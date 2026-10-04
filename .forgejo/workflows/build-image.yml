@@ -2700,6 +2700,18 @@ jobs:
           # the release gate that proves the compositor-owned first-use UI is
           # visible to an external AT-SPI consumer on the installed
           # graphical session.
+          # Password fields refuse Copy and Cut. Typed and copied with the
+          # real keyboard, ordinary chrome text reaches the session clipboard
+          # while the backup passphrase leaves it holding what it held.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-copy-plain
+          ./os/dev/vm.sh type tiloplainprobe
+          ./os/dev/vm.sh keys ctrl-a ctrl-c
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh clipboard-is tiloplainprobe
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-copy-secret
+          ./os/dev/vm.sh type tilosecretprobe42
+          ./os/dev/vm.sh keys ctrl-a ctrl-c ctrl-x
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh \
+            clipboard-keeps tilo-clipboard-sentinel tilosecretprobe42
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-actions
           for attempt in $(seq 1 60); do
             if ./os/dev/vm.sh ssh \

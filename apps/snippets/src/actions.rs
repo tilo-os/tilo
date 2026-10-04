@@ -21,12 +21,14 @@
 //! document and never becomes an action.
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{ActionDecl, PlainText, TextEdit, declaration_spec, publish_child};
+use ui::tilo_resource::{
+    self, ActionDecl, Effect, PlainText, TextEdit, declaration_spec, publish_child,
+};
 use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionAddress, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    ExecutionLocus, OperationKind, ParamType, Resource, RetryPolicy,
+    ExecutionLocus, ParamType, Resource,
 };
 
 use crate::doc::SnippetsDoc;
@@ -35,7 +37,6 @@ use crate::resource::Snippets;
 
 /// Registry `type_id` for every Snippets action.
 pub const SNIPPETS_ACTION_TYPE: &str = "snippets.action";
-pub const SNIPPETS_OPERATION_TYPE: &str = "snippets.operation";
 
 /// Stable resource id for one snippet. Search and every other caller use this
 /// exact identity instead of maintaining a second navigation namespace.
@@ -64,43 +65,21 @@ pub fn reveal_tag_address(tag: &str) -> ActionAddress {
     ActionAddress::new(tag_resource_id(tag), "reveal")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SnippetsOperation {
-    OpenSnippet { id: SnippetId },
-    RevealTag { tag: String },
-    FocusSearch,
-}
-
-/// Decode a Snippets view operation when the type matches.
-///
-/// # Errors
-/// Returns an error for malformed operation payloads.
-pub fn decode_operation(
-    type_id: &str,
-    payload: &[u8],
-) -> Result<Option<SnippetsOperation>, String> {
-    if type_id != SNIPPETS_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
-#[allow(
-    clippy::expect_used,
-    reason = "SnippetsOperation contains only serializable strings and UUIDs"
-)]
-fn view_operation(id: &str, label: &str, operation: &SnippetsOperation) -> ActionSpec {
-    ActionSpec::operation(
-        id,
-        label,
-        OperationKind::View,
-        SNIPPETS_OPERATION_TYPE,
-        operation,
-    )
-    .expect("SnippetsOperation is always serializable")
-    .retry_policy(RetryPolicy::Idempotent)
+/// What the library shows, which changes no document: open a snippet,
+/// reveal a tag's snippets, focus search. Opening and revealing are offered
+/// on the snippet or tag they show.
+#[derive(Debug, Clone, PartialEq, Eq, Effect)]
+#[effect(operation = "snippets.view")]
+pub enum SnippetsView {
+    /// Open snippet
+    #[effect(view, row)]
+    Open { snippet: Uuid },
+    /// Reveal tagged snippets
+    #[effect(view, row)]
+    Reveal { tag: String },
+    /// Search snippets
+    #[effect(view)]
+    Search,
 }
 
 /// Every collaborative operation Snippets exports on its library.
@@ -314,16 +293,6 @@ fn snippet_label(s: &Snippet) -> String {
     format!("{} · {}", base, s.language.label())
 }
 
-/// Library-level View ops (search focus). Document mutations live on
-/// [`crate::resource::Snippets::declarations`] / [`crate::resource::Snippets::children`].
-pub(crate) fn library_view_specs() -> Vec<ActionSpec> {
-    vec![view_operation(
-        "search",
-        "Search snippets",
-        &SnippetsOperation::FocusSearch,
-    )]
-}
-
 /// Document-derived children: folders, tags and snippets.
 pub(crate) fn publish_children(snippets: &[Snippet]) -> Vec<Resource> {
     let folders = snippets
@@ -387,11 +356,8 @@ pub fn provide_folder_resource(folder: String) -> Resource {
 }
 
 pub fn provide_tag_resource(tag: String) -> Resource {
-    Resource::new(tag_resource_id(&tag), "snippets.tag", &tag).with_action(view_operation(
-        "reveal",
-        "Reveal tagged snippets",
-        &SnippetsOperation::RevealTag { tag },
-    ))
+    Resource::new(tag_resource_id(&tag), "snippets.tag", &tag)
+        .with_action(SnippetsView::Reveal { tag }.bound())
 }
 
 /// The id a snippet's body text is published under, as a child of it.
@@ -425,11 +391,7 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
         "snippets.snippet",
         snippet_label(s),
     )
-    .with_action(view_operation(
-        "open",
-        "Open snippet",
-        &SnippetsOperation::OpenSnippet { id },
-    ))
+    .with_action(SnippetsView::Open { snippet: id }.bound())
     .with_action(text_decl(
         "edit-body",
         &ui::i18n!("snippets-edit-body"),
@@ -502,6 +464,7 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
+    use tilo_actions::OperationKind;
 
     fn seeded() -> AutoCommit {
         let mut doc = AutoCommit::new();
@@ -549,7 +512,17 @@ mod tests {
             .iter()
             .find(|child| child.id.as_str() == snippet_resource_id(target.id))
             .expect("each snippet is a child");
-        assert_eq!(action(snippet, "open").kind, OperationKind::View);
+        let open = action(snippet, "open");
+        assert_eq!(open.kind, OperationKind::View);
+        assert!(
+            open.params().is_empty(),
+            "the snippet is bound, not asked for"
+        );
+        assert_eq!(
+            SnippetsView::from_payload(&open.build_json(&serde_json::Map::new()).unwrap().payload)
+                .unwrap(),
+            SnippetsView::Open { snippet: target.id }
+        );
         for id in [
             "edit-body",
             "rename",
