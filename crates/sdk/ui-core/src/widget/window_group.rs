@@ -4785,6 +4785,32 @@ mod tests {
         }
     }
 
+    /// A host that lays out at ~12 fps (a headless session rendering in
+    /// software) steps the opening slot 50 ms at a time. The slot must
+    /// still settle at its width; it used to grow until the client was
+    /// configured `i32::MAX` wide.
+    #[test]
+    fn a_slow_host_opens_the_slot_to_its_width() {
+        let mut g = make_group();
+        g.set_strip_usable_px(996.0);
+        let target = g.resolved_width_px();
+        g.start_spawn_animation();
+        for frame in 0..40 {
+            g.last_width_step = g.width_spring.as_ref().map(|_| instant_ago_ms(80));
+            g.step_width_spring();
+            let width = g.layout_width_px();
+            assert!(
+                width <= target * 1.05,
+                "frame {frame}: slot at {width} past its {target} px width",
+            );
+        }
+        assert!(
+            g.width_spring.is_none() && (g.layout_width_px() - target).abs() < 0.5,
+            "the slot settles at {target}, got {}",
+            g.layout_width_px(),
+        );
+    }
+
     #[test]
     fn maximized_chrome_shows_near_the_top_with_tokenised_chips() {
         // Case `window_group_close_glyph_is_lucide_x`.

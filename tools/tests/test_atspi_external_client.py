@@ -186,5 +186,47 @@ class AppDrivingTests(unittest.TestCase):
         self.assertEqual(names, ["App Store", "Update all", "Settings, offered by a test registry"])
 
 
+class FakeShell:
+    """A desktop with two window groups: [Notes] and [Browser, Browser]."""
+
+    ROOT = CLIENT.ROOT_PATH
+    BASE = "/org/a11y/atspi/accessible/"
+
+    def __init__(self):
+        b = self.BASE
+        self.nodes = {
+            self.ROOT: ("frame", "", [b + "1", b + "4"]),
+            b + "1": ("page tab list", "", [b + "2", b + "3"]),
+            b + "2": ("page tab", "Notes", []),
+            b + "3": ("push button", "New tab", []),
+            b + "4": ("page tab list", "", [b + "5", b + "6", b + "7"]),
+            b + "5": ("page tab", "Browser", []),
+            b + "6": ("page tab", "Browser", []),
+            b + "7": ("push button", "New tab", []),
+        }
+
+    def tree(self, _limit):
+        return {path: f"(<'{name}'>,)" for path, (_role, name, _kids) in self.nodes.items()}
+
+    def property(self, path, _name):
+        return f"(<'{self.nodes[path][1]}'>,)"
+
+    def call(self, path, method, *args, check=True):
+        role, _name, kids = self.nodes[path]
+        if method.endswith("GetRoleName"):
+            return f"('{role}',)"
+        if method.endswith("GetChildren"):
+            return "([" + ", ".join(f"(':1.2', objectpath '{kid}')" for kid in kids) + "],)"
+        raise AssertionError(method)
+
+
+class TabListTests(unittest.TestCase):
+    def test_window_group_strips_list_only_their_tabs(self):
+        lists = CLIENT.tab_lists(FakeShell())
+        self.assertEqual(len(lists), 2)
+        self.assertEqual([len(tabs) for tabs in lists], [1, 2])
+        self.assertTrue(all("Browser" in name for name in lists[1]))
+
+
 if __name__ == "__main__":
     unittest.main()
