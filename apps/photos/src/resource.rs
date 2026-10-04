@@ -10,7 +10,6 @@ use ui::framework::{
     EffectAnswer, EffectCx, Effected, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface,
     SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::ActionAddress;
 use ui::tilo_resource::Effect as _;
 use ui::tilo_resource::effect::Answers;
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
@@ -62,69 +61,11 @@ impl Resource for Photos {
     }
 
     /// Every photograph by its name and everything shared about it — the
-    /// people, tags, folder, place, capture date and analysed text — and
-    /// every album, label and place by its name. Choosing a hit opens it.
+    /// people, tags, folder, place, capture date and analysed text — and the
+    /// timeline, its months and days, places, albums, folders and labels by
+    /// theirs. Choosing a hit opens it.
     fn search(state: &PhotosState) -> Vec<SearchEntry> {
-        let library = &state.library;
-        let open = |id: &str| ActionAddress::new(id, "open");
-        let mut entries: Vec<SearchEntry> = library
-            .photos
-            .iter()
-            .map(|photo| {
-                let mut text: Vec<String> = photo
-                    .people
-                    .iter()
-                    .chain(&photo.tags)
-                    .chain(&photo.folder)
-                    .chain(&photo.captured_at)
-                    .cloned()
-                    .collect();
-                if let Some(location) = photo.location.as_ref().filter(|place| place.is_valid()) {
-                    text.push(location.display_name());
-                }
-                if let Some(analysis) = &photo.analysis {
-                    text.push(analysis.searchable_text());
-                }
-                SearchEntry::new(photo.image.name.clone(), text.join(" "))
-                    .anchored(photo.id.clone())
-                    .invoking(open(&photo.id))
-            })
-            .collect();
-        entries.extend(library.albums.iter().map(|album| {
-            SearchEntry::new(album.name.clone(), "album")
-                .anchored(album.id.clone())
-                .invoking(open(&album.id))
-        }));
-        let (folders, people, tags, objects, pets) = crate::actions::metadata_label_counts(library);
-        for (labels, kind, address) in [
-            (
-                folders,
-                "folder",
-                crate::actions::folder_resource_id as fn(&str) -> String,
-            ),
-            (people, "person", crate::actions::person_resource_id),
-            (tags, "tag", crate::actions::tag_resource_id),
-            (objects, "object", crate::actions::object_resource_id),
-            (pets, "pet", crate::actions::pet_resource_id),
-        ] {
-            entries.extend(labels.into_iter().map(|(label, _)| {
-                let id = address(&label);
-                SearchEntry::new(label, kind)
-                    .anchored(id.clone())
-                    .invoking(open(&id))
-            }));
-        }
-        entries.extend(
-            crate::actions::place_counts(library)
-                .into_iter()
-                .map(|(key, label, _)| {
-                    let id = crate::actions::place_resource_id(&key);
-                    SearchEntry::new(label, "place")
-                        .anchored(id.clone())
-                        .invoking(open(&id))
-                }),
-        );
-        entries
+        crate::search::library_search_entries(&state.library)
     }
 }
 
