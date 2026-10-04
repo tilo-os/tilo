@@ -180,6 +180,8 @@ WORKSPACE_RATCHETS = {
         "ResourceSurface::effect (or ViewCx::effects) and offer item effects bound on their rows",
     ),
 }
+# Ratchets that reached zero and stay there: a ceiling for one is refused.
+CLOSED_RATCHETS = {"raw_operation_handler"}
 RATCHET_REASONS = {
     **{rule: reason for rule, (_, reason) in RATCHETS.items()},
     **{rule: reason for rule, (_, reason) in MODEL_RATCHETS.items()},
@@ -287,6 +289,11 @@ def load_ratchet_baseline(
                 continue
             for relative, limit in entries.items():
                 if not (isinstance(relative, str) and isinstance(limit, int) and limit >= 0):
+                    continue
+                if violations is not None and rule in CLOSED_RATCHETS:
+                    violations.append(
+                        Violation(path, 1, f"{rule} is closed: no ceiling for `{relative}`")
+                    )
                     continue
                 if violations is not None and root / baseline_file(relative) != path:
                     violations.append(
