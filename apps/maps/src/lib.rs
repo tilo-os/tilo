@@ -13,11 +13,11 @@
 //! canvas: a stylised vector basemap, a drawn route polyline, and place
 //! markers, all coloured from the OS `Theme`.
 //!
-//! `app_root()` is the single integration point used by both the live event
-//! loop and the `--shots` offscreen renderer. The live app fetches real data
-//! on background threads; `--shots` (no event loop, no network) renders the
-//! bundled sample city, route and transit options so the screenshot is fully
-//! populated offline.
+//! [`MapsShell`] runs it on the app framework, live and for `--shots`. The
+//! live app fetches real data on background threads; a capture (no network)
+//! stages the bundled sample city, route and transit options through the
+//! framework's scenario hooks so every screenshot is fully populated offline.
+//! Finding places is the platform search ([`place_search`]).
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -56,10 +56,10 @@ mod map_info_sheet;
 pub mod model;
 pub mod net;
 mod offline_panel;
+pub mod place_search;
 pub mod rank;
 pub mod resource;
 pub mod sample;
-mod search_box;
 pub mod tiles;
 pub mod traffic;
 
@@ -81,10 +81,4 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
         .as_definition("Maps")
 }
 
-/// Build the root widget for headless `--shots` and tests: no tile worker, no
-/// network. The stylised vector basemap stands in for raster imagery so the
-/// screenshot is fully populated offline.
-pub fn app_root_offline() -> Box<dyn Widget> {
-    Box::new(MapsApp::offline())
-}
 pub use resource::{Maps, MapsShell};
