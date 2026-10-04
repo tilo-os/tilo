@@ -7,21 +7,20 @@
 use automerge::{AutoCommit, ObjId};
 use ui::theme::Theme;
 use uuid::Uuid;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 use std::collections::HashMap;
-use ui::ColorCompat;
 
 use tilo_rich_text::RichTextView;
+use ui::TextRole;
+use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
+use ui::widget::{Button, ButtonFace, ChipFace, ChipLead, ControlSize};
 
 use crate::input_controls::{InputEventCtx, NoteEditor};
 use crate::model::{AnnoKind, Annotation, HiColor};
-use crate::paint;
 use crate::reader_theme::ReaderPalette;
-
-const TOP_BAR: f64 = 54.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommentAction {
@@ -213,30 +212,32 @@ impl CommentOverlay {
     ) -> Vec<f64> {
         let editing = self.editing_id();
         let editor_h = self.editor.as_ref().map(|editor| editor.rect().height());
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let floor = ControlSize::Small.height(theme);
+        let empty_line = f64::from(theme.text(TextRole::Body).line_height_px());
         comments
             .iter()
             .map(|a| {
-                if editing == Some(a.id) {
-                    return editor_h.map_or(76.0, |h| (h + 12.0).max(76.0));
-                }
-                let text_h = if a.note.trim().is_empty() {
-                    f64::from(tr.measure(&comment_display(a), 13.0, Some(text_w)).1)
+                let text_h = if editing == Some(a.id) {
+                    editor_h.unwrap_or(3.0 * empty_line)
+                } else if a.note.trim().is_empty() {
+                    f64::from(
+                        tr.measure_style(
+                            &comment_display(a),
+                            Some(text_w),
+                            &theme.text(TextRole::Body),
+                        )
+                        .1,
+                    )
                 } else {
-                    let view = self.views.entry(a.id).or_insert_with(comment_view);
+                    let view = self.views.entry(a.id).or_default();
                     view.show(&a.blocks);
                     view.layout(Rect::new(0.0, 0.0, f64::from(text_w), 0.0), theme, tr)
                 };
-                text_h.max(18.0) + 16.0
+                text_h.max(floor) + 2.0 * pad
             })
             .collect()
     }
-}
-
-/// A read-only view of one comment, in comment type.
-fn comment_view() -> RichTextView {
-    let mut view = RichTextView::new();
-    view.editor_mut().set_body_size(13.0);
-    view
 }
 
 impl CommentOverlay {
@@ -262,7 +263,7 @@ impl CommentOverlay {
     /// Write comment `id` in the SDK editor; it shows the comment on the
     /// next sync.
     pub(crate) fn begin_editing(&mut self, id: Uuid) {
-        self.editor = Some(NoteEditor::new(id, 13.0, "Write a comment…"));
+        self.editor = Some(NoteEditor::new(id, "Write a comment"));
     }
 
     pub(crate) fn finish_editing(&mut self) {
@@ -329,100 +330,113 @@ impl CommentOverlay {
         self.hits.push(Hit { rect, action });
     }
 
-    /// Card rect sized to its content, anchored beside `self.anchor` (or the
-    /// viewport center) and clamped inside `viewport`.
-    fn card_rect(&self, viewport: Rect, cw: f64, ch: f64) -> Rect {
+    /// Card rect sized to its content, beside the highlight it belongs to
+    /// (below it when there is room, else above), inside `area`.
+    fn card_rect(&self, area: Rect, theme: &Theme, cw: f64, ch: f64) -> Rect {
         let (ax, atop, abot) = self.anchor.map_or_else(
             || {
-                let c = viewport.center();
+                let c = area.center();
                 (c.x, c.y, c.y)
             },
             |(x0, y0, x1, y1)| (f64::midpoint(x0, x1), y0, y1),
         );
+        let margin = f64::from(theme.tokens.spacing.s3);
+        let gap = f64::from(theme.tokens.spacing.rhythm.related);
         let x0 = (ax - cw / 2.0).clamp(
-            viewport.x0 + 12.0,
-            (viewport.x1 - 12.0 - cw).max(viewport.x0 + 12.0),
+            area.x0 + margin,
+            (area.x1 - margin - cw).max(area.x0 + margin),
         );
-        let top = viewport.y0 + TOP_BAR + 8.0;
-        let bottom = viewport.y1 - 16.0;
-        let y0 = if abot + 12.0 + ch <= bottom {
-            abot + 12.0
-        } else if atop - 12.0 - ch >= top {
-            atop - 12.0 - ch
+        let top = area.y0 + margin;
+        let bottom = area.y1 - margin;
+        let y0 = if abot + gap + ch <= bottom {
+            abot + gap
+        } else if atop - gap - ch >= top {
+            atop - gap - ch
         } else {
             (bottom - ch).max(top)
         };
         Rect::new(x0, y0, x0 + cw, y0 + ch)
     }
 
-    /// Draws the card shadow/background/border and the "Highlight" header row
-    /// (color swatch, label, delete-highlight trash); records their hits.
-    /// Returns the y-coordinate immediately below the header.
+    /// A small plain icon button inside the card, with its private hit.
+    fn icon_button(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        cursor: Point,
+        rect: Rect,
+        (icon, name): (Icon, &str),
+        action: CommentAction,
+    ) {
+        let face = ButtonFace::icon_only(rect, icon, name)
+            .control_size(ControlSize::Small)
+            .hovered(rect.contains(cursor));
+        Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
+        self.push_hit(face.hit_rect(ctx.theme), action);
+    }
+
+    /// The card, its header (the highlight's chip and its delete control)
+    /// and the passage. Returns the y below the passage.
     fn draw_card_and_header(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         cursor: Point,
         layout: &CommentCard<'_>,
     ) -> f64 {
-        let (t, theme) = (ctx.transform, ctx.theme);
-        let PaintCtx {
-            scene, text: tr, ..
-        } = ctx;
+        let theme = ctx.theme;
         let &CommentCard {
             card,
             pad,
-            header_h,
             color,
             group,
             ..
         } = layout;
-        let colors = &theme.tokens.colors;
-        // A floating Panel: elevation, ground and the derived Panel border.
-        // The focus ring belongs to the control being edited, not the card.
-        crate::chrome::panel(scene, t, theme, card);
         self.push_hit(card, CommentAction::Swallow);
-
-        let ix0 = card.x0 + pad;
-        let ix1 = card.x1 - pad;
+        let (ix0, ix1) = (layout.ix0(), layout.ix1());
         let y = card.y0 + pad;
-        paint::circle(
-            scene,
-            t,
-            Point::new(ix0 + 6.0, y + 8.0),
-            6.0,
-            ReaderPalette::highlight_swatch(color),
+        let lead = ChipLead::Dot(ReaderPalette::highlight_swatch(color));
+        let chip_w = ChipFace::intrinsic_width("Highlight", lead, false, ctx.text, theme);
+        let line = layout.header_h;
+        let chip_h = ChipFace::height(theme);
+        let chip = Rect::new(
+            ix0,
+            y + (line - chip_h) / 2.0,
+            ix0 + chip_w,
+            y + f64::midpoint(line, chip_h),
         );
-        tr.draw_text_weighted(
-            scene,
-            "Highlight",
-            13.5,
-            colors.text_primary,
-            t * Affine::translate((ix0 + 20.0, y + 1.0)),
-            None,
-            TextWeight::Semibold,
+        ChipFace::new(chip, "Highlight").lead(lead).paint(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
         );
-        let trash = Rect::new(ix1 - 24.0, y - 2.0, ix1, y + 22.0);
-        let hovered = trash.contains(cursor);
-        if hovered {
-            paint::fill_round(scene, t, trash, 6.0, theme.bg_hover);
-        }
-        paint::trash(
-            scene,
-            t,
-            trash,
-            if hovered {
-                colors.semantic.danger
-            } else {
-                colors.text_dim
-            },
-            1.5,
+        let side = ControlSize::Small.height(theme);
+        let delete = Rect::new(
+            ix1 - side,
+            y + (line - side) / 2.0,
+            ix1,
+            y + f64::midpoint(line, side),
         );
-        self.push_hit(trash, CommentAction::DeleteHighlight(group));
-        y + header_h
+        self.icon_button(
+            ctx,
+            cursor,
+            delete,
+            (Icon::Trash2, "Delete highlight"),
+            CommentAction::DeleteHighlight(group),
+        );
+        let y = y + line + layout.gap;
+        let style = theme.text(TextRole::Body).with_italic(true);
+        ctx.text(
+            layout.excerpt,
+            &style,
+            theme.text_dim,
+            Point::new(ix0, y),
+            Some(layout.inner_w),
+        );
+        y + layout.excerpt_h + layout.gap
     }
 
-    /// Draws each comment row (text, delete/edit affordances) and records
-    /// their hits. Returns the y-coordinate immediately below the last row.
+    /// Each comment as a row (its text, Edit and Delete), rows separated by
+    /// a hairline. Returns the y below the last row.
     fn draw_comment_rows(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -430,110 +444,78 @@ impl CommentOverlay {
         layout: &CommentCard<'_>,
         mut y: f64,
     ) -> f64 {
-        use crate::chrome::rhythm;
-        let (t, theme) = (ctx.transform, ctx.theme);
-        let PaintCtx {
-            scene, text: tr, ..
-        } = ctx;
+        let theme = ctx.theme;
         let &CommentCard {
             comments,
             row_heights,
             text_w,
-            gap,
             ..
         } = layout;
         let (ix0, ix1) = (layout.ix0(), layout.ix1());
-        let colors = &theme.tokens.colors;
-        // The two row controls are full pointer targets, a sibling step from
-        // each other and a tight step in from the row's edge.
-        let control = 24.0;
-        for (annotation, height) in comments.iter().zip(row_heights) {
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let side = ControlSize::Small.height(theme);
+        let gap = f64::from(theme.tokens.spacing.rhythm.tight);
+        for (i, (annotation, height)) in comments.iter().zip(row_heights).enumerate() {
             let height = *height;
-            let row = Rect::new(ix0, y, ix1, y + height);
-            // A row on the panel: one tier up, with its derived edge.
-            crate::chrome::card_on_raised(scene, t, theme, row, 8.0);
-            let delete = Rect::new(
-                ix1 - rhythm::TIGHT - control,
-                y + rhythm::TIGHT,
-                ix1 - rhythm::TIGHT,
-                y + rhythm::TIGHT + control,
-            );
+            if i > 0 {
+                ui::surface::separator(
+                    ctx.scene,
+                    ctx.transform,
+                    ix0,
+                    ix1,
+                    y,
+                    0.0,
+                    theme.tokens.colors.surfaces.content,
+                );
+            }
+            let delete = Rect::new(ix1 - side, y + pad, ix1, y + pad + side);
             let edit = Rect::new(
-                delete.x0 - rhythm::SIBLING - control,
+                delete.x0 - gap - side,
                 delete.y0,
-                delete.x0 - rhythm::SIBLING,
+                delete.x0 - gap,
                 delete.y1,
             );
             let editing = self.editing_id() == Some(annotation.id);
-            if editing {
-                paint::stroke_round(scene, t, row, 8.0, theme.border_focus, 1.4);
-            }
+            let text = Rect::new(ix0, y + pad, ix0 + f64::from(text_w), y + pad);
             if let (true, Some(editor)) = (editing, self.editor.as_mut()) {
-                editor.layout(
-                    Rect::new(ix0 + 8.0, y + 6.0, edit.x0 - rhythm::RELATED, y + 6.0),
-                    theme,
-                    tr,
-                );
-                editor.draw(scene, t, tr, theme);
+                editor.layout(text, theme, ctx.text);
+                editor.draw(ctx.scene, ctx.transform, ctx.text, theme);
             } else if annotation.note.trim().is_empty() {
-                tr.draw_text(
-                    scene,
+                ctx.text_role(
                     &comment_display(annotation),
-                    13.0,
-                    colors.text_dim,
-                    t * Affine::translate((ix0 + 10.0, y + 8.0)),
+                    TextRole::Body,
+                    theme.text_dim,
+                    text.origin(),
                     Some(text_w),
                 );
             } else {
-                let view = self.views.entry(annotation.id).or_insert_with(comment_view);
+                let view = self.views.entry(annotation.id).or_default();
                 view.show(&annotation.blocks);
-                let x0 = ix0 + 10.0;
-                view.layout(
-                    Rect::new(x0, y + 8.0, x0 + f64::from(text_w), y + 8.0),
-                    theme,
-                    tr,
-                );
-                view.draw(scene, t, tr, theme);
+                view.layout(text, theme, ctx.text);
+                view.draw(ctx.scene, ctx.transform, ctx.text, theme);
             }
-            let delete_hover = delete.contains(cursor);
-            paint::close(
-                scene,
-                t,
-                delete,
-                if delete_hover {
-                    colors.semantic.danger
-                } else {
-                    colors.text_dim.with_alpha_factor(0.7)
-                },
-                1.4,
-            );
-            self.push_hit(
-                crate::chrome::pointer_target(delete, theme),
-                CommentAction::Delete(annotation.id),
-            );
-            paint::pencil(
-                scene,
-                t,
-                edit,
-                if edit.contains(cursor) {
-                    colors.text_primary
-                } else {
-                    colors.text_dim.with_alpha_factor(0.7)
-                },
-                1.4,
-            );
             if !editing {
-                self.push_hit(
-                    crate::chrome::pointer_target(edit, theme),
+                self.icon_button(
+                    ctx,
+                    cursor,
+                    edit,
+                    (Icon::Pencil, "Edit comment"),
                     CommentAction::Edit(annotation.id),
                 );
             }
-            y += height + gap;
+            self.icon_button(
+                ctx,
+                cursor,
+                delete,
+                (Icon::Trash2, "Delete comment"),
+                CommentAction::Delete(annotation.id),
+            );
+            y += height;
         }
         y
     }
 
-    /// Draws the "Add comment" button and records its hit.
+    /// "Add comment" and its hit.
     fn draw_add_button(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -541,31 +523,33 @@ impl CommentOverlay {
         layout: &CommentCard<'_>,
         y: f64,
     ) {
-        let (t, theme) = (ctx.transform, ctx.theme);
-        let PaintCtx {
-            scene, text: tr, ..
-        } = ctx;
-        let add = Rect::new(layout.ix0(), y, layout.ix1(), y + layout.add_h - 4.0);
-        // The shared Neutral face (HIG §8): raised, derived edge, themed hover.
-        ui::widget::Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ui::widget::ButtonFace::new(add, "Add comment")
-                .icon(ui::icons::Icon::Plus)
-                .radius(8.0)
-                .text_size(12.5)
-                .weight(TextWeight::Semibold)
-                .hovered(add.contains(cursor)),
+        let theme = ctx.theme;
+        let size = ControlSize::Small;
+        let face = ButtonFace::new(Rect::ZERO, "Add comment")
+            .icon(Icon::Plus)
+            .control_size(size);
+        let width = face.intrinsic_width(ctx.text, theme);
+        let add = Rect::new(
+            layout.ix0(),
+            y,
+            layout.ix0() + width,
+            y + size.height(theme),
         );
-        self.push_hit(add, CommentAction::Add(layout.group));
+        let face = ButtonFace::new(add, "Add comment")
+            .icon(Icon::Plus)
+            .control_size(size)
+            .hovered(add.contains(cursor));
+        Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
+        self.push_hit(face.hit_rect(theme), CommentAction::Add(layout.group));
     }
 
+    /// Paint the comments card for the open highlight inside `area` (the
+    /// reading column), over a full-window tap-away target.
     pub(crate) fn draw(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         viewport: Rect,
+        area: Rect,
         cursor: Point,
         annotations: &[Annotation],
         default_color: HiColor,
@@ -577,50 +561,50 @@ impl CommentOverlay {
         self.push_hit(viewport, CommentAction::Close);
 
         let (color, excerpt, comments) = gather_content(annotations, group, default_color);
-
-        let cw = 360.0_f64.min(viewport.width() - 24.0);
-        let pad = 16.0;
-        let inner_w = (cw - pad * 2.0) as f32;
-        let text_w = inner_w - 52.0;
-        let (_, excerpt_h) = ctx.text.measure(&excerpt, 12.0, Some(inner_w));
-        let row_heights = self.comment_row_heights(ctx.text, ctx.theme, &comments, text_w);
+        let base = ctx.theme;
+        let theme = base.on_ground(ui::chrome::panel_ground(base));
+        let spacing = &theme.tokens.spacing;
+        let margin = f64::from(spacing.s3);
+        let cw = f64::from(theme.tokens.metrics.panel_width_list).min(area.width() - 2.0 * margin);
+        let pad = f64::from(spacing.rhythm.section);
+        let gap = f64::from(spacing.rhythm.related);
+        let inner_w = ui::num::f32_of_f64((cw - pad * 2.0).max(1.0));
+        let controls = 2.0 * ControlSize::Small.height(&theme) + f64::from(spacing.rhythm.tight);
+        let text_w = ui::num::f32_of_f64((f64::from(inner_w) - controls - gap).max(1.0));
+        let excerpt_style = theme.text(TextRole::Body).with_italic(true);
+        let excerpt_h = f64::from(
+            ctx.text
+                .measure_style(&excerpt, Some(inner_w), &excerpt_style)
+                .1,
+        );
+        let row_heights = self.comment_row_heights(ctx.text, &theme, &comments, text_w);
         self.views
             .retain(|id, _| comments.iter().any(|comment| comment.id == *id));
 
-        let header_h = 28.0;
-        let gap = 8.0;
-        let add_h = 34.0;
-        let comments_h = row_heights.iter().sum::<f64>() + gap * comments.len().max(1) as f64;
-        let ch = pad + header_h + 8.0 + f64::from(excerpt_h) + 12.0 + comments_h + add_h + pad;
+        let header_h = ChipFace::height(&theme).max(ControlSize::Small.height(&theme));
+        let add_h = ControlSize::Small.height(&theme);
+        let comments_h = row_heights.iter().sum::<f64>();
+        let ch = pad + header_h + gap + excerpt_h + gap + comments_h + gap + add_h + pad;
 
         let layout = CommentCard {
-            card: self.card_rect(viewport, cw, ch),
+            card: self.card_rect(area, &theme, cw, ch),
             pad,
             header_h,
             gap,
-            add_h,
+            inner_w,
             text_w,
+            excerpt: &excerpt,
+            excerpt_h,
             color,
             group,
             comments: &comments,
             row_heights: &row_heights,
         };
-
-        let y = self.draw_card_and_header(ctx, cursor, &layout);
-
-        ctx.text.draw_text(
-            ctx.scene,
-            &excerpt,
-            12.0,
-            ctx.theme.tokens.colors.text_dim,
-            ctx.transform * Affine::translate((layout.ix0(), y)),
-            Some(inner_w),
-        );
-        let y = y + f64::from(excerpt_h) + 12.0;
-
-        let y = self.draw_comment_rows(ctx, cursor, &layout, y);
-
-        self.draw_add_button(ctx, cursor, &layout, y);
+        ui::widget::floating_surface::paint(ctx.scene, ctx.transform, layout.card, base);
+        let mut panel = PaintCtx::new(ctx.scene, ctx.transform, ctx.text, &theme);
+        let y = self.draw_card_and_header(&mut panel, cursor, &layout);
+        let y = self.draw_comment_rows(&mut panel, cursor, &layout, y);
+        self.draw_add_button(&mut panel, cursor, &layout, y + gap);
     }
 
     #[cfg(test)]
@@ -634,15 +618,17 @@ impl CommentOverlay {
 }
 
 /// The measured comments card for one highlight group: its rect and
-/// spacing, the group's colour and id, and the comments listed in it with
-/// their measured row heights.
+/// spacing, the passage, the group's colour and id, and the comments listed
+/// in it with their measured row heights.
 struct CommentCard<'a> {
     card: Rect,
     pad: f64,
     header_h: f64,
     gap: f64,
-    add_h: f64,
+    inner_w: f32,
     text_w: f32,
+    excerpt: &'a str,
+    excerpt_h: f64,
     color: HiColor,
     group: Uuid,
     comments: &'a [Annotation],
@@ -667,6 +653,7 @@ mod tests {
     use taffy::{NodeId, TaffyTree};
     use ui::theme::Theme;
     use vello::Scene;
+    use vello::kurbo::Affine;
     use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
     use winit::keyboard::{Key, NamedKey, PhysicalKey};
 
@@ -717,6 +704,7 @@ mod tests {
             overlay.draw(
                 &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark()),
                 Rect::new(0.0, 0.0, 800.0, 700.0),
+                Rect::new(0.0, 0.0, 800.0, 700.0),
                 Point::ZERO,
                 &annotations,
                 HiColor::Yellow,
@@ -745,6 +733,7 @@ mod tests {
             let mut text = TextRenderer::new();
             overlay.draw(
                 &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark()),
+                Rect::new(0.0, 0.0, 600.0, 500.0),
                 Rect::new(0.0, 0.0, 600.0, 500.0),
                 Point::ZERO,
                 &annotations,

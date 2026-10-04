@@ -480,7 +480,7 @@ impl CompositionStyle {
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Book => "Book",
+            Self::Book => "Justified",
             Self::Ragged => "Ragged",
         }
     }
@@ -509,9 +509,9 @@ impl ReadMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            ReadMode::Paged => "Page",
+            ReadMode::Paged => "Pages",
             ReadMode::Continuous => "Scroll",
-            ReadMode::TwoUp => "Spread",
+            ReadMode::TwoUp => "Two pages",
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -817,21 +817,21 @@ impl Default for Settings {
 }
 
 impl Settings {
-    pub const FONT_MIN: f32 = 0.8;
-    pub const FONT_MAX: f32 = 2.0;
+    pub const READING_SCALE_MIN: f32 = 0.8;
+    pub const READING_SCALE_MAX: f32 = 2.0;
     pub const SPACING_MIN: f32 = 0.95;
     pub const SPACING_MAX: f32 = 1.6;
 
     /// Base body size in logical px before the scale multiplier.
-    pub const BASE_SIZE: f32 = 19.0;
+    pub const BODY_CONTENT_PX: f32 = 19.0;
 
     pub fn body_size(&self) -> f32 {
-        Self::BASE_SIZE * self.font_scale
+        Self::BODY_CONTENT_PX * self.font_scale
     }
 
     /// Body size including a selected font's per-face size multiplier.
     pub fn body_size_with(&self, font_mult: f32) -> f32 {
-        Self::BASE_SIZE * self.font_scale * font_mult
+        Self::BODY_CONTENT_PX * self.font_scale * font_mult
     }
 }
 
@@ -1069,7 +1069,7 @@ mod tests {
                 font_scale: 1.5,
                 ..Default::default()
             };
-            assert!((s.body_size() - Settings::BASE_SIZE * 1.5).abs() < 0.01);
+            assert!((s.body_size() - Settings::BODY_CONTENT_PX * 1.5).abs() < 0.01);
         }
 
         // --- phase: progress_is_read_at_the_end ---

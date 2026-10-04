@@ -478,7 +478,8 @@ impl EbookAction {
             Self::SetReadingSettings { before, settings } => {
                 for value in [before, settings] {
                     if !value.font_scale.is_finite()
-                        || !(Settings::FONT_MIN..=Settings::FONT_MAX).contains(&value.font_scale)
+                        || !(Settings::READING_SCALE_MIN..=Settings::READING_SCALE_MAX)
+                            .contains(&value.font_scale)
                         || !value.line_spacing.is_finite()
                         || !(Settings::SPACING_MIN..=Settings::SPACING_MAX)
                             .contains(&value.line_spacing)
@@ -1589,11 +1590,7 @@ fn annotation_resources(annotations: &[Annotation]) -> Vec<Resource> {
             preview.pop();
         }
         ResourcePresentation {
-            detail: Some(format!(
-                "Chapter {} · {}",
-                annotation.chapter + 1,
-                annotation.color.as_str()
-            )),
+            detail: Some(format!("Chapter {}", annotation.chapter + 1)),
             badge: Some(annotation.kind.label().into()),
             preview: (!preview.is_empty()).then_some(preview),
         }
@@ -1945,7 +1942,7 @@ pub(crate) fn settings_document_resource(
         next.mode = mode;
         root = root.with_action(encode_spec(
             &format!("mode-{}", mode.as_str()),
-            &format!("Use {} reading", mode.label()),
+            &format!("{} layout", mode.label()),
             &set_reading_settings_action(settings.clone(), next),
         ));
     }
@@ -1954,7 +1951,7 @@ pub(crate) fn settings_document_resource(
         next.composition = composition;
         root = root.with_action(encode_spec(
             &format!("composition-{}", composition.as_str()),
-            &format!("Use {} composition", composition.label()),
+            &format!("{} text", composition.label()),
             &set_reading_settings_action(settings.clone(), next),
         ));
     }
