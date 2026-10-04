@@ -13,6 +13,8 @@ RUN test "$(cat /usr/lib/tilo/image-flavour)" = dev \
     && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 
 FROM ${BASE_IMAGE} AS uki-tools
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 # tilo-rpm-snapshot-package[aarch64]: systemd-ukify
 # tilo-rpm-snapshot-package[aarch64]: systemd-boot-unsigned
 # tilo-rpm-snapshot-package[aarch64]: binutils
