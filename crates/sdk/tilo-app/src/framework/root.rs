@@ -256,6 +256,11 @@ impl<R: Resource> ResourceRoot<R> {
         &self.live
     }
 
+    /// The view the root hosts, for a test reaching a custom surface in it.
+    pub(crate) fn content_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.content.as_mut()
+    }
+
     /// What the launch that opened the window named.
     pub(crate) fn launch(&self) -> super::launch::LaunchInput<'_> {
         self.run.launch()

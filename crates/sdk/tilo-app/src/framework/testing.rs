@@ -441,6 +441,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(())
     }
 
+    /// The custom surface of type `S` the view hosts, without running a
+    /// frame: for a test reading it, or setting it up, between the events it
+    /// sends.
+    ///
+    /// # Panics
+    /// Panics when the view hosts no surface of type `S`.
+    #[allow(
+        clippy::expect_used,
+        reason = "a test naming a surface its app does not host is wrong"
+    )]
+    pub fn surface_mut<S: 'static>(&mut self) -> &mut S {
+        surface_in::<A, S>(self.harness()).expect("the view hosts this surface")
+    }
+
     /// The headless frame harness, for input-level tests (`click_named`,
     /// `type_text`, `targets`).
     ///
@@ -934,6 +948,32 @@ impl<A: ResourceApp> HeadlessApp<A> {
         harness.relayout();
         redone
     }
+}
+
+/// Run `visit` on the custom surface of type `S` that `A`'s view hosts in
+/// `harness` (what [`ViewCx::surface`](super::ViewCx::surface) mounted), then
+/// the frames that follow; `None` when the view hosts no such surface at its
+/// root. For a test that drives a component mounted another way than
+/// [`HeadlessApp`] (two windows over one record).
+pub fn with_surface<A: ResourceApp, S: 'static, T>(
+    harness: &mut FrameHarness,
+    visit: impl FnOnce(&mut S) -> T,
+) -> Option<T> {
+    harness
+        .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| surface_of::<A, S>(root).map(visit))
+        .flatten()
+}
+
+/// The custom surface of type `S` that `A`'s view hosts in `harness`,
+/// without running a frame (see [`with_surface`]).
+pub fn surface_in<A: ResourceApp, S: 'static>(harness: &mut FrameHarness) -> Option<&mut S> {
+    surface_of::<A, S>(harness.widget_mut::<ResourceRoot<A::Resource>>()?)
+}
+
+fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot<A::Resource>) -> Option<&mut S> {
+    root.content_mut()
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<S>())
 }
 
 /// Inspect the window `A`'s live launch opens: the same definition and
