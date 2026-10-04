@@ -19,7 +19,7 @@ use crate::transport::{QEMU_NAMESPACE, VsockBackend, hybrid_commandline_xml};
 /// Marks a domain as Tilo's; a same-named domain without it is not touched.
 pub const METADATA_ELEMENT: &str = "<tilo:legacy-vm";
 
-/// Empty PCIe root ports for live-attached shares.
+/// Empty PCI Express root ports for live-attached shares.
 const HOTPLUG_PORTS: usize = 8;
 
 #[derive(Debug, Error, Eq, PartialEq)]
