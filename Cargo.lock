@@ -11977,6 +11977,7 @@ dependencies = [
  "runtime-portal",
  "serde",
  "serde_json",
+ "settings-store",
  "tilo-test-env",
  "tokio",
  "tokio-util",
