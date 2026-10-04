@@ -98,6 +98,9 @@
 //!   [`ResourceApp::ARGUMENTS`] how many arguments it takes. A handed file's
 //!   bytes are kept in the launch's content store ([`LaunchInput::content`]),
 //!   which the actions name by hash, so the record never carries the file.
+//!   An app that offers private windows ([`ResourceApp::PRIVATE_WINDOWS`],
+//!   `--private`) runs one on a profile thrown away with the process,
+//!   attached to no runtime, and its view knows ([`ViewCx::is_private`]).
 //!   A command the binary runs instead of a window (`--emit-photos DIR`) is a
 //!   [`Command`] in [`ResourceApp::commands`], and the app's messages are
 //!   its [`ResourceApp::catalog`], loaded in every host that mounts it. A

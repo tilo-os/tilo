@@ -82,6 +82,12 @@ pub trait ResourceApp: 'static {
     /// [`LaunchInput::flag`], [`ViewCx::launch_flag`],
     /// [`SurfaceCx::launch_flag`](super::SurfaceCx::launch_flag).
     const FLAGS: &'static [&'static str] = &[];
+    /// Whether the app opens private windows (`--private`): a window on a
+    /// profile of its own that is thrown away with the process — its record,
+    /// settings and files never reach the person's — and that attaches to
+    /// no runtime, so nothing it shows syncs or is shared. Its view tells
+    /// with [`ViewCx::is_private`].
+    const PRIVATE_WINDOWS: bool = false;
 
     /// Build the view. Called once for the live app, and again for every
     /// historical version History mode shows (with a read-only context), so
@@ -427,7 +433,7 @@ fn create<A: ResourceApp>(
     let capture = context.capture().is_some();
     let run = match context.capture().cloned() {
         Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
-        None => Run::live(context.content().cloned()),
+        None => Run::live(context.content().cloned()).in_private(context.is_private()),
     };
     if let Some(file) = &file {
         file.report_opened(<A::Resource as Resource>::KIND);
@@ -581,7 +587,8 @@ fn prepare_app<A: ResourceApp>(
     let arguments = args.positionals();
     let options = launch_options::<A>(args);
     let named = A::launch_record(&LaunchInput::new(arguments, None).with_options(&options));
-    let mut prepared = prepare_named(definition, args, named)?;
+    let private = A::PRIVATE_WINDOWS && args.has(PRIVATE_FLAG);
+    let mut prepared = prepare_named(definition, args, named, private)?;
     hand_launch(definition, arguments, &mut prepared)?;
     prepared.context.provide_launch_options(options);
     // The session launches the target of a playback handoff with where it
@@ -696,7 +703,7 @@ fn prepare_definition(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
-    prepare_named(definition, args, None)
+    prepare_named(definition, args, None, false)
 }
 
 #[cfg(tilo_native_runner)]
@@ -704,12 +711,14 @@ fn prepare_named(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
     named: Option<RecordId>,
+    private: bool,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let inputs = ComponentRunnerInputs::from_native_process();
-    // Captures, audits and headless driving never touch the user's profile:
-    // they run on a private one removed with the process, unless a headless
-    // drive names its profile with `--data-dir`.
-    let isolated = args.shots.is_some()
+    // Captures, audits, headless driving and private windows never touch the
+    // user's profile: they run on a private one removed with the process,
+    // unless a headless drive names its profile with `--data-dir`.
+    let isolated = private
+        || args.shots.is_some()
         || args.responsive_matrix.is_some()
         || args.native_audit
         || (args.headless.is_some() && args.value("--data-dir").is_none());
@@ -738,6 +747,9 @@ fn prepare_named(
             prepared
                 .context
                 .provide_capture(Capture::new(args.scenario.clone()));
+        }
+        if private {
+            prepared.context.provide_private();
         }
         return Ok(super::testing::with_settings_file(prepared, settings));
     }
@@ -813,6 +825,23 @@ fn live_options<A: ResourceApp>() -> &'static [&'static str] {
     .as_slice()
 }
 
+#[cfg(tilo_native_runner)]
+struct LiveFlagsKey<A>(std::marker::PhantomData<A>);
+
+/// The switches a live launch of `A` takes: its own, and `--private` when it
+/// opens private windows.
+#[cfg(tilo_native_runner)]
+fn live_flags<A: ResourceApp>() -> &'static [&'static str] {
+    leaked(TypeId::of::<LiveFlagsKey<A>>(), || {
+        let mut flags = A::FLAGS.to_vec();
+        if A::PRIVATE_WINDOWS {
+            flags.push(PRIVATE_FLAG);
+        }
+        flags
+    })
+    .as_slice()
+}
+
 /// Run the command a launch of `A` names, if it names one.
 #[cfg(tilo_native_runner)]
 fn run_command<A: ResourceApp>(args: &LaunchArgs) -> Result<bool, LaunchError> {
@@ -825,6 +854,10 @@ fn run_command<A: ResourceApp>(args: &LaunchArgs) -> Result<bool, LaunchError> {
     }
     Ok(false)
 }
+
+/// The flag that opens a private window of an app that offers them.
+#[cfg(tilo_native_runner)]
+const PRIVATE_FLAG: &str = "--private";
 
 #[cfg(tilo_native_runner)]
 /// The launch specification of `A`, for apps that add options to it.
@@ -839,7 +872,14 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
         .command_handler(run_command::<A>)
         .allowed_options(&["--data-dir"])
         .allowed_live_options(live_options::<A>())
-        .allowed_live_flags(A::FLAGS);
+        .allowed_live_flags(live_flags::<A>());
+    let spec = if A::PRIVATE_WINDOWS {
+        // A private window is nobody's runtime participant: it neither syncs
+        // nor shares what it shows.
+        spec.runtime_attachment(|args| !args.has(PRIVATE_FLAG))
+    } else {
+        spec
+    };
     // An input surface types into other apps' fields: nothing drives it
     // without a person.
     if A::BEHAVIOUR.window == ui_core::application::WindowRole::InputSurface {
