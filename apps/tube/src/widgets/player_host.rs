@@ -9,7 +9,7 @@
 //! behind an `Rc<RefCell<_>>`; each rebuilt watch tree gets a fresh, cheap
 //! `PlayerHost` pointing at that same shared player.
 //!
-//! `PlayerHost` is the taffy node (a fixed 16:9 leaf, same slot the poster used)
+//! `PlayerHost` is the taffy node (a fixed 16:9 leaf)
 //! and forwards every `Widget` pass to the shared player. Only the host is
 //! registered in the App's `node_map`; the inner player is never aliased there,
 //! so the short `RefCell` borrows each pass takes can't overlap a raw-pointer
@@ -27,11 +27,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use ui::ImageStore;
-use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{FullscreenProvider, MediaArt, MediaAspect, MediaCardFace, VideoPlayer, Widget};
+use ui::widget::{
+    FullscreenProvider, MediaArt, MediaAspect, MediaCardFace, MediaSource, VideoPlayer, Widget,
+};
 
 /// A shared, persistent [`VideoPlayer`]. Cloned cheaply into each rebuilt tree.
 pub type SharedPlayer = Rc<RefCell<VideoPlayer>>;
@@ -44,9 +45,7 @@ pub const PLAYER_HOST_ID: &str = "watch_video_surface";
 /// width-driven 16:9 height.
 pub struct PlayerHost {
     player: SharedPlayer,
-    /// The video's art, holding the player's place until its first frame.
-    poster: Option<Poster>,
-    /// 16:9-derived player height (logical px), matching the poster's slot.
+    /// 16:9-derived player height (logical px).
     player_h: f32,
     /// This host's own laid-out rect (mirrors the inner player's).
     rect: Rect,
@@ -54,17 +53,10 @@ pub struct PlayerHost {
     node: Option<NodeId>,
 }
 
-/// What holds the player's place before it has a picture when the video
-/// has no thumbnail: the same generated art its card shows.
-struct Poster {
-    title: String,
-}
-
 impl PlayerHost {
     pub fn new(player: SharedPlayer, player_h: f32) -> Self {
         Self {
             player,
-            poster: None,
             player_h,
             rect: Rect::ZERO,
             node: None,
@@ -72,63 +64,28 @@ impl PlayerHost {
     }
 
     /// Show the video's art until the player has a frame to show, so a
-    /// watch page that is still starting playback never stands empty: the
-    /// thumbnail (`url` from `store`) is the player's own poster, on its
-    /// letterbox under its controls; without one, the art generated for
-    /// `title` holds the player's place.
+    /// watch page that is still starting playback never stands empty. The
+    /// art is the player's own poster, under its controls: the thumbnail
+    /// (`url` from `store`), or without one the art generated for `title`,
+    /// the same its card shows.
     #[must_use]
-    pub fn with_poster(mut self, store: Option<ImageStore>, url: &str, title: &str) -> Self {
-        if let Some(store) = store.filter(|_| !url.is_empty()) {
-            self.player
-                .borrow_mut()
-                .set_poster(Some(ui::widget::MediaSource::Url {
-                    store,
-                    url: url.to_string(),
-                }));
-            self.poster = None;
+    pub fn with_poster(self, store: Option<ImageStore>, url: &str, title: &str) -> Self {
+        let poster = if let Some(store) = store.filter(|_| !url.is_empty()) {
+            MediaSource::Url {
+                store,
+                url: url.to_string(),
+            }
         } else {
-            self.player.borrow_mut().set_poster(None);
-            self.poster = Some(Poster {
-                title: title.to_string(),
-            });
-        }
-        self
-    }
-
-    /// Whether the poster stands in for the player: there is no frame yet
-    /// and the controls are hidden (the controls, once revealed, stand on
-    /// the player's own letterbox).
-    fn shows_poster(&self) -> bool {
-        let player = self.player.borrow();
-        self.poster.is_some() && player.latest_frame().is_none() && !player.controls_visible()
-    }
-
-    /// Paint the poster in the player's place.
-    fn paint_poster(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(poster) = &self.poster else {
-            return;
+            let title = title.to_string();
+            MediaSource::Paint(Box::new(move |ctx, rect| {
+                MediaCardFace::new(MediaArt::Placeholder)
+                    .aspect(MediaAspect::Wide)
+                    .title(&title)
+                    .paint(ctx, rect);
+            }))
         };
-        // The face sets the title under the art; the poster is the art alone,
-        // so the title only seeds the generated art and is clipped away.
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &self.rect,
-        );
-        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-        MediaCardFace::new(MediaArt::Placeholder)
-            .aspect(MediaAspect::Wide)
-            .title(&poster.title)
-            .paint(&mut ctx, self.rect);
-        scene.pop_layer();
+        self.player.borrow_mut().set_poster(Some(poster));
+        self
     }
 }
 
@@ -156,7 +113,7 @@ impl Widget for PlayerHost {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Same slot the poster occupied: full column width, fixed 16:9 height.
+        // Full column width, fixed 16:9 height.
         // The host (not the inner player) is registered in `node_map`, so events
         // route here and delegate — the inner player is never aliased by a raw
         // pointer.
@@ -190,20 +147,9 @@ impl Widget for PlayerHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.shows_poster() {
-            // The player still runs its paint pass (it settles its control
-            // state there), but nothing of it shows: its letterbox would
-            // stand at the poster's rounded corners.
-            let mut unseen = Scene::new();
-            self.player
-                .borrow_mut()
-                .draw(&mut unseen, transform, text_renderer, theme, presence);
-            self.paint_poster(scene, transform, text_renderer, theme);
-        } else {
-            self.player
-                .borrow_mut()
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
+        self.player
+            .borrow_mut()
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(

@@ -933,6 +933,8 @@ impl TubeApp {
             .map_or_else(|| "vid_donut".to_string(), |v| v.id.clone());
         let mut app = self.with_route_shot(Route::Watch(id.clone()));
         app.player_video = Some(id);
+        // A video just started shows its transport, as the live player does.
+        app.player.borrow_mut().reveal_controls();
         app
     }
 
@@ -1891,7 +1893,7 @@ impl TubeApp {
                     self.model.search_channel_hits = channel_ids;
                     self.live_search.answer(
                         &query,
-                        crate::search_type::live_results(&self.model, &query),
+                        crate::search_type::live_results(&self.model, self.images.as_ref(), &query),
                     );
                     // Progressive avatar coverage: for a bounded set of result
                     // uploaders that still lack a real avatar, pull their channel
@@ -2734,7 +2736,8 @@ impl Widget for TubeApp {
 
 impl ui::search::capability::SearchSource for TubeApp {
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        let provider = crate::search_type::TubeSearchProvider::new(&self.model);
+        let provider =
+            crate::search_type::TubeSearchProvider::new(&self.model, self.images.as_ref());
         vec![Box::new(if self.online {
             provider.with_live(self.live_search.clone())
         } else {
@@ -3742,8 +3745,9 @@ mod tests {
         {
             use ui::search::{PagePoll, SearchProvider, SearchQuery};
             let mut app = TubeApp::empty();
-            let provider = crate::search_type::TubeSearchProvider::new(&app.model)
-                .with_live(app.live_search.clone());
+            let provider =
+                crate::search_type::TubeSearchProvider::new(&app.model, app.images.as_ref())
+                    .with_live(app.live_search.clone());
             let token = provider
                 .search_page(&SearchQuery::new("rust"), None, 64, 64)
                 .pending
@@ -3776,8 +3780,9 @@ mod tests {
             app.online = true; // online without spawning the image store's threads
             app.kicked_off = true;
             app.history_store = OwnerHistoryStore::memory();
-            let provider = crate::search_type::TubeSearchProvider::new(&app.model)
-                .with_live(app.live_search.clone());
+            let provider =
+                crate::search_type::TubeSearchProvider::new(&app.model, app.images.as_ref())
+                    .with_live(app.live_search.clone());
             let page = provider.search_page(&SearchQuery::new("rust"), None, 64, 64);
             assert!(page.pending.is_some(), "YouTube answers as a slow page");
             let mut doc = AutoCommit::new();
