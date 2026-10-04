@@ -539,6 +539,12 @@ impl RichTextLine {
         }
     }
 
+    /// How far the line's text starts inside its rect: the text field's
+    /// own horizontal inset (none for the editor's plain lines).
+    pub fn text_inset(&self, theme: &Theme) -> f64 {
+        self.inner.text_inset_x(theme)
+    }
+
     /// Returns 0.0 before the first draw.
     pub fn pixel_x_for_byte(&self, theme: &Theme, byte: usize) -> f64 {
         let xs = self.inner.char_x_positions();
@@ -1034,11 +1040,13 @@ impl Widget for RichTextLine {
                 clippy::cast_precision_loss,
                 reason = "bounded image pixel dimensions are converted to the f32 layout coordinate space"
             )]
+            // The image stands on the editor's content edge, inside the
+            // line's text inset on both sides, at its native aspect.
+            let pad = self.text_inset(&self.measurement_theme) as f32;
+            let image_width = (width - 2.0 * pad).max(1.0);
             let preview_height = dimensions.map_or(
                 220.0 * self.measurement_theme.text_scale,
-                |(image_width, image_height)| {
-                    width * image_height.max(1) as f32 / image_width.max(1) as f32
-                },
+                |(image_w, image_h)| image_width * image_h.max(1) as f32 / image_w.max(1) as f32,
             );
             return Size {
                 width,
