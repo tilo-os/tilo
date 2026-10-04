@@ -19,7 +19,7 @@ use crate::tokens::contrast::{ContrastFinding, audit};
 use crate::tokens::palette::{Emphasis, Palette, Tone};
 
 /// The one schema this build reads and writes.
-pub const THEME_SCHEMA_VERSION: u32 = 5;
+pub const THEME_SCHEMA_VERSION: u32 = 6;
 
 /// The window tile's radius. Every other radius derives from it
 /// concentrically (`crate::tokens::Radii::from_window_radius`).
@@ -57,11 +57,14 @@ impl ThemeDensity {
     pub const ROOMY: f32 = 1.2;
 }
 
-/// The UI face and the body size every text role derives from.
+/// The UI face, the reading face and the body size every text role derives
+/// from.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeType {
     pub face: String,
+    /// The Reading role's face ([`crate::tokens::ReadingFace`]), by name.
+    pub reading: String,
     pub base_size: f32,
 }
 
@@ -72,6 +75,12 @@ impl ThemeType {
     pub const ADMITTED: std::ops::RangeInclusive<f32> = 10.0..=24.0;
     /// Band a theme is built at; a value outside it is clamped.
     pub const USABLE: std::ops::RangeInclusive<f32> = 12.0..=18.0;
+
+    /// The stock reading face.
+    #[must_use]
+    pub fn default_reading() -> String {
+        crate::tokens::ReadingFace::Default.name().into()
+    }
 }
 
 /// The character of the shared UI springs: `0` calm, `1` the stock snappy
@@ -155,6 +164,7 @@ impl ThemeDocument {
             },
             type_: ThemeType {
                 face: crate::text_render::UI_SANS_FAMILY.into(),
+                reading: ThemeType::default_reading(),
                 base_size: ThemeType::BASE_SIZE,
             },
             motion: ThemeMotion { character: 1.0 },
@@ -201,6 +211,9 @@ impl ThemeDocument {
         }
         if !text_field_ok(&self.type_.face) {
             return Err("invalid type face");
+        }
+        if !text_field_ok(&self.type_.reading) {
+            return Err("invalid reading face");
         }
         if !within(self.type_.base_size, &ThemeType::ADMITTED) {
             return Err("base type size outside 10..=24");

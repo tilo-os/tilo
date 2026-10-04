@@ -23,7 +23,10 @@ pub const UI_SANS_FAMILY: &str = "Tilo Sans";
 /// The built-in "Hyperlegible" UI face a theme or the accessibility layer
 /// can choose instead of [`UI_SANS_FAMILY`].
 pub const UI_HYPERLEGIBLE_FAMILY: &str = "Atkinson Hyperlegible Next";
-pub const UI_SERIF_FAMILY: &str = "Noto Serif";
+/// The default reading face, New Computer Modern. Set in this family, text
+/// takes the cut its size calls for: the 8 pt design for footnotes, Book for
+/// body text and Regular for titles ([`crate::tokens::ReadingFace`]).
+pub const UI_SERIF_FAMILY: &str = "New Computer Modern";
 pub const UI_MONOSPACE_FAMILY: &str = "Noto Sans Mono";
 /// Dedicated OpenType MATH face used by the shared formula compositor.
 pub const UI_MATH_FAMILY: &str = "Noto Sans Math";
@@ -519,6 +522,14 @@ pub enum TextKind {
     Code,
 }
 
+/// The features that pick a figure style: spacing and form.
+pub(crate) const FIGURE_TAGS: [OpenTypeTag; 4] = [
+    OpenTypeTag::TABULAR_NUMERALS,
+    OpenTypeTag::PROPORTIONAL_NUMERALS,
+    OpenTypeTag::OLDSTYLE_NUMERALS,
+    OpenTypeTag::LINING_NUMERALS,
+];
+
 /// One explicit OpenType substitution/positioning setting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct OpenTypeFeature {
@@ -549,6 +560,32 @@ pub enum OpticalSizing {
     Auto,
     None,
     Value(f32),
+}
+
+/// The ground text is set on, as far as the face is concerned. Light ink on a
+/// dark ground loses fine hairlines first, so a family drawn in separate
+/// optical cuts keeps its sturdier text cut to larger sizes there
+/// ([`OpticalSizing::Auto`]). A theme's roles carry its content ground; a
+/// surface that paints its own ground (a book's page) says which it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextGround {
+    #[default]
+    Light,
+    Dark,
+}
+
+impl TextGround {
+    /// The ground `color` is: dark when light ink reads better on it than
+    /// dark ink does.
+    #[must_use]
+    pub fn of(color: Color) -> Self {
+        // Black and white contrast equally with a ground of this luminance.
+        if crate::color::relative_luminance(color) < 0.179 {
+            Self::Dark
+        } else {
+            Self::Light
+        }
+    }
 }
 
 /// Paragraph alignment, including inter-word justification.
@@ -689,6 +726,8 @@ pub struct TextStyle {
     /// What the text is; resolved to OpenType features against each face it
     /// is set in.
     pub kind: TextKind,
+    /// The ground the text is set on, for the optical cut it is set in.
+    pub ground: TextGround,
 }
 
 /// What a [`TextStyle`]'s size (and pixel letter spacing) is measured in.
@@ -733,6 +772,7 @@ impl TextStyle {
             fragmentation: Fragmentation::default(),
             scaling: TextScaling::Renderer,
             kind: TextKind::Prose,
+            ground: TextGround::Light,
         }
     }
 
@@ -785,13 +825,26 @@ impl TextStyle {
     }
 
     /// Say what the text is ([`TextKind`]). `Code` also sets it in the mono
-    /// face.
+    /// face. `Numeric` and `Secret` decide the figures, so they replace any
+    /// figure style set before them (the Reading role's old-style figures).
     #[must_use]
     pub fn with_kind(mut self, kind: TextKind) -> Self {
         self.kind = kind;
         if kind == TextKind::Code {
             self.family = FontChoice::Monospace;
         }
+        if matches!(kind, TextKind::Numeric | TextKind::Secret) {
+            self.font_features
+                .retain(|feature| !FIGURE_TAGS.contains(&feature.tag));
+        }
+        self
+    }
+
+    /// Say what ground the text is set on ([`TextGround`]). Theme roles
+    /// carry their theme's; a surface that paints its own ground sets it.
+    #[must_use]
+    pub fn with_ground(mut self, ground: TextGround) -> Self {
+        self.ground = ground;
         self
     }
 
@@ -977,9 +1030,23 @@ impl TextStyle {
         for feature in &self.font_features {
             features.set(cosmic_text::FeatureTag::new(&feature.tag.0), feature.value);
         }
+        let weight = self.effective_weight();
+        let family = match &self.family {
+            FontChoice::Named(name) => Family::Name(
+                crate::font_catalog::optical::cut(
+                    name,
+                    self.size,
+                    self.optical(),
+                    self.italic,
+                    weight.0,
+                )
+                .unwrap_or(name),
+            ),
+            other => other.to_cosmic(),
+        };
         let mut attrs = Attrs::new()
-            .weight(self.effective_weight())
-            .family(self.family.to_cosmic())
+            .weight(weight)
+            .family(family)
             .font_features(features);
         if self.letter_spacing != 0.0 {
             attrs = attrs.letter_spacing(self.letter_spacing / self.size.max(0.1));
@@ -988,6 +1055,15 @@ impl TextStyle {
             attrs = attrs.style(FontStyle::Italic);
         }
         attrs
+    }
+
+    /// What picks this style's optical cut besides the family, size, style
+    /// and weight of each run.
+    pub(crate) fn optical(&self) -> crate::font_catalog::optical::Optical {
+        crate::font_catalog::optical::Optical {
+            sizing: self.optical_sizing,
+            ground: self.ground,
+        }
     }
 
     pub(crate) fn advanced_hash(&self) -> u64 {
@@ -1013,6 +1089,7 @@ impl TextStyle {
         self.hanging_punctuation.hash(&mut h);
         self.fragmentation.hash(&mut h);
         self.kind.hash(&mut h);
+        self.ground.hash(&mut h);
         h.finish()
     }
 }
@@ -1784,6 +1861,10 @@ impl TextRenderer {
         share_host_font_database(&font_system);
         let mut renderer = Self::with_font_system(font_system);
         renderer.browser_font_demands = Some(BTreeSet::new());
+        renderer.browser_font_assets = crate::font_catalog::browser_startup_files()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
         renderer
     }
 
@@ -2344,9 +2425,13 @@ impl TextRenderer {
         let mut set: BTreeSet<String> = BTreeSet::new();
         for face in self.font_system.db().faces() {
             if let Some((name, _)) = face.families.first() {
-                // Skip internal/placeholder families with no real name.
+                // Skip internal/placeholder families with no real name. An
+                // optical cut is listed as the family it is a cut of.
                 if !name.trim().is_empty() {
-                    set.insert(name.clone());
+                    set.insert(
+                        crate::font_catalog::optical::family_name(name)
+                            .map_or_else(|| name.clone(), str::to_owned),
+                    );
                 }
             }
         }
@@ -2477,6 +2562,7 @@ impl TextRenderer {
             browser_emoji_runs(&shaping_text, &attrs, emoji),
             metrics,
             style.kind,
+            style.optical(),
         );
         crate::font_catalog::matched::set_spans(
             &mut buffer,
@@ -2549,19 +2635,32 @@ impl TextRenderer {
         let Some(demands) = self.browser_font_demands.as_mut() else {
             return;
         };
-        let asset = match &style.family {
-            FontChoice::Named(name) if name == UI_MATH_FAMILY => "NotoSansMath-Regular.ttf",
-            FontChoice::Named(name) if name == UI_HYPERLEGIBLE_FAMILY => {
-                if style.italic {
-                    "AtkinsonHyperlegibleNext-Italic[wght].ttf"
-                } else {
-                    "AtkinsonHyperlegibleNext[wght].ttf"
-                }
-            }
-            _ => return,
+        let FontChoice::Named(name) = &style.family else {
+            return;
         };
-        if !self.browser_font_assets.contains(asset) {
-            demands.insert(asset.to_owned());
+        // A family drawn in optical cuts needs the cut for this size and the
+        // smaller ones its superscripts and footnotes take.
+        let weight = style.effective_weight().0;
+        let mut families = crate::font_catalog::optical::cuts_up_to(
+            name,
+            style.size,
+            style.optical(),
+            style.italic,
+            weight,
+        );
+        if families.is_empty() {
+            families.push(name);
+        }
+        let bold = weight > 500;
+        // A face without a bold sets bold text in its regular.
+        let mut files = crate::font_catalog::product_files_for(&families, style.italic, bold);
+        if files.is_empty() && bold {
+            files = crate::font_catalog::product_files_for(&families, style.italic, false);
+        }
+        for file in files {
+            if !self.browser_font_assets.contains(file) {
+                demands.insert(file.to_owned());
+            }
         }
     }
 
@@ -4513,6 +4612,9 @@ mod tests {
 
 #[cfg(test)]
 mod renderer_regressions;
+
+#[cfg(test)]
+mod reading_faces;
 
 #[cfg(test)]
 mod layout_renderer_pool {

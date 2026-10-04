@@ -1735,6 +1735,15 @@ impl BooksApp {
                     ..Settings::default()
                 });
             }
+            // `face-<name>`: the reader in one of the reading faces a reader
+            // can choose (`face-literata` reads in `reading-literata`).
+            other if other.starts_with("face-") => {
+                self.view = View::Reader;
+                self.shot_settings = Some(Settings {
+                    font_id: format!("reading-{}", other.trim_start_matches("face-")),
+                    ..Settings::default()
+                });
+            }
             "light" => {
                 self.view = View::Reader;
                 self.shot_settings = Some(Settings {
@@ -10340,7 +10349,8 @@ impl BooksApp {
         let spacing = &theme.tokens.spacing;
         let kind = match &f.kind {
             FontKind::Default => "Default face".to_string(),
-            FontKind::Serif => "Serif book face".to_string(),
+            FontKind::Serif => "System reading face".to_string(),
+            FontKind::Reading(_) => "Reading face".to_string(),
             FontKind::Mono => "Monospace".to_string(),
             FontKind::Named(_) => "System font".to_string(),
         };
