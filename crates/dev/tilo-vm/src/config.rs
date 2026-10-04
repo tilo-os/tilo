@@ -12,6 +12,9 @@
 //! keep_generations = 5     # gc keeps this many per slot
 //! keep_targets = 2         # gc keeps this many in-VM build dirs
 //!
+//! [rcargo]                 # builders for swap --builder rcargo, by architecture
+//! aarch64 = "/home/me/.config/rcargo/arm.toml"   # its RCARGO_CONFIG
+//!
 //! [vms.dev]
 //! hypervisor = "libvirt"   # libvirt | qemu | utm | hyperv | whpx
 //! ssh = "root@127.0.0.1:2223"
@@ -45,6 +48,12 @@ pub struct Registry {
     /// In-VM build dirs gc keeps (the daemon's default is 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_targets: Option<u32>,
+    /// rcargo builders by CPU architecture: the `RCARGO_CONFIG` that
+    /// reaches a builder of that architecture (an empty string: rcargo's
+    /// own default config). `swap --builder rcargo` uses the one for the
+    /// machine's architecture, and is the default for a device that has one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rcargo: BTreeMap<String, String>,
     #[serde(default)]
     pub vms: BTreeMap<String, VmEntry>,
 }
