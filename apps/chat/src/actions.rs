@@ -302,8 +302,8 @@ pub enum ChatAction {
     /// summons posts its reply *before* it has an answer, and the states it
     /// then passes through are not revisions of a sentence: routing them
     /// through `EditMessage` would archive each one into the message's edit
-    /// history, flag the reply `edited`, and hang an "(edited) · view
-    /// history" affordance off an outcome nobody had rewritten. The body is
+    /// history, flag the reply `edited`, and hang an "Edited" marker off an
+    /// outcome nobody had rewritten. The body is
     /// written once, when there is one; the state is a separate fact with a
     /// separate field.
     SetAgentWork {
@@ -377,7 +377,7 @@ pub enum ChatAction {
     /// person uses: `send` is the ordinary [`ChatAction::SendMessage`], whose
     /// author is the invoking participant (`agent-task:<task>`), and `name` is
     /// that agent's display name, recorded beside the author so every member
-    /// renders "<name> · agent" instead of the worker's own identity. Anything
+    /// renders "<name> (agent)" instead of the worker's own identity. Anything
     /// else inside, or an author outside the agent-task namespace, applies the
     /// inner action alone (no label).
     AgentAuthored {
@@ -1250,14 +1250,15 @@ fn annotate_contracts(resource: &mut Resource) {
     }
 }
 
-/// A channel's palette label: `#name` for text, a speaker glyph for voice.
+/// A channel's palette label: `#name` for text, named as a voice channel
+/// for voice.
 fn channel_label(ch: &ChannelResource) -> String {
     let name = if ch.name.trim().is_empty() {
         "channel"
     } else {
         ch.name.trim()
     };
-    format!("{} {}", ch.kind.glyph(), name)
+    ch.kind.label(name)
 }
 
 /// Workspace Document ops for [`tilo_resource::publish`] — create channel /
@@ -1329,7 +1330,7 @@ pub(crate) fn publish_channel_document(
         "rename",
         "Rename channel",
         "Name",
-        "channel name…",
+        "Channel name",
         ExecutionLocus::ClientLocal,
         {
             let cid = ch.id.clone();
@@ -1383,7 +1384,7 @@ pub(crate) fn publish_message_document(
         "edit",
         "Edit message",
         "Message",
-        "new text…",
+        "Message text",
         ExecutionLocus::ClientLocal,
         {
             let cid = ch.id.clone();
@@ -1449,7 +1450,7 @@ pub(crate) fn publish_category_document(category: &CategoryResource) -> Resource
         "rename",
         "Rename category",
         "Name",
-        "category name…",
+        "Category name",
         ExecutionLocus::ClientLocal,
         {
             let id = category.id.clone();
@@ -2041,7 +2042,7 @@ fn new_channel_action_spec(workspace_id: &str) -> ActionSpec {
         "new-channel",
         "New channel",
         "Name",
-        "channel name…",
+        "Channel name",
         ExecutionLocus::ClientLocal,
         {
             let ws = workspace_id.to_string();
@@ -2066,14 +2067,14 @@ fn new_category_action_spec(workspace_id: &str) -> ActionSpec {
         "new-category",
         "New category",
         "Name",
-        "category name…",
+        "Category name",
         ExecutionLocus::ClientLocal,
         {
             let workspace = workspace_id.to_string();
             move |name: &str| {
                 let name = name.trim();
                 let name = if name.is_empty() {
-                    "New Category"
+                    "New category"
                 } else {
                     name
                 };
@@ -2102,7 +2103,7 @@ fn build_category_resource(workspace_id: &str, category: &CategoryResource) -> R
         "rename",
         "Rename category",
         "Name",
-        "category name…",
+        "Category name",
         ExecutionLocus::ClientLocal,
         {
             let id = category.id.clone();
@@ -2228,7 +2229,7 @@ fn build_channel_resource(
         "rename",
         "Rename channel",
         "Name",
-        "channel name…",
+        "Channel name",
         ExecutionLocus::ClientLocal,
         {
             let cid = ch.id.clone();
@@ -2407,7 +2408,7 @@ fn build_message_resource(
         "edit",
         "Edit message",
         "Message",
-        "new text…",
+        "Message text",
         ExecutionLocus::ClientLocal,
         {
             let cid = ch.id.clone();
@@ -2656,7 +2657,7 @@ fn build_reaction_resource(
     parent: Option<&String>,
     reaction: &ReactionResource,
 ) -> Resource {
-    let label = format!("{} · {}", reaction.emoji, reaction.count);
+    let label = format!("{} {}", reaction.emoji, reaction.count);
     let mut resource = Resource::new(
         format!("chat.reaction:{message_id}:{}", reaction.emoji),
         "chat.reaction",

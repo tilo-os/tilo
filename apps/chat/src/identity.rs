@@ -170,7 +170,7 @@ fn user_display() -> String {
 /// word-split to the shared toolkit helper (so every app derives a monogram
 /// the same way) and applies chat's own "Y" fallback for a nameless peer.
 fn initials_of(name: &str) -> String {
-    let s = ui::widget::Avatar::initials_for_name(name);
+    let s = ui::widget::initials_for_name(name);
     if s.is_empty() { "Y".to_string() } else { s }
 }
 
