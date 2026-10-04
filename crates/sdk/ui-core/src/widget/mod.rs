@@ -2,6 +2,11 @@ mod action_directory_identity;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
 mod resource_operation;
 pub(crate) use resource_operation::start_without_document_writes;
+// The raw operation protocol between the host and the toolkit's own
+// widgets. Apps never name it: they answer operations as a typed effect
+// vocabulary (`tools/policy/check_app_resource_action_contract.py`).
+pub use resource_operation::HostDelivery;
+#[doc(hidden)]
 pub use resource_operation::{OperationRequest, ResourceOperation, start_in_children};
 
 use crate::dnd::DragPayload;

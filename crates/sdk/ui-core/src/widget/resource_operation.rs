@@ -150,6 +150,64 @@ pub(crate) fn start_without_document_writes(
     started
 }
 
+/// Delivering an admitted invocation to a widget, as the host does once it
+/// admitted one from local input or the palette: for a test that drives a
+/// widget without a host, handing a control's invocation back or an action a
+/// published tree encoded. Apps answer their own operations as a typed
+/// effect vocabulary; this only reaches the toolkit's widgets inside them.
+pub trait HostDelivery {
+    /// Start the encoded operation (`type_id`, `payload`) of `kind`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the widget's refusal or failure.
+    fn start_encoded(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String>;
+
+    /// Hand back the invocation of the toolkit control `control` (its id,
+    /// as its `tilo.control:` resource names it).
+    ///
+    /// # Errors
+    ///
+    /// Returns the widget's refusal or failure.
+    fn deliver_control(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        control: &str,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        let payload = serde_json::to_vec(control).map_err(|error| error.to_string())?;
+        self.start_encoded(kind, CONTROL_INVOKE, &payload, doc, path)
+    }
+}
+
+/// The operation type a toolkit control's invocation travels under.
+const CONTROL_INVOKE: &str = "tilo.ui.control.invoke";
+
+impl<W: Widget + ?Sized> HostDelivery for W {
+    fn start_encoded(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        self.start_operation(
+            &ResourceOperation::local(tilo_actions::InvocationId::new(), kind, type_id, payload),
+            doc,
+            path,
+        )
+    }
+}
+
 /// Offer `op` to each retained child in order and return the first start.
 /// This is [`Widget::start_operation`]'s routing; an override that handles
 /// some types itself calls it for the rest.
