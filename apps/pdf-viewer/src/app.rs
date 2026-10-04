@@ -632,6 +632,13 @@ pub struct PdfApp {
     sig_strokes: Vec<Vec<(f64, f64)>>,
     /// The stroke currently being drawn on the pad (pointer held), if any.
     sig_stroke: Option<Vec<(f64, f64)>>,
+    /// The person's own signature record the composer reads and keeps the
+    /// signer and drawn strokes in, so they follow the person to their
+    /// other devices and never reach a collaborator. Absent where the host
+    /// keeps no person records (a capture, a past version).
+    signature: Option<ui::framework::PersonRecord<crate::signature::SignatureProfile>>,
+    /// The signature record's revision the composer last read.
+    signature_revision: Option<u64>,
     /// The draw pad's screen rect, captured during the sidebar draw so a press
     /// inside it starts drawing rather than hitting a button.
     sig_pad_rect: Rect,
@@ -1150,6 +1157,8 @@ impl PdfApp {
             sig_mode: SigMode::Type,
             sig_strokes: Vec::new(),
             sig_stroke: None,
+            signature: None,
+            signature_revision: None,
             sig_pad_rect: Rect::ZERO,
             search_active: false,
             search_input: TextInput::local()
@@ -1275,6 +1284,53 @@ impl PdfApp {
     ) {
         self.read_only = dispatcher.read_only();
         self.dispatcher = Some(dispatcher);
+    }
+
+    /// Compose with the person's own signature record.
+    pub(crate) fn attach_signature(
+        &mut self,
+        signature: ui::framework::PersonRecord<crate::signature::SignatureProfile>,
+    ) {
+        self.signature = Some(signature);
+        self.signature_revision = None;
+    }
+
+    /// Read the person's signature when it changed: composed here, in
+    /// another window or on another of their devices.
+    fn follow_signature(&mut self) {
+        let Some(record) = self.signature.as_ref() else {
+            return;
+        };
+        let revision = record.revision();
+        if self.signature_revision == Some(revision) {
+            return;
+        }
+        self.signature_revision = Some(revision);
+        let kept = record.get();
+        if !kept.signer.is_empty() {
+            self.signer_name.clone_from(&kept.signer);
+        }
+        self.sig_strokes.clone_from(&kept.strokes);
+        self.dirty = true;
+    }
+
+    /// Keep an edit of the person's signature in their own record.
+    fn keep_signature(&mut self, action: &crate::signature::SignatureAction) {
+        let Some(record) = self.signature.as_ref() else {
+            return;
+        };
+        if let Err(error) = record.apply(action) {
+            self.status_note = Some(format!("Your signature was not kept: {error}"));
+            self.dirty = true;
+        }
+    }
+
+    /// Keep the drawn strokes as the person's signature.
+    fn keep_strokes(&mut self) {
+        let action = crate::signature::SignatureAction::SetStrokes {
+            strokes: self.sig_strokes.clone(),
+        };
+        self.keep_signature(&action);
     }
 
     /// The participant's permission to edit changed.
@@ -3316,6 +3372,10 @@ impl PdfApp {
                 } else {
                     name.to_string()
                 };
+                let action = crate::signature::SignatureAction::SetSigner {
+                    name: self.signer_name.clone(),
+                };
+                self.keep_signature(&action);
             }
             EditTarget::FormField(name) => {
                 let value = model::FormEntry::Text(text.trim_end().to_string());
@@ -4974,6 +5034,7 @@ impl Widget for PdfApp {
         // is non-blocking and is the sole route by which production PDFium
         // results enter widget state.
         self.drain_raster_events(state);
+        self.follow_signature();
         self.reopen_pinned_source();
         // Pull in any file the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
@@ -8272,6 +8333,44 @@ mod tests {
                 app.signer_name, app.author,
                 "an empty signer name falls back to the author"
             );
+        }
+
+        eprintln!("phase the_signature_is_the_persons_own_and_follows_them");
+        {
+            let mut host = ui::framework::testing::TestApp::<crate::PdfViewerShell>::for_person(
+                &"ad".repeat(32),
+            )
+            .expect("the reader for a person");
+            let record = host
+                .person::<crate::signature::SignatureProfile>()
+                .expect("the person's signature record");
+            let (mut app, mut st) = app_with_state();
+            app.attach_signature(record.clone());
+            app.begin_edit(EditTarget::Signer, "");
+            app.editing.as_mut().unwrap().set_text("Ada Lovelace");
+            app.commit_edit(&mut st.doc);
+            app.sig_strokes = vec![vec![(0.1, 0.5), (0.9, 0.4)]];
+            app.keep_strokes();
+            assert_eq!(record.get().signer, "Ada Lovelace", "the signer is kept");
+            assert_eq!(
+                record.get().strokes,
+                app.sig_strokes,
+                "the strokes are kept"
+            );
+            assert!(
+                PdfDoc::list_signatures(&st.doc).is_empty()
+                    || PdfDoc::list_signatures(&st.doc)
+                        .iter()
+                        .all(|signature| signature.signer != "Ada Lovelace"),
+                "composing a signature writes nothing into the shared document"
+            );
+
+            // Another window of the same person composes with the same signature.
+            let (mut other, mut other_st) = app_with_state();
+            other.attach_signature(record);
+            sync_fixture(&mut other, &mut other_st);
+            assert_eq!(other.signer_name, "Ada Lovelace");
+            assert_eq!(other.sig_strokes, vec![vec![(0.1, 0.5), (0.9, 0.4)]]);
         }
     }
 

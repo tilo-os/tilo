@@ -315,6 +315,7 @@ impl PdfApp {
             SidebarHit::SigClear => {
                 self.sig_strokes.clear();
                 self.sig_stroke = None;
+                self.keep_strokes();
             }
             SidebarHit::SigJump(i) => {
                 if let Some(s) = self.signatures.get(i) {
@@ -848,6 +849,7 @@ impl PdfApp {
         if let Some(stroke) = self.sig_stroke.take() {
             if stroke.len() >= 2 {
                 self.sig_strokes.push(stroke);
+                self.keep_strokes();
             }
             self.dirty = true;
             *handled = true;
