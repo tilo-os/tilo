@@ -9,13 +9,13 @@ use std::{
 };
 use taffy::{NodeId, TaffyTree};
 use ui::icons::Icon;
-use ui::tokens::{Metrics, spacing::Spacing};
+use ui::tokens::{Metrics, SpacingStep, spacing::Spacing};
 use ui::widget::{
     Actions, Banner, Button, ButtonRole, Card, CardGrid, CardWidth, Column, Container, ControlSize,
     Dropdown, Element, EmptyState, Field, LabelPlacement, ListRow, ModalDialog, ModelView, NavItem,
     NavList, NavSection, NavShell, NumberInput, ProgressRing, Property, PropertyList, Row,
-    Scrollable, Section, SectionHeader, Segment, Stack, Text, TextInput, TextInputKind, Toggle,
-    ToggleGroup, Widget,
+    Scrollable, Section, SectionHeader, Segment, Spacer, Stack, Text, TextInput, TextInputKind,
+    Toggle, ToggleGroup, Widget,
 };
 use ui::widget::{AppModel, ModelPath};
 use ui::{TextKind, TextRole};
@@ -39,6 +39,11 @@ fn group_gap() -> f32 {
 
 fn text(label: &str, role: TextRole) -> Text {
     Text::new(label).with_role(role)
+}
+
+/// What stands where there is nothing to show: it takes no room and no gap.
+fn nothing() -> Element {
+    Box::new(Spacer::token(SpacingStep::S0))
 }
 
 /// A secondary button that runs `f`.
@@ -359,6 +364,7 @@ fn add_city(state: &ui::LocalState<ClockState>) -> Dropdown {
         .with_id("clocks.world.add")
         .with_accessible_name("Add city")
         .with_placeholder("Add city")
+        .leading_icon(Icon::Plus)
         .on_change(move |zone| {
             if zone.is_empty() {
                 return;
@@ -528,7 +534,7 @@ fn alarm_card(state: &ui::LocalState<ClockState>, alarm: &Alarm) -> Element {
         });
     Box::new(
         Card::new(Box::new(body))
-            .with_title_action(&alarm.label, Box::new(switch))
+            .with_title_action(&alarm.label, Box::new(Row::new().push(Box::new(switch))))
             .with_footer(Actions::new(
                 button(
                     &format!("clocks.alarm.{id}.remove"),
@@ -726,7 +732,7 @@ fn timer_ring(state: &ui::LocalState<ClockState>, id: Uuid) -> ModelView<RingKey
         },
         move |s| {
             let Some(timer) = s.timers.iter().find(|t| t.id == id) else {
-                return Box::new(Row::new()) as Element;
+                return nothing();
             };
             let remaining_ms = timer
                 .remaining(now_utc())
@@ -856,12 +862,9 @@ fn new_timer_dialog(
     let cancel = dialog.clone();
     let dismiss = dialog.clone();
     let error = ModelView::from_state(validation_error, |message| {
-        message.as_ref().map_or_else(
-            || Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element,
-            |message| {
-                Box::new(Banner::error("Timer needs a duration").with_message(message.clone()))
-            },
-        )
+        message.as_ref().map_or_else(nothing, |message| {
+            Box::new(Banner::error("Timer needs a duration").with_message(message.clone()))
+        })
     });
     let form = fields(vec![
         Box::new(
@@ -1156,33 +1159,27 @@ fn screen_of(selection: Option<&str>) -> Screen {
     selection.map_or(Screen::Timers, Screen::from_id)
 }
 
-/// What the open screen adds to the window header: the way to make a new
-/// alarm or timer.
-fn header_action(
-    selection: &ui::LocalState<Option<String>>,
-    dialog: &ui::LocalState<Option<Dialog>>,
-) -> Element {
-    let dialog = dialog.clone();
-    Box::new(ModelView::from_state(selection, move |selected| {
-        let open = dialog.clone();
-        match screen_of(selected.as_deref()) {
-            Screen::Alarms => Box::new(
-                button("clocks.alarm.new", "New alarm", move || {
-                    open.set(Some(Dialog::NewAlarm));
-                })
-                .with_icon(Icon::Plus)
-                .role(ButtonRole::Primary),
-            ) as Element,
-            Screen::Timers => Box::new(
-                button("clocks.timer.new", "New timer", move || {
-                    open.set(Some(Dialog::NewTimer));
-                })
-                .with_icon(Icon::Plus)
-                .role(ButtonRole::Primary),
-            ),
-            Screen::World | Screen::Stopwatch => Box::new(Row::new()),
-        }
-    }))
+/// What a screen adds to the window header: the way to make a new alarm or
+/// timer.
+fn header_actions(screen: Screen, dialog: &ui::LocalState<Option<Dialog>>) -> Vec<Element> {
+    let open = dialog.clone();
+    match screen {
+        Screen::Alarms => vec![Box::new(
+            button("clocks.alarm.new", "New alarm", move || {
+                open.set(Some(Dialog::NewAlarm));
+            })
+            .with_icon(Icon::Plus)
+            .role(ButtonRole::Primary),
+        )],
+        Screen::Timers => vec![Box::new(
+            button("clocks.timer.new", "New timer", move || {
+                open.set(Some(Dialog::NewTimer));
+            })
+            .with_icon(Icon::Plus)
+            .role(ButtonRole::Primary),
+        )],
+        Screen::World | Screen::Stopwatch => Vec::new(),
+    }
 }
 
 /// The window: the screens in the sidebar, the open one beside it.
@@ -1210,12 +1207,9 @@ fn surface(
     // The banner sits above the open screen while a notice is showing, so the
     // screen is built again when either changes; the scroll area stays.
     let pages = ModelView::from_state(view, move |(selected, notice)| {
-        // A page's text starts where the window header's title does, `s3`
-        // in; list rows put their text on that edge and bleed their lift
-        // into the gutter.
-        let mut column = Column::new()
-            .with_intrinsic_height()
-            .with_horizontal_padding(Spacing::BASE.s3, Spacing::BASE.s3);
+        // The page keeps the content gutter: its text starts where the window
+        // header's title does, and list rows bleed their lift into the gutter.
+        let mut column = Column::new().with_intrinsic_height();
         if let Some(notice) = notice {
             column = column
                 .push(notice_banner(notice, &notice_state))
@@ -1237,7 +1231,7 @@ fn surface(
         Some(Dialog::NewTimer) => {
             new_timer_dialog(&dialog_state, &dialog_drafts, &dialog_error, &dialog_open)
         }
-        None => Box::new(Row::new()),
+        None => nothing(),
     });
     let screen = screen_of(selection.get().as_deref());
     NavShell::new()
@@ -1245,7 +1239,7 @@ fn surface(
         .content(Box::new(
             Stack::new().push(Box::new(body)).push(Box::new(dialogs)),
         ))
-        .content_header(screen.title(), vec![header_action(selection, dialog)])
+        .content_header(screen.title(), header_actions(screen, dialog))
 }
 
 pub struct ClocksApp {
@@ -1939,7 +1933,8 @@ impl Widget for ClocksApp {
             .map_or(Screen::Timers, Screen::from_id);
         if screen != self.shown {
             self.shown = screen;
-            self.inner.set_content_title(screen.title());
+            self.inner
+                .set_content_header(screen.title(), header_actions(screen, &self.dialog));
         }
         self.inner.sync(d, p);
     }

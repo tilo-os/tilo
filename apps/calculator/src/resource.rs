@@ -414,7 +414,7 @@ const SCENARIOS: &[&str] = &[
 
 /// A collaborator's pointer in the `remote-cursor` scenario: over the first
 /// function's formula, which draws it as their caret in the math.
-pub const REMOTE_POINTER: (f32, f32) = (145.0, 137.0);
+pub const REMOTE_POINTER: (f32, f32) = (145.0, 97.0);
 
 impl ResourceApp for CalculatorShell {
     type Resource = Calculator;
