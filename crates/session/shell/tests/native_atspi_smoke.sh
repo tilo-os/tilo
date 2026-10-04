@@ -5,9 +5,9 @@
 set -euo pipefail
 
 mode=${1:-}
-usage="usage: $0 {oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|clipboard-is TEXT|clipboard-keeps TEXT SECRET|desktop|established|lock}"
+usage="usage: $0 {oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|clipboard-is TEXT|clipboard-keeps TEXT SECRET|desktop|established|lock|quick-settings}"
 case "$mode" in
-  oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|desktop|established|lock) ;;
+  oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|desktop|established|lock|quick-settings) ;;
   clipboard-is) (($# == 2)) || { echo "$usage" >&2; exit 2; } ;;
   clipboard-keeps) (($# == 3)) || { echo "$usage" >&2; exit 2; } ;;
   *) echo "$usage" >&2; exit 2 ;;
@@ -292,6 +292,18 @@ wait_for_text() {
   return 1
 }
 
+wait_for_absent() {
+  local expected=$1
+  for _ in $(seq 1 400); do
+    if collect_tree && ! node_named "$expected" >/dev/null; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  echo "AT-SPI $mode tree still exposes '$expected'" >&2
+  return 1
+}
+
 # A lock field must be identified as a password to the actual AT-SPI client,
 # not merely be a TextInput whose value happens to be blank. This platform
 # role tells readers and braille displays to suppress credential echo while
@@ -445,6 +457,51 @@ case "$mode" in
   lock)
     wait_for_names "Tilo lock screen" "Password" "Type your password and press Enter"
     assert_password_role "Password"
+    ;;
+  quick-settings)
+    # Open Quick Settings from the top bar and change the power profile
+    # there, then confirm the change in the power daemon itself: a panel
+    # that opens but whose controls never reach the system fails here.
+    # Only the profiles the daemon offers may be chosen, so every press
+    # must land on one of them.
+    command -v powerprofilesctl >/dev/null
+    before=$(powerprofilesctl get)
+    offered=$(powerprofilesctl list | sed -n 's/^[* ] *\([a-z-]*\):$/\1/p' | wc -l)
+    ((offered >= 2)) || { echo "the power daemon offers only $offered profile(s)" >&2; exit 1; }
+    wait_for_names "Open quick settings"
+    click_named "Open quick settings"
+    wait_for_names "Change power profile"
+    changed=""
+    for press in $(seq 1 "$offered"); do
+      current=$(powerprofilesctl get)
+      # The panel learns which profiles exist from a read that starts
+      # when it opens; a press before that lands may be refused once.
+      # A panel that asks for a profile the daemon lacks keeps failing.
+      for attempt in 1 2 3; do
+        click_named "Change power profile"
+        for _ in $(seq 1 60); do
+          now=$(powerprofilesctl get)
+          [[ $now != "$current" ]] && break
+          sleep 0.05
+        done
+        [[ $now != "$current" ]] && break
+        collect_tree
+      done
+      [[ $now != "$current" ]] || {
+        echo "press $press on the power profile left the daemon at '$current'" >&2
+        exit 1
+      }
+      [[ -n $changed ]] || changed=$now
+      collect_tree
+    done
+    # Pressing through every offered profile comes back to where it began.
+    [[ $(powerprofilesctl get) == "$before" ]] || {
+      echo "cycling the offered profiles did not return to '$before'" >&2
+      exit 1
+    }
+    echo "Quick Settings changed the power profile from '$before' to '$changed' and back"
+    click_named "Open quick settings"
+    wait_for_absent "Change power profile"
     ;;
 esac
 
