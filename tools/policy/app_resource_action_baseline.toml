@@ -29,7 +29,6 @@
 "apps/clocks/src/resource.rs" = 1
 "apps/code-editor/src/resource.rs" = 2
 "apps/contacts/src/resource.rs" = 2
-"apps/containers/src/resource.rs" = 2
 "apps/diffmerge/src/resource.rs" = 2
 "apps/disk-usage/src/resource.rs" = 1
 "apps/ebook/src/resource.rs" = 2
@@ -42,7 +41,6 @@
 "apps/logs/src/resource.rs" = 2
 "apps/mail/src/resource.rs" = 2
 "apps/maps/src/resource.rs" = 2
-"apps/monitor/src/resource.rs" = 2
 "apps/music/src/resource.rs" = 2
 "apps/notes/src/resource.rs" = 1
 "apps/osk/src/resource.rs" = 2
@@ -53,7 +51,6 @@
 "apps/settings/src/resource.rs" = 2
 "apps/sheets/src/resource.rs" = 1
 "apps/slides/src/app.rs" = 1
-"apps/snippets/src/resource.rs" = 2
 "apps/speed-test/src/resource.rs" = 1
 "apps/store/src/resource.rs" = 2
 "apps/terminal/src/main_body.rs" = 2
@@ -81,7 +78,6 @@
 "apps/code-editor/src/main.rs" = 1
 "apps/contacts/src/lib.rs" = 2
 "apps/contacts/src/main.rs" = 1
-"apps/containers/src/main.rs" = 2
 "apps/diffmerge/src/lib.rs" = 2
 "apps/diffmerge/src/main.rs" = 2
 "apps/ebook/src/main.rs" = 1
@@ -96,7 +92,6 @@
 "apps/mail/src/main.rs" = 2
 "apps/maps/src/lib.rs" = 2
 "apps/maps/src/main.rs" = 2
-"apps/monitor/src/main.rs" = 1
 "apps/music/src/lib.rs" = 2
 "apps/osk/src/main.rs" = 1
 "apps/pdf-viewer/src/lib.rs" = 2
@@ -108,8 +103,6 @@
 "apps/sheets/src/main.rs" = 1
 "apps/slides/src/lib.rs" = 2
 "apps/slides/src/main.rs" = 1
-"apps/snippets/src/lib.rs" = 2
-"apps/snippets/src/main.rs" = 2
 "apps/speed-test/src/lib.rs" = 2
 "apps/speed-test/src/main.rs" = 2
 "apps/themes/src/lib.rs" = 2
@@ -144,7 +137,6 @@
 "apps/calendar/src/store.rs" = 1
 "apps/camera/src/search.rs" = 2
 "apps/contacts/src/framework_history.rs" = 1
-"apps/containers/src/framework_history.rs" = 1
 "apps/diffmerge/src/framework_history.rs" = 1
 "apps/maps/src/app/interaction.rs" = 1
 "apps/maps/src/offline_panel.rs" = 1
@@ -169,7 +161,6 @@
 "apps/settings/src/panes/users.rs" = 1
 "apps/settings/src/resource.rs" = 1
 "apps/slides/src/framework_history.rs" = 2
-"apps/snippets/src/framework_history.rs" = 1
 "apps/themes/src/framework_history.rs" = 1
 "apps/tube/src/app.rs" = 3
 "apps/typst-editor/src/framework_history.rs" = 1
@@ -189,7 +180,6 @@
 "apps/settings/src/resource.rs" = 1
 "apps/sheets/src/resource.rs" = 1
 "apps/slides/src/resource.rs" = 1
-"apps/snippets/src/resource.rs" = 1
 "apps/tube/src/resource.rs" = 1
 "apps/video-editor/src/app.rs" = 1
 "apps/word-processor/src/framework.rs" = 1
