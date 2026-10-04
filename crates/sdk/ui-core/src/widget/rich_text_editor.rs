@@ -222,7 +222,8 @@ impl RichTextEditor {
         }
     }
 
-    /// Placeholder shown (dimmed) while the editor is empty and unfocused.
+    /// Placeholder shown (dimmed) while the editor is empty, focused or not;
+    /// the first character replaces it.
     #[must_use]
     pub fn with_placeholder(mut self, text: impl Into<String>) -> Self {
         self.placeholder = text.into();
@@ -1001,12 +1002,8 @@ impl Widget for RichTextEditor {
             }
         }
 
-        // Placeholder when empty and unfocused.
-        if self.text.is_empty()
-            && self.preedit.is_empty()
-            && !self.focused
-            && !self.placeholder.is_empty()
-        {
+        // Placeholder while empty; the caret stands at its start when focused.
+        if self.text.is_empty() && self.preedit.is_empty() && !self.placeholder.is_empty() {
             text_renderer.draw_text(
                 scene,
                 &self.placeholder,

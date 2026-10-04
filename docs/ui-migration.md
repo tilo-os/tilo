@@ -1001,6 +1001,7 @@ open list, a focused button).
 | the caret moved to the end after `set_text` | nothing: `set_text` (and `SearchField::set_query`, `Autocomplete::set_text`) parks the caret at the end |
 | a focused field filled darker | nothing: focus keeps the rest fill; the ring marks focus |
 | a placeholder in a hand-picked dim ink or the sans face of a serif field | nothing: placeholders draw in the field's own style, in the tertiary ink |
+| `TextInput::with_persistent_placeholder()`, a placeholder hidden while the field has focus | delete: every placeholder (`TextInput`, `SearchField`, `Autocomplete`, `RichTextEditor`, a block editor's empty hint) stays while the field is empty, focused or not, and the first character replaces it |
 | a formula or query coloured by repainting over the field | `TextInput::with_span_highlighter(\|text, theme\| ranges)`; a field painted by a canvas host: `FieldFace::new(rect, text).focused(b).invalid(b).paint(..)` / `.paint_chrome(..)`, `FieldFace::height(size, theme)`, `text_rect(theme)` |
 | `NumberInput` showing a value through a wrapper string ("Now", "10:57") | `NumberInput::with_value_format(format, parse)` |
 | `"50 %"` spelled in English | nothing: the unit sits where the locale puts it (`50%`, `50 %` in German) |
