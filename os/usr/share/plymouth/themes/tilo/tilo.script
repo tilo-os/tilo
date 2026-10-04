@@ -120,6 +120,10 @@ fun display_password(prompt, bullets)
     if (!global.dialog)
       setup_dialog();
     set_dialog_opacity(1);
+    if (global.unlock_rejected)
+      dialog.retry.SetOpacity(1);
+    else
+      dialog.retry.SetOpacity(0);
 
     # Keep very long passphrases visually bounded while accepting them in full.
     local.visible_bullets = bullets;
@@ -173,8 +177,18 @@ fun display_message(text)
   {
     # Root discovery forwards a confirmed passphrase rejection. Password
     # prompt redraws alone cannot distinguish submission from backspacing.
-    if (text == "tilo-unlock-retry" && dialog.ready)
-      dialog.retry.SetOpacity(1);
+    if (text == "tilo-unlock-retry")
+      {
+        global.unlock_rejected = 1;
+        if (dialog.ready)
+          dialog.retry.SetOpacity(1);
+      }
+    if (text == "tilo-unlock-success")
+      {
+        global.unlock_rejected = 0;
+        if (dialog.ready)
+          dialog.retry.SetOpacity(0);
+      }
   }
 
 mode = "normal";
