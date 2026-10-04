@@ -357,6 +357,9 @@ pub struct GitClientApp {
     /// Row metrics the diff painted last, so wheel scrolling clamps to the
     /// same pitch the rows use at the current text scale.
     diff_metrics: diffview::Metrics,
+    /// Height of the diff the last draw painted, wrapped rows included;
+    /// `None` before the first.
+    diff_content_h: Option<f64>,
     /// Measured diff-pane header height from the last draw.
     diff_header_h: f64,
     /// Hit rect for the diff-header "Discard file" button (worktree side only).
@@ -521,6 +524,7 @@ impl GitClientApp {
             change_semantic_hits: Vec::new(),
             diff_hunk_buttons: Vec::new(),
             diff_metrics: diffview::Metrics::default(),
+            diff_content_h: None,
             diff_header_h: 36.0,
             discard_file_rect: Rect::ZERO,
             history_rows: Vec::new(),
@@ -1942,6 +1946,7 @@ impl GitClientApp {
             );
             self.diff_hunk_buttons = out.buttons;
             self.diff_metrics = out.metrics;
+            self.diff_content_h = Some(out.content_h);
         } else {
             ctx.fill_rect(viewport, ctx.theme.tokens.colors.surfaces.base);
             self.diff_hunk_buttons.clear();
@@ -2470,10 +2475,11 @@ impl GitClientApp {
                     // Clamp at the pitch and header height the last draw
                     // painted, so 2× rows scroll as far as they extend.
                     let metrics = self.diff_metrics;
-                    let max = self
-                        .current_diff()
-                        .map_or(0.0, |d| DiffView::content_height_with_metrics(d, &metrics))
-                        - (self.rect.height() - self.appbar_h - self.diff_header_h);
+                    let painted = self.diff_content_h;
+                    let max = self.current_diff().map_or(0.0, |d| {
+                        painted
+                            .unwrap_or_else(|| DiffView::content_height_with_metrics(d, &metrics))
+                    }) - (self.rect.height() - self.appbar_h - self.diff_header_h);
                     self.diff_scroll = (self.diff_scroll - dy).clamp(0.0, max.max(0.0));
                 }
             }
