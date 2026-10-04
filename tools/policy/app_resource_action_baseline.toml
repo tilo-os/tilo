@@ -134,7 +134,6 @@
 "apps/word-processor/src/word_processor.rs" = 2
 
 [ratchets.empty_action_vocabulary]
-"apps/agent/src/resource.rs" = 1
 "apps/clocks/src/resource.rs" = 1
 "apps/imager/src/setup/actions.rs" = 1
 "apps/imager/src/setup/import_actions.rs" = 1
@@ -142,8 +141,7 @@
 "apps/speed-test/src/resource.rs" = 1
 
 [ratchets.widget_owned_document]
-"apps/agent/src/apply.rs" = 9
-"apps/agent/src/session/chat.rs" = 2
+"apps/agent/src/apply.rs" = 2
 "apps/browser/src/browser_widget.rs" = 1
 "apps/calculator/src/framework_history.rs" = 1
 "apps/calendar/src/store.rs" = 1
