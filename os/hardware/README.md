@@ -55,6 +55,16 @@ in the initramfs. A physical first boot showed that checking only the older
 filename allowed the newer GPU's firmware request to fail before the encrypted
 root was available. Firmware presence must follow the actual kernel requests.
 
+The 83ED firmware publishes a TPM event log for its Qualcomm firmware TPM,
+which Linux has no driver for. `systemd-tpm2-generator` reads that as "a TPM
+whose driver has not loaded yet" and makes `sysinit.target` wait for
+`/dev/tpm0` and `/dev/tpmrm0` until the 45 second device timeout, once in the
+initrd and again after switch-root. On a physical first boot that held the
+splash for a minute and a half after the disk was unlocked. The profile's
+`systemd.tpm2_wait=0` turns that wait off for this board only. Boards whose
+TPM driver is a module (an I2C or SPI TPM) still need the wait, so it stays on
+everywhere else.
+
 ## Local firmware input
 
 For the Lenovo profile, place these six files and `manifest.json` in
