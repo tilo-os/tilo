@@ -107,6 +107,7 @@ fn paint_surface(
     stripe: Option<Tone>,
     interaction: Interaction,
     pressable: bool,
+    selected: bool,
 ) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
@@ -114,7 +115,7 @@ fn paint_surface(
     let theme = ctx.theme;
     let m = CardMetrics::new(theme);
     let raised = theme.tokens.colors.surfaces.raised;
-    let fill = if pressable && !interaction.disabled && interaction.pressed {
+    let fill = if selected || (pressable && !interaction.disabled && interaction.pressed) {
         theme.tokens.colors.lift_on(raised, 1.0)
     } else if pressable && !interaction.disabled && interaction.hovered {
         theme.tokens.colors.lift_on(raised, 0.5)
@@ -140,6 +141,17 @@ fn paint_surface(
         );
         ctx.scene.pop_layer();
     }
+    if selected {
+        // The selected object: its lift and an edge in primary ink, so it
+        // reads beside a hovered one.
+        ctx.scene.stroke(
+            &vello::kurbo::Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px) * 1.5),
+            ctx.transform,
+            theme.text_primary,
+            None,
+            &crate::surface::edge_outline(rect, m.radius),
+        );
+    }
     if interaction.focused && !interaction.disabled {
         crate::widget::paint_focus_ring(ctx.scene, ctx.transform, rect, m.radius, theme);
     }
@@ -157,6 +169,7 @@ pub struct CardFace<'a> {
     title: Option<&'a str>,
     stripe: Option<Tone>,
     pressable: bool,
+    selected: bool,
     interaction: Interaction,
 }
 
@@ -184,6 +197,13 @@ impl<'a> CardFace<'a> {
     #[must_use]
     pub fn pressable(mut self) -> Self {
         self.pressable = true;
+        self
+    }
+
+    /// The selected object among its peers.
+    #[must_use]
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
         self
     }
 
@@ -235,7 +255,14 @@ impl<'a> CardFace<'a> {
 
     /// Paint the card's chrome and title into `rect`.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
-        paint_surface(ctx, rect, self.stripe, self.interaction, self.pressable);
+        paint_surface(
+            ctx,
+            rect,
+            self.stripe,
+            self.interaction,
+            self.pressable,
+            self.selected,
+        );
         if let Some(title) = self.title {
             let m = CardMetrics::new(ctx.theme);
             let style = ctx.theme.text(TextRole::Subheading);
@@ -274,6 +301,7 @@ impl Widget for CardHeader {
             Style {
                 display: taffy::Display::Grid,
                 grid_template_columns: vec![minmax(length(0.0_f32), fr(1.0_f32)), auto()],
+                justify_items: Some(taffy::AlignItems::Stretch),
                 align_items: Some(taffy::AlignItems::Center),
                 gap: Size {
                     width: length(theme.tokens.spacing.rhythm.related),
@@ -289,6 +317,18 @@ impl Widget for CardHeader {
             theme,
             map,
         );
+        // The trailing action (a button, a `Row` or `Actions` of icon
+        // buttons) keeps its own width in the `auto` column instead of
+        // claiming the header's.
+        if let Some(&action) = self.parts.nodes.get(1)
+            && let Ok(style) = taffy.style(action)
+        {
+            let mut style = style.clone();
+            style.size.width = auto();
+            style.justify_self = Some(taffy::AlignItems::End);
+            style.flex_shrink = 0.0;
+            let _ = taffy.set_style(action, style);
+        }
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -313,6 +353,9 @@ pub struct Card {
     stripe: Option<Tone>,
     activation: Activation,
     dirty: bool,
+    title: Option<String>,
+    accessible_name: Option<String>,
+    selected: bool,
 }
 
 impl Card {
@@ -325,13 +368,39 @@ impl Card {
             stripe: None,
             activation: Activation::new("card"),
             dirty: true,
+            title: None,
+            accessible_name: None,
+            selected: false,
         }
+    }
+
+    /// The selected object among its peers: a lift with an edge in primary
+    /// ink, announced as selected.
+    #[must_use]
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    pub fn set_selected(&mut self, selected: bool) {
+        if self.selected != selected {
+            self.selected = selected;
+            self.dirty = true;
+        }
+    }
+
+    /// What assistive technology calls the card; its title by default.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self
     }
 
     /// The object's name, in the header.
     #[must_use]
-    pub fn with_title(self, title: impl Into<String>) -> Self {
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
         let title = title.into();
+        self.title = Some(title.clone());
         self.with_header_parts(
             Box::new(
                 Text::new(&title)
@@ -345,8 +414,9 @@ impl Card {
     /// The object's name and one trailing action (a "More" menu, an
     /// "Install" button, a count).
     #[must_use]
-    pub fn with_title_action(self, title: impl Into<String>, action: Element) -> Self {
+    pub fn with_title_action(mut self, title: impl Into<String>, action: Element) -> Self {
         let title = title.into();
+        self.title = Some(title.clone());
         self.with_header_parts(
             Box::new(
                 Text::new(&title)
@@ -532,6 +602,7 @@ impl Widget for Card {
             self.stripe,
             self.activation.state,
             self.activation.is_bound(),
+            self.selected,
         );
         self.parts.draw(scene, transform, text, theme, presence);
     }
@@ -649,16 +720,25 @@ impl Widget for Card {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
+        let name = self.accessible_name.clone().or_else(|| self.title.clone());
         if !self.activation.is_bound() {
-            return None;
+            // An object that does not open still has a name and may be the
+            // selected one.
+            return (name.is_some() || self.selected).then(|| {
+                AccessNode::new(Role::Group)
+                    .with_optional_name(name)
+                    .with_state(AccessState::new().selected(self.selected))
+            });
         }
         Some(
             AccessNode::new(Role::Button)
                 .with_semantic_key(self.activation.id())
+                .with_optional_name(name)
                 .with_state(
                     AccessState::new()
                         .focusable(true)
-                        .focused(self.activation.state.focused),
+                        .focused(self.activation.state.focused)
+                        .selected(self.selected),
                 ),
         )
     }
@@ -702,6 +782,15 @@ impl Actions {
     pub fn secondary(mut self, button: Button) -> Self {
         let index = self.parts.children.len().saturating_sub(1);
         self.parts.children.insert(index, Box::new(button));
+        self
+    }
+
+    /// Replace the primary (last) action.
+    #[must_use]
+    pub fn replace_primary(mut self, button: Button) -> Self {
+        if let Some(last) = self.parts.children.last_mut() {
+            *last = Box::new(button);
+        }
         self
     }
 }
@@ -819,8 +908,10 @@ impl CardGrid {
         self
     }
 
+    /// How many columns fit `width`. A short section keeps the columns its
+    /// width chose, so two cards are no wider than two of a full row.
     pub fn columns_for_width(&self, width: f64) -> usize {
-        card_columns(width, self.min_card_w, self.gap).min(self.cards.len().max(1))
+        card_columns(width, self.min_card_w, self.gap)
     }
 
     fn grid_style(&self) -> Style {

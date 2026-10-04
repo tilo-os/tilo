@@ -1,19 +1,11 @@
-//! Drawing on the media itself: the shutter, the viewfinder guides, the scan
+//! Drawing on the media itself: the viewfinder guides, the scan
 //! window and the outline of a detected code. Every colour and size comes
 //! from the caller, which reads it from the theme.
 
-pub use ui::paint::{fill_rect, fill_round};
+pub use ui::paint::fill_rect;
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
-
-pub fn circle(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &Circle::new(center, r));
-}
-
-pub fn circle_stroke(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color, w: f64) {
-    scene.stroke(&Stroke::new(w), t, color, None, &Circle::new(center, r));
-}
 
 pub fn line(scene: &mut Scene, t: Affine, from: Point, to: Point, color: Color, w: f64) {
     scene.stroke(&Stroke::new(w), t, color, None, &Line::new(from, to));
