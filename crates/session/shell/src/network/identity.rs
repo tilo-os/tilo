@@ -192,6 +192,68 @@ impl PeerIdentityStore {
             .is_some_and(|list| list.revocation_of(user_pubkey, device_pubkey).is_some())
     }
 
+    /// The verified revocations held for `user_pubkey`.
+    pub fn revocations_of(&self, user_pubkey: &[u8; 32]) -> RevocationList {
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .revocations
+            .get(user_pubkey)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Remove every peer whose device may no longer act for its person at
+    /// `now_ns` — revoked, expired or not permitted — and return them, so
+    /// the caller can close what they had open.
+    pub fn drop_untrusted(&self, now_ns: u64) -> Vec<(PeerOrigin, PeerIdentity)> {
+        let dropped: Vec<(PeerOrigin, PeerIdentity)> = {
+            let inner = self
+                .inner
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let empty = RevocationList::new();
+            inner
+                .by_peer
+                .iter()
+                .filter(|(_, identity)| {
+                    verify_chain(
+                        &identity.device_cert,
+                        &ChainPolicy {
+                            user_public_key: &identity.user_pubkey,
+                            authority: Authority::Person,
+                            revocations: inner
+                                .revocations
+                                .get(&identity.user_pubkey)
+                                .unwrap_or(&empty),
+                            now_ns,
+                        },
+                    )
+                    .is_err()
+                })
+                .map(|(origin, identity)| (origin.clone(), identity.clone()))
+                .collect()
+        };
+        if !dropped.is_empty() {
+            let mut inner = self
+                .inner
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (origin, identity) in &dropped {
+                // Only the entry that was checked; a fresh announcement that
+                // replaced it meanwhile is judged on its own next time.
+                if inner
+                    .by_peer
+                    .get(origin)
+                    .is_some_and(|current| current.device_cert == identity.device_cert)
+                {
+                    inner.by_peer.remove(origin);
+                }
+            }
+        }
+        dropped
+    }
+
     /// `peer`'s identity while its device may still act for its person at
     /// `now_ns`: certificate valid and unexpired, not revoked by its root,
     /// and not a dedicated host. `None` once any link fails.

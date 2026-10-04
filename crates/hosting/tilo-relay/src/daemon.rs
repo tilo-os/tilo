@@ -1512,6 +1512,10 @@ fn spawn_background_tasks(
 
     let revocation_task = spawn_revocation_refresh_task(
         cfg.state_root.clone(),
+        RecordedRevocations {
+            identity_root: cfg.identity_root.clone(),
+            user_public_key: identity.device_cert.user_public_key,
+        },
         identity.revocations.clone(),
         revocations.clone(),
     );
@@ -1842,13 +1846,36 @@ fn spawn_home_peer_authority_refresh(
     })
 }
 
+/// Revocations the person's devices recorded beside this machine's identity
+/// root ([`tilo_relay_protocol::personal_devices::REVOCATIONS_DIR`]): a
+/// device revoked with `tilo-identity` reaches the relay without an admin
+/// command. Only the relay owner's own root counts.
+struct RecordedRevocations {
+    identity_root: PathBuf,
+    user_public_key: [u8; 32],
+}
+
+impl RecordedRevocations {
+    fn entries(&self) -> Vec<tilo_user_identity::RevocationEntry> {
+        tilo_relay_protocol::personal_devices::read_revocations(&self.identity_root)
+            .map(|list| {
+                list.iter()
+                    .filter(|entry| entry.user_public_key == self.user_public_key)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
 /// The revocation-refresh loop: every second, re-read the on-disk
-/// revocation log and, if every entry still applies cleanly against
-/// the identity's own base list, swap it in. A malformed entry
-/// leaves the previously-live list untouched rather than partially
-/// applying.
+/// revocation log and the person's recorded revocations and, if every
+/// entry still applies cleanly against the identity's own base list, swap
+/// it in. A malformed log entry leaves the previously-live list untouched
+/// rather than partially applying.
 fn spawn_revocation_refresh_task(
     state_root: PathBuf,
+    recorded: RecordedRevocations,
     base_revocations: RevocationList,
     live_revocations: Arc<std::sync::RwLock<RevocationList>>,
 ) -> JoinHandle<()> {
@@ -1867,6 +1894,11 @@ fn spawn_revocation_refresh_task(
                     valid = false;
                     break;
                 }
+            }
+            // Recorded entries were verified when read; the directory is
+            // shared, so a bad file is skipped rather than blocking the log.
+            for entry in recorded.entries() {
+                let _ = next.insert(entry);
             }
             if valid && let Ok(mut current) = live_revocations.write() {
                 *current = next;
