@@ -1289,7 +1289,10 @@ impl BlockEditor {
             return;
         };
         let caret = block.line.cursor_pos().min(block.line.value().len());
-        let start = clamp_char_boundary(block.line.value(), caret.saturating_sub(bytes));
+        let start = block
+            .line
+            .value()
+            .floor_char_boundary(caret.saturating_sub(bytes));
         block.line.inner_mut().set_selection(start, caret);
         self.dirty = true;
     }
@@ -1316,8 +1319,8 @@ impl BlockEditor {
                 (at, at)
             });
         let (start, end) = (
-            clamp_char_boundary(&value, start),
-            clamp_char_boundary(&value, end.max(start)),
+            value.floor_char_boundary(start),
+            value.floor_char_boundary(end.max(start)),
         );
         let mut next = value;
         next.replace_range(start..end, &format!("{text}{after}"));
@@ -1642,7 +1645,7 @@ impl BlockEditor {
             let index = self.blocks.iter().position(|block| &block.id == id)?;
             Some(DocumentPosition {
                 block: index,
-                byte: clamp_char_boundary(self.blocks[index].text(), position.byte),
+                byte: self.blocks[index].text().floor_char_boundary(position.byte),
             })
         };
         self.document_selection = self.document_selection.and_then(|selection| {
@@ -1835,6 +1838,19 @@ impl BlockEditor {
 
     pub fn focused_index(&self) -> Option<usize> {
         self.focused
+    }
+
+    /// Whether the active source line or projected table cell owns an IME preedit.
+    pub fn is_composing(&self) -> bool {
+        self.focused
+            .and_then(|index| self.blocks.get(index))
+            .is_some_and(|block| {
+                block.line.inner().is_composing()
+                    || self
+                        .table_editors
+                        .get(&block.id)
+                        .is_some_and(super::table::Table::projected_is_composing)
+            })
     }
 
     pub fn focused_table_cell(&self) -> Option<(String, usize, usize)> {
@@ -2221,7 +2237,7 @@ impl BlockEditor {
         let cur_kind = block.kind.clone();
         let text = block.line.value().to_string();
         let split = split_at.min(text.len());
-        let split = clamp_char_boundary(&text, split);
+        let split = text.floor_char_boundary(split);
         let (prefix, suffix) = text.split_at(split);
         let prefix_marks = marks_before(block.line.marks(), split);
         let suffix_marks = marks_after(block.line.marks(), split);
@@ -2535,13 +2551,11 @@ impl BlockEditor {
         self.indent_blocks(idx..self.list_subtree_end(last), delta)
     }
 
-    /// Selected roots and their descendants shift once, including entire code
+    /// Selected roots and their descendants, including entire code
     /// fences. A selection ending at column zero does not include that block.
-    fn try_indent_selection(&mut self, delta: i8) -> bool {
+    pub fn selected_block_range(&self) -> Option<std::ops::Range<usize>> {
         let Some(selection) = self.document_selection else {
-            return self
-                .focused
-                .is_some_and(|index| self.try_indent(index, delta));
+            return self.focused.and_then(|index| self.block_group_range(index));
         };
         let (first, last) = selection.ordered();
         let last = if last.byte == 0 && last.block > first.block {
@@ -2561,7 +2575,19 @@ impl BlockEditor {
             let row = self.fenced_code_run(end).map_or(end, |(_, end)| end);
             end = self.list_subtree_end(row);
         }
-        self.indent_blocks(start..end, delta)
+        self.blocks.get(start..end)?;
+        Some(start..end)
+    }
+
+    /// One block's complete authored fence and outline descendants.
+    pub fn block_group_range(&self, index: usize) -> Option<std::ops::Range<usize>> {
+        self.blocks.get(index)?;
+        Some(self.movable_group(index))
+    }
+
+    fn try_indent_selection(&mut self, delta: i8) -> bool {
+        self.selected_block_range()
+            .is_some_and(|range| self.indent_blocks(range, delta))
     }
 
     fn indent_blocks(&mut self, range: std::ops::Range<usize>, delta: i8) -> bool {
@@ -3838,14 +3864,6 @@ fn is_heading_prefix(s: &str) -> bool {
     heading_markdown_prefix(s).is_some_and(|(_, len)| len == s.len())
 }
 
-fn clamp_char_boundary(text: &str, byte: usize) -> usize {
-    let mut b = byte.min(text.len());
-    while b > 0 && !text.is_char_boundary(b) {
-        b = b.saturating_sub(1);
-    }
-    b
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "the ordered block diff is kept together so move/insert/delete precedence remains explicit"
@@ -3986,7 +4004,9 @@ fn semantic_text_splice(before: &str, after: &str) -> (usize, usize, String) {
     {
         start = start.saturating_add(1);
     }
-    start = clamp_char_boundary(before, start).min(clamp_char_boundary(after, start));
+    start = before
+        .floor_char_boundary(start)
+        .min(after.floor_char_boundary(start));
     let mut old_end = before.len();
     let mut new_end = after.len();
     while old_end > start
@@ -3997,24 +4017,13 @@ fn semantic_text_splice(before: &str, after: &str) -> (usize, usize, String) {
         old_end = old_end.saturating_sub(1);
         new_end = new_end.saturating_sub(1);
     }
-    old_end = ceil_char_boundary(before, old_end);
-    new_end = ceil_char_boundary(after, new_end);
+    old_end = before.ceil_char_boundary(old_end);
+    new_end = after.ceil_char_boundary(new_end);
     (
         start,
         old_end,
         after.get(start..new_end).unwrap_or_default().to_string(),
     )
-}
-
-/// Rounds a byte offset *up* to the next char boundary — the mirror of
-/// [`clamp_char_boundary`]'s round-down. Used where growing a matched
-/// region (rather than shrinking it) is what keeps a replacement exact.
-fn ceil_char_boundary(text: &str, byte: usize) -> usize {
-    let mut b = byte.min(text.len());
-    while b < text.len() && !text.is_char_boundary(b) {
-        b = b.saturating_add(1);
-    }
-    b
 }
 
 /// Two spaces per indent level (Notion/Obsidian style, not GFM's four);
@@ -5380,8 +5389,8 @@ fn push_text_diff(state: &mut AutoCommit, text_obj: &ObjId, local: &str) {
     // already-identical bytes it needlessly re-touches. Without this, a
     // diff that happens to split a multi-byte character (e.g. between
     // "café" and "cafe\u{301}") would panic on the slice below.
-    let start = clamp_char_boundary(&cur, at_byte);
-    let removed_end = ceil_char_boundary(&cur, raw_removed_end);
+    let start = cur.floor_char_boundary(at_byte);
+    let removed_end = cur.ceil_char_boundary(raw_removed_end);
     let shift = removed_end.saturating_sub(raw_removed_end);
     let inserted_end = raw_inserted_end.saturating_add(shift).min(local.len());
 
@@ -5462,19 +5471,31 @@ impl BlockEditor {
         let Some(anchor_byte) = self
             .blocks
             .get(anchor_block)
-            .map(|b| clamp_char_boundary(b.line.value(), anchor.byte))
+            .map(|b| b.line.value().floor_char_boundary(anchor.byte))
         else {
             return;
         };
         let Some(cursor_byte) = self
             .blocks
             .get(cursor_block)
-            .map(|b| clamp_char_boundary(b.line.value(), cursor.byte))
+            .map(|b| b.line.value().floor_char_boundary(cursor.byte))
         else {
             return;
         };
         self.focus_block(cursor_block, CursorPlacement::Byte(cursor_byte));
         self.paint_cross_block_selection(anchor_block, anchor_byte, cursor_block, cursor_byte);
+    }
+
+    /// Clear selection and its keyboard/drag anchors without changing text.
+    pub fn clear_document_selection(&mut self) {
+        self.clear_cross_block_selection();
+        self.cross_block_drag_start = None;
+        self.kbd_sel_anchor = None;
+        if let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index)) {
+            let cursor = block.line.cursor_pos();
+            block.line.inner_mut().set_selection(cursor, cursor);
+        }
+        self.dirty = true;
     }
 
     /// Plain-text serialization uses a newline for every crossed block
@@ -5495,12 +5516,12 @@ impl BlockEditor {
             };
             let text = block.line.value();
             let from = if block_idx == start.block {
-                clamp_char_boundary(text, start.byte)
+                text.floor_char_boundary(start.byte)
             } else {
                 0
             };
             let to = if block_idx == end.block {
-                clamp_char_boundary(text, end.byte)
+                text.floor_char_boundary(end.byte)
             } else {
                 text.len()
             };
@@ -5542,8 +5563,8 @@ impl BlockEditor {
         ) else {
             return false;
         };
-        let start_byte = clamp_char_boundary(&start_text, start.byte);
-        let end_byte = clamp_char_boundary(&end_text, end.byte);
+        let start_byte = start_text.floor_char_boundary(start.byte);
+        let end_byte = end_text.floor_char_boundary(end.byte);
         let prefix_marks = self
             .blocks
             .get(start.block)
@@ -10053,7 +10074,7 @@ impl BlockEditor {
                     let at = if whole_lines {
                         0
                     } else {
-                        clamp_char_boundary(&text, old_cursor)
+                        text.floor_char_boundary(old_cursor)
                     };
                     text.insert_str(at, "    ");
                     (at, 0, 4)
@@ -10723,7 +10744,7 @@ impl BlockEditor {
             return false;
         };
         let text = block.text();
-        let split = clamp_char_boundary(text, split.min(text.len()));
+        let split = text.floor_char_boundary(split);
         let indent: String = text
             .get(..split)
             .unwrap_or_default()
@@ -10813,7 +10834,7 @@ impl BlockEditor {
             return false;
         }
         let source = block.text();
-        let split_at = clamp_char_boundary(source, split_at.min(source.len()));
+        let split_at = source.floor_char_boundary(split_at);
         let Some((before, after)) = source.split_at_checked(split_at) else {
             return false;
         };
@@ -10905,10 +10926,7 @@ impl BlockEditor {
         // Do not let Enter, Tab, or Backspace become structural document edits.
         if self.is_focused
             && matches!(event, WindowEvent::KeyboardInput { .. })
-            && self
-                .focused
-                .and_then(|index| self.blocks.get(index))
-                .is_some_and(|block| block.line.inner().is_composing())
+            && self.is_composing()
         {
             *ctx.handled = true;
             return;

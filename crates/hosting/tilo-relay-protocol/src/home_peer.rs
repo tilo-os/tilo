@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use tilo_user_identity::home_peer_registry_path;
+
 /// Durable registry record written after enrollment acknowledgement completes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -1094,6 +1094,25 @@ fn pump_chooser_opens(
     }
 }
 
+/// Answer an app's request about its own tab. The app id is the one the
+/// launcher vouched for on this connection.
+fn apply_app_tab_request(
+    frame_builder: &mut FrameBuilder,
+    app_id: &str,
+    instance: Option<u64>,
+    request: crate::shell::app_tabs::AppTabRequest,
+) -> bool {
+    let mut outcome = Ok(());
+    frame_builder.with_chrome(|st| {
+        outcome = crate::shell::app_tabs::apply_request(st, app_id, instance, request);
+        st.bump();
+    });
+    if let Err(error) = outcome {
+        tracing::info!(%app_id, %error, "app tab request refused");
+    }
+    true
+}
+
 // This is the ordered protocol event pump; its branches share authentication
 // and handoff state that is clearer when kept in a single state-machine tick.
 #[allow(
@@ -1395,6 +1414,45 @@ fn pump_floating_surface_service(
                     foreign::store().request_app_capture_protection(connection, &app_id, protected);
                     tracing::debug!(connection, %app_id, protected, "capture protection requested");
                     changed = true;
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::OpenTabBeside {
+                    target,
+                    background,
+                    instance,
+                } => {
+                    changed |= apply_app_tab_request(
+                        frame_builder,
+                        &app_id,
+                        instance,
+                        crate::shell::app_tabs::AppTabRequest::OpenBeside { target, background },
+                    );
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::CloseTab { instance } => {
+                    changed |= apply_app_tab_request(
+                        frame_builder,
+                        &app_id,
+                        instance,
+                        crate::shell::app_tabs::AppTabRequest::Close,
+                    );
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::ReopenClosedTab => {
+                    changed |= apply_app_tab_request(
+                        frame_builder,
+                        &app_id,
+                        None,
+                        crate::shell::app_tabs::AppTabRequest::ReopenClosed,
+                    );
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::PlaceNextWindowBeside {
+                    background,
+                    instance,
+                } => {
+                    changed |= apply_app_tab_request(
+                        frame_builder,
+                        &app_id,
+                        instance,
+                        crate::shell::app_tabs::AppTabRequest::PlaceNextWindowBeside { background },
+                    );
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::Dismiss { id } => {
                     let internal = external_floating_id(connection, &id);

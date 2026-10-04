@@ -174,10 +174,16 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("host") => {
             widget.show_target(terminal::target::SessionTarget::Host, demo_environments());
         }
-        Some("targets" | "environments") => widget.show_target(
-            terminal::target::SessionTarget::environment("work"),
-            demo_environments(),
-        ),
+        Some("targets" | "environments") => {
+            widget.show_target(
+                terminal::target::SessionTarget::environment("work"),
+                demo_environments(),
+            );
+            widget.set_relays(vec![terminal::target::RelaySummary {
+                relay: "ab".repeat(32),
+                label: "Home relay".into(),
+            }]);
+        }
         _ => {}
     }
     let viewport = args

@@ -566,11 +566,17 @@ impl App {
                     Ok(None) => "the component is no longer mounted".to_owned(),
                     Err(error) => format!("{error:?}"),
                 };
-                tracing::error!(
-                    resources = component.resources.len(),
-                    %violations,
-                    "refusing to publish a component surface that fails action contract validation"
-                );
+                if self
+                    .actions
+                    .refusals_logged
+                    .first(&("component", &violations))
+                {
+                    tracing::error!(
+                        resources = component.resources.len(),
+                        %violations,
+                        "refusing to publish a component surface that fails action contract validation"
+                    );
+                }
                 continue;
             }
             for resource in component.resources {
@@ -643,11 +649,18 @@ impl App {
                 .iter()
                 .filter(|entry| entry.status == ControlBindingStatus::StaleAddress)
             {
-                tracing::error!(
-                    control = %entry.binding.control_id,
-                    binding = ?entry.binding.kind,
-                    "refusing to publish a surface with a stale control action binding"
-                );
+                let binding = format!("{:?}", entry.binding.kind);
+                if self.actions.refusals_logged.first(&(
+                    "stale",
+                    &entry.binding.control_id,
+                    &binding,
+                )) {
+                    tracing::error!(
+                        control = %entry.binding.control_id,
+                        %binding,
+                        "refusing to publish a surface with a stale control action binding"
+                    );
+                }
             }
             if self
                 .actions
@@ -690,11 +703,17 @@ impl App {
         );
         if !violations.is_empty() {
             for violation in &violations {
-                tracing::error!(
-                    address = %violation.address,
-                    reason = %violation.reason,
-                    "refusing to publish an invalid resource/action surface"
-                );
+                if self.actions.refusals_logged.first(&(
+                    "surface",
+                    &violation.address,
+                    &violation.reason,
+                )) {
+                    tracing::error!(
+                        address = %violation.address,
+                        reason = %violation.reason,
+                        "refusing to publish an invalid resource/action surface"
+                    );
+                }
             }
             // Withdraw anything previously published. A stale, apparently
             // valid catalogue is more dangerous than an empty one.

@@ -118,3 +118,6 @@ mod capture_runtime;
 
 #[path = "continuation_discovery.rs"]
 mod continuation_discovery;
+
+#[path = "block_commands.rs"]
+mod block_commands;

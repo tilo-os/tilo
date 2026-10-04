@@ -432,6 +432,8 @@ portal-email-attachments = { $count ->
    *[other] { $count } attachments will be available through the document portal.
 }
 portal-remember-device = Remember on this device
+portal-a11y-name = Name
+portal-a11y-answer = Answer
 portal-secret-required = Fill in every required field.
 portal-secret-wifi-length = A Wi-Fi password is 8 to 63 characters, or 64 hexadecimal digits.
 portal-network-heading = Network
@@ -512,6 +514,7 @@ host-session-action-blocked = Session action blocked
 host-action-started = Started “{ $title }”
 host-action-admitted = Action job { $job } was admitted
 host-action-cannot-run = Can't run “{ $title }”
+launchpad-action-unanswered = The app never answered
 host-search-placeholder = Search…
 host-search-in = Search in { $scope }…
 host-search-in-resource-fallback = resource
@@ -1360,6 +1363,8 @@ search-action-tab-close = Close this tab
 search-action-tab-close-subtitle = Close the focused tab; its window closes with it if it was the last
 search-action-tab-reopen = Reopen closed tab
 search-action-tab-reopen-subtitle = Bring back the tab closed most recently in this workspace, where it was
+search-action-tab-open-beside = Open an app in a new tab
+search-action-tab-open-beside-subtitle = Open another instance of an app, optionally at an address, as a tab right after the focused one
 search-action-tab-split-right = Split this tab to the right
 search-action-tab-split-right-subtitle = Move the focused tab into a new window group beside its current one
 search-action-tab-move-to-new-group = Move this tab to a new group
@@ -1696,6 +1701,7 @@ onboarding-nearby-connected = Connected. Your workspaces will appear automatical
 onboarding-nearby-invalid-identity = Your other device returned an invalid identity. Choose Try again.
 onboarding-nearby-failed = Pairing did not finish: the pairing window closed or approval was cancelled. Choose Try again.
 onboarding-nearby-failed-detail = Pairing did not finish: { $detail }. Choose Try again.
+onboarding-nearby-timed-out = Pairing did not finish: no trusted device approved it in time. Choose Try again.
 
 # First-login identity setup: encrypted backup
 onboarding-backup-title = Back up your Tilo identity
