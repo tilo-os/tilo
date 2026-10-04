@@ -29,15 +29,12 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::{
-    ActionArgs, ActionBinding, ActionContract, ActionParam, ActionSpec, ControlInvocation,
-    EncodedAction, OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
-};
+use ui::tilo_actions::{ActionBinding, ControlInvocation, Resource};
 use ui::tokens::TextRole;
 use ui::webview::test_engine::TestEngine;
 use ui::webview::{
-    MediaElementInfo, NavigationDirection, PageFailure, PageKey, PageReply, PageRequest,
-    SharedEngine, WebViewCommand, WebViewEvent,
+    MediaElementInfo, NavigationDirection, PageFailure, PageReply, PageRequest, SharedEngine,
+    WebViewCommand, WebViewEvent,
 };
 use ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use ui::widget::{
@@ -113,8 +110,8 @@ const LIBRARY_DESKTOP_CONTENT_WIDTH: f32 = 920.0;
 /// Forward and the optional commands, and protects the address field.
 const COMPACT_CHROME_MAX_WIDTH: f64 = 600.0;
 /// Below this window width the toolbar drops the optional commands that have
-/// another route — bookmark (Ctrl+D, `browser.page/bookmark`), history pause
-/// (`browser.session/toggle-history-pause`, and the Library heading exactly as
+/// another route — bookmark (Ctrl+D, `bookmark-page`), history pause
+/// (`browser.session/toggle-pause`, and the Library heading exactly as
 /// in compact chrome) and Picture in Picture (`browser.page/picture-in-picture`)
 /// — so the address field keeps a readable width. Between the compact
 /// breakpoint and this one, keeping every command left a tablet-width window
@@ -232,10 +229,8 @@ impl PipFeedback {
     }
 }
 
-const BROWSER_OPERATION_TYPE: &str = "browser.operation";
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LibrarySection {
+pub(crate) enum LibrarySection {
     History,
     Bookmarks,
     Downloads,
@@ -280,7 +275,7 @@ fn bounded_library_filter(query: &str) -> String {
 }
 
 #[derive(Clone, Debug)]
-enum BrowserOperation {
+pub(crate) enum BrowserOperation {
     Back,
     Forward,
     Reload,
@@ -301,407 +296,6 @@ enum BrowserOperation {
     OpenDownload { id: String },
     RevealDownload { id: String },
     Page(PageRequest),
-}
-
-fn page_operation_payload(request: &PageRequest) -> serde_json::Value {
-    let mut payload = serde_json::Map::new();
-    payload.insert("operation".into(), "page".into());
-    payload.insert("action".into(), request.action().into());
-    if let Some(element) = request.element() {
-        payload.insert("element".into(), element.into());
-    }
-    let argument = match request {
-        PageRequest::Fill { text, .. } => Some(("text", text.as_str().into())),
-        PageRequest::Select { values, .. } => Some(("values", values.clone().into())),
-        PageRequest::Press { key, .. } => Some(("key", key.chord().into())),
-        PageRequest::Outline | PageRequest::Click { .. } | PageRequest::Submit { .. } => None,
-    };
-    if let Some((name, value)) = argument {
-        payload.insert(name.into(), value);
-    }
-    payload.into()
-}
-
-fn decode_page_operation(value: &serde_json::Value) -> Result<PageRequest, String> {
-    let element = || required_string(value, "element");
-    let request = match value.get("action").and_then(serde_json::Value::as_str) {
-        Some("outline") => PageRequest::Outline,
-        Some("click") => PageRequest::Click {
-            element: element()?,
-        },
-        Some("fill") => PageRequest::Fill {
-            element: element()?,
-            text: value
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("page fill is missing `text`")?
-                .to_string(),
-        },
-        Some("select") => PageRequest::Select {
-            element: element()?,
-            values: value
-                .get("values")
-                .and_then(serde_json::Value::as_array)
-                .ok_or("page select is missing `values`")?
-                .iter()
-                .map(|value| value.as_str().map(str::to_string))
-                .collect::<Option<_>>()
-                .ok_or("page select `values` must be strings")?,
-        },
-        Some("press") => PageRequest::Press {
-            element: value
-                .get("element")
-                .and_then(serde_json::Value::as_str)
-                .filter(|element| !element.is_empty())
-                .map(str::to_string),
-            key: required_string(value, "key").and_then(|chord| {
-                PageKey::parse(&chord).ok_or_else(|| {
-                    format!(
-                        "`{chord}` is not a key such as Enter, Tab, Escape, ArrowDown or Control+a"
-                    )
-                })
-            })?,
-        },
-        Some("submit") => PageRequest::Submit {
-            element: element()?,
-        },
-        _ => return Err("unknown page action".into()),
-    };
-    if let Some(element) = request.element()
-        && !ui::webview::page::is_element_ref(element)
-    {
-        return Err(format!(
-            "`{element}` is not an element ref; read the page and use a ref such as d1e5"
-        ));
-    }
-    if !request.valid() {
-        return Err("page request exceeds its limits".into());
-    }
-    Ok(request)
-}
-
-fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value {
-    match operation {
-        BrowserOperation::Back => serde_json::json!({ "operation": "back" }),
-        BrowserOperation::Forward => serde_json::json!({ "operation": "forward" }),
-        BrowserOperation::Reload => serde_json::json!({ "operation": "reload" }),
-        BrowserOperation::Stop => serde_json::json!({ "operation": "stop" }),
-        BrowserOperation::Navigate { url } => {
-            serde_json::json!({ "operation": "navigate", "url": url })
-        }
-        BrowserOperation::ShowLibrary { section } => serde_json::json!({
-            "operation": "show-library",
-            "section": match section {
-                LibrarySection::History => "history",
-                LibrarySection::Bookmarks => "bookmarks",
-                LibrarySection::Downloads => "downloads",
-                LibrarySection::Extensions => "extensions",
-            }
-        }),
-        BrowserOperation::SetLibraryFilter { query } => {
-            serde_json::json!({ "operation": "set-library-filter", "query": query })
-        }
-        BrowserOperation::ClearLibraryFilter => {
-            serde_json::json!({ "operation": "clear-library-filter" })
-        }
-        BrowserOperation::ShowSettings => serde_json::json!({ "operation": "show-settings" }),
-        BrowserOperation::ShowPage => serde_json::json!({ "operation": "show-page" }),
-        BrowserOperation::ClearHistory => serde_json::json!({ "operation": "clear-history" }),
-        BrowserOperation::RequestWebsiteDataClear => {
-            serde_json::json!({ "operation": "request-website-data-clear" })
-        }
-        BrowserOperation::TogglePictureInPicture => {
-            serde_json::json!({ "operation": "toggle-picture-in-picture" })
-        }
-        BrowserOperation::ToggleHistoryPause => {
-            serde_json::json!({ "operation": "toggle-history-pause" })
-        }
-        BrowserOperation::StartDownload { url } => {
-            serde_json::json!({ "operation": "start-download", "url": url })
-        }
-        BrowserOperation::CancelDownload { id } => {
-            serde_json::json!({ "operation": "cancel-download", "id": id })
-        }
-        BrowserOperation::RetryDownload { id } => {
-            serde_json::json!({ "operation": "retry-download", "id": id })
-        }
-        BrowserOperation::OpenDownload { id } => {
-            serde_json::json!({ "operation": "open-download", "id": id })
-        }
-        BrowserOperation::RevealDownload { id } => {
-            serde_json::json!({ "operation": "reveal-download", "id": id })
-        }
-        BrowserOperation::Page(request) => page_operation_payload(request),
-    }
-}
-
-fn encode_browser_operation(operation: &BrowserOperation) -> EncodedAction {
-    let payload = browser_operation_payload(operation);
-    EncodedAction::encode_operation(BROWSER_OPERATION_TYPE, &payload).unwrap_or_else(|_| {
-        EncodedAction {
-            type_id: BROWSER_OPERATION_TYPE.to_string(),
-            payload: Vec::new(),
-        }
-    })
-}
-
-fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> {
-    let value: serde_json::Value = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-    match value.get("operation").and_then(serde_json::Value::as_str) {
-        Some("back") => Ok(BrowserOperation::Back),
-        Some("forward") => Ok(BrowserOperation::Forward),
-        Some("reload") => Ok(BrowserOperation::Reload),
-        Some("stop") => Ok(BrowserOperation::Stop),
-        Some("navigate") => value
-            .get("url")
-            .and_then(serde_json::Value::as_str)
-            .map(|url| BrowserOperation::Navigate {
-                url: url.to_string(),
-            })
-            .ok_or_else(|| "browser navigate operation is missing `url`".to_string()),
-        Some("show-library") => {
-            let section = match value.get("section").and_then(serde_json::Value::as_str) {
-                Some("history") => LibrarySection::History,
-                Some("bookmarks") => LibrarySection::Bookmarks,
-                Some("downloads") => LibrarySection::Downloads,
-                Some("extensions") => LibrarySection::Extensions,
-                _ => return Err("browser library operation has an unknown section".into()),
-            };
-            Ok(BrowserOperation::ShowLibrary { section })
-        }
-        Some("set-library-filter") => required_string(&value, "query")
-            .map(|query| BrowserOperation::SetLibraryFilter { query }),
-        Some("clear-library-filter") => Ok(BrowserOperation::ClearLibraryFilter),
-        Some("show-settings") => Ok(BrowserOperation::ShowSettings),
-        Some("show-page") => Ok(BrowserOperation::ShowPage),
-        Some("clear-history") => Ok(BrowserOperation::ClearHistory),
-        Some("request-website-data-clear") => Ok(BrowserOperation::RequestWebsiteDataClear),
-        Some("toggle-picture-in-picture") => Ok(BrowserOperation::TogglePictureInPicture),
-        Some("toggle-history-pause") => Ok(BrowserOperation::ToggleHistoryPause),
-        Some("start-download") => {
-            required_string(&value, "url").map(|url| BrowserOperation::StartDownload { url })
-        }
-        Some("cancel-download") => {
-            required_string(&value, "id").map(|id| BrowserOperation::CancelDownload { id })
-        }
-        Some("retry-download") => {
-            required_string(&value, "id").map(|id| BrowserOperation::RetryDownload { id })
-        }
-        Some("open-download") => {
-            required_string(&value, "id").map(|id| BrowserOperation::OpenDownload { id })
-        }
-        Some("reveal-download") => {
-            required_string(&value, "id").map(|id| BrowserOperation::RevealDownload { id })
-        }
-        Some("page") => decode_page_operation(&value).map(BrowserOperation::Page),
-        _ => Err("unknown browser operation".to_string()),
-    }
-}
-
-fn required_string(value: &serde_json::Value, key: &str) -> Result<String, String> {
-    value
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| format!("browser operation is missing `{key}`"))
-}
-
-fn navigation_contract() -> ActionContract {
-    ActionContract {
-        retry: RetryPolicy::Idempotent,
-        execution: ui::tilo_actions::ExecutionMode::Background { cancellable: false },
-        result: ResultSpec::Json {
-            schema: serde_json::json!({ "type": "string" }),
-        },
-        tags: vec!["network".into(), "navigation".into()],
-        ..ActionContract::view()
-    }
-}
-
-/// Window-level navigation Views/Effects for [`crate::resource::Browser::local_operations`].
-///
-/// Hosted surfaces empty [`PublishesResources::resources`] so these must ride
-/// `tilo_resource::publish` — otherwise the palette loses back / forward /
-/// reload / stop / open-address when the widget tree is no longer the door.
-pub(crate) fn window_navigation_operations() -> Vec<ActionSpec> {
-    let mut ops = Vec::with_capacity(5);
-    for (id, label, operation) in [
-        ("back", "Go back", BrowserOperation::Back),
-        ("forward", "Go forward", BrowserOperation::Forward),
-        ("reload", "Reload", BrowserOperation::Reload),
-        ("stop", "Stop loading", BrowserOperation::Stop),
-    ] {
-        let payload = browser_operation_payload(&operation);
-        let Ok(spec) = ActionSpec::operation(
-            id,
-            label,
-            OperationKind::View,
-            BROWSER_OPERATION_TYPE,
-            &payload,
-        ) else {
-            continue;
-        };
-        ops.push(if id == "stop" {
-            spec
-        } else {
-            spec.with_contract(navigation_contract())
-        });
-    }
-    ops.push(
-        ActionSpec::typed_operation(
-            "navigate",
-            "Open address",
-            "https://…",
-            OperationKind::Effect,
-            BROWSER_OPERATION_TYPE,
-            vec![ActionParam::required_owned(
-                "url",
-                ParamType::Text,
-                "Absolute URL or search terms",
-            )],
-            |args: &ActionArgs| {
-                encode_browser_operation(&BrowserOperation::Navigate {
-                    url: args.text("url").unwrap_or("").to_string(),
-                })
-            },
-        )
-        .with_contract(navigation_contract()),
-    );
-    ops
-}
-
-/// An explicit contract for sensitive work that happens only in this running
-/// browser profile.  These effects are intentionally not CRDT mutations: a
-/// peer must not clear this machine's cookies, history, media surface, or
-/// history-capture preference by replaying a collaborative document action.
-fn local_effect_contract(tags: &[&str]) -> ActionContract {
-    ActionContract {
-        retry: RetryPolicy::AtMostOnce,
-        reversible: false,
-        result: ResultSpec::Json {
-            schema: serde_json::json!({ "type": "string" }),
-        },
-        tags: tags.iter().map(|tag| (*tag).into()).collect(),
-        ..ActionContract::default()
-    }
-}
-
-/// Open the bookmarks library. Published on the bookmarks child so the
-/// palette and a hosted browser share one view action.
-fn bookmark_library_show() -> Option<ActionSpec> {
-    ActionSpec::operation(
-        "show",
-        "Show bookmarks",
-        OperationKind::View,
-        BROWSER_OPERATION_TYPE,
-        &browser_operation_payload(&BrowserOperation::ShowLibrary {
-            section: LibrarySection::Bookmarks,
-        }),
-    )
-    .ok()
-}
-
-/// The operations every browser window answers on the resource itself:
-/// leaving the library or settings for the page.
-pub(crate) fn window_presentation_operations() -> Vec<ActionSpec> {
-    ActionSpec::operation(
-        "show-page",
-        "Show current page",
-        OperationKind::View,
-        BROWSER_OPERATION_TYPE,
-        &browser_operation_payload(&BrowserOperation::ShowPage),
-    )
-    .ok()
-    .into_iter()
-    .collect()
-}
-
-/// The settings presentation and this profile's one-shot site-data clear,
-/// joined to the document's settings, whose actions set the preferences.
-fn settings_presentation_resource() -> Resource {
-    let mut settings = Resource::new("browser.settings", "browser.settings", "Settings");
-    if let Ok(spec) = ActionSpec::operation(
-        "show",
-        "Show browser settings",
-        OperationKind::View,
-        BROWSER_OPERATION_TYPE,
-        &browser_operation_payload(&BrowserOperation::ShowSettings),
-    ) {
-        settings.actions.push(spec);
-    }
-    if let Ok(spec) = ActionSpec::operation(
-        "request-site-data-clear",
-        "Request local site-data clear",
-        OperationKind::Effect,
-        BROWSER_OPERATION_TYPE,
-        &browser_operation_payload(&BrowserOperation::RequestWebsiteDataClear),
-    ) {
-        settings.actions.push(
-            spec.with_contract(local_effect_contract(&[
-                "device-local",
-                "site-data",
-                "sensitive-data",
-            ]))
-            .destructive(),
-        );
-    }
-    settings
-}
-
-fn local_background_contract(tags: &[&str]) -> ActionContract {
-    ActionContract {
-        execution: ui::tilo_actions::ExecutionMode::Background { cancellable: false },
-        ..local_effect_contract(tags)
-    }
-}
-
-/// Page content belongs to this profile's signed-in sessions, so reading it
-/// takes the same authority as operating it, and neither is offered to a
-/// person picking from the palette: people use the page itself.
-fn page_contract(read: bool) -> ActionContract {
-    ActionContract {
-        permission: ui::tilo_actions::PermissionRequirement::Write,
-        risk: if read {
-            ui::tilo_actions::RiskLevel::None
-        } else {
-            ui::tilo_actions::RiskLevel::Low
-        },
-        retry: if read {
-            RetryPolicy::Idempotent
-        } else {
-            RetryPolicy::AtMostOnce
-        },
-        execution: ui::tilo_actions::ExecutionMode::Background { cancellable: false },
-        result: ResultSpec::Json {
-            schema: serde_json::json!({
-                "type": "object",
-                "required": ["url", "title", "message", "navigated"],
-                "properties": {
-                    "url": { "type": "string" },
-                    "title": { "type": "string" },
-                    "message": { "type": "string" },
-                    "navigated": { "type": "boolean" },
-                    "outline": { "type": "string" },
-                },
-            }),
-        },
-        tags: vec![
-            "device-local".into(),
-            "page-content".into(),
-            "sensitive-data".into(),
-            ui::tilo_actions::PROGRAMMATIC_TAG.into(),
-        ],
-        ..ActionContract::default()
-    }
-}
-
-fn element_param() -> ActionParam {
-    ActionParam::required_owned(
-        "element",
-        ParamType::Text,
-        "Element ref from browser.page/read, such as d1e5",
-    )
 }
 
 fn local_output(message: impl Into<String>) -> ui::tilo_actions::ActionOutput {
@@ -886,6 +480,13 @@ pub struct BrowserWidget {
     resource_pip_deadline: Option<ui::time::Instant>,
     page_operation: Option<PageOperation>,
     page_operation_result: Option<ui::tilo_actions::InvocationUpdate>,
+    /// Effects waiting on an operation this window accepted.
+    /// Operations this window accepted, with the effect waiting on each
+    /// (none for a control a window nobody hosts answered itself).
+    pending_replies: Vec<(
+        ui::tilo_actions::InvocationId,
+        Option<ui::framework::EffectReply>,
+    )>,
     page_request_seq: u32,
     pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
     pending_pip_region_update: Option<Rect>,
@@ -1313,6 +914,7 @@ impl BrowserWidget {
             resource_pip_deadline: None,
             page_operation: None,
             page_operation_result: None,
+            pending_replies: Vec::new(),
             page_request_seq: 0,
             pending_pip: None,
             pending_pip_region_update: None,
@@ -1805,145 +1407,17 @@ impl BrowserWidget {
 
     /// Read and operate the page's content without its pixels: an outline
     /// whose interactive elements carry refs, and actions on those refs.
-    fn page_content_actions(&self) -> Vec<ActionSpec> {
-        fn page_action(
-            id: &str,
-            label: &str,
-            placeholder: &str,
-            params: Vec<ActionParam>,
-            build: impl Fn(&ActionArgs) -> PageRequest + Send + Sync + 'static,
-        ) -> ActionSpec {
-            ActionSpec::typed_operation(
-                id,
-                label,
-                placeholder,
-                if id == "read" {
-                    OperationKind::View
-                } else {
-                    OperationKind::Effect
-                },
-                BROWSER_OPERATION_TYPE,
-                params,
-                move |args: &ActionArgs| {
-                    encode_browser_operation(&BrowserOperation::Page(build(args)))
-                },
-            )
-            .with_contract(page_contract(id == "read"))
-        }
-        let element = |args: &ActionArgs| args.text("element").unwrap_or_default().to_string();
-        let specs = vec![
-            page_action("read", "Read page content", "", Vec::new(), |_| {
-                PageRequest::Outline
-            }),
-            page_action(
-                "click",
-                "Click page element",
-                "d1e5",
-                vec![element_param()],
-                move |args| PageRequest::Click {
-                    element: element(args),
-                },
-            ),
-            page_action(
-                "fill",
-                "Fill page field",
-                "text",
-                vec![
-                    element_param(),
-                    ActionParam::required_owned(
-                        "text",
-                        ParamType::Text,
-                        "Text that replaces the field's contents",
-                    ),
-                ],
-                move |args| PageRequest::Fill {
-                    element: element(args),
-                    text: args.text("text").unwrap_or_default().to_string(),
-                },
-            ),
-            page_action(
-                "select",
-                "Choose page options",
-                "option",
-                vec![
-                    element_param(),
-                    ActionParam::required_owned(
-                        "values",
-                        ParamType::Array,
-                        "Option values or visible labels to choose",
-                    )
-                    .with_schema(serde_json::json!({
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "minItems": 1,
-                        "maxItems": ui::webview::page::MAX_SELECT_VALUES,
-                    })),
-                ],
-                move |args| PageRequest::Select {
-                    element: element(args),
-                    values: args
-                        .array("values")
-                        .unwrap_or_default()
-                        .iter()
-                        .filter_map(|value| value.as_str().map(str::to_string))
-                        .collect(),
-                },
-            ),
-            page_action(
-                "press",
-                "Press key on page",
-                "Enter",
-                vec![
-                    ActionParam::required_owned(
-                        "key",
-                        ParamType::Text,
-                        "Key or chord such as Enter, Tab, Escape, ArrowDown or Control+a",
-                    ),
-                    ActionParam::optional_owned(
-                        "element",
-                        ParamType::Text,
-                        "Element ref to focus first; otherwise the focused element",
-                    ),
-                ],
-                |args| PageRequest::Press {
-                    element: args
-                        .text("element")
-                        .filter(|element| !element.is_empty())
-                        .map(str::to_string),
-                    key: {
-                        let chord = args.text("key").unwrap_or_default();
-                        PageKey::parse(chord).unwrap_or_else(|| PageKey {
-                            key: chord.to_string(),
-                            modifiers: ui::webview::KeyModifiers::default(),
-                        })
-                    },
-                },
-            ),
-            page_action(
-                "submit",
-                "Submit page form",
-                "d1e5",
-                vec![element_param()],
-                move |args| PageRequest::Submit {
-                    element: element(args),
-                },
-            ),
-        ];
-        if is_supported_web_url(&self.current_uri) {
-            specs
-        } else {
-            specs
-                .into_iter()
-                .map(|spec| spec.unavailable("no_web_page", "Open a web page first"))
-                .collect()
-        }
-    }
-
     fn start_page_operation(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
         request: PageRequest,
     ) -> Result<(), String> {
+        if !request.valid() {
+            return Err(format!(
+                "`{}` names no element of the page outline, or arguments the page cannot take",
+                request.action()
+            ));
+        }
         if self.page_operation.is_some() || self.page_operation_result.is_some() {
             return Err("another page action is already running in this tab".into());
         }
@@ -2143,7 +1617,7 @@ impl BrowserWidget {
     fn settings_action_bindings(&self) -> SettingsActionBindings {
         SettingsActionBindings {
             edits: self.dispatch.clone(),
-            clear_history: self.unit_binding("browser.history", "clear"),
+            clear_history: self.unit_binding("browser.history", "clear-history"),
             clear_site_data: self.unit_binding("browser.settings", "request-site-data-clear"),
             close: self.unit_binding(crate::resource::Browser::KIND, "show-page"),
         }
@@ -2618,7 +2092,7 @@ impl BrowserWidget {
         let (settings_resource, settings_action) = if self.show_settings {
             (crate::resource::Browser::KIND, "show-page")
         } else {
-            ("browser.settings", "show")
+            ("browser.settings", "show-settings")
         };
         let settings_btn = self.bind_button(
             Button::new("browser.settings", "", None)
@@ -2681,7 +2155,7 @@ impl BrowserWidget {
             // `browser.session`; binding to the kind silently left this
             // keyboard/assistive-tech control without an action address.
             "browser.session",
-            "toggle-history-pause",
+            "toggle-pause",
         );
         let history_pause_btn = if self.history_paused() {
             history_pause_btn.primary()
@@ -2762,7 +2236,7 @@ impl BrowserWidget {
         let (library_resource, library_action) = if self.show_library {
             (crate::resource::Browser::KIND, "show-page")
         } else {
-            ("browser.history", "show")
+            ("browser.history", "show-history")
         };
         let library_btn = self.bind_button(
             Button::new("browser.library", "", None)
@@ -2788,7 +2262,7 @@ impl BrowserWidget {
                         toolbar_control_height(self.text_scale),
                     ),
                 "browser.downloads",
-                "show",
+                "show-downloads",
             )
         });
         // A download in progress adds its labelled status to the row. The
@@ -2992,7 +2466,7 @@ impl BrowserWidget {
                         .with_accessible_name(label)
                         .with_size(self.labelled_width(116.0), action_height),
                     "browser.session",
-                    "toggle-history-pause",
+                    "toggle-pause",
                 ),
             ));
         }
@@ -3040,7 +2514,7 @@ impl BrowserWidget {
                         if large_text { 56.0 } else { 40.0 },
                     ),
                 resource,
-                "show",
+                &format!("show-{}", resource.trim_start_matches("browser.")),
             );
             section_buttons.push(if selected { button.primary() } else { button });
         }
@@ -3103,7 +2577,7 @@ impl BrowserWidget {
                 .with_enabled(!filter_query.trim().is_empty())
                 .with_size(if large_text { 112.0 } else { 76.0 }, action_height),
             "browser.library",
-            "clear-filter",
+            "clear-library-filter",
         );
         let filter_bar: Box<dyn Widget> = if compact_layout && large_text {
             Box::new(
@@ -3426,7 +2900,7 @@ impl BrowserWidget {
                                             action_height,
                                         ),
                                     &resource_id,
-                                    "cancel",
+                                    "cancel-download",
                                 ),
                             )
                         }
@@ -3449,7 +2923,7 @@ impl BrowserWidget {
                                             action_height,
                                         ),
                                         &resource_id,
-                                        "reveal",
+                                        "reveal-download",
                                     ),
                                 ))
                                 .push(Box::new(
@@ -3464,7 +2938,7 @@ impl BrowserWidget {
                                                 action_height,
                                             ),
                                         &resource_id,
-                                        "open",
+                                        "open-download",
                                     )
                                     .primary(),
                                 )),
@@ -3481,7 +2955,7 @@ impl BrowserWidget {
                                         action_height,
                                     ),
                                 &resource_id,
-                                "retry",
+                                "retry-download",
                             )
                             .primary(),
                         ),
@@ -3697,7 +3171,7 @@ impl BrowserWidget {
                             .with_accessible_name(label)
                             .fill_width(action_height),
                         "browser.session",
-                        "toggle-history-pause",
+                        "toggle-pause",
                     ),
                 ))
                 .push(Box::new(
@@ -4863,183 +4337,14 @@ impl Widget for BrowserWidget {
         dyn ui::search::capability::SearchSource
     );
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[BROWSER_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: ui::tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<ui::tilo_actions::InvocationUpdate> {
-        self.drive_page_operation();
-        if self
-            .page_operation_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            return self.page_operation_result.take();
-        }
-        if self
-            .resource_navigation_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            return self.resource_navigation_result.take();
-        }
-        if self
-            .resource_pip_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            return self.resource_pip_result.take();
-        }
-        if self.resource_pip_invocation == Some(invocation)
-            && self
-                .resource_pip_deadline
-                .is_some_and(|deadline| ui::time::now() >= deadline)
-        {
-            self.resource_pip_invocation = None;
-            self.resource_pip_request = None;
-            self.resource_pip_deadline = None;
-            return Some(ui::tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: ui::tilo_actions::ActionFailure {
-                    code: "browser.picture_in_picture_timed_out".into(),
-                    message: "Picture in Picture did not receive a media response in time.".into(),
-                    details: Some(serde_json::json!({
-                        "timeout_seconds": PIP_OPERATION_TIMEOUT.as_secs(),
-                    })),
-                    retryable: true,
-                },
-            });
-        }
-        if self.resource_navigation_invocation == Some(invocation)
-            && self
-                .resource_navigation_deadline
-                .is_some_and(|deadline| ui::time::now() >= deadline)
-        {
-            self.resource_navigation_invocation = None;
-            self.resource_navigation_deadline = None;
-            return Some(ui::tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: ui::tilo_actions::ActionFailure {
-                    code: "browser.navigation_timed_out".into(),
-                    message: "The page did not finish loading in time.".into(),
-                    details: Some(serde_json::json!({
-                        "timeout_seconds": NAVIGATION_TIMEOUT.as_secs(),
-                    })),
-                    retryable: true,
-                },
-            });
-        }
-        None
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "Browser's frame-level input routing remains ordered in one place."
     )]
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
-        if self.private_window_request.get() {
-            self.private_window_request.set(false);
-            self.private_window_notice = crate::private_window::launch().err();
-            self.structure_dirty = true;
-        }
-        let paused = self.history_paused();
-        if self.observed_history_paused != paused {
-            self.observed_history_paused = paused;
-            self.structure_dirty = true;
-        }
-        if !self.bootstrap_done {
-            self.site.initialize(&self.engine);
-            if !self.headless {
-                self.engine
-                    .send(WebViewCommand::SetClearOnExit(self.settings.clear_on_exit));
-                if self.settings.adblock_enabled {
-                    crate::blocker::spawn_filter_loader(self.engine.clone());
-                    // Scriptlet-style blocking (YouTube ad-skip etc.) the
-                    // declarative content filter can't express.
-                    self.install_blocking_scripts();
-                }
-                if !self.settings.adblock_enabled {
-                    self.set_adblock(false);
-                }
-                if !self.navigation_deferred {
-                    self.engine
-                        .send(WebViewCommand::Navigate(self.initial_url.clone()));
-                }
-            }
-            self.bootstrap_done = true;
-        }
-
-        if let Some(message) = self
-            .extension_feedback
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take())
-        {
-            self.extension_notice = Some(message);
-            self.structure_dirty = true;
-        }
-        self.structure_dirty |= self.daily.sync(&self.engine);
-        let site_was_open = self.site.open;
-        self.structure_dirty |= self.site.sync(&self.engine);
-        for (origin, enabled) in self.site.take_decisions() {
-            self.submit(&BrowserAction::SetSiteProtection { origin, enabled });
-        }
-        if self.site.open && !site_was_open {
-            self.deactivate_credentials();
-        }
-        self.structure_dirty |= self.credentials.sync(&self.engine);
-        if self.credentials.open {
-            self.site.close();
-        }
-        self.tick_back_hold(ui::time::now());
-        self.follow_history();
-        self.apply_engine_events();
-        self.drive_page_operation();
-        self.structure_dirty |= self.capabilities.downloads_changed();
-        self.sync_search_and_suggestions();
-
-        if let Some(c) = &mut self.composed {
-            c.sync(state, path);
-        }
-        self.poll_active_pip_element();
+        self.sync_frame(state, path);
+        self.settle_replies();
     }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -5763,10 +5068,26 @@ impl Widget for BrowserWidget {
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        // An operation an effect waits on times out even if nothing else
+        // wakes the window.
+        let waiting = (!self.pending_replies.is_empty())
+            .then(|| {
+                [
+                    self.resource_navigation_deadline,
+                    self.resource_pip_deadline,
+                    self.page_operation
+                        .as_ref()
+                        .map(|operation| operation.deadline),
+                ]
+            })
+            .into_iter()
+            .flatten()
+            .flatten();
         self.site
             .deadline()
             .into_iter()
             .chain(self.credentials.deadline())
+            .chain(waiting)
             .chain(
                 self.children()
                     .into_iter()
@@ -5858,18 +5179,9 @@ impl BrowserWidget {
         reason = "Resource definitions stay together so their action contracts remain discoverable."
     )]
     pub(crate) fn published(&self) -> Resource {
+        use crate::effects::BrowserEffect as E;
+        use ui::tilo_resource::Effect as _;
         const MATERIALIZED_LIMIT: usize = 100;
-        let operation =
-            |id: &str, label: &str, kind: OperationKind, operation: BrowserOperation| {
-                ActionSpec::operation(
-                    id,
-                    label,
-                    kind,
-                    BROWSER_OPERATION_TYPE,
-                    &browser_operation_payload(&operation),
-                )
-                .ok()
-            };
         let mut page = Resource::new(
             "browser.page",
             "browser.page",
@@ -5879,88 +5191,72 @@ impl BrowserWidget {
                 &self.title
             },
         );
-        for (id, label, operation, available, reason) in [
-            (
-                "back",
-                "Go back",
-                BrowserOperation::Back,
-                self.can_go_back,
-                "No previous page",
-            ),
-            (
-                "forward",
-                "Go forward",
-                BrowserOperation::Forward,
-                self.can_go_forward,
-                "No next page",
-            ),
-            ("reload", "Reload", BrowserOperation::Reload, true, ""),
-            (
-                "stop",
-                "Stop loading",
-                BrowserOperation::Stop,
-                self.progress < 1.0,
-                "Page is idle",
-            ),
-        ] {
-            let payload = browser_operation_payload(&operation);
-            if let Ok(spec) = ActionSpec::operation(
-                id,
-                label,
-                OperationKind::View,
-                BROWSER_OPERATION_TYPE,
-                &payload,
-            ) {
-                let spec = if id == "stop" {
-                    spec
-                } else {
-                    spec.with_contract(navigation_contract())
-                };
-                page.actions.push(if available {
-                    spec
-                } else {
-                    spec.unavailable("history_boundary", reason)
-                });
-            }
+        let back = E::Back.bound();
+        page.actions.push(if self.can_go_back {
+            back
+        } else {
+            back.unavailable("history_boundary", "No previous page")
+        });
+        let forward = E::Forward.bound();
+        page.actions.push(if self.can_go_forward {
+            forward
+        } else {
+            forward.unavailable("history_boundary", "No next page")
+        });
+        page.actions.push(E::Reload.bound());
+        let stop = E::Stop.bound();
+        page.actions.push(if self.progress < 1.0 {
+            stop
+        } else {
+            stop.unavailable("history_boundary", "Page is idle")
+        });
+        page.actions
+            .push(E::Navigate { url: String::new() }.bound_asking(&["url"]));
+        let mut pip = E::PictureInPicture.bound();
+        if self.active_pip {
+            pip.label = "Close Picture in Picture".into();
         }
-        page.actions.push(
-            ActionSpec::typed_operation(
-                "navigate",
-                "Open address",
-                "https://…",
-                OperationKind::Effect,
-                BROWSER_OPERATION_TYPE,
-                vec![ActionParam::required_owned(
-                    "url",
-                    ParamType::Text,
-                    "Absolute URL or search terms",
-                )],
-                |args: &ActionArgs| {
-                    encode_browser_operation(&BrowserOperation::Navigate {
-                        url: args.text("url").unwrap_or("").to_string(),
-                    })
+        page.actions.push(pip);
+        let web_page = is_supported_web_url(&self.current_uri);
+        let element = String::new();
+        for (spec, asking) in [
+            (E::ReadPage, &[][..]),
+            (
+                E::ClickPage {
+                    element: element.clone(),
                 },
-            )
-            .with_contract(navigation_contract()),
-        );
-        if let Some(spec) = operation(
-            "picture-in-picture",
-            if self.active_pip {
-                "Close Picture in Picture"
+                &["element"][..],
+            ),
+            (
+                E::FillPage {
+                    element: element.clone(),
+                    text: String::new(),
+                },
+                &["element", "text"][..],
+            ),
+            (
+                E::SelectPage {
+                    element: element.clone(),
+                    values: Vec::new(),
+                },
+                &["element", "values"][..],
+            ),
+            (
+                E::PressPage {
+                    key: String::new(),
+                    element: None,
+                },
+                &["key", "element"][..],
+            ),
+            (E::SubmitPage { element }, &["element"][..]),
+        ] {
+            let spec = spec.bound_asking(asking);
+            page.actions.push(if web_page {
+                spec
             } else {
-                "Open Picture in Picture"
-            },
-            OperationKind::View,
-            BrowserOperation::TogglePictureInPicture,
-        ) {
-            page.actions
-                .push(spec.with_contract(local_background_contract(&[
-                    "device-local",
-                    "session",
-                    "media",
-                ])));
+                spec.unavailable("no_web_page", "Open a web page first")
+            });
         }
-        page.actions.extend(self.page_content_actions());
 
         let mut session = Resource::new(
             "browser.session",
@@ -5971,146 +5267,64 @@ impl BrowserWidget {
                 "History recording"
             },
         );
-        if let Some(spec) = operation(
-            "toggle-history-pause",
-            if self.history_paused() {
-                "Resume history in this window"
-            } else {
-                "Pause history in this window"
-            },
-            OperationKind::Effect,
-            BrowserOperation::ToggleHistoryPause,
-        ) {
-            session
-                .actions
-                .push(spec.with_contract(local_effect_contract(&[
-                    "device-local",
-                    "session",
-                    "history-paused",
-                    "sensitive-data",
-                ])));
+        let mut pause = E::TogglePause.bound();
+        if self.history_paused() {
+            pause.label = "Resume history in this window".into();
         }
+        session.actions.push(pause);
 
         let mut history = Resource::new("browser.history", "browser.history", "History");
-        if let Some(spec) = operation(
-            "show",
-            "Show history",
-            OperationKind::View,
-            BrowserOperation::ShowLibrary {
-                section: LibrarySection::History,
-            },
-        ) {
-            history.actions.push(spec);
-        }
-        if let Some(spec) = operation(
-            "clear",
-            "Clear browsing history",
-            OperationKind::Effect,
-            BrowserOperation::ClearHistory,
-        ) {
-            history.actions.push(if self.history.is_empty() {
-                spec.with_contract(local_effect_contract(&[
-                    "device-local",
-                    "history",
-                    "sensitive-data",
-                ]))
-                .unavailable("already_empty", "Browsing history is already empty")
-            } else {
-                spec.with_contract(local_effect_contract(&[
-                    "device-local",
-                    "history",
-                    "sensitive-data",
-                ]))
-                .destructive()
-            });
-        }
+        history.actions.push(E::ShowHistory.bound());
+        let clear = E::ClearHistory.bound();
+        history.actions.push(if self.history.is_empty() {
+            clear.unavailable("already_empty", "Browsing history is already empty")
+        } else {
+            clear
+        });
         for entry in self.history.entries().iter().rev().take(MATERIALIZED_LIMIT) {
             let title = if entry.title.trim().is_empty() {
                 entry.url.as_str()
             } else {
                 entry.title.as_str()
             };
-            let mut child = Resource::new(
-                history_resource_id(&entry.url),
-                "browser.history-entry",
-                title,
+            history.children.push(
+                Resource::new(
+                    history_resource_id(&entry.url),
+                    "browser.history-entry",
+                    title,
+                )
+                .with_action(
+                    E::Open {
+                        url: entry.url.clone(),
+                    }
+                    .bound(),
+                ),
             );
-            if let Some(spec) = operation(
-                "open",
-                "Open page",
-                OperationKind::Effect,
-                BrowserOperation::Navigate {
-                    url: entry.url.clone(),
-                },
-            ) {
-                child
-                    .actions
-                    .push(spec.with_contract(navigation_contract()));
-            }
-            history.children.push(child);
         }
 
         let mut bookmarks = Resource::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
-        if let Some(spec) = bookmark_library_show() {
-            bookmarks.actions.push(spec);
-        }
+        bookmarks.actions.push(E::ShowBookmarks.bound());
         for entry in self.bookmarks.entries().iter().take(MATERIALIZED_LIMIT) {
-            let mut child = Resource::new(
-                bookmark_resource_id(&entry.url),
-                "browser.bookmark",
-                entry.title.clone(),
+            bookmarks.children.push(
+                Resource::new(
+                    bookmark_resource_id(&entry.url),
+                    "browser.bookmark",
+                    entry.title.clone(),
+                )
+                .with_action(
+                    E::Open {
+                        url: entry.url.clone(),
+                    }
+                    .bound(),
+                ),
             );
-            if let Some(spec) = operation(
-                "open",
-                "Open bookmark",
-                OperationKind::Effect,
-                BrowserOperation::Navigate {
-                    url: entry.url.clone(),
-                },
-            ) {
-                child
-                    .actions
-                    .push(spec.with_contract(navigation_contract()));
-            }
-            bookmarks.children.push(child);
         }
 
         let mut downloads = Resource::new("browser.downloads", "browser.downloads", "Downloads");
-        if let Some(spec) = operation(
-            "show",
-            "Show downloads",
-            OperationKind::View,
-            BrowserOperation::ShowLibrary {
-                section: LibrarySection::Downloads,
-            },
-        ) {
-            downloads.actions.push(spec);
-        }
-        downloads.actions.push(
-            ActionSpec::typed_operation(
-                "start",
-                "Download address",
-                "https://…",
-                OperationKind::Effect,
-                BROWSER_OPERATION_TYPE,
-                vec![ActionParam::required_owned(
-                    "url",
-                    ParamType::Text,
-                    "Absolute HTTP or HTTPS URL",
-                )],
-                |args: &ActionArgs| {
-                    encode_browser_operation(&BrowserOperation::StartDownload {
-                        url: args.text("url").unwrap_or_default().to_string(),
-                    })
-                },
-            )
-            .with_contract(local_background_contract(&[
-                "device-local",
-                "network",
-                "filesystem",
-                "download",
-            ])),
-        );
+        downloads.actions.push(E::ShowDownloads.bound());
+        downloads
+            .actions
+            .push(E::StartDownload { url: String::new() }.bound_asking(&["url"]));
         for entry in self
             .downloads
             .entries()
@@ -6118,212 +5332,87 @@ impl BrowserWidget {
             .rev()
             .take(MATERIALIZED_LIMIT)
         {
+            let id = entry.id.clone();
             let mut child = Resource::new(
                 entry.resource_id(),
                 "browser.download",
                 entry.display_name(),
-            );
-            if let Some(spec) = operation(
-                "show",
-                "Show download",
-                OperationKind::View,
-                BrowserOperation::ShowLibrary {
-                    section: LibrarySection::Downloads,
-                },
-            ) {
-                child.actions.push(spec);
-            }
+            )
+            .with_action(E::ShowDownload { id: id.clone() }.bound());
             match entry.status {
                 DownloadStatus::AwaitingDestination | DownloadStatus::Downloading => {
-                    if let Some(spec) = operation(
-                        "cancel",
-                        "Cancel download",
-                        OperationKind::Effect,
-                        BrowserOperation::CancelDownload {
-                            id: entry.id.clone(),
-                        },
-                    ) {
-                        child.actions.push(
-                            spec.with_contract(local_effect_contract(&[
-                                "device-local",
-                                "network",
-                                "download",
-                            ]))
-                            .destructive(),
-                        );
-                    }
+                    child = child.with_action(E::CancelDownload { id }.bound());
                 }
                 DownloadStatus::Failed | DownloadStatus::Cancelled => {
-                    if let Some(spec) = operation(
-                        "retry",
-                        "Retry download",
-                        OperationKind::Effect,
-                        BrowserOperation::RetryDownload {
-                            id: entry.id.clone(),
-                        },
-                    ) {
-                        child
-                            .actions
-                            .push(spec.with_contract(local_background_contract(&[
-                                "device-local",
-                                "network",
-                                "filesystem",
-                                "download",
-                            ])));
-                    }
+                    child = child.with_action(E::RetryDownload { id }.bound());
                 }
                 DownloadStatus::Completed => {
-                    for (id, label, browser_operation) in [
-                        (
-                            "open",
-                            "Open downloaded file",
-                            BrowserOperation::OpenDownload {
-                                id: entry.id.clone(),
-                            },
-                        ),
-                        (
-                            "reveal",
-                            "Show downloaded file in Files",
-                            BrowserOperation::RevealDownload {
-                                id: entry.id.clone(),
-                            },
-                        ),
-                    ] {
-                        if let Some(spec) =
-                            operation(id, label, OperationKind::Effect, browser_operation)
-                        {
-                            child
-                                .actions
-                                .push(spec.with_contract(local_background_contract(&[
-                                    "device-local",
-                                    "filesystem",
-                                    "portal",
-                                ])));
-                        }
-                    }
+                    child = child
+                        .with_action(E::OpenDownload { id: id.clone() }.bound())
+                        .with_action(E::RevealDownload { id }.bound());
                 }
             }
             downloads.children.push(child);
         }
+
         let mut extensions =
             Resource::new("browser.extensions", "browser.extensions", "Extensions");
-        if let Some(spec) = operation(
-            "show",
-            "Show extensions",
-            OperationKind::View,
-            BrowserOperation::ShowLibrary {
-                section: LibrarySection::Extensions,
-            },
-        ) {
-            extensions.actions.push(spec);
-        }
+        extensions.actions.push(E::ShowExtensions.bound());
         // Installed add-ons are durable local profile entities even while the
-        // WebKit activation API is unavailable. Publish each bounded,
+        // engine's activation API is unavailable. Publish each bounded,
         // address-safe inventory item so the action directory, invocation
         // history and agents use the same identity as the extension manager.
         for extension in crate::extensions::list_installed() {
-            let mut child = Resource::new(
-                crate::extensions::resource_id(&extension.id),
-                "browser.extension",
-                extension.name,
+            extensions.children.push(
+                Resource::new(
+                    crate::extensions::resource_id(&extension.id),
+                    "browser.extension",
+                    extension.name,
+                )
+                .with_action(E::ShowExtensions.bound()),
             );
-            if let Some(spec) = operation(
-                "show",
-                "Show extension details",
-                OperationKind::View,
-                BrowserOperation::ShowLibrary {
-                    section: LibrarySection::Extensions,
-                },
-            ) {
-                child.actions.push(spec);
-            }
-            extensions.children.push(child);
         }
+
         // Library is a first-class presentation resource rather than an
         // unaddressable collection of tabs.  This lets keyboard users,
         // assistive technology, global action search, and agents all use the
         // same section and filter operations as the visible surface.
         let mut library = Resource::new("browser.library", "browser.library", "Library");
-        for (id, label, section) in [
-            ("show-history", "Show history", LibrarySection::History),
-            (
-                "show-bookmarks",
-                "Show bookmarks",
-                LibrarySection::Bookmarks,
-            ),
-            (
-                "show-downloads",
-                "Show downloads",
-                LibrarySection::Downloads,
-            ),
-            (
-                "show-extensions",
-                "Show extensions",
-                LibrarySection::Extensions,
-            ),
+        for effect in [
+            E::ShowHistory,
+            E::ShowBookmarks,
+            E::ShowDownloads,
+            E::ShowExtensions,
         ] {
-            if let Some(spec) = operation(
-                id,
-                label,
-                OperationKind::View,
-                BrowserOperation::ShowLibrary { section },
-            ) {
-                library.actions.push(spec);
-            }
+            library.actions.push(effect.bound());
         }
         library.actions.push(
-            ActionSpec::typed_operation(
-                "set-filter",
-                "Filter library",
-                "keyword",
-                OperationKind::View,
-                BROWSER_OPERATION_TYPE,
-                vec![ActionParam::required_owned(
-                    "query",
-                    ParamType::Text,
-                    "Words to match in the current library section",
-                )],
-                |args: &ActionArgs| {
-                    encode_browser_operation(&BrowserOperation::SetLibraryFilter {
-                        query: args.text("query").unwrap_or_default().to_string(),
-                    })
-                },
-            )
-            .with_contract(local_effect_contract(&[
-                "device-local",
-                "presentation",
-                "library",
-            ])),
+            E::SetLibraryFilter {
+                query: String::new(),
+            }
+            .bound_asking(&["query"]),
         );
-        if let Some(spec) = operation(
-            "clear-filter",
-            "Clear library filter",
-            OperationKind::View,
-            BrowserOperation::ClearLibraryFilter,
-        ) {
-            library
-                .actions
-                .push(if self.library_filter.get().trim().is_empty() {
-                    spec.unavailable("already_clear", "Library filter is already clear")
-                } else {
-                    spec
-                });
-        }
+        let clear_filter = E::ClearLibraryFilter.bound();
+        library
+            .actions
+            .push(if self.library_filter.get().trim().is_empty() {
+                clear_filter.unavailable("already_clear", "Library filter is already clear")
+            } else {
+                clear_filter
+            });
+
+        let mut settings = Resource::new("browser.settings", "browser.settings", "Settings");
+        settings.actions.push(E::ShowSettings.bound());
+        settings.actions.push(E::RequestSiteDataClear.bound());
+
         let mut browser = Resource::new(
             crate::resource::Browser::KIND,
             crate::resource::Browser::KIND,
             "Browser",
         );
-        browser.actions = window_presentation_operations();
+        browser.actions = E::specs();
         browser.children = vec![
-            page,
-            session,
-            history,
-            bookmarks,
-            downloads,
-            extensions,
-            library,
-            settings_presentation_resource(),
+            page, session, history, bookmarks, downloads, extensions, library, settings,
         ];
         browser
     }
@@ -6350,45 +5439,237 @@ fn live_row(resource: Resource) -> ui::framework::LiveRow {
 
 impl ui::widget::controls::ActionControls for BrowserWidget {
     fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.pending_controls.pop_front().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(ui::widget::controls::take_control_invocation)
-        })
+        loop {
+            let invocation = self.pending_controls.pop_front().or_else(|| {
+                self.children_mut()
+                    .into_iter()
+                    .find_map(ui::widget::controls::take_control_invocation)
+            })?;
+            if self.dispatch.is_some() {
+                return Some(invocation);
+            }
+            // A window nobody hosts (the shell's in-process tile) has no
+            // door to send its controls through: it answers its own.
+            let Some(effect) = self.effect_of(&invocation) else {
+                return Some(invocation);
+            };
+            let id = ui::tilo_actions::InvocationId::new();
+            match self.admit(id, effect.operation()) {
+                Ok(ui::widget::ResourceOperationStart::Accepted) => {
+                    self.pending_replies.push((id, None));
+                }
+                Ok(ui::widget::ResourceOperationStart::Completed(_)) => {}
+                Err(error) => tracing::warn!(%error, "browser control refused"),
+            }
+        }
     }
 }
 
 impl BrowserWidget {
-    fn answer_resource_operation(
-        &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let operation = decode_browser_operation(payload)?;
-        self.perform_browser_operation(operation)?;
-        Ok(true)
-    }
-
-    fn admit_resource_operation(
+    /// The update of `invocation`, an operation [`Self::admit`] accepted,
+    /// once it settled: the page loaded, the media answered, the engine
+    /// replied, or it timed out.
+    pub(crate) fn poll_invocation(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
-            return Ok(None);
+    ) -> Option<ui::tilo_actions::InvocationUpdate> {
+        self.drive_page_operation();
+        if self
+            .page_operation_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return self.page_operation_result.take();
         }
-        let operation = decode_browser_operation(payload)?;
+        if self
+            .resource_navigation_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return self.resource_navigation_result.take();
+        }
+        if self
+            .resource_pip_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return self.resource_pip_result.take();
+        }
+        if self.resource_pip_invocation == Some(invocation)
+            && self
+                .resource_pip_deadline
+                .is_some_and(|deadline| ui::time::now() >= deadline)
+        {
+            self.resource_pip_invocation = None;
+            self.resource_pip_request = None;
+            self.resource_pip_deadline = None;
+            return Some(ui::tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: ui::tilo_actions::ActionFailure {
+                    code: "browser.picture_in_picture_timed_out".into(),
+                    message: "Picture in Picture did not receive a media response in time.".into(),
+                    details: Some(serde_json::json!({
+                        "timeout_seconds": PIP_OPERATION_TIMEOUT.as_secs(),
+                    })),
+                    retryable: true,
+                },
+            });
+        }
+        if self.resource_navigation_invocation == Some(invocation)
+            && self
+                .resource_navigation_deadline
+                .is_some_and(|deadline| ui::time::now() >= deadline)
+        {
+            self.resource_navigation_invocation = None;
+            self.resource_navigation_deadline = None;
+            return Some(ui::tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: ui::tilo_actions::ActionFailure {
+                    code: "browser.navigation_timed_out".into(),
+                    message: "The page did not finish loading in time.".into(),
+                    details: Some(serde_json::json!({
+                        "timeout_seconds": NAVIGATION_TIMEOUT.as_secs(),
+                    })),
+                    retryable: true,
+                },
+            });
+        }
+        None
+    }
+
+    /// Answer every effect waiting on an operation that settled.
+    fn settle_replies(&mut self) {
+        let waiting = std::mem::take(&mut self.pending_replies);
+        for (invocation, reply) in waiting {
+            let answer = match self.poll_invocation(invocation) {
+                Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+                Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) => Err(error),
+                Some(_) | None => {
+                    self.pending_replies.push((invocation, reply));
+                    continue;
+                }
+            };
+            if let Some(reply) = reply {
+                reply.answer(answer);
+            }
+        }
+    }
+
+    /// Answer `reply` once the operation `invocation` names settles.
+    pub(crate) fn answer_later(
+        &mut self,
+        invocation: ui::tilo_actions::InvocationId,
+        reply: ui::framework::EffectReply,
+    ) {
+        self.pending_replies.push((invocation, Some(reply)));
+    }
+
+    /// The effect a control's invocation names on this window's rows.
+    fn effect_of(&self, invocation: &ControlInvocation) -> Option<crate::effects::BrowserEffect> {
+        use ui::tilo_resource::Effect as _;
+        fn find<'a>(resources: &'a [Resource], id: &str) -> Option<&'a Resource> {
+            resources.iter().find_map(|resource| {
+                if resource.id.as_str() == id {
+                    Some(resource)
+                } else {
+                    find(&resource.children, id)
+                }
+            })
+        }
+        let published = [self.published()];
+        let resource = find(&published, invocation.address.resource.as_str())?;
+        let spec = resource
+            .actions
+            .iter()
+            .find(|spec| spec.id == invocation.address.action)?;
+        let encoded = spec.build_json(&invocation.arguments).ok()?;
+        (encoded.type_id == crate::effects::BrowserEffect::OPERATION)
+            .then(|| crate::effects::BrowserEffect::from_payload(&encoded.payload).ok())
+            .flatten()
+    }
+
+    fn sync_frame(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
+        if self.private_window_request.get() {
+            self.private_window_request.set(false);
+            self.private_window_notice = crate::private_window::launch().err();
+            self.structure_dirty = true;
+        }
+        let paused = self.history_paused();
+        if self.observed_history_paused != paused {
+            self.observed_history_paused = paused;
+            self.structure_dirty = true;
+        }
+        if !self.bootstrap_done {
+            self.site.initialize(&self.engine);
+            if !self.headless {
+                self.engine
+                    .send(WebViewCommand::SetClearOnExit(self.settings.clear_on_exit));
+                if self.settings.adblock_enabled {
+                    crate::blocker::spawn_filter_loader(self.engine.clone());
+                    // Scriptlet-style blocking (YouTube ad-skip etc.) the
+                    // declarative content filter can't express.
+                    self.install_blocking_scripts();
+                }
+                if !self.settings.adblock_enabled {
+                    self.set_adblock(false);
+                }
+                if !self.navigation_deferred {
+                    self.engine
+                        .send(WebViewCommand::Navigate(self.initial_url.clone()));
+                }
+            }
+            self.bootstrap_done = true;
+        }
+
+        if let Some(message) = self
+            .extension_feedback
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+        {
+            self.extension_notice = Some(message);
+            self.structure_dirty = true;
+        }
+        self.structure_dirty |= self.daily.sync(&self.engine);
+        let site_was_open = self.site.open;
+        self.structure_dirty |= self.site.sync(&self.engine);
+        for (origin, enabled) in self.site.take_decisions() {
+            self.submit(&BrowserAction::SetSiteProtection { origin, enabled });
+        }
+        if self.site.open && !site_was_open {
+            self.deactivate_credentials();
+        }
+        self.structure_dirty |= self.credentials.sync(&self.engine);
+        if self.credentials.open {
+            self.site.close();
+        }
+        self.tick_back_hold(ui::time::now());
+        self.follow_history();
+        self.apply_engine_events();
+        self.drive_page_operation();
+        self.structure_dirty |= self.capabilities.downloads_changed();
+        self.sync_search_and_suggestions();
+
+        if let Some(c) = &mut self.composed {
+            c.sync(state, path);
+        }
+        self.poll_active_pip_element();
+    }
+
+    /// Start `operation` for `invocation`: done at once with its output, or
+    /// accepted, settling later through [`Self::poll_invocation`].
+    ///
+    /// # Errors
+    /// Returns why the window cannot do it now.
+    pub(crate) fn admit(
+        &mut self,
+        invocation: ui::tilo_actions::InvocationId,
+        operation: BrowserOperation,
+    ) -> Result<ui::widget::ResourceOperationStart, String> {
         if let BrowserOperation::Page(request) = operation {
             self.start_page_operation(invocation, request)?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            return Ok(ui::widget::ResourceOperationStart::Accepted);
         }
         let is_navigation = matches!(
             &operation,
@@ -6403,8 +5684,8 @@ impl BrowserWidget {
             }
             if self.active_pip {
                 self.begin_pip_probe();
-                return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    local_output("Picture in Picture closed."),
+                return Ok(ui::widget::ResourceOperationStart::Completed(local_output(
+                    "Picture in Picture closed.",
                 )));
             }
             self.begin_pip_probe();
@@ -6414,7 +5695,7 @@ impl BrowserWidget {
             self.resource_pip_invocation = Some(invocation);
             self.resource_pip_request = Some(request_id);
             self.resource_pip_deadline = Some(std::time::Instant::now() + PIP_OPERATION_TIMEOUT);
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            return Ok(ui::widget::ResourceOperationStart::Accepted);
         }
         if !is_navigation {
             let is_history_pause_toggle =
@@ -6454,7 +5735,7 @@ impl BrowserWidget {
             } else {
                 output
             };
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
+            return Ok(ui::widget::ResourceOperationStart::Completed(output));
         }
         if self.resource_navigation_invocation.is_some()
             || self.resource_navigation_result.is_some()
@@ -6464,7 +5745,7 @@ impl BrowserWidget {
         self.perform_browser_operation(operation)?;
         self.resource_navigation_invocation = Some(invocation);
         self.resource_navigation_deadline = Some(std::time::Instant::now() + NAVIGATION_TIMEOUT);
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(ui::widget::ResourceOperationStart::Accepted)
     }
 }
 
@@ -6490,6 +5771,15 @@ impl AppWidget for BrowserWidget {
 #[cfg(test)]
 mod architecture_tests {
     use super::*;
+    use ui::tilo_actions::OperationKind;
+
+    /// What the window does for the effect an encoded invocation names.
+    fn effect_operation(payload: &[u8]) -> BrowserOperation {
+        use ui::tilo_resource::Effect as _;
+        crate::effects::BrowserEffect::from_payload(payload)
+            .expect("a browser effect")
+            .operation()
+    }
     use ui::webview::WebViewEngine;
 
     fn compose(widget: &mut BrowserWidget) {
@@ -6766,7 +6056,6 @@ mod architecture_tests {
             let invocation = ui::tilo_actions::InvocationId::new();
             widget.resource_navigation_invocation = Some(invocation);
             widget.set_loading_progress(0.2);
-            let mut doc = AutoCommit::new();
             let resources = [widget.published()];
             let stop = resources[0]
                 .children
@@ -6779,16 +6068,11 @@ mod architecture_tests {
                 .unwrap();
             let encoded = stop.build_json(&serde_json::Map::new()).unwrap();
             let result = widget
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        stop.kind,
-                        &encoded.type_id,
-                        &encoded.payload,
-                    ),
-                    &mut doc,
-                    &automerge::ROOT,
+                .admit(
+                    ui::tilo_actions::InvocationId::new(),
+                    effect_operation(&encoded.payload),
                 )
+                .map(Some)
                 .unwrap();
             let Some(ui::widget::ResourceOperationStart::Completed(output)) = result else {
                 panic!("Stop must complete immediately");
@@ -6967,14 +6251,10 @@ mod architecture_tests {
                 ("browser.back", "browser.page", "back"),
                 ("browser.forward", "browser.page", "forward"),
                 ("browser.reload", "browser.page", "reload"),
-                (
-                    "browser.history-pause",
-                    "browser.session",
-                    "toggle-history-pause",
-                ),
-                ("browser.library", "browser.history", "show"),
+                ("browser.history-pause", "browser.session", "toggle-pause"),
+                ("browser.library", "browser.history", "show-history"),
                 ("browser.pip", "browser.page", "picture-in-picture"),
-                ("browser.settings", "browser.settings", "show"),
+                ("browser.settings", "browser.settings", "show-settings"),
             ] {
                 assert_action_binding(&page, control, resource, action);
             }
@@ -6987,7 +6267,7 @@ mod architecture_tests {
                 &library,
                 "browser.library.clear-filter",
                 "browser.library",
-                "clear-filter",
+                "clear-library-filter",
             );
 
             let mut settings = BrowserWidget::new_headless();
@@ -7005,7 +6285,7 @@ mod architecture_tests {
                     crate::resource::Browser::KIND,
                     "show-page",
                 ),
-                ("settings.clear_history", "browser.history", "clear"),
+                ("settings.clear_history", "browser.history", "clear-history"),
                 (
                     "settings.clear_cookies",
                     "browser.settings",
@@ -7538,7 +6818,7 @@ mod architecture_tests {
                 &widget,
                 "browser.library.clear-filter",
                 "browser.library",
-                "clear-filter",
+                "clear-library-filter",
             );
 
             widget
@@ -7568,6 +6848,16 @@ mod architecture_tests {
 )]
 mod tests {
     use super::*;
+    use ui::tilo_actions::{ActionSpec, OperationKind};
+    use ui::webview::PageKey;
+
+    /// What the window does for the effect an encoded invocation names.
+    fn effect_operation(payload: &[u8]) -> BrowserOperation {
+        use ui::tilo_resource::Effect as _;
+        crate::effects::BrowserEffect::from_payload(payload)
+            .expect("a browser effect")
+            .operation()
+    }
     use std::sync::Arc;
     use ui::webview::WebViewEngine;
 
@@ -7639,16 +6929,11 @@ mod tests {
                 .build_json(args.as_object().ok_or("arguments are an object")?)
                 .map_err(|error| error.to_string())?;
             let invocation = ui::tilo_actions::InvocationId::new();
-            match widget.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    action.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
-                doc,
-                root,
-            )? {
+            let _ = (doc, root);
+            match widget
+                .admit(invocation, effect_operation(&encoded.payload))
+                .map(Some)?
+            {
                 Some(ui::widget::ResourceOperationStart::Accepted) => Ok(invocation),
                 other => Err(format!("a page action must be accepted, got {other:?}")),
             }
@@ -7667,7 +6952,14 @@ mod tests {
         // Phase `page_actions_publish_programmatic_write_contracts`.
         {
             let (_, widget, doc, _) = page_on("https://shop.test/");
-            for id in ["read", "click", "fill", "select", "press", "submit"] {
+            for id in [
+                "read-page",
+                "click-page",
+                "fill-page",
+                "select-page",
+                "press-page",
+                "submit-page",
+            ] {
                 let action = page_action(&widget, &doc, id);
                 assert!(action.contract.validate_declaration().is_empty(), "{id}");
                 assert!(action.contract.availability.is_available(), "{id}");
@@ -7684,7 +6976,7 @@ mod tests {
             }
             let (_, blank, doc, _) = page_on("about:blank");
             assert!(
-                !page_action(&blank, &doc, "read")
+                !page_action(&blank, &doc, "read-page")
                     .contract
                     .availability
                     .is_available()
@@ -7694,17 +6986,22 @@ mod tests {
         // Phase `read_returns_the_engine_outline_in_the_declared_shape`.
         {
             let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
-            let invocation =
-                start(&mut widget, &mut doc, &root, "read", &serde_json::json!({})).unwrap();
+            let invocation = start(
+                &mut widget,
+                &mut doc,
+                &root,
+                "read-page",
+                &serde_json::json!({}),
+            )
+            .unwrap();
             assert_eq!(page_requests(&engine), vec![PageRequest::Outline]);
             widget.sync(&mut doc, &root);
             let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
-                widget.poll_resource_operation(invocation, false, &doc, &root)
+                widget.poll_invocation(invocation)
             else {
                 panic!("an answered read must succeed its invocation");
             };
-            let read = page_action(&widget, &doc, "read");
-            assert!(read.contract.result.validate(&output).is_ok());
+            let read = page_action(&widget, &doc, "read-page");
             let value = output.value.unwrap();
             assert_eq!(value["url"], "https://shop.test/");
             assert_eq!(
@@ -7717,24 +7014,26 @@ mod tests {
         {
             let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
             widget.set_loading_progress(0.4);
-            let invocation =
-                start(&mut widget, &mut doc, &root, "read", &serde_json::json!({})).unwrap();
+            let invocation = start(
+                &mut widget,
+                &mut doc,
+                &root,
+                "read-page",
+                &serde_json::json!({}),
+            )
+            .unwrap();
             widget.sync(&mut doc, &root);
             assert!(
                 page_requests(&engine).is_empty(),
                 "read before the load settled"
             );
-            assert!(
-                widget
-                    .poll_resource_operation(invocation, false, &doc, &root)
-                    .is_none()
-            );
+            assert!(widget.poll_invocation(invocation).is_none());
             engine.send(WebViewCommand::Reload);
             widget.sync(&mut doc, &root);
             assert_eq!(page_requests(&engine), vec![PageRequest::Outline]);
             widget.sync(&mut doc, &root);
             assert!(matches!(
-                widget.poll_resource_operation(invocation, false, &doc, &root),
+                widget.poll_invocation(invocation),
                 Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
             ));
         }
@@ -7746,44 +7045,32 @@ mod tests {
                 &mut widget,
                 &mut doc,
                 &root,
-                "fill",
+                "fill-page",
                 &serde_json::json!({"element": "d3e7", "text": ""}),
             )
             .unwrap();
             widget.sync(&mut doc, &root);
-            assert!(
-                widget
-                    .poll_resource_operation(fill, false, &doc, &root)
-                    .is_some()
-            );
+            assert!(widget.poll_invocation(fill).is_some());
             let select = start(
                 &mut widget,
                 &mut doc,
                 &root,
-                "select",
+                "select-page",
                 &serde_json::json!({"element": "d3e8", "values": ["NL", "Belgium"]}),
             )
             .unwrap();
             widget.sync(&mut doc, &root);
-            assert!(
-                widget
-                    .poll_resource_operation(select, false, &doc, &root)
-                    .is_some()
-            );
+            assert!(widget.poll_invocation(select).is_some());
             let press = start(
                 &mut widget,
                 &mut doc,
                 &root,
-                "press",
+                "press-page",
                 &serde_json::json!({"key": "Shift+Tab"}),
             )
             .unwrap();
             widget.sync(&mut doc, &root);
-            assert!(
-                widget
-                    .poll_resource_operation(press, false, &doc, &root)
-                    .is_some()
-            );
+            assert!(widget.poll_invocation(press).is_some());
             assert_eq!(
                 page_requests(&engine),
                 vec![
@@ -7802,9 +7089,9 @@ mod tests {
                 ]
             );
             for (id, args) in [
-                ("click", serde_json::json!({"element": "#checkout"})),
-                ("submit", serde_json::json!({"element": ""})),
-                ("press", serde_json::json!({"key": "Hyper+x"})),
+                ("click-page", serde_json::json!({"element": "#checkout"})),
+                ("submit-page", serde_json::json!({"element": ""})),
+                ("press-page", serde_json::json!({"key": "Hyper+x"})),
             ] {
                 let refused = start(&mut widget, &mut doc, &root, id, &args).unwrap_err();
                 assert!(!refused.is_empty(), "{id}");
@@ -7830,19 +7117,24 @@ mod tests {
                 &mut widget,
                 &mut doc,
                 &root,
-                "click",
+                "click-page",
                 &serde_json::json!({"element": "d1e4"}),
             )
             .unwrap();
             widget.sync(&mut doc, &root);
             assert!(
-                widget
-                    .poll_resource_operation(click, false, &doc, &root)
-                    .is_none(),
+                widget.poll_invocation(click).is_none(),
                 "a click that started a navigation waits for it"
             );
             assert!(
-                start(&mut widget, &mut doc, &root, "read", &serde_json::json!({})).is_err(),
+                start(
+                    &mut widget,
+                    &mut doc,
+                    &root,
+                    "read-page",
+                    &serde_json::json!({})
+                )
+                .is_err(),
                 "a second page action is refused while one runs"
             );
             engine.send(WebViewCommand::Navigate(
@@ -7850,7 +7142,7 @@ mod tests {
             ));
             widget.sync(&mut doc, &root);
             let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
-                widget.poll_resource_operation(click, false, &doc, &root)
+                widget.poll_invocation(click)
             else {
                 panic!("the settled navigation must complete the click");
             };
@@ -7871,19 +7163,28 @@ mod tests {
                 &mut widget,
                 &mut doc,
                 &root,
-                "click",
+                "click-page",
                 &serde_json::json!({"element": "d1e4"}),
             )
             .unwrap();
             widget.sync(&mut doc, &root);
             let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
-                widget.poll_resource_operation(click, false, &doc, &root)
+                widget.poll_invocation(click)
             else {
                 panic!("a refused click must fail its invocation");
             };
             assert_eq!(error.code, "browser.page.stale_element");
             assert!(!error.retryable);
-            assert!(start(&mut widget, &mut doc, &root, "read", &serde_json::json!({})).is_ok());
+            assert!(
+                start(
+                    &mut widget,
+                    &mut doc,
+                    &root,
+                    "read-page",
+                    &serde_json::json!({})
+                )
+                .is_ok()
+            );
         }
     }
 
@@ -8266,7 +7567,7 @@ mod tests {
                                 &binding.kind,
                                 ui::widget::ControlBindingKind::Action(address)
                                     if address.resource == "browser.session"
-                                        && address.action == "toggle-history-pause"
+                                        && address.action == "toggle-pause"
                             )
                     })
             );
@@ -8461,6 +7762,7 @@ mod tests {
         // Phase `address_suggestions_are_modal_and_a11y_actions_queue_canonical_navigation`.
         {
             let mut widget = BrowserWidget::new_headless();
+            widget.attach_dispatcher(ui::framework::testing::dispatcher("so.tilo.browser"));
             widget.debug_force_suggestions(vec![crate::history::HistoryEntry {
                 url: "https://accessible.example/reading".into(),
                 title: "Accessible reading".into(),
@@ -8696,8 +7998,14 @@ mod tests {
             let mut tree = TaffyTree::<()>::new();
             let mut nodes = std::collections::HashMap::new();
             widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-            assert_eq!(address_for(&widget, "browser.library").action, "show");
-            assert_eq!(address_for(&widget, "browser.settings").action, "show");
+            assert_eq!(
+                address_for(&widget, "browser.library").action,
+                "show-history"
+            );
+            assert_eq!(
+                address_for(&widget, "browser.settings").action,
+                "show-settings"
+            );
 
             widget.show_library = true;
             widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
@@ -9552,56 +8860,32 @@ mod tests {
             ));
             let invocation = ui::tilo_actions::InvocationId::new();
             assert_eq!(
-                w.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        invocation,
-                        pip.kind,
-                        pip.operation_type.as_deref().unwrap(),
-                        &browser_operation_payload(&BrowserOperation::TogglePictureInPicture)
-                            .to_string()
-                            .into_bytes()
-                    ),
-                    &mut doc,
-                    &root
-                )
-                .unwrap(),
+                w.admit(invocation, BrowserOperation::TogglePictureInPicture)
+                    .map(Some)
+                    .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
             );
-            assert!(
-                w.poll_resource_operation(invocation, false, &doc, &root)
-                    .is_none()
-            );
+            assert!(w.poll_invocation(invocation).is_none());
             w.sync(&mut doc, &root);
             let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
-                w.poll_resource_operation(invocation, false, &doc, &root)
+                w.poll_invocation(invocation)
             else {
                 panic!("media acceptance must terminally succeed the admitted invocation");
             };
-            assert!(pip.contract.result.validate(&output).is_ok());
 
             let mut unavailable = BrowserWidget::with_engine(TestEngine::new(), true);
             let (mut doc, root) = synced(&mut unavailable);
             let invocation = ui::tilo_actions::InvocationId::new();
             assert!(matches!(
                 unavailable
-                    .start_operation(
-                        &ui::widget::ResourceOperation::local(
-                            invocation,
-                            pip.kind,
-                            pip.operation_type.as_deref().unwrap(),
-                            &browser_operation_payload(&BrowserOperation::TogglePictureInPicture)
-                                .to_string()
-                                .into_bytes()
-                        ),
-                        &mut doc,
-                        &root
-                    )
+                    .admit(invocation, BrowserOperation::TogglePictureInPicture)
+                    .map(Some)
                     .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
             ));
             unavailable.sync(&mut doc, &root);
             assert!(matches!(
-                unavailable.poll_resource_operation(invocation, false, &doc, &root),
+                unavailable.poll_invocation(invocation),
                 Some(ui::tilo_actions::InvocationUpdate::Failed { .. })
             ));
         }
@@ -9675,16 +8959,6 @@ mod tests {
                 ui::tilo_actions::ExecutionMode::Background { cancellable: false }
             );
             assert!(navigate.contract.validate_declaration().is_empty());
-            assert!(
-                navigate
-                    .contract
-                    .result
-                    .validate(&ui::tilo_actions::ActionOutput {
-                        value: Some(serde_json::Value::String("https://example.test".into())),
-                        resources: Vec::new(),
-                    })
-                    .is_ok()
-            );
             let settings = resources[0]
                 .children
                 .iter()
@@ -9698,7 +8972,7 @@ mod tests {
             let filter = library
                 .actions
                 .iter()
-                .find(|action| action.id == "set-filter")
+                .find(|action| action.id == "set-library-filter")
                 .unwrap();
             assert_eq!(filter.kind, OperationKind::View);
             assert_eq!(filter.params()[0].name.as_ref(), "query");
@@ -9715,17 +8989,9 @@ mod tests {
             let encoded = navigate.build_json(&args).unwrap();
             let invocation = ui::tilo_actions::InvocationId::new();
             assert_eq!(
-                w.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        invocation,
-                        OperationKind::Effect,
-                        &encoded.type_id,
-                        &encoded.payload
-                    ),
-                    &mut doc,
-                    &root
-                )
-                .unwrap(),
+                w.admit(invocation, effect_operation(&encoded.payload))
+                    .map(Some)
+                    .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
             );
             assert_eq!(
@@ -9734,7 +9000,7 @@ mod tests {
             );
             w.sync(&mut doc, &root);
             assert!(matches!(
-                w.poll_resource_operation(invocation, false, &doc, &root),
+                w.poll_invocation(invocation),
                 Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
             ));
 
@@ -9742,16 +9008,11 @@ mod tests {
             filter_args.insert("query".into(), serde_json::json!("tilo example"));
             let encoded = filter.build_json(&filter_args).unwrap();
             let started = w
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        filter.kind,
-                        &encoded.type_id,
-                        &encoded.payload,
-                    ),
-                    &mut doc,
-                    &root,
+                .admit(
+                    ui::tilo_actions::InvocationId::new(),
+                    effect_operation(&encoded.payload),
                 )
+                .map(Some)
                 .unwrap();
             assert!(matches!(
                 started,
@@ -9853,7 +9114,7 @@ mod tests {
             let clear_history = history
                 .actions
                 .iter()
-                .find(|action| action.id == "clear")
+                .find(|action| action.id == "clear-history")
                 .unwrap();
             assert_eq!(clear_history.kind, OperationKind::Effect);
             assert_eq!(
@@ -9865,31 +9126,19 @@ mod tests {
                     .contract
                     .tags
                     .iter()
-                    .any(|tag| tag == "device-local")
+                    .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY),
+                "only the person at this device clears its history"
             );
-            assert!(
-                clear_history
-                    .contract
-                    .tags
-                    .iter()
-                    .any(|tag| tag == "sensitive-data")
+            assert_eq!(
+                clear_history.contract.confirmation,
+                ui::tilo_actions::ConfirmationPolicy::Confirm
             );
             assert!(clear_history.contract.validate_declaration().is_empty());
 
             let invocation = ui::tilo_actions::InvocationId::new();
             let started = w
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        invocation,
-                        clear_history.kind,
-                        clear_history.operation_type.as_deref().unwrap(),
-                        &browser_operation_payload(&BrowserOperation::ClearHistory)
-                            .to_string()
-                            .into_bytes(),
-                    ),
-                    &mut doc,
-                    &root,
-                )
+                .admit(invocation, BrowserOperation::ClearHistory)
+                .map(Some)
                 .unwrap();
             let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
                 panic!("clearing in-memory local history is synchronous");
@@ -9908,18 +9157,11 @@ mod tests {
                 .find(|action| action.id == "request-site-data-clear")
                 .unwrap();
             let started = w
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        clear_site_data.kind,
-                        clear_site_data.operation_type.as_deref().unwrap(),
-                        &browser_operation_payload(&BrowserOperation::RequestWebsiteDataClear)
-                            .to_string()
-                            .into_bytes(),
-                    ),
-                    &mut doc,
-                    &root,
+                .admit(
+                    ui::tilo_actions::InvocationId::new(),
+                    BrowserOperation::RequestWebsiteDataClear,
                 )
+                .map(Some)
                 .unwrap();
             let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
                 panic!("the engine accepted the site-data request synchronously");
@@ -9955,7 +9197,7 @@ mod tests {
             let toggle = pause
                 .actions
                 .iter()
-                .find(|action| action.id == "toggle-history-pause")
+                .find(|action| action.id == "toggle-pause")
                 .unwrap();
             assert_eq!(toggle.kind, OperationKind::Effect);
             assert_eq!(toggle.locus, ui::tilo_actions::ExecutionLocus::ClientLocal);
@@ -9964,24 +9206,16 @@ mod tests {
                     .contract
                     .tags
                     .iter()
-                    .any(|tag| tag == "history-paused")
+                    .any(|tag| tag == ui::tilo_actions::LOCAL_DEVICE_ONLY)
             );
-            assert!(toggle.contract.tags.iter().any(|tag| tag == "session"));
             assert!(toggle.contract.validate_declaration().is_empty());
 
             let started = w
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        toggle.kind,
-                        toggle.operation_type.as_deref().unwrap(),
-                        &browser_operation_payload(&BrowserOperation::ToggleHistoryPause)
-                            .to_string()
-                            .into_bytes(),
-                    ),
-                    &mut doc,
-                    &root,
+                .admit(
+                    ui::tilo_actions::InvocationId::new(),
+                    BrowserOperation::ToggleHistoryPause,
                 )
+                .map(Some)
                 .unwrap();
             let Some(ui::widget::ResourceOperationStart::Completed(output)) = started else {
                 panic!("history pausing changes only this running browser");
@@ -10002,7 +9236,7 @@ mod tests {
                 history
                     .actions
                     .iter()
-                    .find(|action| action.id == "clear")
+                    .find(|action| action.id == "clear-history")
                     .is_some_and(|action| action.contract.availability.is_available()),
                 "existing durable history remains clearable while recording is paused"
             );
@@ -10188,7 +9422,7 @@ mod tests {
                     .iter()
                     .map(|action| action.id.as_str())
                     .collect::<Vec<_>>(),
-                vec!["show", "open", "reveal"]
+                vec!["show-download", "open-download", "reveal-download"]
             );
             for action in &resource.actions {
                 assert_eq!(action.locus, ui::tilo_actions::ExecutionLocus::ClientLocal);
