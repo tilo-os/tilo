@@ -4,10 +4,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use osk::widget::{DEFAULT_KEY_HEIGHT, DEFAULT_SUGGESTION_HEIGHT, DEFAULT_TOOLBAR_HEIGHT};
+use osk::widget::{key_row_height, keyboard_gutter, suggestion_row_height, toolbar_row_height};
 use osk::{GeometricSwipeModel, KeyAction, KeyboardLayout, OskWidget, ShiftState, TextMirror};
 use ui::State;
 use ui::headless::Driver;
+use ui::tokens::{Metrics, Spacing};
 use vello::kurbo::{Point, Rect};
 use winit::event::TouchPhase;
 
@@ -51,12 +52,15 @@ impl Keyboard {
 fn key(c: char) -> Point {
     let layout = KeyboardLayout::qwerty();
     let rows = u32::try_from(layout.row_count()).expect("a handful of rows");
-    let top = f64::from(DEFAULT_TOOLBAR_HEIGHT + DEFAULT_SUGGESTION_HEIGHT);
+    let spacing = Spacing::BASE;
+    let metrics = Metrics::BASE;
+    let top = f64::from(toolbar_row_height(&spacing) + suggestion_row_height(&metrics));
+    let gutter = keyboard_gutter(&spacing);
     let area = Rect::new(
-        0.0,
+        gutter,
         top,
-        f64::from(VIEWPORT.0),
-        top + f64::from(rows) * f64::from(DEFAULT_KEY_HEIGHT),
+        f64::from(VIEWPORT.0) - gutter,
+        top + f64::from(rows) * f64::from(key_row_height(&metrics)),
     );
     osk::key_rects(&layout, area, ShiftState::Off)
         .into_iter()

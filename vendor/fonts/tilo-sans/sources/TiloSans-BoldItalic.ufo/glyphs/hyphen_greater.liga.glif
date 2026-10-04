@@ -1,8 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<glyph name="hyphen_greater.liga" format="2">
-  <advance width="866"/>
-  <anchor x="433" y="0" name="caret_1"/>
-  <outline>
-    <component base="rightArrow" xOffset="40"/>
-  </outline>
-</glyph>
