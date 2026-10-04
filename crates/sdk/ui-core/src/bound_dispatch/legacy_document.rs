@@ -454,11 +454,14 @@ impl ResourceRequest<'_> {
             });
         }
     }
+    /// `history_doors` are the tile's own History door actions, which its
+    /// app's History control runs (see `history_mode::embedded::invoke_door`).
     pub(crate) fn tile(
         &mut self,
         owner: Option<&HistoryOwner>,
         separate: bool,
         interactive: bool,
+        history_doors: &std::collections::HashSet<ActionAddress>,
         live: &mut dyn Widget,
     ) -> Result<(), DoorError> {
         if !interactive && !matches!(self, Self::Discard) {
@@ -547,6 +550,7 @@ impl ResourceRequest<'_> {
                                 .into_iter()
                                 .filter(|d| d.contract.availability.is_available())
                                 .map(|d| d.address)
+                                .chain(history_doors.iter().cloned())
                                 .collect();
                             crate::widget::controls::refresh_control_action_availability(
                                 live, &allowed,

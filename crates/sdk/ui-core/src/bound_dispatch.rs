@@ -138,9 +138,21 @@ pub(crate) fn refresh_bound_controls(
     snapshots: &[BoundResourceSnapshot],
     host_doors: &std::collections::HashSet<tilo_actions::ActionAddress>,
 ) -> Result<(), BoundDispatchError> {
+    // A component hosted in a tile with History runs that tile's History door.
+    let mut tile_doors = Vec::new();
+    crate::history_mode::capability::visit_framework_history(&*root, &mut |history, _| {
+        if let Some(owner) = history.enclosing_owner() {
+            tile_doors.push((owner.clone(), history.door_addresses()));
+        }
+    });
     let mut visit = |binding: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
                      _: &tilo_actions::ActionRegistry| {
+        let owner = crate::history_mode::HistoryOwner::component(binding.clone());
+        let tile_doors = tile_doors
+            .iter()
+            .filter(|(enclosing, _)| enclosing.same_owner(&owner))
+            .flat_map(|(_, doors)| doors.iter().cloned());
         let resources = snapshots
             .iter()
             .filter(|snapshot| snapshot.binding.same_component(binding))
@@ -155,6 +167,7 @@ pub(crate) fn refresh_bound_controls(
         // A component's host — its window or the shell — opens search.
         allowed.insert(crate::search::search_address());
         allowed.extend(host_doors.iter().cloned());
+        allowed.extend(tile_doors);
         crate::widget::controls::refresh_control_action_availability(widget, &allowed);
         None
     };
