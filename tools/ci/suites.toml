@@ -1107,7 +1107,7 @@ reason = "needs a compiled kernel, OVMF and QEMU"
 workflow = "build-kernel.yml"
 
 [[unrequired]]
-suite = "os/tests/session_selinux_context.sh"
+suite = "os/tests/session-context-check.sh"
 reason = "runs inside a booted guest after a greetd login"
 workflow = "build-image.yml"
 

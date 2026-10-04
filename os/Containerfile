@@ -2038,10 +2038,9 @@ COPY \
 # source-pinned receiver simulator. No receiver hardware or live network is
 # involved, but an empty/control-plane-only session fails the stats assertions.
 COPY os/tests/airplay-encrypted-session.sh /usr/libexec/tilo/airplay-encrypted-session-test.sh
-COPY os/tests/projection-boot-check.sh /usr/libexec/tilo/projection-boot-check.sh
-# The release gate's check that a greetd login runs in the user's SELinux
+# The session-context check proves a greetd login runs in the user's SELinux
 # domain and logind session scope, with each launched app in its own scope.
-COPY os/tests/session_selinux_context.sh /usr/libexec/tilo/session-context-check.sh
+COPY os/tests/projection-boot-check.sh os/tests/session-context-check.sh /usr/libexec/tilo/
 # Optional AirPlay media acceptance runs against the assembled image separately.
 # Its setup/probe timing is not an installation prerequisite. Keep the full
 # protocol/media/teardown test available; omitting it here does not claim success.
