@@ -61,6 +61,8 @@ enum Command {
     /// Build the runnable artifact for a target: a binary, a dev `.app`, or a web bundle.
     #[command(after_long_help = TARGET_EXAMPLES)]
     Build(BuildArgs),
+    /// Assemble an unsigned macOS bundle from existing binaries, without building or signing.
+    BundleMacos(BundleMacosArgs),
     /// Test an app from any path inside it, after a structural preflight.
     Test(AppTaskArgs),
     /// Run an app and rebuild/restart it after source or asset changes.
@@ -487,6 +489,16 @@ struct CertifyArgs {
     /// expanded-copy, 200%-text, and high-contrast modes.
     #[arg(long, requires = "workspace", value_name = "DIR")]
     responsive_artifacts: Option<PathBuf>,
+
+    /// With `--workspace`, certify only the applications of these Cargo
+    /// packages; packages that are no workspace application are ignored.
+    #[arg(
+        long = "package",
+        short = 'p',
+        requires = "workspace",
+        value_name = "SPEC"
+    )]
+    packages: Vec<String>,
 }
 
 #[derive(clap::Args)]
@@ -703,6 +715,21 @@ struct BuildArgs {
     /// the copies the OS ships.
     #[arg(long = "static", conflicts_with = "target")]
     static_link: bool,
+}
+
+#[derive(clap::Args)]
+struct BundleMacosArgs {
+    /// App project whose manifest supplies identity, capabilities, icon and version.
+    path: PathBuf,
+    /// Previously compiled app executable. Architecture/signature validation is separate.
+    #[arg(long)]
+    binary: PathBuf,
+    /// Previously compiled tilo-runtime-mcp helper.
+    #[arg(long)]
+    runtime_host: PathBuf,
+    /// New output directory; an existing destination is never overwritten.
+    #[arg(long)]
+    output: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -1060,6 +1087,7 @@ fn main() -> ExitCode {
         Command::Certify(args) => run_certify(args),
         Command::Run(args) => run_run(args),
         Command::Build(args) => run_build(args),
+        Command::BundleMacos(args) => run_bundle_macos(&args),
         Command::Test(args) => run_app_task(args, tilo_app_cli::AppTask::Test),
         Command::Dev(args) => run_dev(args),
         Command::Shot(args) => run_shot(args),
@@ -1163,6 +1191,7 @@ impl Command {
             Self::Certify(_) => "certify",
             Self::Run(_) => "run",
             Self::Build(_) => "build",
+            Self::BundleMacos(_) => "bundle-macos",
             Self::Test(_) => "test",
             Self::Dev(_) => "dev",
             Self::Shot(_) => "shot",
@@ -1758,6 +1787,17 @@ fn run_run(args: RunArgs) -> Result<Value> {
         &serve,
     )?;
     Ok(json!({"app_dir": path}))
+}
+
+fn run_bundle_macos(args: &BundleMacosArgs) -> Result<Value> {
+    let artifact = tilo_app_cli::targets::assemble_macos(
+        &args.path,
+        &args.binary,
+        &args.runtime_host,
+        &args.output,
+    )?;
+    println!("{}", artifact.display());
+    Ok(json!({"artifact": artifact, "signed": false, "notarized": false}))
 }
 
 fn run_build(args: BuildArgs) -> Result<Value> {
@@ -2381,6 +2421,14 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
             .unwrap_or(package_name);
         packages.push((app.clone(), package_name.to_owned(), binary_name.to_owned()));
     }
+    if !args.packages.is_empty() {
+        packages.retain(|(_, package, _)| args.packages.contains(package));
+        app_dirs = packages.iter().map(|(app, _, _)| app.clone()).collect();
+        if packages.is_empty() {
+            println!("Certified 0 graphical Tilo applications");
+            return Ok(json!({"certified": app_dirs}));
+        }
+    }
 
     // Build the complete application set in one Cargo graph. Apart from being
     // substantially faster, this keeps the SDK's feature set unified instead
@@ -2726,6 +2774,29 @@ fn list_examples() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundle_macos_requires_explicit_existing_inputs_and_output() {
+        let cli = Cli::try_parse_from([
+            "tilo-app",
+            "bundle-macos",
+            "app with spaces",
+            "--binary",
+            "app binary",
+            "--runtime-host",
+            "helper binary",
+            "--output",
+            "new output",
+        ])
+        .unwrap();
+        assert_eq!(cli.command.name(), "bundle-macos");
+        let Command::BundleMacos(args) = cli.command else {
+            panic!("expected bundle command")
+        };
+        assert_eq!(args.binary, PathBuf::from("app binary"));
+        assert_eq!(args.runtime_host, PathBuf::from("helper binary"));
+        assert!(Cli::try_parse_from(["tilo-app", "bundle-macos", "."]).is_err());
+    }
 
     /// new starts from an example instead of a template, never both, and examples are listed.
     #[test]

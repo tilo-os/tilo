@@ -172,6 +172,9 @@ fn desired_legacy_shares(
                 }
             }
             if !peers.is_empty() {
+                // Hosts bridge the window to web members, which draw pages
+                // themselves; any other viewer decodes video.
+                let paint = peers.iter().all(|peer| viewer_hosts.contains(peer));
                 desired.insert(
                     *surface_id,
                     (
@@ -180,6 +183,7 @@ fn desired_legacy_shares(
                             tab: tab.id,
                             viewers: peers,
                             decode_limits,
+                            paint,
                         },
                         workspace.room,
                     ),
@@ -540,8 +544,10 @@ impl LockClock {
         lock: &'a LockController,
         notification_count: usize,
         now_playing: Option<&'a crate::shell::now_playing::PlayerSnapshot>,
+        keyboard: Option<ui::passcode_keyboard::PasscodeKeyboard>,
     ) -> LockView<'a> {
         LockView {
+            keyboard,
             password_len: lock.buffer_len(),
             error: lock.error(),
             clock: &self.clock,
@@ -1466,17 +1472,53 @@ fn pump_floating_surface_service(
                         &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id },
                     );
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::PaintCapable => {
+                    // The app id is the launcher's, so an app can only ever
+                    // offer its own windows' pages.
+                    state.note_paint_app(&app_id, connection);
+                    changed = true;
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::PaintStream {
+                    payload,
+                    page,
+                    scale,
+                } => {
+                    use base64::Engine as _;
+                    match base64::engine::general_purpose::STANDARD.decode(payload.as_bytes()) {
+                        Ok(payload) => state.receive_paint_frame(
+                            &app_id,
+                            crate::compositor::state::PaintFrame {
+                                payload,
+                                page,
+                                scale,
+                            },
+                        ),
+                        Err(error) => {
+                            tracing::debug!(connection, %app_id, %error, "malformed paint stream frame");
+                        }
+                    }
+                }
             },
             FloatingServiceEvent::Disconnected { connection, app_id } => {
                 for id in connection_ids.remove(&connection).unwrap_or_default() {
                     capture.dismiss_external_floating(id);
                 }
                 state.dismiss_floating_connection(connection);
+                state.drop_paint_connection(connection);
                 foreign::store().release_capture_protection(connection);
                 tracing::debug!(connection, %app_id, "shell-ui client disconnected");
                 changed = true;
             }
         }
+    }
+    // Apps whose pages someone started or stopped watching.
+    for (connection, watched) in state.paint_watch_changes() {
+        let message = if watched {
+            ui::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
+        } else {
+            ui::floating_surface::FloatingSurfaceHostMessage::PaintStop
+        };
+        service.send(connection, &message);
     }
     changed
 }
@@ -2710,6 +2752,14 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "verifying": self.lock.is_some_and(LockController::is_verifying),
                 "password_len": self.lock.map_or(0, LockController::buffer_len),
                 "error": self.lock.and_then(LockController::error),
+                // The keyboard drawn on the lock screen, while it shows:
+                // where each key sits, never what was typed.
+                "keyboard": self.fb.lock_keyboard_keys().iter().map(|(name, rect)| {
+                    serde_json::json!({
+                        "key": name,
+                        "x": rect.x0, "y": rect.y0, "w": rect.width(), "h": rect.height(),
+                    })
+                }).collect::<Vec<_>>(),
             },
             // Who this session is, and whether they may administer the room they're
             // in — read straight off the production helpers, not guessed from `owner`.
@@ -3326,6 +3376,19 @@ fn touch_route(
         TouchRoute::Raw
     } else {
         TouchRoute::for_cursor(fb.chrome_cursor_at(point))
+    }
+}
+
+/// The state dump's name for a key of the lock screen's keyboard.
+fn passcode_key_name(key: ui::passcode_keyboard::PasscodeKey) -> String {
+    use ui::passcode_keyboard::PasscodeKey;
+    match key {
+        PasscodeKey::Char(c) => c.to_string(),
+        PasscodeKey::Shift => "shift".into(),
+        PasscodeKey::Symbols => "symbols".into(),
+        PasscodeKey::Space => "space".into(),
+        PasscodeKey::Backspace => "backspace".into(),
+        PasscodeKey::Enter => "enter".into(),
     }
 }
 
@@ -8186,6 +8249,10 @@ pub fn run() {
     let mut last_lock_clock_refresh = Instant::now();
     let mut lock_player: Option<crate::shell::now_playing::PlayerSnapshot> = None;
     let mut lock_pointer: Option<vello::kurbo::Point> = None;
+    // The keyboard the lock screen draws for unlocking by touch: shown from
+    // the first touch, gone at the next physical key. No input method runs
+    // while locked; the passcode never leaves the lock screen.
+    let mut lock_keyboard = lock_screen::LockTouchKeyboard::default();
     let mut last_lock_media_poll = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
@@ -8689,10 +8756,21 @@ pub fn run() {
                     if route == PriorityRoute::LockScreen {
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
+                        let mut key = winit_event_to_lock_key(wev);
                         match wev {
                             WindowEvent::CursorMoved { position, .. } => {
                                 lock_pointer =
                                     Some(vello::kurbo::Point::new(position.x, position.y));
+                            }
+                            WindowEvent::Touch(touch)
+                                if touch.phase == winit::event::TouchPhase::Started =>
+                            {
+                                lock_keyboard.touch_started();
+                            }
+                            WindowEvent::KeyboardInput { event, .. }
+                                if event.state == ElementState::Pressed =>
+                            {
+                                lock_keyboard.physical_key();
                             }
                             WindowEvent::MouseInput {
                                 state: ElementState::Pressed,
@@ -8700,12 +8778,23 @@ pub fn run() {
                                 ..
                             } => {
                                 let outputs =
-                                    lock_outputs(backend.outputs(), frame_builder.viewport());
+                                    lock_outputs(backend.outputs(), frame_builder.scene_size());
                                 let view = LockView {
                                     now_playing: lock_player.as_ref(),
+                                    keyboard: lock_keyboard.shown(),
                                     ..LockView::default()
                                 };
-                                if let Some(transport) = lock_pointer.and_then(|point| {
+                                let pressed = lock_pointer.and_then(|point| {
+                                    lock_screen::keyboard_key_at(
+                                        &outputs,
+                                        frame_builder.theme(),
+                                        &view,
+                                        point,
+                                    )
+                                });
+                                if let Some(pressed) = pressed {
+                                    key = lock_keyboard.press(pressed);
+                                } else if let Some(transport) = lock_pointer.and_then(|point| {
                                     lock_screen::transport_at(
                                         &outputs,
                                         frame_builder.theme(),
@@ -8718,7 +8807,6 @@ pub fn run() {
                             }
                             _ => {}
                         }
-                        let key = winit_event_to_lock_key(wev);
                         lock.handle_key(key);
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
                         session_changed = true;
@@ -9620,6 +9708,9 @@ pub fn run() {
             // The field/status changed (unlocked, or error shown) — repaint.
             session_changed = true;
             if outcome == UnlockOutcome::Unlocked {
+                // The next lock starts without the keyboard and its layer.
+                lock_keyboard = lock_screen::LockTouchKeyboard::default();
+                frame_builder.set_lock_keyboard_keys(Vec::new());
                 for t in session.request_unlock(Instant::now()) {
                     apply_session_transition(
                         t,
@@ -10755,6 +10846,7 @@ pub fn run() {
                     &lock,
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
+                    lock_keyboard.shown(),
                 );
                 publish_accessibility_tree(
                     &mut native_accessibility,
@@ -10794,6 +10886,13 @@ pub fn run() {
                     // Count-only summary on the lock screen — no bodies leak.
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
+                    lock_keyboard.shown(),
+                );
+                frame_builder.set_lock_keyboard_keys(
+                    lock_screen::keyboard_keys(&lock_outputs, &theme, &view)
+                        .into_iter()
+                        .map(|(key, rect)| (passcode_key_name(key), rect))
+                        .collect(),
                 );
                 let wallpaper = {
                     let chrome = frame_builder.chrome();
@@ -11232,6 +11331,7 @@ pub fn run() {
                         &lock,
                         frame_builder.chrome().notification_count(),
                         lock_player.as_ref(),
+                        lock_keyboard.shown(),
                     )
                 });
                 publish_accessibility_tree(
@@ -12837,18 +12937,20 @@ mod tests {
         workspace.shared_surfaces.share(7, 9);
         let none = std::collections::HashSet::new();
         let nobody = std::collections::BTreeMap::new();
-        let share =
-            |app_id: &str, tab: u64, viewers: &[u64]| crate::compositor::state::LegacyShare {
+        let share = |app_id: &str, tab: u64, viewers: &[u64], paint: bool| {
+            crate::compositor::state::LegacyShare {
                 app_id: app_id.to_string(),
                 tab,
                 viewers: viewers.iter().copied().collect(),
                 decode_limits: HashMap::new(),
-            };
+                paint,
+            }
+        };
 
         let watched = desired_legacy_shares(&tree, true, &none, &nobody);
         assert_eq!(
             watched.get(&7).map(|(share, _)| share),
-            Some(&share("org.gimp.GIMP", 12, &[9]))
+            Some(&share("org.gimp.GIMP", 12, &[9], false))
         );
         assert!(
             !watched.contains_key(&8),
@@ -12858,11 +12960,11 @@ mod tests {
         let through_host = desired_legacy_shares(&tree, true, &hosts, &nobody);
         assert_eq!(
             through_host.get(&7).map(|(share, _)| share),
-            Some(&share("org.gimp.GIMP", 12, &[9, 42]))
+            Some(&share("org.gimp.GIMP", 12, &[9, 42], false))
         );
         assert_eq!(
             through_host.get(&8).map(|(share, _)| share),
-            Some(&share("org.chromium.Chromium", 14, &[42])),
+            Some(&share("org.chromium.Chromium", 14, &[42], true)),
             "a viewer host receives every legacy window of the active workspace"
         );
         assert!(

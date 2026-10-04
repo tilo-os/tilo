@@ -218,6 +218,7 @@ mod tests {
             notification_count: 0,
             verifying: false,
             now_playing: None,
+            keyboard: None,
         }
     }
 

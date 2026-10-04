@@ -635,7 +635,20 @@ impl Converter<'_> {
     /// Form fields draw their value through the engine's shadow tree, which
     /// the snapshot omits: draw value or placeholder from the node instead.
     fn field(&mut self, node: i64, li: usize, order: i64, rect: Rect) {
-        let value = self.doc.input_values.get(&node).copied().unwrap_or("");
+        let raw = self.doc.input_values.get(&node).copied().unwrap_or("");
+        // A password never leaves the host: viewers see its length as dots,
+        // as the page itself shows it.
+        let masked;
+        let value = if self
+            .doc
+            .attr(node, "type")
+            .is_some_and(|t| t.eq_ignore_ascii_case("password"))
+        {
+            masked = "\u{2022}".repeat(raw.chars().count());
+            masked.as_str()
+        } else {
+            raw
+        };
         let (text, color) = if value.is_empty() {
             let placeholder = self.doc.attr(node, "placeholder").unwrap_or("");
             (placeholder, PLACEHOLDER)

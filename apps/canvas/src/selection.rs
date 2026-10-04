@@ -45,6 +45,8 @@ pub struct Select {
     pub colour: Option<String>,
     /// 0..1, default 0.15.
     pub tolerance: Option<f64>,
+    /// at or colour: on this layer alone, not as all show.
+    pub layer: Option<String>,
     /// `replace`, `add`, `subtract`, `intersect` or `none` (deselect).
     pub mode: Option<String>,
     /// Units.
@@ -86,7 +88,7 @@ fn mark_region(mark: &Mark) -> Result<Region, ActionError> {
 }
 
 /// The outline of the area a mark covers, in artwork units.
-fn mark_outline(mark: &Mark) -> Result<BezPath, ActionError> {
+pub(crate) fn mark_outline(mark: &Mark) -> Result<BezPath, ActionError> {
     use ui::vello::kurbo::{Cap, Join, Stroke, StrokeOpts};
     let filled = mark.style.fill.is_some() || mark.style.gradient.is_some() || !mark.inked();
     let path: BezPath = match &mark.shape {
@@ -391,7 +393,8 @@ fn ensure_mask(
     Ok(id)
 }
 
-/// Give `layer` a mask (`reveal` all, or `hide` all), or `remove` it.
+/// Give `layer` a mask (`reveal` all, or `hide` all), `remove` it, or
+/// `unlink` it from (or `link` it to) the layer's marks as they move.
 pub(crate) fn edit_mask(
     doc: &mut Doc,
     art: &Artwork,
@@ -423,8 +426,24 @@ pub(crate) fn edit_mask(
             }
             Ok(())
         }
+        "link" | "unlink" => {
+            let mask = art.mask_of(&owner.id).ok_or_else(|| {
+                refuse(format!(
+                    "{:?} has no mask to {what}; give it one with mask reveal or hide",
+                    owner.id
+                ))
+            })?;
+            doc::write_layer(
+                doc,
+                &Layer {
+                    unlinked: what == "unlink",
+                    ..mask.clone()
+                },
+            )?;
+            Ok(())
+        }
         other => Err(refuse(format!(
-            "mask {other:?} must be reveal, hide or remove"
+            "mask {other:?} must be reveal, hide, remove, link or unlink"
         ))),
     }
 }

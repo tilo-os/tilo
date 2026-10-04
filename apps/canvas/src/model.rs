@@ -45,7 +45,7 @@ impl Default for Ground {
 /// One layer of the artwork.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "shown, held still, an inverted mask and clipped are independent settings"
+    reason = "shown, held still, an inverted or unlinked mask and clipped are independent settings"
 )]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layer {
@@ -76,6 +76,9 @@ pub struct Layer {
     pub invert: bool,
     /// Clipped to the layer below: it shows only where that layer has paint.
     pub clip: bool,
+    /// A mask that stays put when its layer's marks move. Linked, it moves
+    /// with them whenever they all move as one, as the layer's content.
+    pub unlinked: bool,
 }
 
 impl Layer {

@@ -124,6 +124,8 @@ jobs:
             exit 1
           }
 
+      # The RPMs are uploaded with upload-artifact v4 (one zip); only a v4
+      # download (Forgejo's build) unpacks them.
       - name: Take this run's RPMs
         uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
