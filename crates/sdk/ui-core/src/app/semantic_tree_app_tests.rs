@@ -1083,6 +1083,45 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         );
     }
 
+    // Case `a_device_only_effect_runs_for_the_person_at_the_device_alone`.
+    {
+        /// A typed effect vocabulary as an app declares it.
+        #[derive(Clone, Debug, tilo_resource::Effect)]
+        #[effect(operation = "test.counter")]
+        enum Folder {
+            /// Copy a folder on this computer.
+            #[effect(device_only)]
+            CopyLocalFolder,
+            /// Count the copies.
+            Count,
+        }
+        let mut resource = Resource::new("test.folder", "test.folder", "Folder");
+        for spec in <Folder as tilo_resource::Effect>::specs() {
+            resource = resource.with_action(spec);
+        }
+        let mut app = lazy_app(resource);
+        let invoke = |app: &mut App, action: &str, actor: &str| {
+            app.invoke_resource_action(
+                ResourceInvocation::new(
+                    &tilo_actions::ActionAddress::new("test.folder", action),
+                    actor,
+                )
+                .broker_admitted(true)
+                .invocation(Some(tilo_actions::InvocationId::new())),
+            )
+        };
+        assert!(matches!(
+            invoke(&mut app, "copy-local-folder", "person:guest"),
+            Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only"
+        ));
+        assert!(
+            invoke(&mut app, "count", "person:guest").is_ok(),
+            "a collaborator still reaches the shared effects"
+        );
+        let me = app.collaboration.local_author.0.clone();
+        assert!(invoke(&mut app, "copy-local-folder", &me).is_ok());
+    }
+
     // Case `directed_local_device_effect_cannot_run_for_a_remote_writer`.
     {
         let action = ActionSpec::operation(

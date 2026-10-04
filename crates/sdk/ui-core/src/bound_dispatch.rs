@@ -1672,6 +1672,18 @@ pub(crate) fn execute_resource_operation(
         ambient,
         scope,
     } = operation;
+    if spec
+        .contract
+        .tags
+        .iter()
+        .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY)
+        && actor != local_author
+    {
+        return Err(tilo_actions::DoorError::Unavailable {
+            code: "local_device_only".into(),
+            reason: "This action uses private files on the host participant's device".into(),
+        });
+    }
     if spec.kind == tilo_actions::OperationKind::View
         && !crate::invocation_scope::view_operation_permitted(actor, local_author, &spec.contract)
     {

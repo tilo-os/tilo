@@ -322,7 +322,7 @@ pub(crate) fn sql_dispatcher(dispatcher: &Dispatcher<DbClient>) -> Dispatcher<Pl
 /// entry it acts on, which it names by id and resolves again when invoked.
 /// None carries a password.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "db_client.effects")]
+#[effect(operation = "db_client.effects", device_only)]
 pub enum DbEffect {
     /// Run SQL
     ///

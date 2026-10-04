@@ -15,7 +15,7 @@ const ENTRY_LIMIT: usize = 200;
 
 /// The journal effects.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "logs.effects")]
+#[effect(operation = "logs.effects", device_only)]
 pub enum JournalEffect {
     /// Refresh journal.
     #[effect(job, permission = "read")]

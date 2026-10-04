@@ -291,7 +291,7 @@ pub(crate) fn cursor_declarations(
 
 /// Work outside the buffer: reading a file into it and writing it out.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "hex_editor.effects")]
+#[effect(operation = "hex_editor.effects", device_only)]
 pub enum HexEffect {
     /// Open a file.
     #[effect(job, cancellable, label = "Open file")]

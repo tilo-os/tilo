@@ -1,18 +1,16 @@
 //! Video Player as a [`tilo_resource::Resource`]: shared playlists and
-//! annotations in the document; transport and open are View/Effect operations.
-//! Live decoder audio/subtitle/chapter rows stay on the surface — hosted
-//! [`PublishesResources`](ui::resources::PublishesResources) returns only that
-//! slice beside the framework door.
+//! timestamp annotations are the document; the player on this device is the
+//! surface over it, with its effects and the live rows of what it shows.
 
 use std::rc::Rc;
 
-use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind};
-use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
+};
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{self, annotation_resource_id, playlist_resource_id};
+use crate::actions::{self, VideoEffect, annotation_resource_id, playlist_resource_id};
 use crate::app::PlayerApp;
 use crate::shared::{self, SharedAction, SharedLibrary};
 
@@ -20,7 +18,6 @@ use crate::shared::{self, SharedAction, SharedLibrary};
 pub struct VideoPlayer;
 
 impl Resource for VideoPlayer {
-    /// Matches the application root already published by the action tree.
     const KIND: &'static str = "video-player.application";
     const LABEL: &'static str = "Video Player";
     const ACTION_TYPE: &'static str = shared::ACTION_TYPE;
@@ -29,45 +26,36 @@ impl Resource for VideoPlayer {
     type Action = SharedAction;
 
     fn register(registry: &mut tilo_actions::ActionRegistry) {
-        actions::register(registry);
+        shared::register(registry);
     }
 
     fn read(doc: &Doc) -> Result<SharedLibrary, ModelError> {
         Ok(shared::read(doc))
     }
 
-    fn children(state: &SharedLibrary) -> Vec<tilo_actions::Resource> {
-        let ctx = actions::empty_resource_ctx();
-        let doc = actions::doc_from_library(state);
-        actions::application_tree(&ctx, &doc)
-            .into_iter()
-            .next()
-            .map(|root| root.children)
-            .unwrap_or_default()
+    fn declarations() -> Vec<ActionDecl<Self>> {
+        actions::declarations()
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        let ctx = actions::empty_resource_ctx();
-        let doc = automerge::AutoCommit::new();
-        actions::application_tree(&ctx, &doc)
-            .into_iter()
-            .flat_map(|resource| resource.actions)
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
+    fn children(state: &SharedLibrary) -> Vec<tilo_actions::Resource> {
+        actions::document_children(state)
+    }
+
+    fn child(state: &SharedLibrary, id: &str) -> Option<tilo_actions::Resource> {
+        actions::document_child(state, id)
     }
 
     fn search(state: &SharedLibrary) -> Vec<SearchEntry> {
-        let playlists = state.playlists.iter().map(|playlist| SearchEntry {
-            anchor: Some(playlist_resource_id(&playlist.id)),
-            title: playlist.name.clone(),
-            text: "Playlist".to_owned(),
-            action: None,
+        let playlists = state.playlists.iter().map(|playlist| {
+            SearchEntry::new(playlist.name.clone(), "Playlist")
+                .anchored(playlist_resource_id(&playlist.id))
         });
-        let annotations = state.annotations.iter().map(|annotation| SearchEntry {
-            anchor: Some(annotation_resource_id(&annotation.id)),
-            title: annotation.text.clone(),
-            text: format!("{} ms", annotation.time_ms),
-            action: None,
+        let annotations = state.annotations.iter().map(|annotation| {
+            SearchEntry::new(
+                annotation.text.clone(),
+                format!("{} ms", annotation.time_ms),
+            )
+            .anchored(annotation_resource_id(&annotation.id))
         });
         playlists.chain(annotations).collect()
     }
@@ -158,259 +146,179 @@ impl ResourceApp for VideoPlayerShell {
     }
 }
 
-impl ResourceSurface<VideoPlayer> for PlayerApp {
+impl ResourceSurface<VideoPlayer, VideoEffect> for PlayerApp {
     fn present(&mut self, state: &Rc<SharedLibrary>) {
-        self.adopt_shared_library(state);
+        self.present_library(state);
     }
 
     fn attach(&mut self, cx: SurfaceCx<VideoPlayer>) {
-        self.set_framework_hosted(true);
-        self.attach_framework(cx.dispatcher());
-        match cx.mode() {
-            RunMode::Live => self.open_launch(&cx.launch()),
-            RunMode::Capture => {
-                self.capture_launched = cx.launch().argument().map(str::to_owned);
-            }
-            RunMode::Past => {}
-        }
+        self.attach_framework(&cx);
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
         let launched = self.capture_launched.take();
         self.stage_capture(launched.as_deref(), scenario);
     }
-}
 
-/// Framework dispatcher for shared playlists and annotations. Transport stays local.
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<VideoPlayer>>,
-    last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<VideoPlayer>) {
-        self.framework = Some(dispatcher);
-    }
-
-    pub(crate) fn dispatch_with_context(
+    fn effect(
         &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &SharedAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        if let Err(error) = self.try_dispatch_with_context(doc, type_id, action, context) {
-            tracing::warn!(error = %error, type_id, "video player action dispatch failed");
-        }
+        effect: VideoEffect,
+        cx: &mut EffectCx<VideoPlayer, Self>,
+    ) -> EffectAnswer {
+        self.answer_effect(effect, cx)
     }
 
-    pub(crate) fn try_dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &SharedAction,
-        context: ui::tilo_actions::ActionContext,
-    ) -> Result<(), tilo_actions::ActionError> {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = EncodedAction::encode(shared::ACTION_TYPE, action).ok();
-                dispatcher.apply_now_with(doc, action, context)
-            }
-            None => self
-                .local
-                .try_dispatch_with_context(doc, type_id, action, context),
-        }
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
     }
 
-    /// Hosted commits are recorded by the dispatcher. Standalone tests still
-    /// read the local host's rising edge.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
+    /// Edits bound to the playhead: bookmark the moment shown, add the open
+    /// video to the shared Watch later playlist.
+    fn bound_declarations(&self) -> Vec<ActionDecl<VideoPlayer>> {
+        self.playhead_declarations()
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        actions::live_rows(&self.player_rows(), actions::CONTEXTUAL_CHILD_LIMIT)
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        actions::live_row(&self.player_rows(), id)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::resources::PublishesResources;
-    use ui::tilo_actions::OperationKind;
-    use ui::widget::Widget;
+    use ui::framework::testing::TestApp;
+
+    fn surface<T>(
+        app: &mut TestApp<VideoPlayerShell>,
+        read: impl FnOnce(&mut PlayerApp) -> T,
+    ) -> T {
+        app.with_surface::<PlayerApp, T>(read)
+            .expect("the window shows the player")
+    }
+
+    fn activate(app: &mut TestApp<VideoPlayerShell>, target: &str) {
+        app.harness()
+            .perform_named(target, &ui::a11y::Action::Activate)
+            .unwrap_or_else(|error| panic!("{target}: {error}"));
+        app.settle();
+    }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
-    )]
-    fn hosted_resources_keep_track_extras_without_library_root() {
-        let published = ui::tilo_resource::publish::<VideoPlayer>(
-            "video-player.application",
-            "Video Player",
-            &SharedLibrary::default(),
-        );
-        assert_eq!(published.kind, "video-player.application");
-        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
-        for expected in ["open", "show-library", "hide-library", "apply", "group"] {
-            assert!(
-                ids.contains(&expected),
-                "palette `{expected}` must ride publish: {ids:?}"
-            );
-        }
-        let open = published
-            .actions
-            .iter()
-            .find(|action| action.id == "open")
-            .expect("open");
-        assert_eq!(open.kind, OperationKind::Effect);
-        assert!(
-            published
-                .children
-                .iter()
-                .any(|child| child.id.0 == "video-player.shared-library"
-                    || child.kind == "media.shared-library"),
-            "shared library document door must ride Resource children: {:?}",
-            published
-                .children
-                .iter()
-                .map(|child| child.id.as_str())
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            published.children.iter().any(|child| {
-                child.kind == "media.video"
-                    && child.children.iter().any(|nested| {
-                        nested.kind == "media.transport"
-                            && nested
-                                .actions
-                                .iter()
-                                .any(|action| action.id == "play-pause")
-                    })
-            }),
-            "play/pause must ride media children via publish, not a second hosted root"
-        );
-
-        let mut app = PlayerApp::fixture_root();
-        let mut state = ui::State::new();
-        Widget::sync(&mut app, &mut state.doc, &state.root);
-        assert!(
-            !app.is_framework_hosted(),
-            "standalone stays on the full action tree"
-        );
-
-        let standalone = app.resources(&state.doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "video-player.application");
-        let media = standalone[0]
-            .children
-            .iter()
-            .find(|child| child.kind == "media.video")
-            .expect("standalone nests media under the application");
-        let standalone_tracks = media
-            .children
-            .iter()
-            .find(|child| child.kind == "media.tracks")
-            .expect("standalone nests decoder tracks under media");
-        assert!(
-            !standalone_tracks.children.is_empty(),
-            "history fixture must yield audio track rows for the hosted extras contract"
-        );
-        assert!(
-            standalone_tracks
-                .children
-                .iter()
-                .all(|track| track.kind == "media.audio-track"
-                    && track
-                        .actions
+    fn every_scenario_captures_and_the_shared_one_stages_the_library() {
+        for scenario in SCENARIOS {
+            let app = TestApp::<VideoPlayerShell>::capture(Some(scenario))
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            if *scenario == "shared" {
+                let state = app.state();
+                assert_eq!(state.playlists.len(), 1, "the playlist is an action");
+                assert_eq!(state.annotations.len(), 2, "the notes are actions");
+                assert!(
+                    state
+                        .annotations
                         .iter()
-                        .any(|action| action.id.starts_with("select-audio-"))),
-            "each audio track is a selectable media.audio-track row"
-        );
-        assert!(
-            standalone[0]
-                .children
-                .iter()
-                .any(|child| child.id.0 == "video-player.shared-library"),
-            "standalone still publishes the shared library under the application root"
-        );
+                        .all(|note| note.media_ref == crate::app::demo_media_ref()),
+                    "the notes belong to the clip the capture plays"
+                );
+            } else {
+                assert_eq!(app.state(), SharedLibrary::default());
+            }
+        }
+    }
 
-        app.set_framework_hosted(true);
-        assert!(app.is_framework_hosted());
-        assert!(ui::resources::resource(&app, &state.doc, "video-player.application").is_none());
-        let extras = app.resources(&state.doc);
-        assert!(
-            extras.iter().all(|resource| {
-                resource.kind != "video-player.application"
-                    && resource.id.0 != "video-player.shared-library"
-                    && resource.kind != "media.shared-library"
-                    && resource.kind != "media.queue"
-                    && resource.kind != "media.history"
-            }),
-            "hosted must not republish the application or library beside ResourceRoot: {:?}",
-            extras
-                .iter()
-                .map(|resource| format!("{}:{}", resource.kind, resource.id.0))
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            !extras.is_empty(),
-            "hosted must keep live track extras when the decoder reported streams"
-        );
-        assert!(
-            extras.iter().all(
-                |resource| resource.kind == "media.tracks" || resource.kind == "media.chapters"
-            ),
-            "hosted extras are track/chapter slices only: {:?}",
-            extras
-                .iter()
-                .map(|resource| resource.kind.as_str())
-                .collect::<Vec<_>>()
-        );
-        let hosted_tracks = extras
-            .iter()
-            .find(|resource| resource.kind == "media.tracks")
-            .expect("hosted returns the tracks slice");
+    #[test]
+    fn library_controls_reach_the_player_through_the_door() {
+        let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
+        activate(&mut app, "video-player.library");
+        assert!(surface(&mut app, |player| player.library_visible()));
+        activate(&mut app, "video-player.library.tab.recent");
+        activate(&mut app, "video-player.library.close");
+        assert!(!surface(&mut app, |player| player.library_visible()));
+        activate(&mut app, "video-player.library");
         assert_eq!(
-            hosted_tracks.id, standalone_tracks.id,
-            "hosted tracks tree matches the standalone nested slice"
+            surface(&mut app, |player| player.library_tab_name()),
+            "recent",
+            "the library reopens on the tab chosen last"
         );
+        app.effect(&VideoEffect::ShowLibrary {
+            tab: "shared".into(),
+        })
+        .expect("agents show the library the same way");
         assert_eq!(
-            hosted_tracks.children.len(),
-            standalone_tracks.children.len(),
-            "hosted keeps the same bounded track rows"
-        );
-        let track_id = hosted_tracks.children[0].id.as_str();
-        assert!(
-            ui::resources::resource(&app, &state.doc, track_id).is_some(),
-            "a hosted track stays addressable"
-        );
-
-        app.clear_shot_metadata_for_test();
-        assert!(
-            app.resources(&state.doc).is_empty(),
-            "hosted publishes no track extras when the decoder reported none"
+            surface(&mut app, |player| player.library_tab_name()),
+            "shared"
         );
     }
 
     #[test]
-    fn present_empty_does_not_wipe_unpublished_local_library() {
-        let mut app = PlayerApp::new(RunMode::Capture);
-        app.seed_unpublished_playlist_for_test("local-only", "Not published yet");
-        let empty = Rc::new(SharedLibrary::default());
-        ResourceSurface::<VideoPlayer>::present(&mut app, &empty);
-        assert_eq!(
-            app.shared_playlist_ids_for_test(),
-            vec!["local-only".to_owned()],
-            "empty present must not wipe an unpublished local library"
+    fn playback_effects_need_an_open_video() {
+        let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
+        assert!(
+            app.effect(&VideoEffect::TogglePlayback).is_err(),
+            "nothing to play"
         );
+        let missing = std::env::temp_dir().join("tilo-video-player-missing.mp4");
+        let error = app
+            .effect(&VideoEffect::Open {
+                path: Some(missing.display().to_string()),
+            })
+            .expect_err("a missing file does not open");
+        assert!(format!("{error:?}").contains("does not exist"));
+    }
+
+    #[test]
+    fn opening_a_video_answers_once_its_first_picture_decodes() {
+        let sample =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/h264-aac.mp4");
+        let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
+        app.effect(&VideoEffect::Open {
+            path: Some(sample.display().to_string()),
+        })
+        .expect("the video opens");
+        assert!(surface(&mut app, |player| player
+            .player()
+            .latest_frame()
+            .is_some()));
+        let surface_rows = app.agent_surface().to_string();
+        assert!(
+            surface_rows.contains("video-player.queue.item."),
+            "the opened video is a queue row: {surface_rows}"
+        );
+        assert!(
+            surface_rows.contains("bookmark-current-time"),
+            "the playhead's edits are offered: {surface_rows}"
+        );
+    }
+
+    #[test]
+    fn the_shared_library_changes_through_the_door_as_one_step_each() {
+        let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
+        app.invoke(
+            Invoke::apply(&SharedAction::CreatePlaylist {
+                id: "trip".into(),
+                name: "Trip".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(app.state().playlists[0].name, "Trip");
+        assert!(app.undo(), "creating a playlist is one undo step");
+        assert!(app.state().playlists.is_empty());
+
+        let surface_rows = app.agent_surface().to_string();
+        for action in [
+            "create-playlist",
+            "create-annotation",
+            "open",
+            "toggle-playback",
+        ] {
+            assert!(
+                surface_rows.contains(action),
+                "`{action}` is published: {surface_rows}"
+            );
+        }
     }
 }

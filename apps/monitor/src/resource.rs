@@ -63,7 +63,7 @@ impl Default for MonitorState {
 /// (its PID with its kernel start time), so a delayed invocation never
 /// reaches a process that reused the PID.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "monitor.effect")]
+#[effect(operation = "monitor.effect", device_only)]
 pub enum MonitorEffect {
     /// Refresh processes.
     #[effect(permission = "read")]

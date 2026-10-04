@@ -75,7 +75,7 @@ impl Resource for Firewall {
 
 /// What the firewall does outside the document, for every caller.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "firewall.effect")]
+#[effect(operation = "firewall.effect", device_only)]
 pub enum FirewallEffect {
     /// Apply firewall configuration.
     #[effect(job, permission = "admin")]
