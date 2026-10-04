@@ -1,13 +1,14 @@
 //! App Publisher: the key that signs your apps, and the namespaces the
 //! registry lets it publish under.
 //!
-//! The key is the file `tilo-app` reads, `$XDG_CONFIG_HOME/tilo/publisher-key.json`,
-//! which on Tilo OS is private to this app. It never enters the resource: the
+//! The key lives in this app's secrets on this device, where `tilo-app` finds
+//! it too ([`registry_client::key`]). It never enters the resource: the
 //! resource is synced to collaborators and kept in history, and holds only
 //! what an application for a namespace needs.
 
-/// The application id.
-pub const APP_ID: &str = "so.tilo.publisher";
+/// The application id: also the app whose secrets `tilo-app` reads the
+/// publisher key from.
+pub const APP_ID: &str = registry_client::key::SECRETS_APP;
 /// The window and launcher title.
 pub const APP_TITLE: &str = "App Publisher";
 
@@ -20,6 +21,7 @@ fn install_catalog() {
 use registry_client::{RegistryClient, key};
 use registry_types::application::{NamespaceClaim, proof_token};
 use ui::prelude::*;
+use ui::secrets::SecretStore;
 
 /// What to apply for, and where. Stored, synced and undoable; the key is not
 /// part of it.
@@ -86,7 +88,7 @@ impl Publisher {
     }
 }
 
-/// The key on this machine, read from its file.
+/// The key on this machine, read from the app's secrets.
 #[derive(Clone, Debug, PartialEq)]
 pub enum KeyState {
     Missing,
@@ -95,8 +97,8 @@ pub enum KeyState {
 }
 
 impl KeyState {
-    fn load() -> Self {
-        match key::discover() {
+    fn load(secrets: &SecretStore) -> Self {
+        match key::discover(secrets) {
             Ok(Some(key)) => Self::Present {
                 public: key::public_hex(&key),
             },
@@ -180,8 +182,8 @@ fn claims(profile: &Publisher) -> Result<Vec<NamespaceClaim>, String> {
     Ok(claims)
 }
 
-fn apply(profile: &Publisher) -> Result<String, String> {
-    let key = key::resolve(None).map_err(|error| format!("{error:#}"))?;
+fn apply(profile: &Publisher, secrets: &SecretStore) -> Result<String, String> {
+    let key = key::resolve(None, secrets).map_err(|error| format!("{error:#}"))?;
     let claims = claims(profile)?;
     let client = RegistryClient::new(&profile.registry).map_err(|error| format!("{error:#}"))?;
     let status = registry_client::apply(
@@ -195,8 +197,8 @@ fn apply(profile: &Publisher) -> Result<String, String> {
     Ok(registry_client::status_summary(&status))
 }
 
-fn check_status(registry: &str) -> Result<Option<String>, String> {
-    let key = key::resolve(None).map_err(|error| format!("{error:#}"))?;
+fn check_status(registry: &str, secrets: &SecretStore) -> Result<Option<String>, String> {
+    let key = key::resolve(None, secrets).map_err(|error| format!("{error:#}"))?;
     let client = RegistryClient::new(registry).map_err(|error| format!("{error:#}"))?;
     let status = client
         .application(&key::public_hex(&key))
@@ -205,21 +207,20 @@ fn check_status(registry: &str) -> Result<Option<String>, String> {
 }
 
 /// Create or copy the key now, on the UI thread: the clipboard lives there.
-fn local(effect: &KeyEffect) -> Result<Notice, String> {
+fn local(effect: &KeyEffect, secrets: &SecretStore) -> Result<Notice, String> {
     match effect {
         KeyEffect::CreateKey => {
-            let path = key::default_path().ok_or("no configuration directory")?;
-            let key = key::create(&path).map_err(|error| format!("{error:#}"))?;
+            let key = key::create(secrets).map_err(|error| format!("{error:#}"))?;
             Ok(Notice::info("publisher-key-created", key::public_hex(&key)))
         }
         KeyEffect::CopyProof => {
-            let key = key::resolve(None).map_err(|error| format!("{error:#}"))?;
+            let key = key::resolve(None, secrets).map_err(|error| format!("{error:#}"))?;
             let proof = proof_token(&key::public_hex(&key));
             ui::text_selection::clipboard_copy(&proof);
             Ok(Notice::info("publisher-proof-copied", proof))
         }
         KeyEffect::CopySecret => {
-            let key = key::resolve(None).map_err(|error| format!("{error:#}"))?;
+            let key = key::resolve(None, secrets).map_err(|error| format!("{error:#}"))?;
             ui::text_selection::clipboard_copy(&hex::encode(key.to_bytes()));
             Ok(Notice::info("publisher-secret-copied", String::new()))
         }
@@ -230,11 +231,15 @@ fn local(effect: &KeyEffect) -> Result<Notice, String> {
 }
 
 /// Ask the registry, off the UI thread.
-fn remote(effect: &KeyEffect, profile: &Publisher) -> Result<Notice, String> {
+fn remote(
+    effect: &KeyEffect,
+    profile: &Publisher,
+    secrets: &SecretStore,
+) -> Result<Notice, String> {
     if *effect == KeyEffect::ApplyForNamespaces {
-        return apply(profile).map(|status| Notice::info("publisher-status", status));
+        return apply(profile, secrets).map(|status| Notice::info("publisher-status", status));
     }
-    check_status(&profile.registry).map(|status| match status {
+    check_status(&profile.registry, secrets).map(|status| match status {
         Some(status) => Notice::info("publisher-status", status),
         None => Notice::info("publisher-no-application", String::new()),
     })
@@ -266,7 +271,7 @@ fn unavailable(pane: &Pane) -> Vec<EffectStatus> {
             status.push(EffectStatus::unavailable(
                 KeyEffect::CREATE_KEY,
                 "key-unreadable",
-                "The key file on this machine cannot be read",
+                "The key on this machine cannot be read",
             ));
         }
     }
@@ -417,9 +422,10 @@ impl ResourceApp for App {
         ];
         // The key is this machine's, not the version's: a past version shows
         // the application it held and nothing that acts on the key.
+        let secrets = cx.storage().secrets();
         let key = match cx.mode() {
             RunMode::Past => return Box::new(form),
-            RunMode::Live => KeyState::load(),
+            RunMode::Live => KeyState::load(&secrets),
             RunMode::Capture => cx
                 .fixture::<KeyState>()
                 .map_or(KeyState::Missing, |key| (*key).clone()),
@@ -442,11 +448,12 @@ impl ResourceApp for App {
                     ..handler.get()
                 });
                 let pane = handler.clone();
+                let (remote_secrets, reload_secrets) = (secrets.clone(), secrets.clone());
                 return Ok(cx.thread(
-                    move |_| remote(&effect, &profile),
+                    move |_| remote(&effect, &profile, &remote_secrets),
                     move |(), result: Result<Notice, String>, _| {
                         pane.set(Pane {
-                            key: KeyState::load(),
+                            key: KeyState::load(&reload_secrets),
                             busy: false,
                             notice: Some(result.clone().unwrap_or_else(Notice::error)),
                         });
@@ -454,9 +461,9 @@ impl ResourceApp for App {
                     },
                 ));
             }
-            let result = local(&effect);
+            let result = local(&effect, &secrets);
             handler.set(Pane {
-                key: KeyState::load(),
+                key: KeyState::load(&secrets),
                 busy: false,
                 notice: Some(result.clone().unwrap_or_else(Notice::error)),
             });

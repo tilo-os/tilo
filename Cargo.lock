@@ -11581,7 +11581,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-clock",
  "tilo-net",
- "tilo-xdg-paths",
+ "tilo-secrets",
  "workspace-hack",
 ]
 
@@ -14819,6 +14819,7 @@ dependencies = [
  "tilo-caps",
  "tilo-files",
  "tilo-headless-schema",
+ "tilo-paths",
  "tilo-test-env",
  "tilo-ui-graph",
  "toml 1.0.6+spec-1.1.0",

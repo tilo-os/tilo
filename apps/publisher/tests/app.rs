@@ -7,12 +7,33 @@ use ui::tilo_actions::{
     Availability, ConfirmationPolicy, DoorError, PermissionRequirement, RiskLevel,
 };
 
-/// A home of its own, with no key the developer's environment names.
+/// A machine of its own: a home with no key the developer's environment
+/// names, and secrets kept in this test's memory.
+struct Machine {
+    _home: tilo_test_env::TestHome,
+    _host: ui::host::HostScope,
+    secrets: ui::secrets::SecretStore,
+}
+
+impl Machine {
+    /// The publisher key in the machine's secret store, as `tilo-app` reads it.
+    #[expect(clippy::expect_used, reason = "the in-memory store always answers")]
+    fn key(&self) -> Option<registry_client::key::SigningKey> {
+        registry_client::key::stored(&self.secrets).expect("the secret store answers")
+    }
+}
+
 #[expect(clippy::expect_used, reason = "a test without its home cannot run")]
-fn home() -> tilo_test_env::TestHome {
+fn home() -> Machine {
     let mut home = tilo_test_env::TestHome::new().expect("test home");
     home.env().remove(registry_client::key::KEY_ENV);
-    home
+    let services = ui::host::HostServices::null();
+    let secrets = services.secrets.store(registry_client::key::SECRETS_APP);
+    Machine {
+        _home: home,
+        _host: ui::host::enter(&services),
+        secrets,
+    }
 }
 
 #[test]
@@ -49,12 +70,11 @@ fn creating_a_key_needs_confirmation_and_keeps_it_out_of_the_resource() {
         .wait_for_named("public-key", Duration::from_secs(2))
         .expect("the new key's public half is shown");
 
-    let written = home.config().join("tilo/publisher-key.json");
-    let key = registry_client::key::load(&written).expect("the key file tilo-app reads");
+    let key = home.key().expect("the key tilo-app reads");
     let public = registry_client::key::public_hex(&key);
     app.harness()
         .expect(&SemanticExpectation::named("public-key").name_contains(&public))
-        .expect("the public key is the file's");
+        .expect("the public key is the stored key's");
     app.harness()
         .expect(
             &SemanticExpectation::named("proof-line")
@@ -75,9 +95,7 @@ fn creating_a_key_needs_confirmation_and_keeps_it_out_of_the_resource() {
         "an existing key is never replaced: {again:?}"
     );
     assert_eq!(
-        registry_client::key::load(&written)
-            .map(|again| again.to_bytes())
-            .ok(),
+        home.key().map(|again| again.to_bytes()),
         Some(key.to_bytes())
     );
 }
@@ -201,8 +219,5 @@ fn a_capture_shows_a_key_without_reading_the_machine_s() {
         .expect(&SemanticExpectation::named("proof-line").name_contains("tilo-publisher="))
         .expect("the scenario's key is shown");
     assert_eq!(app.state().domain, "example.com");
-    assert!(
-        !home.config().join("tilo/publisher-key.json").exists(),
-        "a capture writes no key"
-    );
+    assert!(home.key().is_none(), "a capture writes no key");
 }
