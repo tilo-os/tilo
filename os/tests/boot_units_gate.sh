@@ -8,7 +8,7 @@
 #     confirmed the running generation. Its timer fires ten minutes after boot,
 #     so the gate starts it itself when the timer has not got there yet.
 #
-# Run as root inside the guest, after the session has come up:
+# Run as root inside the guest, once the first session has come up:
 #   sudo /usr/libexec/tilo/boot-units-gate.sh
 #
 # A unit that may legitimately be failed is listed in ALLOWED_FAILED with the
