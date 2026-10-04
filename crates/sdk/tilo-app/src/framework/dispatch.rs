@@ -77,6 +77,9 @@ pub struct Dispatcher<R: Resource> {
     applied: Rc<Cell<bool>>,
     /// The boundary last taken opened a step that stays open.
     opened: Rc<Cell<bool>>,
+    /// The last immediate action may be continued by a later one
+    /// ([`Resource::continuable`]).
+    continuable: Rc<Cell<bool>>,
     marker: std::marker::PhantomData<fn(R)>,
 }
 
@@ -110,6 +113,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             continuing: Rc::clone(&self.continuing),
             applied: Rc::clone(&self.applied),
             opened: Rc::clone(&self.opened),
+            continuable: Rc::clone(&self.continuable),
             marker: std::marker::PhantomData,
         }
     }
@@ -139,6 +143,7 @@ impl<R: Resource> Dispatcher<R> {
             continuing: Rc::default(),
             applied: Rc::default(),
             opened: Rc::default(),
+            continuable: Rc::default(),
             marker: std::marker::PhantomData,
         }
     }
@@ -366,6 +371,7 @@ impl<R: Resource> Dispatcher<R> {
         let serial = serial.wrapping_add(1);
         self.serial.set(serial);
         *self.last.borrow_mut() = Some((serial, action.clone()));
+        self.continuable.set(R::continuable(action));
         // The event continues the open step only if every action it applied
         // did.
         let first_of_event = !self.applied.replace(true);
@@ -414,6 +420,7 @@ impl<R: Resource> Dispatcher<R> {
             continuing: Rc::clone(&self.continuing),
             applied: Rc::clone(&self.applied),
             opened: Rc::clone(&self.opened),
+            continuable: Rc::clone(&self.continuable),
             marker: std::marker::PhantomData,
         }
     }
@@ -440,7 +447,8 @@ impl<R: Resource> Dispatcher<R> {
     pub(crate) fn take_committed(&self) -> Option<Vec<ChangeHash>> {
         let bracket = self.host.borrow_mut().take_committed();
         let continuing = self.continuing.replace(false);
-        self.opened.set(bracket.is_some() && !continuing);
+        self.opened
+            .set(bracket.is_some() && !continuing && self.continuable.get());
         self.applied.set(false);
         if continuing { None } else { bracket }
     }
