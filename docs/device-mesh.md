@@ -175,6 +175,24 @@ authorization.
   new viewer gets is a keyframe, held if it overtakes the stream start. Copy and paste ride the universal clipboard. The
   app keeps its normal lifecycle on the host, and its encoder stops with the
   last viewer.
+- **Staying awake and waking up.** An action from one of the person's own
+  devices (`actions invoke --device`) counts as use: it renews a 10-minute
+  suspend-only lease in the target session's inhibitor registry, so the
+  screen still blanks and locks and the lease lapses once the requests stop.
+  Each device's presence carries its wake routes (each interface's MAC as
+  the network sees it, Ethernet or Wi-Fi, whether a magic packet wakes it,
+  and the IPv4 subnet it was last seen on). Only an interface whose
+  magic-packet wake is actually enabled wakes a device; a Wi-Fi chip may
+  list WoWLAN while its machine does not wake from it, so the image enables
+  it only where that is verified. A device
+  without one cannot be woken over the network, and `device.wake` says so
+  instead of sending anything. The typed `device.wake` action
+  (provider `continuity.devices`, argument `device`: a label or device id)
+  picks a device that is awake on the target's last subnet, this one first.
+  That device sends the magic packet to UDP port 9 and probes the target
+  until it answers, then reports back. Without such a device the action
+  fails at once and names the subnet (`no awake device on 10.0.0.0/24`).
+  Waking is device administration and needs no optional continuity switch.
 - **Notifications** project only the app-authorized redacted or full payload.
   Dismiss and action replies return to the exact originating device instead of
   turning a mirrored notification into ambient remote-control authority.

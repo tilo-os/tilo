@@ -1386,12 +1386,34 @@ impl QuickSettingsRoot {
         self.set_slider_value(state, index, value);
         Some(self.slider_commit(state, index))
     }
+    /// The next profile the daemon offers. A machine without a
+    /// performance mode (most ARM laptops) would otherwise be asked for it
+    /// on every second press, which fails and leaves the row stuck.
     fn cycle_power(s: &mut QuickSettingsState) -> RootAction {
-        s.power_profile = match s.power_profile {
-            PowerProfile::Saver => PowerProfile::Balanced,
-            PowerProfile::Balanced => PowerProfile::Performance,
-            PowerProfile::Performance => PowerProfile::Saver,
+        const ORDER: [PowerProfile; 3] = [
+            PowerProfile::Saver,
+            PowerProfile::Balanced,
+            PowerProfile::Performance,
+        ];
+        let offered = |profile: &PowerProfile| {
+            s.power_profiles.is_empty() || s.power_profiles.contains(profile)
         };
+        let current = ORDER
+            .iter()
+            .position(|profile| *profile == s.power_profile)
+            .unwrap_or(1);
+        let Some(next) = ORDER
+            .iter()
+            .cycle()
+            .skip(current.saturating_add(1))
+            .take(ORDER.len())
+            .copied()
+            .find(offered)
+            .filter(|next| *next != s.power_profile)
+        else {
+            return RootAction::None;
+        };
+        s.power_profile = next;
         RootAction::Changed(PendingRootActions {
             power: Some(s.power_profile),
             ..Default::default()
@@ -2949,6 +2971,34 @@ mod tests {
             assert_ne!(state.power_profile, previous);
         }
 
+        fn power_profile_cycles_only_through_offered_profiles() {
+            // An ARM laptop's daemon offers no performance mode.
+            let mut state = QuickSettingsState {
+                power_profiles: vec![PowerProfile::Saver, PowerProfile::Balanced],
+                ..QuickSettingsState::default()
+            };
+            let mut seen = Vec::new();
+            for _ in 0..4 {
+                let _ = QuickSettingsRoot::cycle_power(&mut state);
+                seen.push(state.power_profile);
+            }
+            assert_eq!(
+                seen,
+                [
+                    PowerProfile::Saver,
+                    PowerProfile::Balanced,
+                    PowerProfile::Saver,
+                    PowerProfile::Balanced
+                ]
+            );
+            state.power_profiles = vec![PowerProfile::Balanced];
+            assert_eq!(
+                QuickSettingsRoot::cycle_power(&mut state),
+                RootAction::None,
+                "with one profile there is nothing to switch to"
+            );
+        }
+
         fn finishing_edit_clears_removed_done_focus_before_root_activation() {
             let mut root = QuickSettingsRoot::default();
             let mut state = QuickSettingsState::default();
@@ -3016,6 +3066,7 @@ mod tests {
         every_destination_tile_click_routes_to_its_action();
         devices_and_clipboard_rows_summarise_their_panes();
         power_profile_focus_matches_its_enter_action();
+        power_profile_cycles_only_through_offered_profiles();
         finishing_edit_clears_removed_done_focus_before_root_activation();
         edit_focus_order_covers_visible_rows_available_controls_and_footer();
     }

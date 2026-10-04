@@ -401,6 +401,14 @@ pub fn parse_age(text: &str) -> Result<u64, String> {
     Ok(value.saturating_mul(scale))
 }
 
+/// `vm awake --for`: a duration like `parse_age`'s, but never zero.
+fn parse_awake_duration(text: &str) -> Result<u64, String> {
+    match parse_age(text)? {
+        0 => Err("to let it suspend now: --off".into()),
+        seconds => Ok(seconds),
+    }
+}
+
 /// `--resolution`: `WIDTHxHEIGHT`, each 320 to 16384 pixels.
 ///
 /// # Errors
@@ -662,6 +670,28 @@ pub enum VmCommand {
         after_help = "Examples:\n  tilo-vm vm add opi --ssh root@10.0.0.108                       # root with its own key; prints the key install\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --key ~/.ssh/yoga_ed25519   # the owner's account; root through sudo -n\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --grant-sudo           # sudo asks for me's password once, here\n  tilo-vm vm use yoga\n  tilo-vm swap --slot device shell --from sha:1a2b3c4             # a board's own session\n\nEvery remote command runs as root: as root@ with the device's own key\n(keys/<name>_ed25519 beside vms.toml, installed once with the command vm add\nprints), or as another account through sudo -n, for a device whose SSH lets\nonly its owner in (the installer's dev SSH setup). vm add checks SSH, root,\ntilo-vmd and its protocol, the toolchain and bootc, names each fix, and\nregisters the device only once SSH, root and tilo-vmd work; rerun it after a\nfix. Nothing is installed on the device but what --grant-sudo writes\n(/etc/sudoers.d/tilo-vm-<user>). tilo-vm cannot power a device on, so vm\nrestart reboots it over SSH. Details: tilo-vm guide devices."
     )]
     Add(AddArgs),
+    /// Wake a sleeping device with its Wake-on-LAN magic packet (a libvirt VM through the hypervisor), then wait until tilo-vmd answers.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm wake yoga\n  tilo-vm vm wake          # the VM this worktree uses\n\nA device's MAC, hostname and wake setting are recorded whenever tilo-vm\nreaches it (vm add, vm status), so wake it once by hand if none is recorded.\nThe packet goes from this machine to 255.255.255.255 and the device's subnet\nbroadcast, port 9: this machine must be on the device's LAN. Whether the\ndevice wakes on it depends on its network interface; vm status shows what it\nreported (enabled, disabled, unsupported). Details: tilo-vm guide devices."
+    )]
+    Wake {
+        /// The VM or device (default: the one this worktree uses).
+        name: Option<String>,
+    },
+    /// Keep the machine from suspending longer than the 30 minutes every tilo-vm request holds it, or let it suspend now.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm awake               # how long it stays awake\n  tilo-vm vm awake yoga --for 2h # a long build or test run without requests\n  tilo-vm vm awake yoga --off    # done: it may suspend once idle\n\nEvery tilo-vm command that talks to tilo-vmd holds a logind sleep lock\n(tilo-vm-awake.service, `systemd-inhibit --list` shows it) until 30 minutes\nafter it, so a device does not suspend under you, and one you stopped using\ncan again. The lock blocks suspend only: the screen still blanks and locks,\nand closing the lid still suspends. --off releases it; the next tilo-vm\ncommand takes it again."
+    )]
+    Awake {
+        /// The VM or device (default: the one this worktree uses).
+        name: Option<String>,
+        /// Hold it awake this long from now: 90m, 2h, 1d.
+        #[arg(long = "for", value_name = "DURATION", value_parser = parse_awake_duration, conflicts_with = "off")]
+        hold: Option<u64>,
+        /// Release the hold now.
+        #[arg(long)]
+        off: bool,
+    },
     /// Boot the VM and wait until SSH answers.
     #[command(after_help = "Examples:\n  tilo-vm vm start")]
     Start {

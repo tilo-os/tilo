@@ -35,6 +35,14 @@ after rejecting traversal, links, special files, excessive entry counts, and
 expansion beyond `installed_size_bytes`. `"vllm_gguf"` is the sole explicit
 single-file option; no model is treated as a single file by inference.
 
+`"onnx_file"` is a single ONNX graph that runs in-process in the service that
+uses it. Such a model names no `allowed_runtimes`, has `context_window` 0 (both
+may be omitted), declares an in-process capability such as
+`"segmentation": true`, and cannot claim `vision` or `face_recognition`. It is
+verified and installed like any other object, but never started, and it can
+never be the catalog's `recommendation`. A catalog still needs a runtime-served
+recommendation; in-process models are added beside it.
+
 The catalog signature covers:
 
 ```text
@@ -128,3 +136,31 @@ The desktop launcher, rather than this developer socket, supplies the normal
 gateway descriptor to Photos. A successful probe is evidence that the signed
 model service, vLLM runtime, provider profile, and bounded gateway all carried
 out real image inference.
+
+## U²-Net subject selection release
+
+`dist/local-models/u2net-subject/prepare-release.sh` stages the in-process
+salient-object model behind "Select subject": U²-Net's general model
+(Apache-2.0, https://github.com/xuebinqin/U-2-Net), as the ONNX conversion
+rembg publishes. `model-files.sha256` pins the 175997641-byte `u2net.onnx`
+(`8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491`) and the
+upstream `LICENSE` at commit `ac7e1c817ecab7c7dff5ce6b1abba61cd213ff29`.
+
+The upstream asset sits under a release tag, which can move, so it is only a
+source for bytes checked against that digest. The model's revision is the
+digest itself, and both files are re-hosted unchanged at
+`<publish base>/u2net-subject/<revision>/`, so the artifact and licence URLs
+carry the immutable revision as the catalog rules require.
+
+```sh
+dist/local-models/u2net-subject/prepare-release.sh \
+  --output /secure/build/local-models/u2net-subject \
+  --publish-base-url "$TILO_RELEASE_ARTIFACT_BASE_URL"
+```
+
+Upload `artifacts/u2net.onnx` and `artifacts/LICENSE` unchanged, verify their
+published size and SHA-256, then add the generated
+`u2net-subject.model.json` to the `models` of the release's
+`local-models.json` (for example
+`jq --slurpfile m u2net-subject.model.json '.models += $m'`) before compiling
+and signing the catalog as above. `contract-test.sh` checks the recipe offline.

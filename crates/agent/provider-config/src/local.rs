@@ -82,6 +82,31 @@ pub enum ModelArtifactFormat {
     /// An explicit GGUF single-file release. Catalog authors must assert vLLM
     /// compatibility; the format is not inferred as a fallback.
     VllmGguf,
+    /// One ONNX graph that a per-user service loads into its own process and
+    /// runs on the CPU. It needs no signed runtime, container or service
+    /// start: the verified content-addressed object is the whole install.
+    OnnxFile,
+}
+
+impl ModelArtifactFormat {
+    /// Whether models of this format run inside the process that uses them
+    /// rather than behind a supervised vLLM runtime.
+    pub const fn runs_in_process(self) -> bool {
+        matches!(self, Self::OnnxFile)
+    }
+}
+
+/// What an in-process model does. A consumer asks for a capability, never
+/// for a model id, so a newer signed release can replace an older one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InProcessCapability {
+    /// Salient-object segmentation: one image in, a foreground mask out.
+    Segmentation,
+}
+
+impl InProcessCapability {
+    pub const ALL: [Self; 1] = [Self::Segmentation];
 }
 
 impl PinnedArtifact {
@@ -112,6 +137,10 @@ impl PinnedArtifact {
 }
 
 /// A model release built for a fixed runtime family and quantization.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent signed declaration in the catalog wire format"
+)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalModelRelease {
     pub id: String,
@@ -142,6 +171,70 @@ pub struct LocalModelRelease {
     /// Generic vision labels/descriptions never imply this capability.
     #[serde(default)]
     pub face_recognition: bool,
+    /// Signed declaration that this exact release is a salient-object
+    /// segmentation model. Only an in-process format may carry it.
+    #[serde(default)]
+    pub segmentation: bool,
+}
+
+impl LocalModelRelease {
+    /// Whether this release runs inside the process that uses it.
+    pub const fn runs_in_process(&self) -> bool {
+        self.artifact_format.runs_in_process()
+    }
+
+    /// The in-process capabilities this release declares.
+    pub fn in_process_capabilities(&self) -> Vec<InProcessCapability> {
+        let mut capabilities = Vec::new();
+        if self.segmentation {
+            capabilities.push(InProcessCapability::Segmentation);
+        }
+        capabilities
+    }
+
+    /// Check the format against the capabilities it claims. An in-process
+    /// model names no vLLM runtime and no context window, cannot claim chat,
+    /// vision or face capabilities, and must say what it does; a runtime
+    /// model needs a runtime and a context window and cannot claim an
+    /// in-process capability.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the first contradiction.
+    pub fn validate_shape(&self) -> Result<(), ProvisionError> {
+        if self.runs_in_process() {
+            if !self.allowed_runtimes.is_empty() {
+                return Err(ProvisionError::InvalidCatalog(
+                    "in-process model must not name a vLLM runtime",
+                ));
+            }
+            if self.context_window != 0 || self.vision || self.face_recognition {
+                return Err(ProvisionError::InvalidCatalog(
+                    "in-process model cannot claim chat, vision or face capabilities",
+                ));
+            }
+            if self.in_process_capabilities().is_empty() {
+                return Err(ProvisionError::InvalidCatalog(
+                    "in-process model declares no capability",
+                ));
+            }
+        } else {
+            if self.allowed_runtimes.is_empty() {
+                return Err(ProvisionError::InvalidCatalog("model supports no runtime"));
+            }
+            if self.context_window == 0 {
+                return Err(ProvisionError::InvalidCatalog(
+                    "runtime model needs a context window",
+                ));
+            }
+            if self.segmentation {
+                return Err(ProvisionError::InvalidCatalog(
+                    "segmentation is only available to in-process models",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Catalogs are supplied by a signed/pinned desktop update channel. They are
@@ -178,9 +271,7 @@ impl LocalModelCatalog {
             if model.id.trim().is_empty() || !model_ids.insert(model.id.as_str()) {
                 return Err(ProvisionError::InvalidCatalog("model ids must be unique"));
             }
-            if model.allowed_runtimes.is_empty() {
-                return Err(ProvisionError::InvalidCatalog("model supports no runtime"));
-            }
+            model.validate_shape()?;
             model.artifact.validate()?;
             if model.description.trim().is_empty()
                 || model.license_id.trim().is_empty()
@@ -208,6 +299,7 @@ impl LocalModelCatalog {
 
     /// Pick the largest known-fitting model for the preferred runtime. The
     /// caller still presents this as a recommendation, never a silent install.
+    /// In-process models are never the chat recommendation.
     pub fn recommend<'a>(
         &'a self,
         hardware: &HardwareSnapshot,
@@ -217,7 +309,8 @@ impl LocalModelCatalog {
         self.models
             .iter()
             .filter(|model| {
-                model.allowed_runtimes.contains(&runtime)
+                !model.runs_in_process()
+                    && model.allowed_runtimes.contains(&runtime)
                     && model.required_memory_mib <= hardware.memory_mib
                     && model.required_accelerator_mib <= accelerator
                     && model.artifact.size_bytes / (1024 * 1024) <= hardware.free_storage_mib
@@ -583,7 +676,29 @@ mod tests {
                 context_window: 8192,
                 vision: false,
                 face_recognition: false,
+                segmentation: false,
             }],
+        }
+    }
+    fn segmentation_model() -> LocalModelRelease {
+        LocalModelRelease {
+            id: "subject".into(),
+            label: "Subject".into(),
+            description: "A tiny segmentation test model".into(),
+            version: "b".repeat(64),
+            artifact: artifact("subject.onnx"),
+            artifact_format: ModelArtifactFormat::OnnxFile,
+            license_id: "Apache-2.0".into(),
+            license_url: "https://models.example.invalid/LICENSE".into(),
+            requires_acceptance: true,
+            installed_size_bytes: 100,
+            allowed_runtimes: BTreeSet::new(),
+            required_memory_mib: 1024,
+            required_accelerator_mib: 0,
+            context_window: 0,
+            vision: false,
+            face_recognition: false,
+            segmentation: true,
         }
     }
     fn cpu() -> HardwareSnapshot {
@@ -656,6 +771,55 @@ mod tests {
                 Err(ProvisionError::UnsafeEndpoint)
             );
         }
+    }
+
+    /// An ONNX model runs in-process: it is valid without a runtime or
+    /// context window, never becomes the chat recommendation, and cannot
+    /// borrow a runtime model's capabilities or lend its own to one.
+    #[test]
+    fn in_process_models_need_no_runtime_and_claim_only_their_capability() {
+        let mut catalog = catalog();
+        catalog.models.push(segmentation_model());
+        catalog.validate().unwrap();
+        assert_eq!(
+            catalog
+                .recommend(&cpu(), RuntimeKind::Cpu)
+                .map(|model| model.id.as_str()),
+            Some("tiny-q4")
+        );
+        catalog.models.retain(|model| model.id == "subject");
+        assert_eq!(catalog.recommend(&cpu(), RuntimeKind::Cpu), None);
+        assert_eq!(
+            segmentation_model().in_process_capabilities(),
+            [InProcessCapability::Segmentation]
+        );
+
+        let mut with_runtime = segmentation_model();
+        with_runtime.allowed_runtimes = [RuntimeKind::Cpu].into();
+        assert!(with_runtime.validate_shape().is_err());
+        let mut chat = segmentation_model();
+        chat.context_window = 4096;
+        assert!(chat.validate_shape().is_err());
+        let mut vision = segmentation_model();
+        vision.vision = true;
+        assert!(vision.validate_shape().is_err());
+        let mut face = segmentation_model();
+        face.face_recognition = true;
+        assert!(face.validate_shape().is_err());
+        let mut nothing = segmentation_model();
+        nothing.segmentation = false;
+        assert!(nothing.validate_shape().is_err());
+
+        let mut runtime_segmentation = catalog_model();
+        runtime_segmentation.segmentation = true;
+        assert!(runtime_segmentation.validate_shape().is_err());
+        let mut no_runtime = catalog_model();
+        no_runtime.allowed_runtimes.clear();
+        assert!(no_runtime.validate_shape().is_err());
+    }
+
+    fn catalog_model() -> LocalModelRelease {
+        catalog().models.remove(0)
     }
 
     struct Fake {

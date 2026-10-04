@@ -582,6 +582,9 @@ pub fn spawn_render_thread(
                     first_present_recorded = true;
                     tilo_startup_metrics::mark("first-frame-presented");
                     tilo_startup_metrics::dump();
+                    if let Some(line) = tilo_startup_metrics::summary_line(&startup_app_name()) {
+                        crate::diag!("{line}");
+                    }
                 }
 
                 // `Scene::reset` clears the encoding without freeing the
@@ -2081,4 +2084,17 @@ mod retained_damage_tests {
             );
         }
     }
+}
+
+/// The app a startup summary names: its package, else its executable.
+fn startup_app_name() -> String {
+    std::env::var("TILO_PACKAGE_ID").ok().unwrap_or_else(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "unknown".to_owned())
+    })
 }
