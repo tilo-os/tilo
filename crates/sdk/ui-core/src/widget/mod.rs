@@ -2278,8 +2278,6 @@ pub mod marks;
 pub use marks::{Mark, MarkSpan};
 pub mod rich_text_line;
 pub use rich_text_line::{LineSignal, RichTextLine};
-pub mod rich_text_editor;
-pub use rich_text_editor::{RichBlockStyle, RichTextEditor};
 pub mod block_editor;
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,

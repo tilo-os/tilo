@@ -381,7 +381,6 @@ pub use widget::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
     NativeViewInput,
 };
-pub use widget::{RichBlockStyle, RichTextEditor};
 pub use widget::{RouteError, RouteHandle, Router};
 // Audit-timeline widgets + their shared types. The `collab_types::OpClass` /
 // `ArtifactKind` re-exports flow through these widgets, so callers can build
