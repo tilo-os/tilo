@@ -3870,8 +3870,9 @@ fn write_snapshot_png(
     // measured at 1920x1080, ~450ms/frame vs ~70ms actual render+encode.
     // See [`SNAPSHOT_RENDERER`] for why the cache is a `static`, not `thread_local!`.
 
-    // `try_new`, not `new` inside `catch_unwind`: the release profile sets
-    // `panic = "abort"`, so a caught panic can't happen — the `Result` is what
+    // `try_new`, not `new` inside `catch_unwind`: in a release build a panic
+    // outside a `tilo_rt::panic_boundary` aborts, so a caught panic can't
+    // happen — the `Result` is what
     // keeps the compositor alive with no wgpu adapter (CI without llvmpipe).
     // Failure isn't cached: the slot stays empty so a later snapshot retries.
     let cache = SNAPSHOT_RENDERER.get_or_init(|| std::sync::Mutex::new(None));

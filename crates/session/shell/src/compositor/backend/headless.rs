@@ -342,8 +342,9 @@ impl HeadlessBackend {
             return Err("HeadlessBackend: the output arrangement spans no area".into());
         }
         // `try_new` is the fallible constructor; `new` panics, and a
-        // `catch_unwind` around it would be inert in release builds
-        // (`panic = "abort"`). Going through the `Result` is what lets
+        // `catch_unwind` around it would be inert in release builds (a
+        // panic outside a `tilo_rt::panic_boundary` aborts the process).
+        // Going through the `Result` is what lets
         // the headless backend honour the rest of the `Backend::new`
         // contract — return an error, don't take `main` down with us.
         let renderer = OffscreenRenderer::try_new(width, height).map_err(|e| {

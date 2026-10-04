@@ -8,6 +8,8 @@ use crate::shell::state::WorkspaceAuthority as _;
 mod boot_join;
 mod governor_actions;
 mod hosted_topology;
+#[cfg(test)]
+mod live_identity_tests;
 mod native_enrollment;
 mod native_ingress;
 #[cfg(test)]
