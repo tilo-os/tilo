@@ -12,7 +12,7 @@ use super::{caption, heading, icon_button, percent};
 use crate::brushes::Preset;
 use crate::model::{Artwork, BLENDS, Mark, Shadow, Shape};
 use crate::resource::ArtworkResource;
-use crate::tools::{Erasing, Tool, Tools};
+use crate::tools::{Erasing, Sampling, Tool, Tools};
 
 /// Inks for plain layers: document colours, the same in every theme.
 const INKS: [u32; 14] = [
@@ -152,6 +152,9 @@ fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         let tools = tools.clone();
         cx.switch(&tools.tool.clone(), move |cx, tool| {
             let erasing = *tool == Tool::Eraser;
+            if matches!(tool, Tool::Wand | Tool::Bucket) {
+                return sampling(&tools);
+            }
             let tools = tools.clone();
             cx.switch(&tools.layer.clone(), move |cx, layer| {
                 if erasing {
@@ -184,15 +187,16 @@ fn layer_adjust(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Ele
         let layer = art
             .layer(&chosen)
             .or_else(|| art.layers.last())
-            .map(|layer| (layer.id.clone(), layer.adjust.clone().unwrap_or_default()));
+            .map(|layer| layer.id.clone());
         layer.unwrap_or_default()
     });
     let tools = tools.clone();
-    cx.switch(&state, move |cx, (id, adjust)| {
+    // Built again when another layer is chosen, not at each edit: the
+    // controls follow the layer's adjustments in place.
+    cx.switch(&state, move |cx, id| {
         let open = tools.layer_adjust.clone();
         let tools = tools.clone();
         let id = id.clone();
-        let adjust = adjust.clone();
         cx.switch(&open.clone(), move |cx, shown| {
             tools.live.borrow_mut().clear();
             let flip = open.clone();
@@ -222,7 +226,6 @@ fn layer_adjust(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Ele
                 parts.push(super::picture::adjustments(
                     cx,
                     &super::picture::Target::Layer(id.clone()),
-                    &adjust,
                     &tools,
                 ));
             }
@@ -404,6 +407,26 @@ fn dynamics_sliders(tools: &Tools, preset: Preset) -> Element {
         "canvas-brush-taper",
     ));
     section(rows)
+}
+
+/// Where the magic wand and the bucket find colour: in every layer as the
+/// artwork shows, or in the chosen layer alone.
+fn sampling(tools: &Tools) -> Element {
+    let segment = |key: &str| {
+        ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(key))
+    };
+    let choices = vec![
+        (Sampling::All, segment("canvas-sample-all")),
+        (Sampling::Layer, segment("canvas-sample-layer")),
+    ];
+    section(vec![
+        heading("canvas-sample"),
+        Box::new(
+            ui::widget::ToggleGroup::from_state(choices, &tools.sampling)
+                .with_flexible_width()
+                .with_id("canvas-sampling"),
+        ),
+    ])
 }
 
 /// The eraser: whether it takes paint or whole strokes, its size, and for
@@ -596,14 +619,59 @@ fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
 
 /// The selected marks, read again whenever one of them changes so every
 /// control starts from what is there now.
+/// The selection's heading, a picture's controls, then the rest. The rest
+/// is built again whenever a selected mark changes; a picture's controls
+/// follow the artwork in place, built again only when the selection is, so
+/// a drag begun as another slider's edit lands is not lost.
 fn selection(cx: &ViewCx<ArtworkResource>, ids: Vec<String>, tools: &Tools) -> Element {
+    let summary = {
+        let ids = ids.clone();
+        cx.value(move |art: &Artwork| {
+            let marks: Vec<Mark> = ids.iter().filter_map(|id| art.mark(id).cloned()).collect();
+            (!marks.is_empty()).then(|| summary(&marks, marks.iter().all(Mark::erases)))
+        })
+    };
+    let heading_row = cx.switch(&summary, |_, summary| {
+        let Some(summary) = summary else {
+            return Box::new(Spacer::fixed(0.0)) as Element;
+        };
+        Box::new(
+            Row::new()
+                .with_gap(8.0)
+                .no_wrap()
+                .with_align_items(ui::taffy::AlignItems::Center)
+                .push(heading("canvas-selection"))
+                .push(Box::new(Spacer::new()))
+                .push(caption(summary)),
+        )
+    });
+    let picture = {
+        let ids = ids.clone();
+        cx.value(move |art: &Artwork| {
+            ids.first()
+                .and_then(|id| art.mark(id))
+                .is_some_and(|mark| matches!(mark.shape, Shape::Image { .. }))
+        })
+    };
+    let picture_part = {
+        let ids = ids.clone();
+        let tools = tools.clone();
+        cx.switch(&picture, move |cx, picture| {
+            if *picture {
+                super::picture::panel(cx, &ids, &tools)
+            } else {
+                Box::new(Spacer::fixed(0.0))
+            }
+        })
+    };
     let marks = cx.value(move |art: &Artwork| {
         ids.iter()
             .filter_map(|id| art.mark(id).cloned())
             .collect::<Vec<Mark>>()
     });
     let tools = tools.clone();
-    cx.switch(&marks, move |cx, marks| marks_inspector(cx, marks, &tools))
+    let rest = cx.switch(&marks, move |cx, marks| marks_inspector(cx, marks, &tools));
+    spaced(vec![heading_row, picture_part, rest])
 }
 
 /// What is picked, in a word: the kind of one mark (an eraser named so)
@@ -628,7 +696,6 @@ fn summary(marks: &[Mark], erasers: bool) -> String {
 }
 
 fn marks_inspector(cx: &ViewCx<ArtworkResource>, marks: &[Mark], tools: &Tools) -> Element {
-    tools.live.borrow_mut().clear();
     let stop = &tools.stop;
     let Some(first) = marks.first() else {
         return Box::new(Spacer::fixed(0.0));
@@ -637,24 +704,11 @@ fn marks_inspector(cx: &ViewCx<ArtworkResource>, marks: &[Mark], tools: &Tools) 
     let style = &first.style;
     // An eraser has no colour to choose: it takes paint off.
     let erasers = marks.iter().all(Mark::erases);
-    let summary = summary(marks, erasers);
     let palette = cx.read(|art| {
         art.map(|art| crate::media::palette_for(art, &first.layer))
             .unwrap_or_default()
     });
-    let mut parts: Vec<Element> = vec![Box::new(
-        Row::new()
-            .with_gap(8.0)
-            .no_wrap()
-            .with_align_items(ui::taffy::AlignItems::Center)
-            .push(heading("canvas-selection"))
-            .push(Box::new(Spacer::new()))
-            .push(caption(&summary)),
-    )];
-    let picture = matches!(first.shape, Shape::Image { .. });
-    if picture {
-        parts.push(super::picture::panel(cx, &ids, first, tools));
-    }
+    let mut parts: Vec<Element> = Vec::new();
     let lines_only = matches!(
         first.shape,
         Shape::Line { .. } | Shape::Stroke { .. } | Shape::Image { .. }

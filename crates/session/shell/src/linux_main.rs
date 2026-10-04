@@ -426,6 +426,10 @@ pub fn run() -> std::process::ExitCode {
 
     tracing_subscriber::fmt::init();
     shell::crash_log::install("tilo shell panic");
+    // After the crash log: a panic outside a helper's panic boundary still
+    // ends the compositor, in every build. Inside one (the collaboration
+    // broker's thread) it unwinds to the helper's owner, which restarts it.
+    tilo_rt::panic_boundary::abort_outside_boundaries();
     log_gpu_pin(gpu_pin.as_ref());
     compositor::dev_env::report_build_mode();
 
@@ -507,7 +511,7 @@ pub fn run() -> std::process::ExitCode {
     // in, and before the compositor's first read.
     install_session_settings();
 
-    let enable_peer_sync = compositor::peer_sync_enabled_from_env_or_marker();
+    let enable_peer_sync = compositor::parse_peer_sync_from_args();
     let enable_portals = compositor::parse_portals_from_args();
     match compositor::parse_mode_from_args() {
         Mode::Hosted => compositor::hosted::run_with_full_options(HostedOptions {

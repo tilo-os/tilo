@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::{Ime, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
@@ -137,14 +137,43 @@ impl EditState {
     }
 
     fn apply_edit(&mut self, edit: &ui::text_edit::Edit) {
-        if edit.is_noop() {
-            return;
+        if !edit.is_noop() && edit.apply(&mut self.text) {
+            self.core.clamp_to(&self.text);
         }
-        self.text.replace_range(
-            edit.at..edit.at.saturating_add(edit.removed),
-            &edit.inserted,
-        );
-        self.core.clamp_to(&self.text);
+    }
+
+    /// The text as drawn: the committed text with any input-method
+    /// composition shown at the caret.
+    fn shown(&self) -> std::borrow::Cow<'_, str> {
+        self.core.display_text(&self.text)
+    }
+
+    /// Char index into [`Self::shown`] of display byte `byte`.
+    fn shown_chars(&self, byte: usize) -> usize {
+        self.shown()
+            .get(..byte)
+            .map_or(0, |head| head.chars().count())
+    }
+
+    /// The caret as a char index into [`Self::shown`] — inside the
+    /// composition at the input method's cursor while composing.
+    fn shown_caret(&self) -> usize {
+        self.shown_chars(self.core.display_caret(&self.text))
+    }
+
+    /// The selection as char indices into [`Self::shown`].
+    fn shown_selection(&self) -> Option<(usize, usize)> {
+        let range = self.core.selected_range()?;
+        Some((
+            self.shown_chars(self.core.to_display(&self.text, range.start)),
+            self.shown_chars(self.core.to_display(&self.text, range.end)),
+        ))
+    }
+
+    /// The composition as char indices into [`Self::shown`].
+    fn shown_preedit(&self) -> Option<(usize, usize)> {
+        let range = self.core.preedit_display_range(&self.text)?;
+        Some((self.shown_chars(range.start), self.shown_chars(range.end)))
     }
 }
 
@@ -1913,6 +1942,43 @@ impl Grid {
         }
     }
 
+    /// An input-method event while a cell is being edited: the composition
+    /// shows at the caret until it is committed into the cell like typing.
+    /// Returns whether the edit took it.
+    pub fn ime(&mut self, ime: &Ime) -> bool {
+        let Some(e) = &mut self.edit else {
+            return false;
+        };
+        match ime {
+            Ime::Preedit(text, _) if text.is_empty() => e.core.clear_preedit(),
+            Ime::Preedit(text, cursor) => e.core.set_preedit(text, *cursor),
+            Ime::Commit(text) => {
+                let edit = e.core.commit(text);
+                e.apply_edit(&edit);
+                self.point_anchor = None;
+            }
+            Ime::Disabled => e.core.clear_preedit(),
+            Ime::Enabled => return false,
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// The edit as drawn — text with any composition, and the caret's char
+    /// index into it.
+    #[cfg(test)]
+    pub(crate) fn edit_shown(&self) -> Option<(String, usize)> {
+        let e = self.edit.as_ref()?;
+        Some((e.shown().into_owned(), e.shown_caret()))
+    }
+
+    /// Where the input method's candidate window should sit: the cell being
+    /// edited.
+    pub fn ime_cell_rect(&self) -> Option<Rect> {
+        let (col, row) = self.edit.as_ref()?.addr;
+        Some(self.cell_screen_rect(col, row))
+    }
+
     fn insert_text(&mut self, s: &str) {
         if let Some(e) = &mut self.edit {
             let edit = e.core.insert(s);
@@ -2686,7 +2752,7 @@ impl Grid {
         }
 
         let size = self.metrics.cell_size;
-        let text = e.text();
+        let text = e.shown();
         let desired = self.editor_desired_width(&text, tr, size);
 
         // Grow rightward across empty neighbours until we have enough room or
@@ -2727,7 +2793,7 @@ impl Grid {
             &edit_rect,
         );
         // Selection highlight behind the text.
-        if let Some((sel_s, sel_e)) = e.selection() {
+        if let Some((sel_s, sel_e)) = e.shown_selection() {
             let chars: Vec<char> = text.chars().collect();
             let sel_s = sel_s.min(chars.len());
             let sel_e = sel_e.min(chars.len());
@@ -2757,8 +2823,24 @@ impl Grid {
             size,
             theme,
             Point::new(tx, ty),
-            Some(e.caret()),
+            Some(e.shown_caret()),
         );
+        // The composition is underlined until the input method commits it.
+        if let Some((pre_s, pre_e)) = e.shown_preedit() {
+            let chars: Vec<char> = text.chars().collect();
+            let mut width = |n: usize| {
+                let head: String = chars.get(..n).unwrap_or_default().iter().collect();
+                f64::from(tr.measure(&head, size, None).0)
+            };
+            let uy = ty + self.metrics.cell_line_h;
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                colors.text_primary,
+                None,
+                &Line::new((tx + width(pre_s), uy), (tx + width(pre_e), uy)),
+            );
+        }
         scene.stroke(
             &Stroke::new(1.5),
             transform,

@@ -36,6 +36,8 @@ notes-help-code-select = Select code, then note
 notes-scroll-position = Note scroll position
 notes-scroll-help = Drag to scroll. Arrow keys move a little; Page Up and Page Down move a screen; Home and End jump to the beginning or end.
 notes-help-outline-indent = Indent / outdent text or list
+notes-help-editor-leave = Move focus out of the editor
+notes-help-block-backspace = At block start: outdent, unstyle, then join
 notes-help-block-indent = Indent / outdent a whole block
 notes-title = Notes
 notes-menu-new-child = New child note
@@ -49,3 +51,7 @@ notes-a11y-new-child-under = New child note under
 notes-a11y-more-actions-for = More actions for
 
 notes-view-editor = Editor
+
+notes-help-block-duplicate = Duplicate blocks and their children
+
+notes-help-block-move = Move focused or selected blocks
