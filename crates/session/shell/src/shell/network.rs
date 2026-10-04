@@ -906,12 +906,22 @@ fn registered_home_peer_addrs(
 ///
 /// These are ordinary peers of the same person, not relays. A relay handshake
 /// rejects a certificate that cannot act as a host, so a setup laptop is
-/// reached on its device endpoint instead.
+/// reached on its device endpoint instead. A device the person's root
+/// revoked — recorded beside the list, or in `known` — is never dialed, even
+/// before the privileged prune removes it from the list itself.
 fn personal_device_peer_addrs(
     path: &Path,
     local_device: Option<[u8; 32]>,
+    person: Option<&[u8; 32]>,
+    known: &tilo_user_identity::RevocationList,
 ) -> Vec<iroh::EndpointAddr> {
-    let devices = match tilo_relay_protocol::personal_devices::read_direct_peers(path) {
+    let devices = match (person, path.parent()) {
+        (Some(person), Some(root)) => {
+            tilo_relay_protocol::personal_devices::live_direct_peers(root, person, known)
+        }
+        _ => tilo_relay_protocol::personal_devices::read_direct_peers(path),
+    };
+    let devices = match devices {
         Ok(devices) => devices,
         Err(error) => {
             tracing::warn!(path = %path.display(), %error, "personal device list is unusable");
@@ -921,12 +931,38 @@ fn personal_device_peer_addrs(
     devices
         .into_iter()
         .filter(|device| local_device != Some(*device))
+        .filter(|device| !known.is_revoked(device))
         .filter_map(|device| {
             iroh::EndpointId::from_bytes(&device)
                 .ok()
                 .map(iroh::EndpointAddr::new)
         })
         .collect()
+}
+
+/// Persist the revocations in `list` that `user`'s root signed: into the
+/// person's fleet through `fleet`, and into the revocation directory under
+/// `identity_root`. Best effort; each failure is logged.
+fn remember_revocations(
+    fleet: Option<&tilo_identity_host::device_fleet::DeviceFleetStore>,
+    identity_root: Option<&Path>,
+    user: &[u8; 32],
+    list: &tilo_user_identity::RevocationList,
+) {
+    let identity_id = hex::encode(user);
+    for entry in list.iter().filter(|entry| &entry.user_public_key == user) {
+        if let Some(fleet) = fleet
+            && let Err(error) = fleet.remember_revocation(&identity_id, entry.clone())
+        {
+            tracing::debug!(%error, "could not keep a device revocation in the fleet");
+        }
+        if let Some(root) = identity_root
+            && let Err(error) =
+                tilo_relay_protocol::personal_devices::record_revocation(root, entry)
+        {
+            tracing::debug!(%error, "could not record a device revocation for pruning");
+        }
+    }
 }
 
 fn personal_device_peer_path() -> PathBuf {
@@ -959,6 +995,9 @@ fn personal_room_ids(path: &Path) -> Vec<RoomId> {
 /// upper bound on how stale a guest's view of a room can be.
 const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 const HOME_PEER_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+/// How often a session re-reads its own fleet's revocations. A device
+/// revoked here is refused and no longer dialed within this bound.
+const LOCAL_REVOCATION_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 /// How often an unchanged presence snapshot is rewritten, so its timestamp
 /// tells a status tool the session is still running.
 const PRESENCE_EXPORT_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
@@ -1252,6 +1291,9 @@ pub struct ShellNetwork {
     /// be approved after this shell started, so startup-only loading is not
     /// sufficient.
     last_home_peer_refresh: Mutex<Option<std::time::Instant>>,
+    /// When this device last re-read its own fleet's revocations; see
+    /// [`Self::refresh_local_revocations`].
+    last_revocation_refresh: Mutex<Option<std::time::Instant>>,
     /// When [`Self::kick_periodic_sync`] last asked. `None` until the
     /// first tick, so the first frame after startup kicks a round.
     last_sync_kick: Mutex<Option<std::time::Instant>>,
@@ -1642,6 +1684,8 @@ impl ShellNetwork {
             &home_peer_registry_path()
                 .with_file_name(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE),
             Some(*local_peer_id.as_bytes()),
+            personal_continuity_user.as_ref(),
+            &tilo_user_identity::RevocationList::new(),
         ) {
             let _ = cmd_tx.try_send(NetCmd::Connect { addr });
         }
@@ -1716,6 +1760,7 @@ impl ShellNetwork {
             last_presence_export: Mutex::new(None),
             registered_home_device_ids: Mutex::new(home_device_ids),
             last_home_peer_refresh: Mutex::new(None),
+            last_revocation_refresh: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
             personal_focus_recency: Mutex::new(
                 crate::shell::continuity_suggestion::FocusRecency::seeded(
@@ -2786,7 +2831,7 @@ impl ShellNetwork {
             .personal_continuity_device
             .as_ref()
             .and_then(|device| decode_lower_hex_32(device.as_str()));
-        let enrolled = personal_device_peer_addrs(&personal_device_peer_path(), local);
+        let enrolled = self.direct_peer_addrs(local);
         if !enrolled.iter().any(|addr| *addr.id.as_bytes() == device) {
             return Err("device is not an enrolled device".into());
         }
@@ -3299,10 +3344,7 @@ impl ShellNetwork {
 
     /// Dial enrolled devices this session has not reached yet.
     fn dial_direct_peers(&self) -> bool {
-        let direct = personal_device_peer_addrs(
-            &personal_device_peer_path(),
-            Some(*self.local_peer_id.as_bytes()),
-        );
+        let direct = self.direct_peer_addrs(Some(*self.local_peer_id.as_bytes()));
         let Ok(connected) = self.dialed_direct_peers.lock() else {
             return false;
         };
@@ -3316,6 +3358,132 @@ impl ShellNetwork {
             }
         }
         changed
+    }
+
+    /// The person's other devices this session dials: the enrolled list
+    /// without this device and without any device the person's root
+    /// revoked, as recorded beside the list or already known here.
+    fn direct_peer_addrs(&self, local_device: Option<[u8; 32]>) -> Vec<iroh::EndpointAddr> {
+        let known = self
+            .personal_continuity_user
+            .map(|user| self.peer_identities.revocations_of(&user))
+            .unwrap_or_default();
+        personal_device_peer_addrs(
+            &personal_device_peer_path(),
+            local_device,
+            self.personal_continuity_user.as_ref(),
+            &known,
+        )
+    }
+
+    fn refresh_local_revocations_periodically(&self) {
+        let Ok(mut last) = self.last_revocation_refresh.lock() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        if let Some(previous) = *last
+            && now.duration_since(previous) < LOCAL_REVOCATION_REFRESH_INTERVAL
+        {
+            return;
+        }
+        *last = Some(now);
+        drop(last);
+        let Some(user) = self.personal_continuity_user else {
+            return;
+        };
+        let Some(identity) = self.host_identity.as_ref() else {
+            return;
+        };
+        let (cert, mut entries) = identity.material_for(personal_continuity_topic_id(&user));
+        if cert.user_public_key != user {
+            return;
+        }
+        if let Some(root) = personal_device_peer_path().parent()
+            && let Ok(recorded) = tilo_relay_protocol::personal_devices::read_revocations(root)
+        {
+            entries.extend(recorded.iter().cloned());
+        }
+        self.refresh_local_revocations(user, &entries, tilo_clock::unix_now_ns());
+    }
+
+    /// Take the person's own revocations into the peer store and drop every
+    /// connected peer that may no longer act for its person, so a device
+    /// revoked on this machine is refused from the next message on rather
+    /// than when it next announces itself. Each new revocation is also
+    /// recorded beside the identity root, where the privileged prune removes
+    /// the device from the direct-peer list.
+    fn refresh_local_revocations(
+        &self,
+        user: [u8; 32],
+        entries: &[tilo_user_identity::RevocationEntry],
+        now_ns: u64,
+    ) {
+        let before = self.peer_identities.revocations_of(&user);
+        let mut list = tilo_user_identity::RevocationList::new();
+        for entry in entries.iter().filter(|entry| entry.user_public_key == user) {
+            let _ = list.insert(entry.clone());
+        }
+        self.peer_identities.set_revocations(user, &list);
+        let new_entries: Vec<_> = list
+            .iter()
+            .filter(|entry| {
+                before
+                    .revocation_of(&entry.user_public_key, &entry.revoked_device_public_key)
+                    .is_none()
+            })
+            .cloned()
+            .collect();
+        if !new_entries.is_empty()
+            && let Some(root) = personal_device_peer_path().parent()
+        {
+            for entry in &new_entries {
+                // The directory is created by the system; a session that
+                // cannot write it still refuses and stops dialing the device.
+                if let Err(error) =
+                    tilo_relay_protocol::personal_devices::record_revocation(root, entry)
+                {
+                    tracing::debug!(%error, "could not record a device revocation for pruning");
+                }
+            }
+        }
+        self.drop_untrusted_peers(now_ns);
+    }
+
+    /// Remove peers whose chain no longer holds and close what they had
+    /// open: their same-person routes and the workspace-control sessions
+    /// that target them.
+    fn drop_untrusted_peers(&self, now_ns: u64) {
+        let dropped = self.peer_identities.drop_untrusted(now_ns);
+        if dropped.is_empty() {
+            return;
+        }
+        let devices: std::collections::HashSet<[u8; 32]> = dropped
+            .iter()
+            .map(|(_, identity)| identity.device_pubkey)
+            .collect();
+        if let Ok(mut routes) = self.authenticated_personal_routes.lock() {
+            routes.retain(|(_, endpoint), _| !devices.contains(endpoint.as_bytes()));
+        }
+        let topics: Vec<u64> = self
+            .joined_topics
+            .lock()
+            .map(|topics| topics.iter().copied().collect())
+            .unwrap_or_default();
+        for device in &devices {
+            tracing::warn!(device = %hex::encode(device), "refusing a device its person revoked or no longer certifies");
+            let Ok(peer) = iroh::EndpointId::from_bytes(device) else {
+                continue;
+            };
+            if let Ok(mut direct) = self.workspace_control_direct.lock() {
+                direct.retain(|(_, endpoint)| endpoint != &peer);
+            }
+            for workspace_topic in &topics {
+                self.notify_workspace_control(WorkspaceControlNetworkEvent::PeerRevoked {
+                    workspace_topic: *workspace_topic,
+                    peer,
+                });
+            }
+        }
     }
 
     fn refresh_home_peer_hosts_periodically(&self) {
@@ -4816,13 +4984,12 @@ impl ShellNetwork {
                 crate::shell::personal_continuity::DeviceId::new(hex::encode(device)).ok()
             }));
         }
-        for addr in personal_device_peer_addrs(
-            &personal_device_peer_path(),
-            self.personal_continuity_device.as_ref().and_then(|device| {
+        for addr in
+            self.direct_peer_addrs(self.personal_continuity_device.as_ref().and_then(|device| {
                 let bytes = hex::decode(device.as_str()).ok()?;
                 bytes.try_into().ok()
-            }),
-        ) {
+            }))
+        {
             if let Ok(device) =
                 crate::shell::personal_continuity::DeviceId::new(hex::encode(addr.id.as_bytes()))
             {
@@ -4854,11 +5021,9 @@ impl ShellNetwork {
         // Presence and actions between those devices stay available when the
         // optional continuity features are switched off.
         if !self.continuity_policy().enabled()
-            && personal_device_peer_addrs(
-                &personal_device_peer_path(),
-                Some(*self.local_peer_id.as_bytes()),
-            )
-            .is_empty()
+            && self
+                .direct_peer_addrs(Some(*self.local_peer_id.as_bytes()))
+                .is_empty()
         {
             return;
         }
@@ -4960,6 +5125,7 @@ impl ShellNetwork {
         // of a capability change up to date.
         self.kick_periodic_sync();
         self.refresh_home_peer_hosts_periodically();
+        self.refresh_local_revocations_periodically();
         self.finish_shared_rooms();
         self.live_keepalive();
         // Hold the lock for the whole drain so a concurrent frame-tick
@@ -5717,11 +5883,16 @@ impl ShellNetwork {
         // A member of an enrolled room that announced nothing to this device
         // (a browser) is known from the room's governance, which also says it
         // may take part in the room: its actions are answered as its own.
+        let now_ns = tilo_clock::unix_now_ns();
         let governed_action = matches!(msg, NeighbourMsg::RemoteAction { .. })
             && self.peer_identities.get(&origin).is_none()
-            && self.governed_identity(ws, peer).is_some();
+            && self.governed_identity(ws, peer).is_some_and(|identity| {
+                !self
+                    .peer_identities
+                    .is_revoked(&identity.user_pubkey, &identity.device_pubkey)
+            });
         if self.require_peer_identity
-            && self.peer_identities.get(&origin).is_none()
+            && self.peer_identities.trusted(&origin, now_ns).is_none()
             && !governed_action
         {
             tracing::warn!(peer = %peer, "dropping collaboration message from an unauthenticated device");
@@ -6157,7 +6328,12 @@ impl ShellNetwork {
         required: crate::shell::state::Verb,
         pinned_authority_may_bootstrap: bool,
     ) -> bool {
-        let Some(identity) = self.peer_identities.get(origin) else {
+        // Trusted now, not merely announced once: a device revoked or expired
+        // since it connected is refused here.
+        let Some(identity) = self
+            .peer_identities
+            .trusted(origin, tilo_clock::unix_now_ns())
+        else {
             return false;
         };
         let Some(room) = self.unique_room_for_topic(workspace_topic) else {
@@ -6278,6 +6454,26 @@ impl ShellNetwork {
         }
     }
 
+    /// Keep revocations another device of the person carried: in this
+    /// device's fleet, so it refuses the device after a restart and passes
+    /// the revocation on, and beside the identity root, where the
+    /// privileged prune removes the device from the direct-peer list.
+    fn remember_person_revocations(&self, list: &tilo_user_identity::RevocationList) {
+        if list.is_empty() {
+            return;
+        }
+        let Some(user) = self.personal_continuity_user else {
+            return;
+        };
+        let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::from_env();
+        remember_revocations(
+            fleet.as_ref().ok(),
+            personal_device_peer_path().parent(),
+            &user,
+            list,
+        );
+    }
+
     fn accept_identity_hello(
         &self,
         workspace_topic: u64,
@@ -6299,6 +6495,17 @@ impl ShellNetwork {
                 self.peer_identities.remove(origin);
                 return;
             }
+        }
+        if self.personal_continuity_user == Some(cert.user_public_key) {
+            let held = self.peer_identities.revocations_of(&cert.user_public_key);
+            let mut learned = tilo_user_identity::RevocationList::new();
+            for entry in list.iter().filter(|entry| {
+                held.revocation_of(&entry.user_public_key, &entry.revoked_device_public_key)
+                    .is_none()
+            }) {
+                let _ = learned.insert(entry.clone());
+            }
+            self.remember_person_revocations(&learned);
         }
         self.peer_identities
             .set_revocations(cert.user_public_key, &list);
@@ -6479,7 +6686,9 @@ impl ShellNetwork {
         record_id: &str,
         envelope: &collab_types::SignedOp,
     ) -> Option<collab_types::Role> {
-        let identity = self.peer_identities.get(origin)?;
+        let identity = self
+            .peer_identities
+            .trusted(origin, tilo_clock::unix_now_ns())?;
         if *envelope.author.as_bytes() != identity.device_pubkey {
             return None;
         }
@@ -6681,6 +6890,7 @@ pub(crate) fn shell_network_for_test(
         last_presence_export: Mutex::new(None),
         registered_home_device_ids: Mutex::new(std::collections::HashSet::new()),
         last_home_peer_refresh: Mutex::new(None),
+        last_revocation_refresh: Mutex::new(None),
         last_sync_kick: Mutex::new(None),
         personal_continuity: Mutex::new(
             crate::shell::personal_continuity::PersonalContinuity::default(),
@@ -6787,9 +6997,92 @@ mod tests {
             serde_json::to_vec(&vec![hex::encode(own), hex::encode(peer)]).unwrap(),
         )
         .unwrap();
-        let addrs = personal_device_peer_addrs(&path, Some(own));
+        let addrs = personal_device_peer_addrs(
+            &path,
+            Some(own),
+            None,
+            &tilo_user_identity::RevocationList::new(),
+        );
         assert_eq!(addrs.len(), 1);
         assert_eq!(*addrs[0].id.as_bytes(), peer);
+    }
+
+    fn revocation_of(
+        root: &ed25519_dalek::SigningKey,
+        device: [u8; 32],
+    ) -> tilo_user_identity::RevocationEntry {
+        let mut entry = tilo_user_identity::RevocationEntry {
+            user_public_key: root.verifying_key().to_bytes(),
+            revoked_device_public_key: device,
+            revoked_at_ns: 1,
+            reason: tilo_user_identity::RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, root).unwrap();
+        entry
+    }
+
+    #[test]
+    fn revoked_personal_devices_are_never_dialed() {
+        let dir = tempfile::tempdir().expect("temp");
+        let path = dir.path().join("personal-device-peers.json");
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
+        let user = root.verifying_key().to_bytes();
+        let [own, recorded, held, live] = [0x11_u8, 0x22, 0x33, 0x44]
+            .map(|seed| *iroh::SecretKey::from_bytes(&[seed; 32]).public().as_bytes());
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&[own, recorded, held, live].map(hex::encode)).unwrap(),
+        )
+        .unwrap();
+        // One revocation recorded beside the list, one only held in memory.
+        tilo_relay_protocol::personal_devices::record_revocation(
+            dir.path(),
+            &revocation_of(&root, recorded),
+        )
+        .unwrap();
+        let mut known = tilo_user_identity::RevocationList::new();
+        known.insert(revocation_of(&root, held)).unwrap();
+        let addrs = personal_device_peer_addrs(&path, Some(own), Some(&user), &known);
+        assert_eq!(
+            addrs
+                .iter()
+                .map(|addr| *addr.id.as_bytes())
+                .collect::<Vec<_>>(),
+            vec![live]
+        );
+        // Another identity's revocation of a peer changes nothing.
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
+        tilo_relay_protocol::personal_devices::record_revocation(
+            dir.path(),
+            &revocation_of(&stranger, live),
+        )
+        .unwrap();
+        let addrs = personal_device_peer_addrs(&path, Some(own), Some(&user), &known);
+        assert_eq!(addrs.len(), 1);
+    }
+
+    #[test]
+    fn revocations_another_device_carried_are_kept_for_the_person_only() {
+        let dir = tempfile::tempdir().expect("temp");
+        let identity_dir = dir.path().join("identity");
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[0x62; 32]);
+        let user = root.verifying_key().to_bytes();
+        let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::at(
+            &identity_dir,
+            tilo_user_identity::IdentityPaths::under(dir.path()),
+        );
+        let mut list = tilo_user_identity::RevocationList::new();
+        list.insert(revocation_of(&root, [0x22; 32])).unwrap();
+        list.insert(revocation_of(&stranger, [0x33; 32])).unwrap();
+        remember_revocations(Some(&fleet), Some(dir.path()), &user, &list);
+        let kept = fleet.load(&hex::encode(user)).unwrap();
+        assert!(kept.is_revoked(&[0x22; 32]));
+        assert!(!kept.is_revoked(&[0x33; 32]));
+        let recorded = tilo_relay_protocol::personal_devices::read_revocations(dir.path()).unwrap();
+        assert!(recorded.revocation_of(&user, &[0x22; 32]).is_some());
+        assert_eq!(recorded.len(), 1);
     }
 
     #[test]
@@ -7885,6 +8178,47 @@ mod tests {
         // in-process test bridge's unauthenticated compatibility mode.
         net.require_peer_identity = true;
         (net, commands)
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_device_revoked_here_is_refused_and_dropped_without_reconnecting() {
+        let dir = tempfile::tempdir().expect("temp");
+        let registry = dir.path().join("home-peers.json");
+        std::fs::write(&registry, b"[]").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &registry);
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x71; 32]);
+        let user = root.verifying_key().to_bytes();
+        let (net, _commands) = personal_continuity_network_for_test(user);
+        let device = iroh::SecretKey::from_bytes(&[0x72; 32]);
+        let origin = crate::shell::state::PeerOrigin::peer(&device.public());
+        authenticated_personal_peer(&net, &root, &device);
+        let now = tilo_clock::unix_now_ns();
+        assert!(net.peer_identities.trusted(&origin, now).is_some());
+        assert_eq!(net.authenticated_personal_routes.lock().unwrap().len(), 1);
+
+        let entry = revocation_of(&root, *device.public().as_bytes());
+        net.refresh_local_revocations(user, std::slice::from_ref(&entry), now);
+        assert!(net.peer_identities.get(&origin).is_none());
+        assert!(net.authenticated_personal_routes.lock().unwrap().is_empty());
+        assert!(!net.peer_room_allows(
+            &origin,
+            personal_continuity_topic_id(&user),
+            crate::shell::state::Verb::Read,
+            true,
+        ));
+        // Recorded beside the identity root for the privileged prune.
+        let recorded = tilo_relay_protocol::personal_devices::read_revocations(dir.path()).unwrap();
+        assert!(
+            recorded
+                .revocation_of(&user, device.public().as_bytes())
+                .is_some()
+        );
+        // Announcing itself again, without the revocation, does not let it back.
+        authenticated_personal_peer(&net, &root, &device);
+        assert!(net.peer_identities.get(&origin).is_none());
+        assert!(net.authenticated_personal_routes.lock().unwrap().is_empty());
     }
 
     fn test_continuity_policy(
