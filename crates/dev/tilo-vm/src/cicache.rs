@@ -21,6 +21,8 @@ pub const KEEP: usize = 6;
 
 const ARCHIVE: &str = "layer.tar";
 const PULLED: &str = "pulled.json";
+/// The content hash tilo-vmd gave the layer when it was imported.
+const HASH: &str = "layer.hash";
 
 pub struct CiCache {
     dir: PathBuf,
@@ -66,6 +68,27 @@ impl CiCache {
         }
         touch(&entry);
         Some((archive, pulled))
+    }
+
+    /// The content hash a device gave this layer on import, once known: a
+    /// device that lists it needs no upload.
+    pub fn layer_hash(&self, digest: &str, component: &str) -> Option<String> {
+        let entry = self.entry(digest, component)?;
+        let hash = std::fs::read_to_string(entry.join(HASH)).ok()?;
+        let hash = hash.trim();
+        (!hash.is_empty() && hash.bytes().all(|b| b.is_ascii_hexdigit())).then(|| hash.to_owned())
+    }
+
+    /// Note the content hash a device gave the kept layer on import.
+    ///
+    /// # Errors
+    /// I/O failures, or no such kept layer.
+    pub fn record_hash(&self, digest: &str, component: &str, hash: &str) -> std::io::Result<()> {
+        let entry = self
+            .entry(digest, component)
+            .filter(|entry| entry.join(ARCHIVE).is_file())
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+        std::fs::write(entry.join(HASH), hash)
     }
 
     /// Keep `archive` as `component` from the image `pulled` names, then
@@ -155,6 +178,21 @@ mod tests {
                 "a moved tag misses"
             );
             assert!(cache.get("../x", "shell").is_none());
+        }
+        // Phase `the_imported_hash_is_remembered_with_the_layer`.
+        {
+            assert_eq!(cache.layer_hash("sha256:aa", "shell"), None);
+            cache
+                .record_hash("sha256:aa", "shell", "999eb36b8b34")
+                .unwrap();
+            assert_eq!(
+                cache.layer_hash("sha256:aa", "shell").as_deref(),
+                Some("999eb36b8b34")
+            );
+            assert!(cache.record_hash("sha256:zz", "shell", "ab").is_err());
+            // A new put of the same build starts without one.
+            cache.put("shell", &archive, &pulled("sha256:aa")).unwrap();
+            assert_eq!(cache.layer_hash("sha256:aa", "shell"), None);
         }
         // Phase `only_the_most_recently_used_stay`.
         {
