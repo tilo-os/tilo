@@ -19,7 +19,6 @@
 # for every table is empty.
 
 [ratchets.app_action_host]
-"apps/photos/src/resource.rs" = 2
 
 [ratchets.standalone_launch]
 

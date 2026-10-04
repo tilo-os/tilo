@@ -354,6 +354,7 @@ pub(crate) fn build_root<A: ResourceApp>(
         }
         Editing::ReadOnly => (None, true, None, Run::past()),
     };
+    let run = run.for_participant(me.as_deref());
     let label = A::label(reader.state());
     let resource_id = <A::Resource as Resource>::KIND;
     let published = tilo_resource::publish::<A::Resource>(resource_id, &label, reader.state());
@@ -929,9 +930,10 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
         spec
     };
     // An input surface types into other apps' fields: nothing drives it
-    // without a person.
+    // without a person. It is a session service the compositor starts
+    // without a room, so it has no workspace runtime to attach to.
     if A::BEHAVIOUR.window == ui_core::application::WindowRole::InputSurface {
-        spec.disable_headless()
+        spec.disable_headless().runtime_attachment(|_| false)
     } else {
         spec
     }

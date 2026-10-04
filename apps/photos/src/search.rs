@@ -678,14 +678,9 @@ mod tests {
 
     fn open_doc(name: &str) -> AutoCommit {
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        PhotosDoc::set_image(
+        PhotosDoc::put_image(
             &mut doc,
-            Some(&OpenImage::from_path(
-                &format!("/pictures/{name}"),
-                800,
-                400,
-            )),
+            &OpenImage::from_path(&format!("/pictures/{name}"), 800, 400),
         );
         doc
     }
@@ -888,7 +883,6 @@ mod tests {
     #[test]
     fn collection_and_late_search_hits_materialize_their_exact_resources() {
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let location = PhotoLocation {
             latitude: 48.8566,
             longitude: 2.3522,
@@ -928,7 +922,6 @@ mod tests {
 
         {
             let mut doc = AutoCommit::new();
-            PhotosDoc::seed(&mut doc);
             let mut library = PhotoLibrary::default();
             for index in 0..80 {
                 library.albums.push(Album {
@@ -962,7 +955,6 @@ mod tests {
 
         {
             let mut doc = AutoCommit::new();
-            PhotosDoc::seed(&mut doc);
             let library = PhotoLibrary {
                 photos: Vec::new(),
                 albums: vec![Album {
@@ -996,7 +988,6 @@ mod tests {
 
         {
             let mut doc = AutoCommit::new();
-            PhotosDoc::seed(&mut doc);
             let mut library = PhotoLibrary::default();
             for index in 0..3_000 {
                 let name = if index == 2_999 {
@@ -1088,7 +1079,6 @@ mod tests {
             let address = provider.search("before")[0].action_address().unwrap();
 
             PhotosDoc::set_library(&mut doc, &PhotoLibrary::default());
-            PhotosDoc::set_image(&mut doc, None);
             provider.sync(&doc).unwrap();
             assert!(!provider.action_directory_cursor_is_current(&cursor));
             assert!(provider.resolve_action_resource(&address).is_none());

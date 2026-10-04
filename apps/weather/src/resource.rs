@@ -96,6 +96,7 @@ impl Resource for Weather {
                     .collect::<Vec<_>>()
                     .join(", "),
                 action: None,
+                ..Default::default()
             })
             .collect()
     }

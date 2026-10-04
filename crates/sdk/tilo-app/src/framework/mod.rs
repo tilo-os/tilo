@@ -123,7 +123,10 @@
 //!   inside an action: the same id, pinned with the action so every replica
 //!   reads it. The resource state stays the same for everyone; a view
 //!   compares the authors it records with `me`, and an action signs what it
-//!   writes with its author rather than carrying one in its payload.
+//!   writes with its author rather than carrying one in its payload. What a
+//!   view shows for an id is the name the host's roster has for it
+//!   ([`ViewCx::people`], [`SurfaceCx::people`]): the document keeps ids,
+//!   so a name that changes or arrives late reads right everywhere.
 //! * **A brand-new record** starts with the resource's
 //!   [`initialize`](tilo_resource::Resource::initialize), its genesis: the
 //!   same change on every device, so two people creating the same record
@@ -227,6 +230,13 @@
 //!   Neither rows nor children need to be published whole: a bounded page is
 //!   published and the rest resolve by id (`ResourceSurface::live_row`,
 //!   `Resource::child`).
+//! * **One search source** — what the app's search finds is the resource's
+//!   entries ([`Resource::search`](tilo_resource::Resource::search)) and,
+//!   for what a surface shows that the resource does not hold (a page's
+//!   text, a book's outline, processes), the surface's own
+//!   ([`ResourceSurface::search_entries`]), indexed together. An entry says
+//!   how its hit reads — its result group, subtitle, icon and the action it
+//!   invokes — so the app needs no search provider beside it.
 //! * **One published tree** — the palette, agents and scripts see the
 //!   resource's publication and nothing beside it that changes the document:
 //!   a document action a content widget publishes through its own
@@ -268,6 +278,7 @@ mod kinds;
 mod launch;
 mod live;
 mod participant;
+mod people;
 mod person;
 mod preview;
 mod root;
@@ -299,6 +310,7 @@ pub use kinds::resource_kind;
 pub use launch::{Command, LaunchInput};
 pub use live::Live;
 pub use participant::Participant;
+pub use people::People;
 pub use person::PersonRecord;
 pub use preview::PastVersion;
 pub use rows::LiveRow;

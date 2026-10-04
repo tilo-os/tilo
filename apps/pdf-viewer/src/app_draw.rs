@@ -2928,17 +2928,18 @@ impl PdfApp {
         out: &mut SidebarHits,
     ) {
         let c = &theme.tokens.colors;
+        let author = self.author_name(&cm.author);
         draw_avatar(
             scene,
             base,
             tr,
             theme,
-            &cm.author,
+            &author,
             hdr.avatar_c,
             hdr.avatar_radius,
         );
         let name = tr.elide_to_width_weighted(
-            &cm.author,
+            &author,
             self.type_px.sm,
             hdr.name_max,
             TextWeight::Semibold,
@@ -3141,7 +3142,7 @@ impl PdfApp {
             );
             tr.draw_text_weighted(
                 scene,
-                &r.author,
+                &self.author_name(&r.author),
                 10.0,
                 theme.text_dim,
                 base * Affine::translate((card.x0 + 24.0 * s, yy)),
