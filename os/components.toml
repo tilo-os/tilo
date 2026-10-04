@@ -372,6 +372,20 @@ files = [
   { from = "tilo-account-credential", to = "/usr/libexec/tilo-account-credential", mode = "0755" },
 ]
 
+# The command-line door to the person's identity: create, status, pair,
+# approve, list and revoke devices. It drives tilo-enroll and
+# tilo-home-peer-control for the privileged steps.
+[[component]]
+name = "identity-cli"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-identity-host"]
+bins = ["tilo-identity"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-identity", to = "/usr/bin/tilo-identity", mode = "0755" },
+]
+
 [[component]]
 name = "greeter"
 kind = "userspace"

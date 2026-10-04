@@ -120,6 +120,9 @@ an existing recovery copy. If this is your first device, Tilo makes clear that
 the recovery copy is the only way to recover that identity after losing the
 machine. Store it separately before continuing.
 
+A device without a screen (a board, a server, an agent host) does the same
+from a shell with `tilo-identity`; see [Identity on headless devices](headless-devices.md).
+
 The optional tour teaches the navigation model:
 
 1. **Move** through a horizontal strip of windows.

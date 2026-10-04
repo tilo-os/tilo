@@ -132,6 +132,10 @@ enum Command {
         expected_device: Option<String>,
         #[arg(long)]
         expected_service: Option<String>,
+        /// The workspace rooms the new device joins. Defaults to the list
+        /// this account's session exports.
+        #[arg(long)]
+        personal_rooms: Option<PathBuf>,
     },
     #[command(flatten)]
     OutOfBand(OutOfBand),
@@ -228,6 +232,9 @@ struct ResponsePayload {
     /// Current verified home-peer registry, so continuity does not depend on
     /// the approving laptop remaining online after setup.
     home_peers_json: Option<Vec<u8>>,
+    /// The approver's workspace rooms, which the new device joins as the
+    /// same person.
+    personal_rooms_json: Option<Vec<u8>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -291,6 +298,7 @@ enum PersonalCommitCheckpoint {
     Record,
     Fleet,
     HomePeers,
+    PersonalLinks,
     Registry,
     UserPublicKey,
     PerUserCert,
@@ -514,6 +522,40 @@ struct CheckedPersonalProjection {
     fleet: Vec<u8>,
     peers: Vec<u8>,
     registry: Vec<u8>,
+    direct_peers: Vec<u8>,
+    rooms: Vec<u8>,
+}
+
+/// The person's other ordinary devices the new device dials directly: the
+/// approver and every other certified, unrevoked member of the fleet. Home
+/// servers are reached through the home-peer registry instead.
+fn direct_peers_from_fleet(
+    fleet: &[u8],
+    enrolled_device: [u8; 32],
+    approver_device: Option<[u8; 32]>,
+) -> anyhow::Result<Vec<[u8; 32]>> {
+    let fleet: FleetProjection = serde_json::from_slice(fleet)?;
+    let mut revocations = RevocationList::new();
+    for entry in fleet.revocations {
+        revocations
+            .insert(entry)
+            .context("approval returned an invalid revocation")?;
+    }
+    if approver_device.is_some_and(|device| revocations.is_revoked(&device)) {
+        bail!("the approving device is revoked in the fleet it sent");
+    }
+    let mut peers: Vec<[u8; 32]> = approver_device.into_iter().collect();
+    for cert in fleet.certificates {
+        if cert.device_public_key != enrolled_device
+            && !cert.capabilities.can_act_as_host
+            && !revocations.is_revoked(&cert.device_public_key)
+            && !peers.contains(&cert.device_public_key)
+        {
+            peers.push(cert.device_public_key);
+        }
+    }
+    peers.truncate(tilo_relay_protocol::personal_devices::MAX_DIRECT_PEERS);
+    Ok(peers)
 }
 
 fn identity_record_path(identity_dir: &std::path::Path, user: [u8; 32]) -> PathBuf {
@@ -601,10 +643,35 @@ where
     }
 }
 
+/// The staged direct-peer and room lists of a personal enrollment.
+fn personal_links(
+    payload: &ResponsePayload,
+    approver_device: Option<[u8; 32]>,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    let fleet = payload
+        .fleet_json
+        .as_ref()
+        .context("approval omitted the fleet")?;
+    let direct_peers =
+        direct_peers_from_fleet(fleet, payload.cert.device_public_key, approver_device)?;
+    let rooms = payload
+        .personal_rooms_json
+        .as_deref()
+        .map(tilo_relay_protocol::personal_devices::parse_rooms)
+        .transpose()
+        .context("approval returned an invalid room list")?
+        .unwrap_or_default();
+    Ok((
+        serde_json::to_vec_pretty(&direct_peers.iter().map(hex::encode).collect::<Vec<_>>())?,
+        serde_json::to_vec_pretty(&rooms)?,
+    ))
+}
+
 fn checked_personal_projection(
     identity_root: &std::path::Path,
     identity_dir: &std::path::Path,
     payload: &ResponsePayload,
+    approver_device: Option<[u8; 32]>,
 ) -> anyhow::Result<CheckedPersonalProjection> {
     let identity = payload
         .public_identity_json
@@ -623,6 +690,7 @@ fn checked_personal_projection(
 
     validate_personal_fleet(fleet, &identity_id, payload.cert.device_public_key)?;
     validate_public_identity(identity, user)?;
+    let (direct_peers, rooms) = personal_links(payload, approver_device)?;
 
     let incoming: Vec<HomePeerRegistration> = serde_json::from_slice(transferred_peers)?;
     if incoming.len() > 128
@@ -705,17 +773,35 @@ fn checked_personal_projection(
         fleet: fleet.clone(),
         peers: serde_json::to_vec_pretty(&existing)?,
         registry: serde_json::to_vec_pretty(&registry)?,
+        direct_peers,
+        rooms,
     })
 }
 
-fn stage_personal_enrollment(
-    identity_root: &std::path::Path,
-    identity_dir: &std::path::Path,
-    paths: &IdentityPaths,
-    payload: &ResponsePayload,
+#[derive(Clone, Copy)]
+struct PersonalStage<'a> {
+    identity_root: &'a std::path::Path,
+    identity_dir: &'a std::path::Path,
+    paths: &'a IdentityPaths,
+    /// The device that approved this enrollment, absent for a certificate
+    /// delivered out of band.
+    approver_device: Option<[u8; 32]>,
     requester_lease: Option<tilo_relay::ProcessLease>,
+}
+
+fn stage_personal_enrollment(
+    stage: &PersonalStage<'_>,
+    payload: &ResponsePayload,
 ) -> anyhow::Result<(PathBuf, PersonalEnrollmentMarker)> {
-    let projection = checked_personal_projection(identity_root, identity_dir, payload)?;
+    let PersonalStage {
+        identity_root,
+        identity_dir,
+        paths,
+        approver_device,
+        requester_lease,
+    } = *stage;
+    let projection =
+        checked_personal_projection(identity_root, identity_dir, payload, approver_device)?;
     let stage_name = format!(
         "personal-{}-{}",
         hex::encode(payload.nonce),
@@ -740,6 +826,11 @@ fn stage_personal_enrollment(
         &projection.peers,
         0o644,
     )?;
+    tilo_files::native::atomic::write(
+        &staged(&stage_dir, "direct-peers.json"),
+        &projection.direct_peers,
+    )?;
+    tilo_files::native::atomic::write(&staged(&stage_dir, "rooms.json"), &projection.rooms)?;
     tilo_files::native::atomic::write(
         &staged(&stage_dir, "user-pubkey.bin"),
         &payload.cert.user_public_key,
@@ -783,6 +874,44 @@ fn authorize_personal_commit(
         0o600,
     )?;
     Ok(marker)
+}
+
+/// Merge a staged enrollment's direct peers and rooms into the lists beside
+/// the identity root. Merging is idempotent, so recovery may repeat it.
+fn install_staged_links(
+    identity_root: &std::path::Path,
+    stage_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    use tilo_relay_protocol::personal_devices;
+    let direct_peers = personal_devices::parse_direct_peers(&std::fs::read(staged(
+        stage_dir,
+        "direct-peers.json",
+    ))?)?;
+    personal_devices::remember_direct_peers(
+        &identity_root.join(personal_devices::DIRECT_PEERS_FILE),
+        &direct_peers,
+    )?;
+    let rooms = personal_devices::parse_rooms(&std::fs::read(staged(stage_dir, "rooms.json"))?)?;
+    personal_devices::remember_rooms(&identity_root.join(personal_devices::ROOMS_FILE), &rooms)?;
+    Ok(())
+}
+
+/// Make the enrolled identity the account's active one, as imager enrollment
+/// does, unless the account already chose another.
+fn select_enrolled_identity(
+    identity_dir: &std::path::Path,
+    record: &std::path::Path,
+) -> anyhow::Result<()> {
+    let active = identity_dir.join("active");
+    if active.exists() {
+        return Ok(());
+    }
+    let id = record
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .context("identity record has no id")?;
+    tilo_files::native::atomic::write_with_mode(&active, format!("{id}\n").as_bytes(), 0o600)?;
+    Ok(())
 }
 
 fn commit_staged_personal_enrollment(
@@ -841,12 +970,15 @@ fn commit_staged_personal_enrollment(
         &std::fs::read(staged(&stage_dir, "home-peers.json"))?,
         0o644,
     )?;
+    checkpoint(PersonalCommitCheckpoint::PersonalLinks)?;
+    install_staged_links(identity_root, &stage_dir)?;
     checkpoint(PersonalCommitCheckpoint::Registry)?;
     tilo_files::native::atomic::write_with_mode(
         &marker.identity_dir.join("registry.json"),
         &std::fs::read(staged(&stage_dir, "registry.json"))?,
         0o600,
     )?;
+    select_enrolled_identity(&marker.identity_dir, &record)?;
     checkpoint(PersonalCommitCheckpoint::UserPublicKey)?;
     tilo_files::native::atomic::write(&paths.user_pubkey, &marker.user_public_key)?;
     checkpoint(PersonalCommitCheckpoint::PerUserCert)?;
@@ -865,11 +997,14 @@ fn commit_staged_personal_enrollment(
         record.clone(),
         fleet,
         marker.identity_dir.join("registry.json"),
+        marker.identity_dir.join("active"),
     ] {
         restore_owner_from_directory(&path, &owner_dir)?;
     }
     for path in [
         identity_root.join("home-peers.json"),
+        identity_root.join(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE),
+        identity_root.join(tilo_relay_protocol::personal_devices::ROOMS_FILE),
         paths.user_pubkey.clone(),
         paths.device_cert_for_user(&marker.user_public_key),
         paths.device_cert.clone(),
@@ -926,8 +1061,16 @@ fn install_personal_projection(
 ) -> anyhow::Result<PathBuf> {
     let paths = IdentityPaths::under(identity_root);
     paths.ensure_directories()?;
-    let (marker_path, marker) =
-        stage_personal_enrollment(identity_root, identity_dir, &paths, payload, None)?;
+    let (marker_path, marker) = stage_personal_enrollment(
+        &PersonalStage {
+            identity_root,
+            identity_dir,
+            paths: &paths,
+            approver_device: None,
+            requester_lease: None,
+        },
+        payload,
+    )?;
     let marker = authorize_personal_commit(&marker_path, &marker, None)?;
     commit_staged_personal_enrollment(identity_root, &paths, &marker_path, &marker, |_| Ok(()))
 }
@@ -1453,6 +1596,69 @@ fn received_packet(buffer: &[u8], received: usize) -> anyhow::Result<&[u8]> {
         .context("socket reported a packet larger than its receive buffer")
 }
 
+/// Where a nearby-pairing datagram goes: the limited broadcast address, which
+/// leaves only through the interface of the default route, and the directed
+/// broadcast address of every other up IPv4 interface. A laptop whose default
+/// route is a VPN or a second uplink still reaches the device on its LAN.
+fn broadcast_destinations(port: u16) -> Vec<SocketAddrV4> {
+    let mut destinations = vec![SocketAddrV4::new(Ipv4Addr::BROADCAST, port)];
+    #[cfg(target_os = "linux")]
+    {
+        let mut addresses: *mut libc::ifaddrs = std::ptr::null_mut();
+        // SAFETY: getifaddrs writes a list head we free below with freeifaddrs.
+        if unsafe { libc::getifaddrs(&raw mut addresses) } == 0 {
+            let mut cursor = addresses;
+            while !cursor.is_null() {
+                // SAFETY: `cursor` is a non-null node of the list getifaddrs returned.
+                let entry = unsafe { &*cursor };
+                cursor = entry.ifa_next;
+                let flags = entry.ifa_flags;
+                let usable = flags & libc::IFF_UP as libc::c_uint != 0
+                    && flags & libc::IFF_BROADCAST as libc::c_uint != 0
+                    && flags & libc::IFF_LOOPBACK as libc::c_uint == 0;
+                let broadcast = entry.ifa_ifu;
+                if !usable || entry.ifa_addr.is_null() || broadcast.is_null() {
+                    continue;
+                }
+                // SAFETY: both pointers are non-null sockaddrs owned by the list.
+                let (family, target) = unsafe { ((*entry.ifa_addr).sa_family, &*broadcast) };
+                if i32::from(family) != libc::AF_INET
+                    || i32::from(target.sa_family) != libc::AF_INET
+                {
+                    continue;
+                }
+                // SAFETY: an AF_INET sockaddr is a sockaddr_in.
+                let target = unsafe { &*broadcast.cast::<libc::sockaddr_in>() };
+                let address = Ipv4Addr::from(u32::from_be(target.sin_addr.s_addr));
+                let destination = SocketAddrV4::new(address, port);
+                if !address.is_unspecified() && !destinations.contains(&destination) {
+                    destinations.push(destination);
+                }
+            }
+            // SAFETY: frees the list getifaddrs allocated, exactly once.
+            unsafe { libc::freeifaddrs(addresses) };
+        }
+    }
+    destinations
+}
+
+/// Send `bytes` to every [`broadcast_destinations`]. An interface that
+/// refuses the datagram does not stop the others.
+fn broadcast(socket: &UdpSocket, bytes: &[u8], port: u16) -> anyhow::Result<()> {
+    let mut sent = false;
+    let mut last_error = None;
+    for destination in broadcast_destinations(port) {
+        match socket.send_to(bytes, destination) {
+            Ok(_) => sent = true,
+            Err(error) => last_error = Some(error),
+        }
+    }
+    match last_error {
+        Some(error) if !sent => Err(error.into()),
+        _ => Ok(()),
+    }
+}
+
 fn validate_requester(lease: Option<tilo_relay::ProcessLease>) -> anyhow::Result<()> {
     if let Some(lease) = lease {
         lease
@@ -1510,7 +1716,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
         bail!("enrollment token does not grant home-server capabilities");
     }
     if kind == EnrollmentKind::PersonalDevice
-        && (token.capabilities.can_act_as_host || token.capabilities.can_read_all_workspaces)
+        && (token.capabilities.can_act_as_host || token.capabilities.can_admit_devices)
     {
         bail!("enrollment token grants the wrong device role");
     }
@@ -1537,11 +1743,10 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
     let deadline = deadline_after(socket_timeout(timeout))?;
-    let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, port);
     let mut reply = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
         validate_requester(requester_lease)?;
-        socket.send_to(&bytes, destination)?;
+        broadcast(&socket, &bytes, port)?;
         match socket.recv_from(&mut reply) {
             Ok((len, sender)) => {
                 let response_bytes = received_packet(&reply, len)?.to_vec();
@@ -1587,11 +1792,14 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                 // Finalized has been authenticated.
                 let staged_personal = if kind == EnrollmentKind::PersonalDevice {
                     Some(stage_personal_enrollment(
-                        identity_root,
-                        identity_dir.context("identity directory is required")?,
-                        &paths,
+                        &PersonalStage {
+                            identity_root,
+                            identity_dir: identity_dir.context("identity directory is required")?,
+                            paths: &paths,
+                            approver_device: Some(token.issuer_device_public_key),
+                            requester_lease,
+                        },
                         &response.payload,
-                        requester_lease,
                     )?)
                 } else {
                     None
@@ -1782,12 +1990,11 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
     let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    let destination = SocketAddrV4::new(Ipv4Addr::BROADCAST, port);
     let deadline = deadline_after(socket_timeout(timeout))?;
     let mut reply = vec![0_u8; MAX_PACKET];
     while std::time::Instant::now() < deadline {
         validate_requester(requester_lease)?;
-        socket.send_to(&solicitation, destination)?;
+        broadcast(&socket, &solicitation, port)?;
         match socket.recv_from(&mut reply) {
             Ok((len, _sender)) => {
                 let Ok(token_text) = decrypt_pair_offer(received_packet(&reply, len)?, &device)
@@ -1803,7 +2010,7 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
                             || !token.capabilities.can_read_all_workspaces))
                     || (kind == EnrollmentKind::PersonalDevice
                         && (token.capabilities.can_act_as_host
-                            || token.capabilities.can_read_all_workspaces))
+                            || token.capabilities.can_admit_devices))
                 {
                     continue;
                 }
@@ -1866,6 +2073,8 @@ struct ApprovalOptions<'a> {
     relay_workspace_ids: &'a [u64],
     expected_device: Option<&'a str>,
     expected_service: Option<&'a str>,
+    /// The approver's exported workspace rooms, sent to a personal device.
+    personal_rooms: Option<&'a std::path::Path>,
     kind: EnrollmentKind,
     /// Port the listener binds; 0 lets the OS choose one.
     port: u16,
@@ -1897,6 +2106,7 @@ struct ApprovalProjection {
     public_identity_json: Option<Vec<u8>>,
     fleet_json: Option<Vec<u8>>,
     home_peers_json: Option<Vec<u8>>,
+    personal_rooms_json: Option<Vec<u8>>,
 }
 
 struct PreparedApproval {
@@ -2022,7 +2232,7 @@ fn handle_solicitation(
         let expires_at_ns = issued_at_ns.saturating_add(5 * 60 * 1_000_000_000);
         let capabilities = match kind {
             EnrollmentKind::HomePeer => DeviceCapabilities::host(),
-            EnrollmentKind::PersonalDevice => DeviceCapabilities::member(),
+            EnrollmentKind::PersonalDevice => DeviceCapabilities::joined(),
         };
         let token = mint_enrollment_token(
             identity.user_public_key,
@@ -2081,7 +2291,7 @@ fn valid_pending_request(
                 token.capabilities.can_act_as_host && token.capabilities.can_read_all_workspaces
             }
             EnrollmentKind::PersonalDevice => {
-                !token.capabilities.can_act_as_host && !token.capabilities.can_read_all_workspaces
+                !token.capabilities.can_act_as_host && !token.capabilities.can_admit_devices
             }
         }
         && !wrong_selection)
@@ -2186,6 +2396,7 @@ fn approval_projection(
                 public_identity_json: None,
                 fleet_json: None,
                 home_peers_json: None,
+                personal_rooms_json: None,
             })
         }
         EnrollmentKind::PersonalDevice => {
@@ -2203,8 +2414,62 @@ fn approval_projection(
                     options.identity_root,
                     identity.user_public_key,
                 )?),
+                personal_rooms_json: Some(serde_json::to_vec(&approver_rooms(
+                    options.personal_rooms,
+                ))?),
             })
         }
+    }
+}
+
+/// The rooms this approver shares with a new personal device. The export is
+/// the session's convenience copy of its room list: a missing or malformed
+/// one shares no rooms and is reported, rather than failing the approval.
+fn approver_rooms(path: Option<&std::path::Path>) -> Vec<String> {
+    let Some(path) = path else {
+        return Vec::new();
+    };
+    match tilo_relay_protocol::personal_devices::read_rooms(path) {
+        Ok(rooms) => {
+            if rooms.is_empty() {
+                eprintln!(
+                    "note: {} lists no workspace rooms; the new device starts without shared \
+                     workspaces until this device's session has run once",
+                    path.display()
+                );
+            }
+            rooms
+        }
+        Err(error) => {
+            eprintln!(
+                "warning: not sharing workspace rooms: {}: {error}",
+                path.display()
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// Record a newly approved personal device as one this machine dials
+/// directly. Only the privileged enrollment path can write the list beside
+/// the identity root; an unprivileged approver leaves it to
+/// `tilo-home-peer-control`, which re-checks the certificate it prints.
+fn remember_approved_device(identity_root: &std::path::Path, cert: &DeviceCert) {
+    let path = identity_root.join(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE);
+    match tilo_relay_protocol::personal_devices::remember_direct_peers(
+        &path,
+        &[cert.device_public_key],
+    ) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => eprintln!(
+            "note: {} is not writable by this account; approve through `tilo-identity approve` \
+             (or Settings) so the privileged helper records the new device",
+            path.display()
+        ),
+        Err(error) => eprintln!(
+            "warning: could not record the new device in {}: {error}",
+            path.display()
+        ),
     }
 }
 
@@ -2234,6 +2499,7 @@ fn prepare_approval(
             public_identity_json: projection.public_identity_json,
             fleet_json: projection.fleet_json,
             home_peers_json: projection.home_peers_json,
+            personal_rooms_json: projection.personal_rooms_json,
         },
         identity.root.as_ref(),
     )?;
@@ -2328,9 +2594,17 @@ fn commit_approval(
         socket.send_to(&finalized, pending.sender)?;
         std::thread::sleep(Duration::from_millis(125));
     }
+    let cert = &prepared.signed.payload.cert;
+    if options.kind == EnrollmentKind::PersonalDevice {
+        remember_approved_device(options.identity_root, cert);
+    }
     println!(
-        "approved nearby device {}",
-        hex::encode(prepared.signed.payload.cert.device_public_key)
+        "{}",
+        serde_json::json!({
+            "approved_device": hex::encode(cert.device_public_key),
+            "label": cert.device_label,
+            "certificate": hex::encode(tilo_user_identity::canonical::canonical_bytes(cert)?),
+        })
     );
     Ok(())
 }
@@ -2401,6 +2675,7 @@ fn out_of_band_payload(
         public_identity_json: Some(public_identity_record(user, "My Tilo identity")?),
         fleet_json: Some(serde_json::to_vec_pretty(&fleet)?),
         home_peers_json: Some(b"[]".to_vec()),
+        personal_rooms_json: None,
         cert,
     })
 }
@@ -2619,6 +2894,7 @@ fn run() -> anyhow::Result<()> {
             relay_workspace_ids: &relay_workspace_ids,
             expected_device: expected_device.as_deref(),
             expected_service: expected_service.as_deref(),
+            personal_rooms: None,
             kind: EnrollmentKind::HomePeer,
             port: NEARBY_PORT,
             ready: None,
@@ -2629,6 +2905,7 @@ fn run() -> anyhow::Result<()> {
             timeout,
             expected_device,
             expected_service,
+            personal_rooms,
         } => approve(&ApprovalOptions {
             identity_root: &identity_root,
             identity_dir: Some(&identity_dir),
@@ -2638,6 +2915,9 @@ fn run() -> anyhow::Result<()> {
             relay_workspace_ids: &[],
             expected_device: expected_device.as_deref(),
             expected_service: expected_service.as_deref(),
+            personal_rooms: personal_rooms
+                .or_else(tilo_relay_protocol::personal_devices::rooms_export_path)
+                .as_deref(),
             kind: EnrollmentKind::PersonalDevice,
             port: NEARBY_PORT,
             ready: None,
@@ -2755,6 +3035,7 @@ mod tests {
             public_identity_json: Some(public_identity_record(user, "My Tilo identity").unwrap()),
             fleet_json: Some(serde_json::to_vec_pretty(&fleet).unwrap()),
             home_peers_json: Some(b"[]".to_vec()),
+            personal_rooms_json: None,
         }
     }
 
@@ -2779,6 +3060,7 @@ mod tests {
             public_identity_json: None,
             fleet_json: None,
             home_peers_json: None,
+            personal_rooms_json: None,
         }
     }
 
@@ -2862,6 +3144,7 @@ mod tests {
                 relay_workspace_ids: &[],
                 expected_device: None,
                 expected_service: None,
+                personal_rooms: None,
                 kind: EnrollmentKind::HomePeer,
                 port: 0,
                 ready: None,
@@ -2988,11 +3271,14 @@ mod tests {
             let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
             let payload = personal_payload(&root, &member, [9; 16]);
             let (marker_path, marker) = stage_personal_enrollment(
-                identity_root.path(),
-                identity_dir.path(),
-                &paths,
+                &PersonalStage {
+                    identity_root: identity_root.path(),
+                    identity_dir: identity_dir.path(),
+                    paths: &paths,
+                    approver_device: Some([7; 32]),
+                    requester_lease: Some(lease),
+                },
                 &payload,
-                Some(lease),
             )
             .unwrap();
             // This models an approval timeout: the recipient has a durable,
@@ -3082,6 +3368,7 @@ mod tests {
                 ),
                 fleet_json: Some(serde_json::to_vec_pretty(&fleet).unwrap()),
                 home_peers_json: Some(b"[]".to_vec()),
+                personal_rooms_json: None,
             };
             let identity_root = tempfile::tempdir().unwrap();
             let identity_dir = tempfile::tempdir().unwrap();
@@ -3215,11 +3502,14 @@ mod tests {
             let lease = tilo_relay::ProcessLease::capture(requester.id()).unwrap();
             let payload = personal_payload(&root, &member, [12; 16]);
             let (marker_path, marker) = stage_personal_enrollment(
-                identity_root.path(),
-                &identity_dir,
-                &paths,
+                &PersonalStage {
+                    identity_root: identity_root.path(),
+                    identity_dir: &identity_dir,
+                    paths: &paths,
+                    approver_device: Some([7; 32]),
+                    requester_lease: Some(lease),
+                },
                 &payload,
-                Some(lease),
             )
             .unwrap();
             let unrelated = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
@@ -3291,7 +3581,8 @@ mod tests {
         clippy::too_many_lines,
         reason = "the end-to-end test keeps the approver and joining-device setup in one auditable protocol scenario"
     )]
-    fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
+    fn nearby_personal_device_pairing_links_both_devices() {
+        use tilo_relay_protocol::personal_devices;
         let approver_root = tempfile::tempdir().unwrap();
         let approver_identities = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(approver_root.path());
@@ -3365,6 +3656,9 @@ mod tests {
         let expected_device = hex::encode(new_device.verifying_key().to_bytes());
         let expected_service = hex::encode(tilo_relay::daemon::relay_service_node_id(&new_device));
 
+        let shared_room = "0f8fad5b-d9cb-469f-a165-70867728950e";
+        let rooms_export = approver_identities.path().join("exported-rooms.json");
+        std::fs::write(&rooms_export, serde_json::to_vec(&[shared_room]).unwrap()).unwrap();
         let server_root = approver_root.path().to_path_buf();
         let server_identities = approver_identities.path().to_path_buf();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -3378,6 +3672,7 @@ mod tests {
                 relay_workspace_ids: &[],
                 expected_device: Some(&expected_device),
                 expected_service: Some(&expected_service),
+                personal_rooms: Some(&rooms_export),
                 kind: EnrollmentKind::PersonalDevice,
                 // An OS-assigned port keeps concurrent tests off each other's
                 // listeners and off the well-known port.
@@ -3423,7 +3718,7 @@ mod tests {
         let cert =
             tilo_user_identity::persist::read_device_cert(&enrolled_paths.device_cert).unwrap();
         assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
-        assert_eq!(cert.capabilities, DeviceCapabilities::member());
+        assert_eq!(cert.capabilities, DeviceCapabilities::joined());
         assert!(verify_device_cert(&cert).is_ok());
         assert!(!enrolled_paths.user_privkey.exists());
         let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
@@ -3435,11 +3730,40 @@ mod tests {
             &tilo_relay::personal_continuity_workspace_id(&root.verifying_key().to_bytes())
         ));
         let record = identity_record_path(new_identities.path(), root.verifying_key().to_bytes());
+        assert_eq!(
+            runtime_identity::resolve_active_identity(new_identities.path()),
+            Some(record.clone())
+        );
         let identity = runtime_identity::load_from_path(record).unwrap();
         assert!(
             identity
                 .sign(b"root/admin signing must stay unavailable")
                 .is_err()
+        );
+
+        // Both devices dial each other directly afterwards, and the new
+        // device joins the approver's rooms. The home server stays a
+        // home-peer route, never a direct peer.
+        assert_eq!(
+            personal_devices::read_direct_peers(
+                &new_root.path().join(personal_devices::DIRECT_PEERS_FILE)
+            )
+            .unwrap(),
+            vec![issuer.verifying_key().to_bytes()]
+        );
+        assert_eq!(
+            personal_devices::read_rooms(&new_root.path().join(personal_devices::ROOMS_FILE))
+                .unwrap(),
+            vec![shared_room.to_string()]
+        );
+        assert_eq!(
+            personal_devices::read_direct_peers(
+                &approver_root
+                    .path()
+                    .join(personal_devices::DIRECT_PEERS_FILE)
+            )
+            .unwrap(),
+            vec![new_device.verifying_key().to_bytes()]
         );
     }
 
@@ -3576,8 +3900,8 @@ mod tests {
         }
     }
 
-    const KAT_RESPONSE_SIGNATURE: &str = "a645d9aa10752fbf8b19d1ccca48b9cf5405d6ec88eb69fea45df36466edda10\
-        e8b1bf1f0d85e9f224b21f75a7251771b1482ce6ceed2ce018d43895124e6f0c";
+    const KAT_RESPONSE_SIGNATURE: &str = "1def838ab80e77a765625a5834e34224ab4917d56075c437ee85506be214ca9d\
+        81bdf95c9464eb9e86fbb89618fb094f2a6c5135435cd8e0e916458d35b19704";
     const KAT_ACK: &str = "0404040404040404040404040404040417cb79fb2b4120f2b1ec65e4198d6e08\
         b28e813feb01e4a400839b85e18080ce0aa39056fd697d25fd6d7afbe84dbb81\
         f52d9e543b4aa167cf6472c602c8079a40440274b6b4d4b42e7fd529bbbdf4f0\

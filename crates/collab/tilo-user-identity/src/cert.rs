@@ -214,6 +214,22 @@ impl DeviceCapabilities {
         }
     }
 
+    /// Capability set for a personal device that another of the person's
+    /// devices enrolled, by writing its disk (the imager) or by nearby
+    /// pairing: it keeps all of the person's workspaces like the device
+    /// that enrolled it, but can neither admit devices nor serve as a host.
+    /// First-boot provisioning recognises exactly this set as a device that
+    /// is already enrolled.
+    pub fn joined() -> Self {
+        Self {
+            can_own_workspaces: true,
+            can_admit_devices: false,
+            can_act_as_host: false,
+            can_read_all_workspaces: true,
+            foreign: false,
+        }
+    }
+
     /// Capability set for an always-on host (home server / cloud
     /// tenant). Reads everything so it can pin all workspaces; does
     /// not own or admit — those stay with the human's primary
