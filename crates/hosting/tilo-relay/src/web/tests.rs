@@ -198,28 +198,36 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
     let (host_key, host) = device(&root, 72, DeviceCapabilities::host());
     let (key, cert) = device(&root, 73, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let relay = Relay::start_with_relay_mode(
-        RelayConfig {
-            state_root: state.path().into(),
-            ..Default::default()
-        },
-        crate::daemon::RelayIdentity {
-            user_public_key: host.user_public_key,
-            device_signing_key: host_key,
-            device_cert: host,
-            revocations: RevocationList::new(),
-        },
-        iroh::RelayMode::Disabled,
-    )
-    .await
-    .unwrap();
-    for id in [71, 72] {
-        relay
-            .set_workspace_membership(id, true, vec![cert.device_public_key], state.path().into())
-            .await
-            .unwrap();
-    }
-    let sessions = Sessions::new(relay.web_context().clone());
+    let (relay, sessions) = {
+        let relay = Relay::start_with_relay_mode(
+            RelayConfig {
+                state_root: state.path().into(),
+                ..Default::default()
+            },
+            crate::daemon::RelayIdentity {
+                user_public_key: host.user_public_key,
+                device_signing_key: host_key,
+                device_cert: host,
+                revocations: RevocationList::new(),
+            },
+            iroh::RelayMode::Disabled,
+        )
+        .await
+        .unwrap();
+        for id in [71, 72] {
+            relay
+                .set_workspace_membership(
+                    id,
+                    true,
+                    vec![cert.device_public_key],
+                    state.path().into(),
+                )
+                .await
+                .unwrap();
+        }
+        let sessions = Sessions::new(relay.web_context().clone());
+        (relay, sessions)
+    };
     let challenge = sessions
         .hello(&crate::auth::Hello {
             cert: cert.clone(),
