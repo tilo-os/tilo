@@ -29,7 +29,6 @@
 [ratchets.empty_action_vocabulary]
 
 [ratchets.widget_owned_document]
-"apps/agent/src/apply.rs" = 2
 "apps/settings/src/actions/mod.rs" = 3
 "apps/settings/src/panes/audio.rs" = 2
 "apps/settings/src/panes/network.rs" = 1
