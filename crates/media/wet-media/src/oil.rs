@@ -737,20 +737,7 @@ impl OilLayer {
                 } else {
                     deposit
                 };
-                // Every bristle dragged through the paint combs its own
-                // ridge into it, whether or not it adds cover there.
-                if let Some(value) = self.thickness.get_mut(index) {
-                    // The outer hairs push paint aside into a rim, and the
-                    // paint heaps where the brush lands and lifts.
-                    let rim = smoothstep(0.6, 1.0, bristle.offset.abs()) * 0.6 * pass.heap;
-                    let ridge = (0.15 + body)
-                        * (0.35 + 1.3 * bristle.ridge)
-                        * bristle.load.min(1.2)
-                        * body_of(bristle.colour)
-                        * (1.0 + rim + touch.pile * bristle.load.min(1.0));
-                    let body_share = 1.0 - pass.glaze.map_or(0.0, |glaze| glaze.amount);
-                    *value += (ridge - *value) * (pressed * 0.7 * body_share);
-                }
+                self.comb(index, (bristle, touch), (body, pressed), pass);
                 if deposit <= 0.0 {
                     continue;
                 }
@@ -778,6 +765,31 @@ impl OilLayer {
             }
         }
         dab
+    }
+
+    /// Every bristle dragged through the paint combs its own ridge into
+    /// cell `index`, whether or not it adds cover there; the light reads the
+    /// ridges as the stroke's direction. A glaze is too thin to leave one.
+    fn comb(
+        &mut self,
+        index: usize,
+        (bristle, touch): (&Bristle, &Touch),
+        (body, pressed): (f32, f32),
+        pass: &Pass<'_>,
+    ) {
+        let Some(value) = self.thickness.get_mut(index) else {
+            return;
+        };
+        // The outer hairs push paint aside into a rim, and the paint heaps
+        // where the brush lands and lifts.
+        let rim = smoothstep(0.6, 1.0, bristle.offset.abs()) * 0.6 * pass.heap;
+        let ridge = (0.15 + body)
+            * (0.35 + 1.3 * bristle.ridge)
+            * bristle.load.min(1.2)
+            * body_of(bristle.colour)
+            * (1.0 + rim + touch.pile * bristle.load.min(1.0));
+        let body_share = 1.0 - pass.glaze.map_or(0.0, |glaze| glaze.amount);
+        *value += (ridge - *value) * (pressed * 0.7 * body_share);
     }
 
     /// How far the paint at `(x, y)` stands above the paint around it.
