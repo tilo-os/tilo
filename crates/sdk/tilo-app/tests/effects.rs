@@ -325,6 +325,47 @@ fn a_viewer_invokes_read_effects_only_and_sees_its_refused_edits() {
     );
 }
 
+#[test]
+fn an_effect_lends_its_invoker_no_more_than_they_were_admitted_for() {
+    let mut app = TestApp::<MailApp>::new().unwrap();
+    // A viewer may take a read effect, but not the edit it submits.
+    let refused = app
+        .effect_by(
+            "agent:viewer",
+            &MailEffect::Note {
+                text: "seen".into(),
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            &refused,
+            tilo_actions::DoorError::Unavailable { code, .. } if code == "permission_denied"
+        ),
+        "{refused:?}"
+    );
+    app.settle();
+    assert_eq!(app.state().fetched, "", "nothing was written");
+
+    // Someone admitted to write gets the edit their effect submits, as
+    // theirs.
+    app.effect_by(
+        "agent:writer",
+        &MailEffect::Fetch {
+            from: "a writer".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(app.state().fetched, "hello from a writer");
+    let invoker = app
+        .versions()
+        .last()
+        .and_then(|version| version.context.clone())
+        .and_then(|context| context.invoker)
+        .map(|invoker| invoker.actor);
+    assert_eq!(invoker.as_deref(), Some("agent:writer"));
+}
+
 /// A surface's own effects: answered with `&mut self`, completed with it.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "test.tally.effects")]

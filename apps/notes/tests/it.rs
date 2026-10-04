@@ -40,6 +40,8 @@ mod offscreen_smoke;
 mod outline_commands;
 #[path = "page_edit_persistence.rs"]
 mod page_edit_persistence;
+#[path = "paste_image.rs"]
+mod paste_image;
 #[path = "responsive_drawer.rs"]
 mod responsive_drawer;
 #[path = "sidebar_collab_growth.rs"]
@@ -114,3 +116,8 @@ mod block_commands;
 
 #[path = "clipboard_safety.rs"]
 mod clipboard_safety;
+
+#[path = "find_replace.rs"]
+mod find_replace;
+
+mod slash_text_input;

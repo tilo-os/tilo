@@ -54,7 +54,6 @@ use ui::widget::{
 };
 use winit::keyboard::{Key, NamedKey};
 
-use crate::doc::PhotosDoc;
 use crate::model::{Edits, LibraryPhoto, OpenImage, Rect01};
 use crate::pixels::{self, Rgba};
 use crate::strings::tr;
@@ -1090,13 +1089,6 @@ fn faces_for_width(width: f32, btn_h: f32) -> Vec<Face> {
 struct LiveContent {
     library: crate::model::PhotoLibrary,
 }
-impl LiveContent {
-    fn read(doc: &AutoCommit) -> Self {
-        Self {
-            library: PhotosDoc::library(doc),
-        }
-    }
-}
 
 /// The rendered image, and the inputs it was rendered from.
 ///
@@ -1269,7 +1261,7 @@ pub struct PhotosApp {
     library_index: crate::search::LibraryIndex,
     /// Heads that produced the cached immutable/Arc-backed search catalogue.
     /// An unchanged `sync` must not rebuild a full-library index.
-    search_heads: Vec<automerge::ChangeHash>,
+    search_revision: Option<u64>,
     /// A rejected index generation never erases the last-good provider. This
     /// bounded diagnostic is visible and exported until a later refresh
     /// succeeds.
@@ -1369,7 +1361,7 @@ pub struct PhotosApp {
     /// Exact variable-height chronology coordinate.
     timeline_scroll_y: f64,
     timeline_projection: TimelineProjection,
-    timeline_projection_heads: Vec<automerge::ChangeHash>,
+    timeline_projection_revision: Option<u64>,
     timeline_projection_filter: String,
     timeline_viewport_height: f64,
     /// Shared chronological navigation face.  It owns no library data: the
@@ -1493,6 +1485,11 @@ pub struct PhotosApp {
     library_cards: Vec<(String, Rect, bool)>,
     pointer: Point,
     library_mode: bool,
+    /// The resource state the framework presented last.
+    presented: Rc<crate::resource::PhotosState>,
+    /// Counts presentations, so derived indexes rebuild only when the
+    /// presented state changed.
+    presented_revision: u64,
     /// The photograph this window shows: its own view state, never shared.
     /// Opening one here opens nothing for a collaborator.
     open_photo: Option<String>,
@@ -1656,9 +1653,9 @@ impl PhotosApp {
         paused
     }
 
-    fn activate_library_analysis(&mut self, hit: LibraryAnalysisHit, doc: &AutoCommit) -> bool {
+    fn activate_library_analysis(&mut self, hit: LibraryAnalysisHit) -> bool {
         let invocation = tilo_actions::InvocationId::new();
-        let library = PhotosDoc::library(doc);
+        let library = self.presented().library.clone();
         let result = match hit {
             LibraryAnalysisHit::Start => self.begin_library_analysis(invocation, &library, false),
             LibraryAnalysisHit::Pause => self
@@ -1741,13 +1738,21 @@ impl PhotosApp {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each analysis outcome variant is reconciled against the presented library and library-analysis progress in one exhaustive match"
+    )]
     fn drain_library_analysis_result(&mut self, completed: AnalysisResult, doc: &mut AutoCommit) {
         let photo_name = self
             .library_analysis
             .current_name
             .clone()
             .unwrap_or_else(|| completed.photo_id.clone());
-        let stale = PhotosDoc::photo(doc, &completed.photo_id)
+        let stale = self
+            .presented()
+            .library
+            .photo(&completed.photo_id)
+            .cloned()
             .as_ref()
             .is_none_or(|photo| photo.image.content != completed.content);
         let item_result = match completed.result {
@@ -1835,7 +1840,7 @@ impl PhotosApp {
             }
         }
         if self.library_analysis.phase == crate::library_analysis::LibraryAnalysisPhase::Running
-            && let Err(error) = self.schedule_next_library_analysis(&PhotosDoc::library(doc))
+            && let Err(error) = self.schedule_next_library_analysis(&self.presented().library)
         {
             self.library_analysis.pause();
             self.notice = Some(format!("Photo analysis paused: {error}"));
@@ -1859,7 +1864,11 @@ impl PhotosApp {
                 continue;
             }
             let stale = matches!(&completed.result, AnalysisOutcome::Image { .. })
-                && PhotosDoc::photo(doc, &completed.photo_id)
+                && self
+                    .presented()
+                    .library
+                    .photo(&completed.photo_id)
+                    .cloned()
                     .as_ref()
                     .is_none_or(|photo| photo.image.content != completed.content);
             let update = if stale {
@@ -1927,7 +1936,7 @@ impl PhotosApp {
                             if self.people_scan_progress.next_offset != 0 {
                                 if let Err(error) = self.schedule_people_scan_batch(
                                     completed.invocation,
-                                    &PhotosDoc::library(doc),
+                                    &self.presented().library,
                                 ) {
                                     self.people_scan_progress.record_failure(error.clone());
                                     self.people_scan_progress.save();
@@ -2099,7 +2108,7 @@ impl PhotosApp {
             people_pending,
             canvas_state: CanvasState::Empty,
             library_index: crate::search::LibraryIndex::empty(),
-            search_heads: Vec::new(),
+            search_revision: None,
             search_refresh_error: None,
             #[cfg(test)]
             force_search_refresh_error: false,
@@ -2155,7 +2164,7 @@ impl PhotosApp {
             timeline_density: 1,
             timeline_scroll_y: 0.0,
             timeline_projection: TimelineProjection::default(),
-            timeline_projection_heads: Vec::new(),
+            timeline_projection_revision: None,
             timeline_projection_filter: String::new(),
             timeline_viewport_height: 0.0,
             timeline_index: DateIndexedScrollbar::new("photos:timeline-index"),
@@ -2234,6 +2243,8 @@ impl PhotosApp {
             library_cards: Vec::new(),
             pointer: Point::ZERO,
             library_mode: false,
+            presented: Rc::default(),
+            presented_revision: 0,
             open_photo: None,
             launched: None,
             staged: None,
@@ -2289,21 +2300,21 @@ impl PhotosApp {
 
     /// Pose the view for `scenario`, whose photographs the scenario's
     /// actions put in the library.
-    fn apply_staged(&mut self, doc: &AutoCommit) {
+    fn apply_staged(&mut self) {
         let Some(scenario) = self.staged.take() else {
             return;
         };
         self.open_photo = crate::sample::opened(&scenario);
         match scenario.as_str() {
             "albums" => self.show_albums(),
-            "selection" => self.show_selection_for_shot(doc),
+            "selection" => self.show_selection_for_shot(),
             "selection-many-albums" => {
-                self.show_selection_for_shot(doc);
-                self.show_selection_destination_chooser_for_shot(doc);
+                self.show_selection_for_shot();
+                self.show_selection_destination_chooser_for_shot();
             }
-            "album-manage" => self.show_album_editor_for_shot(doc),
-            "metadata-edit" => self.show_metadata_editor_for_shot(doc),
-            "metadata-batch" => self.show_batch_metadata_editor_for_shot(doc),
+            "album-manage" => self.show_album_editor_for_shot(),
+            "metadata-edit" => self.show_metadata_editor_for_shot(),
+            "metadata-batch" => self.show_batch_metadata_editor_for_shot(),
             "people" | "people-detail" => {
                 // A manual, explicitly labelled suggestion exercises the
                 // review layout without pretending that a face model
@@ -2907,7 +2918,7 @@ impl PhotosApp {
             PeopleIntent::Scan => {
                 let invocation = tilo_actions::InvocationId::new();
                 if let Err(error) =
-                    self.schedule_people_scan_batch(invocation, &PhotosDoc::library(doc))
+                    self.schedule_people_scan_batch(invocation, &self.presented().library)
                 {
                     self.notice = Some(error);
                 } else {
@@ -3272,7 +3283,7 @@ impl PhotosApp {
             self.notice = Some("Choose a destination album first".to_owned());
             return;
         };
-        let library = PhotosDoc::library(doc);
+        let library = self.presented().library.clone();
         let Some(album) = library.album(&album_id) else {
             self.notice = Some("That album is no longer available".to_owned());
             return;
@@ -3309,7 +3320,7 @@ impl PhotosApp {
                 self.selection_anchor = None;
             }
             SelectionHit::Favorite => {
-                let library = PhotosDoc::library(doc);
+                let library = self.presented().library.clone();
                 let all_favorite = !self.selected_photo_ids.is_empty()
                     && self
                         .selected_photo_ids
@@ -3317,7 +3328,7 @@ impl PhotosApp {
                         .all(|id| library.photo(id).is_some_and(|photo| photo.favorite));
                 self.set_selected_favorite(doc, !all_favorite);
             }
-            SelectionHit::EditDetails => self.begin_selected_metadata_editor(doc),
+            SelectionHit::EditDetails => self.begin_selected_metadata_editor(),
             SelectionHit::ChooseAlbum => {
                 if self.selected_photo_ids.is_empty() || self.library_albums.is_empty() {
                     self.notice = Some("Select photographs and create an album first".to_owned());
@@ -3355,19 +3366,22 @@ impl PhotosApp {
     /// Pose the ordinary library editor for deterministic offscreen coverage.
     /// The production entry point is the visible “Edit album” control; shot
     /// rendering has no window event stream to click it through.
-    pub fn show_album_editor_for_shot(&mut self, doc: &AutoCommit) {
+    pub fn show_album_editor_for_shot(&mut self) {
         self.show_library();
-        self.active_album = PhotosDoc::library(doc)
+        self.active_album = self
+            .presented()
+            .library
+            .clone()
             .albums
             .first()
             .map(|album| album.id.clone());
-        self.begin_edit_album(doc);
+        self.begin_edit_album();
     }
 
     /// Pose the shared metadata editor for visual regression coverage.
-    pub fn show_metadata_editor_for_shot(&mut self, doc: &AutoCommit) {
+    pub fn show_metadata_editor_for_shot(&mut self) {
         self.show_library();
-        let library = PhotosDoc::library(doc);
+        let library = self.presented().library.clone();
         if let Some(id) = library
             .photos
             .iter()
@@ -3375,16 +3389,16 @@ impl PhotosApp {
             .or_else(|| library.photos.first())
             .map(|photo| photo.id.clone())
         {
-            self.begin_metadata_editor(doc, &id);
+            self.begin_metadata_editor(&id);
         }
     }
 
     /// Pose a mixed-value multi-photo edit on its location section. This is
     /// the state most likely to regress silently because blank means “keep”
     /// until the user explicitly clears or replaces the dimension.
-    pub fn show_batch_metadata_editor_for_shot(&mut self, doc: &AutoCommit) {
-        self.show_selection_for_shot(doc);
-        self.begin_selected_metadata_editor(doc);
+    pub fn show_batch_metadata_editor_for_shot(&mut self) {
+        self.show_selection_for_shot();
+        self.begin_selected_metadata_editor();
         self.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
     }
 
@@ -3552,10 +3566,10 @@ impl PhotosApp {
     /// Pose the ordinary selection shelf for deterministic visual coverage.
     /// Two real photographs are selected so the capture exercises the active
     /// controls and selected-card treatment, not merely their disabled state.
-    pub fn show_selection_for_shot(&mut self, doc: &AutoCommit) {
+    pub fn show_selection_for_shot(&mut self) {
         self.show_library();
         self.begin_selection();
-        for photo in PhotosDoc::library(doc).photos.into_iter().take(2) {
+        for photo in self.presented().library.clone().photos.into_iter().take(2) {
             self.selected_photo_ids.insert(photo.id.clone());
             self.selection_anchor = Some(photo.id);
         }
@@ -3564,8 +3578,8 @@ impl PhotosApp {
     /// Pose the first page of a deliberately long destination list. The
     /// selection is local; this exists only to make pagination visible in the
     /// deterministic accessibility and responsive screenshots.
-    pub fn show_selection_destination_chooser_for_shot(&mut self, doc: &AutoCommit) {
-        if let Some(photo) = PhotosDoc::library(doc).photos.first() {
+    pub fn show_selection_destination_chooser_for_shot(&mut self) {
+        if let Some(photo) = self.presented().library.clone().photos.first() {
             self.selected_photo_ids.insert(photo.id.clone());
             self.selection_anchor = Some(photo.id.clone());
         }
@@ -3737,8 +3751,15 @@ impl PhotosApp {
     }
 
     /// The photograph this window shows, as the library holds it now.
-    pub(crate) fn shown_photo(&self, doc: &AutoCommit) -> Option<LibraryPhoto> {
-        PhotosDoc::photo(doc, self.open_photo.as_deref()?)
+    pub(crate) fn shown_photo(&self) -> Option<LibraryPhoto> {
+        self.shown_photo_in(&self.presented().library)
+    }
+
+    /// The library as the framework last presented it: what every read of
+    /// the widget answers from, so it draws exactly the state its resource
+    /// holds, the live one or a past version.
+    fn presented(&self) -> Rc<crate::resource::PhotosState> {
+        Rc::clone(&self.presented)
     }
 
     /// The photograph this window shows, in `library`.
@@ -3753,13 +3774,12 @@ impl PhotosApp {
 
     /// Show the library the framework resource already holds. An empty
     /// projection does not wipe a library that has not been published yet.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::PhotosState) {
-        if state.library.photos.is_empty() {
+    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<crate::resource::PhotosState>) {
+        if *self.presented == **state {
             return;
         }
-        self.observed_content = Some(LiveContent {
-            library: state.library.clone(),
-        });
+        self.presented = Rc::clone(state);
+        self.presented_revision = self.presented_revision.wrapping_add(1);
     }
 
     /// Attach the library's dispatcher, as the framework does when it hosts
@@ -3901,26 +3921,26 @@ impl PhotosApp {
 
     /// Open the compact, shared-widget metadata sheet for an explicit card.
     /// Nothing is inferred from pixels: people are only labels the user types.
-    fn begin_metadata_editor(&mut self, doc: &AutoCommit, photo_id: &str) {
-        self.begin_metadata_editor_for_ids(doc, vec![photo_id.to_owned()]);
+    fn begin_metadata_editor(&mut self, photo_id: &str) {
+        self.begin_metadata_editor_for_ids(vec![photo_id.to_owned()]);
     }
 
-    fn begin_selected_metadata_editor(&mut self, doc: &AutoCommit) {
+    fn begin_selected_metadata_editor(&mut self) {
         let mut ids: Vec<_> = self.selected_photo_ids.iter().cloned().collect();
         ids.sort_unstable();
         if ids.is_empty() {
             self.notice = Some("Select at least one photograph first".to_owned());
             return;
         }
-        self.begin_metadata_editor_for_ids(doc, ids);
+        self.begin_metadata_editor_for_ids(ids);
     }
 
     #[expect(
         clippy::too_many_lines,
         reason = "seeds every metadata field, mixed-value flag and draft input from one library snapshot"
     )]
-    fn begin_metadata_editor_for_ids(&mut self, doc: &AutoCommit, photo_ids: Vec<String>) {
-        let library = PhotosDoc::library(doc);
+    fn begin_metadata_editor_for_ids(&mut self, photo_ids: Vec<String>) {
+        let library = self.presented().library.clone();
         if photo_ids.is_empty()
             || photo_ids.len() > crate::actions::MAX_BATCH_PHOTOS
             || !photo_ids.iter().all(|id| library.photo(id).is_some())
@@ -4299,12 +4319,12 @@ impl PhotosApp {
         }
     }
 
-    fn begin_edit_album(&mut self, doc: &AutoCommit) {
+    fn begin_edit_album(&mut self) {
         let Some(id) = self.active_album.clone() else {
             self.notice = Some("Choose an album to edit".to_owned());
             return;
         };
-        let Some(album) = PhotosDoc::library(doc).album(&id).cloned() else {
+        let Some(album) = self.presented().library.clone().album(&id).cloned() else {
             self.notice = Some("That album is no longer available".to_owned());
             self.active_album = None;
             return;
@@ -4334,7 +4354,7 @@ impl PhotosApp {
             return;
         };
         let name = self.album_name_input.value().trim().to_owned();
-        let library = PhotosDoc::library(doc);
+        let library = self.presented().library.clone();
         let stale = if self.album_editor_creating {
             library.album(&id).is_some()
         } else {
@@ -5211,14 +5231,20 @@ impl PhotosApp {
     /// Project the open photograph's portable library record into the small
     /// viewer card. Content identity wins; old path-only records retain their
     /// legacy match so opening one still has useful context.
-    fn viewer_details_for(doc: &AutoCommit, open: &OpenImage, edits: Edits) -> ViewerDetails {
-        let photo = PhotosDoc::library(doc).photos.into_iter().find(|photo| {
-            match (&open.content, &photo.image.content) {
+    fn viewer_details_for(
+        library: &crate::model::PhotoLibrary,
+        open: &OpenImage,
+        edits: Edits,
+    ) -> ViewerDetails {
+        let photo = library
+            .photos
+            .iter()
+            .find(|photo| match (&open.content, &photo.image.content) {
                 (Some(open_content), Some(photo_content)) => open_content == photo_content,
                 (None, None) => open.path == photo.image.path,
                 _ => false,
-            }
-        });
+            })
+            .cloned();
         let (width, height) = open.edited_size(&edits);
         ViewerDetails {
             name: open.name.clone(),
@@ -5250,11 +5276,8 @@ impl PhotosApp {
     }
 
     /// Re-derive the rendering if the path or the edits have moved.
-    fn refresh(&mut self, doc: &AutoCommit) {
-        let Some((open, edits)) = self
-            .shown_photo(doc)
-            .map(|photo| (photo.image, photo.edits))
-        else {
+    fn refresh(&mut self) {
+        let Some((open, edits)) = self.shown_photo().map(|photo| (photo.image, photo.edits)) else {
             self.rendered = None;
             self.viewer = None;
             self.viewer_details = None;
@@ -5266,7 +5289,11 @@ impl PhotosApp {
             };
             return;
         };
-        self.viewer_details = Some(Self::viewer_details_for(doc, &open, edits));
+        self.viewer_details = Some(Self::viewer_details_for(
+            &self.presented().library,
+            &open,
+            edits,
+        ));
 
         // Load the original if this is a picture we have not decoded yet. A
         // peer may have opened it, so this is not only the local Open path.
@@ -5332,18 +5359,18 @@ impl PhotosApp {
             return;
         };
         let edits = self
-            .shown_photo(doc)
+            .shown_photo()
             .map(|photo| photo.edits)
             .unwrap_or_default();
         match hit {
             Hit::Open => {
                 let _ = self.perform_effect(
                     PhotosEffect::Import { path: None },
-                    &PhotosDoc::library(doc),
+                    &self.presented().library,
                 );
             }
             Hit::Library => {
-                let _ = self.perform_effect(PhotosEffect::ViewLibrary, &PhotosDoc::library(doc));
+                let _ = self.perform_effect(PhotosEffect::ViewLibrary, &self.presented().library);
             }
             Hit::RotateLeft => self.commit_edits(doc, edits.rotated_left()),
             Hit::RotateRight => self.commit_edits(doc, edits.rotated_right()),
@@ -5359,7 +5386,7 @@ impl PhotosApp {
             }
             Hit::Reset => self.commit_edits(doc, Edits::default()),
             Hit::Copy => {
-                let _ = self.perform_effect(PhotosEffect::Copy, &PhotosDoc::library(doc));
+                let _ = self.perform_effect(PhotosEffect::Copy, &self.presented().library);
             }
             Hit::Share => {
                 if let Some(photo_id) = self.open_photo.clone() {
@@ -5367,7 +5394,7 @@ impl PhotosApp {
                         PhotosEffect::ShareReference {
                             resource_id: photo_id,
                         },
-                        &PhotosDoc::library(doc),
+                        &self.presented().library,
                     );
                 } else {
                     self.notice = Some(tr("photos-share-failed"));
@@ -5375,7 +5402,7 @@ impl PhotosApp {
             }
             Hit::Save => {
                 let _ = self
-                    .perform_effect(PhotosEffect::Save { path: None }, &PhotosDoc::library(doc));
+                    .perform_effect(PhotosEffect::Save { path: None }, &self.presented().library);
             }
             Hit::More => {
                 self.compact_more_open = !self.compact_more_open;
@@ -6688,7 +6715,7 @@ impl PhotosApp {
                 return true;
             }
             if let Some(photo_id) = command.strip_prefix("photo:") {
-                if PhotosDoc::photo(doc, photo_id).is_none() {
+                if self.presented().library.photo(photo_id).cloned().is_none() {
                     return false;
                 }
                 self.show_photo(photo_id);
@@ -6727,7 +6754,7 @@ impl PhotosApp {
                         return false;
                     };
                     return self
-                        .open_place_collection(&PhotosDoc::library(doc), key)
+                        .open_place_collection(&self.presented().library, key)
                         .is_ok();
                 }
             }
@@ -6738,11 +6765,11 @@ impl PhotosApp {
                 return false;
             }
             if matches!(action, AccessAction::Activate) {
-                if PhotosDoc::album(doc, album_id).is_none() {
+                if self.presented().library.album(album_id).cloned().is_none() {
                     return false;
                 }
                 self.active_album = Some(album_id.to_owned());
-                self.begin_edit_album(doc);
+                self.begin_edit_album();
             }
             return true;
         }
@@ -6857,8 +6884,7 @@ impl PhotosApp {
                 }
                 return true;
             }
-            return matches!(action, AccessAction::Activate)
-                && self.activate_library_analysis(hit, doc);
+            return matches!(action, AccessAction::Activate) && self.activate_library_analysis(hit);
         }
         if let Some(command) = target.strip_prefix("photos:selection:") {
             if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
@@ -6866,7 +6892,7 @@ impl PhotosApp {
             }
             if matches!(action, AccessAction::Activate) {
                 if let Some(album_id) = command.strip_prefix("destination:") {
-                    if PhotosDoc::album(doc, album_id).is_none() {
+                    if self.presented().library.album(album_id).cloned().is_none() {
                         self.notice =
                             Some("That destination album is no longer available".to_owned());
                         return false;
@@ -6916,7 +6942,7 @@ impl PhotosApp {
             }
             match command {
                 "new" => self.begin_new_album(doc),
-                "edit" => self.begin_edit_album(doc),
+                "edit" => self.begin_edit_album(),
                 "previous-page" if self.can_page_library(false) => self.page_library(false),
                 "next-page" if self.can_page_library(true) => self.page_library(true),
                 "save" => self.save_album_editor(doc),
@@ -7009,7 +7035,7 @@ impl PhotosApp {
                 return false;
             }
             if matches!(action, AccessAction::Activate) {
-                self.begin_metadata_editor(doc, id);
+                self.begin_metadata_editor(id);
             }
             return true;
         }
@@ -7018,7 +7044,7 @@ impl PhotosApp {
                 return false;
             }
             if matches!(action, AccessAction::Activate) {
-                let _ = self.view_favorites(&PhotosDoc::library(doc));
+                let _ = self.view_favorites(&self.presented().library);
             }
             return true;
         }
@@ -7361,7 +7387,7 @@ impl PhotosApp {
                 .as_mut()
                 .and_then(|job| job.pending.pop_front());
             let Some(indexed) = indexed else { break };
-            let existing = PhotosDoc::photo(doc, &indexed.photo.id);
+            let existing = self.presented().library.photo(&indexed.photo.id).cloned();
             let mode = self
                 .directory_import
                 .as_ref()
@@ -7668,7 +7694,7 @@ impl PhotosApp {
     }
 
     /// The status line: the file, its edited size, and any notice.
-    fn status_text(&self, doc: &AutoCommit) -> String {
+    fn status_text(&self) -> String {
         if self.library_mode {
             let mut s = match self.library_destination {
                 LibraryDestination::Timeline => format!("{} photographs", self.library_total),
@@ -7696,7 +7722,7 @@ impl PhotosApp {
         }
         let Some(LibraryPhoto {
             image: open, edits, ..
-        }) = self.shown_photo(doc)
+        }) = self.shown_photo()
         else {
             return self
                 .notice
@@ -7915,15 +7941,12 @@ impl PhotosApp {
         }
     }
 
-    fn refresh_library_index(
-        &self,
-        doc: &AutoCommit,
-    ) -> Result<(), ui::search::SearchCatalogError> {
+    fn refresh_library_index(&self) -> Result<(), ui::search::SearchCatalogError> {
         #[cfg(test)]
         if self.force_search_refresh_error {
             return Err(ui::search::SearchCatalogError::NonCanonicalResult);
         }
-        self.library_index.sync(doc)
+        self.library_index.sync(&self.presented().library)
     }
 
     fn advance_library_query(&mut self) {
@@ -14428,8 +14451,10 @@ fn bounded_file_bytes(path: &str) -> Option<Vec<u8>> {
 }
 
 impl PhotosApp {
-    fn reconcile_content(&mut self, doc: &AutoCommit) {
-        let current = LiveContent::read(doc);
+    fn reconcile_content(&mut self) {
+        let current = LiveContent {
+            library: self.presented().library.clone(),
+        };
         if self
             .import_content
             .as_ref()
@@ -14498,7 +14523,7 @@ impl PhotosApp {
         self.observed_content = Some(current);
         // Recreating the viewer on changed immutable identity/edits also drops
         // an active drag before the next input can apply its stale viewport.
-        self.refresh(doc);
+        self.refresh();
     }
 
     /// Take completed thumbnail work without blocking the UI thread.
@@ -14610,7 +14635,7 @@ impl PhotosApp {
             self.activate_directory_status(hit);
         }
         if let Some(hit) = self.library_analysis_pending.take() {
-            self.activate_library_analysis(hit, doc);
+            self.activate_library_analysis(hit);
         }
         if let Some(hit) = self.collection_page_pending.take() {
             self.page_collection(hit);
@@ -14631,7 +14656,7 @@ impl PhotosApp {
         if let Some(hit) = self.album_editor_pending.take() {
             match hit {
                 AlbumEditorHit::New => self.begin_new_album(doc),
-                AlbumEditorHit::Edit => self.begin_edit_album(doc),
+                AlbumEditorHit::Edit => self.begin_edit_album(),
                 AlbumEditorHit::Save => self.save_album_editor(doc),
                 AlbumEditorHit::Cancel => self.cancel_album_editor(),
                 AlbumEditorHit::Delete => {
@@ -14779,8 +14804,8 @@ impl Widget for PhotosApp {
         let (doc, path) = ui::doc::document(doc, path);
         self.follow_cancellations();
         self.open_launched();
-        self.reconcile_content(doc);
-        self.apply_staged(doc);
+        self.reconcile_content();
+        self.apply_staged();
         self.drain_action_control_pending(doc);
         self.drain_analysis_results(doc);
         if let Some((invocation, path)) = self.pending_resource_open.take() {
@@ -14805,7 +14830,7 @@ impl Widget for PhotosApp {
         }
         self.drain_picker(doc);
         self.drain_directory_import(doc);
-        self.refresh(doc);
+        self.refresh();
         self.library_search.sync(doc, path);
         if let Some(query) = self.library_search.take_dirty() {
             self.library_query = query;
@@ -14817,24 +14842,24 @@ impl Widget for PhotosApp {
         // available to a headless collaborator that deliberately chooses it.
         let has_image = self.has_image();
         let edited = self
-            .shown_photo(doc)
+            .shown_photo()
             .is_some_and(|photo| !photo.edits.is_identity());
         for (hit, button) in &mut self.buttons {
             button.set_enabled(Self::enabled(*hit, has_image, edited));
         }
-        let heads = doc.get_heads();
-        let document_changed = heads != self.search_heads;
+        let revision = Some(self.presented_revision);
+        let document_changed = revision != self.search_revision;
         if document_changed {
-            self.search_refresh_error = match self.refresh_library_index(doc) {
+            self.search_refresh_error = match self.refresh_library_index() {
                 Ok(()) => None,
                 Err(error) => Some(format!("Photo search kept its previous index: {error}")),
             };
             self.thumbnail_unavailable.clear();
-            self.search_heads.clone_from(&heads);
+            self.search_revision = revision;
         }
         self.advance_library_query();
-        self.status = self.status_text(doc);
-        let library = PhotosDoc::library(doc);
+        self.status = self.status_text();
+        let library = self.presented().library.clone();
         self.library_analysis_coverage = library.photos.iter().fold(
             (0usize, 0usize, 0usize),
             |(analyzed, available, awaiting), photo| {
@@ -14950,7 +14975,7 @@ impl Widget for PhotosApp {
             self.active_pet,
             self.active_favorites
         );
-        if self.timeline_projection_heads != heads
+        if self.timeline_projection_revision != revision
             || self.timeline_projection_filter != projection_filter
         {
             self.timeline_projection.reconcile(
@@ -14974,7 +14999,7 @@ impl Widget for PhotosApp {
                         },
                     }),
             );
-            self.timeline_projection_heads = heads;
+            self.timeline_projection_revision = revision;
             self.timeline_projection_filter = projection_filter;
             self.library_total = self.timeline_projection.len();
         }
@@ -15454,7 +15479,7 @@ impl Widget for PhotosApp {
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        self.reconcile_content(ctx.state);
+        self.reconcile_content();
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
             let next = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             if self.library_mode
@@ -15653,7 +15678,7 @@ impl Widget for PhotosApp {
                 }
             }
             if let Some(hit) = self.library_analysis_pending.take() {
-                self.activate_library_analysis(hit, ctx.state);
+                self.activate_library_analysis(hit);
                 *ctx.handled = true;
                 return;
             }
@@ -15732,7 +15757,7 @@ impl Widget for PhotosApp {
                 PlacesHit::ZoomIn => self.zoom_places_by(1.0),
                 PlacesHit::ZoomOut => self.zoom_places_by(-1.0),
                 PlacesHit::Place(key) => {
-                    let _ = self.open_place_collection(&PhotosDoc::library(ctx.state), &key);
+                    let _ = self.open_place_collection(&self.presented().library, &key);
                 }
                 PlacesHit::Photo(id) => {
                     self.show_photo(&id);
@@ -16054,7 +16079,7 @@ impl Widget for PhotosApp {
                 .cloned()
         {
             self.active_album = Some(album_id);
-            self.begin_edit_album(ctx.state);
+            self.begin_edit_album();
             *ctx.handled = true;
             return;
         }
@@ -16155,7 +16180,7 @@ impl Widget for PhotosApp {
         {
             match hit {
                 AlbumEditorHit::New => self.begin_new_album(ctx.state),
-                AlbumEditorHit::Edit => self.begin_edit_album(ctx.state),
+                AlbumEditorHit::Edit => self.begin_edit_album(),
                 _ => {}
             }
             *ctx.handled = true;
@@ -16203,7 +16228,7 @@ impl Widget for PhotosApp {
                 .cloned()
         {
             if card.favorites {
-                let _ = self.view_favorites(&PhotosDoc::library(ctx.state));
+                let _ = self.view_favorites(&self.presented().library);
             } else {
                 self.active_album = None;
                 self.active_folder = card.folder;
@@ -16232,7 +16257,7 @@ impl Widget for PhotosApp {
                 .find(|(_, rect)| rect.contains(self.pointer))
                 .cloned()
         {
-            self.begin_metadata_editor(ctx.state, &id);
+            self.begin_metadata_editor(&id);
             *ctx.handled = true;
             return;
         }
@@ -16350,7 +16375,7 @@ impl Widget for PhotosApp {
         path: &ModelPath,
     ) -> bool {
         let (state, _) = ui::doc::document(state, path);
-        self.reconcile_content(state);
+        self.reconcile_content();
         self.perform_toolbar_semantic_action(target, action, state)
             || self.perform_directory_semantic_action(target, action)
             || self.perform_library_semantic_action(target, action, state)
@@ -17044,7 +17069,23 @@ mod tests;
 #[cfg(test)]
 mod history_reconcile_tests {
     use super::*;
+    use crate::doc::PhotosDoc;
     use automerge::ROOT;
+
+    /// Present `doc`'s library to `app` as the framework does after a change,
+    /// then sync it.
+    fn sync(app: &mut PhotosApp, doc: &mut AutoCommit) {
+        present(app, doc);
+        Widget::sync(app, doc, &ROOT);
+    }
+
+    /// Present `doc`'s library to `app`, as the framework does after a change.
+    fn present(app: &mut PhotosApp, doc: &AutoCommit) {
+        let state = <crate::resource::Photos as ui::tilo_resource::Resource>::read(doc)
+            .expect("the library reads");
+        app.adopt_resource_state(&Rc::new(state));
+    }
+
     fn test_app() -> PhotosApp {
         test_app_on(ContentStore::memory())
     }
@@ -17067,7 +17108,7 @@ mod history_reconcile_tests {
         let id = PhotosDoc::put_image(&mut doc, &image);
         let mut app = test_app();
         app.show_photo(&id);
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         (app, doc, id)
     }
     #[test]
@@ -17092,7 +17133,7 @@ mod history_reconcile_tests {
             let mut app = test_app();
             app.show_library();
             app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 900.0);
-            app.sync(&mut doc, &ROOT);
+            sync(&mut app, &mut doc);
             assert!(!app.thumbnail_resource_keys.contains_key(&target.id));
             app.view_timeline(
                 &PhotosDoc::library(&doc),
@@ -17141,7 +17182,7 @@ mod history_reconcile_tests {
             let mut lib = PhotosDoc::library(&doc);
             lib.photos[0].image.content = Some("a".repeat(64));
             PhotosDoc::set_library(&mut doc, &lib);
-            app.sync(&mut doc, &ROOT);
+            sync(&mut app, &mut doc);
             assert!(!app.library_thumbnails.contains_key(&id));
             app.accept_thumbnail_result(ThumbnailResult {
                 generation: old,
@@ -17165,24 +17206,28 @@ mod history_reconcile_tests {
             let selected = doc.get_heads();
             lib.photos[0].tags = vec!["live".into()];
             PhotosDoc::set_library(&mut doc, &lib);
-            app.sync(&mut doc, &ROOT);
-            app.begin_metadata_editor(&doc, &id);
+            sync(&mut app, &mut doc);
+            app.begin_metadata_editor(&id);
             app.metadata_tags_input.set_text("unsaved draft");
             PhotosDoc::set_photo_edits(&mut doc, &id, Edits::default().rotated_right());
-            app.sync(&mut doc, &ROOT);
+            sync(&mut app, &mut doc);
             assert!(app.metadata_editor);
             assert_eq!(app.metadata_tags_input.value(), "unsaved draft");
             restore(&mut doc, &selected);
+            present(&mut app, &doc);
+            present(&mut app, &doc);
             app.perform_semantic_action("nonexistent", &AccessAction::Activate, &mut doc, &ROOT);
             assert!(
                 !app.metadata_editor,
                 "stale draft must detach before any new input"
             );
             app.save_metadata_editor(&mut doc);
+            present(&mut app, &doc);
             assert_eq!(PhotosDoc::library(&doc).photos[0].tags, vec!["restored"]);
-            app.begin_metadata_editor(&doc, &id);
+            app.begin_metadata_editor(&id);
             app.metadata_tags_input.set_text("next edit");
             app.save_metadata_editor(&mut doc);
+            present(&mut app, &doc);
             assert_eq!(PhotosDoc::library(&doc).photos[0].tags, vec!["next edit"]);
         }
 
@@ -17198,17 +17243,19 @@ mod history_reconcile_tests {
             let mut library = PhotosDoc::library(&doc);
             library.photos.push(second);
             PhotosDoc::set_library(&mut doc, &library);
-            app.sync(&mut doc, &ROOT);
-            app.begin_metadata_editor_for_ids(&doc, vec![first, second_id.clone()]);
+            sync(&mut app, &mut doc);
+            app.begin_metadata_editor_for_ids(vec![first, second_id.clone()]);
             app.metadata_tags_input.set_text("unsaved batch draft");
             library.photos[1].tags = vec!["remote edit".into()];
             PhotosDoc::set_library(&mut doc, &library);
+            present(&mut app, &doc);
             app.perform_semantic_action("nonexistent", &AccessAction::Activate, &mut doc, &ROOT);
             assert!(
                 !app.metadata_editor,
                 "a changed non-first batch target invalidates the draft before input"
             );
             app.save_metadata_editor(&mut doc);
+            present(&mut app, &doc);
             assert_eq!(
                 PhotosDoc::library(&doc).photo(&second_id).unwrap().tags,
                 vec!["remote edit"]
@@ -17226,12 +17273,13 @@ mod history_reconcile_tests {
                 photo_ids: vec![id],
             });
             PhotosDoc::set_library(&mut doc, &lib);
-            app.sync(&mut doc, &ROOT);
+            sync(&mut app, &mut doc);
             app.active_album = Some("photos.album:membership".into());
-            app.begin_edit_album(&doc);
+            app.begin_edit_album();
             app.album_name_input.set_text("stale draft");
             restore(&mut doc, &selected);
-            app.sync(&mut doc, &ROOT);
+            present(&mut app, &doc);
+            sync(&mut app, &mut doc);
             assert!(!app.album_editor);
             app.save_album_editor(&mut doc);
             assert!(PhotosDoc::library(&doc).albums.is_empty());
@@ -17265,7 +17313,7 @@ mod history_reconcile_tests {
             .unwrap();
             empty_library(&mut doc);
             let heads = doc.get_heads();
-            app.sync(&mut doc, &ROOT);
+            sync(&mut app, &mut doc);
             assert!(PhotosDoc::library(&doc).photos.is_empty());
             assert_eq!(doc.get_heads(), heads);
             assert!(matches!(
@@ -17285,9 +17333,11 @@ mod history_reconcile_tests {
                 let (tx, rx) = std::sync::mpsc::channel();
                 app.picker = Some(rx);
                 app.resource_invocation = Some(invocation);
-                app.import_content = Some(LiveContent::read(&doc));
+                app.import_content = Some(LiveContent {
+                    library: PhotosDoc::library(&doc),
+                });
                 empty_library(&mut doc);
-                app.sync(&mut doc, &ROOT);
+                sync(&mut app, &mut doc);
                 tx.send(match outcome {
                     0 => ui::portal::PortalOutcome::Opened(std::path::PathBuf::from("chosen.png")),
                     1 => ui::portal::PortalOutcome::Cancelled,
@@ -17295,7 +17345,7 @@ mod history_reconcile_tests {
                 })
                 .unwrap();
                 let heads = doc.get_heads();
-                app.sync(&mut doc, &ROOT);
+                sync(&mut app, &mut doc);
                 assert_eq!(doc.get_heads(), heads);
                 assert!(PhotosDoc::library(&doc).photos.is_empty());
                 match app.take_settled(invocation).unwrap() {
@@ -17338,7 +17388,7 @@ mod history_reconcile_tests {
             let id = PhotosDoc::put_image(&mut doc, &open);
             let mut app = test_app_on(store);
             app.show_photo(&id);
-            app.sync(&mut doc, &ROOT);
+            sync(&mut app, &mut doc);
             assert!(app.open_image_path().is_some());
             let invocation = tilo_actions::InvocationId::new();
             let tmp = tempfile::tempdir().unwrap();
@@ -17350,7 +17400,7 @@ mod history_reconcile_tests {
                 &PhotosDoc::library(&doc),
             )
             .unwrap();
-            app.sync(&mut doc, &ROOT);
+            sync(&mut app, &mut doc);
             assert!(matches!(
                 app.take_settled(invocation),
                 Some(tilo_actions::InvocationUpdate::Failed { .. })
@@ -17372,7 +17422,7 @@ mod history_reconcile_tests {
             PhotosDoc::set_photo_edits(&mut doc, &id, Edits::default());
             let mut app = test_app_on(store);
             app.show_photo(&id);
-            app.sync(&mut doc, &ROOT);
+            sync(&mut app, &mut doc);
             let mut taffy = TaffyTree::new();
             let mut nodes = HashMap::new();
             let theme = Theme::dark();
@@ -17429,6 +17479,7 @@ mod history_reconcile_tests {
                 );
             }
             restore(&mut doc, &selected);
+            present(&mut app, &doc);
             app.handle_event(
                 &winit::event::WindowEvent::CursorMoved {
                     device_id,
@@ -17449,7 +17500,7 @@ mod history_reconcile_tests {
             assert!((app.viewer.as_ref().unwrap().zoom() - 1.).abs() < f32::EPSILON);
             let next = PhotosDoc::photo_edits(&doc, &id).rotated_right();
             app.commit_edits(&mut doc, next);
-            app.sync(&mut doc, &ROOT);
+            sync(&mut app, &mut doc);
             assert_eq!(PhotosDoc::photo_edits(&doc, &id).rotate_quarters, 2);
         }
     }
@@ -17476,7 +17527,7 @@ mod history_reconcile_tests {
         );
         let mut app = test_app();
         app.library_mode = true;
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         (app, doc, ids)
     }
 
@@ -17525,7 +17576,7 @@ mod history_reconcile_tests {
         {
             let (mut app, mut doc, ids) = album_membership_fixture();
             seed_membership_album(&mut doc, &ids);
-            app.sync(&mut doc, &ROOT);
+            sync(&mut app, &mut doc);
             activate_album_control(
                 &mut app,
                 &mut doc,
@@ -17551,7 +17602,7 @@ mod history_reconcile_tests {
             library.albums[0].name = "Later album".into();
             library.albums[0].photo_ids = vec![ids[1].clone(), ids[2].clone()];
             PhotosDoc::set_library(&mut doc, &library);
-            app.sync(&mut doc, &ROOT);
+            sync(&mut app, &mut doc);
             activate_album_control(
                 &mut app,
                 &mut doc,
@@ -17560,7 +17611,8 @@ mod history_reconcile_tests {
             activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
             app.album_name_input.set_text("Unsaved later draft");
             restore(&mut doc, &selected);
-            app.sync(&mut doc, &ROOT);
+            present(&mut app, &doc);
+            sync(&mut app, &mut doc);
             assert!(!app.album_editor, "restore must detach the obsolete draft");
             let restored = PhotosDoc::library(&doc);
             let album = restored.album("photos.album:membership").unwrap();

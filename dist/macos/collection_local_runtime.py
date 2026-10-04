@@ -7,6 +7,7 @@ The payload is not an app, installable artifact, or redistribution approval.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -31,9 +32,11 @@ LIMIT = 1024**3
 
 def checked_json(path, expected):
     regular_file(path, 4 * 1024**2)
-    if not re.fullmatch(r'[0-9a-f]{64}', expected) or digest(path) != expected:
+    with path.open('rb') as stream:
+        data = stream.read(4 * 1024**2 + 1)
+    if len(data) > 4 * 1024**2 or not re.fullmatch(r'[0-9a-f]{64}', expected) or hashlib.sha256(data).hexdigest() != expected:
         raise ValueError('profile SHA-256 mismatch')
-    return json.loads(path.read_text())
+    return json.loads(data)
 
 
 def destination(path, roots):
@@ -232,16 +235,25 @@ def compile_adapters(work, plan, guard):
               'TILO_GLIB_LOCALE': plan['locale_prefixes']['glib'],
               'TILO_INTL_NAME': Path(plan['intl']).name,
               'TILO_PROFILE_KEY': plan['profile_sha256']}
+    if plan.get('extended_locale_catalogs'):
+        config['TILO_GST_EXTENDED_CATALOGS'] = '1'
     scratch = work / 'adapter-build'
     scratch.mkdir()
     header = scratch / 'local_runtime_config.h'
     header.write_text(''.join(f'#define {key} {json.dumps(value)}\n' for key, value in config.items()))
     base = [guard, '/usr/bin/clang', '-arch', 'arm64', '-mmacosx-version-min=27.0',
             '-Wall', '-Wextra', '-Werror', '-O2', '-I', scratch, '-Wl,-no_adhoc_codesign']
-    for source, target in [('local_runtime_intl.c', SHIM), ('local_runtime_launcher.c', LAUNCHER)]:
+    sources = [('local_runtime_intl.c', SHIM), ('local_runtime_launcher.c', LAUNCHER)]
+    if plan.get('app_launcher'):
+        sources.append(('local_runtime_launcher.c', plan['app_launcher']))
+    for source, target in sources:
         if digest(HERE / source) != plan['adapter_sources'][source]:
             raise ValueError('adapter source changed')
         command = base + [HERE / source, '-o', work / target]
+        if target == plan.get('app_launcher'):
+            name = Path(target).name
+            command += ['-DTILO_LAUNCH_NAME=' + json.dumps(name),
+                        '-DTILO_EXEC_NAME=' + json.dumps(name + '.real')]
         if target == SHIM:
             command += ['-dynamiclib', '-Wl,-install_name,@loader_path/libtilo-local-intl.dylib',
                         '-Xlinker', '-reexport_library', '-Xlinker', plan['intl']]
@@ -253,9 +265,9 @@ def compile_adapters(work, plan, guard):
          '@loader_path/' + Path(plan['intl']).name, work / SHIM])
 
 
-def inspect_payload(work, plan):
+def inspect_payload(work, plan, extra_code=()):
     expected = {item['destination'] for item in plan['images'].values()} | {SHIM, LAUNCHER}
-    if {str(p.relative_to(work)) for p in machos(work)} != expected:
+    if {str(p.relative_to(work)) for p in machos(work)} != expected | set(extra_code):
         raise ValueError('unexpected or missing payload code')
     records = {}
     for relative in sorted(expected):

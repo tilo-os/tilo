@@ -52,13 +52,22 @@ impl Harness {
         }
     }
 
+    /// The app and its document, the app presented the document's library
+    /// as the framework presents it after every change.
     fn parts(&mut self) -> (&mut PhotosApp, &mut ui::State) {
-        if let Some(framed) = self.mounted.as_mut() {
+        let (app, state) = if let Some(framed) = self.mounted.as_mut() {
             Framed::split(framed)
         } else {
             let (app, state) = self.unmounted.as_mut().expect("harness owns its app");
             (app, state)
-        }
+        };
+        let library = <photos::Photos as ui::tilo_resource::Resource>::read(&state.doc)
+            .expect("the library reads");
+        ui::framework::ResourceSurface::<photos::Photos, photos::actions::PhotosEffect>::present(
+            app,
+            &std::rc::Rc::new(library),
+        );
+        (app, state)
     }
 
     fn app(&mut self) -> &mut PhotosApp {
@@ -72,6 +81,7 @@ impl Harness {
     /// One full frame, exactly as `ui::App` runs it. Returns the drawn scene
     /// so a caller can prove drawing happened at all.
     fn frame(&mut self) -> Scene {
+        let _ = self.parts();
         let viewport = viewport(self.size);
         if let Some(framed) = self.mounted.as_mut() {
             Framed::harness_mut(framed)
@@ -186,9 +196,9 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
             },
         ]);
         PhotosDoc::set_library(&mut hz.state().doc, &library);
-        let (app, state) = hz.parts();
-        app.show_selection_for_shot(&state.doc);
-        app.show_selection_destination_chooser_for_shot(&state.doc);
+        let (app, _) = hz.parts();
+        app.show_selection_for_shot();
+        app.show_selection_destination_chooser_for_shot();
         hz.frame();
 
         let tree = hz

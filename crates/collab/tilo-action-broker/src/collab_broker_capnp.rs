@@ -69,7 +69,7 @@ use collab_types::{
 #[cfg(test)]
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::raw::{
-    OpKind, action_catalogue_stream, action_directory, action_input, channel_handle,
+    OpKind, action_catalogue_stream, action_directory, action_input, blob_stream, channel_handle,
     collab_service, context_stream, invocation_stream, presence_event, presence_handle,
     presence_payload, presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
 };
@@ -5471,6 +5471,7 @@ impl CapnpBrokerState {
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::Realtime(_)
+            | CollabEvent::RecordContent { .. }
             | CollabEvent::RemoteAction { .. } => {
                 // Invocation delivery and cooperative cancellation are
                 // point-to-point and never enter route fanout.
@@ -6158,7 +6159,124 @@ fn reply_frame(
     }
 }
 
+impl CapnpChannelHandle {
+    /// The host's record-content service, for a channel still admitted.
+    fn record_content(
+        &self,
+    ) -> Result<(CrdtRoute, Arc<crate::record_content::RouteContent>), capnp::Error> {
+        self.state
+            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        let route = self.route();
+        if route.app_id.is_empty() || route.cluster_id.is_empty() {
+            return Err(capnp::Error::failed(
+                "record content belongs to a certified app route".into(),
+            ));
+        }
+        let content = self.state.services.record_content.clone().ok_or_else(|| {
+            capnp::Error::unimplemented("this host keeps no record content".into())
+        })?;
+        Ok((route, content))
+    }
+}
+
+/// Content arriving for one channel's record, pulled one piece of content
+/// per `read`.
+struct BlobStreamServer {
+    host_guard: Option<HostWorkerReadGuard>,
+    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<crate::record_content::ContentArrival>>>,
+}
+
+impl blob_stream::Server for BlobStreamServer {
+    fn read(
+        self: Rc<Self>,
+        _params: blob_stream::ReadParams,
+        mut results: blob_stream::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.rx.clone();
+        Promise::from_future(async move {
+            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            let mut guard = rx.lock().await;
+            let Some(arrival) = guard.recv().await else {
+                return Err(capnp::Error::disconnected(
+                    "record content stream closed".into(),
+                ));
+            };
+            drop(guard);
+            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            let mut reply = results.get();
+            reply.set_hash(&arrival.hash);
+            reply.set_bytes(&arrival.bytes);
+            Ok(())
+        })
+    }
+}
+
 impl channel_handle::Server for CapnpChannelHandle {
+    fn offer_blob(
+        self: Rc<Self>,
+        params: channel_handle::OfferBlobParams,
+        _results: channel_handle::OfferBlobResults,
+    ) -> Promise<(), capnp::Error> {
+        let (route, content) = match self.record_content() {
+            Ok(found) => found,
+            Err(error) => return Promise::err(error),
+        };
+        Promise::from_future(async move {
+            let p = params.get()?;
+            let hash = p
+                .get_hash()?
+                .to_str()
+                .map_err(|e| capnp::Error::failed(format!("offerBlob hash: {e}")))?
+                .to_owned();
+            let bytes = p.get_bytes()?;
+            content
+                .offer(&route, &hash, bytes)
+                .map_err(capnp::Error::failed)
+        })
+    }
+
+    fn want_blob(
+        self: Rc<Self>,
+        params: channel_handle::WantBlobParams,
+        _results: channel_handle::WantBlobResults,
+    ) -> Promise<(), capnp::Error> {
+        let (route, content) = match self.record_content() {
+            Ok(found) => found,
+            Err(error) => return Promise::err(error),
+        };
+        Promise::from_future(async move {
+            let hash = params
+                .get()?
+                .get_hash()?
+                .to_str()
+                .map_err(|e| capnp::Error::failed(format!("wantBlob hash: {e}")))?
+                .to_owned();
+            content.want(&route, &hash);
+            Ok(())
+        })
+    }
+
+    fn subscribe_blobs(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeBlobsParams,
+        mut results: channel_handle::SubscribeBlobsResults,
+    ) -> Promise<(), capnp::Error> {
+        let (route, content) = match self.record_content() {
+            Ok(found) => found,
+            Err(error) => return Promise::err(error),
+        };
+        let client: blob_stream::Client = capnp_rpc::new_client(BlobStreamServer {
+            host_guard: HostWorkerReadGuard::for_channel(
+                &self.state,
+                self.peer_id,
+                &self.verified_identity,
+            ),
+            rx: Rc::new(AsyncMutex::new(content.subscribe(&route))),
+        });
+        results.get().set_stream(client);
+        Promise::ok(())
+    }
+
     /// The caller-side door to published actions: one remote-action request
     /// frame in, one answer out, as the caller this channel was admitted as.
     fn remote_action(
@@ -11539,6 +11657,8 @@ pub mod tests {
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
+    #[cfg(test)]
+    include!("record_content_tests.rs");
 
     pub struct LocalDirectoryFixture {
         _fanout: Arc<FanoutState>,

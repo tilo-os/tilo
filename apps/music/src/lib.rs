@@ -53,7 +53,6 @@ pub mod app;
 pub mod art;
 pub mod audio;
 pub mod backend;
-mod capture;
 pub mod commands;
 pub mod doc;
 mod files;
