@@ -479,7 +479,7 @@ impl FirewallApp {
             .filter(|_| self.available)
         else {
             self.shell.set_sidebar(None);
-            self.shell.set_content_title("");
+            self.shell.set_content_title("Firewall");
             self.shell
                 .set_content(view::unavailable(self.unavailable_detail(), &self.intents));
             return;
