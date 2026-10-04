@@ -1130,9 +1130,9 @@ pub struct InvocationJob {
 
 #[derive(Clone)]
 struct PendingInvocation {
-    /// Who it was admitted for, as the door knew them; `None` for a caller
-    /// known otherwise (a certified peer), whose effect submits no edits.
-    caller: Option<tilo_actions::remote::Caller>,
+    /// Who it was admitted for, kept so an edit its effect submits is
+    /// admitted for them too.
+    caller: Option<ContinuingCaller>,
     activity: Option<ActivityTarget>,
     owner: InvocationOwner,
     network_evidence: Option<tilo_relay::client::CertifiedAction>,
@@ -1257,7 +1257,61 @@ impl CapnpBrokerState {
             .ok()?
             .values()
             .find(|pending| pending.peer_id == peer_id && pending.update.invocation() == running)
-            .and_then(|pending| pending.caller.clone())
+            .and_then(|pending| pending.caller.clone())?
+            .current(self)
+    }
+}
+
+/// Who a running invocation was admitted for, however the door knew them:
+/// the caller an edit its effect submits is admitted as.
+#[derive(Clone)]
+enum ContinuingCaller {
+    /// A caller the door knew directly.
+    Caller(tilo_actions::remote::Caller),
+    /// A remote device's certified caller, checked again each time.
+    Certified(Box<VerifiedActionCaller>),
+    /// A person or agent on a connection this host admitted, in a room.
+    Admitted {
+        room: String,
+        admitted: Box<AdmittedJoinIdentity>,
+    },
+}
+
+impl ContinuingCaller {
+    fn from_durable(durable: DurableContext<'_>) -> Self {
+        match durable {
+            DurableContext::Peer(caller, _) => Self::Certified(Box::new(caller.clone())),
+            DurableContext::Local { caller, .. } => {
+                let (room, admitted) = caller.admitted_in();
+                Self::Admitted {
+                    room,
+                    admitted: Box::new(admitted),
+                }
+            }
+        }
+    }
+
+    fn from_origin(origin: &InvocationCaller) -> Self {
+        match origin {
+            InvocationCaller::Certified(caller) => Self::Certified(caller.clone()),
+            InvocationCaller::Local { route, admitted } => Self::Admitted {
+                room: route.cluster_id.clone(),
+                admitted: admitted.clone(),
+            },
+        }
+    }
+
+    /// The caller as they stand now: a certified caller whose certificate
+    /// no longer verifies, or who changed, is nobody.
+    fn current(&self, state: &CapnpBrokerState) -> Option<tilo_actions::remote::Caller> {
+        match self {
+            Self::Caller(caller) => Some(caller.clone()),
+            Self::Certified(caller) => state
+                .current_action_caller(caller)
+                .ok()
+                .map(|admitted| admitted.caller(&caller.room)),
+            Self::Admitted { room, admitted } => Some(admitted.caller(room)),
+        }
     }
 }
 
@@ -4380,6 +4434,11 @@ impl CapnpBrokerState {
             origin,
             retained_time,
         } = provenance;
+        let continuing = caller
+            .cloned()
+            .map(ContinuingCaller::Caller)
+            .or_else(|| durable.map(ContinuingCaller::from_durable))
+            .or_else(|| origin.as_ref().map(ContinuingCaller::from_origin));
         let owner = durable.map_or_else(
             || InvocationOwner::Local {
                 actor: actor.id.clone(),
@@ -4555,7 +4614,7 @@ impl CapnpBrokerState {
         registry.insert(
             id,
             PendingInvocation {
-                caller: caller.cloned(),
+                caller: continuing,
                 activity: ActivityTarget::new(execution, actor, &offered.0, &offered.1),
                 owner,
                 network_evidence: durable.and_then(DurableContext::network),
