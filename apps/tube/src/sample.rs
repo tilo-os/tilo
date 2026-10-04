@@ -564,8 +564,6 @@ pub fn model() -> TubeModel {
         // (auto-skips, share/like acknowledgements, worker status) so it never
         // shows events that didn't happen.
         notices: Vec::new(),
-        palette_open: false,
-        palette_query: String::new(),
         // The bundled catalogue is, by definition, the offline sample.
         data_source: crate::model::DataSource {
             live: false,

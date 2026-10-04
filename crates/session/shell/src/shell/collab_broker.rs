@@ -555,7 +555,7 @@ impl DrainQueues {
     /// holding person-room records for their snapshots, which then travel to
     /// it over the personal fabric like any other edit.
     fn drain_person_snapshot_requests(&self) -> bool {
-        if let Some(person_room) = self.net.take_person_snapshot_request() {
+        while let Some(person_room) = self.net.take_person_snapshot_request() {
             let asked = self.table.request_room_snapshots(&person_room);
             tracing::debug!(asked, "asked local apps to catch a returning device up");
         }

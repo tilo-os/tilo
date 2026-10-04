@@ -38,11 +38,9 @@ pub enum Action {
     Share(VideoId),
     /// Only visible on a narrow window, where the rail is an overlay flap.
     ToggleSidebar,
-    OpenPalette,
-    ClosePalette,
-    /// `hit` is a deep-link (`tube://watch/<id>`, `tube://channel/<id>`);
-    /// routes to the right screen and closes the palette.
-    ActivateHit(String),
+    /// Ask the host to open its search palette, which finds Tube's videos,
+    /// creators, playlists and watch history among everything else.
+    OpenSearch,
     /// A change to the shared library, submitted as it is through the
     /// framework's door.
     Edit(TubeAction),
@@ -76,9 +74,7 @@ impl Action {
             Self::SubmitSearch => "Search",
             Self::Share(_) => "Copy share link",
             Self::ToggleSidebar => "Show or hide navigation",
-            Self::OpenPalette => "Search Tube actions",
-            Self::ClosePalette => "Close action search",
-            Self::ActivateHit(_) => "Open search result",
+            Self::OpenSearch => "Open search",
             Self::Edit(TubeAction::SetVideoLiked { .. }) => "Like or unlike video",
             Self::Edit(TubeAction::SetQueueMembership { .. }) => "Add to or remove from queue",
             Self::Edit(TubeAction::SetSubscription { .. }) => "Subscribe or unsubscribe",

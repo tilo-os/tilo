@@ -431,7 +431,6 @@ impl<W: Widget> Harness<W> {
 // Keyboard injection note: winit 0.30's `KeyEvent` has a `pub(crate)`
 // `platform_specific` field, so a `KeyEvent` cannot be constructed outside the
 // crate — headless tests can't synthesise key presses through `handle_event`.
-// The keyboard-triggered *toggle* (Ctrl+K / Esc) is therefore exercised via
-// `TubeApp`'s test hook, while every *pointer* interaction (tab clicks, palette
-// result activation, scrim dismissal) goes through the real `handle_event` +
-// computed-rect path here — which is the load-bearing interaction to prove.
+// Every *pointer* interaction (tab clicks, card activation, the compact search
+// button) goes through the real `handle_event` + computed-rect path here —
+// which is the load-bearing interaction to prove.
