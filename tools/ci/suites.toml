@@ -729,11 +729,6 @@ inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["apps/chat/src/component_tests.rs"]
 
 [[cargo]]
-package = "containers"
-inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/containers/src/framework_history_tests.rs"]
-
-[[cargo]]
 package = "vpn"
 inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["apps/vpn/src/app.rs"]
