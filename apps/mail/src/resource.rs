@@ -111,21 +111,7 @@ impl Resource for Mail {
     }
 
     fn search(state: &MailboxState) -> Vec<SearchEntry> {
-        let folders = state.folders.iter().map(|folder| SearchEntry {
-            anchor: Some(format!("mail.folder:{folder}")),
-            title: (*folder).to_owned(),
-            text: String::new(),
-            action: None,
-            ..Default::default()
-        });
-        let custom = state.custom_folders.iter().map(|(id, name)| SearchEntry {
-            anchor: Some(format!("mail.folder:{id}")),
-            title: name.clone(),
-            text: String::new(),
-            action: None,
-            ..Default::default()
-        });
-        folders.chain(custom).collect()
+        crate::search::folder_entries(&state.custom_folders)
     }
 }
 
@@ -145,9 +131,8 @@ pub(crate) fn draft_body_dispatcher(dispatcher: &Dispatcher<Mail>) -> Dispatcher
     dispatcher.child::<RichText>(DRAFT_BODY_ID, MailAction::EditDraftBody)
 }
 
-/// Hosted-only extras that are not document state: an in-flight send and a
-/// search-index fault. Folder/message Document ops stay on
-/// [`tilo_resource::publish`].
+/// Hosted-only extras that are not document state: an in-flight send.
+/// Folder/message Document ops stay on [`tilo_resource::publish`].
 pub(crate) fn live_extras(app: &MailApp) -> Vec<PublishedResource> {
     let mut extras = Vec::new();
     if app.has_pending_send() {
@@ -155,13 +140,6 @@ pub(crate) fn live_extras(app: &MailApp) -> Vec<PublishedResource> {
             "mail.send:pending",
             "mail.send",
             "Sending message…",
-        ));
-    }
-    if let Some(error) = app.mail_search_error() {
-        extras.push(PublishedResource::new(
-            "mail.search-status",
-            "mail.search_status",
-            format!("Search index unavailable: {error}"),
         ));
     }
     extras
@@ -269,6 +247,12 @@ impl ResourceApp for MailShell {
 }
 
 impl ResourceSurface<Mail> for MailApp {
+    /// Every message already loaded, outside Trash: its subject, sender and
+    /// body come from the engine, not the document.
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        crate::search::message_entries(&self.shared_mailbox())
+    }
+
     fn present(&mut self, _state: &std::rc::Rc<MailboxState>) {
         // Shared folder/message Document state is adopted through sync from
         // the Automerge document. An empty projection must not wipe the
@@ -437,6 +421,48 @@ mod tests {
                     _ => {}
                 }
             }
+        }
+
+        /// The window's one search source finds a loaded message by its
+        /// subject and a folder by its name, and each hit opens a resource
+        /// the window publishes.
+        #[test]
+        fn the_window_search_finds_loaded_mail_and_folders() {
+            ui::i18n::I18nManager::init("en-US");
+            let mut app = TestApp::<MailShell>::capture(None).unwrap();
+            let message = crate::sample::sample_mailbox()
+                .messages
+                .values()
+                .find(|message| message.folder == Folder::Inbox)
+                .expect("the sample has inbox mail")
+                .clone();
+            let providers = ui::search::capability::search_providers(app.harness().root_widget());
+            assert_eq!(providers.len(), 1, "one search source");
+            let hits = providers[0].search(&message.subject);
+            let hit = hits
+                .iter()
+                .find(|hit| hit.kind == crate::search::MAIL_KIND && hit.title == message.subject)
+                .expect("the loaded message is found by its subject");
+            let address = hit.action_address().expect("a canonical address");
+            let harness = app.harness();
+            let published = ui::resources::resource(
+                harness.root_widget(),
+                &harness.state().doc,
+                &address.resource,
+            )
+            .expect("the hit's message resolves in the window's publication");
+            assert!(
+                published
+                    .actions
+                    .iter()
+                    .any(|action| action.id == address.action)
+            );
+            let folders = providers[0].search("Archive");
+            assert!(
+                folders
+                    .iter()
+                    .any(|hit| hit.kind == crate::search::FOLDER_KIND && hit.title == "Archive")
+            );
         }
 
         /// The purge confirmation shows messages that really are in Trash:
