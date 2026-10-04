@@ -17,9 +17,12 @@ use std::rc::Rc;
 
 use tilo_actions::{ActionParam, ParamType};
 use tilo_document::{RichText, RichTextAction, RichTextState};
-use ui::framework::{LaunchInput, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx};
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, Effected, LaunchInput, ResourceApp, ResourceSurface,
+    RunMode, SurfaceCx, ViewCx,
+};
 use ui::record::RecordId;
-use ui::tilo_resource::{ActionDecl, Demand, Doc, Invoke, ModelError, Resource};
+use ui::tilo_resource::{self, ActionDecl, Demand, Doc, Effect, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::WordProcessorWidget;
@@ -266,7 +269,19 @@ impl ResourceApp for WordProcessorApp {
     }
 }
 
-impl ResourceSurface<Document> for WordProcessorWidget {
+/// What the editor hands out beyond its document.
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "word-processor.effects")]
+pub enum WordProcessorEffect {
+    /// Share image
+    ///
+    /// The picture at the caret, else the document's only picture, as
+    /// content another app's operation takes (a photo editor opening it).
+    #[effect(content, permission = "read")]
+    ShareImage,
+}
+
+impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
     /// The editor reads the live state where it needs it; a new state only
     /// asks for a redraw.
     fn present(&mut self, state: &Rc<RichTextState>) {
@@ -309,6 +324,32 @@ impl ResourceSurface<Document> for WordProcessorWidget {
     fn bound_declarations(&self) -> Vec<ActionDecl<Document>> {
         self.bound_edits()
     }
+
+    fn effect(
+        &mut self,
+        effect: WordProcessorEffect,
+        _cx: &mut EffectCx<Document, Self>,
+    ) -> EffectAnswer {
+        match effect {
+            WordProcessorEffect::ShareImage => {
+                let hash = self
+                    .shared_image()
+                    .ok_or("there is no one picture to share: place the caret on one")?;
+                Effected::content(&hash)
+            }
+        }
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        if self.shared_image().is_some() {
+            return Vec::new();
+        }
+        vec![EffectStatus::unavailable(
+            WordProcessorEffect::SHARE_IMAGE,
+            "no_image",
+            "there is no one picture to share: place the caret on one",
+        )]
+    }
 }
 
 #[cfg(test)]
@@ -326,6 +367,31 @@ mod tests {
         assert!(
             !ids.contains(&"history"),
             "framework history is the host surface"
+        );
+    }
+
+    #[test]
+    fn sharing_an_image_answers_content_another_app_takes() {
+        use ui::tilo_resource::Effect;
+        let spec = super::WordProcessorEffect::specs()
+            .into_iter()
+            .find(|spec| spec.id == "share-image")
+            .expect("sharing an image is a published effect");
+        assert_eq!(
+            spec.contract.result,
+            tilo_actions::ResultSpec::Resource {
+                resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_owned(),
+            },
+            "its result is typed content, so a caller chains it into a content input"
+        );
+        let answer = ui::framework::Effected::content("abc123").expect("a content hash");
+        assert!(
+            matches!(
+                answer,
+                ui::framework::Effected::Done(ref output)
+                    if output.resources == ["tilo.content:abc123"]
+            ),
+            "{answer:?}"
         );
     }
 
