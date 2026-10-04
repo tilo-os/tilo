@@ -63,6 +63,14 @@
 //! strip. Secret fields get neither chips nor recents. Recents persist with
 //! the other keyboard preferences in the keyboard's own per-user document.
 //!
+//! ## Preferences
+//! The letter layout, suggestions, personalization and recent emoji are the
+//! keyboard's [`crate::resource::Osk`] preferences. The widget shows what it
+//! is [presented](OskWidget::present_preferences); a change it makes itself
+//! (a layout key, an emoji pick) is queued as a
+//! [`SetPreference`](crate::actions::SetPreference) for its host to submit
+//! ([`OskWidget::take_preference_edits`]).
+//!
 //! ## Seams
 //! * **Neural swipe:** the decoder is behind the
 //!   [`crate::swipe::SwipeModel`] trait. The shipping model is the geometric
@@ -72,23 +80,18 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
-use ui::doc::{read_bool, read_str};
 use ui::widget::{AppModel, ModelPath};
 
-#[cfg(test)]
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ReadDoc};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent};
 
-use crate::actions::{Preference, PreferenceDrafts};
+use crate::actions::SetPreference;
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::{OperationKind, Resource};
 use ui::widget::Widget;
 
 use crate::autocorrect::{Autocorrector, KeyAdjacency};
@@ -96,7 +99,7 @@ use crate::dict::Language;
 use crate::emoji_panel::{EMOJI_SUGGESTIONS, EmojiPanel, PanelBands, PanelHit, PanelMode};
 use crate::futo::FutoSwipeModel;
 use crate::i18n;
-use crate::imclient::{content_hint, may_learn};
+use crate::imclient::{ImTransition, content_hint, may_learn};
 use crate::inject::Symbol;
 use crate::layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState};
 use crate::output::{OskOutput, TextMirror};
@@ -139,10 +142,6 @@ const MAX_KEY_LOG_ENTRIES: usize = 1_024;
 const MAX_TOOLBAR_LOG_ENTRIES: usize = 128;
 const MAX_GESTURE_POINTS: usize = 256;
 const MAX_TRACKED_WORD_SCALARS: usize = 128;
-const CONFIG_LAYOUT_KEY: &str = "osk.preferred_layout";
-const CONFIG_SUGGESTIONS_KEY: &str = "osk.suggestions_enabled";
-const CONFIG_PERSONALIZATION_KEY: &str = "osk.personalization_enabled";
-const CONFIG_EMOJI_RECENTS_KEY: &str = "osk.emoji_recents";
 
 /// The on-screen keyboard widget.
 #[allow(
@@ -189,8 +188,8 @@ pub struct OskWidget {
     /// Whether candidate chips are shown. Turning this off leaves the stable
     /// suggestion band in place, avoiding geometry churn while typing.
     suggestions_enabled: bool,
-    /// Whether this process may adapt rankings from committed words. The
-    /// learned cache itself is never persisted or collaborated.
+    /// Whether the keyboard may adapt rankings from committed words. What it
+    /// learns stays in this process: it is neither saved nor shared.
     personalization_enabled: bool,
 
     // --- frame caches (populated in apply_layout) ---
@@ -272,9 +271,6 @@ pub struct OskWidget {
     emoji_panel: EmojiPanel,
     /// This user's recently picked emoji, persisted with the preferences.
     emoji_recents: emoji::Recents,
-    /// The persisted recents last read or written, so `sync` parses only a
-    /// change.
-    recents_seen: String,
     /// The theme's spacing scale and metrics, captured at `build_layout`,
     /// for the emoji panel.
     spacing: ui::tokens::Spacing,
@@ -296,8 +292,8 @@ pub struct OskWidget {
     /// taffy node (its intrinsic height tracks the row count). Cleared by
     /// `take_structure_dirty`.
     structure_dirty: bool,
-    drafts: PreferenceDrafts,
-    actions: crate::resource::ActionSink,
+    /// Preference changes the keyboard made itself, for its host to submit.
+    preference_edits: Vec<SetPreference>,
 
     /// Whether the keyboard is on screen. This is not the keyboard's own
     /// choice — visibility belongs to the compositor, which shows the keyboard
@@ -389,7 +385,6 @@ impl OskWidget {
                 &ui::i18n::I18nManager::current_locale(),
             )),
             emoji_recents: emoji::Recents::default(),
-            recents_seen: String::new(),
             spacing: ui::tokens::Spacing::BASE,
             metrics: ui::tokens::Metrics::BASE,
             mirror: TextMirror::new(MAX_PENDING_TEXT_BYTES),
@@ -402,8 +397,7 @@ impl OskWidget {
             on_output: None,
             on_toolbar: None,
             structure_dirty: false,
-            drafts: PreferenceDrafts::default(),
-            actions: crate::resource::ActionSink::default(),
+            preference_edits: Vec::new(),
             visible: true,
         };
         // Seed the bar with cold-start (most-common-word) suggestions so it is
@@ -476,6 +470,11 @@ impl OskWidget {
         self
     }
 
+    /// Deliver every [`OskOutput`] to `output` from now on.
+    pub fn set_output(&mut self, output: Box<dyn FnMut(OskOutput)>) {
+        self.on_output = Some(output);
+    }
+
     /// Imperative toolbar-tap callback.
     #[must_use]
     pub fn on_toolbar<F: FnMut(OskToolbarAction) + 'static>(mut self, f: F) -> Self {
@@ -542,8 +541,8 @@ impl OskWidget {
         self.personalization_enabled
     }
 
-    /// Toggle visible suggestions. This is a durable preference, while the
-    /// candidate words themselves remain deliberately ephemeral.
+    /// Show or hide the suggestion chips, as the suggestions preference
+    /// says. The candidate words themselves stay ephemeral.
     pub fn set_suggestions_enabled(&mut self, enabled: bool) {
         if self.suggestions_enabled == enabled {
             return;
@@ -554,11 +553,10 @@ impl OskWidget {
         } else {
             self.suggestions.clear();
         }
-        self.drafts.stage(Preference::Suggestions(enabled));
     }
 
-    /// Toggle local adaptive ranking. Disabling it immediately forgets the
-    /// in-memory profile; neither profile entries nor typed text are persisted.
+    /// Adapt to what is typed, or not, as the personalization preference
+    /// says. Turning it off forgets what was learned at once.
     pub fn set_personalization_enabled(&mut self, enabled: bool) {
         if self.personalization_enabled == enabled {
             return;
@@ -567,17 +565,14 @@ impl OskWidget {
         if !enabled {
             self.predictor.clear_learned();
             self.touch_model.clear();
-            if !self.emoji_recents.is_empty() {
-                self.emoji_recents = emoji::Recents::default();
-                self.stage_emoji_recents();
-            }
+            self.emoji_recents = emoji::Recents::default();
         }
         self.refresh_next_word_suggestions();
-        self.drafts.stage(Preference::Personalization(enabled));
     }
 
-    /// Forget locally adapted suggestion ranking without changing the privacy
-    /// preference. This has no effect on the bundled dictionary/bigram model.
+    /// Forget locally adapted suggestion ranking, tap positions, kept words
+    /// and recent emoji without changing the personalization preference.
+    /// This has no effect on the bundled dictionary/bigram model.
     pub fn clear_personalization(&mut self) {
         self.predictor.clear_learned();
         self.touch_model.clear();
@@ -756,94 +751,41 @@ impl OskWidget {
         &self.preferred_text_layout
     }
 
-    /// Label of the pressed or hovered key, when one is highlighted.
-    pub(crate) fn highlighted_key_label(&self) -> Option<String> {
-        let id = self.pressed_key.or(self.hovered_key)?;
-        self.current_layout()
-            .key(id)
-            .map(|key| key.display_label(self.shift))
+    /// Show the keyboard preferences `preferences`: the layout text fields
+    /// open in, the suggestion bar, personalization and the recent emoji.
+    pub fn present_preferences(&mut self, preferences: &crate::resource::OskPreferences) {
+        self.select_text_layout_from_preference(&preferences.layout);
+        self.set_suggestions_enabled(preferences.suggestions);
+        self.set_personalization_enabled(preferences.personalization);
+        self.set_emoji_recents(&preferences.emoji_recents);
     }
 
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Osk>,
-    ) {
-        self.actions.attach(dispatcher);
+    /// The preference changes the keyboard made itself since the last call
+    /// (a layout key, an emoji pick), in order, for its host to submit.
+    pub fn take_preference_edits(&mut self) -> Vec<SetPreference> {
+        std::mem::take(&mut self.preference_edits)
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
-    }
-
-    /// Adopt collaborative prefs when present — never clear a local layout
-    /// that has not been published.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::OskPreferences) {
-        if let Some(layout) = state.layout.as_deref() {
-            self.select_text_layout_from_sync(layout);
+    /// Follow what the compositor said about the focused text field over the
+    /// input method: a new field drops the composition that belonged to the
+    /// previous one, its purpose picks the layout, its hints decide secrecy
+    /// and capitalization, and the keyboard is shown only while a field is
+    /// focused. The compositor relays this to the keyboard alone.
+    pub fn follow_input_method(&mut self, transition: ImTransition) {
+        if transition.field_changed {
+            self.reset_composition();
         }
-        if let Some(enabled) = state.suggestions {
-            self.set_suggestions_enabled_from_sync(enabled);
+        // Purpose first, so the first mapped frame already has the right
+        // layout; hints after it, since a purpose change resets shift.
+        if let Some(purpose) = transition.purpose_changed {
+            self.set_purpose(purpose);
         }
-        if let Some(enabled) = state.personalization {
-            self.set_personalization_enabled_from_sync(enabled);
+        if let Some(hints) = transition.hints_changed {
+            self.set_content_hints(hints);
         }
-    }
-
-    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let mut choices = self
-            .layouts
-            .keys()
-            .filter(|name| name.as_str() != "symbols")
-            .cloned()
-            .collect::<Vec<_>>();
-        choices.sort();
-        // Layout, suggestions, and personalization are the document. The
-        // installed layout list stays on this device. An unwritten field
-        // still uses the widget until sync stores it.
-        let from_doc = <crate::resource::Osk as ui::tilo_resource::Resource>::read(doc).ok();
-        let state = crate::resource::OskPreferences {
-            layout: from_doc
-                .as_ref()
-                .and_then(|state| state.layout.clone())
-                .or_else(|| Some(self.preferred_text_layout.clone())),
-            suggestions: from_doc
-                .as_ref()
-                .and_then(|state| state.suggestions)
-                .or(Some(self.suggestions_enabled)),
-            personalization: from_doc
-                .as_ref()
-                .and_then(|state| state.personalization)
-                .or(Some(self.personalization_enabled)),
-            layout_choices: choices,
-        };
-        crate::resource::provide_resources(&state)
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn commit_preference(
-        &mut self,
-        doc: &mut AutoCommit,
-        action: &crate::actions::SetPreference,
-    ) {
-        self.actions.dispatch(doc, action);
-        match &action.value {
-            Preference::Layout(value) => self.select_text_layout_from_sync(value),
-            Preference::Suggestions(value) => self.set_suggestions_enabled_from_sync(*value),
-            Preference::Personalization(value) => {
-                self.set_personalization_enabled_from_sync(*value);
-            }
-            Preference::EmojiRecents(value) => self.set_emoji_recents_from_sync(value.clone()),
+        if let Some(visible) = transition.visibility_changed {
+            self.set_visible(visible);
         }
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_document_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
     }
 
     // --- programmatic activation (test/host helpers) -------------------
@@ -948,7 +890,8 @@ impl OskWidget {
         self.showing_symbols = false;
         self.shift = ShiftState::Off;
         self.structure_dirty = true;
-        self.drafts.stage(Preference::Layout(name.into()));
+        self.preference_edits
+            .push(SetPreference::Layout(name.to_owned()));
         self.follow_layout_language();
         true
     }
@@ -972,7 +915,7 @@ impl OskWidget {
         self.refresh_completion_suggestions();
     }
 
-    fn select_text_layout_from_sync(&mut self, name: &str) {
+    fn select_text_layout_from_preference(&mut self, name: &str) {
         if name == "symbols"
             || !self.layouts.contains_key(name)
             || self.preferred_text_layout == name
@@ -987,31 +930,6 @@ impl OskWidget {
             self.structure_dirty = true;
         }
         self.follow_layout_language();
-    }
-
-    fn set_suggestions_enabled_from_sync(&mut self, enabled: bool) {
-        if self.suggestions_enabled == enabled {
-            return;
-        }
-        self.suggestions_enabled = enabled;
-        if enabled {
-            self.refresh_next_word_suggestions();
-        } else {
-            self.suggestions.clear();
-        }
-    }
-
-    fn set_personalization_enabled_from_sync(&mut self, enabled: bool) {
-        if self.personalization_enabled == enabled {
-            return;
-        }
-        self.personalization_enabled = enabled;
-        if !enabled {
-            self.predictor.clear_learned();
-            self.touch_model.clear();
-            self.emoji_recents = emoji::Recents::default();
-        }
-        self.refresh_next_word_suggestions();
     }
 
     /// The layout currently on screen.
@@ -1443,29 +1361,28 @@ impl OskWidget {
         &self.emoji_panel
     }
 
-    /// Save the recents in the keyboard's document through the preference
-    /// action, like every other keyboard preference.
+    /// Save the recents with the keyboard's preferences.
     fn stage_emoji_recents(&mut self) {
-        if let Ok(recents) = serde_json::to_string(&self.emoji_recents) {
-            self.recents_seen.clone_from(&recents);
-            self.drafts.stage(Preference::EmojiRecents(recents));
-        }
+        self.preference_edits.push(SetPreference::EmojiRecents(
+            self.emoji_recents.items().to_vec(),
+        ));
     }
 
-    /// Adopt the recents saved in the keyboard's document, parsing only a
-    /// change.
-    fn set_emoji_recents_from_sync(&mut self, recents: String) {
-        if recents == self.recents_seen {
+    /// Show the recents saved with the keyboard's preferences, most recent
+    /// first.
+    fn set_emoji_recents(&mut self, recents: &[String]) {
+        if self.emoji_recents.items() == recents {
             return;
         }
-        if let Ok(parsed) = serde_json::from_str::<emoji::Recents>(&recents) {
-            self.emoji_recents = parsed;
-            self.layout_bands();
+        let mut adopted = emoji::Recents::default();
+        for emoji in recents.iter().rev() {
+            adopted.record(emoji);
         }
-        self.recents_seen = recents;
+        self.emoji_recents = adopted;
+        self.layout_bands();
     }
 
-    fn open_emoji_panel(&mut self) {
+    pub(crate) fn open_emoji_panel(&mut self) {
         self.emoji_panel.open();
         self.fingers.clear();
         self.structure_dirty = true;
@@ -2174,6 +2091,11 @@ impl OskWidget {
         self
     }
 
+    /// Show or stop showing the effective tap targets over the keys.
+    pub fn set_hit_overlay(&mut self, on: bool) {
+        self.hit_overlay = on;
+    }
+
     /// The effective hit areas in the current typing context, sampled every
     /// `step` logical px over the letter keys.
     fn hit_cells(&mut self, step: f64) -> Vec<HitCell> {
@@ -2297,90 +2219,9 @@ struct Correction {
     tail: String,
 }
 
-impl OskWidget {
-    fn answer_resource_operation(
-        &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind != OperationKind::Effect || type_id != "osk.suggestions" {
-            return Ok(false);
-        }
-        let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        if value != "clear-personal" {
-            return Ok(false);
-        }
-        self.clear_personalization();
-        Ok(true)
-    }
-}
-
 impl Widget for OskWidget {
-    ui::provides!(
-        dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
-    );
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["osk.suggestions"]
-    }
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.poll_hold(Instant::now());
-        if !self.drafts.has(0) {
-            if let Some(layout) = read_str(state, path, CONFIG_LAYOUT_KEY) {
-                // Remote/persisted config cannot introduce an arbitrary layout: it
-                // must still be one registered in this OSK process.
-                self.select_text_layout_from_sync(&layout);
-            } else if matches!(state.get(path, CONFIG_LAYOUT_KEY), Ok(None)) {
-                self.select_text_layout_from_sync("qwerty");
-            }
-        }
-        if !self.drafts.has(1) {
-            if let Some(value) = read_bool(state, path, CONFIG_SUGGESTIONS_KEY) {
-                self.set_suggestions_enabled_from_sync(value);
-            } else if matches!(state.get(path, CONFIG_SUGGESTIONS_KEY), Ok(None)) {
-                self.set_suggestions_enabled_from_sync(true);
-            }
-        }
-        if !self.drafts.has(2) {
-            if let Some(value) = read_bool(state, path, CONFIG_PERSONALIZATION_KEY) {
-                self.set_personalization_enabled_from_sync(value);
-            } else if matches!(state.get(path, CONFIG_PERSONALIZATION_KEY), Ok(None)) {
-                self.set_personalization_enabled_from_sync(true);
-            }
-        }
-        if !self.drafts.has(3)
-            && let Some(recents) = read_str(state, path, CONFIG_EMOJI_RECENTS_KEY)
-        {
-            self.set_emoji_recents_from_sync(recents);
-        }
-        let resources = ui::resources::resources(self, state);
-        self.drafts.prepare_after_sync(&resources);
     }
 
     fn build_layout(
@@ -2773,114 +2614,10 @@ impl Widget for OskWidget {
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.structure_dirty)
     }
-
-    /// Out-of-band commands from the host's input-method thread, which runs on
-    /// its own Wayland connection and can't touch this widget directly. The
-    /// compositor decides when the keyboard is shown (a text input is focused)
-    /// and relays that decision — only to the keyboard — over the input method;
-    /// the host forwards it here as short text commands so the keyboard
-    /// shows/hides and re-layouts in step with the focused field:
-    ///
-    /// * `osk:show` / `osk:hide` — apply the compositor's show/hide decision.
-    /// * `osk:field` — a text field gained or lost focus; drop the composition
-    ///   and typed-text traces that belonged to the previous one.
-    /// * `osk:hints:<bits>` — the focused field's content hints.
-    /// * `osk:purpose:<name>` — switch to the layout for an [`InputPurpose`]
-    ///   (`text`, `number`, `decimal`, `phone`, `url`, `email`, `pin`,
-    ///   `password`, `date`, `time`). An unknown name is ignored.
-    ///
-    /// Unrecognised payloads are ignored so an unrelated `External` event can't
-    /// disturb the keyboard.
-    fn on_external_event(&mut self, payload: &str, _state: &mut AppModel, _root: &ModelPath) {
-        match payload {
-            "osk:show" => self.set_visible(true),
-            "osk:hide" => self.set_visible(false),
-            "osk:field" => self.reset_composition(),
-            other => {
-                if let Some(name) = other.strip_prefix("osk:purpose:")
-                    && let Some(purpose) = input_purpose_from_name(name)
-                {
-                    self.set_purpose(purpose);
-                } else if let Some(bits) = other.strip_prefix("osk:hints:")
-                    && let Ok(hints) = bits.parse::<u32>()
-                {
-                    self.set_content_hints(hints);
-                }
-            }
-        }
-    }
 }
 
-impl ui::resources::PublishesResources for OskWidget {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// the keyboard door — keep only live compose / key-highlight extras.
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        if self.is_hosted() {
-            return crate::resource::live_extras(self);
-        }
-        self.publish_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if self.is_hosted() && id == crate::actions::KEYBOARD_RESOURCE_ID {
-            return None;
-        }
-        find_resource(&self.publish_resources(doc), id).or_else(|| {
-            self.is_hosted().then(|| {
-                crate::resource::live_extras(self)
-                    .into_iter()
-                    .find(|resource| resource.id.as_str() == id)
-            })?
-        })
-    }
-}
-
-impl ui::widget::controls::ActionControls for OskWidget {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.drafts.take()
-    }
-}
-
-impl ui::history_mode::capability::DocumentHistory for OskWidget {
-    fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
-        if scope == crate::framework_history::SCOPE && self.drafts.pending() {
-            Err("Return to live to finish pending keyboard preferences before restoring".into())
-        } else {
-            Ok(())
-        }
-    }
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(crate::framework_history::definition(
-            self.layouts.get("qwerty") == Some(&KeyboardLayout::qwerty()),
-            self.layouts.get("azerty") == Some(&KeyboardLayout::azerty()),
-        ))
-    }
-    fn document_action_applied(
-        &mut self,
-        action: &ui::tilo_actions::EncodedAction,
-        _before: &[automerge::ChangeHash],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) {
-        let Some(action) = crate::actions::decode(action) else {
-            return;
-        };
-        if self.drafts.acknowledge(&action, doc) {
-            match action.value {
-                Preference::Layout(value) => self.select_text_layout_from_sync(&value),
-                Preference::Suggestions(value) => self.set_suggestions_enabled_from_sync(value),
-                Preference::Personalization(value) => {
-                    self.set_personalization_enabled_from_sync(value);
-                }
-                Preference::EmojiRecents(value) => self.set_emoji_recents_from_sync(value),
-            }
-        }
-    }
-}
-
-/// Parse the canonical name of an [`InputPurpose`] (as used in the `osk:purpose:`
-/// command). Returns `None` for an unknown name so the caller can ignore it.
+/// Parse the canonical name of an [`InputPurpose`]. Returns `None` for an
+/// unknown name so the caller can ignore it.
 pub fn input_purpose_from_name(name: &str) -> Option<InputPurpose> {
     Some(match name {
         "text" => InputPurpose::Text,
@@ -2898,7 +2635,7 @@ pub fn input_purpose_from_name(name: &str) -> Option<InputPurpose> {
 }
 
 /// The canonical name for an [`InputPurpose`], the inverse of
-/// [`input_purpose_from_name`]. Used to build the `osk:purpose:<name>` command.
+/// [`input_purpose_from_name`].
 pub fn input_purpose_name(purpose: InputPurpose) -> &'static str {
     match purpose {
         InputPurpose::Text => "text",
@@ -2914,33 +2651,11 @@ pub fn input_purpose_name(purpose: InputPurpose) -> &'static str {
     }
 }
 
-/// Test readers for the persisted configuration keys (the framework History
-/// tests assert on the stored document through these names).
-#[cfg(test)]
-fn read_config_text(state: &impl ReadDoc, path: &ObjId, key: &str) -> Option<String> {
-    read_str(state, path, key)
-}
-#[cfg(test)]
-fn read_config_bool(state: &impl ReadDoc, path: &ObjId, key: &str) -> Option<bool> {
-    read_bool(state, path, key)
-}
-
-fn find_resource(resources: &[Resource], id: &str) -> Option<Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::presentation::MAX_KEYBOARD_CONTENT_WIDTH;
+    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -3235,12 +2950,8 @@ mod tests {
         assert!(!osk.take_structure_dirty(), "flag is rising-edge");
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one a11y sweep covers painted keys, configuration doors, and host extras"
-    )]
     #[test]
-    fn resources_and_accessibility_expose_configuration_not_keystrokes() {
+    fn accessibility_operates_each_painted_key_and_announces_disabled_suggestions() {
         eprintln!("phase accessibility_exposes_and_operates_each_painted_key");
         {
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
@@ -3272,69 +2983,6 @@ mod tests {
                 &automerge::ROOT,
             ));
             assert_eq!(osk.pending_text(), "q");
-        }
-
-        eprintln!("phase resource_catalogue_exports_configuration_not_keystrokes");
-        {
-            let osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-            let resources = ui::resources::resources(&osk, &AutoCommit::new());
-            let keyboard = resources.first().expect("keyboard resource");
-            assert!(
-                keyboard.actions.iter().all(|action| {
-                    action.id == ui::tilo_resource::APPLY
-                        || action.id == ui::tilo_resource::GROUP
-                        || action.id.starts_with("set-")
-                }),
-                "root carries preference declarations and programmatic apply/group, not keystrokes: {:?}",
-                keyboard
-                    .actions
-                    .iter()
-                    .map(|action| action.id.as_str())
-                    .collect::<Vec<_>>()
-            );
-            assert_eq!(keyboard.children.len(), 3);
-            let layout = keyboard
-                .children
-                .iter()
-                .find(|resource| resource.id.0 == "osk.keyboard.layout")
-                .expect("layout configuration resource");
-            assert!(layout.actions.iter().any(|action| action.id == "qwerty"));
-            assert!(layout.actions.iter().any(|action| action.id == "azerty"));
-            assert_eq!(osk.local_resource_operation_handlers(), ["osk.suggestions"]);
-        }
-
-        eprintln!("phase configuration_resource_persists_and_restores_preferred_layout");
-        {
-            let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-            let mut doc = AutoCommit::new();
-            let resources = ui::resources::resources(&osk, &doc);
-            let encoded = ui::tilo_actions::door::encode(
-                &resources,
-                &ui::tilo_actions::ActionAddress::new("osk.keyboard.layout", "azerty"),
-                None,
-            )
-            .unwrap();
-            let mut registry = ui::tilo_actions::ActionRegistry::new();
-            crate::actions::register(&mut registry);
-            let action = registry.decode(&encoded).unwrap();
-            action.apply(&mut doc).unwrap();
-            ui::history_mode::capability::document_action_applied(
-                &mut osk,
-                &encoded,
-                &[],
-                &doc,
-                &automerge::ROOT,
-            );
-            osk.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(
-                read_str(&doc, &automerge::ROOT, CONFIG_LAYOUT_KEY).as_deref(),
-                Some("azerty")
-            );
-
-            let mut restored =
-                OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-            restored.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(restored.active_layout_name(), "azerty");
         }
 
         eprintln!("phase disabled_suggestions_are_announced_and_not_materialised");
@@ -4122,8 +3770,7 @@ mod tests {
         let mut osk = OskWidget::new();
         osk.set_purpose(InputPurpose::Password);
         osk.apply_action(KeyAction::Char("s".into()));
-        let mut doc = AutoCommit::new();
-        osk.on_external_event("osk:field", &mut doc, &automerge::ROOT);
+        osk.follow_input_method(field_changed());
         assert_eq!(osk.pending_text(), "");
         assert!(osk.take_output().is_empty());
         assert!(osk.take_key_actions().is_empty());
@@ -4132,9 +3779,10 @@ mod tests {
     #[test]
     fn auto_capitalization_shifts_at_sentence_starts() {
         let mut osk = OskWidget::new();
-        let mut doc = AutoCommit::new();
-        let hints = content_hint::AUTO_CAPITALIZATION;
-        osk.on_external_event(&format!("osk:hints:{hints}"), &mut doc, &automerge::ROOT);
+        osk.follow_input_method(ImTransition {
+            hints_changed: Some(content_hint::AUTO_CAPITALIZATION),
+            ..ImTransition::default()
+        });
         assert_eq!(osk.shift_state(), ShiftState::Shift);
         lay_out(&mut osk, 800.0, 360.0);
         for label in ["h", "i", ".", "space", "o", "k", "space"] {
@@ -4144,7 +3792,7 @@ mod tests {
         assert_eq!(osk.shift_state(), ShiftState::Off);
 
         osk.set_content_hints(content_hint::AUTO_CAPITALIZATION | content_hint::LOWERCASE);
-        osk.on_external_event("osk:field", &mut doc, &automerge::ROOT);
+        osk.follow_input_method(field_changed());
         assert_eq!(osk.shift_state(), ShiftState::Off);
     }
 
@@ -4152,8 +3800,7 @@ mod tests {
     fn field_change_drops_the_composition() {
         let mut osk = OskWidget::new();
         osk.apply_action(KeyAction::Char("h".into()));
-        let mut doc = AutoCommit::new();
-        osk.on_external_event("osk:field", &mut doc, &automerge::ROOT);
+        osk.follow_input_method(field_changed());
         assert_eq!(osk.current_word(), "");
         osk.apply_action(KeyAction::Backspace);
         assert_eq!(
@@ -4214,7 +3861,7 @@ mod tests {
     }
 
     #[test]
-    fn external_commands_drive_visibility_and_purpose_without_blocking() {
+    fn the_input_method_drives_visibility_and_purpose_without_blocking() {
         eprintln!("phase keyboard_app_id_is_the_well_known_id");
         {
             // The compositor recognises the keyboard by this exact app-id to keep
@@ -4223,47 +3870,47 @@ mod tests {
             assert_eq!(crate::KEYBOARD_APP_ID, "so.tilo.osk");
         }
 
-        eprintln!("phase external_show_hide_commands_drive_visibility");
+        eprintln!("phase input_method_focus_drives_visibility");
         {
             let mut osk =
                 OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())).hidden();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
+            let shown = |visible| ImTransition {
+                visibility_changed: Some(visible),
+                ..ImTransition::default()
+            };
 
-            osk.on_external_event("osk:show", &mut doc, &root);
+            osk.follow_input_method(shown(true));
             assert!(osk.is_visible());
 
-            osk.on_external_event("osk:hide", &mut doc, &root);
+            osk.follow_input_method(shown(false));
             assert!(!osk.is_visible());
         }
 
-        eprintln!("phase external_purpose_command_switches_layout");
+        eprintln!("phase input_method_purpose_switches_layout");
         {
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
+            let purpose = |purpose| ImTransition {
+                purpose_changed: Some(purpose),
+                ..ImTransition::default()
+            };
 
-            osk.on_external_event("osk:purpose:phone", &mut doc, &root);
+            osk.follow_input_method(purpose(InputPurpose::Telephone));
             assert_eq!(osk.purpose(), InputPurpose::Telephone);
             assert_eq!(osk.active_layout_name(), "phone");
 
-            osk.on_external_event("osk:purpose:email", &mut doc, &root);
+            osk.follow_input_method(purpose(InputPurpose::Email));
             assert_eq!(osk.purpose(), InputPurpose::Email);
             assert_eq!(osk.active_layout_name(), "email");
         }
 
-        eprintln!("phase external_unknown_command_is_ignored");
+        eprintln!("phase an_unchanged_focus_changes_nothing");
         {
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
-            let before = osk.purpose();
-            let visible_before = osk.is_visible();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-
-            osk.on_external_event("osk:purpose:dvorak", &mut doc, &root); // unknown name
-            osk.on_external_event("something:else", &mut doc, &root); // unrelated payload
-            assert_eq!(osk.purpose(), before);
-            assert_eq!(osk.is_visible(), visible_before);
+            osk.apply_action(KeyAction::Char("h".into()));
+            osk.follow_input_method(ImTransition::default());
+            assert_eq!(osk.purpose(), InputPurpose::Text);
+            assert!(osk.is_visible());
+            assert_eq!(osk.current_word(), "h");
         }
 
         eprintln!("phase bounded_diagnostic_buffers_report_overflow_without_blocking_delivery");
@@ -4291,19 +3938,11 @@ mod tests {
         }
     }
 
-    // The keyboard publishes device-local configuration (layout, suggestion
-    // privacy) as client-local `osk.preference` document actions plus the
-    // clear-personal effect; keystrokes never become actions. The registry is
-    // the one the app installs, so every published document type decodes.
-    ui::action_contract_tests! {
-        seed: AutoCommit::new(),
-        registry: {
-            let mut registry = ui::tilo_actions::ActionRegistry::new();
-            crate::actions::register(&mut registry);
-            registry
-        },
-        resources: |doc| ui::resources::resources(&OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())), doc),
-        palette: ["English (QWERTY)", "French (AZERTY)", "Clear learned suggestions"],
+    fn field_changed() -> ImTransition {
+        ImTransition {
+            field_changed: true,
+            ..ImTransition::default()
+        }
     }
 
     fn semantic(osk: &mut OskWidget, target: &str, action: &AccessibilityAction) -> bool {
@@ -4529,36 +4168,25 @@ mod tests {
     }
 
     #[test]
-    fn recents_round_trip_through_the_keyboard_document() {
-        let mut doc = AutoCommit::new();
+    fn picked_emoji_are_saved_as_preferences_and_presented_back() {
         let mut osk = OskWidget::new();
         open_panel(&mut osk);
         let first = osk.emoji_panel().sections(&emoji::Recents::default())[0].emoji[0].clone();
         assert!(activate(&mut osk, &format!("osk:emoji:{first}")));
-        // Recents are saved through the keyboard's preference action.
-        osk.sync(&mut doc, &automerge::ROOT);
-        let offer = ui::widget::controls::take_control_invocation(&mut osk)
-            .expect("the recents are offered as a preference action");
-        let encoded = ui::tilo_actions::door::encode_json(
-            &ui::resources::resources(&osk, &doc),
-            &offer.address,
-            &offer.arguments,
-        )
-        .unwrap();
-        let mut registry = ui::tilo_actions::ActionRegistry::new();
-        crate::actions::register(&mut registry);
-        registry.decode(&encoded).unwrap().apply(&mut doc).unwrap();
-        ui::history_mode::capability::document_action_applied(
-            &mut osk,
-            &encoded,
-            &[],
-            &doc,
-            &automerge::ROOT,
-        );
-        assert!(!osk.drafts.pending(), "the saved recents settle the draft");
+        let edits = osk.take_preference_edits();
+        assert_eq!(edits, [SetPreference::EmojiRecents(vec![first.clone()])]);
+        assert!(osk.take_preference_edits().is_empty(), "taken once");
+
         let mut restarted = OskWidget::new();
-        restarted.sync(&mut doc, &automerge::ROOT);
+        restarted.present_preferences(&crate::resource::OskPreferences {
+            emoji_recents: vec![first.clone()],
+            ..crate::resource::OskPreferences::default()
+        });
         assert_eq!(restarted.emoji_recents(), [first]);
+        assert!(
+            restarted.take_preference_edits().is_empty(),
+            "presenting saved preferences saves nothing"
+        );
     }
 
     #[test]
@@ -4592,7 +4220,7 @@ mod tests {
     fn a_field_change_closes_the_panel() {
         let mut osk = OskWidget::new();
         open_panel(&mut osk);
-        osk.on_external_event("osk:field", &mut AutoCommit::new(), &automerge::ROOT);
+        osk.follow_input_method(field_changed());
         assert_eq!(osk.emoji_panel().mode(), PanelMode::Closed);
     }
 
@@ -4864,10 +4492,6 @@ mod tests {
         );
     }
 }
-
-#[cfg(test)]
-#[path = "framework_history_tests.rs"]
-mod framework_history_tests;
 
 #[cfg(test)]
 #[path = "visual_review.rs"]
