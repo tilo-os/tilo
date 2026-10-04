@@ -16,8 +16,7 @@ Give every Tilo app a pleasant balance of useful information and breathing room 
 - Use actual text measurement for sizing and painting; do not shrink fonts to hide overlap.
 - Reuse existing Card, Actions, Form, Toolbar, split and shell primitives before adding new abstractions.
 - Do not globally change primitive padding or reinterpret explicit fixed sizes.
-- Preserve unrelated working changes and untracked Scratchpad ownership; coordinate any Scratchpad app edit explicitly with its task.
-- No pushes, merges, publishing or dependency upgrades.
+- No dependency upgrades.
 
 ## Composition rules
 
