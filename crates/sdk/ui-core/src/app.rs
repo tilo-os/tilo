@@ -2089,23 +2089,46 @@ impl App {
     /// beats its enclosing toolbar.
     #[cfg(feature = "native")]
     fn tooltip_target_at(&self, point: Point) -> Option<(vello::kurbo::Rect, String)> {
+        self.tooltip_placed_at(point)
+            .map(|(rect, label, _)| (rect, label))
+    }
+
+    /// [`Self::tooltip_target_at`] with the side of its control the
+    /// tooltip prefers.
+    #[cfg(feature = "native")]
+    pub(crate) fn tooltip_placed_at(
+        &self,
+        point: Point,
+    ) -> Option<(
+        vello::kurbo::Rect,
+        String,
+        crate::widget::tooltip::TooltipSide,
+    )> {
         if !self.input.interaction.supports_hover() {
             return None;
         }
-        let mut best: Option<(f64, vello::kurbo::Rect, String)> = None;
+        let mut best: Option<(
+            f64,
+            vello::kurbo::Rect,
+            String,
+            crate::widget::tooltip::TooltipSide,
+        )> = None;
         for &node in self.layout.node_map.keys() {
-            let Ok(target) = self.inspect_node(node, |widget| widget.tooltip_target_at(point))
-            else {
+            let Ok(target) = self.inspect_node(node, |widget| {
+                widget
+                    .tooltip_target_at(point)
+                    .map(|(rect, tip)| (rect, tip, widget.tooltip_side()))
+            }) else {
                 continue;
             };
-            if let Some((rect, tip)) = target {
+            if let Some((rect, tip, side)) = target {
                 let area = (rect.width() * rect.height()).max(0.0);
-                if best.as_ref().is_none_or(|(a, _, _)| area < *a) {
-                    best = Some((area, rect, tip));
+                if best.as_ref().is_none_or(|(a, _, _, _)| area < *a) {
+                    best = Some((area, rect, tip, side));
                 }
             }
         }
-        best.map(|(_, rect, label)| (rect, label))
+        best.map(|(_, rect, label, side)| (rect, label, side))
     }
 }
 

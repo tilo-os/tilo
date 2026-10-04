@@ -59,3 +59,46 @@ fn apply_reads_the_invoking_context_and_replay_reads_it_again() {
     assert_eq!(group(&peer).as_deref(), Some("run-7"));
     assert_eq!(peer.get_heads(), doc.get_heads(), "the same change");
 }
+
+/// Counts what it found: a step named by what it does.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Tally;
+
+impl Action for Tally {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        doc.put(ROOT, "tally", 3_i64)?;
+        Ok(())
+    }
+
+    fn history_label(&self, doc: &Doc) -> Option<String> {
+        // Read before the apply: nothing tallied yet.
+        let before = doc.get(ROOT, "tally").unwrap().is_none();
+        before.then(|| "Tally 3 items".to_owned())
+    }
+}
+
+#[test]
+fn a_step_is_named_by_what_it_did_and_replicas_replay_the_name() {
+    let mut doc = AutoCommit::new();
+    let base = doc.fork();
+    let context = ActionContext::for_resource("Edit", "r", "k", "l");
+    let encoded = EncodedAction::encode("test.tally", &Tally).unwrap();
+    let mut transport = LocalTransport::new();
+    dispatch_with_context(&mut doc, &Tally, encoded, &mut transport, context).unwrap();
+    let sent = &transport.replicated[0];
+    assert_eq!(
+        sent.context
+            .as_ref()
+            .map(|context| context.action_label.as_str()),
+        Some("Tally 3 items")
+    );
+    let mut registry = ActionRegistry::new();
+    registry.register::<Tally>("test.tally");
+    let mut peer = base;
+    replay(&mut peer, sent, &registry).unwrap();
+    assert_eq!(
+        peer.get_heads(),
+        doc.get_heads(),
+        "the same change, name and all"
+    );
+}
