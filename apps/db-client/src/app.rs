@@ -1361,6 +1361,11 @@ impl DbClientApp {
         rows
     }
 
+    /// Every row of the open connection's catalog as a search entry.
+    pub(crate) fn catalog_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.search_index.entries()
+    }
+
     /// The live entity `id`, at any depth of the open connection's catalog.
     pub(crate) fn live_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
         self.search_index.resource(id).map(live_row)
@@ -1949,10 +1954,7 @@ fn csv_field(value: &str) -> String {
 }
 
 impl Widget for DbClientApp {
-    ui::provides!(
-        dyn ui::search::capability::SearchSource,
-        dyn ui::undo::UndoPoints
-    );
+    ui::provides!(dyn ui::undo::UndoPoints);
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
@@ -2589,12 +2591,6 @@ impl ui::undo::UndoPoints for DbClientApp {
     }
     fn set_state(&mut self, state: &str) {
         self.editor.set_state(state);
-    }
-}
-
-impl ui::search::capability::SearchSource for DbClientApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 }
 
