@@ -20,6 +20,42 @@ pub(crate) fn action_ui_routes(
     address: &tilo_actions::ActionAddress,
 ) -> Vec<ActionUiRoute> {
     let mut routes = Vec::new();
+    visit_action_ui_routes(tree, bindings, address, &mut |binding, path, node| {
+        routes.push(ActionUiRoute {
+            address: address.clone(),
+            control_id: binding.control_id.clone(),
+            path: path.to_vec(),
+            bounds: node.bounds,
+            focused: node.state.focused,
+            disabled: node.state.disabled,
+        });
+    });
+    routes.sort_by(|left, right| {
+        left.disabled
+            .cmp(&right.disabled)
+            .then_with(|| left.bounds.is_none().cmp(&right.bounds.is_none()))
+            .then_with(|| left.path.len().cmp(&right.path.len()))
+            .then_with(|| right.focused.cmp(&left.focused))
+            .then_with(|| left.control_id.cmp(&right.control_id))
+    });
+    routes.dedup_by(|left, right| left.path.last() == right.path.last());
+    routes
+}
+
+type ActionRouteVisitor<'tree, 'visitor> = dyn FnMut(
+        &crate::widget::ControlBindingMetadata,
+        &[crate::a11y_tree::SemanticId],
+        &'tree crate::a11y_tree::SemanticNode,
+    ) + 'visitor;
+
+// Ranking is a public presentation policy. Exact resource geometry needs the
+// same admitted candidates, but neither route allocation nor ranked sorting.
+fn visit_action_ui_routes<'tree>(
+    tree: &'tree crate::a11y_tree::SemanticTree,
+    bindings: &[crate::widget::ControlBindingMetadata],
+    address: &tilo_actions::ActionAddress,
+    visit: &mut ActionRouteVisitor<'tree, '_>,
+) {
     for binding in bindings {
         if bindings
             .iter()
@@ -29,7 +65,7 @@ pub(crate) fn action_ui_routes(
         {
             continue;
         }
-        let paths = tree.control_paths(&binding.control_id);
+        let paths = tree.control_paths_unranked(&binding.control_id);
         let leaves = paths
             .iter()
             .filter(|path| {
@@ -66,26 +102,9 @@ pub(crate) fn action_ui_routes(
             let Some(node) = tree.node(semantic_id) else {
                 continue;
             };
-            routes.push(ActionUiRoute {
-                address: address.clone(),
-                control_id: binding.control_id.clone(),
-                path: path.clone(),
-                bounds: node.bounds,
-                focused: node.state.focused,
-                disabled: node.state.disabled,
-            });
+            visit(binding, path, node);
         }
     }
-    routes.sort_by(|left, right| {
-        left.disabled
-            .cmp(&right.disabled)
-            .then_with(|| left.bounds.is_none().cmp(&right.bounds.is_none()))
-            .then_with(|| left.path.len().cmp(&right.path.len()))
-            .then_with(|| right.focused.cmp(&left.focused))
-            .then_with(|| left.control_id.cmp(&right.control_id))
-    });
-    routes.dedup_by(|left, right| left.path.last() == right.path.last());
-    routes
 }
 
 /// Resolve only an unambiguous, currently bound control. Labels and positional
@@ -154,13 +173,24 @@ pub(crate) fn resource_bounds(
     if !resource.durable_identity || resource.action(&address.action).is_none() {
         return None;
     }
-    let routes = action_ui_routes(tree, bindings, address);
-    if routes.len() != 1 {
+    let mut only = None;
+    let mut ambiguous = false;
+    visit_action_ui_routes(tree, bindings, address, &mut |_, _, node| {
+        if let Some(previous) = only {
+            ambiguous |= previous != &node.id;
+        } else {
+            only = Some(&node.id);
+        }
+    });
+    if ambiguous {
         return None;
     }
-    let route = routes.first()?;
-    let bounds = route.bounds?;
-    let widget = tree.node(route.path.last()?)?.widget_taffy_id?;
+    // Adjacent deduplication after ranking has cardinality one exactly when
+    // every candidate ends at this same node. Mixed endpoints remain ambiguous
+    // regardless of interleaving; this does not globally deduplicate ranked UI.
+    let node = tree.node(only?)?;
+    let bounds = node.bounds?;
+    let widget = node.widget_taffy_id?;
     ([bounds.x0, bounds.y0, bounds.x1, bounds.y1]
         .into_iter()
         .all(f64::is_finite)

@@ -151,7 +151,9 @@ impl FrameHarness {
         record: &str,
         address: &tilo_actions::ActionAddress,
     ) -> Option<Rect> {
-        self.retained_action_geometry()?;
+        if !self.action_geometry_visible() {
+            return None;
+        }
         let target = self.bound_publication.target(address).ok()??;
         if target.binding.instance_id != instance
             || target.binding.app_id != app
@@ -273,11 +275,9 @@ impl FrameHarness {
         (matches.len() == 1).then(|| matches[0])
     }
 
-    fn retained_action_geometry(
-        &self,
-    ) -> Option<(SemanticTree, Vec<crate::widget::ControlBindingMetadata>)> {
+    fn action_geometry_visible(&self) -> bool {
         // A system surface hiding the app cannot expose its background locus.
-        if self.system_search_presentation().is_some()
+        !(self.system_search_presentation().is_some()
             || self.caller_palette.palette.is_some()
             || self
                 .history
@@ -289,8 +289,13 @@ impl FrameHarness {
             || self
                 .action_palette
                 .as_deref()
-                .is_some_and(|palette| palette.is_presented())
-        {
+                .is_some_and(|palette| palette.is_presented()))
+    }
+
+    fn retained_action_geometry(
+        &self,
+    ) -> Option<(SemanticTree, Vec<crate::widget::ControlBindingMetadata>)> {
+        if !self.action_geometry_visible() {
             return None;
         }
         let mut resources = Vec::new();
@@ -766,6 +771,15 @@ mod locus_tests {
             paths.len() >= 2,
             "fixture contains distinct owners with the same control id"
         );
+        let (tree, bindings) = frame.retained_action_geometry().unwrap();
+        assert!(
+            crate::action_locus::resource_bounds(
+                &tree,
+                &bindings,
+                &tilo_actions::ActionAddress::new("one:root", "edit"),
+            )
+            .is_none()
+        );
         for target in paths.iter().filter_map(|path| path.last()) {
             let mut event = interaction("one:root");
             event.anchor = tilo_actions::InteractionAnchor::SemanticControl {
@@ -892,6 +906,69 @@ mod locus_tests {
         assert_eq!(frame.relayout_frames(), layouts);
         assert_eq!(frame.state.doc.get_heads(), before);
         assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn exact_resource_bounds_matches_unique_ranked_route_without_input() {
+        let (mut frame, calls) = fixture();
+        let before = frame.state.doc.get_heads();
+        let focus = frame.focused;
+        let layouts = frame.relayout_frames();
+        let (tree, bindings) = frame.retained_action_geometry().unwrap();
+        for id in ["first", "second"] {
+            let address = tilo_actions::ActionAddress::new(id, "edit");
+            let ranked = frame.action_ui_routes(&address);
+            assert_eq!(ranked.len(), 1);
+            let exact = crate::action_locus::resource_bounds(&tree, &bindings, &address).unwrap();
+            assert_eq!(Some(exact.0), ranked[0].bounds);
+            assert_eq!(exact.0, frame.targets()[id]);
+            let node = tree.node(ranked[0].path.last().unwrap()).unwrap();
+            assert_eq!(Some(exact.1), node.widget_taffy_id);
+        }
+        for address in [
+            tilo_actions::ActionAddress::new("missing", "edit"),
+            tilo_actions::ActionAddress::new("first", "missing"),
+        ] {
+            assert!(crate::action_locus::resource_bounds(&tree, &bindings, &address).is_none());
+        }
+        assert_eq!(frame.focused, focus);
+        assert_eq!(frame.relayout_frames(), layouts);
+        assert_eq!(frame.state.doc.get_heads(), before);
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn exact_resource_bounds_preserves_ambiguity_and_ranked_order() {
+        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit", false);
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
+        let root = resource_actions::immediate(
+            Box::new(
+                Column::new()
+                    .push(Box::new(
+                        Button::new("b", "Same label", None).on_action(binding.clone()),
+                    ))
+                    .push(Box::new(
+                        Button::new("a", "Same label", None).on_action(binding),
+                    )),
+            ),
+            resource,
+            |_| panic!("observation must not execute"),
+        );
+        let frame = FrameHarness::new(State::new(), root, (400, 240));
+        let address = tilo_actions::ActionAddress::new("shared:root", "edit");
+        let ranked = frame.action_ui_routes(&address);
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].control_id, "a");
+        assert_eq!(ranked[1].control_id, "b");
+        let (tree, mut bindings) = frame.retained_action_geometry().unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                crate::action_locus::action_ui_routes(&tree, &bindings, &address),
+                ranked
+            );
+            assert!(crate::action_locus::resource_bounds(&tree, &bindings, &address).is_none());
+            bindings.reverse();
+        }
     }
 
     #[test]
