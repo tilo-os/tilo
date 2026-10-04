@@ -417,6 +417,10 @@ pub enum RoomAuthority {
     /// Joined without an invite naming an administrator: the first peer
     /// to supply governance becomes it, and is pinned.
     Unpinned,
+    /// The room belongs to a person (their user root key), not to one of
+    /// their devices: every authenticated, unrevoked device of that person
+    /// governs it, this one included when it is theirs.
+    Person([u8; 32]),
 }
 
 /// Root-signed device identity admitted into one room by that room's
@@ -499,6 +503,16 @@ pub struct NativeDocumentReference {
 /// The id of the person sitting at this machine. Derived from the device
 /// identity when provisioned, falling back to the OS account name —
 /// stable across restarts, or an owner would lose their own workspaces.
+/// The person a user root key names, as workspace owners record it.
+pub fn person_id_of(user_public_key: [u8; 32]) -> Option<UserId> {
+    match Principal::person_from_key(collab_types::crypto::Ed25519PublicKey::from_bytes(
+        user_public_key,
+    )) {
+        Principal::Person(person) => Some(person),
+        _ => None,
+    }
+}
+
 pub fn local_user_id() -> UserId {
     #[cfg(test)]
     crate::shell::test_support::ambient_start("session identity");
@@ -626,6 +640,16 @@ pub struct WorkspaceTree {
     /// that happened to use the same app id.
     #[serde(default)]
     pub continuation_tabs: BTreeSet<TabId>,
+    /// The person this device is certified for (their user root key), when
+    /// the identity layer has certified it. Rooms that person owns are
+    /// governed by any of their devices.
+    #[serde(skip)]
+    pub local_person: Option<[u8; 32]>,
+    /// The person behind each transport-authenticated peer whose device
+    /// certificate verifies and is not revoked, as the network layer last
+    /// checked it. Session-local: a peer is only here while authenticated.
+    #[serde(skip)]
+    pub authenticated_persons: HashMap<PeerOrigin, [u8; 32]>,
     /// Rooms introduced only by another device's private continuation offer.
     /// Once a person takes ownership of an offered tab the room becomes local
     /// and is removed from this set.
@@ -689,6 +713,8 @@ impl Default for WorkspaceTree {
             room_peer_identities: HashMap::new(),
             room_share_floor: HashMap::new(),
             continuation_tabs: BTreeSet::new(),
+            local_person: None,
+            authenticated_persons: HashMap::new(),
             continuation_rooms: BTreeSet::new(),
             continuation_owned_tabs: HashMap::new(),
             continuation_closed_tabs: HashMap::new(),
@@ -1047,9 +1073,34 @@ impl WorkspaceTree {
             .unwrap_or(RoomAuthority::Local)
     }
 
-    /// Does this machine hold `room`'s governance?
+    /// Does this machine hold `room`'s governance? A room minted here does,
+    /// and so does a room governed by the person this device belongs to.
     pub fn governs_room(&self, room: RoomId) -> bool {
-        self.room_authority(room) == RoomAuthority::Local
+        match self.room_authority(room) {
+            RoomAuthority::Local => true,
+            RoomAuthority::Person(person) => self.local_person == Some(person),
+            RoomAuthority::Peer(_) | RoomAuthority::Unpinned => false,
+        }
+    }
+
+    /// Whether `from` is another device of the person this device belongs to
+    /// and that person owns `room`: then it governs `room` as much as this
+    /// device does. The person behind `from` is what the transport
+    /// authenticated, never what a payload claims.
+    fn same_person_governs(&self, room: RoomId, from: &PeerOrigin) -> bool {
+        let Some(local) = self.local_person else {
+            return false;
+        };
+        if self.authenticated_persons.get(from) != Some(&local) {
+            return false;
+        }
+        let Principal::Person(person) =
+            Principal::person_from_key(collab_types::crypto::Ed25519PublicKey::from_bytes(local))
+        else {
+            return false;
+        };
+        self.workspace_in_room(room)
+            .is_some_and(|workspace| workspace.owner.as_deref() == Some(person.as_str()))
     }
 
     /// Name the peer `peer_id` (iroh `EndpointId`) `name` in
@@ -1957,8 +2008,9 @@ impl WorkspaceTree {
             return false;
         }
         match self.room_authority(room) {
-            // We administer the room, so no peer is entitled to write
-            // its governance.
+            // We administer the room; only another device of the person who
+            // owns it governs it alongside us.
+            RoomAuthority::Local if self.same_person_governs(room, from) => false,
             RoomAuthority::Local => {
                 tracing::warn!(
                     target: "shell::state",
@@ -1980,6 +2032,20 @@ impl WorkspaceTree {
                      the peer that administers the room",
                 );
                 true
+            }
+            // A person's room: any of that person's authenticated devices.
+            RoomAuthority::Person(person) => {
+                let refused = self.authenticated_persons.get(from) != Some(&person);
+                if refused {
+                    tracing::warn!(
+                        target: "shell::state",
+                        room = %room,
+                        from = %from,
+                        "room sync refused: governance may only come from \
+                         a device of the person who owns the room",
+                    );
+                }
+                refused
             }
             // `Unpinned`: joined without an invite naming an administrator —
             // the first peer to supply governance becomes it. Legacy TOFU is
@@ -2280,8 +2346,18 @@ impl WorkspaceTree {
                  governance authority (joined without an invite \
                  naming one)",
             );
-            self.room_authority
-                .insert(room, RoomAuthority::Peer(from.clone()));
+            // A device of this person supplying governance of a room the
+            // person owns pins the person, not that one device.
+            let owner = Self::governance_of(Some(&candidate)).0;
+            let pin = match (self.local_person, self.authenticated_persons.get(from)) {
+                (Some(local), Some(sender))
+                    if *sender == local && owner.as_deref() == person_id_of(local).as_deref() =>
+                {
+                    RoomAuthority::Person(local)
+                }
+                _ => RoomAuthority::Peer(from.clone()),
+            };
+            self.room_authority.insert(room, pin);
         }
         let records_changed = self.queue_inbound_records(room, &candidate);
 
@@ -3782,28 +3858,102 @@ impl WorkspaceTree {
     /// This is membership, not a continuation offer, so turning app
     /// continuations off does not remove it.
     pub fn join_enrolled_room(&mut self, room: RoomId) -> bool {
-        if room.is_nil()
-            || self
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room == room)
+        if self
+            .desktop
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.room == room)
         {
             return false;
         }
+        self.adopt_personal_room(room, "From another device", &local_user_id(), None)
+    }
+
+    /// Hold `room` as one of `person`'s workspaces, named `name`: the
+    /// person's workspace list says they are in it. `governor` is the peer
+    /// that governs a room someone else owns, the same one the device that
+    /// accepted the invitation pinned; `None` means the person owns the
+    /// room, so whichever of their devices first answers for it pins the
+    /// person. A room this tree lacks is joined without focus or layout; a
+    /// room only offered by another device's continuation becomes a
+    /// workspace of its own; one already held takes the listed name.
+    /// Returns whether the tree changed.
+    pub fn adopt_personal_room(
+        &mut self,
+        room: RoomId,
+        name: &str,
+        person: &UserId,
+        governor: Option<&PeerOrigin>,
+    ) -> bool {
+        if room.is_nil() {
+            return false;
+        }
+        if let Some(index) = self
+            .desktop
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.room == room)
+        {
+            let offered = self.continuation_rooms.remove(&room);
+            let Some(workspace) = self.desktop.workspaces.get_mut(index) else {
+                return false;
+            };
+            let id = workspace.id;
+            let renamed = workspace.name != name;
+            if renamed {
+                workspace.name = name.to_string();
+            }
+            let owned = governor.is_none() && workspace.owner.is_none();
+            if owned {
+                workspace.set_owner(person.clone());
+            }
+            let pinned = match governor {
+                Some(governor) if self.room_authority(room) == RoomAuthority::Unpinned => {
+                    self.room_authority
+                        .insert(room, RoomAuthority::Peer(governor.clone()));
+                    true
+                }
+                _ => false,
+            };
+            if !(offered || renamed || owned || pinned) {
+                return false;
+            }
+            self.seed_doc_from_cache();
+            if owned {
+                self.doc_set_owner(id, person);
+            }
+            self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+            self.queue_save();
+            return true;
+        }
         let id = WorkspaceId::new();
-        let mut workspace = Workspace::new(id, "From another device");
+        let mut workspace = Workspace::new(id, name);
         workspace.room = room;
         // The same person sits at this machine. Without their membership the
         // room exists but every launch from either of their devices is denied.
-        let user = local_user_id();
-        workspace.set_owner(user.clone());
+        // A room someone else owns brings its owner and membership with its
+        // governance.
+        if governor.is_none() {
+            workspace.set_owner(person.clone());
+        }
+        let first = self.desktop.workspaces.is_empty();
         self.desktop.workspaces.push(workspace);
-        self.room_authority.insert(room, RoomAuthority::Unpinned);
+        if first {
+            self.desktop.active = id;
+        }
+        self.room_authority.insert(
+            room,
+            governor.map_or(RoomAuthority::Unpinned, |governor| {
+                RoomAuthority::Peer(governor.clone())
+            }),
+        );
         self.room_share_floor
             .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
         self.seed_doc_from_cache();
-        self.doc_set_owner(id, &user);
+        if governor.is_none() {
+            self.doc_set_owner(id, person);
+        }
+        self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
         self.queue_save();
         true
     }
