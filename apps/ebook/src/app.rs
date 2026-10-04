@@ -8581,7 +8581,7 @@ impl BooksApp {
                         );
                         ctx.fill_rect(bar, ReaderPalette::highlight_swatch(a.color));
                         let gx = content_x + f64::from(content_w) + 6.0;
-                        paint::note(
+                        Icon::MessageSquare.draw_with_stroke(
                             ctx.scene,
                             ctx.transform,
                             Rect::new(gx, by0, gx + 20.0, by0 + 20.0),
@@ -8591,13 +8591,11 @@ impl BooksApp {
                     }
                     AnnoKind::Bookmark => {
                         let gx = content_x + f64::from(content_w) + 6.0;
-                        paint::bookmark(
+                        Icon::Bookmark.draw_filled(
                             ctx.scene,
                             ctx.transform,
                             Rect::new(gx, by0 - 2.0, gx + 20.0, by0 + 22.0),
                             palette.accent,
-                            1.6,
-                            true,
                         );
                     }
                 }
@@ -9267,14 +9265,12 @@ impl BooksApp {
         } else {
             theme.text_dim
         };
-        paint::bookmark(
-            ctx.scene,
-            ctx.transform,
-            Rect::from_center_size(rect.center(), (glyph, glyph)),
-            ink,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            bookmarked,
-        );
+        let glyph = Rect::from_center_size(rect.center(), (glyph, glyph));
+        if bookmarked {
+            Icon::Bookmark.draw_filled(ctx.scene, ctx.transform, glyph, ink);
+        } else {
+            Icon::Bookmark.draw(ctx.scene, ctx.transform, glyph, ink);
+        }
     }
 
     /// A header's title in `Heading` with a secondary detail (an author, a

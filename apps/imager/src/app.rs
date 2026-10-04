@@ -722,7 +722,7 @@ impl ImagerApp {
                 "Selected image",
                 vec![Box::new(
                     ListRow::new("imager.selected", &source.name)
-                        .icon(Icon::File)
+                        .icon(Icon::Disc3)
                         .secondary(self.source_secondary(source))
                         .meta(fmt_size(source.size))
                         .selected(true),
@@ -746,7 +746,7 @@ impl ImagerApp {
                     let sink = Rc::clone(&self.commands);
                     Some(Box::new(
                         ListRow::new(format!("imager.recent.{index}"), &source.name)
-                            .icon(Icon::File)
+                            .icon(Icon::Disc3)
                             .secondary(self.source_secondary(source))
                             .meta(fmt_size(source.size))
                             .selected(self.recent_selected(index))
@@ -792,7 +792,7 @@ impl ImagerApp {
         .icon(if release.local_path.is_empty() {
             Icon::CloudDownload
         } else {
-            Icon::File
+            Icon::Disc3
         })
         .secondary(secondary)
         .meta(fmt_size(release.size))
@@ -838,7 +838,7 @@ impl ImagerApp {
                 let sink = Rc::clone(&self.commands);
                 Box::new(
                     ListRow::new(format!("imager.drive.{}", drive.name), &drive.model)
-                        .icon(Icon::HardDrive)
+                        .icon(drive.icon())
                         .secondary(format!(
                             "{}, {}",
                             drive.dev_path(),

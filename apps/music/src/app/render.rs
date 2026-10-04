@@ -13,8 +13,8 @@ use super::{
     Action, Affine, AlbumPage, Arc, ArtistPage, AutoCommit, CacheState, Color, Dimension, Drag,
     Fill, HashMap, HomeItem, HomeItemKind, HomeSection, Instant, MusicApp, NodeId, ObjId,
     PermissionContext, PlaylistPage, Point, PresenceCtx, Rect, RepeatMode, Scene, Size, Style,
-    TaffyTree, TextRenderer, TextStyle, Theme, View, Widget, elide, icon::Glyph, is_live_album_id,
-    is_live_id, is_live_playlist_id, lyrics,
+    TaffyTree, TextRenderer, TextStyle, Theme, View, Widget, elide, is_live_album_id, is_live_id,
+    is_live_playlist_id, lyrics,
 };
 use ui::widget::{AppModel, ModelPath};
 
@@ -557,7 +557,7 @@ const NAV_DESTINATIONS: [NavDestination; 8] = [
         view: View::Artists,
     },
     NavDestination {
-        icon: Icon::ThumbsUp,
+        icon: Icon::Heart,
         label: "Liked songs",
         view: View::Liked,
     },
@@ -567,7 +567,7 @@ const NAV_DESTINATIONS: [NavDestination; 8] = [
         view: View::Downloads,
     },
     NavDestination {
-        icon: Icon::ListVideo,
+        icon: Icon::ListMusic,
         label: "Queue",
         view: View::Queue,
     },
@@ -2485,43 +2485,6 @@ impl MusicApp {
         hovered
     }
 
-    /// An icon button for a playback glyph the shared icon set lacks
-    /// (shuffle, repeat): the plain button's face with the glyph in its ink.
-    fn glyph_button(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        rect: Rect,
-        glyph: Glyph,
-        name: &str,
-        on: bool,
-        action: Option<Action>,
-    ) {
-        let enabled = action.is_some();
-        let face = ButtonFace::new(rect, "")
-            .accessible_name(name)
-            .role(ButtonRole::Plain)
-            .disabled(!enabled);
-        let hovered = self.push_hit(face.hit_rect(ctx.theme), action.unwrap_or(Action::None));
-        let face = face.hovered(hovered && enabled).toggled(on && enabled);
-        Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
-        let (_, _, ink) = face.colors(ctx.theme);
-        let side = f64::from(ctx.theme.tokens.metrics.icon_md);
-        let glyph_rect = square_around(rect.center(), side);
-        if !enabled {
-            ctx.scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                ui::widget::DISABLED_ALPHA,
-                ctx.transform,
-                &glyph_rect,
-            );
-        }
-        glyph.draw(ctx.scene, ctx.transform, glyph_rect, ink);
-        if !enabled {
-            ctx.scene.pop_layer();
-        }
-    }
-
     /// The width a button with `label` (and `icon`) needs at `size`.
     fn button_width(
         ctx: &mut PaintCtx<'_>,
@@ -3767,16 +3730,16 @@ impl MusicApp {
             let name = if liked { "Unlike" } else { "Like" };
             self.icon_button(
                 ctx,
-                ButtonFace::icon_only(slot, Icon::ThumbsUp, name).control_size(ControlSize::Small),
+                ButtonFace::icon_only(slot, Icon::Heart, name).control_size(ControlSize::Small),
                 false,
                 Action::ToggleLike(track.to_string()),
             );
             if liked {
-                Icon::ThumbsUp.draw_filled(ctx.scene, ctx.transform, glyph, look.text);
+                Icon::Heart.draw_filled(ctx.scene, ctx.transform, glyph, look.text);
             }
         } else if liked {
             self.push_hit(slot, Action::ToggleLike(track.to_string()));
-            Icon::ThumbsUp.draw_filled(ctx.scene, ctx.transform, glyph, look.dim);
+            Icon::Heart.draw_filled(ctx.scene, ctx.transform, glyph, look.dim);
         }
     }
 
@@ -4778,7 +4741,7 @@ impl MusicApp {
         let ids = self.lib.liked_ids();
         if ids.is_empty() {
             let content = EmptyStateContent {
-                icon: Some(Icon::ThumbsUp),
+                icon: Some(Icon::Heart),
                 message: Some("Like a song and it appears here."),
                 ..EmptyStateContent::new("No liked songs yet")
             };
@@ -5102,14 +5065,14 @@ impl MusicApp {
         let liked = self.lib.is_liked(&tk.id);
         self.icon_button(
             ctx,
-            ButtonFace::icon_only(like, Icon::ThumbsUp, if liked { "Unlike" } else { "Like" })
+            ButtonFace::icon_only(like, Icon::Heart, if liked { "Unlike" } else { "Like" })
                 .control_size(ControlSize::Regular),
             false,
             Action::ToggleLike(tk.id.clone()),
         );
         if liked {
             let side = f64::from(ctx.theme.tokens.metrics.icon_md);
-            Icon::ThumbsUp.draw_filled(
+            Icon::Heart.draw_filled(
                 ctx.scene,
                 ctx.transform,
                 square_around(like.center(), side),
@@ -5146,13 +5109,13 @@ impl MusicApp {
             next_slot(),
             next_slot(),
         );
-        self.glyph_button(
+        self.icon_button(
             ctx,
-            shuffle,
-            Glyph::Shuffle,
-            "Shuffle",
-            self.pb.shuffle,
-            act(Action::ToggleShuffle),
+            ButtonFace::icon_only(shuffle, Icon::Shuffle, "Shuffle")
+                .control_size(ControlSize::Regular)
+                .disabled(idle),
+            self.pb.shuffle && !idle,
+            act(Action::ToggleShuffle).unwrap_or(Action::None),
         );
         self.icon_button(
             ctx,
@@ -5189,18 +5152,18 @@ impl MusicApp {
             false,
             act(Action::Next).unwrap_or(Action::None),
         );
-        let (glyph, name) = match self.pb.repeat {
-            RepeatMode::One => (Glyph::RepeatOne, "Repeat one"),
-            RepeatMode::All => (Glyph::Repeat, "Repeat all"),
-            RepeatMode::Off => (Glyph::Repeat, "Repeat"),
+        let (icon, name) = match self.pb.repeat {
+            RepeatMode::One => (Icon::Repeat1, "Repeat one"),
+            RepeatMode::All => (Icon::Repeat, "Repeat all"),
+            RepeatMode::Off => (Icon::Repeat, "Repeat"),
         };
-        self.glyph_button(
+        self.icon_button(
             ctx,
-            repeat,
-            glyph,
-            name,
-            self.pb.repeat != RepeatMode::Off,
-            act(Action::CycleRepeat),
+            ButtonFace::icon_only(repeat, icon, name)
+                .control_size(ControlSize::Regular)
+                .disabled(idle),
+            self.pb.repeat != RepeatMode::Off && !idle,
+            act(Action::CycleRepeat).unwrap_or(Action::None),
         );
 
         let scrub = Rect::new(r.x0, y0 + control + look.tight, r.x1, r.y1);
@@ -5284,7 +5247,7 @@ impl MusicApp {
         self.queue_btn_rect = queue;
         self.icon_button(
             ctx,
-            ButtonFace::icon_only(queue, Icon::ListVideo, "Queue")
+            ButtonFace::icon_only(queue, Icon::ListMusic, "Queue")
                 .control_size(ControlSize::Regular),
             self.view == View::Queue,
             Action::ToggleQueue,

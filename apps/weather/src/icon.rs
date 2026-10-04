@@ -180,37 +180,10 @@ fn crescent(center: Point, r: f64) -> BezPath {
     path
 }
 
-/// A raindrop filling `rect`: the mark beside a chance of precipitation.
+/// A raindrop filling `rect`: the mark beside a chance of precipitation,
+/// the icon set's droplet filled in the rain's colour.
 pub fn draw_drop(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme) {
-    let s = rect.width().min(rect.height());
-    let cx = rect.center().x;
-    let r = s * 0.30;
-    let cy = rect.y0 + s * 0.62;
-    let tip = Point::new(cx, cy - s * 0.52);
-    let mut path = BezPath::new();
-    path.move_to(tip);
-    path.curve_to(
-        Point::new(cx + r * 0.35, cy - r * 1.05),
-        Point::new(cx + r, cy - r * 0.55),
-        Point::new(cx + r, cy),
-    );
-    path.curve_to(
-        Point::new(cx + r, cy + r * 0.56),
-        Point::new(cx + r * 0.56, cy + r),
-        Point::new(cx, cy + r),
-    );
-    path.curve_to(
-        Point::new(cx - r * 0.56, cy + r),
-        Point::new(cx - r, cy + r * 0.56),
-        Point::new(cx - r, cy),
-    );
-    path.curve_to(
-        Point::new(cx - r, cy - r * 0.55),
-        Point::new(cx - r * 0.35, cy - r * 1.05),
-        tip,
-    );
-    path.close_path();
-    scene.fill(Fill::NonZero, t, rain_colour(theme), None, &path);
+    ui::icons::Icon::Droplet.draw_filled(scene, t, rect, rain_colour(theme));
 }
 
 /// A rounded cloud: one outline, the union of a base capsule and three
