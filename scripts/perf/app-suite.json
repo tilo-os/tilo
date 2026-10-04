@@ -727,14 +727,13 @@
         },
         {
           "kind": "named_screenshot_scenarios",
-          "source": "apps/monitor/src/main.rs",
-          "description": "Entrypoint registers named screenshot scenarios. Consult the registered list; none is claimed as a performance workload."
+          "source": "apps/monitor/src/resource.rs",
+          "description": "The app registers named screenshot scenarios. Consult the registered list; none is claimed as a performance workload."
         },
         {
           "kind": "app_benchmark",
-          "source": "apps/monitor/src/main.rs",
-          "cli_option": "--bench-interact",
-          "description": "Existing app-specific benchmark; not native presentation qualification."
+          "source": "apps/monitor/examples/bench_interact.rs",
+          "description": "Existing app-specific benchmark (cargo example bench_interact); not native presentation qualification."
         }
       ],
       "proposed_workloads": [
