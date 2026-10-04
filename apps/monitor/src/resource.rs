@@ -349,7 +349,6 @@ mod tests {
             .set(&MonitorPreferences {
                 interval_ms: 3000,
                 show_kernel_threads: true,
-                confirm_kill: false,
             })
             .unwrap();
         app.harness().relayout();
@@ -364,7 +363,6 @@ mod tests {
             MonitorPreferences {
                 interval_ms: 5000,
                 show_kernel_threads: true,
-                confirm_kill: false,
             }
         );
         assert_eq!(
