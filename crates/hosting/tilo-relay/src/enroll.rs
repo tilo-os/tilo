@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
 use tilo_clock::try_unix_now_ns;
 use tilo_relay::HomePeerRegistration;
+#[path = "enroll/person_home.rs"]
+mod person_home;
+
+use person_home::PersonHome;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList, decode_enrollment_token,
     encode_enrollment_token, mint_enrollment_token, sign_device_cert, verify_device_cert,
@@ -136,6 +140,21 @@ enum Command {
         /// this account's session exports.
         #[arg(long)]
         personal_rooms: Option<PathBuf>,
+        /// The account whose identity directory and room list this approves
+        /// for. Required when run as root, which then reads and writes them
+        /// only as that account.
+        #[arg(long)]
+        person_uid: Option<u32>,
+    },
+    /// Read or write one of the person's identity files as this process's
+    /// own account; the child a root-run approval delegates to.
+    #[command(name = "person-home", hide = true)]
+    PersonHome {
+        operation: person_home::ChildOperation,
+        #[arg(long)]
+        path: PathBuf,
+        #[arg(long)]
+        user: Option<String>,
     },
     #[command(flatten)]
     OutOfBand(OutOfBand),
@@ -328,14 +347,14 @@ fn fleet_path(identity_dir: &std::path::Path, user: [u8; 32]) -> PathBuf {
 }
 
 fn fleet_revokes_device(
+    home: &PersonHome,
     identity_dir: &std::path::Path,
     user: [u8; 32],
     device: [u8; 32],
 ) -> anyhow::Result<bool> {
-    let bytes = std::fs::read(fleet_path(identity_dir, user))?;
-    if bytes.len() > 1024 * 1024 {
-        bail!("device fleet exceeds 1 MiB");
-    }
+    let bytes = home
+        .read_fleet(identity_dir, user)?
+        .context("this identity has no device fleet")?;
     let fleet: FleetProjection =
         serde_json::from_slice(&bytes).context("device fleet is invalid")?;
     if fleet.schema_version != 1
@@ -447,23 +466,21 @@ fn owns_directory(directory: &std::path::Path) -> anyhow::Result<bool> {
 }
 
 fn project_personal_device(
+    home: &PersonHome,
     identity_dir: &std::path::Path,
     cert: &DeviceCert,
 ) -> anyhow::Result<Vec<u8>> {
     verify_device_cert_at(cert, now_ns()?).context("new personal-device certificate validity")?;
-    let path = fleet_path(identity_dir, cert.user_public_key);
-    let mut fleet = match std::fs::read(&path) {
-        Ok(bytes) if bytes.len() <= 1024 * 1024 => {
+    let mut fleet = match home.read_fleet(identity_dir, cert.user_public_key)? {
+        Some(bytes) => {
             serde_json::from_slice::<FleetProjection>(&bytes).context("device fleet is invalid")?
         }
-        Ok(_) => bail!("device fleet exceeds 1 MiB"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => FleetProjection {
+        None => FleetProjection {
             schema_version: 1,
             identity_id: hex::encode(cert.user_public_key),
             certificates: Vec::new(),
             revocations: Vec::new(),
         },
-        Err(error) => return Err(error.into()),
     };
     if fleet.schema_version != 1
         || fleet.identity_id != hex::encode(cert.user_public_key)
@@ -491,31 +508,16 @@ fn project_personal_device(
     Ok(bytes)
 }
 
+/// Record the fleet that now lists the approved device. The person's own
+/// account writes it, so it belongs to them without any ownership change.
 fn commit_personal_device(
+    home: &PersonHome,
     identity_dir: &std::path::Path,
     user: [u8; 32],
     fleet: &[u8],
 ) -> anyhow::Result<()> {
-    let path = fleet_path(identity_dir, user);
-    #[cfg(unix)]
-    let owner = {
-        use std::os::unix::fs::MetadataExt as _;
-        std::fs::metadata(&path)
-            .or_else(|_| std::fs::metadata(identity_dir))
-            .map(|metadata| (metadata.uid(), metadata.gid()))?
-    };
-    tilo_files::native::atomic::write_creating_parent(&path, fleet)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt as _;
-        let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
-        // SAFETY: `path` is NUL-terminated and owner comes from the existing
-        // user-owned fleet file or identity directory.
-        if unsafe { libc::chown(path.as_ptr(), owner.0, owner.1) } != 0 {
-            return Err(std::io::Error::last_os_error()).context("restore fleet ownership");
-        }
-    }
-    Ok(())
+    home.write_fleet(identity_dir, user, fleet)
+        .context("record the approved device in the person's fleet")
 }
 
 fn bounded_home_peer_registry(
@@ -2164,6 +2166,8 @@ struct ApprovalOptions<'a> {
     expected_service: Option<&'a str>,
     /// The approver's exported workspace rooms, sent to a personal device.
     personal_rooms: Option<&'a std::path::Path>,
+    /// How the person's identity directory and room list are reached.
+    home: &'a PersonHome,
     kind: EnrollmentKind,
     /// Port the listener binds; 0 lets the OS choose one.
     port: u16,
@@ -2234,6 +2238,13 @@ fn load_approval_root(options: &ApprovalOptions<'_>) -> anyhow::Result<Box<dyn R
             .context(MISSING_ROOT)?;
         return Ok(Box::new(root));
     };
+    if options.home.is_delegated() {
+        bail!(
+            "{MISSING_ROOT}: without a seed under {}, approval signs with the person's identity \
+             record, which only their own account opens; run this as that account",
+            options.identity_root.display()
+        );
+    }
     let record = runtime_identity::resolve_active_identity(identity_dir).with_context(|| {
         format!(
             "{MISSING_ROOT}: {} holds no active identity",
@@ -2252,7 +2263,7 @@ fn load_approval_root(options: &ApprovalOptions<'_>) -> anyhow::Result<Box<dyn R
             bail!(
                 "{}",
                 tilo_user_identity::RootOnly::AdmitDevice.refusal(
-                    root_holders(identity_dir, identity.group_public_key())
+                    root_holders(options.home, identity_dir, identity.group_public_key())
                         .iter()
                         .map(String::as_str)
                 )
@@ -2265,8 +2276,8 @@ fn load_approval_root(options: &ApprovalOptions<'_>) -> anyhow::Result<Box<dyn R
 
 /// Labels of the person's devices that hold the root, from this account's
 /// fleet; empty when it cannot be read.
-fn root_holders(identity_dir: &std::path::Path, user: [u8; 32]) -> Vec<String> {
-    let Ok(bytes) = std::fs::read(fleet_path(identity_dir, user)) else {
+fn root_holders(home: &PersonHome, identity_dir: &std::path::Path, user: [u8; 32]) -> Vec<String> {
+    let Ok(Some(bytes)) = home.read_fleet(identity_dir, user) else {
         return Vec::new();
     };
     let Ok(fleet) = serde_json::from_slice::<FleetProjection>(&bytes) else {
@@ -2307,8 +2318,13 @@ fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<Appro
         bail!("this device is not authorised to approve enrollment");
     }
     if let Some(directory) = options.identity_dir
-        && fleet_revokes_device(directory, user_public_key, issuer_cert.device_public_key)
-            .context("verify approving device fleet")?
+        && fleet_revokes_device(
+            options.home,
+            directory,
+            user_public_key,
+            issuer_cert.device_public_key,
+        )
+        .context("verify approving device fleet")?
     {
         bail!("this device is revoked and cannot approve enrollment");
     }
@@ -2535,12 +2551,13 @@ fn approval_projection(
                     identity.user_public_key,
                     "My Tilo identity",
                 )?),
-                fleet_json: Some(project_personal_device(identity_dir, cert)?),
+                fleet_json: Some(project_personal_device(options.home, identity_dir, cert)?),
                 home_peers_json: Some(bounded_home_peer_registry(
                     options.identity_root,
                     identity.user_public_key,
                 )?),
                 personal_rooms_json: Some(serde_json::to_vec(&approver_rooms(
+                    options.home,
                     options.personal_rooms,
                 ))?),
             })
@@ -2551,11 +2568,17 @@ fn approval_projection(
 /// The rooms this approver shares with a new personal device. The export is
 /// the session's convenience copy of its room list: a missing or malformed
 /// one shares no rooms and is reported, rather than failing the approval.
-fn approver_rooms(path: Option<&std::path::Path>) -> Vec<String> {
+fn approver_rooms(home: &PersonHome, path: Option<&std::path::Path>) -> Vec<String> {
     let Some(path) = path else {
         return Vec::new();
     };
-    match tilo_relay_protocol::personal_devices::read_rooms(path) {
+    let rooms = home.read_rooms(path).and_then(|bytes| {
+        bytes.map_or_else(
+            || Ok(Vec::new()),
+            |bytes| Ok(tilo_relay_protocol::personal_devices::parse_rooms(&bytes)?),
+        )
+    });
+    match rooms {
         Ok(rooms) => {
             if rooms.is_empty() {
                 eprintln!(
@@ -2689,6 +2712,7 @@ fn commit_approval(
             &identity.relay_workspace_ids,
         )?,
         EnrollmentKind::PersonalDevice => commit_personal_device(
+            options.home,
             options
                 .identity_dir
                 .context("identity directory is required")?,
@@ -2950,6 +2974,46 @@ fn pair_device_cli(
     result
 }
 
+/// Approve a nearby personal device for the person whose identity directory
+/// this names; as root, that directory is reached only as `person_uid`.
+fn approve_device_cli(
+    identity_root: &std::path::Path,
+    identity_dir: &std::path::Path,
+    timeout: u64,
+    expected_device: Option<&str>,
+    expected_service: Option<&str>,
+    personal_rooms: Option<PathBuf>,
+    person_uid: Option<u32>,
+) -> anyhow::Result<()> {
+    let home = PersonHome::for_process(
+        person_home::local::own_uid(),
+        person_uid,
+        person_home::primary_gid,
+    )?;
+    // Root's own environment says nothing about where the person's session
+    // exports its rooms; only an explicit path is read then.
+    let personal_rooms = if home.is_delegated() {
+        personal_rooms
+    } else {
+        personal_rooms.or_else(tilo_relay_protocol::personal_devices::rooms_export_path)
+    };
+    approve(&ApprovalOptions {
+        identity_root,
+        identity_dir: Some(identity_dir),
+        timeout,
+        workspace_cache: std::path::Path::new(""),
+        acl: std::path::Path::new(""),
+        relay_workspace_ids: &[],
+        expected_device,
+        expected_service,
+        personal_rooms: personal_rooms.as_deref(),
+        home: &home,
+        kind: EnrollmentKind::PersonalDevice,
+        port: NEARBY_PORT,
+        ready: None,
+    })
+}
+
 fn run() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Discover { timeout } => discover(timeout, EnrollmentKind::HomePeer),
@@ -3022,6 +3086,7 @@ fn run() -> anyhow::Result<()> {
             expected_device: expected_device.as_deref(),
             expected_service: expected_service.as_deref(),
             personal_rooms: None,
+            home: &PersonHome::Direct,
             kind: EnrollmentKind::HomePeer,
             port: NEARBY_PORT,
             ready: None,
@@ -3033,22 +3098,21 @@ fn run() -> anyhow::Result<()> {
             expected_device,
             expected_service,
             personal_rooms,
-        } => approve(&ApprovalOptions {
-            identity_root: &identity_root,
-            identity_dir: Some(&identity_dir),
+            person_uid,
+        } => approve_device_cli(
+            &identity_root,
+            &identity_dir,
             timeout,
-            workspace_cache: std::path::Path::new(""),
-            acl: std::path::Path::new(""),
-            relay_workspace_ids: &[],
-            expected_device: expected_device.as_deref(),
-            expected_service: expected_service.as_deref(),
-            personal_rooms: personal_rooms
-                .or_else(tilo_relay_protocol::personal_devices::rooms_export_path)
-                .as_deref(),
-            kind: EnrollmentKind::PersonalDevice,
-            port: NEARBY_PORT,
-            ready: None,
-        }),
+            expected_device.as_deref(),
+            expected_service.as_deref(),
+            personal_rooms,
+            person_uid,
+        ),
+        Command::PersonHome {
+            operation,
+            path,
+            user,
+        } => person_home::serve_child(operation, &path, user.as_deref()),
         Command::OutOfBand(command) => out_of_band(command),
     }
 }
@@ -3213,7 +3277,8 @@ mod tests {
             sign_device_cert(&mut cert, &root).unwrap();
             let identity = tempfile::tempdir().unwrap();
 
-            let error = project_personal_device(identity.path(), &cert).unwrap_err();
+            let error =
+                project_personal_device(&PersonHome::Direct, identity.path(), &cert).unwrap_err();
 
             assert!(error.to_string().contains("certificate validity"));
             assert!(!fleet_path(identity.path(), cert.user_public_key).exists());
@@ -3245,7 +3310,15 @@ mod tests {
             )
             .unwrap();
 
-            assert!(fleet_revokes_device(identity.path(), user, device_public_key).unwrap());
+            assert!(
+                fleet_revokes_device(
+                    &PersonHome::Direct,
+                    identity.path(),
+                    user,
+                    device_public_key
+                )
+                .unwrap()
+            );
         }
         // Phase `signed_response_rejects_bundle_tampering`.
         {
@@ -3272,6 +3345,7 @@ mod tests {
                 expected_device: None,
                 expected_service: None,
                 personal_rooms: None,
+                home: &PersonHome::Direct,
                 kind: EnrollmentKind::HomePeer,
                 port: 0,
                 ready: None,
@@ -3830,6 +3904,7 @@ mod tests {
                 expected_device: Some(&expected_device),
                 expected_service: Some(&expected_service),
                 personal_rooms: Some(&rooms_export),
+                home: &PersonHome::Direct,
                 kind: EnrollmentKind::PersonalDevice,
                 // An OS-assigned port keeps concurrent tests off each other's
                 // listeners and off the well-known port.
