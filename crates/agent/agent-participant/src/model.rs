@@ -944,7 +944,6 @@ mod tests {
     fn open_notes() -> Catalogue {
         let (catalogue, _) = catalogue(&PlanContext {
             open: Vec::new(),
-            controls: Vec::new(),
             known: Vec::new(),
             apps: vec!["so.tilo.notes".into()],
         });
