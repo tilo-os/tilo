@@ -7,8 +7,8 @@
 //! clipboard. The library is a CRDT object (see [`doc`]) so it syncs across
 //! devices and collaborators converge on one shared set of snippets.
 //!
-//! The single integration point is [`app_root`], used by both the live
-//! event loop and the `--shots` offscreen renderer in `main.rs`.
+//! The app runs through the framework ([`launch_spec`]): the live window,
+//! `--shots` and its scenarios share one root.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -40,10 +40,12 @@
 
 pub mod actions;
 pub mod app;
+mod detail_pane;
 pub mod doc;
 pub mod draw;
 pub mod expand;
 pub mod highlight;
+mod list_pane;
 pub mod model;
 pub mod resource;
 pub mod search_provider;
@@ -74,27 +76,35 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
         .as_definition("Snippets")
 }
 
-/// Like [`app_root`] but with a named interaction scenario staged for a
-/// single headless screenshot (the live `--shots` renderer paints one frame
-/// and can't reach toggled states through input). Recognised scenarios:
-///
-/// * `"narrow"` — pair with a sub-breakpoint `--viewport` to show the
-///   primary sidebar as an open overlay flap over the content + scrim.
-/// * `"detail"` — pair with a very-narrow `--viewport` to show the
-///   single-pane push stack on the detail with its Back affordance.
-///
-/// An empty / unknown name yields the same frame as [`app_root`].
-pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
-    // The `empty` scenario captures the honest live zero-state (a fresh
-    // install has no snippets); every other scenario stages the seeded demo
-    // library so the capture shows the manager doing real work.
-    let mut app = if scenario == "empty" {
-        SnippetsApp::new()
-    } else {
-        SnippetsApp::new_demo()
-    };
-    app.seed_shot_scenario(scenario);
-    Box::new(app)
+/// The catalogs, loaded on first use on each thread: a host's manager gets
+/// them added, a thread without one starts in the person's locale.
+#[cfg(not(test))]
+static CATALOG: ui::i18n::EmbeddedCatalog =
+    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES, "snippets-library").with_system_locale();
+
+/// Tests read the source copy on every machine.
+#[cfg(test)]
+static CATALOG: ui::i18n::EmbeddedCatalog =
+    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES, "snippets-library")
+        .with_pinned_locale("en-US");
+
+/// A message of the app's catalogs in the person's language.
+pub(crate) fn tr(key: &str) -> String {
+    CATALOG.t(key)
+}
+
+/// A message with named text arguments.
+pub(crate) fn tr_with(key: &str, args: &[(&str, &str)]) -> String {
+    let args: Vec<(&str, ui::i18n::ArgValue)> = args
+        .iter()
+        .map(|(name, value)| (*name, ui::i18n::ArgValue::Text((*value).to_string())))
+        .collect();
+    CATALOG.t_args(key, &args)
+}
+
+/// A message with a plural count.
+pub(crate) fn tr_count(key: &str, count: usize) -> String {
+    CATALOG.t_args(key, &[("count", ui::i18n::ArgValue::Number(count as f64))])
 }
 
 pub use resource::{Snippets, SnippetsShell, launch_spec};
