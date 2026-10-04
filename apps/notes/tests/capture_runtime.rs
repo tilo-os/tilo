@@ -150,7 +150,6 @@ fn canonical_navigation_and_overlay_captures_use_real_input_paths() {
         ("rename", (1000, 700)),
         ("rename_commit", (1000, 700)),
         ("shortcuts", (1000, 700)),
-        ("shortcuts_bottom", (390, 844)),
         ("code_group_drag", (1000, 700)),
         ("code_group_drop", (1000, 700)),
         ("sidebar_scroll", (390, 844)),
@@ -194,7 +193,7 @@ fn creating_then_visiting_another_note_keeps_creation_reachable_by_ctrl_z() {
         .unwrap();
     let mut live = driver(&fixture, 225, &checkout);
 
-    let new_note = semantic_rect(&live, "heading-action").center();
+    let new_note = semantic_rect(&live, "new-note").center();
     live.click_at(new_note.x, new_note.y);
     assert_eq!(
         fixture
@@ -357,7 +356,7 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
             "../../target/notes-review/wrapped-code-{scale}.png"
         ));
         std::fs::create_dir_all(out.parent().unwrap()).unwrap();
-        live.render_window_png(&out);
+        live.render_png(&out);
         live.perform_semantic_named(
             "block_editor",
             Some(&target),

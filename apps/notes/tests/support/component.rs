@@ -251,7 +251,9 @@ pub fn semantic_rect(driver: &ui::headless::Driver, target: &str) -> vello::kurb
             .and_then(|node| access(node, target))
             .or_else(|| node.children.iter().find_map(|node| retained(node, target)))
     }
-    retained(&driver.inspection().root, target).unwrap()
+    retained(&driver.inspection().root, target)
+        .or_else(|| driver.targets().get(target).copied())
+        .unwrap()
 }
 
 /// The actual component boundary with its admitted layout, for an unfinished

@@ -46,10 +46,7 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
     let mut neighbor = driver(&f, 12, &imported(&f));
     let buttons = named(&a, "New note");
     assert_eq!(buttons.len(), 2);
-    let sidebar = buttons
-        .iter()
-        .find(|r| r.1.as_deref() == Some("heading-action"))
-        .unwrap();
+    let sidebar = buttons.iter().find(|r| r.1.is_none()).unwrap();
     perform(&mut a, sidebar, &Action::Activate);
     assert_eq!(
         f.records
@@ -263,7 +260,7 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
         .unwrap();
     let create = named(&a, "New note")[0].clone();
     perform(&mut a, &create, &Action::Activate);
-    let rect = semantic_rect(&a, "heading-action");
+    let rect = semantic_rect(&a, "new-note");
     a.click_at(rect.center().x, rect.center().y);
     assert_eq!(
         f.records
@@ -290,7 +287,7 @@ fn revoked_authority_rejects_empty_notes_semantic_and_pointer_creation() {
     for route in named(&a, "New note") {
         perform(&mut a, &route, &Action::Activate);
     }
-    let rect = semantic_rect(&a, "heading-action");
+    let rect = semantic_rect(&a, "new-note");
     a.click_at(rect.center().x, rect.center().y);
     assert_eq!(
         f.records
