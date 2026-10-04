@@ -473,7 +473,7 @@ impl Credentials {
             .push(Box::new(
                 Text::new(self.origin.as_deref().unwrap_or("No secure page"))
                     .with_role(TextRole::Caption)
-                    .with_kind(TextKind::Identifier)
+                    .with_kind(TextKind::Url)
                     .dimmed(),
             ));
         if !self.notice.is_empty() {

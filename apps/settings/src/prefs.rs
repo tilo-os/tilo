@@ -530,6 +530,11 @@ pub struct AppearancePrefs {
     /// Force theme tokens onto content surfaces, with high contrast.
     #[serde(default)]
     pub forced_colors: bool,
+    /// "Always distinguish similar letters": I, l, 1 and 0, O set apart in
+    /// all text. `None` follows the theme's typeface (on with Hyperlegible);
+    /// [`Self::distinct_letters_effective`] is what the system shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distinct_letters: Option<bool>,
 }
 
 fn default_mode() -> String {
@@ -600,6 +605,7 @@ impl Default for AppearancePrefs {
             wallpaper_target: default_wallpaper_target(),
             distribution_defaults: None,
             forced_colors: false,
+            distinct_letters: None,
         }
     }
 }
@@ -727,8 +733,32 @@ impl AppearancePrefs {
             ui_scale: self.ui_scale as f32,
             reduce_motion: self.reduce_motion,
             reduce_transparency: self.reduce_transparency,
+            distinct_letters: self.distinct_letters,
             ..ui::theme::AccessibilityLayer::default()
         }))
+    }
+
+    /// Whether similar letters are set apart everywhere: the person's
+    /// choice, else what the theme's typeface does.
+    pub fn distinct_letters_effective(&self) -> bool {
+        self.distinct_letters
+            .unwrap_or_else(|| self.distinct_letters_by_face())
+    }
+
+    /// What the theme the mode shows does with no choice made: on with
+    /// Hyperlegible, off otherwise.
+    pub fn distinct_letters_by_face(&self) -> bool {
+        let unset = Self {
+            distinct_letters: None,
+            ..self.clone()
+        };
+        unset.resolve_theme().tokens.typography.distinct_letters
+    }
+
+    /// Record `on` as the person's choice: no choice when it is what the
+    /// typeface does anyway, so a later Hyperlegible theme still turns it on.
+    pub fn choose_distinct_letters(&mut self, on: bool) {
+        self.distinct_letters = (on != self.distinct_letters_by_face()).then_some(on);
     }
 
     /// The chosen theme before the accessibility comforts.
