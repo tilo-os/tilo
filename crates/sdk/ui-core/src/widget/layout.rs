@@ -8,7 +8,7 @@ use taffy::{AvailableSpace, LengthPercentage, NodeId, Size, TaffyTree};
 
 use super::Widget;
 use crate::Theme;
-use crate::bound_dispatch::{BoundNodeMap, mutate_bound_node};
+use crate::bound_dispatch::{BoundNodeMap, layout_bound_node, mutate_bound_node};
 use crate::text_render::TextRenderer;
 use crate::tokens::TextRole;
 
@@ -231,7 +231,7 @@ pub(super) unsafe fn compute_widget_layout_depth(
     for &node in nodes.keys() {
         // SAFETY: use the same admission/lifetime checks as measurement below.
         let needs_measure = unsafe {
-            mutate_bound_node(bindings, nodes, node, |widget| {
+            layout_bound_node(bindings, nodes, node, |widget| {
                 widget.layout_needs_measure()
             })
         }
@@ -245,7 +245,7 @@ pub(super) unsafe fn compute_widget_layout_depth(
             // SAFETY: caller owns the stable matching tree, each callback is
             // exclusive, and bound dispatch checks admission and lifetime.
             unsafe {
-                mutate_bound_node(bindings, nodes, node, |widget| {
+                layout_bound_node(bindings, nodes, node, |widget| {
                     widget.measure(known, available, text)
                 })
             }
@@ -271,7 +271,7 @@ pub(super) unsafe fn compute_widget_layout_depth(
             // SAFETY: same contract as measurement; no topology mutation is
             // permitted by adjust_layout_with_measure.
             changed |= unsafe {
-                mutate_bound_node(bindings, nodes, node, |widget| {
+                layout_bound_node(bindings, nodes, node, |widget| {
                     widget.adjust_layout_with_measure(taffy, node, text)
                 })
             }
