@@ -80,7 +80,8 @@ enum Cmd {
         /// `libstd-<hash>.so` and the Tilo `libruntime_dylib.so` into
         /// the bundle so thin (`-C prefer-dynamic`) apps resolve them
         /// via the launcher's `LD_LIBRARY_PATH=<mount>/lib`. Each is
-        /// hashed + signed like every other bundle file.
+        /// hashed + signed like every other bundle file. A directory keeps
+        /// its tree under `lib/<name>/`, as the browser engine does.
         #[arg(long = "include", value_name = "PATH")]
         include: Vec<PathBuf>,
     },

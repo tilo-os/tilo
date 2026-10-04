@@ -49,6 +49,12 @@ path = "src/home_peer_control.rs"
 name = "tilo-relay-environment"
 path = "src/environment_cli.rs"
 
+# Asks this device's relays what their workers run for environments, for
+# Terminal's relay picker; the `ush` supervisor runs it without waiting.
+[[bin]]
+name = "tilo-relay-offers"
+path = "src/relay_offers_cli.rs"
+
 # The host / relay daemon.
 #
 # `tilo-relay` is the WAN transport + host tier of the sync/host model:
@@ -127,7 +133,7 @@ uuid.workspace = true
 
 # Runtime + config.
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio", "postcard"] }
 n0-future = "0.3.2"
 thiserror.workspace = true
 

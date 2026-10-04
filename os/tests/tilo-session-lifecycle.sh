@@ -110,17 +110,18 @@ if [ -e "$repo/os/dev-image/usr/lib/systemd/user" ]; then
 fi
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   "$repo/os/usr/share/wayland-sessions/shell.desktop"
-grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync' \
-  "$repo/os/usr/share/wayland-sessions/shell-peer-sync.desktop"
+[ "$(ls "$repo/os/usr/share/wayland-sessions")" = shell.desktop ] || {
+  echo 'the image must ship exactly one login session: shell.desktop' >&2
+  exit 1
+}
 grep -Fq 'missing="$(ldd /usr/bin/shell | awk '\''/not found/ { print $1 }'\'')"' \
   "$repo/os/Containerfile"
 grep -Fq 'if [ -n "$missing" ]; then' "$repo/os/Containerfile"
 grep -Fq 'shell has unresolved runtime libraries:' "$repo/os/Containerfile"
-wpe_copy_line=$(grep -n '^COPY --from=wpe-builder /wpe/ /$' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
-wpe_deps_line=$(grep -n '&& gst-inspect-1.0 aacparse >/dev/null' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
+engine_deps_line=$(grep -n '&& gst-inspect-1.0 aacparse >/dev/null' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
 shell_link_check_line=$(grep -n 'missing="$(ldd /usr/bin/shell' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
-test "$wpe_copy_line" -lt "$wpe_deps_line"
-test "$wpe_deps_line" -lt "$shell_link_check_line"
+test "$engine_deps_line" -lt "$shell_link_check_line"
+grep -Fq 'the browser engine has unresolved runtime libraries:' "$repo/os/Containerfile"
 grep -Fq 'busctl --user status org.freedesktop.impl.portal.desktop.tilo' "$release_workflow"
 # First-use actions are now driven through the installed AT-SPI endpoint;
 # keeping stale blind-keyboard assertions here made the FUSE lane reject the

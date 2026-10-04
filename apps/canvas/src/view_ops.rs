@@ -678,7 +678,18 @@ pub fn export(
             "scale must be within 0.05..=4 and the picture at most 8192 pixels wide".into(),
         );
     }
-    let format = export.format.as_deref().unwrap_or("png");
+    // A path names its format when the caller names none.
+    let named = export
+        .path
+        .as_deref()
+        .and_then(|path| std::path::Path::new(path).extension())
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    let format = export
+        .format
+        .as_deref()
+        .or(named.as_deref())
+        .unwrap_or("png");
     let quality = export.quality.unwrap_or(EXPORT_JPEG_QUALITY);
     if !(1..=100).contains(&quality) {
         return Err("quality is 1 to 100".into());
@@ -697,7 +708,18 @@ pub fn export(
         "webp" => (encode_webp(&rgba, width, height)?, "webp"),
         other => return Err(format!("format {other:?} is png, jpeg or webp")),
     };
-    let info = json!({"width": width, "height": height, "format": format, "bytes": bytes.len()});
+    let mut info =
+        json!({"width": width, "height": height, "format": format, "bytes": bytes.len()});
+    if let Some(path) = &export.path {
+        let extensions: &[&str] = match format {
+            "jpeg" => &["jpg", "jpeg"],
+            other => &[other],
+        };
+        let written = crate::document::export_to(path, extensions, &bytes)?;
+        if let Value::Object(fields) = &mut info {
+            fields.insert("path".into(), written.into());
+        }
+    }
     Ok((
         Picture {
             bytes,
@@ -920,11 +942,13 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
             region.is_none_or(|region| art.visible_bounds(mark).intersect(region).area() > 0.0)
         })
         .collect();
+    // Measuring, the measures are the answer: marks are listed when asked.
+    let listed = if inspect.measure.is_some() { 0 } else { LISTED };
     let limit = inspect
         .limit
-        .map_or(LISTED, |limit| usize::try_from(limit).unwrap_or(MAX_LISTED));
-    if !(1..=MAX_LISTED).contains(&limit) {
-        return Err(format!("limit must be within 1..={MAX_LISTED}"));
+        .map_or(listed, |limit| usize::try_from(limit).unwrap_or(MAX_LISTED));
+    if limit > MAX_LISTED {
+        return Err(format!("limit must be within 0..={MAX_LISTED}"));
     }
     let marks: Vec<Value> = matching
         .iter()

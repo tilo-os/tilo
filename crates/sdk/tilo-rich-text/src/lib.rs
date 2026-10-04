@@ -41,10 +41,12 @@
     )
 )]
 
+mod block_commands;
 mod blocks;
 mod convert;
 mod draft;
 mod edit;
+mod image_paste;
 mod source;
 mod surface;
 mod view;

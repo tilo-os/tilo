@@ -27,7 +27,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  CARGO_HOME: /cargo-home
   CARGO_BUILD_JOBS: "4"
   CARGO_INCREMENTAL: "0"
   # Match the test profile below. Cargo keeps dev/test artifacts in the same
@@ -357,6 +356,18 @@ jobs:
           bash tools/test-env.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}"
 
+      # The shard's affected graphical apps through the same production-root
+      # native audit the nightly runs for every app, so a change that breaks
+      # an app's Tilo-native contract fails here, not overnight.
+      - name: Certify affected apps of shard ${{ matrix.shard }}
+        if: matrix.test_packages != ''
+        env:
+          TILO_REQUIRE_GPU: "1"
+        run: >-
+          bash tools/ci/measure.sh "certify affected apps shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "tilo-app certify (affected shard ${{ matrix.shard }})" --
+          cargo run --locked -p tilo-app-cli --bin tilo-app -- certify --workspace ${{ matrix.test_packages }}
+
       # The saved headless scenarios of each selected example, through the
       # example's own binary with the native audit: what `tilo-app check`
       # runs as its scenario stage.
@@ -398,7 +409,7 @@ jobs:
       - name: Save test results of shard ${{ matrix.shard }}
         if: always() && (matrix.test_packages != '' || matrix.scoped_tests != '')
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: nextest-junit-${{ matrix.arch }}-${{ matrix.shard }}
           path: target/nextest/ci/junit.xml
@@ -469,7 +480,7 @@ jobs:
       - name: Save observed compiler inputs
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: compiler-inputs-${{ matrix.arch }}-${{ matrix.shard }}
           path: target/ci/compiler-inputs.json
@@ -517,8 +528,8 @@ jobs:
       # must remain fast enough to keep their formatting, secret, and
       # staged-diff checks useful. The release-app workflow separately
       # compiles the shipped thin-app feature; `--all-features` is
-      # deliberately invalid here because it also selects ui/webview-wpe,
-      # whose native SDK exists only in the OS image builder.
+      # deliberately invalid here because some features link native SDKs
+      # that exist only in the OS image builder.
       - name: Clippy shard ${{ matrix.shard }}
         if: matrix.arch == 'x86_64'
         env:
@@ -541,7 +552,7 @@ jobs:
       - name: Save observed Clippy inputs
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: clippy-inputs-${{ matrix.arch }}-${{ matrix.shard }}
           path: target/ci/clippy-*-inputs.json
@@ -553,10 +564,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
+          path: ${{ steps.rust-build.outputs.cargo-cache-paths }}
           key: cargo-deps-${{ hashFiles('Cargo.lock') }}
 
   # Apps with an Android host example (docs/android.md), linted for both

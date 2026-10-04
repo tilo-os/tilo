@@ -158,6 +158,15 @@ const DISPLAYS_KEYWORDS: &[&str] = &[
     "external",
 ];
 const MOUSE_KEYBOARD_KEYWORDS: &[&str] = &[
+    "keyboard",
+    "keyboard layout",
+    "input source",
+    "input method",
+    "language",
+    "qwerty",
+    "qwertz",
+    "azerty",
+    "dvorak",
     "pointer",
     "trackpad",
     "touchpad",
@@ -653,6 +662,24 @@ mod tests {
                 "night light → Displays",
             ),
             (Category::Network, "vpn", true, "vpn → Network"),
+            (
+                Category::MouseKeyboard,
+                "keyboard layout",
+                true,
+                "keyboard layout → Mouse & Keyboard",
+            ),
+            (
+                Category::MouseKeyboard,
+                "qwertz",
+                true,
+                "qwertz → Mouse & Keyboard",
+            ),
+            (
+                Category::MouseKeyboard,
+                "language",
+                true,
+                "language → Mouse & Keyboard",
+            ),
             (Category::Power, "battery", true, "battery → Power"),
             (
                 Category::Appearance,

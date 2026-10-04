@@ -19,6 +19,8 @@ use ui::vello::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
 pub const MAX_SIDE: f64 = 8192.0; // a document limit in artwork units, not on-screen spacing
 /// The most marks one action may add.
 pub const MAX_MARKS_PER_ACTION: usize = 2000;
+/// The most marks an artwork opened from a file may hold.
+pub const MAX_MARKS: usize = 100_000;
 /// The most points one stroke or outline may have.
 pub const MAX_POINTS: usize = 4096;
 
@@ -43,7 +45,7 @@ impl Default for Ground {
 /// One layer of the artwork.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "shown, held still, an inverted mask and clipped are independent settings"
+    reason = "shown, held still, an inverted or unlinked mask and clipped are independent settings"
 )]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layer {
@@ -74,6 +76,9 @@ pub struct Layer {
     pub invert: bool,
     /// Clipped to the layer below: it shows only where that layer has paint.
     pub clip: bool,
+    /// A mask that stays put when its layer's marks move. Linked, it moves
+    /// with them whenever they all move as one, as the layer's content.
+    pub unlinked: bool,
 }
 
 impl Layer {
@@ -158,32 +163,37 @@ pub enum Shape {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
     },
-    /// A brush stroke: a smooth curve through `points`, `size` wide.
-    /// Points are `[x, y]` or `[x, y, pressure]`; a handful of points is
-    /// enough, the stroke is smoothed through them.
+    /// A brush stroke as `paint` lays one: a smooth curve through `points`
+    /// (`[x, y]` or `[x, y, pressure]`), `size` wide; forks, dabs and hatch
+    /// as there.
     Stroke {
         points: Vec<StrokePoint>,
         size: f64,
-        /// A limb that lifts to a point and forks this many times (1-6)
-        /// into ever thinner twigs: a branch or bare tree in one stroke.
+        // Its forms are described once, on `paint`'s strokes: an agent reads
+        // them there, and `draw` names this shape after it.
+        //
+        // A limb that lifts to a point and forks this many times (1-6) into
+        // ever thinner twigs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         forks: Option<u32>,
-        /// With `forks`: how widely the twigs splay, in degrees (default 35).
+        // With `forks`: how widely the twigs splay, in degrees (default 35).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spread: Option<f64>,
-        /// Instead of one line, this many short dabs (1-600) of `size`
-        /// scattered along the points: foliage, flowers, broken light.
+        // Instead of one line, this many short dabs (1-600) of `size`
+        // scattered along the points.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dabs: Option<u32>,
-        /// With `dabs`: how far they stray either side of the path, in units
-        /// (default twice `size`).
+        // With `dabs`: how far they stray either side of the path, in units
+        // (default twice `size`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scatter: Option<f64>,
-        /// With `dabs`: how long each is, in units (about `size` when
-        /// absent); much longer than `size`, each is a flick that lifts to
-        /// a point, as grass is painted.
+        // With `dabs`: how long each is, in units (about `size` when absent).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dab_length: Option<f64>,
+        // Instead of one line, lines this many units apart across the area
+        // the points enclose, at the mark's angle (default 45).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hatch: Option<f64>,
     },
     /// A PNG, JPEG or WebP in the frame `x, y, width, height`.
     Image {
@@ -442,6 +452,37 @@ pub struct MarkBody {
     pub area: String,
 }
 
+impl Mark {
+    /// What is stored of the mark besides its id, layer and place.
+    pub fn body(&self) -> MarkBody {
+        MarkBody {
+            name: self.name.clone(),
+            shape: self.shape.clone(),
+            style: self.style.clone(),
+            transform: self.transform,
+            group: self.group.clone(),
+            clip: self.clip.clone(),
+            area: self.area.clone(),
+        }
+    }
+
+    /// The mark `id` on `layer` at `order`, made of `body`.
+    pub fn of_body(id: String, layer: String, order: String, body: MarkBody) -> Self {
+        Self {
+            id,
+            layer,
+            order,
+            name: body.name,
+            shape: body.shape,
+            style: body.style,
+            transform: body.transform,
+            group: body.group,
+            clip: body.clip,
+            area: body.area,
+        }
+    }
+}
+
 /// The whole artwork as views and actions read it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Artwork {
@@ -545,11 +586,17 @@ impl Artwork {
     /// tools that outline erasers pick them; [`Self::mark_at`] passes
     /// through them.
     pub fn pick_at(&self, point: Point) -> Option<&Mark> {
+        self.pick_near(point, 0.0)
+    }
+
+    /// [`Self::pick_at`] forgiving a pointer `slop` artwork units off a
+    /// line or a stroke: a hand's few pixels at the zoom it is shown at.
+    pub fn pick_near(&self, point: Point, slop: f64) -> Option<&Mark> {
         self.marks.iter().rev().find(|mark| {
             self.layer(&mark.layer)
                 .is_some_and(|layer| layer.visible && !layer.locked && !layer.is_mask())
                 && (mark.inked() || mark.erases())
-                && mark.hit(point)
+                && mark.hit_within(point, slop)
                 && self.clipped_in(mark, point)
         })
     }
@@ -698,6 +745,7 @@ impl Shape {
             dabs: None,
             scatter: None,
             dab_length: None,
+            hatch: None,
         }
     }
 
@@ -808,6 +856,8 @@ impl Shape {
             dabs,
             scatter,
             dab_length,
+            hatch,
+            points,
             ..
         } = self
         else {
@@ -815,8 +865,17 @@ impl Shape {
         };
         let units =
             |value: &Option<f64>| value.is_some_and(|value| !(0.0..=MAX_SIDE).contains(&value));
-        if forks.is_some() && dabs.is_some() {
-            Some("a stroke either forks or breaks into dabs, not both".into())
+        if [forks.is_some(), dabs.is_some(), hatch.is_some()]
+            .iter()
+            .filter(|given| **given)
+            .count()
+            > 1
+        {
+            Some("a stroke forks, breaks into dabs or hatches an area: one of them".into())
+        } else if hatch.is_some_and(|hatch| !(0.5..=MAX_SIDE).contains(&hatch)) {
+            Some("hatch is 0.5 or more units between lines".into())
+        } else if hatch.is_some() && points.len() < 3 {
+            Some("a hatched stroke's points enclose an area: give 3 or more".into())
         } else if forks.is_some_and(|forks| !(1..=6).contains(&forks)) {
             Some("forks is 1 to 6".into())
         } else if spread.is_some_and(|spread| !(5.0..=90.0).contains(&spread)) {
@@ -971,6 +1030,7 @@ impl Shape {
                 dabs,
                 scatter,
                 dab_length,
+                hatch,
             } => Self::Stroke {
                 points: points
                     .iter()
@@ -991,6 +1051,7 @@ impl Shape {
                 dabs: *dabs,
                 scatter: *scatter,
                 dab_length: *dab_length,
+                hatch: *hatch,
             },
         }
     }
@@ -1005,11 +1066,18 @@ impl Shape {
             dabs,
             scatter,
             dab_length,
+            hatch,
             ..
         } = self
         else {
             return None;
         };
+        if let Some(spacing) = hatch {
+            return Some(tilo_wet_media::Form::Hatch {
+                spacing: narrow(*spacing),
+                angle: narrow(angle.unwrap_or(45.0)),
+            });
+        }
         if let Some(forks) = forks {
             return Some(tilo_wet_media::Form::Branch {
                 forks: *forks,
@@ -1118,6 +1186,7 @@ impl Shape {
                 dabs,
                 scatter,
                 dab_length,
+                hatch,
             } if uniform => Self::Stroke {
                 points: points
                     .iter()
@@ -1135,6 +1204,7 @@ impl Shape {
                 dabs: *dabs,
                 scatter: scatter.map(|scatter| scatter * sx),
                 dab_length: dab_length.map(|length| length * sx),
+                hatch: hatch.map(|spacing| spacing * sx),
             },
             Self::Text { .. } | Self::Stroke { .. } => return None,
         })
@@ -1370,6 +1440,11 @@ impl Mark {
                 dab_length,
                 ..
             } => size * 2.0 + scatter.unwrap_or(size * 2.0) + dab_length.unwrap_or(0.0) * 1.4,
+            Shape::Stroke {
+                size,
+                hatch: Some(spacing),
+                ..
+            } => size * 0.5 + spacing * 0.5,
             Shape::Stroke { size, .. } => size * 0.5,
             _ => self.style.stroke_width * 0.5,
         };
@@ -1379,7 +1454,14 @@ impl Mark {
     /// Whether `point` lands on the mark: inside a filled shape, or near a
     /// line or stroke.
     pub fn hit(&self, point: Point) -> bool {
-        if !self.bounds().contains(point) {
+        self.hit_within(point, 0.0)
+    }
+
+    /// [`Self::hit`] with lines and strokes reaching `slop` artwork units
+    /// further, so a thin line is not missed by a hair at a far zoom.
+    pub fn hit_within(&self, point: Point, slop: f64) -> bool {
+        let slop = slop.max(0.0);
+        if !self.bounds().inflate(slop, slop).contains(point) {
             return false;
         }
         let local = self.affine().inverse() * point;
@@ -1389,10 +1471,27 @@ impl Mark {
             | Shape::Ellipse { .. }
             | Shape::Image { .. } => self.shape.path().contains(local),
             Shape::Polygon { .. } | Shape::Path { .. } if self.shape.closed() => {
-                self.shape.path().contains(local) || self.near_outline(local, 4.0)
+                self.shape.path().contains(local) || self.near_outline(local, 4.0_f64.max(slop))
             }
-            Shape::Stroke { size, .. } => self.near_outline(local, size * 0.5 + 2.0),
-            _ => self.near_outline(local, self.style.stroke_width * 0.5 + 4.0),
+            Shape::Stroke {
+                hatch: Some(_),
+                points,
+                ..
+            } => Shape::Polygon {
+                points: points
+                    .iter()
+                    .map(|point| {
+                        [
+                            point.first().copied().unwrap_or(0.0),
+                            point.get(1).copied().unwrap_or(0.0),
+                        ]
+                    })
+                    .collect(),
+            }
+            .path()
+            .contains(local),
+            Shape::Stroke { size, .. } => self.near_outline(local, size * 0.5 + 2.0_f64.max(slop)),
+            _ => self.near_outline(local, self.style.stroke_width * 0.5 + 4.0_f64.max(slop)),
         }
     }
 

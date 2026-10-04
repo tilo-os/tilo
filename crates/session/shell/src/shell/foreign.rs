@@ -2019,6 +2019,23 @@ impl ForeignFrameStore {
         Some(snapshot)
     }
 
+    /// `rgba`, a `width`×`height` buffer `id` committed, cut to the window
+    /// its client declared (no shadow or resize border), as tiles show it.
+    /// Unchanged without a declared geometry.
+    pub fn crop_to_window(&self, id: SurfaceId, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+        let crop = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .and_then(|e| e.geometry)
+            .and_then(|geometry| geometry.crop(width, height));
+        match crop {
+            Some(content) => crop_rgba(&rgba, width, content),
+            None => rgba,
+        }
+    }
+
     /// Record the client's declared window geometry (`None` clears it), read
     /// from the state each commit applied.
     pub fn note_window_geometry(&self, id: SurfaceId, geometry: Option<WindowGeometry>) {
@@ -4252,7 +4269,15 @@ mod tests {
             }
         }
 
+        // A shared window's stream is cut the same way from the buffer it commits.
+        assert_eq!(
+            store().crop_to_window(id, rgba.clone(), w, h),
+            frame.rgba,
+            "the stream shows what the tile shows"
+        );
+
         store().note_window_geometry(id, None);
+        assert_eq!(store().crop_to_window(id, rgba.clone(), w, h), rgba);
         let whole = store().snapshot(id).expect("frame");
         assert_eq!(
             (whole.width, whole.height),

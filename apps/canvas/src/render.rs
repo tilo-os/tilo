@@ -212,6 +212,14 @@ const ERASED: Color = Color::TRANSPARENT.with_alpha(1.0);
 pub const SHADOW_INK: Color = Color::from_rgba8(0, 0, 0, 96); // document colour
 
 impl Renderer {
+    /// A renderer that draws a placeholder for a picture still decoding,
+    /// decoding it in the background, instead of waiting for it.
+    pub fn impatient() -> Self {
+        let mut renderer = Self::default();
+        renderer.pictures.patient = false;
+        renderer
+    }
+
     /// Draw `art` into `scene`, artwork units mapped by `transform`.
     pub fn draw(
         &mut self,
@@ -1187,6 +1195,25 @@ pub fn eraser_outline(scene: &mut Scene, path: &BezPath, marked: Option<Color>) 
     scene.stroke(&dashes, Affine::IDENTITY, ink, None, path);
 }
 
+/// Where a brush or eraser will land, round the pointer: a dark ring
+/// under a light one, so it reads on any paint.
+pub fn footprint_ring(scene: &mut Scene, path: &BezPath) {
+    scene.stroke(
+        &Stroke::new(1.5),
+        Affine::IDENTITY,
+        SHADOW_INK.with_alpha(0.6),
+        None,
+        path,
+    );
+    scene.stroke(
+        &Stroke::new(0.75),
+        Affine::IDENTITY,
+        BLANK_GROUND.multiply_alpha(0.9),
+        None,
+        path,
+    );
+}
+
 fn image(pixels: Vec<u8>, width: usize, height: usize) -> ImageData {
     ImageData {
         data: Blob::new(Arc::new(pixels)),
@@ -1505,33 +1532,17 @@ pub fn silhouette(mark: &Mark) -> BezPath {
     }
 }
 
-fn wet_points(points: &[Vec<f64>]) -> Vec<WetPoint> {
-    points
-        .iter()
-        .map(|point| {
-            WetPoint::new(
-                narrow(point.first().copied().unwrap_or(0.0)),
-                narrow(point.get(1).copied().unwrap_or(0.0)),
-                narrow(point.get(2).copied().unwrap_or(1.0)),
-            )
-        })
-        .collect()
-}
-
 /// A stroke drawn by the round ink brush: its own line, or every twig or
 /// dab it grows into, each after the stroke's smoothing.
 fn ink_strokes(mark: &Mark) -> BezPath {
     let smoothing = crate::brushes::Dynamics::of_mark(mark).smoothing;
     let mut path = BezPath::new();
     for (points, size) in crate::brushes::pieces(mark) {
+        // Laid as every brush lays its path, so its corners stay sharp.
         let points = crate::brushes::steady_ends(&points, size);
-        let points = if smoothing > 0.0 {
-            crate::brushes::smoothed(&points, smoothing)
-        } else {
-            points
-        };
+        let samples = crate::brushes::samples(&points, 0.75, smoothing, size);
         path.extend(
-            ink_outline(&wet_points(&points), narrow(size))
+            ink_outline(&samples, narrow(size))
                 .elements()
                 .iter()
                 .copied(),
@@ -1540,9 +1551,8 @@ fn ink_strokes(mark: &Mark) -> BezPath {
     path
 }
 
-fn ink_outline(points: &[WetPoint], size: f32) -> BezPath {
-    let samples = tilo_wet_media::brush::smooth(points, 0.75);
-    let outline = tilo_wet_media::brush::ink_outline(&samples, size);
+fn ink_outline(samples: &[tilo_wet_media::brush::Sample], size: f32) -> BezPath {
+    let outline = tilo_wet_media::brush::ink_outline(samples, size);
     let mut path = BezPath::new();
     for (index, (x, y)) in outline.iter().enumerate() {
         let point = Point::new(f64::from(*x), f64::from(*y));
@@ -1832,6 +1842,7 @@ fn dab_key(mark: &Mark, rgb: [u8; 3], scale: f64, cx: &MarkCx<'_>) -> [u8; 32] {
         dabs,
         scatter,
         dab_length,
+        hatch,
     } = &mark.shape
     {
         // Hashed as bytes: this runs for every dabbed stroke every frame.
@@ -1842,7 +1853,9 @@ fn dab_key(mark: &Mark, rgb: [u8; 3], scale: f64, cx: &MarkCx<'_>) -> [u8; 32] {
             key.update(&[0xff]);
         }
         key.update(&size.to_le_bytes());
-        key.update(format!("{forks:?}{spread:?}{dabs:?}{scatter:?}{dab_length:?}").as_bytes());
+        key.update(
+            format!("{forks:?}{spread:?}{dabs:?}{scatter:?}{dab_length:?}{hatch:?}").as_bytes(),
+        );
     }
     key.update(format!("{:?}{:?}{:?}", style.brush, style.params, style.angle).as_bytes());
     key.update(&rgb);

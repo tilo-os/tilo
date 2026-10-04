@@ -218,6 +218,18 @@ pub enum Action {
     ShowContextMenu,
 }
 
+/// A change to the person's accessibility preferences that a control asked
+/// for, such as the sign-in screen's larger-text or high-contrast toggle.
+/// The host applies it to the whole window, exactly as the matching system
+/// preference would.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AccessibilityRequest {
+    /// Multiply text by this factor (1.0 is the default size).
+    TextScale(f32),
+    HighContrast(bool),
+    ScreenReader(bool),
+}
+
 /// How urgently a [live region](AccessNode::live) narrates its own update
 /// *without moving focus* — a toast appearing, a status line changing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]

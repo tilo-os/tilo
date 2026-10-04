@@ -7,9 +7,6 @@ apps/api-tester/src/responsive.rs pixel_const 1
 apps/backups/src/app.rs pixel_const 13
 apps/backups/src/paint.rs pixel_const 1
 apps/browser/src/address_overlay.rs pixel_const 5
-apps/browser/src/browser_tab_strip.rs pixel_const 4
-apps/browser/src/browser_tab_strip.rs taffy_length 4
-apps/browser/src/browser_tabs.rs taffy_length 1
 apps/browser/src/browser_widget.rs pixel_const 6
 apps/browser/src/history.rs pixel_const 1
 apps/browser/src/settings.rs pixel_const 3
@@ -32,12 +29,15 @@ apps/canvas/src/detail.rs pixel_const 1
 apps/canvas/src/gesture/brush.rs pixel_const 1
 apps/canvas/src/lib.rs pixel_const 2
 apps/canvas/src/model.rs pixel_const 1
+apps/canvas/src/panels/export.rs pixel_const 1
 apps/canvas/src/panels/gradient.rs pixel_const 2
-apps/canvas/src/panels/header.rs pixel_const 2
+apps/canvas/src/panels/header.rs pixel_const 4
 apps/canvas/src/panels/history.rs pixel_const 1
 apps/canvas/src/panels/inspector.rs pixel_const 2
 apps/canvas/src/panels/layers.rs pixel_const 1
 apps/canvas/src/panels/mod.rs pixel_const 1
+apps/canvas/src/panels/shortcuts.rs pixel_const 1
+apps/canvas/src/panels/start.rs pixel_const 7
 apps/canvas/src/render.rs pixel_const 1
 apps/canvas/src/surface.rs pixel_const 2
 apps/canvas/src/view_ops.rs pixel_const 1
@@ -242,7 +242,6 @@ crates/sdk/ui-core/src/widget/progress_bar.rs pixel_const 2
 crates/sdk/ui-core/src/widget/qr.rs taffy_length 2
 crates/sdk/ui-core/src/widget/resizable_split.rs pixel_const 2
 crates/sdk/ui-core/src/widget/resize_handle.rs pixel_const 4
-crates/sdk/ui-core/src/widget/rich_text_editor.rs pixel_const 2
 crates/sdk/ui-core/src/widget/rich_text_line.rs pixel_const 1
 crates/sdk/ui-core/src/widget/screenshot_markup.rs pixel_const 6
 crates/sdk/ui-core/src/widget/scrollable.rs pixel_const 5

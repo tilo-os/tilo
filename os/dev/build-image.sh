@@ -20,9 +20,8 @@
 # Build notes:
 #   * First build is a long COLD Rust compile inside the container; the
 #     Containerfile uses cargo + sccache cache mounts so rebuilds are fast.
-#   * TILO_WITH_BROWSER=0 ./os/dev/build-image.sh omits the browser and the WPE
-#     WebKit engine stage that builds its engine from source — ~45 of the ~60
-#     minutes a cold build costs. The boot chain (kernel, initramfs, LUKS/TPM,
+#   * TILO_WITH_BROWSER=0 ./os/dev/build-image.sh omits the Browser and its
+#     Chromium engine runtime. The boot chain (kernel, initramfs, LUKS/TPM,
 #     greeter, installer, rollback) is all still there, so this is the image to
 #     build when the question is "does it boot?". Default is the full image.
 #   * TILO_IMAGE_ONLY=1 builds the container and stops: the base a dev image is
@@ -190,8 +189,17 @@ fi
 # Disk-only installation uses an image with its external assets already baked
 # in, so it does not need the build-context downloads.
 if [ "${TILO_SKIP_BUILD:-0}" != 1 ] && [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
-  mapfile -t _tilo_native_assets < <(sed -nE 's/^(LIBWPE|FDO|WPEWK)=([A-Za-z0-9._-]+)$/\2/p' "$TILO_OS_DIR/dev/build-wpe.sh")
-  [ "${#_tilo_native_assets[@]}" -eq 3 ] || die "expected exactly three pinned WPE source archives"
+  _tilo_native_assets=()
+  if [ "${TILO_WITH_BROWSER:-1}" = 1 ]; then
+    case "$TILO_WINDOWS_ARCH" in
+      x86_64) _tilo_cef_platform=linux64 ;;
+      aarch64) _tilo_cef_platform=linuxarm64 ;;
+      *) die "unsupported browser engine architecture" ;;
+    esac
+    _tilo_cef_version=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["chromium_version"])' \
+      "$TILO_REPO/scripts/browser/cef-lock.json") || die "could not read the pinned CEF version"
+    _tilo_native_assets+=("cef-${_tilo_cef_version}-${_tilo_cef_platform}-minimal.tar.bz2")
+  fi
   _tilo_sccache_version=$(sed -nE 's/^ARG SCCACHE_VERSION=([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' "$TILO_OS_DIR/Containerfile")
   [[ "$_tilo_sccache_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "expected one pinned sccache version"
   case "$TILO_WINDOWS_ARCH" in
@@ -428,49 +436,6 @@ if [ -n "${TILO_IMAGE_SCCACHE_URL:-}" ]; then
     --secret "id=actions_runtime_token,src=$TILO_IMAGE_SCCACHE_TOKEN_FILE")
   msg "compiler cache: $TILO_IMAGE_SCCACHE_URL"
 fi
-# Retained development payloads have their own provenance, including an unknown
-# original compilation epoch. Never present them as a current producer build.
-if [ -n "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
-  [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] && [ "$TILO_WITH_BROWSER" = 1 ] \
-    && [ "$TILO_SKIP_BUILD" != 1 ] || die "WPE adoption requires a fresh full-browser development build"
-  [ -z "${TILO_WPE_STAGE_RECEIPT:-}${TILO_WPE_BUILD_CACHE_REF:-}" ] \
-    || die "WPE adoption cannot be combined with another WPE source"
-  [[ "${TILO_WPE_ADOPTION_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] \
-    || die "WPE adoption requires an independently pinned receipt SHA256"
-  [ "${TILO_REQUIRE_WPE_SIGNATURE:-0}" != 1 ] \
-    || die "WPE adoption cannot replace release buildroot verification"
-fi
-# Select the promoted buildroot for this native architecture. Before the first
-# promotion a developer may opt into the clearly named live-repository
-# bootstrap; it is never enabled implicitly and release CI never passes it.
-: "${TILO_WPE_BOOTSTRAP:=0}"
-_tilo_wpe_ref_override="${WPE_BUILDROOT_REF:-}"
-# shellcheck disable=SC1091
-[ -f "$TILO_OS_DIR/wpe-buildroot-snapshot.env" ] && . "$TILO_OS_DIR/wpe-buildroot-snapshot.env"
-case "$(uname -m)" in
-  x86_64) WPE_BUILDROOT_REF="${_tilo_wpe_ref_override:-${WPE_BUILDROOT_X86_64_REF:-}}" ;;
-  aarch64) WPE_BUILDROOT_REF="${_tilo_wpe_ref_override:-${WPE_BUILDROOT_AARCH64_REF:-}}" ;;
-  *) die "unsupported WPE buildroot architecture: $(uname -m)" ;;
-esac
-if [ "$TILO_SKIP_BUILD" != 1 ] && [ "$TILO_WITH_BROWSER" = 1 ] && [ -z "$WPE_BUILDROOT_REF" ] \
-    && [ -z "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
-  if [ "$TILO_WPE_BOOTSTRAP" = 1 ]; then
-    WPE_BUILDROOT_REF="$("$TILO_OS_DIR/dev/build-wpe-buildroot.sh")"
-  else
-    die "no promoted WPE buildroot for $(uname -m).
-Run the build-buildroots workflow, or explicitly bootstrap a local-only
-build with TILO_WPE_BOOTSTRAP=1. Release CI never permits bootstrap mode."
-  fi
-fi
-# Dockerfile FROM references are resolved even for a pruned browser stage.
-[ -n "$WPE_BUILDROOT_REF" ] || WPE_BUILDROOT_REF="$BASE_REF"
-if [ "${TILO_REQUIRE_WPE_SIGNATURE:-0}" = 1 ] && [ "$TILO_WITH_BROWSER" = 1 ]; then
-  [[ "$WPE_BUILDROOT_REF" =~ ^registry\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] \
-    || die "release builds require a digest-pinned WPE buildroot"
-  command -v cosign >/dev/null || die "release builds require cosign to verify the WPE buildroot"
-  cosign verify --key "$TILO_REPO/keys/cosign.pub" "$WPE_BUILDROOT_REF" >/dev/null \
-    || die "WPE buildroot signature verification failed"
-fi
 # Extra podman-build flags, for the times the layer cache is the problem rather
 # than the source. A disk that fills mid-build can leave a cached layer holding a
 # corrupt RPM database, which then surfaces as dnf insisting that packages the
@@ -501,17 +466,6 @@ for ((_i = 0; _i < ${#_tilo_build_args[@]}; _i++)); do
 done
 TILO_BUILD_CACHE_KEY="$(for _k in "${!_tilo_cache_inputs[@]}"; do printf '%s=%s\n' "$_k" "${_tilo_cache_inputs[$_k]}"; done \
   | LC_ALL=C sort | sha256sum | cut -c1-12)"
-_tilo_wpe_args=()
-if [ -n "${TILO_WPE_STAGE_RECEIPT:-}" ]; then
-  [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] && [ "$TILO_WITH_BROWSER" = 1 ] \
-    && [ "$TILO_SKIP_BUILD" != 1 ] || die "WPE artifact import requires a fresh full-browser development build"
-  [ -n "${TILO_WPE_SOURCE_DATE_EPOCH:-}" ] || die "WPE artifact import requires an explicit dependency epoch"
-elif [ -n "${TILO_WPE_BUILD_CACHE_REF:-}" ]; then
-  [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] && [ "$TILO_WITH_BROWSER" = 1 ] \
-    && [ "$TILO_SKIP_BUILD" != 1 ] || die "WPE stage caching requires a fresh full-browser development build"
-  [ -n "${TILO_WPE_SOURCE_DATE_EPOCH:-}" ] || die "WPE stage caching requires an explicit dependency epoch"
-fi
-
 TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY="${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}"
 if [ "$TILO_SKIP_BUILD" != 1 ]; then
   [[ "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" =~ ^[0-9a-fA-F]{64}$ ]] \
@@ -551,9 +505,8 @@ build_image() {
     [ "${TILO_RAW_ROOTFS_ONLY:-0}" = 1 ] &&
       [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] &&
       [[ "${TILO_NATIVE_BUILDER_IMAGE_ID:-}" =~ ^sha256:[0-9a-f]{64}$ ]] &&
-      [[ "${TILO_WPE_ADOPTION_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] &&
       [ "$#" = 4 ] && [ "$1" = --target ] && [ "$2" = rootfs ] &&
-      [ "$3" = --iidfile ] || die "layer epoch requires verified raw-only native/WPE reuse"
+      [ "$3" = --iidfile ] || die "layer epoch requires verified raw-only native reuse"
     [[ "$TILO_RAW_LAYER_EPOCH" =~ ^(0|[1-9][0-9]{0,11})$ ]] &&
       (( TILO_RAW_LAYER_EPOCH <= 253402300799 )) || die "invalid raw layer epoch"
     layer_epoch="$TILO_RAW_LAYER_EPOCH"
@@ -564,7 +517,6 @@ build_image() {
     --build-arg "TILO_BUILD_CACHE_KEY=$TILO_BUILD_CACHE_KEY" \
     "${_tilo_jobs_args[@]}" \
     "${_tilo_build_args[@]}" \
-    "${_tilo_wpe_args[@]}" \
     "${_tilo_native_builder_args[@]}" \
     "${_tilo_trust_args[@]}" \
     --label "org.tilo.kernel.trust=$TILO_KERNEL_TRUST" \
@@ -575,13 +527,11 @@ build_image() {
     --build-arg "BASE_REF=$BASE_REF" \
     --build-arg "RPMS_REF=$RPMS_REF" \
     --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
-    --build-arg "WPE_BUILDROOT_REF=$WPE_BUILDROOT_REF" \
     --build-arg "TILO_WINDOWS_ARCH=$TILO_WINDOWS_ARCH" \
     --build-arg "FEX_PAYLOAD_REF=${FEX_PAYLOAD_REF:-scratch}" \
     --build-arg "WINDOWS_GUEST_REF=${WINDOWS_GUEST_REF:-scratch}" \
     --build-arg "ENV_RUNTIME_REF=${ENV_RUNTIME_REF:-scratch}" \
     --build-arg "TILO_WITH_WINDOWS=$TILO_WITH_WINDOWS" \
-    --build-arg "WPE_BUILD_JOBS=${TILO_WPE_BUILD_JOBS:-8}" \
     --build-arg "TILO_WITH_BROWSER=$TILO_WITH_BROWSER" \
     --build-arg "TILO_HARDWARE_PROFILE=$TILO_HARDWARE_PROFILE" \
     --build-arg "TILO_TARGET_IMGREF=${TILO_TARGET_IMGREF:-}" \
@@ -614,49 +564,7 @@ if [ "$TILO_SKIP_BUILD" = "1" ]; then
     podman tag  registry.tilo.so/tilo/tilo:<tag> $TILO_IMAGE"
   msg "1/2 skipped (TILO_SKIP_BUILD=1): imaging the existing $TILO_IMAGE"
 else
-  msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; windows=$TILO_WITH_WINDOWS; rust-lto=$TILO_RUST_LTO; cargo-target-cache=$TILO_BUILD_CACHE_KEY; generation=$TILO_GENERATION)"
-  if [ -n "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
-    _tilo_wpe_id=$(python3 "$TILO_OS_DIR/dev/adopt-development-wpe.py" import-adopted \
-      --receipt "$TILO_WPE_ADOPTION_RECEIPT" --receipt-sha256 "$TILO_WPE_ADOPTION_SHA256" \
-      --architecture "$TILO_WINDOWS_ARCH" --repo "$TILO_REPO" --assets "$TILO_REPO/os/external-assets/cache")
-    [[ "$_tilo_wpe_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "WPE adoption did not return an immutable image ID"
-    _tilo_wpe_args=(--build-context "wpe-builder=container-image://$_tilo_wpe_id")
-  elif [ -n "${TILO_WPE_STAGE_RECEIPT:-}" ]; then
-    # A selected completed artifact is mandatory: never hide an invalid receipt
-    # or unavailable artifact by compiling another stage in this OS build.
-    _tilo_wpe_id=$(python3 "$TILO_OS_DIR/dev/wpe-stage-artifact.py" import \
-      --receipt "$TILO_WPE_STAGE_RECEIPT" --architecture "$TILO_WINDOWS_ARCH" \
-      --epoch "$TILO_WPE_SOURCE_DATE_EPOCH" --repo "$TILO_REPO" \
-      --assets "$TILO_REPO/os/external-assets/cache" --wpe "$WPE_BUILDROOT_REF")
-    [[ "$_tilo_wpe_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "WPE artifact did not return an immutable image ID"
-    _tilo_wpe_args=(--build-context "wpe-builder=container-image://$_tilo_wpe_id")
-  elif [ -n "${TILO_WPE_BUILD_CACHE_REF:-}" ]; then
-    _tilo_wpe_id=$(python3 "$TILO_OS_DIR/dev/prepare-wpe-stage.py" \
-      --architecture "$TILO_WINDOWS_ARCH" --epoch "$TILO_WPE_SOURCE_DATE_EPOCH" \
-      --cache "$TILO_WPE_BUILD_CACHE_REF" --repo "$TILO_REPO" \
-      --assets "$TILO_REPO/os/external-assets/cache" --wpe "$WPE_BUILDROOT_REF")
-    [[ "$_tilo_wpe_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "WPE stage did not return an immutable image ID"
-    _tilo_wpe_args=(--build-context "wpe-builder=container-image://$_tilo_wpe_id")
-  elif [ "$TILO_WITH_BROWSER" = 1 ]; then
-    # Compile only from os/Containerfile.wpe, then consume the immutable stage.
-    # Never fall back into a second compile recipe inside os/Containerfile.
-    : "${TILO_WPE_SOURCE_DATE_EPOCH:=0}"
-    _tilo_wpe_iid="$(mktemp)"
-    podman "${_tilo_podman_args[@]}" build -f "$TILO_OS_DIR/Containerfile.wpe" \
-      --layers --skip-unused-stages=true --network=none --target wpe-builder-1 \
-      --iidfile "$_tilo_wpe_iid" \
-      --source-date-epoch "$TILO_WPE_SOURCE_DATE_EPOCH" --rewrite-timestamp \
-      --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
-      --build-arg "WPE_BUILDROOT_REF=$WPE_BUILDROOT_REF" \
-      --build-arg "TILO_WPE_SOURCE_DATE_EPOCH=$TILO_WPE_SOURCE_DATE_EPOCH" \
-      --build-arg "WPE_BUILD_JOBS=${TILO_WPE_BUILD_JOBS:-8}" \
-      "$TILO_REPO" \
-      || { rm -f "$_tilo_wpe_iid"; die "isolated WPE recipe build failed"; }
-    _tilo_wpe_id="$(tr -d '[:space:]' < "$_tilo_wpe_iid")"
-    rm -f "$_tilo_wpe_iid"
-    [[ "$_tilo_wpe_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "WPE stage did not return an immutable image ID"
-    _tilo_wpe_args=(--build-context "wpe-builder=container-image://$_tilo_wpe_id")
-  fi
+  msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; windows=$TILO_WITH_WINDOWS; rust-lto=$TILO_RUST_LTO; cargo-target-cache=$TILO_BUILD_CACHE_KEY; generation=$TILO_GENERATION)"
   if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
     [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] || die "native payload compilation requires development mode"
     [ -n "${TILO_NATIVE_BUILDER_IIDFILE:-}" ] || die "native payload compilation requires an output iidfile"

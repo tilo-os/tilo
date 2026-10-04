@@ -23,6 +23,7 @@ use ui::text_render::TextRenderer;
 use ui::text_selection::{
     Selection, clipboard_copy, clipboard_paste, line_boundaries, word_boundaries,
 };
+use ui::{EditCore, Motion};
 
 use crate::shell::crdt_text::{CrdtTextBody, full_bleed_leaf, full_bleed_rect};
 use ui::icons::Icon;
@@ -53,32 +54,6 @@ const MULTI_CLICK_RADIUS: f64 = 6.0;
 /// ~8px average advance for 15px proportional text; 7.2 avoids
 /// overshooting on the common case.
 const APPROX_ADVANCE_PX: f64 = 7.2;
-
-/// Byte offset where the line containing `pos` starts (one past the
-/// previous `\n`, or 0 for the first line).
-fn line_start_at(text: &str, pos: usize) -> usize {
-    text.get(..pos)
-        .and_then(|s| s.rfind('\n'))
-        .map_or(0, |i| i.saturating_add(1))
-}
-
-/// Byte offset where the line containing `pos` ends (the `\n` itself,
-/// or the text's length on the last line).
-fn line_end_at(text: &str, pos: usize) -> usize {
-    text.get(pos..)
-        .and_then(|s| s.find('\n'))
-        .map_or(text.len(), |i| pos.saturating_add(i))
-}
-
-/// Walks forward from `pos` to the next valid char boundary (or the
-/// text's end). Used after column arithmetic lands mid-character.
-fn snap_forward_to_char_boundary(text: &str, pos: usize) -> usize {
-    let mut p = pos.min(text.len());
-    while p < text.len() && !text.is_char_boundary(p) {
-        p = p.saturating_add(1);
-    }
-    p
-}
 
 /// Widens a small row/column count to `f64` for draw-time geometry.
 fn count_to_f64(n: usize) -> f64 {
@@ -149,112 +124,65 @@ impl NotesApp {
         app
     }
 
+    /// Keep the selection on whole characters after the body changed under
+    /// it (a peer's edit, an undo).
     fn clamp_cursor(&mut self) {
-        self.selection.cursor = self.body.clamp(self.selection.cursor);
-        self.selection.anchor = self.body.clamp(self.selection.anchor);
+        let mut core = self.edit_core();
+        core.clamp_to(&self.body.text);
+        self.selection = core.selection();
+    }
+
+    /// The shared editing core over this note's selection.
+    fn edit_core(&self) -> EditCore {
+        let mut core = EditCore::new();
+        core.set_selection(self.selection.anchor, self.selection.cursor);
+        core
+    }
+
+    /// Run one edit through the core and splice it into the body.
+    fn edit(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        apply: impl FnOnce(&mut EditCore, &str) -> ui::Edit,
+    ) {
+        let mut core = self.edit_core();
+        let edit = apply(&mut core, &self.body.text);
+        if !edit.is_noop() {
+            self.body.splice(state, root, edit.range(), &edit.inserted);
+        }
+        self.selection = core.selection();
     }
 
     fn delete_selection(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.selection.is_collapsed() {
-            return;
-        }
-        let range = self.selection.min()..self.selection.max();
-        let caret = self.body.splice(state, root, range, "");
-        self.selection.move_to(caret);
+        self.edit(state, root, |core, _| core.delete_selection());
     }
 
-    /// Used by every typing path (printable chars, Enter, Tab, paste).
+    /// Used by every typing path (printable chars, Enter, Tab, paste): the
+    /// text replaces the selection at the caret.
     fn insert_str(&mut self, state: &mut AutoCommit, root: &ObjId, s: &str) {
-        // A collapsed selection makes this an insert; an open one makes it
-        // a replace. `splice` covers both — the range is just empty.
-        let range = self.selection.min()..self.selection.max();
-        let caret = self.body.splice(state, root, range, s);
-        self.selection.move_to(caret);
+        self.edit(state, root, |core, _| core.insert(s));
     }
 
-    /// Collapsed-selection path; selection-aware paths route through
-    /// `delete_selection`.
+    /// Backspace: the selection, else the character before the caret as a
+    /// person sees it.
     fn delete_before(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let cur = self.selection.cursor;
-        if cur == 0 {
-            return;
-        }
-        let prev = self.body.prev_boundary(cur);
-        let caret = self.body.splice(state, root, prev..cur, "");
-        self.selection.move_to(caret);
+        self.edit(state, root, |core, text| core.delete_backward(text, false));
     }
 
     fn delete_after(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let cur = self.selection.cursor;
-        if cur >= self.body.text.len() {
-            return;
-        }
-        let next = self.body.next_boundary(cur);
-        self.body.splice(state, root, cur..next, "");
+        self.edit(state, root, |core, text| core.delete_forward(text, false));
     }
 
     fn selected_str(&self) -> Option<&str> {
-        if self.selection.is_collapsed() {
-            None
-        } else {
-            self.body.text.get(self.selection.range())
-        }
+        self.edit_core().selected(&self.body.text)
     }
 
-    fn move_or_extend(&mut self, pos: usize, extend: bool) {
-        if extend {
-            self.selection.extend_to(pos);
-        } else {
-            self.selection.move_to(pos);
-        }
-    }
-
-    /// Vertical-nav helper for `ArrowUp`: same column, previous line.
-    fn move_line_up(&mut self, shift: bool) {
-        let cur = self.selection.cursor;
-        let line_start = line_start_at(&self.body.text, cur);
-        let col = cur.saturating_sub(line_start);
-        let new_pos = if line_start == 0 {
-            0
-        } else {
-            let prev_nl = line_start_at(&self.body.text, line_start.saturating_sub(1));
-            let prev_line_end = line_start.saturating_sub(1);
-            let prev_line_len = prev_line_end.saturating_sub(prev_nl);
-            let want_col = col.min(prev_line_len);
-            // `prev_nl` is always itself a valid char boundary (0, or one
-            // past a `\n`), so clamping downward from `want_col` bytes
-            // past it can never walk below `prev_nl`.
-            self.body.clamp(prev_nl.saturating_add(want_col))
-        };
-        self.move_or_extend(new_pos, shift);
-    }
-
-    /// Vertical-nav helper for `ArrowDown`: same column, next line.
-    fn move_line_down(&mut self, shift: bool) {
-        let cur = self.selection.cursor;
-        let line_start = line_start_at(&self.body.text, cur);
-        let col = cur.saturating_sub(line_start);
-        let line_end = line_end_at(&self.body.text, cur);
-        let new_pos = if line_end == self.body.text.len() {
-            self.body.text.len()
-        } else {
-            let next_line_start = line_end.saturating_add(1);
-            let next_line_end = line_end_at(&self.body.text, next_line_start);
-            let next_line_len = next_line_end.saturating_sub(next_line_start);
-            let want_col = col.min(next_line_len);
-            snap_forward_to_char_boundary(&self.body.text, next_line_start.saturating_add(want_col))
-        };
-        self.move_or_extend(new_pos, shift);
-    }
-
-    fn move_home(&mut self, shift: bool) {
-        let line_start = line_start_at(&self.body.text, self.selection.cursor);
-        self.move_or_extend(line_start, shift);
-    }
-
-    fn move_end(&mut self, shift: bool) {
-        let line_end = line_end_at(&self.body.text, self.selection.cursor);
-        self.move_or_extend(line_end, shift);
+    /// Caret motion through the core: `extend` keeps the anchor.
+    fn motion(&mut self, motion: Motion, extend: bool) {
+        let mut core = self.edit_core();
+        core.motion(&self.body.text, motion, extend);
+        self.selection = core.selection();
     }
 }
 
@@ -879,19 +807,11 @@ impl NotesApp {
     ) {
         match logical_key {
             Key::Named(NamedKey::Backspace) => {
-                if self.selection.is_collapsed() {
-                    self.delete_before(state, root);
-                } else {
-                    self.delete_selection(state, root);
-                }
+                self.delete_before(state, root);
                 *handled = true;
             }
             Key::Named(NamedKey::Delete) => {
-                if self.selection.is_collapsed() {
-                    self.delete_after(state, root);
-                } else {
-                    self.delete_selection(state, root);
-                }
+                self.delete_after(state, root);
                 *handled = true;
             }
             Key::Named(NamedKey::Enter) => {
@@ -907,37 +827,27 @@ impl NotesApp {
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowLeft) => {
-                if !shift && !self.selection.is_collapsed() {
-                    self.selection.move_to(self.selection.min());
-                } else {
-                    let p = self.body.prev_boundary(self.selection.cursor);
-                    self.move_or_extend(p, shift);
-                }
+                self.motion(Motion::Left, shift);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowRight) => {
-                if !shift && !self.selection.is_collapsed() {
-                    self.selection.move_to(self.selection.max());
-                } else {
-                    let p = self.body.next_boundary(self.selection.cursor);
-                    self.move_or_extend(p, shift);
-                }
+                self.motion(Motion::Right, shift);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowUp) => {
-                self.move_line_up(shift);
+                self.motion(Motion::LineUp, shift);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowDown) => {
-                self.move_line_down(shift);
+                self.motion(Motion::LineDown, shift);
                 *handled = true;
             }
             Key::Named(NamedKey::Home) => {
-                self.move_home(shift);
+                self.motion(Motion::LineStart, shift);
                 *handled = true;
             }
             Key::Named(NamedKey::End) => {
-                self.move_end(shift);
+                self.motion(Motion::LineEnd, shift);
                 *handled = true;
             }
             _ => {

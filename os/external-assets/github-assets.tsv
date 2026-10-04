@@ -22,9 +22,6 @@ ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0	appimagetool-1.
 f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158	appimagetool-1.9.1-aarch64.AppImage	https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-aarch64.AppImage
 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d	type2-runtime-20251108-x86_64	https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444	type2-runtime-20251108-aarch64	https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-aarch64
-c880fa8d607b2aa6eadde7d6d6302b1396ebc38368fe2332fa20e193c7ee1420	libwpe-1.16.3.tar.xz	https://wpewebkit.org/releases/libwpe-1.16.3.tar.xz
-544ae14012f8e7e426b8cb522eb0aaaac831ad7c35601d1cf31d37670e0ebb3b	wpebackend-fdo-1.16.1.tar.xz	https://wpewebkit.org/releases/wpebackend-fdo-1.16.1.tar.xz
-b2bafef2751625b7fdf530f230ff0f542ff0eeba3590c3a989d931b2a55c858e	wpewebkit-2.52.6.tar.xz	https://wpewebkit.org/releases/wpewebkit-2.52.6.tar.xz
 e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118	doubletake-ae06722-LICENSE	https://raw.githubusercontent.com/omarroth/doubletake/ae067228d76df011375164814b729932ed55ca2f/LICENSE
 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986	fluxcast-a74f39f-LICENSE	https://raw.githubusercontent.com/IlyaP358/fluxcast/a74f39fe3f2012e20315cd37e13e9803871e587f/LICENSE
 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986	joycond-0df025a-LICENSE	https://raw.githubusercontent.com/DanielOgorchock/joycond/0df025ac5dc284b1f31172b6b252321ba788c4de/LICENSE
@@ -50,3 +47,6 @@ c799b9ccae8728793da2186718fbe53b76400a9da396184fac0c64aa3298ec37	mold-2.40.4-aar
 3167956a7b2cffc4cfcaf6a282b95728c529eebef18a5d9e6d9ff32de32cc67c	brcmfmac43456-sdio-30d86fc.bin	https://raw.githubusercontent.com/armbian/firmware/30d86fc98f1bac54d4be7046c828a14e588f6fff/brcm/brcmfmac43456-sdio.bin
 2dbd7d22fc9af0eb560ceab45b19646d211bc7b34a1dd00c6bfac5dd6ba25e8a	brcmfmac43456-sdio-30d86fc.clm_blob	https://raw.githubusercontent.com/armbian/firmware/30d86fc98f1bac54d4be7046c828a14e588f6fff/brcm/brcmfmac43456-sdio.clm_blob
 66c71eb53b47c49d42386b66735134578640b0946f3f46e44f384fef5aacfd9e	brcmfmac43456-sdio-67ccb55.txt	https://raw.githubusercontent.com/armbian/firmware/67ccb5550b2aa460212d09403c706b1d962b388e/brcm/brcmfmac43456-sdio.txt
+# The browser engine: CEF's pinned minimal Linux distributions (scripts/browser/cef-lock.json).
+daf8c2b6e63787d6a91d666205a8a4521419937eabaf47723738c86aea7135bd	cef-152.0.7977.83-linux64-minimal.tar.bz2	https://cef-builds.spotifycdn.com/cef_binary_152.0.6%2Bg708dc14%2Bchromium-152.0.7977.83_linux64_minimal.tar.bz2
+6a2448eccce01ab2495131f754a1c75a49333aa1678a95cb794dfe166cc477d2	cef-152.0.7977.83-linuxarm64-minimal.tar.bz2	https://cef-builds.spotifycdn.com/cef_binary_152.0.6%2Bg708dc14%2Bchromium-152.0.7977.83_linuxarm64_minimal.tar.bz2
