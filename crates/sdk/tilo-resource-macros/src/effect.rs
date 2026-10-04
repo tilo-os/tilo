@@ -102,6 +102,7 @@ struct VariantOptions {
     returns: bool,
     destructive: bool,
     privileged: bool,
+    sensitive: bool,
     device_only: bool,
     permission: Option<String>,
 }
@@ -130,12 +131,14 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.destructive = true;
             } else if meta.path.is_ident("privileged") {
                 options.privileged = true;
+            } else if meta.path.is_ident("sensitive") {
+                options.sensitive = true;
             } else if meta.path.is_ident("device_only") {
                 options.device_only = true;
             } else {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, \
-                     `destructive`, `privileged`, `idempotent`, `device_only` or `permission`",
+                     `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only` or `permission`",
                 ));
             }
             Ok(())
@@ -201,12 +204,16 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             .collect::<Vec<_>>()
             .join(" ");
         if options.view
-            && (options.job || options.cancellable || options.destructive || options.privileged)
+            && (options.job
+                || options.cancellable
+                || options.destructive
+                || options.privileged
+                || options.sensitive)
         {
             return Err(syn::Error::new(
                 variant.span(),
                 "a `view` effect only changes what its caller sees: it answers at once and \
-                 asks no confirmation (drop `job`, `cancellable`, `destructive` and `privileged`)",
+                 asks no confirmation (drop `job`, `cancellable`, `destructive`, `privileged` and `sensitive`)",
             ));
         }
         let permission = match options.permission.as_deref() {
@@ -282,17 +289,18 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         } else {
             quote!(#krate::effect::Answers::Nothing)
         };
-        let risk = match (options.destructive, options.privileged) {
-            (true, true) => {
+        let risk = match (options.destructive, options.privileged, options.sensitive) {
+            (true, false, false) => quote!(Destructive),
+            (false, true, false) => quote!(Privileged),
+            (false, false, true) => quote!(Sensitive),
+            (false, false, false) if options.view => quote!(None),
+            (false, false, false) => quote!(Low),
+            _ => {
                 return Err(syn::Error::new(
                     variant.span(),
-                    "an effect is `destructive` or `privileged`, not both",
+                    "an effect is one of `destructive`, `privileged` or `sensitive`",
                 ));
             }
-            (true, false) => quote!(Destructive),
-            (false, true) => quote!(Privileged),
-            (false, false) if options.view => quote!(None),
-            (false, false) => quote!(Low),
         };
         let idempotent = options.idempotent;
         let device_only = all_device_only || options.device_only;
