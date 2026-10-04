@@ -432,6 +432,13 @@ impl VerifiedJoinIdentity {
             capped,
         }
     }
+
+    /// Whether `cluster_id` is this identity's own person room: the room
+    /// every device its root certified owns, and no other device enters.
+    fn owns_person_room(&self, cluster_id: &str) -> bool {
+        uuid::Uuid::parse_str(cluster_id)
+            .is_ok_and(|room| collab_types::is_person_room(&self.user_public_key, &room))
+    }
 }
 
 /// Whether a device is held to the foreign-device cap in `room`, as far as
@@ -651,12 +658,27 @@ fn admit_verified_join_at(
     verified: VerifiedJoinIdentity,
     now: u64,
 ) -> Result<AdmittedJoinIdentity, String> {
+    let principal_id = principal_id_for_root(verified.user_public_key);
+    // The person room has no roster to consult: its members are, by the
+    // room id's derivation, exactly the devices this root certified, each
+    // acting as the room's owner. Any other room id is a workspace.
+    if verified.owns_person_room(&route.cluster_id) {
+        return Ok(AdmittedJoinIdentity {
+            host_scope: None,
+            worker_registration: None,
+            certificate: None,
+            verified,
+            principal_id,
+            role: CapRole::Owner,
+            display_handle: None,
+            agent_id: None,
+        });
+    }
     let workspace = tree
         .workspaces
         .iter()
         .find(|workspace| workspace.room.to_string() == route.cluster_id)
         .ok_or_else(|| "certified join names a workspace this session does not host".to_string())?;
-    let principal_id = principal_id_for_root(verified.user_public_key);
     let mut role = workspace
         .role_of_at(&principal_id, now)
         .ok_or_else(|| "certified collaboration identity is not a workspace member".to_string())?;
@@ -5260,6 +5282,20 @@ impl CapnpBrokerState {
             ));
         }
         drop(broker_channels);
+        if admitted.agent_id.is_none() && admitted.verified.owns_person_room(&route.cluster_id) {
+            // The owner of the person room holds every verb on its records;
+            // there is no workspace policy to narrow it.
+            if !role_permits(CapRole::Owner, ArtifactKind::Note, envelope.op_class) {
+                return Err(capnp::Error::failed(
+                    "the person room's owner may not perform this document action".into(),
+                ));
+            }
+            return Ok(AuthorizedDocumentRoute {
+                artifact: envelope.artifact,
+                channel,
+                payload,
+            });
+        }
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("certified session lost its membership authority".into())
         })?;
@@ -12500,6 +12536,94 @@ pub mod tests {
                 .is_err(),
             "a signed envelope cannot be replayed through another record route"
         );
+    }
+
+    /// The person room is admitted from the joiner's own root alone, with no
+    /// workspace in the tree, and its documents reach the other local
+    /// connections on the record and the peer publisher. Nobody else's root
+    /// enters it, and nobody enters another person's room.
+    #[test]
+    fn person_room_admits_only_its_own_roots_devices_as_owner() {
+        let root = SigningKey::from_bytes(&[26; 32]);
+        let device = SigningKey::from_bytes(&[27; 32]);
+        let stranger = SigningKey::from_bytes(&[28; 32]);
+        let own_room = collab_types::person_room(&root.verifying_key().to_bytes());
+        let route = CrdtRoute::record("so.tilo.tube", own_room.to_string(), "watch-history");
+        let membership = WorkspaceTree::default().shared();
+        let own_device = VerifiedJoinIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            capped: false,
+        };
+
+        let admitted = admit_verified_join(&membership.read(), &route, own_device.clone())
+            .expect("the root's own device joins its person room");
+        assert_eq!(admitted.role, CapRole::Owner);
+        assert_eq!(
+            admitted.principal_id,
+            principal_id_for_root(root.verifying_key().to_bytes())
+        );
+        assert!(
+            admit_verified_join(&membership.read(), &route, verified_device(&stranger)).is_err(),
+            "another root's device never joins this person's room"
+        );
+        let strangers_room = CrdtRoute::record(
+            "so.tilo.tube",
+            collab_types::person_room(&stranger.verifying_key().to_bytes()).to_string(),
+            "watch-history",
+        );
+        assert!(
+            admit_verified_join(&membership.read(), &strangers_room, own_device).is_err(),
+            "a device never joins another person's room"
+        );
+
+        let fanout = Arc::new(FanoutState::new());
+        let broker_channels = Arc::new(Mutex::new(BrokerChannels::default()));
+        let sink = Arc::new(RecordingSink::default());
+        let publisher =
+            PeerPublisher::new(sink.clone() as Arc<dyn crate::collab_outbound::PeerPublishSink>);
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::clone(&broker_channels),
+            publisher,
+            Some(membership),
+            None,
+        );
+        fanout.attach_capnp(Arc::clone(&state));
+        state.ensure_channel(&route.channel_key());
+        let mut other_window = state.subscribe_ops(&route.channel_key(), 2);
+        let current = state
+            .revalidate_admission(&route, &admitted)
+            .expect("the person room stays admitted without a workspace");
+        assert_eq!(current.role, CapRole::Owner);
+
+        let mut op = SignedOp::new_unsigned(
+            DocumentMutation::Snapshot(b"watched".to_vec())
+                .encode()
+                .expect("typed snapshot"),
+            document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+            Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            collab_types::OpClass::Splice,
+            SystemTime::now(),
+            1,
+        );
+        sign_op(&mut op, &device).expect("device signs document op");
+        let authorized = state
+            .authorize_certified_document(&route, &current, &op)
+            .expect("the owner writes their own records");
+        handle_authorized_signed_op_send(&state, 1, &route, &current, &authorized, op.clone());
+
+        let delivered = other_window.try_recv().expect("local fanout");
+        assert_eq!(
+            postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("signed envelope"),
+            op
+        );
+        assert!(matches!(
+            sink.snapshot().as_slice(),
+            [Sent::Signed { cluster_id, record_id, .. }]
+                if *cluster_id == route.cluster_id && record_id == "watch-history"
+        ));
     }
 
     #[test]
