@@ -146,7 +146,11 @@ impl Widget for Link {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let style = theme.text(self.text_role);
+        let mut style = theme.text(self.text_role);
+        if self.label == self.url {
+            // A link that shows its address is read as one.
+            style = style.with_kind(crate::text_render::TextKind::Url);
+        }
         if style != self.style {
             self.style = style;
             self.dirty = true;

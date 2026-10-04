@@ -410,7 +410,7 @@ impl SiteControls {
                         .unwrap_or("No HTTP or HTTPS origin"),
                 )
                 .with_role(TextRole::Caption)
-                .with_kind(TextKind::Identifier)
+                .with_kind(TextKind::Url)
                 .dimmed(),
             ))
             .push(Box::new(self.pages()));
