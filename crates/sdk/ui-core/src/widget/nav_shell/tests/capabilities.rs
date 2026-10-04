@@ -238,8 +238,11 @@ fn actions_collapse_to_icons_then_overflow_into_more() {
     at_mut(&mut h.root_mut::<NavShell>().headers, Column::Content)
         .more
         .choose(row);
-    h.root_mut::<NavShell>().sync(&mut doc, &automerge::ROOT);
-    settle(&mut h, 220, 700);
+    // The choice runs with the event that made it.
+    h.send(&WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(10.0, 300.0),
+    });
     assert!(deleted.get(), "the chosen action ran through its door");
 }
 
@@ -595,6 +598,21 @@ fn typed_access_controls_and_the_filter_reach_the_apps_widgets() {
     );
     let overview = child_rect(&h, "overview").expect("overview laid out");
     assert!(overview.y0 >= g.controls.y1);
+
+    // A fluid control (a dropdown) stands at the band's height.
+    let order = LocalState::new("Name".to_owned());
+    let shell = NavShell::new()
+        .overview(Probe::boxed("list").0)
+        .content(Probe::boxed("detail").0)
+        .overview_header("Contacts", Vec::new())
+        .overview_controls(Box::new(
+            crate::widget::Dropdown::from_state(vec!["Name".into(), "Organization".into()], &order)
+                .with_accessible_name("Sort contacts"),
+        ));
+    let mut d = harness(shell, 1280, 800, Theme::dark());
+    settle(&mut d, 1280, 800);
+    let sort = part_rect(&d, Part::Controls);
+    assert!(sort.width() > 0.0 && sort.height() > 0.0, "{sort:?}");
 
     assert!(
         h.root_mut::<NavShell>()
