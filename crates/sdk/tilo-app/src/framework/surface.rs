@@ -151,7 +151,10 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     /// resource's action, published on the resource beside its declared
     /// actions. Invoking one dispatches the action it builds through the
     /// same permission check, confirmation and undo as any other. An id the
-    /// resource already publishes keeps the resource's action.
+    /// resource already publishes keeps the resource's action, unless the
+    /// bound one refines it ([`tilo_resource::bind_declaration`]): same
+    /// parameters, permission and risk, adding only where it was invoked
+    /// from, such as the caret an append leaves its writer at.
     fn bound_declarations(&self) -> Vec<ActionDecl<R>> {
         Vec::new()
     }
