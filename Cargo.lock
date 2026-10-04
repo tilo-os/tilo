@@ -1555,6 +1555,7 @@ dependencies = [
  "tilo-files",
  "tilo-test-env",
  "tilo-wet-media",
+ "tracing",
  "usvg",
  "uuid",
  "workspace-hack",
