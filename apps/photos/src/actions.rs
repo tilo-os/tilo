@@ -153,12 +153,12 @@ pub enum PhotosEffect {
     ManagePeopleRecognition,
     /// Enable private People recognition on this device. Changes no shared
     /// metadata and begins no scan.
-    #[effect(row)]
+    #[effect(row, device_only)]
     EnablePeopleRecognition,
     /// Scan local library for faces: the next bounded local batch, with the
     /// separately signed face model. Suggestions stay on this device until
     /// approved.
-    #[effect(row, job, cancellable)]
+    #[effect(row, job, cancellable, device_only)]
     AnalyzePeopleLibrary,
     /// Open photo analysis: local model availability, library coverage,
     /// progress and failures.
@@ -166,16 +166,16 @@ pub enum PhotosEffect {
     ViewLibraryAnalysis,
     /// Analyze unprocessed photographs on this device. Pixels stay local;
     /// each bounded result is shared with `SetImageAnalysis`.
-    #[effect(row, job, cancellable)]
+    #[effect(row, job, cancellable, device_only, sensitive)]
     AnalyzeLibrary,
     /// Pause photo analysis after the photograph in progress.
-    #[effect(row, returns)]
+    #[effect(row, returns, device_only)]
     PauseLibraryAnalysis,
     /// Resume photo analysis without widening the queue.
-    #[effect(row, job, cancellable)]
+    #[effect(row, job, cancellable, device_only, sensitive)]
     ResumeLibraryAnalysis,
     /// Retry failed photographs from the bounded failure report.
-    #[effect(row, job, cancellable)]
+    #[effect(row, job, cancellable, device_only, sensitive)]
     RetryLibraryAnalysisFailures,
     /// View favorites: photographs marked as favorites in the shared library.
     #[effect(view, row)]
@@ -209,7 +209,7 @@ pub enum PhotosEffect {
     #[effect(view, row)]
     ViewPet { pet: String },
     /// Import photograph into the library and show it.
-    #[effect(job, cancellable)]
+    #[effect(job, cancellable, device_only)]
     Import {
         #[param("Direct filesystem path; omit to use the system file picker")]
         path: Option<String>,
@@ -217,7 +217,7 @@ pub enum PhotosEffect {
     /// Import photo folder: recursively index a folder with bounded
     /// real-file reads. Paths never enter collaboration and EXIF GPS is never
     /// uploaded.
-    #[effect(job, cancellable)]
+    #[effect(job, cancellable, device_only)]
     ImportDirectory {
         #[param("Authorised local folder path; omit to use the system folder picker")]
         path: Option<String>,
@@ -226,11 +226,11 @@ pub enum PhotosEffect {
     },
     /// Import Camera media: a verified Camera photograph whose bytes are on
     /// this device.
-    #[effect(returns)]
+    #[effect(returns, device_only)]
     ImportCameraMedia { media_id: String, name: String },
     /// Reindex photo folder: refresh metadata re-read from a folder's files
     /// without overwriting deliberate organization.
-    #[effect(job, cancellable)]
+    #[effect(job, cancellable, device_only)]
     ReindexDirectory {
         #[param("Explicit authorised local folder path")]
         path: String,
@@ -238,10 +238,11 @@ pub enum PhotosEffect {
         retain_exif_location: Option<bool>,
     },
     /// Copy photograph: the photograph this window shows, as edited.
+    #[effect(device_only)]
     Copy,
     /// Share photograph reference: copy its portable address to the local
     /// clipboard.
-    #[effect(row)]
+    #[effect(row, device_only)]
     ShareReference { resource_id: String },
     /// Produce edited image content: render one photograph's crop and
     /// rotation into immutable PNG content.
@@ -252,21 +253,173 @@ pub enum PhotosEffect {
         edits: Edits,
     },
     /// Save edited photograph: the photograph this window shows.
-    #[effect(job)]
+    #[effect(job, device_only)]
     Save {
         #[param("Direct filesystem path; omit for the suggested path beside the original")]
         path: Option<String>,
     },
     /// Recognize text locally and share only bounded text and provenance.
-    #[effect(row, job, cancellable)]
+    #[effect(row, job, cancellable, device_only, sensitive)]
     AnalyzeText {
         resource_id: String,
         language: String,
     },
     /// Analyze image locally with the signed local model; share only the
     /// bounded result.
-    #[effect(row, job, cancellable)]
+    #[effect(row, job, cancellable, device_only, sensitive)]
     AnalyzeImage { resource_id: String },
+    /// Rotate left: turn the photograph this window shows a quarter turn
+    /// anticlockwise.
+    RotateLeft,
+    /// Rotate right: turn the photograph this window shows a quarter turn
+    /// clockwise.
+    RotateRight,
+    /// Crop to view: keep what this window frames of its photograph.
+    CropToView,
+    /// Reset edits of the photograph this window shows.
+    ResetEdits,
+    /// Share the photograph this window shows: copy its portable address.
+    #[effect(device_only)]
+    ShareShown,
+    /// More: the commands that do not fit a narrow toolbar.
+    #[effect(view)]
+    ToggleMoreMenu,
+    /// New album: start naming one and choosing its photographs.
+    #[effect(view)]
+    NewAlbum,
+    /// Edit album: the album this window browses.
+    #[effect(view)]
+    EditAlbum,
+    /// Previous page of the library shown.
+    #[effect(view)]
+    PreviousLibraryPage,
+    /// Next page of the library shown.
+    #[effect(view)]
+    NextLibraryPage,
+    /// Save album: the name and photographs being edited.
+    SaveAlbumDraft,
+    /// Cancel album editing.
+    #[effect(view)]
+    CancelAlbumDraft,
+    /// Delete album: ask to confirm deleting the album being edited.
+    #[effect(view)]
+    DeleteAlbumDraft,
+    /// Confirm deleting the album being edited. Its photographs stay.
+    #[effect(destructive)]
+    ConfirmAlbumDelete,
+    /// Save changes to the photograph details being edited.
+    SaveDetails,
+    /// Cancel editing photograph details.
+    #[effect(view)]
+    CancelDetails,
+    /// Organize: the folder, people and tags of the details being edited.
+    #[effect(view)]
+    ShowDetailsOrganize,
+    /// Time & place of the details being edited.
+    #[effect(view)]
+    ShowDetailsTimeAndPlace,
+    /// Clear folder of the details being edited.
+    #[effect(view)]
+    ClearDraftFolder,
+    /// Clear people of the details being edited.
+    #[effect(view)]
+    ClearDraftPeople,
+    /// Clear tags of the details being edited.
+    #[effect(view)]
+    ClearDraftTags,
+    /// Clear capture time of the details being edited.
+    #[effect(view)]
+    ClearDraftCapturedAt,
+    /// Clear location of the details being edited.
+    #[effect(view)]
+    ClearDraftLocation,
+    /// Set location from offline map: the centre of the map in the details
+    /// being edited.
+    #[effect(view)]
+    PlaceDraftOnMap,
+    /// Show fewer photographs in a timeline row.
+    #[effect(view)]
+    ShowFewerPhotos,
+    /// Show more photographs in a timeline row.
+    #[effect(view)]
+    ShowMorePhotos,
+    /// Previous page of albums.
+    #[effect(view)]
+    PreviousAlbumsPage,
+    /// Next page of albums.
+    #[effect(view)]
+    NextAlbumsPage,
+    /// Previous page of people.
+    #[effect(view)]
+    PreviousPeoplePage,
+    /// Next page of people.
+    #[effect(view)]
+    NextPeoplePage,
+    /// Previous page of places.
+    #[effect(view)]
+    PreviousPlacesPage,
+    /// Next page of places.
+    #[effect(view)]
+    NextPlacesPage,
+    /// Stop the folder import; photographs already imported are kept.
+    #[effect(device_only)]
+    StopImport,
+    /// Details of the folder import.
+    #[effect(view)]
+    ShowImportDetails,
+    /// Dismiss the folder import report.
+    #[effect(view)]
+    DismissImport,
+    /// Back from a person or suggestion to People.
+    #[effect(view)]
+    PeopleBack,
+    /// Turn private People recognition on or off on this device.
+    #[effect(device_only)]
+    TogglePeopleRecognition,
+    /// Stop the People scan after the batch in progress.
+    #[effect(device_only)]
+    CancelPeopleScan,
+    /// View photos of an approved person.
+    #[effect(view)]
+    OpenApprovedPerson { person: String },
+    /// Review a private suggestion.
+    #[effect(view)]
+    OpenSuggestion { cluster: String },
+    /// Browse approved people.
+    #[effect(view)]
+    BrowseApprovedPeople,
+    /// Save the name typed for the person reviewed.
+    SavePersonName,
+    /// Merge: choose a person to merge the one shown into.
+    #[effect(view)]
+    BeginPeopleMerge,
+    /// Merge the person shown into `person`.
+    MergeApprovedInto { person: String },
+    /// Approve the suggestion reviewed: share its people label.
+    ApproveSuggestion,
+    /// Reject the suggestion reviewed on this device.
+    #[effect(device_only)]
+    RejectSuggestion,
+    /// Hide the suggestion reviewed on this device.
+    #[effect(device_only)]
+    HideSuggestion,
+    /// Restore the hidden suggestion reviewed.
+    #[effect(device_only)]
+    RestoreSuggestion,
+    /// Merge the suggestion reviewed into the approved `person`.
+    MergeSuggestionWith { person: String },
+    /// Show or hide hidden suggestions.
+    #[effect(view)]
+    ToggleHiddenSuggestions,
+    /// Another page of People suggestions.
+    #[effect(view)]
+    PeoplePage { forward: bool },
+    /// Delete local People data: ask to confirm.
+    #[effect(view)]
+    DeleteLocalPeopleData,
+    /// Confirm deleting this device's private People data.
+    #[effect(device_only, destructive)]
+    ConfirmDeleteLocalPeopleData,
 }
 
 /// Render one exact addressed source/edit snapshot into immutable content.
@@ -320,10 +473,10 @@ pub fn export_edited_content(
     })
 }
 
-/// `effect`, offered bound to one row as `id` with `label`.
-fn operation(id: &str, label: &str, effect: &PhotosEffect) -> ActionSpec {
+/// `effect`, offered bound to one row with `label`: under the effect's own
+/// id, so a caller naming the effect on the row reaches it.
+fn operation(label: &str, effect: &PhotosEffect) -> ActionSpec {
     let mut spec = effect.bound();
-    id.clone_into(&mut spec.id);
     label.clone_into(&mut spec.label);
     spec
 }
@@ -1599,7 +1752,6 @@ fn photo_edit_actions(photo: &PhotoResourceSeed) -> Vec<ActionSpec> {
     }
     if let Some(source_content) = photo.content.clone() {
         let spec = operation(
-            EXPORT_EDITED_CONTENT_ACTION_ID,
             "Produce edited image content",
             &PhotosEffect::ExportEditedContent {
                 resource_id: photo.id.clone(),
@@ -1696,40 +1848,35 @@ pub(crate) fn library_analysis_resource() -> Resource {
         "photos.library-analysis",
         "Photo analysis",
     );
-    for (id, label, description, op) in [
+    for (label, description, op) in [
         (
-            "open",
             "Open photo analysis",
             "Review local model availability, library coverage, progress, and failures",
             PhotosEffect::ViewLibraryAnalysis,
         ),
         (
-            "analyze-library",
             "Analyze unprocessed photographs",
             "Use the verified local model on locally available photographs and share only bounded searchable results",
             PhotosEffect::AnalyzeLibrary,
         ),
         (
-            "pause",
             "Pause photo analysis",
             "Stop scheduling photographs after the current local item finishes",
             PhotosEffect::PauseLibraryAnalysis,
         ),
         (
-            "resume",
             "Resume photo analysis",
             "Continue the explicitly started queue on this device",
             PhotosEffect::ResumeLibraryAnalysis,
         ),
         (
-            "retry-failures",
             "Retry failed photographs",
             "Retry only photographs listed in the bounded local failure report",
             PhotosEffect::RetryLibraryAnalysisFailures,
         ),
     ] {
         {
-            let spec = operation(id, label, &op);
+            let spec = operation(label, &op);
             resource = resource.with_action(spec.with_description(description));
         }
     }
@@ -1818,7 +1965,6 @@ pub(crate) fn timeline_resource_from_search(
     ));
     {
         let spec = operation(
-            "open",
             &crate::strings::tr("photos-open-timeline"),
             &PhotosEffect::ViewTimeline { anchor: None },
         );
@@ -1847,7 +1993,6 @@ pub(crate) fn timeline_month_resource(month: &str, count: usize) -> Resource {
     ));
     {
         let spec = operation(
-            "open",
             &crate::strings::tr("photos-open-timeline-month"),
             &PhotosEffect::ViewTimeline {
                 anchor: Some(TimelineAnchor::Month {
@@ -1871,7 +2016,6 @@ pub(crate) fn timeline_day_resource(day: &str, count: usize) -> Resource {
         ));
     {
         let spec = operation(
-            "open",
             &crate::strings::tr("photos-open-timeline-day"),
             &PhotosEffect::ViewTimeline {
                 anchor: Some(TimelineAnchor::Day {
@@ -1924,7 +2068,7 @@ pub(crate) fn favorites_resource(count: usize) -> Resource {
             format!("{count} photographs"),
         ));
     {
-        let spec = operation("open", "View favorites", &PhotosEffect::ViewFavorites);
+        let spec = operation("View favorites", &PhotosEffect::ViewFavorites);
         resource = resource.with_action(
             spec.with_description("Show photographs marked as favorites in the shared library"),
         );
@@ -1953,7 +2097,7 @@ pub(crate) fn albums_resource_from_count(count: usize) -> Resource {
         Resource::new("photos.albums#count", "photos.count", count_label),
     );
     {
-        let spec = operation("open", "View albums", &PhotosEffect::ViewAlbums);
+        let spec = operation("View albums", &PhotosEffect::ViewAlbums);
         resource = resource.with_action(
             spec.with_description("Browse and manage the shared library's durable albums"),
         );
@@ -1972,14 +2116,13 @@ pub(crate) fn people_root_resource(library: &crate::model::PhotoLibrary) -> Reso
             format!("{count} approved people"),
         ));
     {
-        let spec = operation("open", "Open People", &PhotosEffect::ViewPeople);
+        let spec = operation("Open People", &PhotosEffect::ViewPeople);
         resource = resource.with_action(
             spec.with_description("Review local suggestions and browse approved people"),
         );
     }
     {
         let spec = operation(
-            "manage-recognition",
             "Manage local recognition model",
             &PhotosEffect::ManagePeopleRecognition,
         );
@@ -1989,7 +2132,6 @@ pub(crate) fn people_root_resource(library: &crate::model::PhotoLibrary) -> Reso
     }
     {
         let spec = operation(
-            "enable-local-recognition",
             "Enable private People recognition",
             &PhotosEffect::EnablePeopleRecognition,
         );
@@ -1999,7 +2141,6 @@ pub(crate) fn people_root_resource(library: &crate::model::PhotoLibrary) -> Reso
     }
     {
         let spec = operation(
-            "scan-local-library",
             "Scan local library for faces",
             &PhotosEffect::AnalyzePeopleLibrary,
         );
@@ -2035,7 +2176,7 @@ pub(crate) fn places_resource_from_count(count: usize) -> Resource {
             format!("{count} located photographs"),
         ));
     {
-        let spec = operation("open", "View places", &PhotosEffect::ViewPlaces);
+        let spec = operation("View places", &PhotosEffect::ViewPlaces);
         resource = resource.with_action(spec.with_description(
             "Browse explicitly shared photo locations on an offline-first map; Photos never uploads coordinates",
         ));
@@ -2083,7 +2224,6 @@ pub(crate) fn place_resource(place_key: &str, label: &str, count: usize) -> Reso
     ));
     {
         let spec = operation(
-            "open",
             "View place",
             &PhotosEffect::ViewPlace {
                 place_key: place_key.to_owned(),
@@ -2182,7 +2322,6 @@ pub(crate) fn folder_resource(folder: &str, count: usize) -> Resource {
     );
     {
         let spec = operation(
-            "open",
             "Open folder",
             &PhotosEffect::ViewFolder {
                 folder: folder.to_owned(),
@@ -2203,7 +2342,6 @@ pub(crate) fn person_resource(person: &str, count: usize) -> Resource {
     );
     {
         let spec = operation(
-            "open",
             "View person",
             &PhotosEffect::ViewPerson {
                 person: person.to_owned(),
@@ -2238,7 +2376,6 @@ pub(crate) fn tag_resource(tag: &str, count: usize) -> Resource {
         ));
     {
         let spec = operation(
-            "open",
             "View tag",
             &PhotosEffect::ViewTag {
                 tag: tag.to_owned(),
@@ -2259,7 +2396,6 @@ pub(crate) fn object_resource(object: &str, count: usize) -> Resource {
     );
     {
         let spec = operation(
-            "open",
             "View object",
             &PhotosEffect::ViewObject {
                 object: object.to_owned(),
@@ -2281,7 +2417,6 @@ pub(crate) fn pet_resource(pet: &str, count: usize) -> Resource {
         ));
     {
         let spec = operation(
-            "open",
             "View pet",
             &PhotosEffect::ViewPet {
                 pet: pet.to_owned(),
@@ -2519,7 +2654,6 @@ fn analysis_resource(photo_id: &str, analysis: &ImageAnalysis) -> Resource {
     }
     {
         let spec = operation(
-            "refresh",
             "Recognize text again locally",
             &PhotosEffect::AnalyzeText {
                 resource_id: photo_id.to_owned(),
@@ -2571,7 +2705,6 @@ fn analysis_resource(photo_id: &str, analysis: &ImageAnalysis) -> Resource {
     }
     {
         let spec = operation(
-            "refresh",
             "Analyze image again locally",
             &PhotosEffect::AnalyzeImage {
                 resource_id: photo_id.to_owned(),
@@ -2722,7 +2855,6 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
         ));
         {
             let spec = operation(
-                "view-place",
                 "View on map",
                 &PhotosEffect::ViewPlace {
                     place_key: location.place_key(),
@@ -2735,7 +2867,6 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
     }
     {
         let spec = operation(
-            "open",
             "Open photograph",
             &PhotosEffect::View {
                 photo_id: photo.id.clone(),
@@ -2762,7 +2893,6 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
     }
     {
         let spec = operation(
-            "share-reference",
             "Share photograph reference",
             &PhotosEffect::ShareReference {
                 resource_id: photo.id.clone(),
@@ -2789,7 +2919,6 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
     }
     {
         let spec = operation(
-            "recognize-text",
             "Recognize text locally",
             &PhotosEffect::AnalyzeText {
                 resource_id: photo.id.clone(),
@@ -2802,7 +2931,6 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
     }
     {
         let spec = operation(
-            "analyze-image",
             "Analyze image locally",
             &PhotosEffect::AnalyzeImage {
                 resource_id: photo.id.clone(),
@@ -3167,7 +3295,6 @@ pub(crate) fn album_resource_from_fields(id: &str, name: &str, photo_count: usiz
     ));
     {
         let spec = operation(
-            "open",
             "Open album",
             &PhotosEffect::ViewAlbum {
                 album_id: id.to_owned(),
@@ -3861,7 +3988,7 @@ mod tests {
             let place_id = place_resource_id(&location.place_key());
             let place = PhotosResources.publish_resource(&doc, &place_id).unwrap();
             assert_eq!(place.kind, "photos.place");
-            assert!(place.actions.iter().any(|action| action.id == "open"));
+            assert!(place.actions.iter().any(|action| action.id == "view-place"));
             let photo_resource = PhotosResources.publish_resource(&doc, &id).unwrap();
             assert!(
                 photo_resource
@@ -3935,7 +4062,12 @@ mod tests {
                 .publish_resource(&doc, &place_resource_id(&location.place_key()))
                 .expect("map pin has one canonical place resource");
             assert_eq!(resource.label, "Meeting point");
-            assert!(resource.actions.iter().any(|action| action.id == "open"));
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "view-place")
+            );
         }
     }
 
@@ -3976,7 +4108,7 @@ mod tests {
                 resource
                     .actions
                     .iter()
-                    .any(|action| action.id == "recognize-text")
+                    .any(|action| action.id == "analyze-text")
             );
             assert!(
                 resource
@@ -4071,7 +4203,7 @@ mod tests {
             let refresh = ocr
                 .actions
                 .iter()
-                .find(|action| action.id == "refresh")
+                .find(|action| action.id == "analyze-text")
                 .expect("OCR component owns canonical refresh");
             let tilo_actions::ActionInput::Immediate(encoded) = &refresh.input else {
                 panic!("refresh is an immediate operation request");
@@ -4129,7 +4261,7 @@ mod tests {
             let refresh = vision
                 .actions
                 .iter()
-                .find(|action| action.id == "refresh")
+                .find(|action| action.id == "analyze-image")
                 .expect("vision component owns canonical refresh");
             let tilo_actions::ActionInput::Immediate(encoded) = &refresh.input else {
                 panic!("refresh is an immediate operation request");
@@ -4149,7 +4281,6 @@ mod tests {
         eprintln!("phase image_analysis_is_a_cancellable_background_operation");
         {
             let spec = operation(
-                "analyze-image",
                 "Analyze image locally",
                 &PhotosEffect::AnalyzeImage {
                     resource_id: "photos.photo:abc".to_owned(),
@@ -4224,18 +4355,22 @@ mod tests {
                 .expect("library analysis resolves without materializing the gallery");
             assert_eq!(resource.kind, "photos.library-analysis");
             for id in [
-                "open",
+                "view-library-analysis",
                 "analyze-library",
-                "pause",
-                "resume",
-                "retry-failures",
+                "pause-library-analysis",
+                "resume-library-analysis",
+                "retry-library-analysis-failures",
             ] {
                 assert!(
                     resource.actions.iter().any(|action| action.id == id),
                     "missing canonical {id} action"
                 );
             }
-            for id in ["analyze-library", "resume", "retry-failures"] {
+            for id in [
+                "analyze-library",
+                "resume-library-analysis",
+                "retry-library-analysis-failures",
+            ] {
                 let action = resource
                     .actions
                     .iter()
@@ -4627,7 +4762,7 @@ mod tests {
             let open = albums
                 .actions
                 .iter()
-                .find(|action| action.id == "open")
+                .find(|action| action.id == "view-albums")
                 .expect("the collection exposes canonical navigation");
             let tilo_actions::ActionInput::Immediate(encoded) = &open.input else {
                 panic!("album browsing is a presentation operation");
@@ -4678,7 +4813,12 @@ mod tests {
                 .publish_resource(&doc, "photos.favorites")
                 .expect("favorites is addressable even outside a materialized shelf");
             assert_eq!(favorites.kind, FAVORITES_KIND);
-            assert!(favorites.actions.iter().any(|action| action.id == "open"));
+            assert!(
+                favorites
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "view-favorites")
+            );
             assert!(
                 favorites
                     .children
@@ -4756,7 +4896,7 @@ mod tests {
                 .publish_resource(&doc, &late)
                 .expect("late stable id resolves");
             assert_eq!(resolved.id.0, late);
-            assert!(resolved.actions.iter().any(|action| action.id == "open"));
+            assert!(resolved.actions.iter().any(|action| action.id == "view"));
             assert!(
                 PhotosResources
                     .publish_resource(&doc, "photos.photo:stale")
@@ -4831,7 +4971,7 @@ mod tests {
             let open = timeline
                 .actions
                 .iter()
-                .find(|action| action.id == "open")
+                .find(|action| action.id == "view-timeline")
                 .expect("timeline has a stable open action");
             let tilo_actions::ActionInput::Immediate(encoded) = &open.input else {
                 panic!("timeline opening is a presentation operation");
@@ -4848,7 +4988,7 @@ mod tests {
             let action = day
                 .actions
                 .iter()
-                .find(|action| action.id == "open")
+                .find(|action| action.id == "view-timeline")
                 .expect("day has a stable open action");
             let tilo_actions::ActionInput::Immediate(encoded) = &action.input else {
                 panic!("timeline day opening is a presentation operation");
@@ -4987,7 +5127,7 @@ mod tests {
             assert_eq!(
                 ids,
                 vec![
-                    "open",
+                    "view",
                     "rotate-right",
                     "rotate-left",
                     "crop",
@@ -4995,7 +5135,7 @@ mod tests {
                     "share-reference",
                     "set-metadata",
                     "set-location",
-                    "recognize-text",
+                    "analyze-text",
                     "analyze-image",
                     "remove",
                 ]
@@ -5038,7 +5178,7 @@ mod tests {
             assert!(crop.contract.reversible);
 
             // Opening a photograph shows it in this window: presentation only.
-            let view = image.actions.iter().find(|a| a.id == "open").unwrap();
+            let view = image.actions.iter().find(|a| a.id == "view").unwrap();
             assert_eq!(view.contract.retry, RetryPolicy::Idempotent);
             assert_eq!(view.kind, OperationKind::View);
 
@@ -5294,7 +5434,12 @@ mod tests {
                 let resource = PhotosResources
                     .publish_resource(&doc, &id)
                     .expect("virtual resource resolves");
-                assert!(resource.actions.iter().any(|action| action.id == "open"));
+                assert!(
+                    resource
+                        .actions
+                        .iter()
+                        .any(|action| action.kind == OperationKind::View)
+                );
                 assert!(
                     resource
                         .children
