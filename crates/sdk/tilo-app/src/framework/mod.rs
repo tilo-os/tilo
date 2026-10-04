@@ -160,7 +160,9 @@
 //! * **Live external rows** — processes, devices, containers, journal
 //!   entries, fetched catalogue rows, running jobs — are [`LiveRow`]s from
 //!   [`ResourceSurface::live_rows`], merged by id into the resource's
-//!   published children. A row carries only view and effect operations.
+//!   published children. A row carries only view and effect operations
+//!   (an effect bound to the row with [`Effect::bound`]) and may say how
+//!   its entity stands right now (`LiveRow::presentation`).
 //!   Neither rows nor children need to be published whole: a bounded page is
 //!   published and the rest resolve by id (`ResourceSurface::live_row`,
 //!   `Resource::child`).
