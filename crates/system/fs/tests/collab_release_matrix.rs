@@ -250,13 +250,7 @@ fn publish_authority(binary: &Path, identity: &Path, workspace_cache: &Path, acl
             "TILO_AUTHORITY_SOCKET_DIR",
             workspace_cache.join("authority-sockets"),
         )
-        .args([
-            "publish-authority",
-            "--cache-dir",
-            workspace_cache.to_str().unwrap(),
-            "--acl",
-            acl.to_str().unwrap(),
-        ])
+        .args(["publish-authority", "--acl", acl.to_str().unwrap()])
         .status()
         .unwrap();
     assert!(status.success(), "authority publication failed: {status}");
