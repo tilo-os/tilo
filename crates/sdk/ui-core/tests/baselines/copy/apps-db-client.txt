@@ -1,8 +1,0 @@
-# The copy ratchet for apps-db-client: counts may only fall (HIG §9.13).
-# Format: <path relative to the repository root> <pattern> <count>
-# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/db-client/src/app.rs middle_dot_join 5
-apps/db-client/src/model.rs middle_dot_join 3
-apps/db-client/src/schema_nav.rs all_caps_label 1
-apps/db-client/src/search.rs middle_dot_join 2
-apps/db-client/src/session.rs middle_dot_join 2
