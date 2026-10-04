@@ -395,7 +395,7 @@ impl CanvasSurface {
         let Some(mark) = self.art.mark(id) else {
             return false;
         };
-        let Some(outline) = Editable::of_shape(&mark.shape) else {
+        let Some(outline) = Editable::of_mark(mark) else {
             return false;
         };
         self.points = Some(PointEdit {
@@ -3081,7 +3081,7 @@ impl ResourceSurface<ArtworkResource> for CanvasSurface {
                 Some(mark) => {
                     if mark.shape != points.shape
                         && !matches!(self.drag, Some(Drag::Point { .. }))
-                        && let Some(outline) = Editable::of_shape(&mark.shape)
+                        && let Some(outline) = Editable::of_mark(mark)
                     {
                         points.outline = outline;
                         points.shape = mark.shape.clone();
