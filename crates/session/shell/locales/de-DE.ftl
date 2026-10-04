@@ -1063,7 +1063,6 @@ launch-error-launcher-unavailable = Der App-Starter ist nicht verfügbar. Versuc
 launch-error-no-display = Der Desktop startet noch. Versuche es gleich noch einmal.
 launch-error-no-workspace = Wähle einen Arbeitsbereich und versuche es dann erneut.
 launch-error-shell-owned-intent = Öffne dieses Ziel über die Desktop-Steuerelemente.
-launch-error-identity-unavailable = Die Identität des Arbeitsbereichs konnte nicht geladen werden. Versuche es erneut.
 launch-error-registry-unreadable = Die App-Liste konnte nicht gelesen werden. Versuche es erneut.
 launch-error-host-app-refused = Der Desktop-Eintrag dieser App kann nicht gestartet werden.
 launch-failed-launcher-unavailable = Der App-Starter ist nicht verfügbar. Öffne „Anwendungen“ und versuche es erneut.

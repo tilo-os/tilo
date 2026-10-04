@@ -21,7 +21,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
-use launcher::run::{IdentitySource, LaunchMode, RunError, RunOptions, run};
+use launcher::run::{LaunchMode, RunError, RunOptions, run};
 
 const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
 
@@ -125,10 +125,6 @@ enum Cmd {
         /// Capabilities naming another app are ignored.
         #[arg(long)]
         app_id: Option<String>,
-        /// Exact host identity record selected for this workspace. The shell
-        /// resolves this from its private identity registry.
-        #[arg(long)]
-        identity: Option<PathBuf>,
         /// The DRM render node the compositor renders on. The app is pinned to
         /// the same GPU — only that node and its matching loaders are visible.
         /// Omit when no compositor is involved.
@@ -300,7 +296,6 @@ fn main() -> ExitCode {
             capabilities,
             trusted_identities,
             app_id,
-            identity,
             render_node,
             open,
             open_uri,
@@ -320,7 +315,6 @@ fn main() -> ExitCode {
             capabilities,
             trusted_identities,
             app_id,
-            identity,
             render_node,
             open,
             open_uri,
@@ -390,7 +384,6 @@ struct RunCliArgs {
     capabilities: Option<PathBuf>,
     trusted_identities: Option<PathBuf>,
     app_id: Option<String>,
-    identity: Option<PathBuf>,
     render_node: Option<PathBuf>,
     open: Option<PathBuf>,
     open_uri: Option<String>,
@@ -427,9 +420,6 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         allow_missing_runtime: args.allow_missing_runtime,
         allow_unsigned_runtime: args.allow_unsigned_runtime,
         require_runtime_publisher: args.require_runtime_publisher,
-        identity: args
-            .identity
-            .map_or(IdentitySource::UserStore, IdentitySource::Record),
         data_home: None,
         wayland_socket: args.wayland_socket,
         workspace_id: args.workspace_id,
@@ -852,7 +842,6 @@ fn run_installed(
         require_runtime_publisher: std::env::var("TILO_LAUNCHER_REQUIRE_RUNTIME_PUBLISHER")
             .ok()
             .filter(|s| !s.is_empty()),
-        identity: IdentitySource::UserStore,
         data_home: None,
         trusted_identities_host_path: None,
         // CLI launches are stdio-only: no display in the sandbox, and

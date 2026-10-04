@@ -624,8 +624,6 @@ pub enum LaunchError {
     NoWorkspace,
     /// A typed intent addresses shell chrome, not an application package.
     ShellOwnedIntent,
-    /// The workspace's selected identity could not be resolved safely.
-    IdentityUnavailable { detail: String },
     /// The registry file exists but could not be read or parsed.
     RegistryUnreadable { detail: String },
     /// No `.desktop` entry with this id (distinct from
@@ -672,9 +670,6 @@ impl LaunchError {
             LaunchError::ShellOwnedIntent => {
                 "this destination belongs to shell chrome, not an application".to_string()
             }
-            LaunchError::IdentityUnavailable { detail } => {
-                format!("the workspace identity could not be loaded: {detail}")
-            }
             LaunchError::RegistryUnreadable { detail } => {
                 format!("the app registry could not be read: {detail}")
             }
@@ -708,7 +703,6 @@ impl LaunchError {
             Self::NoDisplay => t("launch-error-no-display"),
             Self::NoWorkspace => t("launch-error-no-workspace"),
             Self::ShellOwnedIntent => t("launch-error-shell-owned-intent"),
-            Self::IdentityUnavailable { .. } => t("launch-error-identity-unavailable"),
             Self::RegistryUnreadable { .. } => t("launch-error-registry-unreadable"),
             Self::HostAppRefused { .. } => t("launch-error-host-app-refused"),
         }
@@ -1883,7 +1877,6 @@ pub fn build_launch_command(
     wayland_socket: &Path,
     room: RoomId,
     capabilities_file: Option<&Path>,
-    identity_path: Option<&Path>,
     render_node: Option<&Path>,
     document: Option<&Path>,
 ) -> LaunchCommand {
@@ -1894,7 +1887,6 @@ pub fn build_launch_command(
         room,
         &LaunchExtras {
             capabilities_file,
-            identity_path,
             render_node,
             document,
             uri: None,
@@ -1910,7 +1902,6 @@ pub fn build_workspace_agent_command(
     app: &InstalledApp,
     launcher_bin: &Path,
     room: RoomId,
-    identity_path: Option<&Path>,
     agent_id: &str,
 ) -> LaunchCommand {
     let mut command = build_launch_command_for(
@@ -1920,7 +1911,6 @@ pub fn build_workspace_agent_command(
         room,
         &LaunchExtras {
             capabilities_file: None,
-            identity_path,
             render_node: None,
             document: None,
             uri: None,
@@ -1952,7 +1942,6 @@ pub fn build_workspace_agent_command(
 #[derive(Clone, Copy)]
 struct LaunchExtras<'a> {
     capabilities_file: Option<&'a Path>,
-    identity_path: Option<&'a Path>,
     render_node: Option<&'a Path>,
     document: Option<&'a Path>,
     uri: Option<&'a str>,
@@ -1967,7 +1956,6 @@ fn build_launch_command_for(
 ) -> LaunchCommand {
     let LaunchExtras {
         capabilities_file,
-        identity_path,
         render_node,
         document,
         uri,
@@ -1991,10 +1979,6 @@ fn build_launch_command_for(
     }
     if let Some(path) = capabilities_file {
         args.push("--capabilities".to_string());
-        args.push(path.display().to_string());
-    }
-    if let Some(path) = identity_path {
-        args.push("--identity".to_string());
         args.push(path.display().to_string());
     }
     if let Some(node) = render_node {
@@ -2141,19 +2125,7 @@ fn execute_workspace_agent(
     workspace: &Workspace,
 ) -> Result<InstalledApp, LaunchError> {
     let launcher_bin = selected_execution_program()?;
-    let identity_path = crate::identity_registry::selected_identity_path(
-        &workspace.room.to_string(),
-    )
-    .map_err(|error| LaunchError::IdentityUnavailable {
-        detail: error.to_string(),
-    })?;
-    let command = build_workspace_agent_command(
-        &app,
-        &launcher_bin,
-        workspace.room,
-        identity_path.as_deref(),
-        agent_id,
-    );
+    let command = build_workspace_agent_command(&app, &launcher_bin, workspace.room, agent_id);
     if let Err(detail) = spawn_detached(app.clone(), command) {
         return Err(LaunchError::AgentLaunchWorkerUnavailable { detail });
     }
@@ -2458,11 +2430,6 @@ fn execute_installed_inner(
             None
         }
     };
-    let identity_path = crate::identity_registry::selected_identity_path(&room.to_string())
-        .map_err(|error| LaunchError::IdentityUnavailable {
-            detail: error.to_string(),
-        })?;
-    tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "identity selection resolved");
 
     let mut command = build_launch_command_for(
         &app,
@@ -2471,7 +2438,6 @@ fn execute_installed_inner(
         room,
         &LaunchExtras {
             capabilities_file: capabilities_file.as_deref(),
-            identity_path: identity_path.as_deref(),
             render_node: crate::compositor::render_node::resolved(),
             document,
             uri,
@@ -4301,7 +4267,6 @@ mod tests {
                 None,
                 None,
                 None,
-                None,
             );
             if crate::compositor::dev_env::DEV_ENV_OVERRIDES {
                 for (index, name) in names.iter().enumerate() {
@@ -4649,7 +4614,6 @@ mod tests {
                 Path::new("/run/user/1000/wayland-3"),
                 RoomId::new(),
                 None,
-                None,
                 Some(Path::new("/dev/dri/renderD128")),
                 None,
             );
@@ -4699,7 +4663,6 @@ mod tests {
                 None,
                 None,
                 None,
-                None,
             );
             assert!(
                 !cmd.args.iter().any(|a| a == "--render-node"),
@@ -4714,7 +4677,6 @@ mod tests {
                 Path::new("/usr/bin/tilo-launcher"),
                 Path::new("/run/user/1000/wayland-3"),
                 RoomId::new(),
-                None,
                 None,
                 None,
                 None,
@@ -4744,7 +4706,6 @@ mod tests {
                 )),
                 None,
                 None,
-                None,
             );
             let pos = cmd
                 .args
@@ -4757,26 +4718,19 @@ mod tests {
             );
         }
 
-        fn launch_command_names_the_workspace_selected_identity() {
+        fn launch_command_never_names_an_identity_record() {
+            // Apps sign through the identity service with this device's
+            // certified key; the launcher is never pointed at the record.
             let cmd = build_launch_command(
                 &test_app("so.tilo.books"),
                 Path::new("/usr/bin/tilo-launcher"),
                 Path::new("/run/user/1000/wayland-3"),
                 RoomId::new(),
                 None,
-                Some(Path::new("/home/alice/.config/tilo/identity/alice.json")),
                 None,
                 None,
             );
-            let position = cmd
-                .args
-                .iter()
-                .position(|arg| arg == "--identity")
-                .expect("--identity flag");
-            assert_eq!(
-                cmd.args[position + 1],
-                "/home/alice/.config/tilo/identity/alice.json"
-            );
+            assert!(!cmd.args.iter().any(|arg| arg == "--identity"));
         }
 
         fn workspace_agent_command_is_headless_fixed_package_service_argv() {
@@ -4798,7 +4752,6 @@ mod tests {
                 &app,
                 Path::new("/usr/bin/tilo-launcher"),
                 room,
-                Some(Path::new("/run/user/1000/tilo/identity.json")),
                 "studio-agent",
             );
 
@@ -4846,7 +4799,7 @@ mod tests {
         launch_command_omits_the_render_node_when_none_resolved();
         launch_command_names_the_app_id_and_omits_capabilities_when_none_are_granted();
         launch_command_names_the_capability_file_when_one_was_written();
-        launch_command_names_the_workspace_selected_identity();
+        launch_command_never_names_an_identity_record();
         workspace_agent_command_is_headless_fixed_package_service_argv();
     }
 
@@ -5928,7 +5881,6 @@ mod tests {
                 Path::new("/usr/bin/tilo-launcher"),
                 Path::new("/run/user/1000/wayland-3"),
                 room,
-                None,
                 None,
                 None,
                 None,

@@ -6,7 +6,6 @@
 //! and relay the exit code.
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
-use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
@@ -187,8 +186,6 @@ pub enum RunError {
          of its signed manifest"
     )]
     AppIdMismatch { app_id: String, package: String },
-    #[error("refusing authored launch: identity signing broker could not start ({0})")]
-    IdentityBroker(String),
     #[error(
         "internal error: the sandbox argv lost its trailing entrypoint token before a splice \
          step could run. This should never happen — refusing to launch rather than risk a \
@@ -219,22 +216,6 @@ impl RunError {
             _ => 1,
         }
     }
-}
-
-/// Where a launch finds the identity record it brokers to the app.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum IdentitySource {
-    /// The active identity in the invoking user's store, located through
-    /// `$XDG_CONFIG_HOME`, else `$HOME/.config`.
-    #[default]
-    UserStore,
-    /// The active identity in this identity store directory.
-    Store(PathBuf),
-    /// This exact record, used verbatim with no existence check. It is
-    /// migrated only when it lies in the user's store.
-    Record(PathBuf),
-    /// No identity: the app runs without an identity broker.
-    None,
 }
 
 /// Optional knobs for `run_with`.
@@ -290,10 +271,6 @@ pub struct RunOptions {
     /// from the compositor's own `zwp_linux_dmabuf_v1` decision rather than
     /// re-derived. `None` means loaders keep their own defaults.
     pub render_node: Option<PathBuf>,
-    /// Where the identity brokered to the app comes from. It is read only by
-    /// the launcher to create a broker capability and is never bound into
-    /// the sandbox.
-    pub identity: IdentitySource,
     /// Host data home holding the per-room app directories; `None` resolves
     /// `$XDG_DATA_HOME`, else `$HOME/.local/share`.
     pub data_home: Option<PathBuf>,
@@ -337,7 +314,6 @@ impl Default for RunOptions {
             require_runtime_publisher: None,
             wayland_socket: None,
             render_node: None,
-            identity: IdentitySource::UserStore,
             data_home: None,
             trusted_identities_host_path: None,
             workspace_id: None,
@@ -649,75 +625,6 @@ fn resolve_app_dir(manifest: &MinimalManifest, opts: &RunOptions) -> Result<Path
         ),
         source,
     })
-}
-
-/// The identity store records are migrated in, if any: the named store, or
-/// the user's store for [`IdentitySource::UserStore`] and
-/// [`IdentitySource::Record`].
-fn identity_store(source: &IdentitySource) -> Option<PathBuf> {
-    match source {
-        IdentitySource::UserStore | IdentitySource::Record(_) => {
-            runtime_identity::identity_dir_from_env().ok()
-        }
-        IdentitySource::Store(dir) => Some(dir.clone()),
-        IdentitySource::None => None,
-    }
-}
-
-/// The identity record this launch brokers: an explicit record verbatim (no
-/// existence check), else the active identity selected in the store, else
-/// `None`.
-pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
-    match &opts.identity {
-        IdentitySource::Record(path) => Some(path.clone()),
-        IdentitySource::None => None,
-        source @ (IdentitySource::UserStore | IdentitySource::Store(_)) => {
-            runtime_identity::resolve_active_identity(&identity_store(source)?)
-        }
-    }
-}
-
-fn start_identity_broker(
-    path: &Path,
-    store: Option<&Path>,
-) -> Result<(UnixStream, UnixStream, std::thread::JoinHandle<()>), RunError> {
-    // Standard store records are migrated before loading. Explicit debug
-    // paths outside the store still stay host-side, but are not rewritten in
-    // an unexpected directory.
-    if let Some(store) = store
-        && path.parent() == Some(store)
-        && let Some(id) = path.file_stem().and_then(|value| value.to_str())
-        && path.extension().and_then(|value| value.to_str()) == Some("json")
-        && path == store.join(format!("{id}.json"))
-    {
-        runtime_identity::secure_identity(store, id)
-            .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
-    }
-    let identity = runtime_identity::load_from_path(path.to_path_buf())
-        .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
-    let (host, app) =
-        UnixStream::pair().map_err(|error| RunError::IdentityBroker(error.to_string()))?;
-    let control = host
-        .try_clone()
-        .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
-    let thread = std::thread::Builder::new()
-        .name("tilo-identity-broker".into())
-        .spawn(move || {
-            if let Err(error) = runtime_identity::broker::serve(host, identity) {
-                tracing::debug!(%error, "identity broker connection ended");
-            }
-        })
-        .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
-    Ok((app, control, thread))
-}
-
-fn stop_identity_broker(control: Option<UnixStream>, thread: Option<std::thread::JoinHandle<()>>) {
-    if let Some(control) = control {
-        let _ = control.shutdown(std::net::Shutdown::Both);
-    }
-    if let Some(thread) = thread {
-        let _ = thread.join();
-    }
 }
 
 /// Derive GPU pinning, or `None` when nothing to pin. Every decline is
@@ -1714,17 +1621,12 @@ fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &MinimalManif
 }
 
 /// What [`spawn_and_wait`] wires into the child in `pre_exec`: the staged
-/// seccomp filters, the resolved service sockets, the identity broker (app end,
-/// control end, serving thread) and whether to apply game scheduling hints.
+/// seccomp filters, the resolved service sockets (the identity service among
+/// them) and whether to apply game scheduling hints.
 /// The launcher's copies are released at fixed points around `spawn`.
 struct ChildSetup {
     seccomp_fds: SeccompFds,
     services: Vec<crate::services::ResolvedService>,
-    identity_broker: (
-        Option<UnixStream>,
-        Option<UnixStream>,
-        Option<std::thread::JoinHandle<()>>,
-    ),
     latency_sensitive: bool,
 }
 
@@ -1752,7 +1654,6 @@ fn spawn_and_wait(
     let ChildSetup {
         seccomp_fds,
         services: resolved,
-        identity_broker,
         latency_sensitive,
     } = child_setup;
     let (observer, debug_output) = match observer {
@@ -1771,7 +1672,6 @@ fn spawn_and_wait(
             .ok()
             .map(|file| (path, file))
     });
-    let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
     SeccompFds::prepend_bwrap_args(&mut argv);
 
     // Passthrough: everything after the entrypoint token is opaque to bwrap,
@@ -1807,12 +1707,6 @@ fn spawn_and_wait(
         .iter()
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
         .collect();
-    if let Some(stream) = &identity_broker_app {
-        service_fds.push((
-            stream.as_raw_fd(),
-            runtime_identity::broker::BROKER_CHILD_FD,
-        ));
-    }
     for r in &resolved {
         tracing::info!(
             service = %r.name,
@@ -1888,14 +1782,12 @@ fn spawn_and_wait(
     // Same rule: the child holds its own copies, so the launcher's are dead
     // weight, dropped before the wait so the far end learns of the exit.
     drop(resolved);
-    drop(identity_broker_app);
     let status = if let Some(observer) = observer {
         observer.child_created();
         observer.supervise(child)?
     } else {
         child.wait()?
     };
-    stop_identity_broker(identity_broker_control, identity_broker_thread);
     Ok(status)
 }
 
@@ -1930,41 +1822,6 @@ fn stage_seccomp(manifest: &MinimalManifest) -> Result<SeccompFds, RunError> {
     })
 }
 
-/// Resolve the selected identity record on the host, migrate legacy storage,
-/// then mint one app-scoped broker connection. Returns `identity_host`
-/// alongside the broker handles since `identity_arg` (a presence marker for
-/// the argv builder, computed by the caller) borrows from it.
-/// Broker handles + `identity_host` returned by [`resolve_identity_broker`]:
-/// the app- and control-side ends of the identity broker socketpair, the
-/// thread serving the control side, and the host path `identity_arg`
-/// borrows from.
-type IdentityBrokerResolution = (
-    Option<UnixStream>,
-    Option<UnixStream>,
-    Option<std::thread::JoinHandle<()>>,
-    Option<PathBuf>,
-);
-
-fn resolve_identity_broker(
-    capabilities: &CapabilityPlan,
-    opts: &RunOptions,
-) -> Result<IdentityBrokerResolution, RunError> {
-    let identity_host = resolve_identity_host_path(opts);
-    let (app, control, thread) = if capabilities.participation.carries_identity() {
-        match identity_host.as_deref() {
-            Some(path) => {
-                let store = identity_store(&opts.identity);
-                let (app, control, thread) = start_identity_broker(path, store.as_deref())?;
-                (Some(app), Some(control), Some(thread))
-            }
-            None => (None, None, None),
-        }
-    } else {
-        (None, None, None)
-    };
-    Ok((app, control, thread, identity_host))
-}
-
 /// What an argv builder produces: the bwrap command line, an optional
 /// `(name, value)` environment pair the caller must splice in, and the
 /// trailing arguments passed through to the app.
@@ -1980,7 +1837,6 @@ fn build_initial_argv(
     runtime_arg: Option<(&Path, &str)>,
     binds: &[crate::sandbox::ServiceBind],
     dbus_plan: Option<&DBusBindPlan>,
-    identity_arg: Option<&Path>,
     capabilities: &CapabilityPlan,
 ) -> Result<BuiltArgv, RunError> {
     match &opts.mode {
@@ -1991,7 +1847,6 @@ fn build_initial_argv(
                 runtime_arg,
                 binds,
                 dbus_plan,
-                identity_arg,
                 capabilities,
             ),
             None,
@@ -2014,7 +1869,6 @@ fn build_initial_argv(
                 runtime_arg,
                 binds,
                 dbus_plan,
-                identity_arg,
                 &entry_bin_owned,
                 capabilities,
             );
@@ -2036,7 +1890,6 @@ fn build_initial_argv(
                 runtime_arg,
                 binds,
                 dbus_plan,
-                identity_arg,
                 &entry_bin_owned,
                 capabilities,
             );
@@ -2183,20 +2036,7 @@ fn run_with_context(
         capabilities.participation = crate::capabilities::Participation::Author;
     }
 
-    // Resolve the selected record on the host, migrate legacy storage, then
-    // mint one app-scoped broker connection. The path is only a presence
-    // marker for the argv builder; it is never mounted.
-    let (identity_broker_app, identity_broker_control, identity_broker_thread, identity_host) =
-        if enrolled.is_some() {
-            (None, None, None, None)
-        } else {
-            resolve_identity_broker(&capabilities, opts)?
-        };
-    let identity_arg = identity_broker_app.as_ref().and(identity_host.as_deref());
-    let mut keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();
-    if identity_broker_app.is_some() {
-        keep_fds.push(runtime_identity::broker::BROKER_CHILD_FD);
-    }
+    let keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();
 
     // Egress: a grant naming specific hosts runs a gate; `*` or bare `host`
     // mode shares the host network with no allowlist to enforce, so neither
@@ -2212,7 +2052,6 @@ fn run_with_context(
         runtime_arg,
         &binds,
         dbus_plan.as_ref(),
-        identity_arg,
         &capabilities,
     )?;
     let latency_sensitive = is_native_game_launch(manifest, opts);
@@ -2264,11 +2103,6 @@ fn run_with_context(
         ChildSetup {
             seccomp_fds,
             services: resolved,
-            identity_broker: (
-                identity_broker_app,
-                identity_broker_control,
-                identity_broker_thread,
-            ),
             latency_sensitive,
         },
         &egress,
@@ -2343,13 +2177,7 @@ fn spawn_and_capture(
     opts: &RunOptions,
     seccomp_fds: SeccompFds,
     resolved: Vec<crate::services::ResolvedService>,
-    identity_broker: (
-        Option<UnixStream>,
-        Option<UnixStream>,
-        Option<std::thread::JoinHandle<()>>,
-    ),
 ) -> Result<(ExitStatus, Vec<u8>), RunError> {
-    let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
     SeccompFds::prepend_bwrap_args(&mut argv);
     // Everything after the entrypoint token is opaque to bwrap and
     // becomes the child's argv[1..].
@@ -2369,12 +2197,6 @@ fn spawn_and_capture(
         .iter()
         .map(|r| (r.host_fd(), r.child_fd as RawFd))
         .collect();
-    if let Some(stream) = &identity_broker_app {
-        service_fds.push((
-            stream.as_raw_fd(),
-            runtime_identity::broker::BROKER_CHILD_FD,
-        ));
-    }
     unsafe {
         cmd.pre_exec(move || {
             place_fd(host_clone3_compat_fd, CLONE3_COMPAT_SECCOMP_CHILD_FD)?;
@@ -2390,14 +2212,12 @@ fn spawn_and_capture(
     // As in `run_with`: the child has its own copies, so holding these open
     // only keeps the service from seeing the app end.
     drop(resolved);
-    drop(identity_broker_app);
     let mut buf = Vec::new();
     if let Some(mut so) = child.stdout.take() {
         use std::io::Read;
         so.read_to_end(&mut buf)?;
     }
     let status = child.wait()?;
-    stop_identity_broker(identity_broker_control, identity_broker_thread);
     Ok((status, buf))
 }
 
@@ -2529,16 +2349,10 @@ fn spawn_and_capture_bounded(
     opts: &RunOptions,
     seccomp_fds: SeccompFds,
     resolved: Vec<crate::services::ResolvedService>,
-    identity_broker: (
-        Option<UnixStream>,
-        Option<UnixStream>,
-        Option<std::thread::JoinHandle<()>>,
-    ),
     plan: CapturedResourcePlan,
     cancellation: &CaptureCancellation,
 ) -> Result<CapturedRunOutput, RunError> {
     let plan = plan.validate()?;
-    let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
     SeccompFds::prepend_bwrap_args(&mut argv);
     argv.extend(passthrough);
 
@@ -2558,12 +2372,6 @@ fn spawn_and_capture_bounded(
         .iter()
         .map(|service| (service.host_fd(), service.child_fd as RawFd))
         .collect();
-    if let Some(stream) = &identity_broker_app {
-        service_fds.push((
-            stream.as_raw_fd(),
-            runtime_identity::broker::BROKER_CHILD_FD,
-        ));
-    }
     unsafe {
         cmd.pre_exec(move || {
             place_fd(host_clone3_compat_fd, CLONE3_COMPAT_SECCOMP_CHILD_FD)?;
@@ -2581,7 +2389,6 @@ fn spawn_and_capture_bounded(
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
     drop(seccomp_fds);
     drop(resolved);
-    drop(identity_broker_app);
     let used = Arc::new(AtomicUsize::new(0));
     let exceeded = Arc::new(AtomicBool::new(false));
     let stdout = child.stdout.take().ok_or_else(|| {
@@ -2651,19 +2458,12 @@ fn spawn_and_capture_bounded(
     let stderr = stderr_thread
         .join()
         .map_err(|_| RunError::Io(std::io::Error::other("stderr capture thread panicked")))??;
-    stop_identity_broker(identity_broker_control, identity_broker_thread);
     Ok(CapturedRunOutput {
         termination,
         stdout,
         stderr,
     })
 }
-
-type IdentityBrokerHandles = (
-    Option<UnixStream>,
-    Option<UnixStream>,
-    Option<std::thread::JoinHandle<()>>,
-);
 
 /// [`run_with`] sibling that captures the child's stdout instead of inheriting
 /// it. It deliberately uses the same Landlock, seccomp, runtime, portal,
@@ -2709,14 +2509,13 @@ pub fn run_with_captured_bounded(
         manifest,
         payload_root,
         opts,
-        move |argv, passthrough, opts, seccomp, services, identity| {
+        move |argv, passthrough, opts, seccomp, services| {
             spawn_and_capture_bounded(
                 argv,
                 passthrough,
                 opts,
                 seccomp,
                 services,
-                identity,
                 plan,
                 &cancellation,
             )
@@ -2734,7 +2533,6 @@ fn run_with_capture_spawn<T>(
         &RunOptions,
         SeccompFds,
         Vec<crate::services::ResolvedService>,
-        IdentityBrokerHandles,
     ) -> Result<T, RunError>,
 ) -> Result<T, RunError> {
     validate_open_uri(manifest, opts)?;
@@ -2789,13 +2587,7 @@ fn run_with_capture_spawn<T>(
     let (dbus_plan, _dbus_guards) =
         resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());
     let capabilities = resolve_capabilities(manifest, opts);
-    let (identity_broker_app, identity_broker_control, identity_broker_thread, identity_host) =
-        resolve_identity_broker(&capabilities, opts)?;
-    let identity_arg = identity_broker_app.as_ref().and(identity_host.as_deref());
-    let mut keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();
-    if identity_broker_app.is_some() {
-        keep_fds.push(runtime_identity::broker::BROKER_CHILD_FD);
-    }
+    let keep_fds: Vec<RawFd> = resolved.iter().map(|r| r.child_fd as RawFd).collect();
     // Same egress decision as `run_with`: without the gate spliced in here
     // too, a host-scoped grant would be silently offline. No shim on this
     // path, so no loopback relay — ALL_PROXY has nothing listening behind it.
@@ -2810,7 +2602,6 @@ fn run_with_capture_spawn<T>(
         runtime_arg,
         &binds,
         dbus_plan.as_ref(),
-        identity_arg,
         &capabilities,
     )?;
     splice_cli_setenv(&mut argv, extra_setenv)?;
@@ -2841,18 +2632,7 @@ fn run_with_capture_spawn<T>(
         },
     )?;
 
-    spawn(
-        argv,
-        passthrough,
-        opts,
-        seccomp_fds,
-        resolved,
-        (
-            identity_broker_app,
-            identity_broker_control,
-            identity_broker_thread,
-        ),
-    )
+    spawn(argv, passthrough, opts, seccomp_fds, resolved)
 }
 
 /// Give `bwrap` itself an environment worth inheriting, so a dropped
@@ -3132,174 +2912,6 @@ fn current_uid() -> u32 {
 }
 
 #[cfg(test)]
-mod identity_resolution_tests {
-    use super::*;
-
-    /// A store directory holding a `primary` record. The resolver only checks
-    /// that the record is a regular file, so the content is irrelevant here.
-    fn store_with_primary(root: &Path) -> PathBuf {
-        let store = root.join("tilo").join("identity");
-        std::fs::create_dir_all(&store).unwrap();
-        std::fs::write(store.join("primary.json"), b"{}").unwrap();
-        store
-    }
-
-    #[test]
-    fn identity_record_resolution_honours_the_requested_source() {
-        // Phase `explicit_record_wins_and_skips_existence_check`.
-        {
-            let opts = RunOptions {
-                identity: IdentitySource::Record(PathBuf::from("/nowhere/does/not/exist.json")),
-                ..RunOptions::default()
-            };
-            assert_eq!(
-                resolve_identity_host_path(&opts),
-                Some(PathBuf::from("/nowhere/does/not/exist.json")),
-                "explicit path is used verbatim, no exists() check"
-            );
-        }
-        // Phase `a_named_store_resolves_its_active_identity`.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let store = store_with_primary(tmp.path());
-            let opts = RunOptions {
-                identity: IdentitySource::Store(store.clone()),
-                ..RunOptions::default()
-            };
-            assert_eq!(
-                resolve_identity_host_path(&opts),
-                Some(store.join("primary.json"))
-            );
-        }
-        // Phase `an_empty_store_resolves_nothing`.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let opts = RunOptions {
-                identity: IdentitySource::Store(tmp.path().to_path_buf()),
-                ..RunOptions::default()
-            };
-            assert_eq!(resolve_identity_host_path(&opts), None);
-        }
-        // Phase `no_identity_ignores_the_users_store`.
-        // `None` means no identity even when the user's store holds one.
-        {
-            let home = tilo_test_env::TestHome::new().unwrap();
-            store_with_primary(home.config());
-            let opts = RunOptions {
-                identity: IdentitySource::None,
-                ..RunOptions::default()
-            };
-            assert_eq!(resolve_identity_host_path(&opts), None);
-        }
-        // Phase `a_joined_devices_public_record_brokers_without_a_secret`.
-        // A device joined from a nearby device holds only the identity's
-        // public record; its apps sign through the workspace identity service
-        // with the certified device key.
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let store = tempfile::tempdir().unwrap();
-            std::fs::set_permissions(store.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-            let path = store.path().join("identity-joined.json");
-            let original =
-                runtime_identity::public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
-            std::fs::write(&path, &original).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-            for _ in 0..2 {
-                let (app, control, thread) =
-                    start_identity_broker(&path, Some(store.path())).unwrap();
-                drop(app);
-                drop(control);
-                thread.join().unwrap();
-            }
-
-            assert_eq!(std::fs::read(&path).unwrap(), original);
-            assert!(!store.path().join("secrets").exists());
-        }
-        // Phase `explicit_identity_outside_the_managed_store_is_never_rewritten`.
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-            let store = tempfile::tempdir().unwrap();
-            let path = dir.path().join("custom.json");
-            let secret = [31u8; 32];
-            let key = ed25519_dalek::SigningKey::from_bytes(&secret);
-            let original = serde_json::to_vec(&serde_json::json!({
-                "display_name": "Explicit debug identity",
-                "avatar_color": [1, 2, 3],
-                "threshold_identity": {
-                    "single_device": true,
-                    "group_public_key": key.verifying_key().to_bytes(),
-                    "threshold": 1,
-                    "total_shares": 1,
-                    "share_index": 1,
-                    "secret_bytes": secret,
-                },
-                "created_at": "2026-08-30T00:00:00Z",
-                "schema_version": 1,
-            }))
-            .unwrap();
-            std::fs::write(&path, &original).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-            let (app, control, thread) = start_identity_broker(&path, Some(store.path())).unwrap();
-            drop(app);
-            drop(control);
-            thread.join().unwrap();
-
-            assert_eq!(std::fs::read(&path).unwrap(), original);
-            assert_eq!(
-                std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
-                0o755,
-                "an explicit path must never chmod its parent"
-            );
-            assert!(!dir.path().join("secrets").exists());
-            assert!(!dir.path().join(".identity.lock").exists());
-            assert!(!store.path().join("secrets").exists());
-        }
-    }
-
-    // The user's store is located through the environment; these pin that
-    // resolution itself.
-
-    #[test]
-    fn the_user_identity_store_is_located_via_xdg_then_home() {
-        // Phase `the_user_store_prefers_xdg_config_home`.
-        {
-            let mut home = tilo_test_env::TestHome::new().unwrap();
-            // A record under `$HOME/.config` must lose to `$XDG_CONFIG_HOME`.
-            store_with_primary(&home.home().join(".config"));
-            let xdg = home.root().join("xdg-config");
-            let ident = store_with_primary(&xdg).join("primary.json");
-            home.env().set("XDG_CONFIG_HOME", &xdg);
-            assert_eq!(
-                resolve_identity_host_path(&RunOptions::default()),
-                Some(ident)
-            );
-        }
-        // Phase `the_user_store_falls_back_to_home_without_xdg`.
-        {
-            let mut home = tilo_test_env::TestHome::new().unwrap();
-            let ident = store_with_primary(&home.home().join(".config")).join("primary.json");
-            home.env().remove("XDG_CONFIG_HOME");
-            assert_eq!(
-                resolve_identity_host_path(&RunOptions::default()),
-                Some(ident)
-            );
-        }
-        // Phase `the_user_store_resolves_nothing_without_a_home`.
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("XDG_CONFIG_HOME").remove("HOME");
-            assert_eq!(resolve_identity_host_path(&RunOptions::default()), None);
-        }
-    }
-}
-
-#[cfg(test)]
 mod app_dir_tests {
     use super::*;
 
@@ -3313,7 +2925,6 @@ mod app_dir_tests {
     fn opts_in(room: Option<&str>) -> RunOptions {
         RunOptions {
             workspace_id: room.map(str::to_string),
-            identity: IdentitySource::None,
             ..RunOptions::default()
         }
     }
@@ -3471,7 +3082,6 @@ mod managed_spawn_policy_tests {
                         baseline: tempfile::tempfile().unwrap().into(),
                     },
                     services: vec![],
-                    identity_broker: (None, None, None),
                     latency_sensitive: false,
                 },
                 &crate::netgate::EgressDecision::Blocked,

@@ -102,8 +102,7 @@ const CHOOSER_CHILD_FD: i32 = 32;
 pub(crate) const CLONE3_COMPAT_SECCOMP_CHILD_FD: i32 = 40;
 pub(crate) const BASELINE_SECCOMP_CHILD_FD: i32 = 41;
 /// Every fixed child slot; declared services are numbered around them.
-pub(crate) const RESERVED_CHILD_FDS: [i32; 6] = [
-    runtime_identity::broker::BROKER_CHILD_FD,
+pub(crate) const RESERVED_CHILD_FDS: [i32; 5] = [
     BLOB_CHILD_FD,
     IDENTITY_CHILD_FD,
     CHOOSER_CHILD_FD,

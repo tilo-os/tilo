@@ -317,8 +317,7 @@ pub fn push_trusted_identities_bind(argv: &mut Vec<String>, host_path: &Path) {
 }
 /// Build the bwrap argv from a manifest plus the launcher's resolved
 /// inputs: `runtime_root`, `service_binds` (fds reach the child by
-/// inheritance, not argv), `dbus_bind`, and whether an identity broker fd is
-/// available (`identity_host_path` is a host-only presence marker).
+/// inheritance, not argv, the identity service among them) and `dbus_bind`.
 ///
 /// `capabilities` only ever adds binds — [`CapabilityPlan::empty`]
 /// renders exactly the sandbox the manifest alone describes, the whole
@@ -329,7 +328,6 @@ pub fn build_bwrap_argv(
     runtime: Option<(&Path, &str)>,
     service_binds: &[ServiceBind],
     dbus_bind: Option<&DBusBindPlan>,
-    identity_host_path: Option<&Path>,
     capabilities: &CapabilityPlan,
 ) -> Vec<String> {
     // GUI launch: pick the GUI-flavour bin, falling back to the legacy
@@ -344,7 +342,6 @@ pub fn build_bwrap_argv(
         runtime,
         service_binds,
         dbus_bind,
-        identity_host_path,
         entry,
         capabilities,
     )
@@ -490,7 +487,6 @@ pub fn build_bwrap_argv_for_entry(
     runtime: Option<(&Path, &str)>,
     service_binds: &[ServiceBind],
     dbus_bind: Option<&DBusBindPlan>,
-    identity_host_path: Option<&Path>,
     entry_bin: &str,
     capabilities: &CapabilityPlan,
 ) -> Vec<String> {
@@ -598,23 +594,6 @@ pub fn build_bwrap_argv_for_entry(
         argv.push("--setenv".to_string());
         argv.push("TILO_PARTICIPATION".to_string());
         argv.push(mode.to_string());
-    }
-
-    // User identity: the path is a host-side presence marker only. Private
-    // material is never mounted. run.rs puts one connected broker socket on
-    // BROKER_CHILD_FD and the app receives only that least-privilege signing
-    // capability.
-    //
-    // A **read-only participant gets no identity at all** — without a
-    // signing key the app can't produce an authored change for anything
-    // downstream to reject.
-    if let Some(host_path) =
-        identity_host_path.filter(|_| capabilities.participation.carries_identity())
-    {
-        let _ = host_path;
-        argv.push("--setenv".to_string());
-        argv.push(runtime_identity::broker::BROKER_ENV_VAR.to_string());
-        argv.push(runtime_identity::broker::BROKER_CHILD_FD.to_string());
     }
 
     // Service sockets reach the app as inherited descriptors: dup2'd onto
@@ -936,7 +915,6 @@ mod tests {
             None,
             &[],
             None,
-            None,
             &CapabilityPlan::empty(),
         )
     }
@@ -1013,7 +991,6 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
                 &CapabilityPlan::empty(),
             );
             assert!(argv.iter().any(|a| a == "--unshare-all"));
@@ -1032,7 +1009,6 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
                 &CapabilityPlan::empty(),
             );
             assert!(argv.iter().any(|a| a == "--share-net"));
@@ -1045,7 +1021,6 @@ mod tests {
                 Path::new("/host/pkg"),
                 None,
                 &[],
-                None,
                 None,
                 &CapabilityPlan::empty(),
             );
@@ -1069,7 +1044,6 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
                 &CapabilityPlan::empty(),
             );
             for entry in crate::profile::SYSTEM_READ_PATHS {
@@ -1089,7 +1063,6 @@ mod tests {
                 Path::new("/host/pkg"),
                 None,
                 &[],
-                None,
                 None,
                 &CapabilityPlan::empty(),
             );
@@ -1119,7 +1092,6 @@ mod tests {
                 Path::new("/host/pkg"),
                 Some((Path::new("/host/runtime"), "1")),
                 &[],
-                None,
                 None,
                 &CapabilityPlan::empty(),
             );
@@ -1160,7 +1132,6 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
                 &CapabilityPlan::empty(),
             );
             assert_eq!(
@@ -1176,7 +1147,6 @@ mod tests {
                 Path::new("/host/pkg"),
                 None,
                 &[],
-                None,
                 None,
                 "bin/notes-cli",
                 &CapabilityPlan::empty(),
@@ -1197,7 +1167,6 @@ mod tests {
                 Path::new("/host/pkg"),
                 None,
                 &[],
-                None,
                 None,
                 &CapabilityPlan::empty(),
             );
@@ -1330,7 +1299,6 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
                 &CapabilityPlan::empty(),
             );
             drop(env);
@@ -1357,7 +1325,6 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
                 &CapabilityPlan::empty(),
             );
             assert_eq!(
@@ -1376,7 +1343,6 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
                 &CapabilityPlan::empty(),
             );
             assert_eq!(setenv_value(&argv, "TILO_STARTUP_METRICS_PATH"), None);
@@ -1387,7 +1353,6 @@ mod tests {
                 Path::new("/host/pkg"),
                 None,
                 &[],
-                None,
                 None,
                 &CapabilityPlan::empty(),
             );
@@ -1404,7 +1369,6 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
                 &CapabilityPlan::empty(),
             );
             assert_eq!(setenv_value(&argv, "TILO_APP_NAME"), Some("Notes"));
@@ -1419,7 +1383,6 @@ mod tests {
                 Path::new("/host/pkg"),
                 None,
                 &[],
-                None,
                 None,
                 &CapabilityPlan::empty(),
             );
@@ -1437,7 +1400,6 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
                 &CapabilityPlan::empty(),
             );
             assert_eq!(
@@ -1454,7 +1416,6 @@ mod tests {
                 Path::new("/host/pkg"),
                 None,
                 &[],
-                None,
                 None,
                 &CapabilityPlan::empty(),
             );
@@ -1479,7 +1440,6 @@ mod tests {
             None,
             &[],
             Some(&plan),
-            None,
             &CapabilityPlan::empty(),
         );
         assert!(
@@ -1533,7 +1493,6 @@ mod tests {
                 None,
                 &[],
                 Some(&plan),
-                None,
                 &CapabilityPlan::empty(),
             );
             // Proxy socket bound at /run/user/1234/bus, NOT the raw bus path.
@@ -1565,7 +1524,6 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
                 &CapabilityPlan::empty(),
             );
             assert!(
@@ -1587,7 +1545,6 @@ mod tests {
                 None,
                 &[],
                 None,
-                None,
                 &CapabilityPlan::empty(),
             );
             assert!(
@@ -1603,7 +1560,9 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn identity_handoff_follows_participation() {
-        // Phase `identity_handoff_sets_broker_fd_without_mounting_a_key`.
+        // Phase `no_identity_record_or_root_broker_reaches_the_sandbox`.
+        // Apps sign through the identity service, inherited like any other
+        // service; nothing about the identity record enters the argv.
         {
             let m = mk_manifest("off");
             let argv = build_bwrap_argv(
@@ -1612,18 +1571,17 @@ mod tests {
                 None,
                 &[],
                 None,
-                Some(Path::new("/home/alice/.config/tilo/identity/primary.json")),
                 &CapabilityPlan::empty(),
             );
+            for name in ["TILO_IDENTITY_BROKER_FD", "TILO_USER_IDENTITY"] {
+                assert!(
+                    !argv.iter().any(|arg| arg == name),
+                    "{name} must never appear: {argv:?}"
+                );
+            }
             assert!(
-                argv.windows(3).any(|w| w[0] == "--setenv"
-                    && w[1] == runtime_identity::broker::BROKER_ENV_VAR
-                    && w[2] == runtime_identity::broker::BROKER_CHILD_FD.to_string()),
-                "identity broker setenv missing: {argv:?}"
-            );
-            assert!(
-                !argv.iter().any(|arg| arg.contains("identity/primary.json")),
-                "private identity path reached the sandbox argv: {argv:?}"
+                !argv.iter().any(|arg| arg.contains("/identity/")),
+                "the private identity directory reached the sandbox argv: {argv:?}"
             );
         }
         // Phase `trusted_identity_projection_is_one_live_read_only_directory`.
@@ -1642,120 +1600,30 @@ mod tests {
                 ]
             );
         }
-        // Phase `a_read_only_participant_keeps_only_the_public_identity_projection`.
-        // A read-only participant gets public identity metadata for attribution,
-        // but the launcher has already stripped the signing key.
+        // Phase `participation_is_announced_to_the_app`.
+        // A read-only participant is told so, so chrome can present a viewer
+        // rather than an editor whose saves vanish; an author is told too.
+        // An app no workspace capability names gets no claim at all.
         {
             use crate::capabilities::Participation;
 
             let m = mk_manifest("off");
-            let host = Path::new("/home/alice/.config/tilo/identity/primary.json");
-            let read_only = CapabilityPlan {
-                participation: Participation::ReadOnly,
-                ..CapabilityPlan::empty()
-            };
-            let argv = build_bwrap_argv(
-                &m,
-                Path::new("/host/pkg"),
-                None,
-                &[],
-                None,
-                Some(host),
-                &read_only,
-            );
-            assert!(
-                !argv
-                    .iter()
-                    .any(|a| a == runtime_identity::broker::BROKER_ENV_VAR),
-                "a read-only participant must not receive a signing capability: {argv:?}"
-            );
-            assert!(
-                !argv.iter().any(|a| a == host.to_str().unwrap()),
-                "nor may the private identity path enter its namespace: {argv:?}"
-            );
-            // …and it is told which shape it is in, so chrome can present a
-            // viewer rather than an editor whose saves vanish.
-            assert!(
-                argv.windows(3).any(|w| w[0] == "--setenv"
-                    && w[1] == "TILO_PARTICIPATION"
-                    && w[2] == "read-only"),
-                "the app must be able to see that it is a viewer: {argv:?}"
-            );
-
-            let authoring = CapabilityPlan {
-                participation: Participation::Author,
-                ..CapabilityPlan::empty()
-            };
-            let argv = build_bwrap_argv(
-                &m,
-                Path::new("/host/pkg"),
-                None,
-                &[],
-                None,
-                Some(host),
-                &authoring,
-            );
-            assert!(
-                argv.windows(3).any(|w| w[0] == "--setenv"
-                    && w[1] == runtime_identity::broker::BROKER_ENV_VAR
-                    && w[2] == runtime_identity::broker::BROKER_CHILD_FD.to_string()),
-                "an authoring participant gets a signing broker: {argv:?}"
-            );
-            assert!(
-                argv.windows(3).any(|w| w[0] == "--setenv"
-                    && w[1] == "TILO_PARTICIPATION"
-                    && w[2] == "author"),
-                "and is told so: {argv:?}"
-            );
-        }
-        // Phase `an_unscoped_launch_is_unchanged`.
-        // An app no workspace capability names keeps the launch it always had:
-        // brokered identity, and no participation claim made on its behalf.
-        {
-            let m = mk_manifest("off");
-            let host = Path::new("/home/alice/.config/tilo/identity/primary.json");
-            let argv = build_bwrap_argv(
-                &m,
-                Path::new("/host/pkg"),
-                None,
-                &[],
-                None,
-                Some(host),
-                &CapabilityPlan::empty(),
-            );
-            assert!(
-                argv.windows(3).any(|w| w[0] == "--setenv"
-                    && w[1] == runtime_identity::broker::BROKER_ENV_VAR
-                    && w[2] == runtime_identity::broker::BROKER_CHILD_FD.to_string()),
-                "an unscoped launch keeps brokered identity: {argv:?}"
-            );
-            assert!(
-                !argv.iter().any(|a| a == "TILO_PARTICIPATION"),
-                "and no participation is claimed on its behalf: {argv:?}"
-            );
-        }
-        // Phase `identity_bind_absent_when_host_path_is_none`.
-        {
-            let m = mk_manifest("off");
-            let argv = build_bwrap_argv(
-                &m,
-                Path::new("/host/pkg"),
-                None,
-                &[],
-                None,
-                None,
-                &CapabilityPlan::empty(),
-            );
-            assert!(
-                !argv
-                    .iter()
-                    .any(|a| a == runtime_identity::broker::BROKER_ENV_VAR),
-                "identity broker fd must not appear without a host identity: {argv:?}"
-            );
-            assert!(
-                !argv.iter().any(|a| a == "TILO_USER_IDENTITY"),
-                "legacy identity path env must never appear: {argv:?}"
-            );
+            for (participation, expected) in [
+                (Participation::ReadOnly, Some("read-only")),
+                (Participation::Author, Some("author")),
+                (Participation::Unscoped, None),
+            ] {
+                let plan = CapabilityPlan {
+                    participation,
+                    ..CapabilityPlan::empty()
+                };
+                let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, &plan);
+                let announced = argv
+                    .windows(3)
+                    .find(|w| w[0] == "--setenv" && w[1] == "TILO_PARTICIPATION")
+                    .map(|w| w[2].as_str());
+                assert_eq!(announced, expected, "{participation:?}: {argv:?}");
+            }
         }
     }
 
@@ -1905,7 +1773,6 @@ mod tests {
                 None,
                 &binds,
                 None,
-                None,
                 &CapabilityPlan::empty(),
             );
             assert!(
@@ -1937,7 +1804,6 @@ mod tests {
                 Path::new("/host/pkg"),
                 None,
                 &binds,
-                None,
                 None,
                 &CapabilityPlan::empty(),
             );
@@ -1994,7 +1860,7 @@ mod tests {
     fn argv_with_caps(app_id: &str, caps: &[CapOverride], now: u64) -> Vec<String> {
         let m = mk_manifest("off");
         let plan = CapabilityPlan::for_app_with(app_id, caps, Some(now), fake_device_paths);
-        build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &plan)
+        build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, &plan)
     }
 
     /// Every bind triple in an argv, as `(flag, src, dst)`.
@@ -2061,7 +1927,6 @@ mod tests {
                 Path::new("/host/pkg"),
                 None,
                 &[],
-                None,
                 None,
                 &CapabilityPlan::empty(),
             );

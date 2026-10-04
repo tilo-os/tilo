@@ -1,11 +1,22 @@
 # Identity signing boundary
 
-Tilo applications do not receive private identity material. For each authored
-launch, `tilo-launcher` resolves the selected identity on the host, opens exactly
-one Unix socket pair, retains the signing share, and places the app end at file
-descriptor 15. The runtime supports two bounded operations: read public
-metadata and sign a message up to 4 MiB. Read-only workspace participation gets
-no descriptor. Closing the application closes its authority.
+Tilo applications do not receive private identity material, and the
+identity's root key never signs for them. For each launch into a workspace,
+`tilo-launcher` connects the session's identity service and hands the app one
+end, bound by the launcher to that workspace and app before the sandbox
+starts. The app reads public metadata (the person's identity key, this
+device's key and the certificate the root issued for it) and asks the service
+to sign. The service signs with this device's key, after checking that the
+certificate is valid, unrevoked and enrolled, and that the workspace lets this
+app do what it asks; peers accept the result through the identity → device
+certificate → signature chain (`tilo_user_identity::verify_chain`). A device
+another device enrolled holds only the identity's public record and runs every
+app the same way. Closing the application closes its authority.
+
+The root key stays on the devices that can approve others. It signs only what
+must come from the root: device certificates, revocations, and the identity's
+backup and recovery. A device without it refuses those and names a device
+that holds it.
 
 ## Storage and migration
 
@@ -34,13 +45,14 @@ after it actually sealed the secret. The default resolver deliberately refuses
 
 ## Compatibility and limits
 
-`runtime_identity::load()` prefers `TILO_IDENTITY_BROKER_FD`. The old
+`runtime_identity::load()` uses the inherited identity service. The
 `TILO_USER_IDENTITY` path remains for unsandboxed development, but the Tilo
-launcher never sets or mounts it. Existing application call sites keep the same
-`SigningIdentity` API.
+launcher never sets or mounts it.
 
-Automated tests cover protocol bounds, signature verification, one-shot file
-descriptor ownership, migration without secret bytes in metadata, symlink and
+Securing a record that holds only the identity's public half leaves it as it
+is: there is no secret to store, and a provider never stores an empty one.
+
+Automated tests cover protocol bounds, signature verification, migration without secret bytes in metadata, symlink and
 permission refusal, duplicate imports, shared-secret removal, active/final
 record protections, and prevention of migration/chmod outside the canonical
 identity store. They do not prove a particular desktop keyring is unlocked or

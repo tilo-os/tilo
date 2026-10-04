@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use launcher::run::{IdentitySource, RunOptions};
+use launcher::run::RunOptions;
 
 /// A payload root holding `bin/hello`, the in-tree `hello` fixture.
 pub fn hello_payload() -> &'static Path {
@@ -31,11 +31,10 @@ fn built_once(cell: &'static OnceLock<PathBuf>, name: &str, edition: &str) -> &'
     cell.get_or_init(|| build_payload(name, edition))
 }
 
-/// Launch options that touch nothing of the invoking user's: no identity is
-/// brokered and the per-room app directories live under `data_home`.
+/// Launch options that touch nothing of the invoking user's: the per-room
+/// app directories live under `data_home`.
 pub fn isolated_options(data_home: &Path) -> RunOptions {
     RunOptions {
-        identity: IdentitySource::None,
         data_home: Some(data_home.to_path_buf()),
         ..RunOptions::default()
     }

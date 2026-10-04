@@ -437,7 +437,6 @@ fn service_launch_command(socket: &Path) -> Result<crate::shell::launcher::Launc
         socket,
         RoomId::nil(),
         None,
-        None,
         crate::compositor::render_node::resolved(),
         None,
     ))

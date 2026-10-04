@@ -258,6 +258,12 @@ impl SecretProvider for BrokerFileProvider {
     }
 
     fn store(&self, locator: &str, secret: &[u8]) -> io::Result<()> {
+        if secret.is_empty() || secret.len() as u64 > MAX_IDENTITY_SECRET_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "identity secret has an invalid length",
+            ));
+        }
         self.ensure_root()?;
         let path = self.path(locator)?;
         let mut file = match OpenOptions::new()

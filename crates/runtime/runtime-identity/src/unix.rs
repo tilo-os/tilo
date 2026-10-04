@@ -1,9 +1,11 @@
 //! `runtime-identity` — user-identity loader for Tilo apps.
 //!
-//! The launcher hands applications a connected signing-broker descriptor via
-//! `TILO_IDENTITY_BROKER_FD`. Apps can inspect public metadata and request a
-//! signature, but private shares stay in the host session. `TILO_USER_IDENTITY`
-//! remains a compatibility path for non-sandboxed development only.
+//! The launcher hands applications a connection to the session's identity
+//! service. Apps read public metadata and ask it to sign; it signs with this
+//! device's key under the certificate the identity's root issued for it, so
+//! the root key never serves app signatures and a device without it still
+//! runs every app. `TILO_USER_IDENTITY` remains a path for non-sandboxed
+//! development only.
 //!
 //! The on-disk file is the JSON emitted by the identity-flow's
 //! `IdentityRecord::to_json_bytes` (see `crates/sdk/ui-core/src/widget/identity_flow`). This
@@ -64,8 +66,6 @@ use zeroize::Zeroizing;
 
 #[path = "backup.rs"]
 mod backup;
-#[path = "broker.rs"]
-pub mod broker;
 #[path = "secure_store.rs"]
 mod secure_store;
 #[cfg(test)]
@@ -140,15 +140,15 @@ pub fn secret_service_unavailable_error() -> io::Error {
     }
 }
 
-/// Legacy unsandboxed-development path. The Tilo launcher uses
-/// [`broker::BROKER_ENV_VAR`] and never sets this for packaged apps.
+/// Unsandboxed-development path. The Tilo launcher binds the identity
+/// service instead and never sets this for packaged apps.
 pub const IDENTITY_ENV_VAR: &str = "TILO_USER_IDENTITY";
 /// How a record's private share is protected on this device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeyProtection {
     /// Stored in the desktop's freedesktop Secret Service collection.
     SecretService,
-    /// Stored as a mode-0600 host file, reachable only by the signing broker.
+    /// Stored as a mode-0600 host file that sandboxed apps cannot reach.
     BrokerFile,
     /// An externally supplied provider has sealed this record.
     HardwareBacked,
@@ -164,9 +164,9 @@ pub enum KeyProtection {
 impl KeyProtection {
     pub fn label(self) -> &'static str {
         match self {
-            Self::SecretService => "Secret Service + app-scoped signing broker",
-            Self::BrokerFile => "Private session file + app-scoped signing broker",
-            Self::HardwareBacked => "Hardware-backed + app-scoped signing broker",
+            Self::SecretService => "Secret Service; apps sign with this device's certified key",
+            Self::BrokerFile => "Private session file; apps sign with this device's certified key",
+            Self::HardwareBacked => "Hardware-backed; apps sign with this device's certified key",
             Self::LegacyPlaintext => "Migration required",
             Self::DeviceCertificate => {
                 "No identity key here; this device signs with its certificate"
@@ -706,7 +706,7 @@ fn move_secret_unlocked(
     Ok(to.protection())
 }
 
-/// Select which identity the launcher brokers into newly started apps.
+/// Select which identity newly started apps act as.
 /// Running apps retain the old capability until relaunched, avoiding a
 /// mid-operation author change.
 ///
@@ -1014,7 +1014,6 @@ enum SigningSource {
     /// Returns [`NotAvailable`] when this is not a host-local threshold share,
     /// the identity lock is poisoned, or FROST round-one generation fails.
     LocalThreshold(Mutex<ThresholdIdentity>),
-    Broker(Mutex<std::os::unix::net::UnixStream>),
     ActionBroker(Arc<BrokerSigningIdentity>),
 }
 
@@ -1047,8 +1046,8 @@ impl std::fmt::Debug for SigningIdentity {
 impl SigningIdentity {
     /// Start one host-coordinated FROST signing round without exporting this
     /// device's share. This succeeds only for a threshold identity loaded by
-    /// the trusted launcher; sandbox clients receive a broker source and
-    /// cannot invoke the local-share path.
+    /// the trusted host; sandboxed apps hold only an identity-service
+    /// connection and cannot invoke the local-share path.
     ///
     /// # Errors
     ///
@@ -1188,30 +1187,27 @@ impl SigningIdentity {
         self.single_device
     }
 
-    /// Sign a message locally. In single-device mode, returns the raw 64-byte
-    /// Ed25519 signature; in threshold mode, returns
-    /// [`NotAvailable::ConnectionFailed`] — threshold signing needs the
-    /// multi-device FROST ceremony via `threshold-identity` instead.
+    /// Sign a message. A record holding the root key signs locally; a
+    /// connection to the identity service signs with this device's certified
+    /// key. A public-only record (a device another device enrolled) cannot
+    /// sign as the root, and a threshold share needs the multi-device FROST
+    /// ceremony via `threshold-identity`.
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::ConnectionFailed`] in threshold mode, or if
-    /// signing through the broker fails.
+    /// Returns [`NotAvailable::ConnectionFailed`] when this device does not
+    /// hold the root key, in threshold mode, or if the identity service
+    /// refuses.
     pub fn sign(&self, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
         match &self.source {
             SigningSource::Local(Some(sk)) => Ok(sk.sign(message).to_bytes()),
-            SigningSource::Local(None) => Err(NotAvailable::ConnectionFailed(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "threshold-mode signing is not supported by tilo-runtime-identity; \
-                 use tilo-threshold-identity + the multi-device orchestrator instead",
-            ))),
+            SigningSource::Local(None) => Err(NotAvailable::ConnectionFailed(no_root_here())),
             SigningSource::LocalThreshold(_) => {
                 Err(NotAvailable::ConnectionFailed(io::Error::new(
                     io::ErrorKind::WouldBlock,
                     "threshold signature is awaiting approval from another enrolled device",
                 )))
             }
-            SigningSource::Broker(stream) => broker::sign(stream, message),
             SigningSource::ActionBroker(stream) => stream.sign_for("generic", message),
         }
     }
@@ -1268,12 +1264,12 @@ impl SigningIdentity {
             SigningSource::ActionBroker(stream) => {
                 stream.channel_keys(workspace_id, app_id, record_id, known_generation)
             }
-            SigningSource::Local(_)
-            | SigningSource::LocalThreshold(_)
-            | SigningSource::Broker(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "channel keys require the workspace identity service",
-            ))),
+            SigningSource::Local(_) | SigningSource::LocalThreshold(_) => {
+                Err(NotAvailable::ConnectionFailed(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "channel keys require the workspace identity service",
+                )))
+            }
         }
     }
 
@@ -1299,30 +1295,12 @@ impl SigningIdentity {
             SigningSource::ActionBroker(stream) => {
                 stream.sign_collaboration_op(workspace_id, app_id, record_id, unsigned_op)
             }
-            SigningSource::Local(_)
-            | SigningSource::LocalThreshold(_)
-            | SigningSource::Broker(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "certified collaboration operations require the workspace identity service",
-            ))),
-        }
-    }
-
-    fn sign_local(&self, message: &[u8]) -> io::Result<[u8; 64]> {
-        match &self.source {
-            SigningSource::Local(Some(sk)) => Ok(sk.sign(message).to_bytes()),
-            SigningSource::Local(None) => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "threshold signing requires the multi-device orchestrator",
-            )),
-            SigningSource::LocalThreshold(_) => Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "threshold signature requires a confirmed broker quorum",
-            )),
-            SigningSource::Broker(_) | SigningSource::ActionBroker(_) => Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "refusing to chain identity brokers",
-            )),
+            SigningSource::Local(_) | SigningSource::LocalThreshold(_) => {
+                Err(NotAvailable::ConnectionFailed(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "certified collaboration operations require the workspace identity service",
+                )))
+            }
         }
     }
 
@@ -1373,23 +1351,20 @@ impl SigningIdentity {
     }
 }
 
-/// Load the user's identity from the inherited broker, falling back to the
-/// legacy [`IDENTITY_ENV_VAR`] development path. Returns
+/// Load the user's identity from the inherited identity service, falling
+/// back to the [`IDENTITY_ENV_VAR`] development path. Returns
 /// `Err(NotAvailable::ServiceFdMissing)` when neither is present,
 /// `Err(NotAvailable::ConnectionFailed(_))` when the file is missing,
 /// unreadable, or malformed, and `Ok(SigningIdentity)` on success.
 ///
 /// # Errors
 ///
-/// Returns [`NotAvailable::ServiceFdMissing`] when neither the broker nor
+/// Returns [`NotAvailable::ServiceFdMissing`] when neither the service nor
 /// [`IDENTITY_ENV_VAR`] is present, or [`NotAvailable::ConnectionFailed`]
 /// when the identity file is missing, unreadable, or malformed.
 pub fn load() -> Result<SigningIdentity, NotAvailable> {
     if let Some(fd) = runtime_portal::service_fd(IDENTITY_SERVICE) {
         return load_from_service(fd);
-    }
-    if std::env::var_os(broker::BROKER_ENV_VAR).is_some() {
-        return broker::connect_from_env();
     }
     let path_str = env::var(IDENTITY_ENV_VAR).map_err(|_| NotAvailable::ServiceFdMissing)?;
     if path_str.is_empty() {
@@ -1741,6 +1716,16 @@ fn identity_from_record(
     ))
 }
 
+/// The refusal a device without the identity's root key gives when asked to
+/// sign as the root.
+fn no_root_here() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "this device does not hold the identity's root key; it signs as the person with its \
+         certified device key through the identity service",
+    )
+}
+
 fn is_public_member_projection(record: &ondisk::IdentityRecord) -> bool {
     let identity = &record.threshold_identity;
     !identity.single_device
@@ -1989,9 +1974,7 @@ mod tests {
 
     fn clear_env() -> tilo_test_env::ScopedEnv {
         let mut scoped = tilo_test_env::ScopedEnv::new();
-        scoped
-            .remove(IDENTITY_ENV_VAR)
-            .remove(broker::BROKER_ENV_VAR);
+        scoped.remove(IDENTITY_ENV_VAR);
         scoped
     }
 
@@ -2707,6 +2690,40 @@ mod tests {
         }
         let path = imported.unwrap();
         assert_published_identity_keeps_secret(&path, &BrokerFileProvider::new(dir.path()), 78);
+    }
+
+    #[test]
+    fn a_public_record_refuses_root_signing_and_providers_refuse_empty_secrets() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            ensure_private_dir(dir.path()).unwrap();
+            let bytes = public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
+            let path = dir.path().join("member.json");
+            write_private_atomic(&path, &bytes).unwrap();
+            let provider = secure_store::fallback_provider(dir.path());
+            assert_eq!(
+                secure_identity_with_provider(dir.path(), "member", &provider).unwrap(),
+                KeyProtection::DeviceCertificate
+            );
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+            assert!(!dir.path().join("secrets").exists());
+
+            let identity = load_from_path(path).unwrap();
+            let NotAvailable::ConnectionFailed(error) = identity.sign(b"as the root").unwrap_err()
+            else {
+                panic!("a public record must refuse to sign");
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("does not hold the identity's root key"),
+                "{error}"
+            );
+            assert_eq!(
+                provider.store(&"ab".repeat(32), &[]).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
     }
 
     #[test]

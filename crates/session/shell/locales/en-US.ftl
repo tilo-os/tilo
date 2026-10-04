@@ -1060,7 +1060,6 @@ launch-error-launcher-unavailable = The app launcher is unavailable. Try again.
 launch-error-no-display = The desktop is still starting. Try again in a moment.
 launch-error-no-workspace = Choose a workspace, then try again.
 launch-error-shell-owned-intent = Open this destination from the desktop controls.
-launch-error-identity-unavailable = The workspace identity could not be loaded. Try again.
 launch-error-registry-unreadable = The app list could not be read. Try again.
 launch-error-host-app-refused = This app's desktop entry cannot be started.
 launch-failed-launcher-unavailable = The app launcher is unavailable. Open Applications and try again.
