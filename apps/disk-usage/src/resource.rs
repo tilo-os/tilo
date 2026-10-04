@@ -103,7 +103,9 @@ impl ResourceApp for DiskUsageShell {
     const SHOT_VIEWPORT: (u32, u32) = (1180, 760);
 
     fn view(cx: &mut ViewCx<DiskUsage>) -> Element {
-        cx.surface(DiskUsageApp::new())
+        let mut app = DiskUsageApp::new();
+        app.host_actions(cx.actions());
+        cx.surface(app)
     }
 
     fn scenarios() -> &'static [&'static str] {
