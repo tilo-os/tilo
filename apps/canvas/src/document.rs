@@ -490,38 +490,61 @@ pub fn unpack(bytes: &[u8], store: &tilo_content::ContentStore) -> Result<Artwor
     if !bytes.starts_with(b"PK\x03\x04") {
         return ArtworkFile::parse(bytes);
     }
-    let broken = |error: bounded_zip::ZipError| format!("this artwork file is damaged: {error}");
-    let limits = bounded_zip::ZipLimits {
-        max_parts: crate::model::MAX_MARKS.saturating_add(2),
-        max_part_bytes: MAX_FILE_BYTES as u64,
-        max_total_bytes: (MAX_FILE_BYTES as u64).saturating_mul(2),
+    let broken = |error: &dyn std::fmt::Display| format!("this artwork file is damaged: {error}");
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|error| broken(&error))?;
+    if archive.len() > crate::model::MAX_MARKS.saturating_add(2) {
+        return Err(broken(&"it holds more pictures than an artwork can show"));
+    }
+    // What is inflated in all, held to a bound however the entries lie
+    // about their sizes.
+    let mut budget = (MAX_FILE_BYTES as u64).saturating_mul(2);
+    let json = {
+        let entry = archive
+            .by_name(DOCUMENT_ENTRY)
+            .map_err(|error| broken(&error))?;
+        inflate(entry, MAX_FILE_BYTES as u64, &mut budget).map_err(|error| broken(&error))?
     };
-    let mut archive = bounded_zip::BoundedArchive::from_bytes(bytes, limits).map_err(broken)?;
-    let json = archive
-        .read(DOCUMENT_ENTRY, MAX_FILE_BYTES as u64)
-        .map_err(broken)?;
     let file = ArtworkFile::parse(&json)?;
-    let names: Vec<String> = archive.file_names().map(str::to_owned).collect();
-    for name in names {
-        let Some(hash) = name.strip_prefix(CONTENT_DIR) else {
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).map_err(|error| broken(&error))?;
+        let Some(hash) = entry.name().strip_prefix(CONTENT_DIR).map(str::to_owned) else {
             continue;
         };
-        if store.has(hash) {
+        if !tilo_content::valid_hash(&hash) {
+            return Err(broken(&format!("{hash:?} names no content")));
+        }
+        if store.has(&hash) {
             continue;
         }
-        let picture = archive
-            .read(&name, crate::picture::MAX_PICTURE_BYTES as u64)
-            .map_err(broken)?;
-        if !tilo_content::verify(hash, &picture) {
-            return Err(format!(
-                "this artwork file is damaged: its picture {hash} is not that content"
-            ));
+        let picture = inflate(entry, crate::picture::MAX_PICTURE_BYTES as u64, &mut budget)
+            .map_err(|error| broken(&error))?;
+        if !tilo_content::verify(&hash, &picture) {
+            return Err(broken(&format!("its picture {hash} is not that content")));
         }
         store
             .put(&picture)
             .map_err(|error| format!("the artwork's picture could not be kept: {error}"))?;
     }
     Ok(file)
+}
+
+/// The bytes of a package entry, at most `cap` of them and at most what is
+/// left of `budget`, which they are taken from.
+fn inflate(mut entry: impl std::io::Read, cap: u64, budget: &mut u64) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let cap = cap.min(*budget);
+    let mut bytes = Vec::new();
+    (&mut entry)
+        .take(cap.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    let read = bytes.len() as u64;
+    if read > cap {
+        return Err(format!("an entry is over {cap} bytes"));
+    }
+    *budget = budget.saturating_sub(read);
+    Ok(bytes)
 }
 
 /// Answer `save-artwork`: write the artwork's file to the path given, or
