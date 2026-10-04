@@ -15185,6 +15185,7 @@ dependencies = [
  "tilo-test-env",
  "tracing",
  "wasm-bindgen",
+ "wayland-server",
  "workspace-hack",
 ]
 
