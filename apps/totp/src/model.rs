@@ -469,7 +469,8 @@ pub fn demo_accounts() -> Vec<Account> {
         .enumerate()
         .map(
             |(i, (issuer, label, secret, alg, digits, period, color))| Account {
-                id: Uuid::new_v4(),
+                // Fixed ids: a screenshot shows the same accounts every run.
+                id: Uuid::from_u128(0x7070_0000_0000_0000_0000_0000_0000_0000 + i as u128),
                 issuer: issuer.to_string(),
                 label: label.to_string(),
                 secret: normalise_secret(secret),
