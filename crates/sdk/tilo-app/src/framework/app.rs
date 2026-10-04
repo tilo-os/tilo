@@ -153,6 +153,23 @@ pub trait ResourceApp: 'static {
         Vec::new()
     }
 
+    /// What a person does in the scene that the scenario's actions and
+    /// staged view state cannot show: text typed into an editor, a drag
+    /// held over its drop target, a menu opened with a right click. Driven
+    /// on `input` through the window's own event path after the actions
+    /// and staging, so the frame shows the app's real answer to that input.
+    /// Must be deterministic, like the rest of the scenario.
+    ///
+    /// # Errors
+    /// Returns why the input could not be given (its target is missing).
+    fn scenario_input(
+        name: Option<&str>,
+        input: &mut ui_core::headless::FrameHarness,
+    ) -> Result<(), String> {
+        let _ = (name, input);
+        Ok(())
+    }
+
     /// What a brand-new record starts with that depends on who creates it or
     /// where: the creator as its owner, a first-run import of settings that
     /// already exist on this device. Everything that depends on neither is

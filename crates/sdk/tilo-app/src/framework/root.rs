@@ -10,6 +10,9 @@ use ui_core::widget::{AppModel, ModelPath};
 use tilo_resource::{Resource, SearchEntry};
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 use ui_core::PresencePayload;
+use ui_core::application_view::{
+    ApplicationFocusRestore, ApplicationLocalView, ApplicationViewState,
+};
 use ui_core::automerge::AutoCommit;
 use ui_core::permissions::{LivePermissions, PermissionScope};
 use ui_core::presence::{PresenceCtx, PresenceKey};
@@ -18,6 +21,8 @@ use ui_core::search::{SearchProvider, SearchResult};
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::Affine;
+use ui_core::view::ThawError;
+use ui_core::widget::capability::{capability, capability_mut};
 use ui_core::widget::{AppKind, AppWidget, Decorator, Element, IconDescriptor, Widget};
 use ui_core::{LocalState, Theme};
 
@@ -871,6 +876,33 @@ impl<R: Resource> AppWidget for ResourceRoot<R> {
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
         self.saved.set(status);
+    }
+
+    // A surface that keeps presentation of its own across restarts (the
+    // open item, the caret) saves it as the window's.
+    fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {
+        capability::<dyn ApplicationViewState>(self.content.as_ref())
+            .map_or(Ok(None), ApplicationViewState::capture_application_view)
+    }
+
+    fn restore_application_view(
+        &mut self,
+        local: &ApplicationLocalView,
+        doc: &AutoCommit,
+    ) -> Result<ApplicationFocusRestore, ThawError> {
+        match capability_mut::<dyn ApplicationViewState>(self.content.as_mut()) {
+            Some(view) => view.restore_application_view(local, doc),
+            None => Err(ThawError::State(
+                "application-local restoration unsupported".into(),
+            )),
+        }
+    }
+
+    fn finish_application_view_restore(&mut self) -> Result<(), ThawError> {
+        capability_mut::<dyn ApplicationViewState>(self.content.as_mut()).map_or(
+            Ok(()),
+            ApplicationViewState::finish_application_view_restore,
+        )
     }
 }
 
