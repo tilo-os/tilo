@@ -2221,7 +2221,8 @@ pub use sidebar::{
 mod nav_shell;
 pub mod window_header;
 pub use nav_shell::{
-    InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, SidebarPlacement,
+    InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
+    SidebarPlacement,
 };
 pub use window_header::{HISTORY_CONTROL_ID, HistoryControl, HistoryOpener, WindowHeader};
 mod nav_list;

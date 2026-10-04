@@ -136,11 +136,15 @@ impl Widget for OverviewPane {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
-        self.core
-            .borrow_mut()
-            .draw_overview_overlay(scene, transform, text_renderer, theme);
+        self.core.borrow_mut().draw_overview_overlay(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
     }
 
     fn modal_capture(&self) -> Option<Rect> {
