@@ -124,14 +124,21 @@ because the existing clipboard vocabulary cannot represent them losslessly.
 - Red: original caller tests exposed absent duplication; later tests caught
   stale selection replacing originals, inaccessible semantic controls, invalid
   code-fence names and structural commands interrupting IME (source and table).
-- All eight new mounted-Notes regressions passed before adding stronger Markdown
-  export assertions. The shared SDK passes 52 block-editor and 34 rich-text tests,
+- All eight new mounted-Notes regressions pass, including Markdown export/import
+  and distinct exported code-fence assertions. The shared SDK passes 52 block-editor and 34 rich-text tests,
   including its existing bounded-keystroke-work regressions. Independent review
   found no remaining issues after the table-composition fix.
 - Full Notes nextest (each test in its own process): 137 passed, one failed,
   one existing interactive test skipped. The sole failure remains
   `canonical_actions::bound_undo_is_per_instance_and_retypes_once` at line 727.
-  A fresh exact-base comparison and final native/WASM checks are in progress.
+  The same failure was reproduced on unchanged `ac1925a9b5` and the earlier
+  `4211afecccc4` main integration before this increment.
+- Final strict all-target Clippy for Notes, `tilo-ui` and `tilo-rich-text`, the
+  required shell test compilation, and Notes WASM library compilation all pass.
+  The final eight caller regressions pass again after test-helper lint fixes.
+  Browser execution remains unverified.
+- Repository pre-commit checks pass. The affected plan selects 96 of 260 packages
+  and 16 test packages with `full=false`; no CI coverage was weakened.
 - Passing existing Notes coverage also qualifies: every supported block kind and
   inline marks through byte-stable Markdown round trips (`markdown_*_roundtrip`),
   list indentation, slash conversion/list continuation (`interaction_event_path`),
