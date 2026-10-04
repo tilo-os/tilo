@@ -94,6 +94,7 @@ suites = [
   "os/tests/test_copy_windows_direct_final_install.py",
   "os/tests/test_create_development_disk.py",
   "os/tests/dev_base_inputs_tree.sh",
+  "os/tests/test_cargo_freshness.py",
   "os/tests/test_dev_builder_staging.py",
   "os/tests/test_development_boot.py",
   "os/tests/test_development_composefs.py",
@@ -734,11 +735,6 @@ inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["apps/chat/src/component_tests.rs"]
 
 [[cargo]]
-package = "vpn"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/vpn/src/app.rs"]
-
-[[cargo]]
 package = "word-processor"
 inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["apps/word-processor/tests/canonical_component.rs"]
@@ -1043,6 +1039,11 @@ reason = "needs squashfs-tools, absent from the ci-fast image"
 [[unrequired]]
 suite = "os/tests/installer-render-smoke.sh"
 reason = "needs a built tilo-installer binary"
+
+[[unrequired]]
+suite = "os/tests/input-hotplug-check.sh"
+reason = "runs inside a booted guest's graphical session, partly as root"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/internal_bundle_export.sh"

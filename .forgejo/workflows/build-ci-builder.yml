@@ -223,7 +223,7 @@ jobs:
           }))
           PY
       - name: Upload the native child descriptor
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: builder-native-${{ matrix.arch }}-${{ github.run_attempt }}
           path: native-child/
@@ -246,7 +246,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - if: needs.plan.outputs.mode == 'build'
-        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: native-candidates
       - name: Resolve exact successful native producer attempts
@@ -334,7 +334,7 @@ jobs:
             /cargo-home/git/db
           key: cargo-deps-${{ hashFiles('Cargo.lock') }}
       - name: Retain only successful cold acceptance
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: builder-cache-cold-${{ matrix.arch }}-${{ github.run_attempt }}
           path: cold-receipt/
@@ -360,7 +360,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Restore Cargo downloads
         uses: ./.forgejo/actions/restore-cargo-downloads
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: cold-receipts
       - name: Select the exact successful cold namespace
@@ -376,7 +376,7 @@ jobs:
             cargo build -p tilo-advisory-lock --locked
           bash tools/ci/sccache-canary.sh warm
       - name: Retain only successful warm acceptance
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: builder-cache-warm-${{ matrix.arch }}-${{ github.run_attempt }}
           path: warm-receipt/
@@ -396,7 +396,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: acceptance-receipts
       - name: Verify the exact native identities used by both canaries
@@ -471,7 +471,7 @@ jobs:
             --signing-key "$COSIGN_KEY_REF" --output builder-index.txt
           cat builder-index.txt >> "$GITHUB_STEP_SUMMARY"
       - name: Retain the immutable builder reference
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: builder-index-${{ github.sha }}
           path: builder-index.txt

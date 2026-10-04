@@ -2492,7 +2492,7 @@ mod tests {
                 assert_eq!(target, rect);
                 assert_eq!(label, panel.dates.labels()[row]);
                 assert!(
-                    label.contains("UTC"),
+                    label.contains(':'),
                     "compact metadata must expose the exact time"
                 );
             }

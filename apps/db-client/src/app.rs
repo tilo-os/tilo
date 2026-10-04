@@ -23,8 +23,8 @@ use std::ops::{Deref, DerefMut};
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
-use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use automerge::AutoCommit;
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
@@ -34,7 +34,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use uuid::Uuid;
 
-use tilo_actions::{OperationKind, Resource};
+use tilo_actions::Resource;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -51,6 +51,7 @@ use crate::connect_modal::ConnectModal;
 use crate::doc::EditorDoc;
 use crate::grid::GridView;
 use crate::model::Engine;
+use crate::resource::DbEffect;
 use crate::schema_nav::{self, Activation, SchemaActivations, SchemaBrowser};
 use crate::session::{MainTab, RunStatus, Session};
 use crate::theme_ext::ThemeExt;
@@ -131,18 +132,6 @@ impl Bands {
 /// Minimum toolbar control widths; measured labels widen them when needed.
 const RUN_MIN_W: f64 = 150.0;
 const SNIPPETS_MIN_W: f64 = 110.0;
-/// The single externally-invokable effect protocol for live database work.
-/// Unlike document actions, these payloads contain only stable object ids and
-/// SQL/table names — never passwords or live driver handles.
-pub(crate) const DB_OPERATION_TYPE: &str = "db_client.operation";
-
-/// `spec`, an effect the client answers once the database worker has
-/// settled it: a job its caller waits on.
-pub(crate) fn job(spec: tilo_actions::ActionSpec) -> tilo_actions::ActionSpec {
-    spec.execution(tilo_actions::ExecutionMode::Background { cancellable: false })
-        .returns(tilo_actions::ResultSpec::Job)
-}
-
 /// What a saved connection's keyring entry holds.
 const PASSWORD_PURPOSE: &str = "password";
 
@@ -712,44 +701,6 @@ impl Widget for QueryResizeMenu {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) enum DbClientOperation {
-    /// Reveal a catalog location in the local navigator. It never touches the
-    /// database or shared document, but it is a real view transition rather
-    /// than a decorative/no-op search target.
-    FocusCatalog {
-        connection_id: String,
-        schema: Option<String>,
-    },
-    /// Bring the current result back into view after resolving its generation.
-    ShowResult {
-        connection_id: String,
-        result_generation: usize,
-    },
-    /// Re-run a bounded, per-device history entry. History itself remains
-    /// private to a peer and is re-resolved before the external effect starts.
-    RunHistory {
-        connection_id: String,
-        generation: usize,
-    },
-    RunQuery {
-        connection_id: String,
-        sql: String,
-    },
-    Connect {
-        connection_id: String,
-    },
-    BrowseTable {
-        connection_id: String,
-        schema: String,
-        table: String,
-    },
-    ExportCsv {
-        connection_id: String,
-        result_generation: usize,
-    },
-}
-
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independent piece of widget state (hover/open toggles, capture override), always set by name rather than a confusing positional constructor"
@@ -791,12 +742,12 @@ pub struct DbClientApp {
     /// it lands back through the document reconcile (peer-added connections do
     /// not set this, so they are listed but not auto-connected).
     pending_connect_id: Option<Uuid>,
-    /// Active resource invocation plus whether its effect can be retried
-    /// safely without duplicating a database write.
-    resource_operation: Option<(tilo_actions::InvocationId, bool)>,
-    /// The caller of a running "Run SQL" effect, answered when the query
-    /// settles.
-    query_reply: Option<ui::framework::EffectReply>,
+    /// The caller of the running database effect (a connect, a query, a
+    /// table page, an export), answered when the worker settles it.
+    effect_reply: Option<ui::framework::EffectReply>,
+    /// The workspace's saved queries as last presented, which "Run saved
+    /// query" resolves against when it is invoked.
+    saved_queries: Vec<crate::doc::SavedQuery>,
     export_rx: Option<ui::portal::PortalChannel>,
     export_snapshot: Option<crate::model::QueryResult>,
 
@@ -908,9 +859,7 @@ impl DbClientApp {
             .and_then(|id| Uuid::parse_str(id).ok())
         {
             return self
-                .execute_operation(DbClientOperation::Connect {
-                    connection_id: id.to_string(),
-                })
+                .execute_effect(DbEffect::Connect { connection: id })
                 .is_ok();
         }
         false
@@ -962,8 +911,8 @@ impl DbClientApp {
             secrets: None,
             sql_edits: None,
             pending_connect_id: None,
-            resource_operation: None,
-            query_reply: None,
+            effect_reply: None,
+            saved_queries: Vec::new(),
             export_rx: None,
             export_snapshot: None,
             rect: Rect::ZERO,
@@ -1017,84 +966,62 @@ impl DbClientApp {
     }
 
     fn run_sql_effect(&mut self, sql: String) {
-        let Some(connection_id) = self.session.active_connection_id() else {
-            self.session.status =
-                RunStatus::Error("Connect to a database before running SQL".into());
-            self.dirty = true;
-            return;
-        };
-        // Keep the toolbar shortcut on the very same effect path exposed to
-        // the command palette/agents. It carries a stable connection identity
-        // and never smuggles a password into the action envelope.
-        if let Err(error) = self.execute_operation(DbClientOperation::RunQuery {
-            connection_id: connection_id.to_string(),
-            sql,
-        }) {
+        // The toolbar runs the very effect the palette and agents invoke.
+        if let Err(error) = self.execute_effect(DbEffect::Query { sql }) {
             self.session.status = RunStatus::Error(error);
         }
         self.dirty = true;
     }
 
     /// Execute a transient database effect after re-resolving every target
-    /// against the current session. Resource descriptors are only a helpful
-    /// snapshot: a collaborator can remove/rename a connection before an
-    /// invocation arrives, so their payload is never authority by itself.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one match arm per DbClientOperation keeps resolve+dispatch together"
-    )]
-    fn execute_operation(&mut self, operation: DbClientOperation) -> Result<(), String> {
-        match operation {
-            DbClientOperation::FocusCatalog {
-                connection_id,
-                schema,
-            } => self.focus_catalog(&connection_id, schema.as_deref())?,
-            DbClientOperation::ShowResult {
-                connection_id,
-                result_generation,
-            } => self.show_result(&connection_id, result_generation)?,
-            DbClientOperation::RunHistory {
-                connection_id,
-                generation,
-            } => self.run_history(&connection_id, generation)?,
-            DbClientOperation::RunQuery { connection_id, sql } => {
-                // Empty id means "active connection" — the framework resource
-                // publishes Run SQL without a live session snapshot.
-                let id = if connection_id.is_empty() {
-                    self.session
-                        .active_connection_id()
-                        .ok_or_else(|| "connect to a database before running SQL".to_string())?
-                } else {
-                    Uuid::parse_str(&connection_id)
-                        .map_err(|_| "invalid database connection id".to_string())?
-                };
-                if self.session.active_connection_id() != Some(id) {
-                    return Err("the requested connection is no longer active".to_string());
-                }
-                if !self.session.connected {
-                    return Err("connect to this database before running SQL".to_string());
-                }
-                self.session.run_query(&sql);
+    /// against the current session. The rows that offer an effect are only a
+    /// snapshot: a collaborator can remove or rename a connection before an
+    /// invocation arrives, so what it was bound to is never authority by
+    /// itself.
+    fn execute_effect(&mut self, effect: DbEffect) -> Result<(), String> {
+        match effect {
+            DbEffect::FocusDatabase { connection } => self.focus_catalog(connection, None)?,
+            DbEffect::FocusSchema { connection, schema } => {
+                self.focus_catalog(connection, Some(&schema))?;
             }
-            DbClientOperation::Connect { connection_id } => {
-                let id = Uuid::parse_str(&connection_id)
-                    .map_err(|_| "invalid database connection id".to_string())?;
+            DbEffect::ShowResult {
+                connection,
+                generation,
+            } => self.show_result(connection, generation)?,
+            DbEffect::Rerun {
+                connection,
+                generation,
+            } => self.run_history(connection, generation)?,
+            DbEffect::Query { sql } => self.run_on_open(&sql)?,
+            DbEffect::Run { query } => {
+                let sql = self
+                    .saved_queries
+                    .iter()
+                    .find(|saved| saved.id == query)
+                    .map(|saved| saved.sql.clone())
+                    .ok_or_else(|| "the saved query is no longer available".to_string())?;
+                self.run_on_open(&sql)?;
+            }
+            DbEffect::Begin { connection } => self.run_on(connection, "BEGIN")?,
+            DbEffect::Commit { connection } => self.run_on(connection, "COMMIT")?,
+            DbEffect::Rollback { connection } => self.run_on(connection, "ROLLBACK")?,
+            DbEffect::Connect { connection } => {
                 let idx = self
                     .session
                     .connections
                     .iter()
-                    .position(|connection| connection.id == id)
+                    .position(|candidate| candidate.id == connection)
                     .ok_or_else(|| "connection is no longer available".to_string())?;
                 self.connect(idx);
             }
-            DbClientOperation::BrowseTable {
-                connection_id,
+            DbEffect::Browse {
+                connection,
                 schema,
                 table,
             } => {
-                let id = Uuid::parse_str(&connection_id)
-                    .map_err(|_| "invalid database connection id".to_string())?;
-                if self.session.active_connection_id() != Some(id) || !self.session.connected {
+                if self.session.active_connection_id() != Some(connection)
+                    || !self.session.connected
+                {
                     return Err("the table's connection is no longer open".to_string());
                 }
                 if self.session.schema.find_relation(&schema, &table).is_none() {
@@ -1105,14 +1032,12 @@ impl DbClientApp {
                     name: table,
                 });
             }
-            DbClientOperation::ExportCsv {
-                connection_id,
-                result_generation,
+            DbEffect::ExportCsv {
+                connection,
+                generation,
             } => {
-                let id = Uuid::parse_str(&connection_id)
-                    .map_err(|_| "invalid database connection id".to_string())?;
-                if self.session.active_connection_id() != Some(id)
-                    || self.session.query_gen != result_generation
+                if self.session.active_connection_id() != Some(connection)
+                    || self.session.query_gen != generation
                 {
                     return Err("the query result is no longer current".to_string());
                 }
@@ -1149,9 +1074,25 @@ impl DbClientApp {
         Ok(())
     }
 
-    fn focus_catalog(&mut self, connection_id: &str, schema: Option<&str>) -> Result<(), String> {
-        let id = Uuid::parse_str(connection_id)
-            .map_err(|_| "invalid database connection id".to_string())?;
+    /// Run `sql` on the open connection.
+    fn run_on_open(&mut self, sql: &str) -> Result<(), String> {
+        if self.session.active_connection_id().is_none() || !self.session.connected {
+            return Err("connect to a database before running SQL".to_string());
+        }
+        self.session.run_query(sql);
+        Ok(())
+    }
+
+    /// Run `sql` on `connection`, which must be the open one.
+    fn run_on(&mut self, connection: Uuid, sql: &str) -> Result<(), String> {
+        if self.session.active_connection_id() != Some(connection) || !self.session.connected {
+            return Err("the requested connection is no longer open".to_string());
+        }
+        self.session.run_query(sql);
+        Ok(())
+    }
+
+    fn focus_catalog(&mut self, id: Uuid, schema: Option<&str>) -> Result<(), String> {
         if self.session.active_connection_id() != Some(id) {
             return Err("the catalog connection is no longer active".to_string());
         }
@@ -1172,9 +1113,7 @@ impl DbClientApp {
         Ok(())
     }
 
-    fn show_result(&mut self, connection_id: &str, generation: usize) -> Result<(), String> {
-        let id = Uuid::parse_str(connection_id)
-            .map_err(|_| "invalid database connection id".to_string())?;
+    fn show_result(&mut self, id: Uuid, generation: usize) -> Result<(), String> {
         if self.session.active_connection_id() != Some(id)
             || self.session.query_gen != generation
             || self.session.query_result.is_none()
@@ -1185,9 +1124,7 @@ impl DbClientApp {
         Ok(())
     }
 
-    fn run_history(&mut self, connection_id: &str, generation: usize) -> Result<(), String> {
-        let id = Uuid::parse_str(connection_id)
-            .map_err(|_| "invalid database connection id".to_string())?;
+    fn run_history(&mut self, id: Uuid, generation: usize) -> Result<(), String> {
         let sql = self
             .session
             .query_history
@@ -1287,6 +1224,7 @@ impl DbClientApp {
         if !same {
             self.session.set_connections(state.connections.clone());
         }
+        self.saved_queries.clone_from(&state.saved_queries);
         if let Some(id) = self.pending_connect_id
             && let Some(idx) = self.session.connections.iter().position(|c| c.id == id)
         {
@@ -1358,41 +1296,48 @@ impl DbClientApp {
         self.session.connected
     }
 
-    /// Run `sql` on the open connection for a caller of the "Run SQL"
-    /// effect, who is answered when the query settles.
-    pub(crate) fn start_query_effect(
+    /// Answer `effect` for whoever invoked it: a view at once, database work
+    /// once the worker settles it.
+    pub(crate) fn answer_effect(
         &mut self,
-        sql: &str,
+        effect: DbEffect,
         cx: &mut ui::framework::EffectCx<crate::resource::DbClient, Self>,
     ) -> ui::framework::EffectAnswer {
-        if self.query_reply.is_some() || self.resource_operation.is_some() || self.session.busy() {
+        if matches!(
+            effect,
+            DbEffect::FocusDatabase { .. }
+                | DbEffect::FocusSchema { .. }
+                | DbEffect::ShowResult { .. }
+        ) {
+            self.execute_effect(effect)?;
+            return Ok(ui::framework::Effected::done());
+        }
+        if self.effect_reply.is_some() || self.session.busy() {
             return Err("another database operation is already running".into());
         }
-        if self.session.active_connection_id().is_none() || !self.session.connected {
-            return Err("connect to a database before running SQL".into());
-        }
-        self.session.run_query(sql);
-        self.query_reply = Some(cx.reply());
+        self.execute_effect(effect)?;
+        self.effect_reply = Some(cx.reply());
         self.dirty = true;
         Ok(ui::framework::Effected::Pending)
     }
 
-    /// Answer the caller of a running "Run SQL" effect once its query has
-    /// settled, or stop the query when the caller cancelled it.
-    fn settle_query_effect(&mut self) {
-        let Some(reply) = &self.query_reply else {
+    /// Answer the caller of the running effect once the worker has settled
+    /// it, or stop the query when the caller cancelled it.
+    fn settle_effect(&mut self) {
+        let Some(reply) = &self.effect_reply else {
             return;
         };
-        if reply.progress().is_cancelled() {
+        if reply.is_cancelled() {
             self.session.cancel_in_flight_query();
-            self.query_reply = None;
+            self.effect_reply = None;
             self.dirty = true;
             return;
         }
-        if self.session.busy() {
+        self.drain_export_portal();
+        if self.session.busy() || self.export_rx.is_some() {
             return;
         }
-        if let Some(reply) = self.query_reply.take() {
+        if let Some(reply) = self.effect_reply.take() {
             reply.finish(match &self.session.status {
                 RunStatus::Error(message) => Err(message.clone()),
                 _ => Ok(tilo_actions::ActionOutput::default()),
@@ -1425,9 +1370,7 @@ impl DbClientApp {
     fn live_job_label(&self) -> Option<String> {
         match &self.session.status {
             RunStatus::Busy(label) => Some(label.clone()),
-            _ if self.resource_operation.is_some() || self.query_reply.is_some() => {
-                Some("Database operation…".into())
-            }
+            _ if self.effect_reply.is_some() => Some("Database operation…".into()),
             _ => None,
         }
     }
@@ -2011,95 +1954,6 @@ impl Widget for DbClientApp {
         dyn ui::undo::UndoPoints
     );
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[DB_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        let (pending, retryable) = self.resource_operation?;
-        if pending != invocation {
-            return None;
-        }
-        if cancellation_requested {
-            if !self.session.cancel_in_flight_query() {
-                return Some(tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "db_client.cancel_not_active".into(),
-                        message:
-                            "The requested query already completed; no newer query was cancelled"
-                                .into(),
-                        details: None,
-                        retryable: false,
-                    },
-                });
-            }
-            self.resource_operation = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("Cancellation requested for this query".into()),
-            });
-        }
-        self.session.drain();
-        self.drain_export_portal();
-        if self.session.busy() || self.export_rx.is_some() {
-            return None;
-        }
-        self.resource_operation = None;
-        Some(match &self.session.status {
-            RunStatus::Error(message) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "db_client.operation_failed".into(),
-                    message: message.clone(),
-                    details: None,
-                    retryable,
-                },
-            },
-            _ => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-        })
-    }
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
         self.drain_query_resize_actions();
@@ -2114,7 +1968,7 @@ impl Widget for DbClientApp {
         // outcomes, query result sets, table pages). This is what makes a
         // remote query land on screen without further user input.
         self.session.drain();
-        self.settle_query_effect();
+        self.settle_effect();
 
         self.sync_schema_tree();
         self.editor.text.pull(state);
@@ -2557,7 +2411,7 @@ impl Widget for DbClientApp {
         self.flap_animating()
             || (self.schema_in_tree() && self.tree.needs_animation_frame())
             || self.session.busy()
-            || self.query_reply.is_some()
+            || self.effect_reply.is_some()
             || self.status_bubble.needs_frame(ui::time::now())
     }
 
@@ -2741,72 +2595,6 @@ impl ui::undo::UndoPoints for DbClientApp {
 impl ui::search::capability::SearchSource for DbClientApp {
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.search_index.provider())]
-    }
-}
-
-impl DbClientApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if !matches!(kind, OperationKind::Effect | OperationKind::View)
-            || type_id != DB_OPERATION_TYPE
-        {
-            return Ok(false);
-        }
-        let operation: DbClientOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        self.execute_operation(operation)?;
-        Ok(true)
-    }
-
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if !matches!(kind, OperationKind::Effect | OperationKind::View)
-            || type_id != DB_OPERATION_TYPE
-        {
-            return Ok(None);
-        }
-        if kind == OperationKind::View {
-            return self
-                .answer_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                });
-        }
-        if self.resource_operation.is_some() || self.session.busy() {
-            return Err("another database operation is already running".into());
-        }
-        let operation: DbClientOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        // Reconnecting and browsing are idempotent reads/handle opens. An
-        // arbitrary SQL statement is deliberately *not* retryable: repeating
-        // an INSERT/UPDATE after an uncertain network outcome could duplicate
-        // a real side effect.
-        let retryable = matches!(
-            operation,
-            DbClientOperation::Connect { .. } | DbClientOperation::BrowseTable { .. }
-        );
-        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        self.resource_operation = Some((invocation, retryable));
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -3287,8 +3075,8 @@ impl DbClientApp {
                 if let Some(connection) = self.session.connections.get(idx) {
                     // Use the shared effect implementation for both selecting
                     // and retrying an already-active disconnected profile.
-                    let _ = self.execute_operation(DbClientOperation::Connect {
-                        connection_id: connection.id.to_string(),
+                    let _ = self.execute_effect(DbEffect::Connect {
+                        connection: connection.id,
                     });
                 }
                 self.dirty = true;
@@ -5552,6 +5340,14 @@ mod behavior_tests {
     /// into the shared document.
     #[test]
     fn a_saved_connection_reopens_and_runs_sql_without_writing_results() {
+        /// The first published resource of `kind`, at any depth.
+        fn of_kind(resources: &[Resource], kind: &str) -> Option<Resource> {
+            resources.iter().find_map(|resource| {
+                (resource.kind == kind)
+                    .then(|| resource.clone())
+                    .or_else(|| of_kind(&resource.children, kind))
+            })
+        }
         use ui::framework::testing::TestApp;
         use ui::tilo_resource::{Invoke, TextEdit};
 
@@ -5615,45 +5411,47 @@ mod behavior_tests {
             heads,
             "running SQL copies no result into the shared document"
         );
+
+        // The result row shows itself, bound to its own generation.
+        let result = of_kind(&app.harness().resources(), "database.query-result")
+            .expect("the result is a live row");
+        app.call_on(result.id.as_str(), "show-result", serde_json::json!({}))
+            .unwrap();
+
+        // A saved query runs from its own row, once confirmed: nobody types
+        // its id or its SQL.
+        let query = Uuid::new_v4();
+        app.invoke(
+            Invoke::apply(&crate::actions::save_query_action(
+                query,
+                "Proof",
+                "SELECT value FROM proof",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let saved = crate::resource::saved_query_resource_id(query);
+        assert!(
+            app.call_on(&saved, "run", serde_json::json!({})).is_err(),
+            "running a saved query asks for confirmation"
+        );
+        app.effect_on_confirmed(&saved, &crate::resource::DbEffect::Run { query })
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        assert!(
+            app.effect_progress()
+                .iter()
+                .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. })),
+            "the saved query answers once the worker settles it"
+        );
     }
 
-    /// Resource queries stay pending until the worker finishes; the live rows cover schema, results and transactions without secrets and stay schema-qualified.
+    /// The live rows cover schema, results and transactions without secrets and stay schema-qualified.
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
     )]
     #[test]
     fn resource_tree_and_queries_are_schema_qualified_and_secret_free() {
-        // --- phase: resource_query_is_pending_until_the_database_worker_finishes ---
-        {
-            let (mut app, mut doc) = synced();
-            let invocation = tilo_actions::InvocationId::new();
-            let payload = serde_json::to_vec(&DbClientOperation::RunQuery {
-                connection_id: app.session.active_connection_id().unwrap().to_string(),
-                sql: "SELECT 1".into(),
-            })
-            .unwrap();
-            assert_eq!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        invocation,
-                        OperationKind::Effect,
-                        DB_OPERATION_TYPE,
-                        &payload
-                    ),
-                    &mut doc,
-                    &ROOT
-                )
-                .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Accepted)
-            );
-            app.session.block_until_idle();
-            assert!(matches!(
-                app.poll_resource_operation(invocation, false, &doc, &ROOT),
-                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-            ));
-        }
-
         // --- phase: live_rows_cover_schema_results_and_transactions_without_secrets ---
         {
             use ui::tilo_resource::Effect as _;
@@ -5732,10 +5530,13 @@ mod behavior_tests {
                 .find(|action| action.id == "browse")
                 .unwrap();
             let encoded = browse.build_json(&serde_json::Map::new()).unwrap();
-            let operation: DbClientOperation = serde_json::from_slice(&encoded.payload).unwrap();
+            let effect = <crate::resource::DbEffect as ui::tilo_resource::Effect>::from_payload(
+                &encoded.payload,
+            )
+            .unwrap();
             assert!(matches!(
-                operation,
-                DbClientOperation::BrowseTable { schema, table, .. }
+                effect,
+                crate::resource::DbEffect::Browse { schema, table, .. }
                     if schema == "other:schema" && table == original.name
             ));
         }
