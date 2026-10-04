@@ -696,6 +696,8 @@ pub struct ChatApp {
     // through it, permission-checked, attributed to this window's person,
     // recorded in history and replicated. See [`crate::actions`].
     pub(crate) dispatch: Option<ui::framework::Dispatcher<crate::resource::Chat>>,
+    /// The voice channel a started call joins once it is in the document.
+    pub(crate) pending_call: Option<Id>,
     /// This person's Chat preferences, following their other devices; `None`
     /// where the host keeps none (a past version, a test).
     pub(crate) preferences: Option<ui::framework::Setting<crate::preferences::ChatPreferences>>,
@@ -916,6 +918,7 @@ impl ChatApp {
             // `--shots`/tests from binding a real iroh endpoint per instance.
             perms: ChatPermissions::permissive(),
             dispatch: None,
+            pending_call: None,
             preferences: None,
             collapsed: std::collections::BTreeSet::new(),
             #[cfg(test)]
@@ -2939,6 +2942,7 @@ impl Widget for ChatApp {
             self.canonical_dirty = true;
             self.reload(doc);
         }
+        self.join_pending_call();
         // The channel in view is read: advance its watermark (no-op when
         // nothing new arrived) so its unread badge stays cleared. Only a
         // presented instance has a viewer; a headless host worker never

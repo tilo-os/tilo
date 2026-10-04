@@ -26,6 +26,7 @@ use crate::doc::ChatDoc;
 use crate::effects::ChatEffect;
 use crate::identity::LocalIdentity;
 use crate::model::{Category, Channel, User, Workspace};
+use ui::tilo_resource::Effect as _;
 
 /// The shared chat document as everyone reads it — the same state for every
 /// participant; a view compares the authors it records with its own `me`.
@@ -152,6 +153,25 @@ impl Resource for Chat {
             )
         }));
         children
+    }
+
+    /// Starting a call rides the root once there is a conversation to call
+    /// in, and launches Chat when it is closed (Home's "Plan a meeting", an
+    /// agent). A chat holding nothing yet offers nothing to do in it.
+    fn bound_actions(state: &ChatState) -> Vec<tilo_actions::ActionSpec> {
+        if state.workspaces.is_empty() {
+            return Vec::new();
+        }
+        vec![
+            ChatEffect::StartCall.bound().launchable_when_closed(),
+            ChatEffect::StartVideoCall
+                .bound()
+                .launchable_when_closed()
+                .unavailable(
+                    crate::effects::VIDEO_CALL_UNAVAILABLE,
+                    crate::effects::video_call_unavailable_reason(),
+                ),
+        ]
     }
 
     fn child(state: &ChatState, id: &str) -> Option<PublishedResource> {
@@ -428,6 +448,71 @@ mod tests {
             state.messages().next().is_none(),
             "no fabricated conversation"
         );
+    }
+
+    #[test]
+    fn the_root_offers_launchable_call_starts_once_there_is_a_workspace() {
+        let mut doc = ui::tilo_resource::Doc::new();
+        ChatDoc::seed_if_empty(&mut doc);
+        let state = Chat::read(&doc).unwrap();
+        let published = ui::tilo_resource::publish::<Chat>(Chat::KIND, "Chat", &state);
+        let spec = |id: &str| {
+            published
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("the Chat root publishes {id}"))
+        };
+        for id in ["start-call", "start-video-call"] {
+            let action = spec(id);
+            assert_eq!(action.kind, ui::tilo_actions::OperationKind::Effect, "{id}");
+            assert_eq!(
+                action.contract.discovery,
+                ui::tilo_actions::DiscoveryScope::Launchable,
+                "{id} launches Chat when it is closed"
+            );
+            assert_eq!(
+                action.contract.retry,
+                ui::tilo_actions::RetryPolicy::Idempotent
+            );
+        }
+        assert_eq!(spec("start-call").label, "Start a call");
+        assert_eq!(
+            spec("start-video-call").contract.availability,
+            ui::tilo_actions::Availability::Unavailable {
+                code: crate::effects::VIDEO_CALL_UNAVAILABLE.into(),
+                reason: crate::effects::video_call_unavailable_reason(),
+            }
+        );
+        let empty = ui::tilo_resource::publish::<Chat>(
+            Chat::KIND,
+            "Chat",
+            &Chat::read(&ui::tilo_resource::Doc::new()).unwrap(),
+        );
+        assert!(
+            !empty
+                .actions
+                .iter()
+                .any(|action| action.id.starts_with("start-")),
+            "a chat with no conversation yet offers no call to start"
+        );
+    }
+
+    #[test]
+    fn start_call_through_the_door_makes_a_voice_channel_and_joins_it() {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        app.call("start-call", serde_json::json!({})).unwrap();
+        app.settle();
+        let state = app.state();
+        assert!(
+            state
+                .channels
+                .iter()
+                .any(|channel| channel.kind == crate::model::ChannelKind::Voice),
+            "the starter's voice channel stands"
+        );
+        let refused = app.call("start-video-call", serde_json::json!({}));
+        assert!(refused.is_err(), "{refused:?}");
     }
 
     #[test]

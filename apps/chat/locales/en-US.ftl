@@ -62,3 +62,9 @@ chat-call-reconnecting = Reconnecting
 chat-call-joining = Joining
 chat-call-unavailable = Unavailable
 chat-call-stream-status = { $count } audio streams · { $status }
+
+# Effects on the Chat root that start a call in the active workspace (Home's
+# "Plan a meeting", the palette, agents). Video is published but unavailable.
+chat-start-call = Start a call
+chat-start-video-call = Start a video call
+chat-start-video-call-unavailable = Calls are voice-only for now; video is not supported yet
