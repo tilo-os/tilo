@@ -103,7 +103,8 @@ pub trait ResourceApp: 'static {
     /// `created` when this launch created the record, so actions that fill
     /// a new record (the source of a new project) are taken only then. They
     /// go through the same door as every control: checked against the
-    /// participant's permissions, attributed, undoable and in history.
+    /// participant's permissions, attributed, undoable and in history. A
+    /// capture takes none: its [scenario](Self::scenario) stages the record.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Self::Resource>> {
         let _ = (input, created);
         Vec::new()
@@ -381,6 +382,7 @@ fn create<A: ResourceApp>(
             )
             .map_err(LaunchError::Record)?;
     }
+    let capture = context.capture().is_some();
     let run = match context.capture().cloned() {
         Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
         None => Run::live(context.content().cloned()),
@@ -405,8 +407,13 @@ fn create<A: ResourceApp>(
     if let Some(file) = &file {
         file.report_opened(<A::Resource as Resource>::KIND);
     }
-    for invoke in A::launch(&LaunchInput::new(&arguments, file.as_ref()), created) {
-        root.dispatcher().invoke(invoke);
+    // A capture is staged by its scenario alone: what a launch takes reads
+    // from outside the process (a file, a library on this device), which a
+    // screenshot must not depend on.
+    if !capture {
+        for invoke in A::launch(&LaunchInput::new(&arguments, file.as_ref()), created) {
+            root.dispatcher().invoke(invoke);
+        }
     }
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
     component.set_behaviour(A::BEHAVIOUR);
