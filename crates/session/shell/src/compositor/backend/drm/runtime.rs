@@ -495,14 +495,13 @@ enum RawPadEvent {
 /// A touch client has to see the first one or two contacts promptly, before
 /// we can know whether a third will join them. Once it does, `wl_touch.cancel`
 /// retires that partial client stream and ownership remains with the shell
-/// until every contact lifts. Pointer emulation is deliberately held until a
-/// one-finger stream finishes, so an upgrade can never leave a client with a
-/// synthetic press, drag, or click to undo.
+/// until every contact lifts. Turning touch into pointer input, where a
+/// contact needs that, is the compositor's decision: only it knows whether
+/// the contact reached a client that understands touch.
 #[derive(Debug, Default)]
 pub(crate) struct DirectTouchOwnership {
     contacts: BTreeMap<TouchContactKey, DirectTouchContact>,
     next_global_id: u32,
-    max_contacts: usize,
     client_stream_active: bool,
     client_frame_pending: bool,
     shell_owned: bool,
@@ -520,9 +519,7 @@ pub(crate) struct TouchContactKey {
 #[derive(Clone, Copy, Debug)]
 struct DirectTouchContact {
     id: u32,
-    start: (f64, f64),
     current: (f64, f64),
-    moved: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -533,8 +530,6 @@ pub(crate) enum DirectTouchDown {
 }
 
 impl DirectTouchOwnership {
-    const TAP_SLOP: f64 = 14.0;
-
     /// Construct the stable compositor-side identity for a physical touch
     /// contact. Test-control's headless input adapter uses this same
     /// ownership state as DRM, rather than recreating the third-finger
@@ -552,12 +547,9 @@ impl DirectTouchOwnership {
             key,
             DirectTouchContact {
                 id,
-                start: position,
                 current: position,
-                moved: false,
             },
         );
-        self.max_contacts = self.max_contacts.max(self.contacts.len());
         if self.shell_owned {
             return DirectTouchDown::ShellOwned(id);
         }
@@ -586,20 +578,17 @@ impl DirectTouchOwnership {
     ) -> Option<(u32, bool)> {
         let contact = self.contacts.get_mut(key)?;
         contact.current = position;
-        contact.moved |= distance(contact.start, position) > Self::TAP_SLOP;
         if self.client_stream_active {
             self.client_frame_pending = true;
         }
         Some((contact.id, self.client_stream_active))
     }
 
-    /// Returns the last known position, whether this still belongs to the
-    /// client touch stream, and whether it completed a confirmed one-finger
-    /// tap eligible for pointer emulation.
-    pub(crate) fn up(&mut self, key: &TouchContactKey) -> Option<((f64, f64), u32, bool, bool)> {
+    /// Returns the last known position, the contact's id and whether this
+    /// still belongs to the client touch stream.
+    pub(crate) fn up(&mut self, key: &TouchContactKey) -> Option<((f64, f64), u32, bool)> {
         let contact = self.contacts.remove(key)?;
         let forward_to_client = self.client_stream_active;
-        let emulate_pointer = self.client_stream_active && self.max_contacts == 1 && !contact.moved;
         if self.contacts.is_empty() {
             self.reset();
         }
@@ -609,12 +598,7 @@ impl DirectTouchOwnership {
             // compositor-side contact.
             self.client_frame_pending = true;
         }
-        Some((
-            contact.current,
-            contact.id,
-            forward_to_client,
-            emulate_pointer,
-        ))
+        Some((contact.current, contact.id, forward_to_client))
     }
 
     pub(crate) fn client_stream_active(&self) -> bool {
@@ -651,7 +635,6 @@ impl DirectTouchOwnership {
     }
 
     fn reset(&mut self) {
-        self.max_contacts = 0;
         self.client_stream_active = false;
         self.shell_owned = false;
         // `reset` retires ownership, not the protocol batch already queued by
@@ -660,10 +643,6 @@ impl DirectTouchOwnership {
         // disappear without its closing wl_touch.frame. Cancel explicitly
         // clears the flag because wl_touch.cancel is its own boundary.
     }
-}
-
-fn distance(a: (f64, f64), b: (f64, f64)) -> f64 {
-    (a.0 - b.0).hypot(a.1 - b.1)
 }
 
 /// One output the backend is currently driving, from the loop thread's view — the scanout itself lives on the render thread; this is the identity, geometry and crtc needed to reconcile a hotplug.
@@ -768,6 +747,11 @@ pub enum ScanoutCommand {
         dpms_on: bool,
     },
     SetCursorSize(u32),
+    /// Draw the cursor on `output` for its scale.
+    SetCursorScale {
+        output: OutputId,
+        scale: f64,
+    },
     SetPointerImage(crate::compositor::cursor::PointerImage),
     /// Switch one panel off or back on for an output-power client.
     SetOutputPower {
@@ -1941,6 +1925,11 @@ impl DrmDispatchState {
                 (entry.position.0, entry.position.1, logical.0, logical.1),
             );
             self.hw_cursor.set_transform(entry.id, entry.transform);
+            self.hw_cursor.set_scale(entry.id, entry.scale);
+            self.command(ScanoutCommand::SetCursorScale {
+                output: entry.id,
+                scale: entry.scale,
+            });
         }
     }
 
@@ -3181,13 +3170,12 @@ impl DrmDispatchState {
     }
 
     /// The touchscreen arms of [`Self::handle_libinput_event`] — split out
-    /// to keep that dispatcher short. Raw touch always reaches the shell's
-    /// touch arena first. The first one or two contacts also reach `wl_touch`,
-    /// but a third transfers the complete stream to shell gestures and sends
-    /// `wl_touch.cancel` for the partial client stream. A confirmed
-    /// one-finger tap additionally ends in [`BackendEvent::TouchTap`], which
-    /// the compositor may turn into a chrome click, so no multi-touch stream
-    /// can press or drag the client or shell chrome.
+    /// to keep that dispatcher short. Every contact reaches the shell as raw
+    /// touch. The first one or two contacts also reach `wl_touch`, ahead of
+    /// their raw event so the compositor knows whether a client took them;
+    /// a third transfers the complete stream to shell gestures and sends
+    /// `wl_touch.cancel` for the partial client stream. Touch never moves the
+    /// pointer: a finger is not the mouse.
     fn handle_libinput_touch_event(&mut self, event: InputEvent<LibinputInputBackend>) {
         match event {
             InputEvent::TouchDown { event } => {
@@ -3226,16 +3214,15 @@ impl DrmDispatchState {
     /// from libinput extraction so unit tests can cover the ownership wire
     /// without a real touch device or seat.
     fn handle_direct_touch_down(&mut self, key: TouchContactKey, x: f64, y: f64) {
-        self.set_pointer_scene((x, y));
         match self.direct_touch.down(key, (x, y)) {
             DirectTouchDown::ForwardToClient(id) => {
+                self.push(BackendEvent::Touch(TiloTouchEvent::Down { slot: id, x, y }));
                 self.push(BackendEvent::Input(touch_input_event(
                     id,
                     x,
                     y,
                     TouchPhase::Started,
                 )));
-                self.push(BackendEvent::Touch(TiloTouchEvent::Down { slot: id, x, y }));
             }
             DirectTouchDown::CancelClientForShell(id) => {
                 self.push(BackendEvent::Input(touch_input_event(
@@ -3265,7 +3252,6 @@ impl DrmDispatchState {
     }
 
     fn handle_direct_touch_motion(&mut self, key: &TouchContactKey, x: f64, y: f64) {
-        self.set_pointer_scene((x, y));
         if let Some((id, forward_to_client)) = self.direct_touch.motion(key, (x, y)) {
             self.push(BackendEvent::Input(touch_input_event(
                 id,
@@ -3284,11 +3270,9 @@ impl DrmDispatchState {
     }
 
     fn handle_direct_touch_up(&mut self, key: &TouchContactKey) {
-        let Some(((x, y), id, forward_to_client, emulate_pointer)) = self.direct_touch.up(key)
-        else {
+        let Some(((x, y), id, forward_to_client)) = self.direct_touch.up(key) else {
             return;
         };
-        self.set_pointer_scene((x, y));
         self.push(BackendEvent::Input(touch_input_event(
             id,
             x,
@@ -3300,9 +3284,6 @@ impl DrmDispatchState {
         // cleared at the cancellation boundary and nothing reaches it here.
         if forward_to_client {
             self.push(BackendEvent::Touch(TiloTouchEvent::Up { slot: id }));
-        }
-        if emulate_pointer {
-            self.push(BackendEvent::TouchTap { x, y });
         }
     }
 
@@ -3396,6 +3377,9 @@ pub struct DrmRuntime {
     last_display_transaction_check: std::time::Instant,
     last_icc_profile_refresh: std::time::Instant,
     icc_profiles: IccProfileWorker,
+    /// Second handle on the udev-seat libinput context registered in
+    /// `event_loop`, used only to see whether it still has work queued.
+    libinput: Libinput,
 }
 
 /// One live output: its public [`OutputId`], top-left position in the combined coordinate space (laid out side-by-side), and the [`DrmScanout`] driving its crtc.
@@ -3633,6 +3617,44 @@ fn bring_up_all_devices(
 /// [`DrmDispatchState::handle_session_event`],
 /// [`DrmDispatchState::handle_udev_event`], and
 /// [`DrmDispatchState::handle_libinput_event`] for what each one actually does.
+/// Upper bound on the extra libinput passes one [`DrmRuntime::dispatch_pending`]
+/// makes. One device plug raises about four uevents; a dock or a KVM switch a
+/// few dozen at most.
+const LIBINPUT_DRAIN_LIMIT: usize = 64;
+
+/// Run `dispatch` again while `fd` still polls readable, at most `limit` times,
+/// and return how many extra passes ran.
+///
+/// libinput's udev seat takes a single monitor message per `libinput_dispatch`,
+/// and the compositor wakes on this backend's loop fd as an edge. When several
+/// uevents land within one wake — every device plug and unplug raises a burst
+/// of them — one pass leaves the rest queued, the fd stays readable, and no
+/// further edge arrives. A keyboard or mouse plugged in after login then stayed
+/// unopened until unrelated input woke the loop once per stuck message, and the
+/// backlog carried over to the next plug.
+fn redispatch_while_readable(
+    fd: std::os::fd::BorrowedFd<'_>,
+    limit: usize,
+    mut dispatch: impl FnMut(),
+) -> usize {
+    (0..limit)
+        .take_while(|_| fd_readable(fd))
+        .map(|_| dispatch())
+        .count()
+}
+
+fn fd_readable(fd: std::os::fd::BorrowedFd<'_>) -> bool {
+    let mut descriptor = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one valid pollfd for a descriptor the caller keeps borrowed, and
+    // a zero timeout never blocks the compositor thread.
+    let ready = unsafe { libc::poll(&raw mut descriptor, 1, 0) };
+    ready > 0 && descriptor.revents & libc::POLLIN != 0
+}
+
 fn register_event_sources(
     handle: &LoopHandle<'static, DrmDispatchState>,
     session_notifier: LibSeatSessionNotifier,
@@ -3775,6 +3797,7 @@ impl DrmRuntime {
         libinput_ctx
             .udev_assign_seat(&seat_name)
             .map_err(|e| DrmBackendError::Libinput(format!("{e:?}")))?;
+        let libinput = libinput_ctx.clone();
         let libinput_backend = LibinputInputBackend::new(libinput_ctx);
 
         // The session notifier, udev backend, and libinput backend each register as event sources; page-flip/DRM-device sources attach once individual `cardN` devices open.
@@ -3852,6 +3875,7 @@ impl DrmRuntime {
             last_display_transaction_check: std::time::Instant::now(),
             last_icc_profile_refresh: std::time::Instant::now(),
             icc_profiles,
+            libinput,
         })
     }
 
@@ -4204,6 +4228,17 @@ impl DrmRuntime {
     pub fn dispatch_pending(&mut self) {
         use std::time::Duration;
         let _ = self.event_loop.dispatch(Duration::ZERO, &mut self.dispatch);
+        let event_loop = &mut self.event_loop;
+        let dispatch = &mut self.dispatch;
+        let extra = redispatch_while_readable(self.libinput.as_fd(), LIBINPUT_DRAIN_LIMIT, || {
+            let _ = event_loop.dispatch(Duration::ZERO, &mut *dispatch);
+        });
+        if extra == LIBINPUT_DRAIN_LIMIT {
+            tracing::warn!(
+                passes = extra,
+                "DRM input: libinput still has work queued after the drain limit"
+            );
+        }
         if self.dispatch.finish_retired_cards() {
             // A Udev Added that raced removal was deliberately held until
             // libseat closed the old fd.  It is a new physical card from the
@@ -4508,16 +4543,25 @@ impl<'a> From<&'a LiveEntry> for TouchOutputGeometry<'a> {
 /// deterministic after a hotplug. Libinput provides only the raw connector
 /// label, not a DRM card/bus id, so an ambiguous raw label deliberately falls
 /// back to the primary instead of selecting the first matching GPU.
+///
+/// A touchscreen with no association at all is, in practice, the one built
+/// into a laptop or tablet panel (udev tags the rare external touch monitor
+/// with its output). It goes to the built-in panel, even when an external
+/// monitor is the primary display.
 fn touch_output_for_name<'a>(
     outputs: impl IntoIterator<Item = TouchOutputGeometry<'a>>,
     output_name: Option<&str>,
 ) -> Option<TouchOutputGeometry<'a>> {
     let mut fallback = None;
+    let mut panel = None;
     let mut raw_match = None;
     let mut raw_match_count = 0usize;
     for output in outputs {
         if fallback.is_none() {
             fallback = Some(output);
+        }
+        if panel.is_none() && is_builtin_connector(output.connector_name) {
+            panel = Some(output);
         }
         if output_name.is_some_and(|name| name == output.config_key) {
             return Some(output);
@@ -4529,6 +4573,8 @@ fn touch_output_for_name<'a>(
     }
     if raw_match_count == 1 {
         raw_match
+    } else if output_name.is_none() {
+        panel.or(fallback)
     } else {
         fallback
     }
@@ -5138,6 +5184,156 @@ where
         }
     }
     Ok(connectors)
+}
+
+#[cfg(test)]
+mod libinput_drain_tests {
+    use std::cell::Cell;
+    use std::os::fd::AsFd;
+    use std::os::unix::net::UnixDatagram;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use smithay::reexports::calloop::generic::Generic;
+    use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction};
+
+    use super::{fd_readable, redispatch_while_readable};
+
+    /// The DRM runtime's shape in miniature: an inner loop whose source, like
+    /// libinput's udev seat, takes one queued message per dispatch, watched by
+    /// an outer loop that registers the inner loop's fd as an edge.
+    struct Nested {
+        outer: EventLoop<'static, ()>,
+        inner: EventLoop<'static, ()>,
+        sender: UnixDatagram,
+        source: UnixDatagram,
+        received: Rc<Cell<usize>>,
+        woken: Rc<Cell<usize>>,
+    }
+
+    fn nested() -> Nested {
+        let (sender, source) = UnixDatagram::pair().expect("socket pair");
+        source.set_nonblocking(true).expect("nonblocking");
+        let reader = source.try_clone().expect("clone socket");
+        let received = Rc::new(Cell::new(0_usize));
+        let inner: EventLoop<'static, ()> = EventLoop::try_new().expect("inner loop");
+        let count = received.clone();
+        inner
+            .handle()
+            .insert_source(
+                Generic::new(reader, Interest::READ, Mode::Level),
+                move |_, socket, ()| {
+                    let mut buf = [0u8; 16];
+                    if socket.recv(&mut buf).is_ok() {
+                        count.set(count.get().saturating_add(1));
+                    }
+                    Ok(PostAction::Continue)
+                },
+            )
+            .expect("inner source");
+        let outer: EventLoop<'static, ()> = EventLoop::try_new().expect("outer loop");
+        let wake = inner.as_fd().try_clone_to_owned().expect("dup inner fd");
+        let woken = Rc::new(Cell::new(0_usize));
+        let wakes = woken.clone();
+        outer
+            .handle()
+            .insert_source(
+                Generic::new(wake, Interest::READ, Mode::Edge),
+                move |_, _, ()| {
+                    wakes.set(wakes.get().saturating_add(1));
+                    Ok(PostAction::Continue)
+                },
+            )
+            .expect("outer source");
+        Nested {
+            outer,
+            inner,
+            sender,
+            source,
+            received,
+            woken,
+        }
+    }
+
+    impl Nested {
+        fn plug_burst(&self, messages: usize) {
+            for _ in 0..messages {
+                self.sender.send(b"add").expect("send uevent");
+            }
+        }
+
+        /// One compositor iteration: wait for the edge, then dispatch the
+        /// inner loop the way `DrmRuntime::dispatch_pending` does.
+        fn wake_and_dispatch(&mut self, drain: bool) -> bool {
+            let before = self.woken.get();
+            self.outer
+                .dispatch(Duration::ZERO, &mut ())
+                .expect("outer dispatch");
+            if self.woken.get() == before {
+                return false;
+            }
+            self.inner
+                .dispatch(Duration::ZERO, &mut ())
+                .expect("inner dispatch");
+            if drain {
+                let inner = &mut self.inner;
+                redispatch_while_readable(self.source.as_fd(), 64, || {
+                    inner
+                        .dispatch(Duration::ZERO, &mut ())
+                        .expect("inner dispatch");
+                });
+            }
+            true
+        }
+    }
+
+    #[test]
+    fn one_pass_per_edge_strands_the_rest_of_a_plug_burst() {
+        let mut nested = nested();
+        nested.plug_burst(4);
+        assert!(nested.wake_and_dispatch(false));
+        assert_eq!(nested.received.get(), 1);
+        assert!(
+            !nested.wake_and_dispatch(false),
+            "the outer edge must not fire again for messages already queued"
+        );
+        assert_eq!(nested.received.get(), 1);
+        assert!(fd_readable(nested.source.as_fd()));
+    }
+
+    #[test]
+    fn draining_after_the_edge_delivers_every_message_in_the_burst() {
+        let mut nested = nested();
+        nested.plug_burst(4);
+        assert!(nested.wake_and_dispatch(true));
+        assert_eq!(nested.received.get(), 4);
+        assert!(!fd_readable(nested.source.as_fd()));
+        nested.plug_burst(4);
+        assert!(
+            nested.wake_and_dispatch(true),
+            "the next plug wakes the loop again"
+        );
+        assert_eq!(nested.received.get(), 8);
+    }
+
+    #[test]
+    fn a_source_that_never_drains_is_bounded() {
+        let (sender, source) = UnixDatagram::pair().expect("socket pair");
+        sender.send(b"stuck").expect("send");
+        let mut passes = 0_usize;
+        let extra = redispatch_while_readable(source.as_fd(), 5, || {
+            passes = passes.saturating_add(1);
+        });
+        assert_eq!(extra, 5);
+        assert_eq!(passes, 5);
+    }
+
+    #[test]
+    fn an_idle_source_costs_no_extra_pass() {
+        let (_sender, source) = UnixDatagram::pair().expect("socket pair");
+        let extra = redispatch_while_readable(source.as_fd(), 5, || panic!("nothing queued"));
+        assert_eq!(extra, 0);
+    }
 }
 
 #[cfg(test)]
@@ -5846,6 +6042,16 @@ mod tests {
             ];
             let fallback = touch_output_for_name(no_metadata, None).expect("primary fallback");
             assert_eq!(calibrate_touch_position(fallback, 0.5, 0.5), (959.5, 539.5));
+
+            // An unassociated touchscreen is the laptop's own panel, even
+            // when a docked monitor is the primary display.
+            let docked = [
+                touch_geometry("HDMI-A-1", "HDMI-A-1", (0, 0), (2560, 1440), Normal),
+                touch_geometry("eDP-1", "eDP-1", (2560, 0), (2944, 1840), Normal),
+            ];
+            let panel = touch_output_for_name(docked, None).expect("built-in panel");
+            assert_eq!(panel.connector_name, "eDP-1");
+            assert_eq!(calibrate_touch_position(panel, 0.0, 0.0), (2560.0, 0.0));
         }
         // Phase `ambiguous_libinput_connector_name_never_picks_a_secondary_gpu_by_order`.
         {
@@ -7365,7 +7571,7 @@ mod tests {
                     event,
                     BackendEvent::Input(
                         WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
-                    ) | BackendEvent::TouchTap { .. }
+                    )
                 )),
                 "a shell-owned multi-touch stream must not synthesize client/chrome pointer motion, press, drag, or click"
             );
@@ -7393,9 +7599,10 @@ mod tests {
                 "the shell still receives the complete raw stream needed by its three-finger arena"
             );
         }
-        // Phase `a_single_touch_keeps_client_touch_and_reports_one_tap_at_release`.
+        // Phase `a_single_touch_reaches_the_client_and_never_moves_the_pointer`.
         {
             let mut state = DrmDispatchState::default();
+            let pointer = state.pointer;
             let key = test_touch_key("panel", 7);
             state.handle_direct_touch_down(key.clone(), 320.0, 240.0);
             state.handle_direct_touch_motion(&key, 324.0, 242.0);
@@ -7425,18 +7632,9 @@ mod tests {
                     TiloTouchEvent::Up { slot: 0 },
                 ]
             );
-            let taps: Vec<_> = state
-                .events
-                .iter()
-                .filter_map(|event| match event {
-                    BackendEvent::TouchTap { x, y } => Some((*x, *y)),
-                    _ => None,
-                })
-                .collect();
             assert_eq!(
-                taps,
-                [(324.0, 242.0)],
-                "the release-confirmed tap is reported once, at the release position"
+                state.pointer, pointer,
+                "a finger is not the mouse: touch leaves the pointer where it was"
             );
             assert!(
                 !state.events.iter().any(|event| matches!(
@@ -7445,7 +7643,7 @@ mod tests {
                         WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
                     )
                 )),
-                "the backend must not click on its own: only the compositor knows whether the tap already reached a client"
+                "the backend must not click on its own: only the compositor knows whether the touch reached a client that understands it"
             );
         }
         // Phase `moved_single_touch_never_becomes_a_release_position_click`.
@@ -7460,9 +7658,9 @@ mod tests {
                     event,
                     BackendEvent::Input(
                         WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
-                    ) | BackendEvent::TouchTap { .. }
+                    )
                 )),
-                "a movement beyond touch slop is deliberately not converted into a late click"
+                "a drag is never turned into pointer input by the backend"
             );
         }
     }
@@ -7529,8 +7727,8 @@ mod tests {
             assert!(matches!(
                 state.events.as_slice(),
                 [
-                    BackendEvent::Input(WindowEvent::Touch(_)),
                     BackendEvent::Touch(TiloTouchEvent::Down { .. }),
+                    BackendEvent::Input(WindowEvent::Touch(_)),
                     BackendEvent::Touch(TiloTouchEvent::Frame),
                     BackendEvent::Input(WindowEvent::Touch(touch)),
                     BackendEvent::Touch(TiloTouchEvent::Cancel),

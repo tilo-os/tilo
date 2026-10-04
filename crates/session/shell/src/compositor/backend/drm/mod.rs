@@ -1011,6 +1011,11 @@ fn apply_scanout_command(
                 entry.scanout.set_cursor_size(size);
             }
         }
+        ScanoutCommand::SetCursorScale { output, scale } => {
+            for entry in scanouts.iter_mut().filter(|entry| entry.id == output) {
+                entry.scanout.set_cursor_scale(scale);
+            }
+        }
         ScanoutCommand::SetPointerImage(image) => {
             for entry in scanouts.iter_mut() {
                 entry.scanout.set_pointer_image(image.clone());

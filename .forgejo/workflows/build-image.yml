@@ -1079,8 +1079,12 @@ jobs:
           # both take the commit time instead and their configs can agree.
           echo "SOURCE_DATE_ISO=$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
           if [[ $DEV_BUILD == true ]]; then
+            # Every rootfs step is keyed on the epoch, and the kernel enters
+            # only near the end of it: with the kernel snapshot (refreshed
+            # several times a day) in the epoch, each refresh rebuilt the
+            # whole rootfs and the dev build toolchain on every slot.
             epoch=0
-            for ref in "$BASE_REF" "$RPMS_REF" "$KERNEL_RPMS_REF"; do
+            for ref in "$BASE_REF" "$RPMS_REF"; do
               created="$(date -u -d "$(skopeo inspect "docker://$ref" | jq -er .Created)" +%s)"
               if (( created > epoch )); then epoch=$created; fi
             done
@@ -1998,37 +2002,38 @@ jobs:
       # A real boot of this image's own UKI: from an ESP beside an encrypted
       # Tilo root, on a virtual panel larger than the firmware's mode, filmed
       # through the disk unlock. The UKI splash and Plymouth must cover the
-      # whole panel in every phase (os/dev/check-boot-splash.py).
+      # whole panel in every phase (os/dev/check-boot-splash.py). It films
+      # beside the steps below, which need nothing from it; "Check the boot
+      # splash film" waits for it.
       - name: Film the boot splash on a high-resolution panel
+        id: splash
         if: steps.dev-image.outputs.digest != ''
-        timeout-minutes: 45
         env:
           IMAGE_DIGEST: ${{ steps.dev-image.outputs.digest }}
           SPLASH_FRAMES: /var/tmp/tilo-boot-splash-${{ matrix.arch }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          if command -v apt-get >/dev/null; then
-            if [[ '${{ matrix.arch }}' == x86_64 ]]; then firmware='ovmf qemu-system-x86'; else firmware='qemu-efi-aarch64 qemu-system-arm'; fi
-            sudo -n apt-get update -qq
-            sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-              cryptsetup-bin dosfstools fdisk mtools skopeo zstd $firmware >/dev/null
-          else
-            if [[ '${{ matrix.arch }}' == x86_64 ]]; then firmware='edk2-ovmf qemu-system-x86-core qemu-device-display-virtio-vga'; else firmware='edk2-aarch64 qemu-system-aarch64-core qemu-device-display-virtio-gpu-pci'; fi
-            sudo -n dnf -y -q install cryptsetup dosfstools mtools skopeo util-linux zstd \
-              qemu-device-display-virtio-gpu $firmware >/dev/null
-          fi
-          rm -rf -- "$SPLASH_FRAMES"
-          python3 os/dev/check-boot-splash.py --arch '${{ matrix.arch }}' --out "$SPLASH_FRAMES" \
-            "docker://registry.tilo.so/tilo/tilo-ci@$IMAGE_DIGEST"
-      - name: Retain the boot splash frames
-        if: always() && steps.dev-image.outputs.digest != ''
-        continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        with:
-          name: tilo-boot-splash-${{ matrix.arch }}
-          path: /var/tmp/tilo-boot-splash-${{ matrix.arch }}
-          if-no-files-found: ignore
-          retention-days: 7
+          export TILO_SPLASH_LOG="$RUNNER_TEMP/tilo-boot-splash.log"
+          rm -f "$TILO_SPLASH_LOG" "$TILO_SPLASH_LOG.status"
+          echo "TILO_SPLASH_LOG=$TILO_SPLASH_LOG" >> "$GITHUB_ENV"
+          setsid nohup bash -c '
+            set -euo pipefail
+            trap '\''echo "$?" > "$TILO_SPLASH_LOG.status"'\'' EXIT
+            if command -v apt-get >/dev/null; then
+              if [[ $ARCH == x86_64 ]]; then firmware="ovmf qemu-system-x86"; else firmware="qemu-efi-aarch64 qemu-system-arm"; fi
+              sudo -n apt-get update -qq
+              sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                cryptsetup-bin dosfstools fdisk mtools skopeo zstd $firmware >/dev/null
+            else
+              if [[ $ARCH == x86_64 ]]; then firmware="edk2-ovmf qemu-system-x86-core qemu-device-display-virtio-vga"; else firmware="edk2-aarch64 qemu-system-aarch64-core qemu-device-display-virtio-gpu-pci"; fi
+              sudo -n dnf -y -q install cryptsetup dosfstools mtools skopeo util-linux zstd \
+                qemu-device-display-virtio-gpu $firmware >/dev/null
+            fi
+            rm -rf -- "$SPLASH_FRAMES"
+            timeout 45m python3 os/dev/check-boot-splash.py --arch "$ARCH" --out "$SPLASH_FRAMES" \
+              "docker://registry.tilo.so/tilo/tilo-ci@$IMAGE_DIGEST"' > "$TILO_SPLASH_LOG" 2>&1 < /dev/null &
+          echo "$!" > "$TILO_SPLASH_LOG.pid"
 
       # Reproducibility is a release gate, not a statement inferred from pinned
       # inputs. Rebuild without the first build's layer cache and compare the
@@ -2329,6 +2334,26 @@ jobs:
           # is out; its board job then fails on the missing image.
           [[ $boards_ok == true ]]
 
+      - name: Check the boot splash film
+        if: ${{ !cancelled() && steps.splash.outcome == 'success' }}
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          while [[ ! -s $TILO_SPLASH_LOG.status ]] && kill -0 "$(cat "$TILO_SPLASH_LOG.pid")" 2>/dev/null; do
+            sleep 5
+          done
+          cat "$TILO_SPLASH_LOG"
+          [[ $(cat "$TILO_SPLASH_LOG.status" 2>/dev/null) == 0 ]]
+      - name: Retain the boot splash frames
+        if: always() && steps.splash.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: tilo-boot-splash-${{ matrix.arch }}
+          path: /var/tmp/tilo-boot-splash-${{ matrix.arch }}
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Publish the rootfs base for the runners' seed
         id: rootfs-publish
         if: github.event_name == 'workflow_call' && github.ref == 'refs/heads/main' && needs.plan.outputs.hardware-profile == 'generic' && steps.rootfs-stage.outcome == 'success' && steps.dev-image.outcome == 'success'
@@ -2628,6 +2653,11 @@ jobs:
           # throwaway overlay of the still-unbooted disk, it signs in straight
           # to the desktop, without identity setup or recovery.
           ./os/dev/test-joined-device-startup.sh "$TILO_DISK" --out "$TILO_RUN/joined-device"
+          # Two more overlays on one Ethernet segment: one creates an
+          # identity, the other joins it from first-boot onboarding through
+          # Connect a nearby device, first through an injected helper failure
+          # and then for real, and signs in again afterwards.
+          ./os/dev/test-nearby-pairing.sh "$TILO_DISK" --out "$TILO_RUN/nearby-pairing"
           # Any failing check leaves the guest's own account of it in the log:
           # failed units and this boot's warnings (the gate user reads the
           # system journal through wheel), before the VM goes away.
@@ -2691,6 +2721,18 @@ jobs:
           # the release gate that proves the compositor-owned first-use UI is
           # visible to an external AT-SPI consumer on the installed
           # graphical session.
+          # Password fields refuse Copy and Cut. Typed and copied with the
+          # real keyboard, ordinary chrome text reaches the session clipboard
+          # while the backup passphrase leaves it holding what it held.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-copy-plain
+          ./os/dev/vm.sh type tiloplainprobe
+          ./os/dev/vm.sh keys ctrl-a ctrl-c
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh clipboard-is tiloplainprobe
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-copy-secret
+          ./os/dev/vm.sh type tilosecretprobe42
+          ./os/dev/vm.sh keys ctrl-a ctrl-c ctrl-x
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh \
+            clipboard-keeps tilo-clipboard-sentinel tilosecretprobe42
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-actions
           for attempt in $(seq 1 60); do
             if ./os/dev/vm.sh ssh \
@@ -2707,6 +2749,12 @@ jobs:
             sleep 1
           done
           ./os/dev/vm.sh keys tab ret
+
+          # A desktop that reached its first session can still be degraded.
+          # No unit may have failed by now, and the rollback confirmation
+          # (which refuses to confirm a degraded generation) must have run and
+          # succeeded. Before the app checks, so none of them can mask it.
+          ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/boot-units-gate.sh"
 
           # The compositor presented this login's first-use flow on the
           # presenter its GPU allows, within budget: direct GPU scanout
@@ -2736,20 +2784,69 @@ jobs:
           # AT-SPI client. Per-app evidence comes from their installed manifest;
           # this is distinct from the compositor and Files-depth smokes below.
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh
+          # The sandboxed Settings reads the device's network through the
+          # system authorities it is granted: its Network pane must say what
+          # nmcli says on the same booted, connected VM, and show no read error.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh settings-network
           # The empty workspace's cards perform what they name: the Notes card
           # opens Notes itself rather than a launcher pre-filled with "Notes".
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh card Notes Notes
+          # The call card starts the workspace's call through Chat's own
+          # action: Chat opens already in the call, not on a Call button.
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh card "Start a call" Chat --expect "Leave call"'
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
+          # The system authentication sheet is drawn by the compositor, not
+          # an app window. A real polkit request from the graphical session
+          # must reach an external reader as a dialog with password text it
+          # can focus, type into and cancel.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh auth
           # The greetd login left the display manager's SELinux domain: the
           # compositor and the apps it launched run as the user, in the
           # session's logind scope and their own app scopes, and nothing of
           # the session was denied home access in its first minute.
           ./os/dev/vm.sh ssh /usr/libexec/tilo/session-context-check.sh
 
+          # Typing in a note is a keyboard's job, so the sentence reaches Notes
+          # through QEMU's keyboard as key presses, never an app API. The
+          # document must read back exactly what was typed, in order.
+          typed_sentence='The quick brown fox jumps over the lazy dog, twice!'
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-typing'
+          ./os/dev/vm.sh type "$typed_sentence"
+          # The note is durable, and Notes says so: "Saved", never "Not saved".
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$typed_sentence' --state /tmp/notes-typing --status Saved"
+
+          # Tab in a note nests the line under the one above instead of
+          # moving focus away; the second block must read as nested.
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-nesting'
+          ./os/dev/vm.sh type one
+          ./os/dev/vm.sh keys ret
+          ./os/dev/vm.sh type two
+          ./os/dev/vm.sh keys tab
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh described "Paragraph block 2" "Level 2" --state /tmp/notes-nesting'
+
+          # Keyboards and mice plugged in after login must reach the running
+          # compositor: a USB keyboard hot-added on QEMU's own bus, then a
+          # virtual keyboard plugged and unplugged repeatedly, every time
+          # listed in the compositor's input snapshot as opened and dropped.
+          usb_kbd='QEMU QEMU USB Keyboard'
+          usb_kbds=$(./os/dev/vm.sh ssh "/usr/libexec/tilo/input-hotplug-check.sh count '$usb_kbd'")
+          ./os/dev/vm.sh cmd 'device_add usb-kbd,id=hotplug-kbd'
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo/input-hotplug-check.sh wait-count '$usb_kbd' $((usb_kbds + 1))"
+          ./os/dev/vm.sh cmd 'device_del hotplug-kbd'
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo/input-hotplug-check.sh wait-count '$usb_kbd' $usb_kbds"
+
+          # The windows opened above logged the GPU adapter they render on. On
+          # a virgl boot none may have fallen back to a CPU rasterizer; the 2D
+          # display has no render node, so there is nothing to judge.
+          ./os/dev/vm.sh ssh "$(python3 scripts/vm-acceptance/gpu_check.py --probe)" \
+            | python3 scripts/vm-acceptance/gpu_check.py
+
           # Lock is compositor-owned too. It has previously fallen outside the
           # app-window AT-SPI path; exercise the Super+L route and require its
-          # protected password field and instructions on the session bus.
-          ./os/dev/vm.sh keys meta_l-l
+          # protected password field and instructions on the session bus. The
+          # chord comes from the last virtual keyboard plugged in above, so it
+          # also proves a hot-plugged device's keys reach the compositor.
+          ./os/dev/vm.sh ssh "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/input-hotplug-check.sh uinput \"\$XDG_RUNTIME_DIR/tilo/input-state.json\""
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock
           ./os/dev/vm.sh type "$TILO_PASS"
           ./os/dev/vm.sh keys ret
@@ -2758,6 +2855,9 @@ jobs:
             # What makes the disk a dev VM: tilo-vm reaches tilo-vmd as root,
             # on this architecture, built on exactly this lane's image.
             ./os/dev/check-dev-vm.sh --arch '${{ matrix.arch }}' --base-digest "$dev_base_digest"
+            # The image's apps are installed packages: Settings updates from
+            # a registry, launches as the new version, and rolls back.
+            RUNNER='./os/dev/vm.sh ssh' ./os/tests/booted_app_update.sh
           fi
           else
             # A Lenovo DTB cannot describe QEMU virt hardware. The sealed
@@ -2800,6 +2900,7 @@ jobs:
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.ppm
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.png
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/joined-device/
+            /var/tmp/tilo-projection-vm-${{ matrix.arch }}/nearby-pairing/
             /var/tmp/tilo-projection-image-${{ matrix.arch }}/qcow2/.install.log
           if-no-files-found: ignore
 

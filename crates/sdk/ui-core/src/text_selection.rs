@@ -123,10 +123,7 @@ use crate::text_break::unicode_word_ranges;
 /// word this returns that word's start; at its start it returns the preceding
 /// word's start. The result is always a UTF-8 boundary.
 pub fn prev_word_boundary(text: &str, byte_idx: usize) -> usize {
-    let mut byte = byte_idx.min(text.len());
-    while byte > 0 && !text.is_char_boundary(byte) {
-        byte = byte.saturating_sub(1);
-    }
+    let byte = text.floor_char_boundary(byte_idx);
     unicode_word_ranges(text)
         .rev()
         .find(|range| range.start < byte)
@@ -136,10 +133,7 @@ pub fn prev_word_boundary(text: &str, byte_idx: usize) -> usize {
 /// Mirror of [`prev_word_boundary`] for forward movement: the next UAX #29
 /// word start, or the end of the string.
 pub fn next_word_boundary(text: &str, byte_idx: usize) -> usize {
-    let mut byte = byte_idx.min(text.len());
-    while byte < text.len() && !text.is_char_boundary(byte) {
-        byte = byte.saturating_add(1);
-    }
+    let byte = text.ceil_char_boundary(byte_idx);
     unicode_word_ranges(text)
         .find(|range| range.start > byte)
         .map_or(text.len(), |range| range.start)
@@ -149,10 +143,7 @@ pub fn next_word_boundary(text: &str, byte_idx: usize) -> usize {
 /// word immediately on the left when the index lands in following punctuation
 /// or whitespace. Used by double-click word selection.
 pub fn word_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
-    let mut byte = byte_idx.min(text.len());
-    while byte > 0 && !text.is_char_boundary(byte) {
-        byte = byte.saturating_sub(1);
-    }
+    let byte = text.floor_char_boundary(byte_idx);
     let mut previous = None;
     for range in unicode_word_ranges(text) {
         if range.start <= byte && byte <= range.end {

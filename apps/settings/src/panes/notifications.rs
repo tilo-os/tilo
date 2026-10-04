@@ -32,11 +32,11 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::prefs::{NotificationPrefs, SystemPrefs};
 use crate::widgets::{
-    El, StatusTone, caption, card, choice_row, rows, semantic_status_pill, setting_row_described,
-    value_row,
+    El, StatusTone, caption, card, choice_row, error_row, rows, semantic_status_pill,
+    setting_row_described, value_row,
 };
 
 pub const DND_KEY: &str = "notifications.do_not_disturb";
@@ -506,9 +506,20 @@ impl NotificationsPane {
     }
 
     fn build_delivery_card() -> Box<dyn Widget> {
-        let sounds_value = match media::event_sound::sound_backend() {
-            media::event_sound::SoundBackend::PipeWire => t("notif-sounds-pipewire"),
-            media::event_sound::SoundBackend::Unavailable => t("notif-sounds-missing"),
+        let sounds_row = match (
+            media::event_sound::sound_backend(),
+            super::installed_programs_unreadable(),
+        ) {
+            (media::event_sound::SoundBackend::PipeWire, _) => {
+                value_row(&t("notif-sounds"), &t("notif-sounds-pipewire"))
+            }
+            (media::event_sound::SoundBackend::Unavailable, Some(error)) => error_row(
+                &t("notif-sounds"),
+                &t_args("settings-programs-error", &[("error", error.into())]),
+            ),
+            (media::event_sound::SoundBackend::Unavailable, None) => {
+                value_row(&t("notif-sounds"), &t("notif-sounds-missing"))
+            }
         };
         card(
             &t("notif-delivery-title"),
@@ -518,7 +529,7 @@ impl NotificationsPane {
                     &t("notif-lock-screen-desc"),
                     Self::toggle("notifications.lock_screen", LOCK_SCREEN_KEY),
                 ),
-                value_row(&t("notif-sounds"), &sounds_value),
+                sounds_row,
                 setting_row_described(
                     &t("notif-play-sounds"),
                     &t("notif-play-sounds-desc"),

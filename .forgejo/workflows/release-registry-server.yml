@@ -160,7 +160,7 @@ jobs:
 
       - name: Retain the immutable digest receipt
         if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: registry-server-image-receipt
           path: registry-server-image-receipt/registry-server-image.json

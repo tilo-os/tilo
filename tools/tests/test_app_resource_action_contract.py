@@ -281,6 +281,19 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertFalse(any("not reachable" in item.reason for item in violations))
+        with self.subTest(phase='framework surface answering typed effects passes'):
+            root = self.fixture(
+                "#[derive(Model, Default)] pub struct Note { pub body: String }\n"
+                "#[resource(kind = \"sample.note\", label = \"Note\")]\n"
+                "impl Note { #[action] pub fn edit(&mut self, text: String) { self.body = text; } }\n"
+                "struct Sample;\n"
+                "impl ResourceApp for Sample { type Resource = Note; }\n"
+                "impl ResourceSurface<Note, Show> for View {\n"
+                " fn effect(&mut self, effect: Show, cx: &mut EffectCx<Note, Self>) -> EffectAnswer { todo() } }\n"
+                "fn check(spec: &ActionSpec) -> bool { spec.kind == OperationKind::View }\n"
+            )
+            violations, _ = contract.audit(root)
+            self.assertEqual(violations, [])
 
     def test_agent_uses_generic_broker_catalogue_and_receipts(self):
         with self.subTest(phase='agent must use generic broker catalogue and receipts'):
@@ -376,7 +389,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
                 "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
             )
-            baseline = root / contract.BASELINE
+            baseline = root / contract.BASELINE / "sample.toml"
             baseline.parent.mkdir(parents=True)
             baseline.write_text(
                 '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
@@ -400,7 +413,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
             )
-            baseline = root / contract.BASELINE
+            baseline = root / contract.BASELINE / "sample.toml"
             baseline.parent.mkdir(parents=True)
             baseline.write_text(
                 '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
@@ -408,6 +421,22 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertTrue(any("stale raw_on_click_closure ceiling" in item.reason for item in violations))
+        with self.subTest(phase="each ceiling lives in its app's baseline file"):
+            root = self.fixture(
+                "use tilo_actions::ActionSpec;\n"
+                "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+                "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
+            )
+            baseline = root / contract.BASELINE / "other.toml"
+            baseline.parent.mkdir(parents=True)
+            baseline.write_text(
+                '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
+                encoding="utf-8",
+            )
+            violations, _ = contract.audit(root)
+            self.assertTrue(any("belongs in" in item.reason for item in violations))
 
     def test_bespoke_automation_palette_and_search_activation_paths_fail(self):
         with self.subTest(phase='new bespoke automation entry point fails'):
