@@ -3586,52 +3586,60 @@ impl RemoteApp {
                 done()
             }
             RemoteEffect::TrustHostKey {
-                connection: connection_id,
+                connection,
                 observed,
-            } => {
-                let connection = self
-                    .workspace
-                    .get(connection_id)
-                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
-                if !matches!(self.ssh_host_key_issue(connection_id), Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == &observed)
-                {
-                    return Err(
-                        "the observed SSH host key is stale; reconnect to inspect the current key"
-                            .into(),
-                    );
-                }
-                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
-                    format!("private SSH host-key storage is unavailable: {error}")
-                })?;
-                crate::ssh::trust_host_key(&path, &connection.host, connection.port, &observed)
-                    .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
-                self.open_session(connection_id);
-                done()
-            }
-            RemoteEffect::ForgetHostKey {
-                connection: connection_id,
-            } => {
-                let connection = self
-                    .workspace
-                    .get(connection_id)
-                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
-                if !matches!(
-                    self.ssh_host_key_issue(connection_id),
-                    Some(crate::ssh::HostKeyIssue::Changed { .. })
-                ) {
-                    return Err(
-                        "only the currently observed changed SSH host key can be forgotten".into(),
-                    );
-                }
-                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
-                    format!("private SSH host-key storage is unavailable: {error}")
-                })?;
-                crate::ssh::forget_host_key(&path, &connection.host, connection.port)
-                    .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
-                self.disconnect_session();
-                done()
+            } => self
+                .trust_host_key(connection, &observed)
+                .and_then(|()| done()),
+            RemoteEffect::ForgetHostKey { connection } => {
+                self.forget_host_key(connection).and_then(|()| done())
             }
         }
+    }
+
+    /// Trust the SSH host key `observed` on first contact with `connection_id`,
+    /// then connect.
+    fn trust_host_key(
+        &mut self,
+        connection_id: ConnectionId,
+        observed: &crate::ssh::HostKeyIdentity,
+    ) -> Result<(), String> {
+        let connection = self
+            .workspace
+            .get(connection_id)
+            .ok_or_else(|| "saved connection no longer exists".to_string())?;
+        if !matches!(self.ssh_host_key_issue(connection_id), Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == observed)
+        {
+            return Err(
+                "the observed SSH host key is stale; reconnect to inspect the current key".into(),
+            );
+        }
+        let path = crate::ssh::default_known_hosts_path()
+            .map_err(|error| format!("private SSH host-key storage is unavailable: {error}"))?;
+        crate::ssh::trust_host_key(&path, &connection.host, connection.port, observed)
+            .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
+        self.open_session(connection_id);
+        Ok(())
+    }
+
+    /// Forget the changed SSH host key of `connection_id`, and disconnect.
+    fn forget_host_key(&mut self, connection_id: ConnectionId) -> Result<(), String> {
+        let connection = self
+            .workspace
+            .get(connection_id)
+            .ok_or_else(|| "saved connection no longer exists".to_string())?;
+        if !matches!(
+            self.ssh_host_key_issue(connection_id),
+            Some(crate::ssh::HostKeyIssue::Changed { .. })
+        ) {
+            return Err("only the currently observed changed SSH host key can be forgotten".into());
+        }
+        let path = crate::ssh::default_known_hosts_path()
+            .map_err(|error| format!("private SSH host-key storage is unavailable: {error}"))?;
+        crate::ssh::forget_host_key(&path, &connection.host, connection.port)
+            .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
+        self.disconnect_session();
+        Ok(())
     }
 
     /// Answer the session effect still waiting, once its transport settled.
