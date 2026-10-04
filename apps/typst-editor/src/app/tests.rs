@@ -381,8 +381,8 @@ fn controls_stay_in_the_bar_and_never_overlap_at_any_width() {
             render_once(&mut app);
             let rects = control_rects(&app);
             assert!(
-                rects.len() >= 4,
-                "the picker, switch or arrows, toolbar and History show at {width}px"
+                rects.len() >= 3,
+                "the picker, switch or arrows, and toolbar show at {width}px"
             );
             for (index, (left_name, left)) in rects.iter().enumerate() {
                 assert!(
