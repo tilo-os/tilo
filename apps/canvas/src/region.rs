@@ -425,70 +425,199 @@ fn off_line(point: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     ((b[0] - a[0]) * (a[1] - point[1]) - (a[0] - point[0]) * (b[1] - a[1])).abs() / length
 }
 
-/// A grid of yes/no cells, row by row: a region as pixels.
-pub struct Mask {
+/// A grid of coverage, row by row: how much of each cell an area covers,
+/// `0..=1`, as the magic wand finds it.
+pub struct Coverage<'a> {
     pub width: usize,
     pub height: usize,
-    pub cells: Vec<bool>,
+    pub cells: &'a [f32],
 }
 
-impl Mask {
-    fn at(&self, x: usize, y: usize) -> bool {
-        y.checked_mul(self.width)
-            .and_then(|row| row.checked_add(x))
-            .and_then(|index| self.cells.get(index))
+/// Where coverage is traced: half of a cell covered is on the edge.
+const HALF: f32 = 0.5;
+/// The smallest speck or hole a traced coverage keeps, in square cells.
+const SPECK: f64 = 1.5;
+
+impl Coverage<'_> {
+    fn at(&self, x: usize, y: usize) -> f32 {
+        // Cells are read one cell in, so the grid has an empty border and
+        // every edge closes.
+        if x == 0 || y == 0 || x > self.width || y > self.height {
+            return 0.0;
+        }
+        self.cells
+            .get((y - 1) * self.width + (x - 1))
             .copied()
-            .unwrap_or(false)
+            .unwrap_or(0.0)
     }
 
-    /// The cells that are set, as a region in units: `to_units` maps a
-    /// cell's corner to the artwork. Its staircase edges are smoothed to
-    /// lines through the middle of each step.
+    /// The area as a region in units: `to_units` maps a cell's corner to the
+    /// artwork. The edge runs where coverage is half, followed between the
+    /// cells' centres, so a partly covered cell puts it partway across.
     pub fn traced(&self, to_units: Affine) -> Region {
-        let mut runs: Vec<Contour> = Vec::new();
-        for y in 0..self.height {
-            let mut x = 0;
-            while x < self.width {
-                if !self.at(x, y) {
-                    x = x.saturating_add(1);
+        let grid = self.width + 2;
+        let inside = |x: usize, y: usize| self.at(x, y) >= HALF;
+        // An edge between grid points: (y * grid + x) * 2, plus 1 when it
+        // runs down rather than across.
+        let across = |x: usize, y: usize| (y * grid + x) * 2;
+        let down = |x: usize, y: usize| (y * grid + x) * 2 + 1;
+        let point = |key: usize| {
+            let (base, vertical) = (key / 2, key % 2 == 1);
+            let (column, row) = (base % grid, base / grid);
+            let (to_column, to_row) = if vertical {
+                (column, row + 1)
+            } else {
+                (column + 1, row)
+            };
+            let (from, to) = (self.at(column, row), self.at(to_column, to_row));
+            let along = if (to - from).abs() > f32::EPSILON {
+                f64::from(((HALF - from) / (to - from)).clamp(0.0, 1.0))
+            } else {
+                0.5
+            };
+            // Grid point (column, row) is the centre of cell (column - 1, row - 1).
+            let (x, y) = (cell(column) - 0.5, cell(row) - 0.5);
+            if vertical {
+                [x, y + along]
+            } else {
+                [x + along, y]
+            }
+        };
+        let mut next: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        let mut starts: Vec<usize> = Vec::new();
+        for y in 0..=self.height {
+            for x in 0..=self.width {
+                // The square's corners and sides, clockwise from the top left.
+                let corners = [(x, y), (x + 1, y), (x + 1, y + 1), (x, y + 1)];
+                let sides = [across(x, y), down(x + 1, y), across(x, y + 1), down(x, y)];
+                let ins = corners.map(|(x, y)| inside(x, y));
+                if ins.iter().all(|inside| *inside) || ins.iter().all(|inside| !*inside) {
                     continue;
                 }
-                let start = x;
-                while x < self.width && self.at(x, y) {
-                    x = x.saturating_add(1);
+                // Where the edge crosses the sides, and whether it enters the
+                // area there, going clockwise.
+                let crossings: Vec<(usize, bool)> = (0..4)
+                    .filter_map(|side| {
+                        let (from, to) = (ins.get(side)?, ins.get((side + 1) % 4)?);
+                        (from != to).then_some((*sides.get(side)?, !*from))
+                    })
+                    .collect();
+                let count = crossings.len();
+                // Two inside corners across from each other join through the
+                // middle when it is covered too.
+                let joined = count == 4
+                    && corners.iter().map(|(x, y)| self.at(*x, *y)).sum::<f32>() / 4.0 >= HALF;
+                for (index, (side, enters)) in crossings.iter().enumerate() {
+                    if !enters {
+                        continue;
+                    }
+                    let partner = if joined { index + count - 1 } else { index + 1 } % count;
+                    if let Some((leaves, _)) = crossings.get(partner) {
+                        next.insert(*side, *leaves);
+                        starts.push(*side);
+                    }
                 }
-                let (x0, x1, y0) = (cell(start), cell(x), cell(y));
-                runs.push(vec![[x0, y0], [x1, y0], [x1, y0 + 1.0], [x0, y0 + 1.0]]);
             }
         }
-        let steps = Region::of_contours(runs);
-        let smooth = steps
-            .shapes
-            .iter()
-            .flatten()
-            .map(|contour| douglas_peucker(&smooth_steps(contour), 0.35))
-            .collect();
-        Region::of_contours(smooth).transformed(to_units)
+        let mut contours: Vec<Contour> = Vec::new();
+        for start in starts {
+            let mut contour = Vec::new();
+            let mut key = start;
+            while let Some(after) = next.remove(&key) {
+                contour.push(point(key));
+                key = after;
+            }
+            if contour.len() >= 3 && signed_area(&contour).abs() >= SPECK {
+                contours.push(douglas_peucker(&softened(&contour), 0.2));
+            }
+        }
+        Region::of_contours(contours).transformed(to_units)
     }
 }
 
-/// A traced outline with its staircases read as the lines through their
-/// steps' middles. A corner between two long edges stays a corner.
-fn smooth_steps(contour: &[[f64; 2]]) -> Contour {
+/// A traced outline with each corner drawn a little toward its neighbours,
+/// so the grid it was traced on does not show.
+fn softened(contour: &[[f64; 2]]) -> Contour {
     let count = contour.len();
     let point = |index: usize| contour.get(index % count).copied().unwrap_or_default();
-    // A step is an edge one cell long.
-    let step = |index: usize| distance(point(index), point(index + 1)) <= 1.0 + 1e-9;
-    let mut smooth = Vec::with_capacity(count);
-    for index in 0..count {
-        if step(index) {
-            let (a, b) = (point(index), point(index + 1));
-            smooth.push([f64::midpoint(a[0], b[0]), f64::midpoint(a[1], b[1])]);
-        } else if !step(index + count - 1) {
-            smooth.push(point(index));
+    (0..count)
+        .map(|index| {
+            let (before, here, after) = (point(index + count - 1), point(index), point(index + 1));
+            [
+                0.5 * here[0] + 0.25 * (before[0] + after[0]),
+                0.5 * here[1] + 0.25 * (before[1] + after[1]),
+            ]
+        })
+        .collect()
+}
+
+impl Region {
+    /// Which cells of a `width` by `height` grid have their centre inside:
+    /// `to_cells` maps units to the grid, a cell one unit square.
+    pub fn cells(&self, to_cells: Affine, width: usize, height: usize) -> Vec<bool> {
+        let mut rows: Vec<Vec<(f64, i32)>> = vec![Vec::new(); height];
+        for contour in self.shapes.iter().flatten() {
+            let points: Vec<Point> = contour
+                .iter()
+                .map(|[x, y]| to_cells * Point::new(*x, *y))
+                .collect();
+            for (index, a) in points.iter().enumerate() {
+                let Some(b) = points.get((index + 1) % points.len()) else {
+                    continue;
+                };
+                if (a.y - b.y).abs() < 1e-12 {
+                    continue;
+                }
+                let (low, high, winding) = if a.y < b.y { (a, b, 1) } else { (b, a, -1) };
+                // The rows whose centre y + 0.5 lies in [low.y, high.y).
+                let first = index_of((low.y - 0.5).ceil());
+                let last = index_of((high.y - 0.5).ceil()).min(height);
+                for row in first..last {
+                    let y = cell(row) + 0.5;
+                    let x = low.x + (y - low.y) * (high.x - low.x) / (high.y - low.y);
+                    if let Some(crossings) = rows.get_mut(row) {
+                        crossings.push((x, winding));
+                    }
+                }
+            }
         }
+        let mut cells = vec![false; width * height];
+        for (row, crossings) in rows.iter_mut().enumerate() {
+            crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut winding = 0;
+            for pair in crossings.windows(2) {
+                let [(from, turn), (to, _)] = pair else {
+                    continue;
+                };
+                winding += turn;
+                if winding == 0 {
+                    continue;
+                }
+                // The cells whose centre x + 0.5 lies in [from, to).
+                let first = index_of((from - 0.5).ceil());
+                let last = index_of((to - 0.5).ceil()).min(width);
+                for column in first..last {
+                    if let Some(slot) = cells.get_mut(row * width + column) {
+                        *slot = true;
+                    }
+                }
+            }
+        }
+        cells
     }
-    smooth
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped at zero, and the callers bound it by the grid"
+)]
+fn index_of(value: f64) -> usize {
+    if value.is_finite() {
+        value.clamp(0.0, 1e9) as usize
+    } else {
+        0
+    }
 }
 
 #[allow(
@@ -534,25 +663,40 @@ mod tests {
     }
 
     #[test]
-    fn a_mask_traces_to_its_outline() {
-        // A filled disc of radius 20 cells.
+    fn coverage_traces_to_its_outline() {
+        // A disc of radius 20 cells, its edge cells partly covered.
         let (width, height) = (60, 60);
-        let cells = (0..width * height)
+        let cells: Vec<f32> = (0..width * height)
             .map(|index| {
                 let (x, y) = (cell(index % width) + 0.5, cell(index / width) + 0.5);
-                (x - 30.0).hypot(y - 30.0) <= 20.0
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a coverage of 0 to 1 fits an f32"
+                )]
+                let cover = (20.5 - (x - 30.0).hypot(y - 30.0)).clamp(0.0, 1.0) as f32;
+                cover
             })
             .collect();
-        let mask = Mask {
+        let coverage = Coverage {
             width,
             height,
-            cells,
+            cells: &cells,
         };
-        let region = mask.traced(Affine::scale(2.0));
+        let region = coverage.traced(Affine::scale(2.0));
         let area = region.area();
         let disc = std::f64::consts::PI * 40.0 * 40.0;
-        assert!((area - disc).abs() / disc < 0.03, "{area} against {disc}");
-        assert!(region.corners() < 120, "{} corners", region.corners());
+        assert!((area - disc).abs() / disc < 0.01, "{area} against {disc}");
+        assert!(region.corners() < 200, "{} corners", region.corners());
         assert!(region.contains(Point::new(60.0, 60.0)));
+    }
+
+    #[test]
+    fn a_region_marks_the_cells_inside_it() {
+        let ring = square(0.0, 0.0, 10.0).combine(&square(3.0, 3.0, 4.0), Op::Subtract);
+        let cells = ring.cells(Affine::IDENTITY, 12, 12);
+        assert!(cells[0] && cells[9 * 12 + 9]);
+        assert!(!cells[5 * 12 + 5], "the hole");
+        assert!(!cells[11], "outside");
+        assert_eq!(cells.iter().filter(|cell| **cell).count(), 100 - 16);
     }
 }
