@@ -619,9 +619,7 @@ pub fn published_for(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     );
     let view = live_presentation_resources(ctx, doc, None);
     for decl in bound::declarations(&view) {
-        if !root.actions.iter().any(|existing| existing.id == decl.id) {
-            root = root.with_action(ui::tilo_resource::declaration_spec(&decl));
-        }
+        root = ui::tilo_resource::bind_declaration(root, &decl);
     }
     for spec in
         <crate::framework::WordProcessorApp as ui::framework::ResourceApp>::local_operations()

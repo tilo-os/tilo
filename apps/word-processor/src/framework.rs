@@ -101,6 +101,7 @@ impl Resource for Document {
                 result: decl.result,
                 tags: decl.tags,
                 content: decl.content,
+                refines: decl.refines,
                 build: decl.build,
             })
             .collect();
