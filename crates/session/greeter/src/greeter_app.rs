@@ -48,7 +48,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, Dropdown, IconWidget, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget,
+    Button, Dropdown, IconSize, IconWidget, Row, Scrollable, Spacer, Spinner, Text, TextInput,
+    Widget,
 };
 
 mod console;
@@ -1014,7 +1015,9 @@ impl GreeterApp {
                     rows.push(Box::new(
                         Row::new()
                             .push(Box::new(
-                                IconWidget::new(Icon::Ban, 13.0).with_color(c.semantic.danger),
+                                IconWidget::new(Icon::Ban)
+                                    .sized(IconSize::Small)
+                                    .with_color(c.semantic.danger),
                             ))
                             .push(Box::new(
                                 Text::new(&self.status)
@@ -1260,7 +1263,9 @@ impl GreeterApp {
             password_group.push(Box::new(
                 Row::new()
                     .push(Box::new(
-                        IconWidget::new(Icon::ArrowBigUp, 13.0).with_color(c.semantic.warning),
+                        IconWidget::new(Icon::ArrowBigUp)
+                            .sized(IconSize::Small)
+                            .with_color(c.semantic.warning),
                     ))
                     .push(Box::new(
                         Text::new("Caps Lock is on")

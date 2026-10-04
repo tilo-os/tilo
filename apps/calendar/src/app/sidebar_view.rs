@@ -1,6 +1,7 @@
-//! The sidebar's contents: the smart lists and projects as navigation rows,
-//! each calendar account's calendars as visibility checkboxes, the selected
-//! list's open tasks, and the month navigator at the bottom.
+//! The sidebar's contents: the smart lists and projects as navigation rows
+//! (a project led by its colour), each calendar account's calendars as
+//! checked navigation rows in their colours that show or hide their events,
+//! the selected list's open tasks, and the month navigator at the bottom.
 
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Fill;
@@ -164,11 +165,13 @@ impl CalendarApp {
                     task.project == Some(project.id) && !task.done && task.parent.is_none()
                 })
                 .count();
-            let mut face = NavRowFace::new(rect, &project.name).state(SelectionState::new(
-                self.list_sel == Some(sel),
-                rect.contains(column.pointer),
-                false,
-            ));
+            let mut face = NavRowFace::new(rect, &project.name)
+                .swatch(project.color.color(theme))
+                .state(SelectionState::new(
+                    self.list_sel == Some(sel),
+                    rect.contains(column.pointer),
+                    false,
+                ));
             if count > 0 {
                 face = face.count(NavCount::Neutral(u32::try_from(count).unwrap_or(u32::MAX)));
             }
@@ -179,7 +182,8 @@ impl CalendarApp {
     }
 
     /// Each account is a collapsible section whose trailing action syncs;
-    /// its calendars are checkboxes that show or hide their events.
+    /// its calendars are checked rows in their colours: the whole row shows
+    /// or hides the calendar's events.
     fn draw_sidebar_calendars(&self, ctx: &mut PaintCtx<'_>, column: &mut Column<'_>) {
         let theme = column.theme;
         let row_h = nav_row_height(theme);
@@ -208,18 +212,11 @@ impl CalendarApp {
             }
             for calendar in &account.calendars {
                 let rect = column.row(row_h);
-                Self::checkbox_row(
-                    ctx,
-                    theme,
-                    rect,
-                    &CheckRow {
-                        label: &calendar.name,
-                        checked: calendar.visible,
-                        hovered: rect.contains(column.pointer),
-                        dim: false,
-                        trailing: None,
-                    },
-                );
+                let face = NavRowFace::new(rect, &calendar.name)
+                    .checked(calendar.visible)
+                    .swatch(calendar.palette().color(theme))
+                    .hovered(rect.contains(column.pointer));
+                chrome::paint_nav_row(ctx.scene, ctx.transform, ctx.text, theme, &face);
                 column.hits.push((
                     rect,
                     Action::SetCalendarVisible {

@@ -39,12 +39,13 @@ pub(super) struct ScannerLayout {
 /// The icon for a kind of code.
 pub(super) fn code_icon(kind: &CodeKind) -> Icon {
     match kind {
-        CodeKind::Url => Icon::Globe,
+        CodeKind::Url => Icon::Link,
         CodeKind::Wifi { .. } => Icon::Wifi,
-        CodeKind::Contact { .. } | CodeKind::Phone => Icon::Users,
+        CodeKind::Contact { .. } => Icon::User,
+        CodeKind::Phone => Icon::Phone,
         CodeKind::Email => Icon::Mail,
-        CodeKind::Geo => Icon::Pin,
-        CodeKind::Text => Icon::FileText,
+        CodeKind::Geo => Icon::MapPin,
+        CodeKind::Text => Icon::Type,
     }
 }
 
@@ -417,7 +418,7 @@ impl CameraApp {
     ) {
         let waiting = self.scan_image_picker.is_some();
         let content = EmptyStateContent {
-            icon: Some(Icon::Image),
+            icon: Some(Icon::QrCode),
             message: Some("No camera is connected. Choose a saved image that shows a code."),
             action_label: (!waiting).then_some("Choose image"),
             ..EmptyStateContent::new("Scan a code from an image")
@@ -598,7 +599,7 @@ impl CameraApp {
         let row = ListRowFace::new("Scan")
             .secondary("Kind")
             .meta("now")
-            .leading(RowLeading::Icon(Icon::Globe))
+            .leading(RowLeading::Icon(Icon::Link))
             .height(tr, &local);
         heading + row + f64::from(spacing.s2)
     }

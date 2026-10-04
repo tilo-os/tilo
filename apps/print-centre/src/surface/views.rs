@@ -125,19 +125,6 @@ fn stack_of(mut body: Column, items: Vec<El>) -> Column {
     body
 }
 
-/// A column whose children belong together: it has no gap of its own, and
-/// [`related_gap`] between two children sets them one related step apart.
-fn related_stack() -> Column {
-    Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_gap(0.0)
-}
-
-fn related_gap() -> El {
-    Box::new(Spacer::token(SpacingStep::S2))
-}
-
 /// A page column: the toolkit's gutter and gap, as tall as its content.
 fn column() -> Column {
     Column::new().with_intrinsic_height()
@@ -228,11 +215,12 @@ pub(super) fn unavailable_notice(areas: &[&str], tx: &mpsc::Sender<UiCommand>) -
         "Print Centre couldn't get {} right now. Your saved devices and documents have not been removed.",
         join_areas(areas)
     );
+    // Trying again is what resolves it, so the banner holds that action.
     Some(Box::new(
-        related_stack()
-            .push(Box::new(Banner::error(subject).with_message(detail)))
-            .push(related_gap())
-            .push(Box::new(
+        Banner::error(subject)
+            .with_message(detail)
+            .with_id("print-centre.service")
+            .with_action(
                 command_button(
                     "print-centre.service.retry",
                     "Try again",
@@ -240,7 +228,7 @@ pub(super) fn unavailable_notice(areas: &[&str], tx: &mpsc::Sender<UiCommand>) -
                     UiCommand::Refresh,
                 )
                 .with_icon(Icon::Refresh),
-            )),
+            ),
     ))
 }
 

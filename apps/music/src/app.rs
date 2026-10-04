@@ -44,7 +44,6 @@ use crate::backend::{
     PlaylistPage, SearchBundle, SearchTop, TrackHit,
 };
 use crate::doc::{self, LiveTrack};
-use crate::icon;
 use crate::lyrics::{self, LyricsLine, LyricsWorker, TrackMeta};
 use crate::model::{Album, Artist, CacheState, Library, Playback, RepeatMode, Track};
 use crate::mpris::{MprisCommand, MprisHandle, PlaybackStatus, PlayerSnapshot};

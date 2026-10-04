@@ -24,8 +24,8 @@
 //! Run:  `cargo run -p ui-examples --example ui-shots -- widget_states [OUT_DIR]`
 //! Out:  `OUT_DIR` (default `/tmp/widget_states`): `<page>-<theme>.png` for
 //!       the pages `controls`, `sizes`, `inputs`, `rows`, `panes`,
-//!       `content`, `editor` (and `editor-large` at 200 % text), `overlays`,
-//!       `overlays-opaque` and `modal`.
+//!       `navigation`, `icons`, `content`, `editor` (and `editor-large` at
+//!       200 % text), `overlays`, `overlays-opaque` and `modal`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -57,13 +57,13 @@ use tilo_ui::widget::tree_view::TreeNode;
 use tilo_ui::widget::{
     Actions, Avatar, AvatarFace, AvatarSize, Badge, Banner, Breadcrumb, Button, ButtonRole, Card,
     CardGrid, Checkbox, Chip, ChipLead, ChipStyle, Column, Container, ContextMenu, ControlSize,
-    DatePicker, DropZone, Dropdown, Element, EmptyState, Field, Image, Interaction, Link, ListRow,
-    ListRowFace, MediaArt, MediaCard, MediaCardFace, MediaGrid, MediaSource, MenuItem, ModalDialog,
-    NavItem, NavList, NavSection, NumberInput, ObjectHeader, Popover, PopoverSide, ProgressBar,
-    ProgressRing, Property, PropertyList, Row, RowLeading, RowStatus, SearchField, Section,
-    SectionHeader, Skeleton, Slider, Spinner, StatGroup, StatTile, StatusLine, Stepper, TabBar,
-    TabDescriptor, Text, TextInput, TimePicker, Toggle, ToggleGroup, Tone, Toolbar, TreeView,
-    Trend, Widget,
+    DatePicker, DropZone, Dropdown, Element, EmptyState, Field, IconSize, IconWidget, Image,
+    Interaction, Link, ListRow, ListRowFace, MediaArt, MediaCard, MediaCardFace, MediaGrid,
+    MediaSource, MenuItem, ModalDialog, NavItem, NavList, NavSection, NumberInput, ObjectHeader,
+    Popover, PopoverSide, ProgressBar, ProgressRing, Property, PropertyList, Row, RowLeading,
+    RowStatus, SearchField, Section, SectionHeader, Skeleton, Slider, Spinner, StatGroup, StatTile,
+    StatusLine, Stepper, TabBar, TabDescriptor, Text, TextInput, TimePicker, Toggle, ToggleGroup,
+    Tone, Toolbar, TreeView, Trend, Widget,
 };
 use tilo_ui::{LocalState, State, TextRole};
 
@@ -462,6 +462,56 @@ fn row_specs() -> Vec<Spec> {
             let row = NavRowFace::new(centred(rect, h), "Notifications")
                 .icon(Icon::Bell)
                 .count(NavCount::Live(3))
+                .hovered(matches!(col.st, St::Hover | St::Pressed))
+                .focused(col.st == St::Focused)
+                .selected(col.st == St::Selected);
+            paint_nav_row(ctx.scene, ctx.transform, ctx.text, ctx.theme, &row);
+        }),
+        face("Navigation row, parts", 56.0, |ctx, rect, col| {
+            let row = NavRowFace::new(rect, "Orders database")
+                .icon(Icon::HardDrive)
+                .secondary("db.example.net:5432")
+                .status(RowStatus::Active)
+                .hovered(matches!(col.st, St::Hover | St::Pressed))
+                .focused(col.st == St::Focused)
+                .selected(col.st == St::Selected);
+            let h = row.height(ctx.theme);
+            let row = NavRowFace {
+                rect: centred(rect, h),
+                ..row
+            };
+            paint_nav_row(ctx.scene, ctx.transform, ctx.text, ctx.theme, &row);
+        }),
+        face("Navigation row, level", 64.0, |ctx, rect, col| {
+            let row = NavRowFace::new(rect, "Backup disk")
+                .icon(Icon::Usb)
+                .secondary("Every night at 02:00")
+                .meta("1.2 TB")
+                .level(0.62)
+                .hovered(matches!(col.st, St::Hover | St::Pressed))
+                .focused(col.st == St::Focused)
+                .selected(col.st == St::Selected);
+            let h = row.height(ctx.theme);
+            let row = NavRowFace {
+                rect: centred(rect, h),
+                ..row
+            };
+            paint_nav_row(ctx.scene, ctx.transform, ctx.text, ctx.theme, &row);
+        }),
+        face("Navigation row, check", 48.0, |ctx, rect, col| {
+            let h = tilo_ui::chrome::nav_row_height(ctx.theme);
+            let row = NavRowFace::new(centred(rect, h), "Family")
+                .checked(col.st != St::Disabled)
+                .swatch(ctx.theme.tokens.colors.presence.series(4))
+                .hovered(matches!(col.st, St::Hover | St::Pressed))
+                .focused(col.st == St::Focused);
+            paint_nav_row(ctx.scene, ctx.transform, ctx.text, ctx.theme, &row);
+        }),
+        face("Navigation row, badge", 48.0, |ctx, rect, col| {
+            let h = tilo_ui::chrome::nav_row_height(ctx.theme);
+            let row = NavRowFace::new(centred(rect, h), "Allow SSH")
+                .badge("POST")
+                .status_label("Active", Tone::Success)
                 .hovered(matches!(col.st, St::Hover | St::Pressed))
                 .focused(col.st == St::Focused)
                 .selected(col.st == St::Selected);
@@ -1019,6 +1069,249 @@ fn pane_blocks() -> Vec<Block> {
     ]
 }
 
+/// The navigation list with every part a row can show, a rail whose
+/// captions wrap, and the breadcrumb with its root icon and truncation.
+fn navigation_blocks() -> Vec<Block> {
+    vec![
+        block("Navigation list, every part", 320.0, 560.0, |theme| {
+            let presence = &theme.tokens.colors.presence;
+            let list = NavList::new(vec![
+                NavSection::new(
+                    "connections",
+                    "Connections",
+                    vec![
+                        NavItem::new("orders", "Orders")
+                            .icon(Icon::HardDrive)
+                            .secondary("db.example.net:5432")
+                            .status(RowStatus::Active),
+                        NavItem::new("staging", "Staging")
+                            .icon(Icon::HardDrive)
+                            .secondary("10.0.4.12:5432")
+                            .status(RowStatus::Warning),
+                    ],
+                ),
+                NavSection::new(
+                    "requests",
+                    "Requests",
+                    vec![
+                        NavItem::new("list", "List users").badge("GET"),
+                        NavItem::new("create", "Create user").badge("POST"),
+                        NavItem::new("remove", "Remove user").badge("DELETE"),
+                    ],
+                ),
+                NavSection::new(
+                    "calendars",
+                    "Calendars",
+                    vec![
+                        NavItem::new("home", "Home")
+                            .checked(true)
+                            .swatch(presence.series(1)),
+                        NavItem::new("work", "Work")
+                            .checked(false)
+                            .swatch(presence.series(6)),
+                    ],
+                ),
+                NavSection::new(
+                    "destinations",
+                    "Destinations",
+                    vec![
+                        NavItem::new("disk", "Backup disk")
+                            .icon(Icon::Usb)
+                            .secondary("Every night")
+                            .meta("1.2 TB")
+                            .level(0.62),
+                    ],
+                ),
+                NavSection::new(
+                    "zones",
+                    "Zones",
+                    vec![
+                        NavItem::new("public", "Public")
+                            .icon(Icon::Globe)
+                            .status_label("Active", Tone::Success),
+                        NavItem::new("notes", "Design notes")
+                            .icon(Icon::FileText)
+                            .presence("ana")
+                            .presence("ben"),
+                    ],
+                ),
+                NavSection::new("drafts", "Drafts", Vec::new()).empty_caption("No drafts"),
+                NavSection::new("archive", "Archive", vec![NavItem::new("old", "Old mail")])
+                    .collapsed(),
+            ])
+            .selected("orders");
+            Box::new(list)
+        }),
+        block("Rail", 76.0, 360.0, |_| {
+            Box::new(
+                NavList::new(vec![NavSection::untitled(
+                    "destinations",
+                    vec![
+                        NavItem::new("home", "Home").icon(Icon::Home),
+                        NavItem::new("subs", "Subscriptions").icon(Icon::Rss),
+                        NavItem::new("connections", "Connections").icon(Icon::Link),
+                        NavItem::new("later", "Watch later").icon(Icon::Clock),
+                    ],
+                )])
+                .rail()
+                .selected("subs"),
+            )
+        }),
+        block("Dragging a row", 280.0, 220.0, |_| {
+            let mut list = NavList::new(vec![NavSection::new(
+                "playlists",
+                "Playlists",
+                vec![
+                    NavItem::new("focus", "Focus").icon(Icon::ListMusic),
+                    NavItem::new("running", "Running").icon(Icon::ListMusic),
+                    NavItem::new("dinner", "Dinner").icon(Icon::ListMusic),
+                    NavItem::new("road", "Road trip").icon(Icon::ListMusic),
+                ],
+            )])
+            .on_move(|_, _| {});
+            list.stage_drag("road", "running");
+            Box::new(list)
+        }),
+        block("Breadcrumb, root icon", 480.0, 40.0, |_| {
+            Box::new(
+                Breadcrumb::new(vec![
+                    "Home".into(),
+                    "Projects".into(),
+                    "Atlas".into(),
+                    "Design".into(),
+                ])
+                .root_icon(Icon::Home),
+            )
+        }),
+        block("Breadcrumb, truncated", 280.0, 40.0, |_| {
+            Box::new(
+                Breadcrumb::new(vec![
+                    "Files".into(),
+                    "Projects".into(),
+                    "Atlas".into(),
+                    "Design".into(),
+                    "Exports".into(),
+                    "Final".into(),
+                ])
+                .root_icon(Icon::HardDrive),
+            )
+        }),
+    ]
+}
+
+/// Every glyph of the everyday icon set at the three icon sizes.
+fn icon_blocks() -> Vec<Block> {
+    vec![
+        block("Small", 1200.0, 120.0, |_| icon_row(IconSize::Small)),
+        block("Regular", 1200.0, 140.0, |_| icon_row(IconSize::Regular)),
+        block("Large", 1200.0, 180.0, |_| icon_row(IconSize::Large)),
+    ]
+}
+
+fn icon_row(size: IconSize) -> Element {
+    let mut row = Row::new().with_gap(12.0);
+    for icon in EVERYDAY_ICONS {
+        row = row.push(Box::new(IconWidget::new(*icon).sized(size)));
+    }
+    Box::new(row)
+}
+
+const EVERYDAY_ICONS: &[Icon] = &[
+    Icon::EyeOff,
+    Icon::Phone,
+    Icon::Link,
+    Icon::MapPin,
+    Icon::QrCode,
+    Icon::ScanLine,
+    Icon::SwitchCamera,
+    Icon::User,
+    Icon::UserPlus,
+    Icon::Hash,
+    Icon::Smile,
+    Icon::SmilePlus,
+    Icon::Video,
+    Icon::PhoneOff,
+    Icon::Lock,
+    Icon::MessageSquare,
+    Icon::Clock,
+    Icon::AlarmClock,
+    Icon::Hourglass,
+    Icon::Bookmark,
+    Icon::Tag,
+    Icon::Rss,
+    Icon::Upload,
+    Icon::Type,
+    Icon::Box,
+    Icon::Contrast,
+    Icon::Columns2,
+    Icon::Palette,
+    Icon::Crop,
+    Icon::Usb,
+    Icon::SdCard,
+    Icon::CircleCheck,
+    Icon::Disc3,
+    Icon::Bold,
+    Icon::Italic,
+    Icon::Underline,
+    Icon::Strikethrough,
+    Icon::Superscript,
+    Icon::Subscript,
+    Icon::Heading1,
+    Icon::Heading2,
+    Icon::ListOrdered,
+    Icon::Quote,
+    Icon::ReplyAll,
+    Icon::Forward,
+    Icon::MailOpen,
+    Icon::AlignLeft,
+    Icon::AlignCenter,
+    Icon::AlignRight,
+    Icon::AlignJustify,
+    Icon::BringToFront,
+    Icon::SendToBack,
+    Icon::Baseline,
+    Icon::Highlighter,
+    Icon::Table,
+    Icon::ListTree,
+    Icon::Shuffle,
+    Icon::Repeat,
+    Icon::Repeat1,
+    Icon::Heart,
+    Icon::ListMusic,
+    Icon::Speaker,
+    Icon::Headphones,
+    Icon::Gauge,
+    Icon::LocateFixed,
+    Icon::Navigation,
+    Icon::Flag,
+    Icon::CornerUpLeft,
+    Icon::CornerUpRight,
+    Icon::ArrowUpLeft,
+    Icon::ArrowUpRight,
+    Icon::ArrowDownLeft,
+    Icon::ArrowDownRight,
+    Icon::Coffee,
+    Icon::Utensils,
+    Icon::Beer,
+    Icon::Landmark,
+    Icon::Trees,
+    Icon::TrainFront,
+    Icon::BedDouble,
+    Icon::ShoppingBag,
+    Icon::Hospital,
+    Icon::Droplet,
+    Icon::Wind,
+    Icon::Cloud,
+    Icon::CloudRain,
+    Icon::CloudSnow,
+    Icon::Moon,
+    Icon::Hand,
+    Icon::PawPrint,
+    Icon::Plane,
+    Icon::Trophy,
+    Icon::Lightbulb,
+];
+
 /// A note in the block editor: every block kind on the one content edge,
 /// with its drag handles, checklist ticks and an embedded note.
 fn editor_blocks() -> Vec<Block> {
@@ -1399,6 +1692,8 @@ pub fn run(args: &[String]) {
         grid_page(&theme, INPUT_COLS, &input_specs(), &file("inputs"));
         grid_page(&theme, ROW_COLS, &row_specs(), &file("rows"));
         block_page(&theme, &pane_blocks(), &file("panes"));
+        block_page(&theme, &navigation_blocks(), &file("navigation"));
+        block_page(&theme, &icon_blocks(), &file("icons"));
         block_page(&theme, &content_blocks(), &file("content"));
         block_page(&theme, &editor_blocks(), &file("editor"));
         block_page(
