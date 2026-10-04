@@ -12,8 +12,9 @@ use ui::tilo_resource::{
 };
 
 use crate::actions::{
-    ACTION_TYPE, AddLayer, Align, Arrange, CanvasAction, Draw, EditLayer, EditMarks, Paint,
-    RemoveLayer, RemoveMarks, RemoveMedium, SaveMedium, SetArtwork, SetReference,
+    ACTION_TYPE, AddLayer, Align, Arrange, CanvasAction, Draw, EditLayer, EditMarks, NewArtwork,
+    OpenArtwork, Paint, RemoveLayer, RemoveMarks, RemoveMedium, SaveMedium, SetArtwork,
+    SetReference,
 };
 use crate::model::Artwork;
 
@@ -252,6 +253,14 @@ pub struct ExportSvg {
     pub outline_text: Option<bool>,
 }
 
+/// Save the artwork as a `.artwork` file.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SaveArtwork {
+    /// An absolute `.artwork` path to write; else kept as content.
+    pub path: Option<String>,
+}
+
 /// A view or effect the canvas answers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
@@ -263,6 +272,7 @@ pub enum ViewOp {
     Diff(Diff),
     ExportSvg(ExportSvg),
     Compare(Compare),
+    SaveArtwork(SaveArtwork),
 }
 
 /// What changed between two versions of the artwork.
@@ -480,6 +490,48 @@ pub struct OpenPath {
     pub path: String,
 }
 
+/// Starting a new artwork and opening a saved one.
+fn document_declarations() -> Vec<ActionDecl<ArtworkResource>> {
+    vec![
+        decl::<NewArtwork>(
+            "new-artwork",
+            "New artwork",
+            "Start over on a blank artwork (one undo away). size: screen, a4, letter, square, poster, icon (landscape turns it). start: paper, white, watercolour, oil, panel, dark.",
+            CanvasAction::NewArtwork,
+        ),
+        ActionDecl::new("open-artwork", "Open artwork", params_of::<OpenArtwork>(), |args, _now| {
+            let open: OpenArtwork = read_args(args)?;
+            let bytes = artwork_bytes(&open.file)?;
+            crate::document::ArtworkFile::parse(&bytes)?;
+            let file = String::from_utf8(bytes)
+                .map_err(|_| "the artwork file is not UTF-8 text".to_owned())?;
+            Ok(CanvasAction::OpenArtwork(OpenArtwork { file }))
+        })
+        .describe("Replace the artwork with a saved .artwork file (path, content address or JSON), one undo away."),
+    ]
+}
+
+/// The bytes of the artwork file `file` names: its JSON itself, stored
+/// content, or a file.
+///
+/// # Errors
+/// Returns why the file cannot be had.
+fn artwork_bytes(file: &str) -> Result<Vec<u8>, String> {
+    let trimmed = file.trim_start();
+    if trimmed.starts_with('{') {
+        return Ok(trimmed.as_bytes().to_vec());
+    }
+    if let Some(hash) = ui::tilo_actions::content_hash(trimmed) {
+        return tilo_content::ContentStore::for_app()
+            .read(hash)
+            .ok_or_else(|| format!("no stored content {trimmed}"));
+    }
+    if trimmed.starts_with('/') {
+        return read_file(trimmed, crate::document::MAX_FILE_BYTES);
+    }
+    Err("file is an absolute path to a .artwork file, a content address, or its JSON".into())
+}
+
 /// The bytes of the file at `path`, at most `limit` of them.
 ///
 /// # Errors
@@ -648,6 +700,7 @@ impl Resource for ArtworkResource {
         .into_iter()
         .chain(picture_declarations())
         .chain(area_declarations())
+        .chain(document_declarations())
         .collect()
     }
 
@@ -718,7 +771,20 @@ impl Resource for ArtworkResource {
             schema: serde_json::json!({"type": "object"}),
         };
         let [compare, svg] = vector_operations();
-        vec![look, inspect, media, export, diff, compare, svg]
+        let mut save = operation(
+            "save-artwork",
+            "Save artwork",
+            OperationKind::Effect,
+            params_of::<SaveArtwork>(),
+            |args| ViewOp::SaveArtwork(read_args(args).unwrap_or_default()),
+        )
+        .with_description(
+            "Save the artwork as a .artwork file open-artwork reads: to a path, or kept as content.",
+        );
+        save.contract.result = ResultSpec::Json {
+            schema: serde_json::json!({"type": "object"}),
+        };
+        vec![look, inspect, media, export, diff, compare, svg, save]
     }
 
     fn search(art: &Artwork) -> Vec<SearchEntry> {

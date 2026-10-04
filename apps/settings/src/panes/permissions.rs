@@ -21,7 +21,7 @@ use ui::tokens::SpacingStep;
 
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, StatusTone, caption, card, cards, gap, rows, semantic_status_pill, value_row,
+    El, StatusTone, caption, card, cards, error_row, gap, rows, semantic_status_pill, value_row,
 };
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
 use serde::Deserialize;
@@ -42,15 +42,29 @@ fn load_text() -> Option<String> {
 struct DeviceSecurity {
     disk_encryption: String,
     secure_boot: String,
-    firewall: String,
+    /// The firewall in force, or why that could not be read.
+    firewall: Result<String, String>,
 }
 
 fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
-    let out =
-        bounded_command::run(program, args, None, 1024 * 1024, Duration::from_secs(5)).ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    command_output(program, args).ok()
+}
+
+/// `program args…`'s trimmed standard output, or why it gave none.
+fn command_output(program: &str, args: &[&str]) -> Result<String, String> {
+    let out = bounded_command::run(program, args, None, 1024 * 1024, Duration::from_secs(5))
+        .map_err(|error| format!("{program}: {error}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let said = [stderr.trim(), stdout.trim()]
+            .into_iter()
+            .find(|text| !text.is_empty())
+            .map_or_else(|| format!("exited with {}", out.status), str::to_string);
+        Err(format!("{program}: {said}"))
+    }
 }
 
 /// `lsblk` reports every ancestor of `/`; any `crypt` layer means the live
@@ -89,14 +103,30 @@ fn secure_boot_status() -> String {
     }
 }
 
-fn firewall_status() -> String {
-    if command_stdout("firewall-cmd", &["--state"]).as_deref() == Some("running") {
-        return t("perm-firewall-firewalld");
+/// firewalld when it runs, otherwise the nftables ruleset. "Not active" is
+/// only said when the ruleset was read and is empty; a ruleset that could
+/// not be read (it needs privileges) is reported as unreadable.
+fn firewall_status() -> Result<String, String> {
+    firewall_from(command_output("firewall-cmd", &["--state"]), || {
+        command_output("nft", &["list", "ruleset"])
+    })
+}
+
+fn firewall_from(
+    firewalld: Result<String, String>,
+    nft: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    if firewalld.as_deref() == Ok("running") {
+        return Ok(t("perm-firewall-firewalld"));
     }
-    if command_stdout("nft", &["list", "ruleset"]).is_some_and(|s| !s.trim().is_empty()) {
-        return t("perm-firewall-nftables");
+    match nft() {
+        Ok(ruleset) if !ruleset.trim().is_empty() => Ok(t("perm-firewall-nftables")),
+        Ok(_) => Ok(t("perm-firewall-off")),
+        Err(nft_error) => Err(match firewalld {
+            Err(firewalld_error) => format!("{firewalld_error}; {nft_error}"),
+            Ok(_) => nft_error,
+        }),
     }
-    t("perm-firewall-off")
 }
 
 fn device_security() -> DeviceSecurity {
@@ -391,7 +421,13 @@ fn device_security_card() -> El {
         rows(vec![
             value_row(&t("perm-disk"), &security.disk_encryption),
             value_row(&t("perm-secure-boot"), &security.secure_boot),
-            value_row(&t("perm-firewall"), &security.firewall),
+            match &security.firewall {
+                Ok(firewall) => value_row(&t("perm-firewall"), firewall),
+                Err(error) => error_row(
+                    &t("perm-firewall"),
+                    &t_args("perm-firewall-error", &[("error", error.as_str().into())]),
+                ),
+            },
             caption(&t("perm-security-caption")),
         ]),
     )
@@ -529,6 +565,37 @@ mod tests {
     use super::*;
     use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     use std::collections::HashMap;
+
+    /// "Not active" is only said about a ruleset that was read and is empty.
+    /// A ruleset this session may not read (nft needs privileges) and no
+    /// running firewalld is not a firewall that is off.
+    #[test]
+    fn an_unreadable_firewall_is_not_reported_as_off() {
+        let denied = || Err("nft: Operation not permitted (you must be root)".to_string());
+        assert_eq!(
+            firewall_from(Ok("running".into()), denied),
+            Ok(t("perm-firewall-firewalld"))
+        );
+        assert_eq!(
+            firewall_from(Err("firewall-cmd: not running".into()), denied),
+            Err(
+                "firewall-cmd: not running; nft: Operation not permitted (you must be root)".into()
+            )
+        );
+        assert_eq!(
+            firewall_from(
+                Err("firewall-cmd: not running".into()),
+                || Ok(String::new())
+            ),
+            Ok(t("perm-firewall-off"))
+        );
+        assert_eq!(
+            firewall_from(Err("firewall-cmd: not running".into()), || {
+                Ok("table inet filter {}".into())
+            }),
+            Ok(t("perm-firewall-nftables"))
+        );
+    }
     use taffy::{NodeId, TaffyTree};
     use ui::Theme;
 
