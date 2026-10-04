@@ -12,14 +12,17 @@
 //! Nothing here needs a session or a display; a relay's compute worker
 //! drives the same [`Builder`] as a device does.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tilo_app_package::PackageId;
 
 use crate::index::{Entry, LocalIndex, ToolLookup};
 use crate::key::CacheKey;
+use crate::network::{Network, NetworkChoice};
 use crate::resolve::{self, Resolution, ResolveError};
 use crate::sandbox::{BuildSandbox, SandboxError};
 use crate::seal::{self, SealError, SealReport};
@@ -137,7 +140,10 @@ pub struct Builder<S, C> {
     state: PathBuf,
     index: LocalIndex,
     timeouts: Timeouts,
-    bwrap: Option<PathBuf>,
+    sandbox: SandboxOptions,
+    network: NetworkChoice,
+    /// Each runtime's egress policy, worked out once.
+    policies: Mutex<HashMap<PackageId, tilo_egress::EgressPolicy>>,
 }
 
 impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
@@ -151,7 +157,9 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
             catalog,
             state,
             timeouts: Timeouts::default(),
-            bwrap: None,
+            sandbox: SandboxOptions::default(),
+            network: NetworkChoice::default(),
+            policies: Mutex::new(HashMap::new()),
         }
     }
 
@@ -163,7 +171,15 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
 
     #[must_use]
     pub fn with_bwrap(mut self, bwrap: PathBuf) -> Self {
-        self.bwrap = Some(bwrap);
+        self.sandbox.bwrap = Some(bwrap);
+        self
+    }
+
+    /// What the builds may reach: their runtime's repositories (the
+    /// default), nothing, or the caller's whole network.
+    #[must_use]
+    pub fn with_network(mut self, network: NetworkChoice) -> Self {
+        self.network = network;
         self
     }
 
@@ -269,14 +285,9 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
         packages: &[String],
     ) -> Result<(CacheKey, Resolution), BuildError> {
         let scratch = self.scratch("resolve")?;
-        let result = resolve_in(
-            tree,
-            &scratch,
-            Some(self.dnf_cache(runtime)),
-            self.bwrap.as_deref(),
-            packages,
-            self.timeouts.resolve,
-        );
+        let result = self.options(runtime, tree).and_then(|options| {
+            resolve_in(tree, &scratch, &options, packages, self.timeouts.resolve)
+        });
         let _ = crate::sandbox::remove_tree(&scratch);
         let resolution = result?;
         Ok((CacheKey::new(*runtime, &resolution.install), resolution))
@@ -297,15 +308,8 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
         scratch: &Path,
         out: &Path,
     ) -> Result<SealedTree, BuildError> {
-        build_tree(
-            tree,
-            nevras,
-            scratch,
-            out,
-            Some(self.dnf_cache(runtime)),
-            self.bwrap.as_deref(),
-            self.timeouts.install,
-        )
+        let options = self.options(runtime, tree)?;
+        build_tree(tree, nevras, scratch, out, &options, self.timeouts.install)
     }
 
     fn remember(&self, key: &CacheKey, tool: PackageId, requested: &[String]) {
@@ -319,8 +323,42 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
         }
     }
 
-    fn dnf_cache(&self, runtime: &PackageId) -> PathBuf {
-        self.state.join("dnf-cache").join(runtime.to_hex())
+    /// The sandbox options for a build on `runtime` (at `tree`): its own
+    /// metadata cache, and the network the builder's choice gives it.
+    fn options(&self, runtime: &PackageId, tree: &Path) -> Result<SandboxOptions, BuildError> {
+        let network = match self.network {
+            NetworkChoice::Offline => Network::Offline,
+            NetworkChoice::Host => Network::Host,
+            NetworkChoice::Gated => crate::network::gated(self.policy(runtime, tree)?),
+        };
+        Ok(SandboxOptions {
+            dnf_cache: Some(self.state.join("dnf-cache").join(runtime.to_hex())),
+            network,
+            ..self.sandbox.clone()
+        })
+    }
+
+    fn policy(
+        &self,
+        runtime: &PackageId,
+        tree: &Path,
+    ) -> Result<tilo_egress::EgressPolicy, BuildError> {
+        if let Some(policy) = self
+            .policies
+            .lock()
+            .ok()
+            .and_then(|p| p.get(runtime).cloned())
+        {
+            return Ok(policy);
+        }
+        let scratch = self.scratch("mirrors")?;
+        let policy = crate::network::repo_policy(tree, &scratch);
+        let _ = crate::sandbox::remove_tree(&scratch);
+        let policy = policy?;
+        if let Ok(mut policies) = self.policies.lock() {
+            policies.insert(*runtime, policy.clone());
+        }
+        Ok(policy)
     }
 
     fn scratch(&self, what: &str) -> Result<PathBuf, BuildError> {
@@ -344,20 +382,40 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
     }
 }
 
+/// How a build's sandbox is set up beyond its runtime and scratch.
+#[derive(Clone, Debug)]
+pub struct SandboxOptions {
+    /// dnf's metadata cache, kept across builds on one runtime.
+    pub dnf_cache: Option<PathBuf>,
+    /// A bubblewrap other than `bwrap` on `PATH`.
+    pub bwrap: Option<PathBuf>,
+    /// What the sandbox may reach.
+    pub network: Network,
+}
+
+impl Default for SandboxOptions {
+    fn default() -> Self {
+        Self {
+            dnf_cache: None,
+            bwrap: None,
+            network: Network::Offline,
+        }
+    }
+}
+
 fn sandbox(
     tree: &Path,
     scratch: &Path,
-    dnf_cache: Option<PathBuf>,
-    bwrap: Option<&Path>,
+    options: &SandboxOptions,
 ) -> Result<BuildSandbox, SandboxError> {
     let mut sandbox = BuildSandbox::create(tree, scratch)?;
-    if let Some(cache) = dnf_cache {
-        sandbox = sandbox.with_dnf_cache(cache);
+    if let Some(cache) = &options.dnf_cache {
+        sandbox = sandbox.with_dnf_cache(cache.clone());
     }
-    if let Some(bwrap) = bwrap {
-        sandbox = sandbox.with_bwrap(bwrap.to_owned());
+    if let Some(bwrap) = &options.bwrap {
+        sandbox = sandbox.with_bwrap(bwrap.clone());
     }
-    Ok(sandbox)
+    Ok(sandbox.with_network(options.network.clone()))
 }
 
 fn dnf_argv<'a>(head: &[&'a str], packages: &'a [String]) -> Vec<&'a str> {
@@ -379,15 +437,14 @@ fn dnf_argv<'a>(head: &[&'a str], packages: &'a [String]) -> Vec<&'a str> {
 pub fn resolve_in(
     tree: &Path,
     scratch: &Path,
-    dnf_cache: Option<PathBuf>,
-    bwrap: Option<&Path>,
+    options: &SandboxOptions,
     packages: &[String],
     timeout: Duration,
 ) -> Result<Resolution, BuildError> {
     if packages.is_empty() {
         return Err(BuildError::Empty);
     }
-    let sandbox = sandbox(tree, scratch, dnf_cache, bwrap)?;
+    let sandbox = sandbox(tree, scratch, options)?;
     let ran = sandbox.run(&dnf_argv(&["--assumeno", "install"], packages), timeout)?;
     let output = format!("{}\n{}", ran.stdout, ran.stderr);
     let resolution = resolve::parse_assumeno(&output)?;
@@ -416,14 +473,13 @@ pub fn build_tree(
     nevras: &[String],
     scratch: &Path,
     out: &Path,
-    dnf_cache: Option<PathBuf>,
-    bwrap: Option<&Path>,
+    options: &SandboxOptions,
     timeout: Duration,
 ) -> Result<SealedTree, BuildError> {
     if nevras.is_empty() {
         return Err(BuildError::Empty);
     }
-    let sandbox = sandbox(tree, scratch, dnf_cache, bwrap)?;
+    let sandbox = sandbox(tree, scratch, options)?;
     let before = installed(&sandbox)?;
     let ran = sandbox.run(&dnf_argv(&["-y", "install"], nevras), timeout)?;
     if !ran.success {
@@ -461,7 +517,7 @@ pub fn build_tree(
 }
 
 fn installed(sandbox: &BuildSandbox) -> Result<Vec<String>, BuildError> {
-    let ran = sandbox.run(
+    let ran = sandbox.run_offline(
         &["rpm", "-qa", "--qf", resolve::RPM_QUERY_FORMAT],
         Duration::from_secs(120),
     )?;

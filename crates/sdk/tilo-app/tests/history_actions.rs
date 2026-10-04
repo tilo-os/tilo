@@ -177,8 +177,53 @@ fn an_agent_run_undoes_its_own_steps_and_leaves_the_persons() {
     assert_eq!(cards(&app), ["person's card"]);
     let nothing = refusal(app.call_in_run("mcp:run-1", "undo", json!({})));
     assert!(
-        nothing.contains("This agent run has nothing in effect to undo"),
+        nothing.contains("This agent run (\"mcp:run-1\") has nothing in effect to undo"),
         "{nothing}"
+    );
+}
+
+#[test]
+fn a_refused_undo_names_the_earlier_runs_and_the_call_that_takes_them_back() {
+    let mut app = TestApp::<BoardApp>::new().unwrap();
+    for text in ["one", "two", "three", "four"] {
+        app.call_in_run("mcp:earlier", "add", json!({"text": text}))
+            .unwrap();
+    }
+    // The same agent, connected again: a run of its own with nothing done.
+    let refused = refusal(app.call_in_run("mcp:later", "undo", json!({"steps": 4})));
+    assert!(
+        refused.contains(
+            r#""mcp:earlier" by mcp:earlier (4 steps): undo {"run": "mcp:earlier", "steps": 4}"#
+        ),
+        "{refused}"
+    );
+    assert!(refused.contains("earlier connection"), "{refused}");
+    assert_eq!(cards(&app).len(), 4, "a refusal changes nothing");
+
+    // Doing as it says takes them back.
+    app.call_in_run(
+        "mcp:later",
+        "undo",
+        json!({"run": "mcp:earlier", "steps": 4}),
+    )
+    .unwrap();
+    assert!(cards(&app).is_empty());
+    let none_left = refusal(app.call_in_run("mcp:later", "undo", json!({})));
+    assert!(!none_left.contains("mcp:earlier"), "{none_left}");
+
+    // A person asking names the runs too.
+    app.call_in_run("mcp:earlier", "redo", json!({}))
+        .unwrap_err();
+    app.call_in_run("mcp:later", "redo", json!({})).unwrap();
+    assert_eq!(cards(&app).len(), 4);
+    let person = refusal(app.call("undo", json!({})));
+    assert!(
+        person.starts_with("You have nothing in effect to undo"),
+        "{person}"
+    );
+    assert!(
+        person.contains(r#"undo {"run": "mcp:later", "steps": 1}"#),
+        "{person}"
     );
 }
 

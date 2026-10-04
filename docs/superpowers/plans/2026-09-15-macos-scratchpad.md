@@ -12,7 +12,6 @@ An exclusive data-directory lock prevents two independent windows overwriting it
 **Scope:** Native standalone macOS app, shared widgets, same tree for headless input
 tests and screenshots. FS storage APIs are used directly: native FS mounting is
 unavailable on macOS. No claims about a mounted filesystem or live collaboration.
-The existing isolated worktree and unrelated edits are preserved.
 
 **Files:** `apps/scratchpad/{Cargo.toml,README.md,src/lib.rs,src/storage.rs,src/main.rs}`,
 `apps/scratchpad/tests/scratchpad.rs`, workspace membership and lockfile.
@@ -49,5 +48,4 @@ wrong reference publication order and unsafe fallback after storage corruption.
 - Input was verified through the real framework's headless event driver. macOS
   accessibility automation is unavailable to this session, so OS-injected input
   and VoiceOver behavior are not claimed.
-- Independent code review found no actionable findings. Changes remain in the
-  existing worktree; no merge or publication is part of this task.
+- Independent code review found no actionable findings.

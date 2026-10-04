@@ -127,6 +127,30 @@ impl Records {
         Ok(env.clone())
     }
 
+    /// Every environment record there is, by key.
+    ///
+    /// # Errors
+    /// Returns an error when the record directory cannot be read.
+    pub fn keys(&self) -> Result<Vec<String>, RecordError> {
+        let dir = self.record_dir(DEFAULT_RECORD)?;
+        let Some(room) = dir.parent() else {
+            return Ok(Vec::new());
+        };
+        let entries = match std::fs::read_dir(room) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(RecordError::Store(e.to_string())),
+        };
+        let mut keys: Vec<String> = entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|key| is_record_key(key))
+            .filter(|key| self.load(key).ok().flatten().is_some())
+            .collect();
+        keys.sort();
+        Ok(keys)
+    }
+
     /// The environment a session names, creating the default environment on
     /// first use with the system store's current `env-runtime`. Any other
     /// missing record is an error: only the default comes into being by

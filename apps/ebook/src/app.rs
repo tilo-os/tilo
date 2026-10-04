@@ -3083,7 +3083,7 @@ impl BooksApp {
             let id = draft.id;
             self.perform_action(doc, &draft.into_action());
             self.composing = Some(id);
-            self.note_composer.open(id);
+            self.note_composer.open(id, self.actions.framework.as_ref());
         }
     }
 
@@ -3102,7 +3102,7 @@ impl BooksApp {
             .any(|a| a.id == id && a.kind == AnnoKind::Note)
         {
             self.composing = Some(id);
-            self.note_composer.open(id);
+            self.note_composer.open(id, self.actions.framework.as_ref());
             self.notes_flap.open();
             self.notes_scroll_to_annotation = Some(id);
         }
@@ -3181,7 +3181,8 @@ impl BooksApp {
             .into_action();
             self.perform_action(doc, &action);
             self.comment_overlay.open(group);
-            self.comment_overlay.begin_editing(id);
+            self.comment_overlay
+                .begin_editing(id, self.actions.framework.as_ref());
         }
     }
 
@@ -3191,7 +3192,8 @@ impl BooksApp {
             .iter()
             .any(|annotation| annotation.id == id && annotation.kind == AnnoKind::Note)
         {
-            self.comment_overlay.begin_editing(id);
+            self.comment_overlay
+                .begin_editing(id, self.actions.framework.as_ref());
         }
     }
 
@@ -4032,6 +4034,8 @@ impl BooksApp {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Ebook>,
     ) {
+        self.note_composer.attach(&dispatcher);
+        self.comment_overlay.attach(&dispatcher);
         self.actions.attach(dispatcher);
     }
 
@@ -5120,7 +5124,8 @@ impl Widget for BooksApp {
                 let aid = a.id;
                 BooksDoc::upsert_annotation(doc, &a);
                 self.composing = Some(aid);
-                self.note_composer.open(aid);
+                self.note_composer
+                    .open(aid, self.actions.framework.as_ref());
             }
         }
         if self.shot_comments && !self.comment_overlay.is_open() {
@@ -6061,15 +6066,7 @@ impl ui::undo::CommittedActions for BooksApp {
     /// Hand the host the heads captured before an on-page affordance
     /// dispatched its annotation action. Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions
-            .take_committed()
-            .or_else(|| self.note_composer.take_committed())
-            .or_else(|| self.comment_overlay.take_committed())
-    }
-    /// A word typed into a note or comment is one undo step, kept open for
-    /// its next letters.
-    fn keeps_undo_step_open(&self) -> bool {
-        self.note_composer.keeps_step_open() || self.comment_overlay.keeps_step_open()
+        self.actions.take_committed()
     }
 }
 

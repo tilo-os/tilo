@@ -48,12 +48,22 @@ path and hash. Adding a board does not add a new branch to the UKI builder.
 
 The first registered profile, `lenovo-83ed`, describes the Lenovo Yoga Slim 7x.
 Its kernel must supply `dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb`.
-The retained 7.2.5 RPM's MSM module contains the Adreno 740 firmware selection
-`a740_sqe.fw` (the inspected compressed module SHA-256 is
-`4d500d42033b9fa3df293dd3f8b71a50067bbb5ad9e9c2ffda16497a45f03267`).
-The profile therefore requires the distro-provided `qcom/a740_sqe.fw` and
-includes it in the initramfs so GPU initialization does not depend on the
-encrypted root already being mounted.
+Older MSM kernels request `a740_sqe.fw`; the installed 7.2.7 kernel requests
+`gen70500_sqe.fw`, `gen70500_gmu.bin`, and the X1E80100-specific
+`gen70500_zap.mbn`. The profile includes both generations' distro firmware
+in the initramfs. A physical first boot showed that checking only the older
+filename allowed the newer GPU's firmware request to fail before the encrypted
+root was available. Firmware presence must follow the actual kernel requests.
+
+The 83ED firmware publishes a TPM event log for its Qualcomm firmware TPM,
+which Linux has no driver for. `systemd-tpm2-generator` reads that as "a TPM
+whose driver has not loaded yet" and makes `sysinit.target` wait for
+`/dev/tpm0` and `/dev/tpmrm0` until the 45 second device timeout, once in the
+initrd and again after switch-root. On a physical first boot that held the
+splash for a minute and a half after the disk was unlocked. The profile's
+`systemd.tpm2_wait=0` turns that wait off for this board only. Boards whose
+TPM driver is a module (an I2C or SPI TPM) still need the wait, so it stays on
+everywhere else.
 
 ## Local firmware input
 

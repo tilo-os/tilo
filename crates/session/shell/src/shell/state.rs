@@ -5,10 +5,12 @@ use tilo_automerge::ApplyIncoming;
 use tilo_clock::unix_now_i64;
 
 mod local_app_records;
+mod window_hosting;
 use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use local_app_records::LocalAppRecord;
+pub use window_hosting::WindowHosting;
 
 fn now_unix_nanos() -> u64 {
     tilo_clock::unix_now_ns()
@@ -219,6 +221,7 @@ mod identity_fs_tests {
             let output = temp.path().join("fs-caps.json");
             tree.fs_acl_path = Some(output.clone());
             tree.export_fs_capabilities();
+            crate::shell::persist::wait_for_saves();
 
             let exported: Vec<CapOverride> =
                 serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
@@ -242,6 +245,7 @@ mod identity_fs_tests {
                 )
                 .expect("revoke current device");
             tree.export_fs_capabilities();
+            crate::shell::persist::wait_for_saves();
             let after_revoke: Vec<CapOverride> =
                 serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
             assert!(after_revoke.iter().all(|capability| {
@@ -303,6 +307,7 @@ mod identity_fs_tests {
                 ..WorkspaceTree::default()
             };
             tree.export_fs_capabilities();
+            crate::shell::persist::wait_for_saves();
 
             let exported: Vec<CapOverride> =
                 serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
@@ -333,6 +338,7 @@ mod identity_fs_tests {
                 .capabilities
                 .retain(|capability| !matches!(&capability.scope, Scope::Room(room) if room == &room_a_id.to_string()));
             tree.export_fs_capabilities();
+            crate::shell::persist::wait_for_saves();
             let after_revoke: Vec<CapOverride> =
                 serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
             assert!(after_revoke.iter().all(|capability| {
@@ -411,6 +417,10 @@ pub enum RoomAuthority {
     /// Joined without an invite naming an administrator: the first peer
     /// to supply governance becomes it, and is pinned.
     Unpinned,
+    /// The room belongs to a person (their user root key), not to one of
+    /// their devices: every authenticated, unrevoked device of that person
+    /// governs it, this one included when it is theirs.
+    Person([u8; 32]),
 }
 
 /// Root-signed device identity admitted into one room by that room's
@@ -493,6 +503,16 @@ pub struct NativeDocumentReference {
 /// The id of the person sitting at this machine. Derived from the device
 /// identity when provisioned, falling back to the OS account name —
 /// stable across restarts, or an owner would lose their own workspaces.
+/// The person a user root key names, as workspace owners record it.
+pub fn person_id_of(user_public_key: [u8; 32]) -> Option<UserId> {
+    match Principal::person_from_key(collab_types::crypto::Ed25519PublicKey::from_bytes(
+        user_public_key,
+    )) {
+        Principal::Person(person) => Some(person),
+        _ => None,
+    }
+}
+
 pub fn local_user_id() -> UserId {
     #[cfg(test)]
     crate::shell::test_support::ambient_start("session identity");
@@ -620,6 +640,16 @@ pub struct WorkspaceTree {
     /// that happened to use the same app id.
     #[serde(default)]
     pub continuation_tabs: BTreeSet<TabId>,
+    /// The person this device is certified for (their user root key), when
+    /// the identity layer has certified it. Rooms that person owns are
+    /// governed by any of their devices.
+    #[serde(skip)]
+    pub local_person: Option<[u8; 32]>,
+    /// The person behind each transport-authenticated peer whose device
+    /// certificate verifies and is not revoked, as the network layer last
+    /// checked it. Session-local: a peer is only here while authenticated.
+    #[serde(skip)]
+    pub authenticated_persons: HashMap<PeerOrigin, [u8; 32]>,
     /// Rooms introduced only by another device's private continuation offer.
     /// Once a person takes ownership of an offered tab the room becomes local
     /// and is removed from this set.
@@ -646,6 +676,13 @@ pub struct WorkspaceTree {
     /// Kept only in the device snapshot, never in a room document or peer offer.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub local_app_records: HashMap<TabId, LocalAppRecord>,
+    /// The Tilo package each tab's window was launched as, from the
+    /// launcher's authenticated launch record. Only these windows are Tilo
+    /// apps other devices open themselves; every other window is legacy and
+    /// stays hosted here. Device-local and persisted, so a restored window
+    /// keeps what it was launched as.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub package_launches: HashMap<TabId, String>,
     /// Where to write this tree when a capability changes. `None`
     /// disables it (tests, offscreen renderer). Set at boot by the
     /// compositor — what makes an `Always` grant survive a restart.
@@ -656,6 +693,20 @@ pub struct WorkspaceTree {
     /// to `tilo-fs --acl`, so both sides decide from one list.
     #[serde(skip)]
     pub fs_acl_path: Option<std::path::PathBuf>,
+    /// This device as host of its legacy windows, which rooms carry as
+    /// hosted here instead of as windows to reopen. Set at session start.
+    #[serde(skip)]
+    pub window_hosting: Option<WindowHosting>,
+    /// Which of the person's devices each of their workspaces shows on, as
+    /// the person's workspace list says; set by the network for the
+    /// workspace's menu.
+    #[serde(skip)]
+    pub personal_device_choices:
+        HashMap<RoomId, Vec<crate::shell::personal_workspaces::DeviceChoice>>,
+    /// Choices made in a workspace's menu, `(room, device, shown)`, waiting
+    /// for the network to write them into the person's workspace list.
+    #[serde(skip)]
+    pub personal_device_requests: Vec<(RoomId, [u8; 32], bool)>,
 }
 
 impl Default for WorkspaceTree {
@@ -672,15 +723,56 @@ impl Default for WorkspaceTree {
             room_peer_identities: HashMap::new(),
             room_share_floor: HashMap::new(),
             continuation_tabs: BTreeSet::new(),
+            local_person: None,
+            authenticated_persons: HashMap::new(),
             continuation_rooms: BTreeSet::new(),
             continuation_owned_tabs: HashMap::new(),
             continuation_closed_tabs: HashMap::new(),
             continuation_file_references: HashMap::new(),
             native_document_tabs: HashMap::new(),
             local_app_records: HashMap::new(),
+            package_launches: HashMap::new(),
             persist_path: None,
             fs_acl_path: None,
+            window_hosting: None,
+            personal_device_choices: HashMap::new(),
+            personal_device_requests: Vec::new(),
         }
+    }
+}
+
+/// What [`WorkspaceTree::export_fs_capabilities`] takes from a workspace
+/// to write on the state writer thread.
+struct FsExportWorkspace {
+    id: WorkspaceId,
+    room: RoomId,
+    /// Only those that persist across a restart; the export never carries
+    /// session grants.
+    capabilities: Vec<CapOverride>,
+}
+
+/// The filesystem's capability list as of one moment, to be written on the
+/// state writer thread.
+struct FsExport {
+    path: std::path::PathBuf,
+    workspaces: Vec<FsExportWorkspace>,
+    sequence: super::native_workspace_owner::store::StateSequence,
+    runtime: super::native_workspace_owner::NativeStateRuntime,
+}
+
+impl FsExport {
+    /// Queue the write; a newer export queued before it starts replaces it.
+    fn submit(self) {
+        crate::shell::durable_writer::global().submit(self.path.clone(), move || self.write());
+    }
+
+    /// Write it, unless an export from a later moment already landed.
+    fn write(self) {
+        self.runtime.write_companion(
+            super::native_workspace_owner::store::Companion::FsCapabilities,
+            self.sequence,
+            || WorkspaceTree::write_fs_capabilities(&self.path, &self.workspaces),
+        );
     }
 }
 
@@ -816,6 +908,7 @@ impl WorkspaceTree {
                     app_id: kind.app_id(),
                     label: label.clone(),
                     note: String::new(),
+                    missing: None,
                 };
                 changed = true;
             }
@@ -992,9 +1085,34 @@ impl WorkspaceTree {
             .unwrap_or(RoomAuthority::Local)
     }
 
-    /// Does this machine hold `room`'s governance?
+    /// Does this machine hold `room`'s governance? A room minted here does,
+    /// and so does a room governed by the person this device belongs to.
     pub fn governs_room(&self, room: RoomId) -> bool {
-        self.room_authority(room) == RoomAuthority::Local
+        match self.room_authority(room) {
+            RoomAuthority::Local => true,
+            RoomAuthority::Person(person) => self.local_person == Some(person),
+            RoomAuthority::Peer(_) | RoomAuthority::Unpinned => false,
+        }
+    }
+
+    /// Whether `from` is another device of the person this device belongs to
+    /// and that person owns `room`: then it governs `room` as much as this
+    /// device does. The person behind `from` is what the transport
+    /// authenticated, never what a payload claims.
+    fn same_person_governs(&self, room: RoomId, from: &PeerOrigin) -> bool {
+        let Some(local) = self.local_person else {
+            return false;
+        };
+        if self.authenticated_persons.get(from) != Some(&local) {
+            return false;
+        }
+        let Principal::Person(person) =
+            Principal::person_from_key(collab_types::crypto::Ed25519PublicKey::from_bytes(local))
+        else {
+            return false;
+        };
+        self.workspace_in_room(room)
+            .is_some_and(|workspace| workspace.owner.as_deref() == Some(person.as_str()))
     }
 
     /// Name the peer `peer_id` (iroh `EndpointId`) `name` in
@@ -1042,7 +1160,7 @@ impl WorkspaceTree {
         }
         if changed {
             self.sync_room_doc(room);
-            self.flush_to_disk();
+            self.queue_save();
         }
         true
     }
@@ -1119,7 +1237,7 @@ impl WorkspaceTree {
         let changed = identities.insert(peer_id.to_string(), row.clone()).as_ref() != Some(&row);
         if changed {
             self.sync_room_doc(room);
-            self.flush_to_disk();
+            self.queue_save();
         }
         changed
     }
@@ -1252,7 +1370,7 @@ impl WorkspaceTree {
             return false;
         }
         self.room_authority.insert(room, RoomAuthority::Peer(peer));
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -1439,7 +1557,10 @@ impl WorkspaceTree {
             .get(&room)
             .cloned()
             .unwrap_or_default();
-        let strips: Vec<Strip> = ws.strips.clone();
+        let strips: Vec<Strip> = self.window_hosting.as_ref().map_or_else(
+            || ws.strips.clone(),
+            |hosting| hosting.published(&ws.strips, &self.package_launches),
+        );
         let room_str = room.to_string();
         let local_salt = self.local_salt();
         let share_floor = self.room_share_floor.get(&room).copied();
@@ -1475,7 +1596,11 @@ impl WorkspaceTree {
             },
             _ => None,
         };
-        if current_name.as_deref() != Some(name.as_str()) {
+        // The name is governed like the owner: only the governing machine
+        // writes it. A member's local name (a device's "From another
+        // device" placeholder before its first sync) would otherwise race
+        // the real name in the shared document and could win.
+        if governs && current_name.as_deref() != Some(name.as_str()) {
             let _ = doc.put(&ROOT, "name", name);
         }
 
@@ -1895,8 +2020,9 @@ impl WorkspaceTree {
             return false;
         }
         match self.room_authority(room) {
-            // We administer the room, so no peer is entitled to write
-            // its governance.
+            // We administer the room; only another device of the person who
+            // owns it governs it alongside us.
+            RoomAuthority::Local if self.same_person_governs(room, from) => false,
             RoomAuthority::Local => {
                 tracing::warn!(
                     target: "shell::state",
@@ -1918,6 +2044,20 @@ impl WorkspaceTree {
                      the peer that administers the room",
                 );
                 true
+            }
+            // A person's room: any of that person's authenticated devices.
+            RoomAuthority::Person(person) => {
+                let refused = self.authenticated_persons.get(from) != Some(&person);
+                if refused {
+                    tracing::warn!(
+                        target: "shell::state",
+                        room = %room,
+                        from = %from,
+                        "room sync refused: governance may only come from \
+                         a device of the person who owns the room",
+                    );
+                }
+                refused
             }
             // `Unpinned`: joined without an invite naming an administrator —
             // the first peer to supply governance becomes it. Legacy TOFU is
@@ -2218,8 +2358,18 @@ impl WorkspaceTree {
                  governance authority (joined without an invite \
                  naming one)",
             );
-            self.room_authority
-                .insert(room, RoomAuthority::Peer(from.clone()));
+            // A device of this person supplying governance of a room the
+            // person owns pins the person, not that one device.
+            let owner = Self::governance_of(Some(&candidate)).0;
+            let pin = match (self.local_person, self.authenticated_persons.get(from)) {
+                (Some(local), Some(sender))
+                    if *sender == local && owner.as_deref() == person_id_of(local).as_deref() =>
+                {
+                    RoomAuthority::Person(local)
+                }
+                _ => RoomAuthority::Peer(from.clone()),
+            };
+            self.room_authority.insert(room, pin);
         }
         let records_changed = self.queue_inbound_records(room, &candidate);
 
@@ -2280,7 +2430,7 @@ impl WorkspaceTree {
         if fields_changed {
             // Mirror the merged state into the tree document and to disk.
             self.seed_doc_from_cache();
-            self.flush_to_disk();
+            self.queue_save();
         }
         let landed = fields_changed || records_changed || media_changed;
         if landed {
@@ -2313,28 +2463,36 @@ impl WorkspaceTree {
         tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
     }
 
-    /// Write the tree to [`Self::persist_path`], if one is set. Called on
-    /// every capability mutation, synchronous and eager rather than
-    /// batched on shutdown — a compositor that's killed must not forget
-    /// which permissions the user granted.
-    pub fn flush_to_disk(&self) {
+    /// Save the tree to [`Self::persist_path`], if one is set, and export
+    /// the capabilities the filesystem enforces. Called on every mutation
+    /// that must survive a restart — a compositor that's killed must not
+    /// forget which permissions the user granted.
+    ///
+    /// The caller pays only for a copy of the tree: the writes and their
+    /// fsyncs run on the state writer thread, newest copy first, so a
+    /// keypress never waits on the disk.
+    /// [`crate::shell::persist::wait_for_saves`] waits for them. A copy the
+    /// state file refuses (a stale authority snapshot) exports nothing.
+    pub fn queue_save(&self) {
         let started = std::time::Instant::now();
-        if let Some(path) = &self.persist_path
-            && let Err(e) = crate::shell::persist::save_tree_to(self, path)
-        {
-            tracing::warn!("capability persistence failed: {e}");
-            return;
+        let export = self.fs_capability_export();
+        match (&self.persist_path, export) {
+            (Some(path), export) => {
+                crate::shell::persist::queue_save(self, path, move || {
+                    if let Some(export) = export {
+                        export.write();
+                    }
+                });
+            }
+            (None, Some(export)) => export.submit(),
+            (None, None) => {}
         }
-        let saved = started.elapsed();
-        self.export_fs_capabilities();
-        let total = started.elapsed();
-        if total > std::time::Duration::from_millis(10) {
+        let took = started.elapsed();
+        if took > std::time::Duration::from_millis(4) {
             tracing::warn!(
                 target: "tilo::latency",
-                total_ms = total.as_secs_f64() * 1_000.0,
-                save_ms = saved.as_secs_f64() * 1_000.0,
-                fs_acl_ms = total.saturating_sub(saved).as_secs_f64() * 1_000.0,
-                "workspace tree persistence was slow"
+                took_ms = took.as_secs_f64() * 1_000.0,
+                "copying the workspace tree for saving was slow"
             );
         }
     }
@@ -2350,7 +2508,7 @@ impl WorkspaceTree {
     /// is converted here; an arbitrary named person cannot be safely made
     /// into a network principal and is omitted fail-closed.
     fn relay_room_capability(
-        workspace: &Workspace,
+        workspace: &FsExportWorkspace,
         capability: &CapOverride,
     ) -> Option<CapOverride> {
         if !capability.persists_across_restart() {
@@ -2397,17 +2555,49 @@ impl WorkspaceTree {
     /// after the registry and root-signed device certificate establish the
     /// `identity -> device` relationship. Restrictions are duplicated too,
     /// so translation can never widen a grant.
+    ///
+    /// The list is taken from the tree now and written on the state writer
+    /// thread, newest list first; the identity files it consults are read
+    /// there too.
     pub fn export_fs_capabilities(&self) {
-        let Some(path) = &self.fs_acl_path else {
-            return;
-        };
+        if let Some(export) = self.fs_capability_export() {
+            export.submit();
+        }
+    }
+
+    fn fs_capability_export(&self) -> Option<FsExport> {
+        let path = self.fs_acl_path.clone()?;
+        let workspaces: Vec<FsExportWorkspace> = self
+            .desktop
+            .workspaces
+            .iter()
+            .map(|workspace| FsExportWorkspace {
+                id: workspace.id,
+                room: workspace.room,
+                capabilities: workspace
+                    .capabilities
+                    .iter()
+                    .filter(|capability| capability.persists_across_restart())
+                    .cloned()
+                    .collect(),
+            })
+            .collect();
+        Some(FsExport {
+            path,
+            workspaces,
+            sequence: self.native_runtime.next_sequence(),
+            runtime: self.native_runtime.clone(),
+        })
+    }
+
+    fn write_fs_capabilities(path: &std::path::Path, workspaces: &[FsExportWorkspace]) {
         let identity_paths = crate::firstboot::collaboration_identity_paths();
         let device_public_key =
             tilo_user_identity::persist::read_device_key(identity_paths.device_privkey.as_path())
                 .ok()
                 .map(|key| key.verifying_key().to_bytes());
         let mut caps: Vec<CapOverride> = Vec::new();
-        for workspace in &self.desktop.workspaces {
+        for workspace in workspaces {
             let profile =
                 crate::identity_registry::selected_identity_profile(&workspace.room.to_string())
                     .ok()
@@ -2439,9 +2629,11 @@ impl WorkspaceTree {
                     collab_types::crypto::Ed25519PublicKey::from_bytes(profile.user_public_key),
                 )],
             });
-            for capability in workspace.capabilities.iter().filter(|capability| {
-                matches!(capability.scope, Scope::FsPath(_)) && capability.persists_across_restart()
-            }) {
+            for capability in workspace
+                .capabilities
+                .iter()
+                .filter(|capability| matches!(capability.scope, Scope::FsPath(_)))
+            {
                 caps.push(capability.clone());
                 if let (Some(device), Some(actor)) = (device_public_key, identity_actor.as_ref())
                     && capability.subject.matches_actor(actor)
@@ -2469,7 +2661,7 @@ impl WorkspaceTree {
             tracing::warn!("filesystem capability export failed: {e}");
             return;
         }
-        schedule_fs_authority_publication(path.clone());
+        schedule_fs_authority_publication(path.to_path_buf());
     }
 
     /// Give every workspace with no recorded owner to `user`, returning
@@ -2519,7 +2711,7 @@ impl WorkspaceTree {
             }
         }
         if !adopted.is_empty() {
-            self.flush_to_disk();
+            self.queue_save();
         }
         adopted.into_iter().map(|(id, _)| id).collect()
     }
@@ -2577,7 +2769,7 @@ impl WorkspaceTree {
             }
         }
         if !rebound.is_empty() {
-            self.flush_to_disk();
+            self.queue_save();
         }
         rebound.into_iter().map(|(id, _)| id).collect()
     }
@@ -2601,7 +2793,7 @@ impl WorkspaceTree {
     pub fn set_room(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
         let changed = self.set_room_in_memory(workspace_id, room);
         if changed {
-            self.flush_to_disk();
+            self.queue_save();
         }
         changed
     }
@@ -2698,7 +2890,7 @@ impl WorkspaceTree {
             tilo_clock::unix_now(),
         )?;
         self.doc_insert_capability(workspace_id, &stored);
-        self.flush_to_disk();
+        self.queue_save();
         Some(stored.id)
     }
 
@@ -2771,7 +2963,7 @@ impl WorkspaceTree {
             return false;
         }
         self.doc_revoke_capability(workspace_id, cap_id);
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3086,7 +3278,7 @@ impl WorkspaceTree {
             .tasks
             .push(task.clone());
         self.doc_upsert_workspace_task(workspace_id, &task);
-        self.flush_to_disk();
+        self.queue_save();
         Some(id)
     }
 
@@ -3109,7 +3301,7 @@ impl WorkspaceTree {
             return false;
         };
         self.doc_upsert_workspace_task(workspace_id, &task);
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3135,7 +3327,7 @@ impl WorkspaceTree {
             return false;
         };
         self.doc_upsert_workspace_task(workspace_id, &task);
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3179,7 +3371,7 @@ impl WorkspaceTree {
             return false;
         };
         self.doc_upsert_workspace_effect_receipt(workspace_id, &receipt);
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3247,7 +3439,7 @@ impl WorkspaceTree {
         if tilo_desktop_model::desktop_doc::upsert_shortcut(&mut self.doc, workspace_id, shortcut) {
             self.commit_room_change();
         }
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3298,7 +3490,7 @@ impl WorkspaceTree {
         ) {
             self.commit_room_change();
         }
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3331,7 +3523,7 @@ impl WorkspaceTree {
         ) {
             self.commit_room_change();
         }
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3640,7 +3832,7 @@ impl WorkspaceTree {
         // collaboration-document change. Persist it at the mutation boundary:
         // otherwise a compositor crash before the next unrelated edit silently
         // loses the room the person just created.
-        self.flush_to_disk();
+        self.queue_save();
         ws_id
     }
 
@@ -3669,7 +3861,7 @@ impl WorkspaceTree {
         self.room_share_floor
             .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
         self.seed_doc_from_cache();
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3678,30 +3870,243 @@ impl WorkspaceTree {
     /// This is membership, not a continuation offer, so turning app
     /// continuations off does not remove it.
     pub fn join_enrolled_room(&mut self, room: RoomId) -> bool {
-        if room.is_nil()
-            || self
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room == room)
+        if self
+            .desktop
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.room == room)
         {
             return false;
         }
+        self.adopt_personal_room(room, "From another device", &local_user_id(), None)
+    }
+
+    /// Hold `room` as one of `person`'s workspaces, named `name`: the
+    /// person's workspace list says they are in it. `governor` is the peer
+    /// that governs a room someone else owns, the same one the device that
+    /// accepted the invitation pinned; `None` means the person owns the
+    /// room, so whichever of their devices first answers for it pins the
+    /// person. A room this tree lacks is joined without focus or layout; a
+    /// room only offered by another device's continuation becomes a
+    /// workspace of its own; one already held takes the listed name.
+    /// Returns whether the tree changed.
+    pub fn adopt_personal_room(
+        &mut self,
+        room: RoomId,
+        name: &str,
+        person: &UserId,
+        governor: Option<&PeerOrigin>,
+    ) -> bool {
+        if room.is_nil() {
+            return false;
+        }
+        if let Some(index) = self
+            .desktop
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.room == room)
+        {
+            let offered = self.continuation_rooms.remove(&room);
+            let Some(workspace) = self.desktop.workspaces.get_mut(index) else {
+                return false;
+            };
+            let id = workspace.id;
+            let renamed = workspace.name != name;
+            if renamed {
+                workspace.name = name.to_string();
+            }
+            let owned = governor.is_none() && workspace.owner.is_none();
+            if owned {
+                workspace.set_owner(person.clone());
+            }
+            let pinned = match governor {
+                Some(governor) if self.room_authority(room) == RoomAuthority::Unpinned => {
+                    self.room_authority
+                        .insert(room, RoomAuthority::Peer(governor.clone()));
+                    true
+                }
+                _ => false,
+            };
+            if !(offered || renamed || owned || pinned) {
+                return false;
+            }
+            self.seed_doc_from_cache();
+            if owned {
+                self.doc_set_owner(id, person);
+            }
+            self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+            self.queue_save();
+            return true;
+        }
         let id = WorkspaceId::new();
-        let mut workspace = Workspace::new(id, "From another device");
+        let mut workspace = Workspace::new(id, name);
         workspace.room = room;
         // The same person sits at this machine. Without their membership the
         // room exists but every launch from either of their devices is denied.
-        let user = local_user_id();
-        workspace.set_owner(user.clone());
+        // A room someone else owns brings its owner and membership with its
+        // governance.
+        if governor.is_none() {
+            workspace.set_owner(person.clone());
+        }
+        let first = self.desktop.workspaces.is_empty();
         self.desktop.workspaces.push(workspace);
-        self.room_authority.insert(room, RoomAuthority::Unpinned);
+        if first {
+            self.desktop.active = id;
+        }
+        self.room_authority.insert(
+            room,
+            governor.map_or(RoomAuthority::Unpinned, |governor| {
+                RoomAuthority::Peer(governor.clone())
+            }),
+        );
         self.room_share_floor
             .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
         self.seed_doc_from_cache();
-        self.doc_set_owner(id, &user);
-        self.flush_to_disk();
+        if governor.is_none() {
+            self.doc_set_owner(id, person);
+        }
+        self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+        self.queue_save();
         true
+    }
+
+    /// Take `room`'s workspace off this device: the person deleted it on
+    /// another of their devices, or keeps it off this one. Only this
+    /// device's copy goes; the room and its content stay with its other
+    /// members. If it was showing, the neighbouring workspace shows
+    /// instead. Returns its place and value, for an undo.
+    pub fn forget_personal_room(&mut self, room: RoomId) -> Option<(usize, Workspace)> {
+        let index = self
+            .desktop
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.room == room)?;
+        let removed = self.desktop.workspaces.remove(index);
+        if self.desktop.active == removed.id {
+            let next = self
+                .desktop
+                .workspaces
+                .get(index)
+                .or_else(|| {
+                    index
+                        .checked_sub(1)
+                        .and_then(|i| self.desktop.workspaces.get(i))
+                })
+                .map_or_else(WorkspaceId::default, |workspace| workspace.id);
+            self.desktop.active = next;
+        }
+        self.desktop.active_strip.remove(&removed.id);
+        for strip in &removed.strips {
+            self.desktop.active_group.remove(&strip.id);
+        }
+        // Who governs the room and where this device's share of it starts
+        // stay recorded, so putting the workspace back (an undo, or the
+        // person showing it here again) does not make this device claim a
+        // room another device governs.
+        self.room_docs.remove(&room);
+        self.continuation_rooms.remove(&room);
+        self.seed_doc_from_cache();
+        self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+        self.queue_save();
+        Some((index, removed))
+    }
+
+    /// Delete workspace `id` from this person's desktop, on this device and,
+    /// through the person's workspace list, on their other devices. The last
+    /// workspace stays. Returns its place and value, for an undo.
+    pub fn delete_workspace(&mut self, id: WorkspaceId) -> Option<(usize, Workspace)> {
+        if self.desktop.workspaces.len() < 2 {
+            return None;
+        }
+        let room = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)?
+            .room;
+        let removed = self.forget_personal_room(room);
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        removed
+    }
+
+    /// Put a deleted workspace back where it was. Its room document is
+    /// rebuilt from this copy and from the room's other members.
+    pub fn restore_workspace(&mut self, index: usize, workspace: Workspace) -> bool {
+        if self
+            .desktop
+            .workspaces
+            .iter()
+            .any(|existing| existing.room == workspace.room || existing.id == workspace.id)
+        {
+            return false;
+        }
+        let index = index.min(self.desktop.workspaces.len());
+        let id = workspace.id;
+        self.desktop.workspaces.insert(index, workspace);
+        self.desktop.active = id;
+        self.seed_doc_from_cache();
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        self.queue_save();
+        true
+    }
+
+    /// Move workspace `id` one place earlier (`-1`) or later (`1`) in the
+    /// list. Returns whether it moved.
+    pub fn move_workspace(&mut self, id: WorkspaceId, step: i32) -> bool {
+        let Some(index) = self.desktop.workspaces.iter().position(|w| w.id == id) else {
+            return false;
+        };
+        let target = match step.signum() {
+            -1 => index.checked_sub(1),
+            1 => Some(index.saturating_add(1)).filter(|t| *t < self.desktop.workspaces.len()),
+            _ => None,
+        };
+        let Some(target) = target else {
+            return false;
+        };
+        self.desktop.workspaces.swap(index, target);
+        self.seed_doc_from_cache();
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        self.queue_save();
+        true
+    }
+
+    /// Order the workspaces of `rooms` as listed, in the places they already
+    /// take among this tree's workspaces; every other workspace stays where
+    /// it is. Returns whether anything moved.
+    pub fn arrange_rooms(&mut self, rooms: &[RoomId]) -> bool {
+        let slots: Vec<usize> = self
+            .desktop
+            .workspaces
+            .iter()
+            .enumerate()
+            .filter(|(_, workspace)| rooms.contains(&workspace.room))
+            .map(|(index, _)| index)
+            .collect();
+        let mut wanted: Vec<Workspace> = Vec::with_capacity(slots.len());
+        for room in rooms {
+            if let Some(workspace) = self.desktop.workspaces.iter().find(|w| w.room == *room) {
+                wanted.push(workspace.clone());
+            }
+        }
+        if wanted.len() != slots.len() {
+            return false;
+        }
+        let mut moved = false;
+        for (slot, workspace) in slots.into_iter().zip(wanted) {
+            if let Some(existing) = self.desktop.workspaces.get_mut(slot)
+                && existing.room != workspace.room
+            {
+                *existing = workspace;
+                moved = true;
+            }
+        }
+        if moved {
+            self.seed_doc_from_cache();
+            self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+            self.queue_save();
+        }
+        moved
     }
 
     /// Turn a synchronized offer into a locally-owned live app. The Wayland
@@ -3787,7 +4192,7 @@ impl WorkspaceTree {
                 .map_or_else(WorkspaceId::default, |workspace| workspace.id);
         }
         self.seed_doc_from_cache();
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3860,6 +4265,7 @@ impl WorkspaceTree {
                                 app_id: app_id.clone(),
                                 label: "Available on another device".to_string(),
                                 note: String::new(),
+                                missing: None,
                             },
                         )
                     }
@@ -3947,7 +4353,7 @@ impl WorkspaceTree {
         }
         if changed {
             self.seed_doc_from_cache();
-            self.flush_to_disk();
+            self.queue_save();
         }
         changed
     }
@@ -3985,7 +4391,7 @@ impl WorkspaceTree {
             }
         }
         self.seed_doc_from_cache();
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3997,7 +4403,7 @@ impl WorkspaceTree {
             // a render hint. Persist it immediately so a compositor restart
             // opens the workspace the user selected rather than the one that
             // happened to be active at the last unrelated mutation.
-            self.flush_to_disk();
+            self.queue_save();
         }
     }
 
@@ -4016,7 +4422,7 @@ impl WorkspaceTree {
         };
         self.desktop.active = prev.id;
         tilo_desktop_model::desktop_doc::set_active(&mut self.doc, self.desktop.active);
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -4032,7 +4438,7 @@ impl WorkspaceTree {
         };
         self.desktop.active = next.id;
         tilo_desktop_model::desktop_doc::set_active(&mut self.doc, self.desktop.active);
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -4088,7 +4494,7 @@ impl WorkspaceTree {
             self.doc = before_doc;
             return false;
         }
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -4130,7 +4536,7 @@ impl WorkspaceTree {
             self.doc = before_doc;
             return None;
         }
-        self.flush_to_disk();
+        self.queue_save();
         Some(moved.new_group.id)
     }
 
@@ -4159,7 +4565,7 @@ impl WorkspaceTree {
         // Same-strip drag/split changes are user-visible layout state. Keep
         // the local restart snapshot in step with the cache and room doc;
         // callers may have no later mutation before a crash or shutdown.
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -4186,7 +4592,7 @@ impl WorkspaceTree {
         desktop.outputs.place_unhomed(&desktop.workspaces);
         let changed = self.desktop.outputs != before;
         if changed {
-            self.flush_to_disk();
+            self.queue_save();
         }
         changed
     }
@@ -4205,7 +4611,7 @@ impl WorkspaceTree {
         {
             return false;
         }
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -4219,7 +4625,7 @@ impl WorkspaceTree {
         {
             return false;
         }
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -4309,7 +4715,7 @@ impl WorkspaceTree {
             }
             _ => {}
         }
-        self.flush_to_disk();
+        self.queue_save();
         Ok(true)
     }
 
@@ -4371,7 +4777,7 @@ impl WorkspaceTree {
             }
             return Err("the room document refused the group move".into());
         }
-        self.flush_to_disk();
+        self.queue_save();
         Ok(true)
     }
 
@@ -5946,6 +6352,81 @@ mod automerge_foundation_tests {
     /// tab)`. Half of
     /// [`a_window_the_host_opens_appears_for_the_guest_without_moving_them`]'s
     /// fixture — the host's side.
+    #[test]
+    fn legacy_windows_cross_the_room_as_hosted_and_tilo_apps_as_windows_to_open() {
+        const HOST: u16 = 0xCAFE;
+        const GUEST: u16 = 0xBEEF;
+        let (mut host, mut guest, room) = two_in_a_room();
+        host.set_salt_override(HOST);
+        guest.set_salt_override(GUEST);
+        let (_, _, tab) = seed_single_tab_strip(&mut host, room, HOST);
+        let native = salted(HOST, 4);
+        {
+            let ws = host
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|w| w.room == room)
+                .unwrap();
+            let group = &mut ws.strips[0].window_groups[0];
+            group.tabs[0].tile = TileContent::Foreign {
+                app_id: "org.gimp.GIMP".into(),
+                surface_id: 41,
+            };
+            group.tabs.push(Tab {
+                id: native,
+                title: "Groceries".into(),
+                tile: TileContent::Foreign {
+                    app_id: "so.tilo.notes".into(),
+                    surface_id: 42,
+                },
+            });
+        }
+        host.window_hosting = Some(WindowHosting {
+            device: "ab".repeat(32),
+            device_label: "Laptop".into(),
+        });
+        host.remember_package_launch(native, "so.tilo.notes".into());
+
+        ship(&mut host, &mut guest, room, 1);
+
+        let tiles: std::collections::HashMap<u64, TileContent> = guest
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.room == room)
+            .into_iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| (tab.id, tab.tile.clone()))
+            .collect();
+        assert_eq!(
+            tiles.get(&tab),
+            Some(&TileContent::HostedWindow {
+                app_id: "org.gimp.GIMP".into(),
+                label: "Plan".into(),
+                host: "ab".repeat(32),
+                host_label: "Laptop".into(),
+            }),
+            "a legacy window is shown as running on its host"
+        );
+        assert!(
+            matches!(
+                tiles.get(&native),
+                Some(TileContent::PeerWindow { app_id, .. }) if app_id == "so.tilo.notes"
+            ),
+            "a Tilo app's window is one to open here"
+        );
+        assert!(
+            matches!(
+                host.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile,
+                TileContent::Foreign { .. }
+            ),
+            "the host keeps its own live window"
+        );
+    }
+
     fn seed_single_tab_strip(
         tree: &mut WorkspaceTree,
         room: RoomId,
@@ -7467,7 +7948,7 @@ mod active_group_tests {
         // edit. Re-seed to model the symbolic launch record that a normal
         // compositor checkpoint carries across restart.
         tree.seed_doc_from_cache();
-        tree.flush_to_disk();
+        tree.queue_save();
         let first_group = tree
             .desktop
             .active_group_for(second_strip)
@@ -7479,7 +7960,7 @@ mod active_group_tests {
             Placement::NewGroup,
         );
         tree.seed_doc_from_cache();
-        tree.flush_to_disk();
+        tree.queue_save();
         let second_group = tree
             .desktop
             .active_group_for(second_strip)
@@ -7522,7 +8003,7 @@ mod active_group_tests {
         );
 
         assert!(remove_tab(&mut tree, second_tab));
-        tree.flush_to_disk();
+        tree.queue_save();
         let reloaded = load_tree_from(&state_path).expect("close persisted");
         assert!(
             reloaded
@@ -8382,8 +8863,11 @@ mod workspace_tree_lifecycle_tests {
 
     #[test]
     fn relay_authority_never_turns_session_grants_into_timeless_nas_access() {
-        let mut workspace = Workspace::new(WorkspaceId::new(), "Private");
-        workspace.room = RoomId::new();
+        let workspace = FsExportWorkspace {
+            id: WorkspaceId::new(),
+            room: RoomId::new(),
+            capabilities: Vec::new(),
+        };
         let subject = Subject::User(collab_types::Ed25519PublicKey::from_bytes([7; 32]));
         for expiry in [Expiry::AfterUse, Expiry::EndOfSession] {
             let capability =

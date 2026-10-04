@@ -42,8 +42,7 @@ fn the_code_follows_the_payload_and_is_described() {
 
 #[test]
 fn the_staged_scenario_shows_a_code() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
-    app.stage(Some("encoded")).expect("stage the scenario");
+    let mut app = TestApp::<App>::capture(Some("encoded")).expect("stage the scenario");
     app.harness()
         .expect(&SemanticExpectation::named("qr-output").name_contains("tilo.dev"))
         .expect("the scenario encodes a link");

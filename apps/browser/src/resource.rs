@@ -109,6 +109,7 @@ impl Resource for Browser {
                     entry.title.clone()
                 },
                 text: entry.url.clone(),
+                action: None,
             })
             .collect()
     }
@@ -146,7 +147,9 @@ impl ResourceApp for BrowserShell {
     const ID: &'static str = "so.tilo.browser";
     const TITLE: &'static str = "Browser";
     const ICON: Option<&'static str> = Some("browser");
-    const SHOT_VIEWPORT: (u32, u32) = (1200, 720);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1200, 720)
+    }
 
     fn view(cx: &mut ViewCx<Browser>) -> Element {
         cx.surface(BrowserWidget::new())

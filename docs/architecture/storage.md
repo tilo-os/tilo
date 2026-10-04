@@ -1609,16 +1609,40 @@ belongs to a document item (a profile's password, a connection's passphrase)
 is `SecretStore::item(purpose, id)`: the document names the item, the secret
 stays in the device's store. PersonInRoom has no implementation yet.
 
-**Making the settings record the source (Q12, decided, not yet built).**
-Every reader — the compositor, the shell, apps — already reads one document
-through `settings_store::load`, which a host can back with a
-`SettingsSource`. The Settings app's resource becomes the source of truth by
-the shell installing a source that projects the person's settings record
-(personal leaves) over the device's local record (device-local leaves);
-`settings.json` is then a projection the shell writes for processes that
-start before it (the compositor at boot), never edited as the truth. Readers
-do not change; the fabric's settings channel is replaced by the record's own
-sync. Until then `settings.json` remains the stored document.
+**The records are the source.** Every reader — the compositor, the shell,
+apps — reads one document through `settings_store::load`, which a host can
+back with a `SettingsSource`. At startup the shell installs
+`settings_store::SessionSettings`: the person's record (the leaves the
+continuity registry classifies as personal) laid over the device's record
+(every other leaf), stored beside the settings file in `records/`. A write
+lands in the record its leaf's scope names. The device fabric publishes the
+person's leaves and writes the winners it receives back through the same
+source. `settings.json` is a copy the shell rewrites after every change, for
+the processes that read the document without the source: the compositor's
+boot path, apps, the Settings app and anything that runs before the session.
+Those processes still merge sections into the copy; every writer holds the
+copy's lock across its read, merge and replace, and the session takes in each
+leaf that differs from the copy it last wrote. A copy written while no session
+ran (first boot) is taken in when the session opens. Replacing the fabric's
+settings channel with the person record's own sync is still to come.
+
+**Sandboxed apps reach the records through their channel.** A sandboxed app
+has no settings document: its sandbox holds neither the records nor the copy
+(only Settings, which owns the document, is given the copy). The collaboration
+channel the launcher hands every app carries an `AppSettings` capability
+instead (`ChannelHandle.settings`), bound to the channel's certified app. At
+launch the toolkit installs it as the app process's `SettingsSource`, so
+`Settings<T>`, `cx.settings::<T>()` and the toolkit's own readers go through
+it. The shell answers from its records with the app's view
+(`settings_store::app_scope`): the app's own `app_personal` and
+`app_device_local` entries, and the shared sections every app's toolkit reads
+(`locale`, `text_assistance`, `accessibility`, `appearance`). The app writes
+only its own two entries; a write naming another app's entry or any other
+section is refused, in the app and again in the shell. A write shows in the
+app at once, lands in the record its scope names (so a personal one roams),
+and is copied to `settings.json`; a change to the app's view, from another
+window or another of the person's devices, reaches the app within a fraction
+of a second and wakes it, so a view following a `Setting<T>` repaints.
 
 ### 13.7 Foreign apps
 

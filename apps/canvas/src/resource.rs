@@ -153,6 +153,23 @@ impl ArtworkResource {
         ActionRef::new("edit-layer", &["id", "clip"]);
     /// `checkpoint`: name the current version.
     pub const CHECKPOINT: ActionRef<Self, String> = ActionRef::new("checkpoint", &["name"]);
+    /// `edit-marks` changing colour and tone adjustments.
+    pub const SET_ADJUST: ActionRef<Self, (Vec<String>, crate::model::Adjust)> =
+        ActionRef::new("edit-marks", &["ids", "adjust"]);
+    /// `edit-marks` cropping a picture: fractions, or `[]` for all of it.
+    pub const SET_CROP: ActionRef<Self, (Vec<String>, Vec<f64>)> =
+        ActionRef::new("edit-marks", &["ids", "crop"]);
+    /// `edit-marks` straightening a picture, in degrees.
+    pub const SET_STRAIGHTEN: ActionRef<Self, (Vec<String>, f64)> =
+        ActionRef::new("edit-marks", &["ids", "straighten"]);
+    /// `edit-marks` mirroring marks `horizontal` or `vertical`.
+    pub const FLIP: ActionRef<Self, (Vec<String>, String)> =
+        ActionRef::new("edit-marks", &["ids", "flip"]);
+    /// `set-artwork` cropping the artwork to what a mark shows.
+    pub const FIT_ARTWORK: ActionRef<Self, String> = ActionRef::new("set-artwork", &["fit"]);
+    /// `edit-layer` changing a layer's adjustments.
+    pub const SET_LAYER_ADJUST: ActionRef<Self, (String, Box<crate::model::Adjust>)> =
+        ActionRef::new("edit-layer", &["id", "adjust"]);
 }
 
 /// Look at the artwork, or a region of it, as a picture.
@@ -211,12 +228,16 @@ pub struct Compare {
     pub size: Option<u32>,
 }
 
-/// Render the artwork at full size as a PNG.
+/// Render the artwork at full size as a picture.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Export {
-    /// Pixels per artwork unit, 0.25 to 4 (default 1).
+    /// Pixels per artwork unit, 0.05 to 4 (default 1).
     pub scale: Option<f64>,
+    /// `png` (default), `jpeg` or `webp` (lossless).
+    pub format: Option<String>,
+    /// JPEG quality, 1 to 100 (default 90).
+    pub quality: Option<u8>,
 }
 
 /// Export the artwork, or some of its marks, as SVG.
@@ -321,37 +342,142 @@ fn read_args<T: serde::de::DeserializeOwned>(
     serde_json::from_value(Value::Object(fields)).map_err(|error| error.to_string())
 }
 
-/// Read the picture at `path` where the action is authored and keep it in
-/// the content store, so the action names it by content and every replica
-/// shows the same picture.
-fn store_picture(path: &str) -> Result<String, String> {
-    let bytes = read_file(path, crate::render::MAX_REFERENCE_BYTES)?;
-    crate::render::decode_picture(&bytes)
-        .map_err(|error| format!("{path} is not a PNG or JPEG: {error}"))?;
-    store(&bytes)
+/// A picture named by an absolute path, a content address or a `data:`
+/// URI, kept in the content store where the action is authored: the action
+/// names it by content, so every replica shows the same picture. Answers
+/// its address and size in pixels.
+///
+/// # Errors
+/// Returns why the picture cannot be read or is not a PNG, JPEG or WebP.
+pub fn keep_picture(src: &str) -> Result<(String, (u32, u32)), String> {
+    use crate::picture::MAX_PICTURE_BYTES;
+    let bytes = if src.starts_with('/') {
+        read_file(src, MAX_PICTURE_BYTES)?
+    } else if src.starts_with("data:") {
+        use base64::Engine as _;
+        let encoded = src
+            .split_once(";base64,")
+            .map(|(_, encoded)| encoded.trim())
+            .ok_or("an inline picture is data:image/png;base64,… (or jpeg, webp)")?;
+        if encoded.len() > MAX_PICTURE_BYTES.saturating_mul(4) / 3 {
+            return Err(format!("the picture is over {MAX_PICTURE_BYTES} bytes"));
+        }
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|error| format!("the inline picture is not base64: {error}"))?
+    } else if ui::tilo_actions::content_hash(src).is_some() {
+        let bytes = crate::picture::bytes_of(src)
+            .ok_or_else(|| format!("{src} is not in this app's content store"))?;
+        let size = picture_size(src, &bytes)?;
+        return Ok((src.to_owned(), size));
+    } else {
+        return Err(format!(
+            "{src:?} must be an absolute path to a PNG, JPEG or WebP, a content address, or a data: URI"
+        ));
+    };
+    keep_picture_bytes(src, &bytes)
 }
 
-/// Keep a picture the caller sent itself (`data:image/png;base64,…`) in
-/// the content store, as [`store_picture`] does a file: the action names it
-/// by content, so every replica shows the same picture.
-fn store_inline_picture(data: &str) -> Result<String, String> {
-    use base64::Engine as _;
-    let encoded = data
-        .split_once(";base64,")
-        .map(|(_, encoded)| encoded.trim())
-        .ok_or("an inline picture is data:image/png;base64,… or data:image/jpeg;base64,…")?;
-    if encoded.len() > crate::render::MAX_REFERENCE_BYTES.saturating_mul(4) / 3 {
+/// Picture bytes kept in the content store: their address and size in
+/// pixels. `named` says where they came from, in a refusal.
+///
+/// # Errors
+/// Returns why the bytes are not a PNG, JPEG or WebP, or cannot be kept.
+pub fn keep_picture_bytes(named: &str, bytes: &[u8]) -> Result<(String, (u32, u32)), String> {
+    let size = picture_size(named, bytes)?;
+    Ok((store(bytes)?, size))
+}
+
+/// The edit that opens a picture file's bytes as a new artwork, titled by
+/// the file's name.
+///
+/// # Errors
+/// Returns why the bytes are not a picture or cannot be kept.
+pub fn open_picture(name: &str, bytes: &[u8]) -> Result<CanvasAction, String> {
+    let (src, (width, height)) = keep_picture_bytes(name, bytes)?;
+    Ok(CanvasAction::OpenPicture(crate::actions::Open {
+        src,
+        pixels: [width, height],
+        title: std::path::Path::new(name)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_owned(),
+    }))
+}
+
+/// The size of the picture in `bytes`, refusing what is not one.
+fn picture_size(src: &str, bytes: &[u8]) -> Result<(u32, u32), String> {
+    let named = if src.starts_with('/') {
+        src
+    } else {
+        "the picture"
+    };
+    let format = image::guess_format(bytes)
+        .map_err(|error| format!("{named} is not a PNG, JPEG or WebP: {error}"))?;
+    if !matches!(
+        format,
+        image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP
+    ) {
+        return Err(format!("{named} is {format:?}, not a PNG, JPEG or WebP"));
+    }
+    let (width, height) = crate::picture::dimensions(bytes)
+        .map_err(|error| format!("{named} cannot be read: {error}"))?;
+    if width.max(height) > crate::picture::MAX_PICTURE_SIDE || width == 0 || height == 0 {
         return Err(format!(
-            "the picture is over {} bytes",
-            crate::render::MAX_REFERENCE_BYTES
+            "{named} is {width}x{height}; pictures are at most {} pixels a side",
+            crate::picture::MAX_PICTURE_SIDE
         ));
     }
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(|error| format!("the inline picture is not base64: {error}"))?;
-    crate::render::decode_picture(&bytes)
-        .map_err(|error| format!("the inline picture is not a PNG or JPEG: {error}"))?;
-    store(&bytes)
+    Ok((width, height))
+}
+
+/// An image shape as authored: its picture kept by content and its frame
+/// filled in from the picture's size where it was left out.
+fn kept_image(shape: &mut crate::model::Shape) -> Result<(), String> {
+    let crate::model::Shape::Image {
+        src,
+        width,
+        height,
+        crop,
+        ..
+    } = shape
+    else {
+        return Ok(());
+    };
+    let (address, (pw, ph)) = keep_picture(src)?;
+    *src = address;
+    let [.., cw, ch] = crop.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+    let (natural_w, natural_h) = (f64::from(pw) * cw, f64::from(ph) * ch);
+    match (*width > 0.0, *height > 0.0) {
+        (false, false) => (*width, *height) = (natural_w, natural_h),
+        (true, false) => *height = *width * natural_h / natural_w.max(1e-9),
+        (false, true) => *width = *height * natural_w / natural_h.max(1e-9),
+        (true, true) => {}
+    }
+    Ok(())
+}
+
+/// The title a picture's file gives a new artwork: its name without the
+/// extension.
+fn title_of(path: &str) -> String {
+    if !path.starts_with('/') {
+        return String::new();
+    }
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// Open a picture as a new artwork.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpenPath {
+    /// A PNG, JPEG or WebP: an absolute path, a content address or a data:
+    /// URI.
+    pub path: String,
 }
 
 /// The bytes of the file at `path`, at most `limit` of them.
@@ -439,25 +565,29 @@ impl Resource for ArtworkResource {
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
+        [
             decl::<Paint>(
                 "paint",
                 "Paint strokes",
                 "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (light pressure, many strokes; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
                 CanvasAction::Paint,
             ),
-            decl::<Draw>(
-                "draw",
-                "Draw shapes",
-                "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text or stroke, each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
-                CanvasAction::Draw,
-            ),
-            decl::<EditMarks>(
-                "edit-marks",
-                "Edit marks",
-                "Change marks by id: colours, opacity, name, move_by [dx,dy], scale and rotate about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge.",
-                CanvasAction::edit,
-            ),
+            ActionDecl::new("draw", "Draw shapes", params_of::<Draw>(), |args, _now| {
+                let mut draw: Draw = read_args(args)?;
+                for mark in &mut draw.marks {
+                    kept_image(&mut mark.shape)?;
+                }
+                Ok(CanvasAction::Draw(draw))
+            })
+            .describe("Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes."),
+            ActionDecl::new("edit-marks", "Edit marks", params_of::<EditMarks>(), |args, _now| {
+                let mut edit: EditMarks = read_args(args)?;
+                if let Some(shape) = &mut edit.shape {
+                    kept_image(&mut shape.0)?;
+                }
+                Ok(CanvasAction::edit(edit))
+            })
+            .describe("Change marks by id: colours, opacity, name, move_by [dx,dy], scale, rotate and flip about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge. Pictures: crop, straighten, adjust (exposure, white balance, …; look to judge)."),
             decl::<RemoveMarks>(
                 "remove-marks",
                 "Remove marks",
@@ -481,7 +611,7 @@ impl Resource for ArtworkResource {
             decl::<EditLayer>(
                 "edit-layer",
                 "Edit layer",
-                "Rename a layer, change its medium, opacity, visibility or lock, or move it to the front, back, forward or backward.",
+                "Rename a layer, change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward.",
                 CanvasAction::EditLayer,
             ),
             decl::<RemoveLayer>(
@@ -493,7 +623,7 @@ impl Resource for ArtworkResource {
             decl::<SetArtwork>(
                 "set-artwork",
                 "Set artwork",
-                "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour.",
+                "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour; or crop the artwork to a region or to what a mark shows (fit).",
                 CanvasAction::SetArtwork,
             ),
             decl::<SaveMedium>(
@@ -514,27 +644,9 @@ impl Resource for ArtworkResource {
                 "Align marks or groups to an edge or centre line, and/or distribute them with equal gaps, within their own extent, the artwork or another mark.",
                 CanvasAction::Align,
             ),
-            ActionDecl::new("set-reference", "Set reference", params_of::<SetReference>(), |args, _now| {
-                let mut set: SetReference = read_args(args)?;
-                if let Some(image) = &set.image
-                    && image.starts_with('/')
-                {
-                    set.image = Some(store_picture(image)?);
-                } else if let Some(image) = &set.image
-                    && image.starts_with("data:")
-                {
-                    set.image = Some(store_inline_picture(image)?);
-                }
-                Ok(CanvasAction::SetReference(set))
-            })
-            .describe("Set the reference picture to recreate or trace: shown over the artwork at its opacity, seen by look (reference: false hides it) and compare; never exported."),
-            ActionDecl::new("import-svg", "Import SVG", params_of::<crate::svg::ImportSvg>(), |args, _now| {
-                let request: crate::svg::ImportSvg = read_args(args)?;
-                crate::svg::import(&request).map(CanvasAction::Draw)
-            })
-            .describe("Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths."),
         ]
         .into_iter()
+        .chain(picture_declarations())
         .chain(area_declarations())
         .collect()
     }
@@ -573,8 +685,8 @@ impl Resource for ArtworkResource {
         };
         let mut export = ActionSpec::typed_operation(
             "export",
-            "Export PNG",
-            "Export PNG",
+            "Export picture",
+            "Export picture",
             OperationKind::Effect,
             VIEW_TYPE,
             params_of::<Export>(),
@@ -591,7 +703,7 @@ impl Resource for ArtworkResource {
         )
         .requiring(PermissionRequirement::Read)
         .with_description(
-            "Render the artwork at full size as a PNG and answer with its content address.",
+            "Render the artwork at full size (or scaled) as a PNG, JPEG or WebP and answer with its content address.",
         );
         export.contract.result = ResultSpec::Json {
             schema: serde_json::json!({"type": "object"}),
@@ -623,6 +735,7 @@ impl Resource for ArtworkResource {
                 .map(|layer| layer.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
+            action: None,
         }];
         entries.extend(
             art.marks
@@ -632,10 +745,41 @@ impl Resource for ArtworkResource {
                     anchor: Some(mark.id.clone()),
                     title: mark.name.clone(),
                     text: mark.shape.kind().into(),
+                    action: None,
                 }),
         );
         entries
     }
+}
+
+/// The actions that bring pictures in: a reference to work from, an SVG
+/// as vector marks, a picture as a new artwork.
+fn picture_declarations() -> Vec<ActionDecl<ArtworkResource>> {
+    vec![
+            ActionDecl::new("set-reference", "Set reference", params_of::<SetReference>(), |args, _now| {
+                let mut set: SetReference = read_args(args)?;
+                if let Some(image) = &set.image {
+                    set.image = Some(keep_picture(image)?.0);
+                }
+                Ok(CanvasAction::SetReference(set))
+            })
+            .describe("Set the reference picture to recreate or trace: shown over the artwork at its opacity, seen by look (reference: false hides it) and compare; never exported."),
+            ActionDecl::new("import-svg", "Import SVG", params_of::<crate::svg::ImportSvg>(), |args, _now| {
+                let request: crate::svg::ImportSvg = read_args(args)?;
+                crate::svg::import(&request).map(CanvasAction::Draw)
+            })
+            .describe("Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths."),
+            ActionDecl::new("open", "Open picture", params_of::<OpenPath>(), |args, _now| {
+                let open: OpenPath = read_args(args)?;
+                let (src, (width, height)) = keep_picture(&open.path)?;
+                Ok(CanvasAction::OpenPicture(crate::actions::Open {
+                    src,
+                    pixels: [width, height],
+                    title: title_of(&open.path),
+                }))
+            })
+            .describe("Open a PNG, JPEG or WebP as a new artwork the size of the picture (a unit per pixel), the picture its first mark, `picture`. Replaces what the artwork held (undo brings it back)."),
+    ]
 }
 
 /// Selecting areas, using the selection and combining shapes.

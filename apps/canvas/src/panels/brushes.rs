@@ -70,6 +70,7 @@ fn sample(preset: Preset, colour: &str) -> Artwork {
             base: 0.0,
             invert: false,
             clip: false,
+            adjust: None,
         }],
         marks: vec![Mark {
             id: format!("sample-{}", preset.name()),
@@ -86,6 +87,7 @@ fn sample(preset: Preset, colour: &str) -> Artwork {
             transform: None,
             group: String::new(),
             clip: String::new(),
+            area: String::new(),
         }],
         ..Artwork::default()
     }

@@ -69,6 +69,7 @@ impl Resource for Themes {
                 anchor: Some(format!("themes.theme:{}", theme.id)),
                 title: theme.name.clone(),
                 text: theme.id.clone(),
+                action: None,
             })
             .collect()
     }
@@ -99,7 +100,9 @@ impl ResourceApp for ThemesShell {
     const ID: &'static str = "so.tilo.themes";
     const TITLE: &'static str = "Themes";
     const ICON: Option<&'static str> = Some("themes");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Themes>) -> Element {
         cx.surface(ThemesApp::new())

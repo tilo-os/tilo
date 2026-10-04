@@ -48,6 +48,7 @@ suites = [
   "os/tests/composefs_digest_parse.sh",
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/board_session.sh",
+  "os/tests/board_audio_contract.sh",
   "os/tests/disk_image_firstboot_seed.sh",
   "os/tests/disk_image_mirror_policy.sh",
   "os/tests/disk_image_mtools_esp.sh",
@@ -201,6 +202,14 @@ name = "no-cisco-openh264"
 # finished-rootfs gate, and the CI/developer environments that alone may carry it.
 inputs = ["os/", ".forgejo/workflows/build-rpms.yml", "dist/ci/install-build-deps.sh"]
 suites = ["os/tests/test_no_cisco_openh264.py"]
+
+[[group]]
+name = "mount-source-cache-keys"
+# A RUN that bind-mounts a pulled image's alias stage (the frozen RPM snapshot,
+# the kernel, a toolchain) keys its layer on that image's reference, so a local
+# Buildah build never reuses a layer installed from a previous snapshot.
+inputs = ["os/"]
+suites = ["os/tests/test_mount_source_cache_keys.py"]
 
 [[group]]
 name = "dev-feature-targets"
@@ -418,6 +427,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs",
   "crates/browser/tilo-browser-runtime/web/membership.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs",
   "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",
@@ -679,11 +689,6 @@ readers = [
 ]
 
 [[cargo]]
-package = "calculator"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/calculator/src/framework_history_tests.rs"]
-
-[[cargo]]
 package = "contacts"
 inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/contacts/src/framework_history_tests.rs"]
@@ -704,11 +709,6 @@ inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/slides/src/framework_history_tests.rs"]
 
 [[cargo]]
-package = "snippets"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/snippets/src/framework_history_tests.rs"]
-
-[[cargo]]
 package = "themes"
 inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/themes/src/framework_history_tests.rs"]
@@ -727,11 +727,6 @@ readers = ["apps/weather/src/framework_history_tests.rs"]
 package = "chat"
 inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["apps/chat/src/component_tests.rs"]
-
-[[cargo]]
-package = "containers"
-inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/containers/src/framework_history_tests.rs"]
 
 [[cargo]]
 package = "vpn"
@@ -888,6 +883,11 @@ reason = "boots VMs (KVM) from a built installer image"
 [[unrequired]]
 suite = "os/tests/validation_drive_qemu.sh"
 reason = "requires a native ARM KVM host and QEMU"
+workflow = "build-image.yml"
+
+[[unrequired]]
+suite = "os/dev/test-joined-device-startup.sh"
+reason = "boots the installed OS image in a VM and signs in"
 workflow = "build-image.yml"
 
 [[unrequired]]
@@ -1106,6 +1106,11 @@ reason = "needs FEX sources and a guest rootfs container"
 suite = "os/tests/secureboot_vm_probe.sh"
 reason = "needs a compiled kernel, OVMF and QEMU"
 workflow = "build-kernel.yml"
+
+[[unrequired]]
+suite = "os/tests/session-context-check.sh"
+reason = "runs inside a booted guest after a greetd login"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/staging_helper_loop.sh"
