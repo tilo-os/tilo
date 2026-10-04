@@ -2690,6 +2690,14 @@ jobs:
           # greetd removes once the session has started.
           ./os/dev/vm.sh ssh 'TILO_BOOT_USERSPACE_BUDGET_SEC=20 /usr/libexec/tilo/boot-performance-gate.sh'
 
+          # The sign-in screen as a person meets it, judged from the frames
+          # QEMU scans out: whole before any input and while the pointer
+          # moves, each keystroke on screen within the latency bound and
+          # repainting only the field, and a wrong passcode answered with a
+          # plain sentence on a steady frame. Captures and timings land in
+          # the uploaded artifacts.
+          ./os/dev/vm.sh greeter-acceptance "$TILO_RUN/greeter"
+
           # The disk holds one account, so the greeter shows its personal
           # form: the account is chosen and the passcode field has focus.
           ./os/dev/vm.sh login --passcode-only "$TILO_PASS"
@@ -2716,6 +2724,8 @@ jobs:
             sleep 1
           done
           sleep 2
+          # The session that sign-in started is on screen, fully painted.
+          ./os/dev/vm.sh check-frame 05-after-login "$TILO_RUN/greeter"
           # Unit/native audits prove the AccessKit shape in-process. This is
           # the release gate that proves the compositor-owned first-use UI is
           # visible to an external AT-SPI consumer on the installed
@@ -2841,6 +2851,16 @@ jobs:
           ./os/dev/vm.sh keys tab
           ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh described "Paragraph block 2" "Level 2" --state /tmp/notes-nesting'
 
+          # A screenshot copied elsewhere pastes into a note as an image with
+          # Ctrl+V, kept by the document media service the launcher must reach.
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-image'
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh copy-image
+          # The copy reaches Notes as a selection event; give it a moment to
+          # read the image before pasting.
+          sleep 2
+          ./os/dev/vm.sh keys ctrl-v
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh present Notes "Pasted image" --state /tmp/notes-image'
+
           # Keyboards and mice plugged in after login must reach the running
           # compositor: a USB keyboard hot-added on QEMU's own bus, then a
           # virtual keyboard plugged and unplugged repeatedly, every time
@@ -2916,6 +2936,8 @@ jobs:
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/serial.log
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.ppm
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.png
+            /var/tmp/tilo-projection-vm-${{ matrix.arch }}/greeter/*.png
+            /var/tmp/tilo-projection-vm-${{ matrix.arch }}/greeter/*.json
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/joined-device/
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/nearby-pairing/
             /var/tmp/tilo-projection-image-${{ matrix.arch }}/qcow2/.install.log

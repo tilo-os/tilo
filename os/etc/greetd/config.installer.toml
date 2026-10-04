@@ -7,9 +7,9 @@
 # or the normal greeter — both wrapped in `cage`, since greetd has no display
 # of its own.
 #
-# tilo-session-select sets WLR_NO_HARDWARE_CURSORS=1 itself (software cursor;
-# the virtio-gpu HW cursor renders Y-flipped/offset under qemu GL — see
-# config.toml for the full rationale), so the command here is the bare script.
+# tilo-session-select starts both through tilo-cage-session, which chooses
+# cage's renderer and cursor for the display hardware, so the command here is
+# the bare script.
 #
 # The Containerfile.installer overwrites /etc/greetd/config.toml with THIS
 # file, so the live image's greetd uses the session selector.
