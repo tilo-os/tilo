@@ -123,6 +123,10 @@ pub struct SettingsApp {
     /// persisted across rebuilds so its collapse/overlay state survives a
     /// category switch. Its nav + content are swapped on selection.
     shell: Option<AppShell>,
+    /// Where the last wallpaper request stands, for the Appearance pane.
+    wallpaper_status: ui::LocalState<Option<String>>,
+    /// The assistive software this device has installed.
+    software: panes::accessibility::Software,
     /// The text scale the shell was built for. A large-text preference widens
     /// the docked sidebar and its breakpoint with the type (the same policy
     /// the Store applies to its card grid), so a change rebuilds the shell.
@@ -177,6 +181,8 @@ impl SettingsApp {
             rect: vello::kurbo::Rect::ZERO,
             shell: None,
             shell_text_scale: 1.0,
+            wallpaper_status: ui::LocalState::new(None),
+            software: panes::accessibility::Software::installed(),
         }
     }
 
@@ -406,6 +412,16 @@ impl SettingsApp {
         self.refresh_shell_children();
     }
 
+    /// Where the last wallpaper request stands.
+    pub(crate) fn wallpaper_status(&self) -> &ui::LocalState<Option<String>> {
+        &self.wallpaper_status
+    }
+
+    /// The assistive software this device has installed.
+    pub(crate) fn software(&self) -> panes::accessibility::Software {
+        self.software
+    }
+
     /// What the panes reach of the host.
     pub(crate) fn host(&self) -> &crate::host::PaneCx {
         &self.cx
@@ -522,14 +538,14 @@ impl SettingsApp {
                     .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
-            Category::Appearance => {
-                let mut pane = panes::appearance::AppearancePane::new();
-                if let Some(dispatcher) = self.cx.dispatcher() {
-                    pane.bind_dispatcher(dispatcher);
-                }
-                Box::new(pane)
-            }
-            Category::Accessibility => panes::accessibility::build(),
+            Category::Appearance => Box::new(panes::appearance::AppearancePane::new(
+                self.cx.clone(),
+                self.wallpaper_status.clone(),
+            )),
+            Category::Accessibility => Box::new(panes::accessibility::AccessibilityPane::new(
+                self.cx.clone(),
+                self.software,
+            )),
             Category::Notifications if !self.cx.is_live() => {
                 Box::new(panes::notifications::NotificationsPane::for_shot())
             }
