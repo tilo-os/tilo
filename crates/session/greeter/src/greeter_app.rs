@@ -2142,6 +2142,7 @@ mod tests {
                 vec![
                     "greeter.username",
                     "greeter.password",
+                    "greeter.password_reveal",
                     "greeter.login",
                     "greeter.fingerprint",
                     "greeter.session",
@@ -2448,13 +2449,14 @@ mod tests {
             assert_eq!(
                 base,
                 vec![
-                    "TextInput", // username
-                    "TextInput", // passcode
-                    "Button",    // sign in
-                    "Button",    // fingerprint
-                    "Dropdown",  // session
-                    "Button",    // restart
-                    "Button",    // shut down
+                    "TextInput",      // username
+                    "TextInput",      // passcode
+                    "PasswordReveal", // show/hide passcode
+                    "Button",         // sign in
+                    "Button",         // fingerprint
+                    "Dropdown",       // session
+                    "Button",         // restart
+                    "Button",         // shut down
                 ]
             );
             app.selected_session = 1;
@@ -2491,6 +2493,7 @@ mod tests {
                 focusables(&app),
                 vec![
                     "greeter.password",
+                    "greeter.password_reveal",
                     "greeter.login",
                     "greeter.fingerprint",
                     "greeter.reboot",
@@ -2956,6 +2959,7 @@ mod tests {
                 let card = app.composed.as_deref().expect("composed");
                 for id in [
                     "greeter.password",
+                    "greeter.password_reveal",
                     "greeter.login",
                     "greeter.session",
                     "greeter.reboot",

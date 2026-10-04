@@ -22,7 +22,6 @@
 "apps/api-tester/src/resource.rs" = 2
 "apps/backups/src/resource.rs" = 2
 "apps/browser/src/resource.rs" = 2
-"apps/calculator/src/resource.rs" = 1
 "apps/calendar/src/resource.rs" = 1
 "apps/camera/src/resource.rs" = 2
 "apps/chat/src/resource.rs" = 2
@@ -45,7 +44,6 @@
 "apps/pdf-viewer/src/resource.rs" = 2
 "apps/photos/src/resource.rs" = 2
 "apps/print-centre/src/resource.rs" = 1
-"apps/remote/src/resource.rs" = 2
 "apps/settings/src/resource.rs" = 2
 "apps/sheets/src/resource.rs" = 1
 "apps/slides/src/app.rs" = 1
@@ -65,7 +63,6 @@
 "apps/api-tester/src/lib.rs" = 2
 "apps/api-tester/src/main.rs" = 2
 "apps/backups/src/main.rs" = 2
-"apps/calculator/src/main.rs" = 1
 "apps/calendar/src/main.rs" = 1
 "apps/camera/src/lib.rs" = 2
 "apps/camera/src/main.rs" = 1
@@ -92,7 +89,6 @@
 "apps/pdf-viewer/src/main.rs" = 3
 "apps/photos/src/lib.rs" = 2
 "apps/print-centre/src/main.rs" = 2
-"apps/remote/src/main.rs" = 2
 "apps/settings/src/main.rs" = 1
 "apps/slides/src/lib.rs" = 2
 "apps/slides/src/main.rs" = 1
@@ -123,7 +119,6 @@
 [ratchets.widget_owned_document]
 "apps/agent/src/apply.rs" = 2
 "apps/browser/src/browser_widget.rs" = 1
-"apps/calculator/src/framework_history.rs" = 1
 "apps/calendar/src/store.rs" = 1
 "apps/camera/src/search.rs" = 2
 "apps/contacts/src/framework_history.rs" = 1
@@ -139,7 +134,6 @@
 "apps/osk/src/framework_history.rs" = 1
 "apps/pdf-viewer/src/main.rs" = 1
 "apps/photos/src/framework_history.rs" = 2
-"apps/remote/src/app.rs" = 1
 "apps/settings/src/actions/mod.rs" = 17
 "apps/settings/src/panes/agent_models.rs" = 1
 "apps/settings/src/panes/audio.rs" = 2
