@@ -984,13 +984,23 @@ jobs:
           DEV_BUILD: ${{ github.event_name == 'workflow_call' }}
         run: |
           set -euo pipefail
-          if [[ $DEV_BUILD == true ]]; then
+          free_kib() {
+            docker exec "buildx_buildkit_${BUILDER_NAME}0" \
+              sh -c 'df -Pk /var/lib/buildkit | awk "NR == 2 { print \$4 }"'
+          }
+          if [[ $DEV_BUILD == true ]] && (( $(free_kib) < 46875000 )); then
             # Only this job's builder cache: Docker's images and the runner
             # configuration are outside this cleanup. Reserve enough space
             # before compiles start, rather than racing the background GC.
-            timeout --kill-after=30s 180s docker buildx prune \
-              --builder "$BUILDER_NAME" --force --all \
-              --min-free-space 48GB --reserved-space 2GB
+            # Only when short of it: BuildKit's prune removes one record even
+            # when the space is there, and its pick was the Rust target cache
+            # every build would otherwise reuse. Layers go first.
+            for filter in type!=exec.cachemount type!=internal; do
+              timeout --kill-after=30s 180s docker buildx prune \
+                --builder "$BUILDER_NAME" --force --all --filter "$filter" \
+                --min-free-space 48GB --reserved-space 2GB
+              (( $(free_kib) < 46875000 )) || break
+            done
           fi
           docker exec "buildx_buildkit_${BUILDER_NAME}0" df -h /var/lib/buildkit
           docker exec "buildx_buildkit_${BUILDER_NAME}0" df -i /var/lib/buildkit
