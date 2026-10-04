@@ -373,7 +373,7 @@ impl FilePicker {
     #[must_use]
     pub fn with_filename(mut self, name: impl Into<String>) -> Self {
         let name = name.into();
-        self.filename.set_text(&name);
+        self.set_filename(&name);
         self
     }
 
@@ -405,6 +405,13 @@ impl FilePicker {
         self.filters
             .get(self.active_filter)
             .map_or("All files", |f| f.label.as_str())
+    }
+
+    /// Put `name` in the filename field with the caret after it, so typing
+    /// continues it.
+    fn set_filename(&mut self, name: &str) {
+        self.filename.set_text(name);
+        self.filename.set_cursor_pos(name.len());
     }
 
     pub fn filename(&self) -> &str {
@@ -1035,7 +1042,8 @@ impl FilePicker {
         }
         // In Save mode, clicking a file copies its name into the field.
         if self.mode == FilePickerMode::Save {
-            self.filename.set_text(&entry.name);
+            let name = entry.name.clone();
+            self.set_filename(&name);
         }
         if is_double && self.mode == FilePickerMode::Directory {
             self.last_click = None;
