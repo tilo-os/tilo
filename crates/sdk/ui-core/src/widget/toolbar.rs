@@ -848,7 +848,8 @@ impl Widget for Toolbar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.menu.draw(scene, transform, text, theme, presence);
+        self.menu
+            .draw_overlay(scene, transform, text, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {

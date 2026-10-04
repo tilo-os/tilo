@@ -96,13 +96,6 @@ impl Facing {
             Facing::Wide => "Ultra-wide",
         }
     }
-    pub fn short(self) -> &'static str {
-        match self {
-            Facing::Back => "1×",
-            Facing::Front => "Front",
-            Facing::Wide => "0.5×",
-        }
-    }
     pub fn as_str(self) -> &'static str {
         match self {
             Facing::Back => "back",
@@ -384,33 +377,53 @@ impl CodeKind {
         }
     }
 
-    /// Contextual action labels offered for this payload, primary first.
+    /// The actions offered for this payload, primary first. Each names
+    /// exactly what it does.
     pub fn actions(&self) -> Vec<&'static str> {
         match self {
-            CodeKind::Url => vec!["Open link", "Copy", "Share"],
-            CodeKind::Wifi { .. } => vec!["Connect", "Copy password", "Save"],
-            CodeKind::Contact { .. } => vec!["Add contact", "Call", "Copy"],
-            CodeKind::Email => vec!["Compose", "Copy"],
-            CodeKind::Phone => vec!["Call", "Copy"],
-            CodeKind::Geo => vec!["Open map", "Copy"],
-            CodeKind::Text => vec!["Copy", "Search"],
+            CodeKind::Url => vec!["Open link", "Copy link"],
+            CodeKind::Wifi { .. } => vec!["Copy password", "Copy network name"],
+            CodeKind::Contact { phone, .. } if !phone.is_empty() => {
+                vec!["Call", "Copy contact"]
+            }
+            CodeKind::Contact { .. } => vec!["Copy contact"],
+            CodeKind::Email => vec!["Write email", "Copy address"],
+            CodeKind::Phone => vec!["Call", "Copy number"],
+            CodeKind::Geo => vec!["Open map", "Copy location"],
+            CodeKind::Text => vec!["Copy text"],
         }
     }
 
-    /// A short, friendly one-line summary of the payload.
+    /// The payload's one main fact: a network name, a person, an address.
     pub fn summary(&self, raw: &str) -> String {
+        let without = |scheme: &str| {
+            raw.get(..scheme.len())
+                .filter(|head| head.eq_ignore_ascii_case(scheme))
+                .and_then(|_| raw.get(scheme.len()..))
+                .unwrap_or(raw)
+                .to_owned()
+        };
         match self {
-            CodeKind::Wifi { ssid, auth, .. } => {
-                format!("\"{ssid}\"  ·  {auth}")
+            CodeKind::Wifi { ssid, .. } => ssid.clone(),
+            CodeKind::Contact { name, .. } => name.clone(),
+            CodeKind::Email => without("mailto:"),
+            CodeKind::Phone => without("tel:"),
+            CodeKind::Geo => without("geo:").replace(',', ", "),
+            CodeKind::Url | CodeKind::Text => raw.to_string(),
+        }
+    }
+
+    /// What kind of payload it is, with the one detail that tells two of a
+    /// kind apart.
+    pub fn description(&self) -> String {
+        match self {
+            CodeKind::Wifi { auth, .. } if !auth.is_empty() && auth != "nopass" => {
+                format!("Wi-Fi network, {auth}")
             }
-            CodeKind::Contact { name, phone, .. } => {
-                if phone.is_empty() {
-                    name.clone()
-                } else {
-                    format!("{name}  ·  {phone}")
-                }
+            CodeKind::Contact { phone, .. } if !phone.is_empty() => {
+                format!("Contact, {phone}")
             }
-            _ => raw.to_string(),
+            other => other.title().to_owned(),
         }
     }
 }
@@ -623,7 +636,7 @@ mod tests {
         // Phase `actions_match_kind`.
         {
             assert_eq!(classify("https://x").actions()[0], "Open link");
-            assert_eq!(classify("WIFI:S:x;;").actions()[0], "Connect");
+            assert_eq!(classify("WIFI:S:x;;").actions()[0], "Copy password");
             assert_eq!(classify("tel:+15550100").actions()[0], "Call");
         }
     }

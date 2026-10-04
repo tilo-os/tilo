@@ -543,7 +543,8 @@ impl PageJumpPalette {
     ) {
         let tokens = &theme.tokens;
         let scale = f64::from(theme.text_scale);
-        let selected_ink = tokens.colors.intent.on_inverted;
+        // The armed row is the panel's strong lift, as in every menu.
+        let selected_ink = crate::widget::floating_surface::armed_row(theme).1;
         let list_top = input_rect.y1 + PADDING * scale;
         // Result rows use `TextRenderer`, which owns the global accessibility
         // multiplier. Keep the requested size at the unscaled design token so
@@ -587,13 +588,12 @@ impl PageJumpPalette {
                 y0 + self.row_height() * scale,
             );
             if visible_index == self.cursor {
-                let hl = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.detail));
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+                crate::widget::floating_surface::paint_armed_row(
+                    scene,
                     transform,
-                    tokens.colors.intent.inverted,
-                    None,
-                    &hl,
+                    row_rect,
+                    row_rect.x0 - rect.x0,
+                    theme,
                 );
             }
             let subtitle = self.subtitles.get(&row.id);

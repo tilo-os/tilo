@@ -18,10 +18,8 @@
 //!
 //! Shots-only flags:
 //! - `--viewport WxH`: render at `WxH` logical px instead of the default
-//!   1280x800. A sub-`NAV_BREAKPOINT` width exercises the responsive
-//!   overlay-flap layout.
-//! - `--narrow`: build the narrow variant (rail collapsed to an open overlay
-//!   flap), so the still captures the summoned rail + scrim.
+//!   1280x800.
+//! - `--narrow`: render the narrow (560 px) window.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -51,19 +49,11 @@
     )
 )]
 
-use std::collections::HashMap;
-
-use taffy::prelude::*;
 use ui::launch::{
     LaunchArgs, LaunchError, LaunchSpec, ShotFrame, ShotLayout, ShotScenario, build_shot_scenario,
 };
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
@@ -119,11 +109,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // `--bench-scroll [frames]` — headless scroll-performance benchmark. Times
-    // the exact per-frame passes the live event loop runs (compute_layout /
-    // apply_layout / draw) over a large Home grid, in two modes — the pre-fix
-    // "always re-solve" baseline and the scroll-reposition fast path — and
-    // prints the numbers. No window, no GPU present (matches the TILO_UI_PERF
-    // main-thread breakdown, which excludes the render worker).
+    // each scroll frame through the toolkit's headless host (input, update,
+    // layout and draw) over a large Home grid and prints the numbers. No
+    // window, no GPU present (matches the TILO_UI_PERF main-thread breakdown,
+    // which excludes the render worker).
     if let Some(frames) = parse_flag_usize(&args, "--bench-scroll", 90) {
         // `--watch` benches the watch page (full-bleed player + a long comment
         // list) instead of the Home grid — the heaviest scroll scenario.
@@ -133,7 +122,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `sync` each frame, so the per-frame engine cost is measured, not just
         // layout + draw.
         let loaded = args.iter().any(|a| a == "--loaded");
-        return run_bench_scroll(frames, watch, loaded);
+        run_bench_scroll(frames, watch, loaded);
+        return Ok(());
     }
 
     if !tube::standalone_launch() {
@@ -144,11 +134,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new("so.tilo.tube", live_root)
             .shot_root(shot_root)
-            // `--narrow` / `--scenario narrow` is a complete responsive-shot
-            // preset, not merely a request to open the rail. Keeping the
-            // render canvas narrow as well as the app's layout hint makes the
-            // screenshot deterministic and prevents a docked wide canvas from
-            // hiding the overlay case.
+            // `--narrow` / `--scenario narrow` renders a narrow window unless
+            // a viewport is given.
             .shot_viewport(|args| {
                 let narrow = args.has("--narrow") || args.scenario.as_deref() == Some("narrow");
                 if narrow && args.viewport.is_none() {
@@ -162,20 +149,18 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "empty",
                 "loading",
                 "device-sync",
-                "palette",
                 "play-demo",
                 "narrow",
                 "route",
             ])
             .allowed_flags(&[
                 "--narrow",
-                "--palette",
                 "--play-demo",
                 "--empty",
                 "--loading",
                 "--device-sync",
             ])
-            .allowed_options(&["--route", "--palette-query"])
+            .allowed_options(&["--route"])
             .configure_app(configure_app),
     )?;
     Ok(())
@@ -211,10 +196,6 @@ const SHOT_SCENARIOS: &[ShotScenario] = &[
     ShotScenario {
         name: "device-sync",
         build: shot_device_sync,
-    },
-    ShotScenario {
-        name: "palette",
-        build: shot_palette,
     },
     ShotScenario {
         name: "play-demo",
@@ -282,16 +263,6 @@ fn shot_device_sync(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     clippy::unnecessary_wraps,
     reason = "signature is fixed by ui::launch::ShotFactory"
 )]
-fn shot_palette(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(Box::new(shot_app(args).with_palette_open_for_test(
-        args.value("--palette-query").unwrap_or("rust"),
-    )))
-}
-
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "signature is fixed by ui::launch::ShotFactory"
-)]
 fn shot_play_demo(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(Box::new(shot_app(args).with_playing_demo_for_test()))
 }
@@ -301,7 +272,7 @@ fn shot_play_demo(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     reason = "signature is fixed by ui::launch::ShotFactory"
 )]
 fn shot_narrow(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(Box::new(shot_app(args).with_open_sidebar_shot()))
+    Ok(Box::new(shot_app(args)))
 }
 
 #[allow(
@@ -328,8 +299,6 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
             args.scenario = Some("loading".into());
         } else if args.has("--device-sync") {
             args.scenario = Some("device-sync".into());
-        } else if args.has("--palette") {
-            args.scenario = Some("palette".into());
         } else if args.has("--play-demo") {
             args.scenario = Some("play-demo".into());
         } else if args.has("--narrow") {
@@ -817,12 +786,11 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
                 }
                 smodel.reconcile_channel_avatars();
             }
-            smodel.search_query = query.to_string();
             smodel.search_hits_query = query.to_string();
             smodel.search_hits = vids;
             smodel.search_playlist_hits = pids;
             smodel.search_channel_hits = cids;
-            smodel.route = Route::Search(query.to_string());
+            smodel.route = Route::Home;
             smodel.data_source = DataSource {
                 live: true,
                 label: "live".into(),
@@ -1470,32 +1438,14 @@ fn avg_us(samples: &[u128]) -> u128 {
     }
 }
 
-/// One measured pass of [`run_bench_scroll`]'s inner `run_pass` closure: the
-/// per-frame sync/compute/apply/draw timing series (µs) and whether the pass
-/// used the scroll fast path.
-type ScrollBenchPass =
-    Result<(Vec<u128>, Vec<u128>, Vec<u128>, Vec<u128>, bool), Box<dyn std::error::Error>>;
-
 /// `--bench-scroll [frames] [--watch]`: measure the per-frame main-thread cost
 /// of scrolling either a large Home grid or the watch page (full-bleed player +
-/// a long comment list), in two modes, and report the numbers.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one timed pipeline stage per widget-cycle phase (sync, compute, apply, draw), \
-              measured twice (baseline + fast path); the length is the number of phases \
-              instrumented, not accidental complexity in any one of them"
-)]
-#[allow(
-    clippy::many_single_char_names,
-    reason = "w/h are the viewport size and s/c/a/d the per-phase (sync/compute/apply/draw) \
-              timing series threaded through the report() closure"
-)]
-fn run_bench_scroll(
-    frames: usize,
-    watch: bool,
-    loaded: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+/// a long comment list) through the toolkit's real headless host: each frame
+/// delivers a wheel notch and runs the host's update, layout and draw passes.
+#[allow(clippy::many_single_char_names, reason = "w/h are the viewport size")]
+fn run_bench_scroll(frames: usize, watch: bool, loaded: bool) {
     use tube::model::{Route, TubeModel};
+    use winit::dpi::PhysicalPosition;
     use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
 
     const CARDS: usize = 80;
@@ -1548,188 +1498,39 @@ fn run_bench_scroll(
         m.route = Route::Watch(id);
         m
     };
-    let big_model = || -> TubeModel { if watch { watch_model() } else { home_model() } };
-
-    // One measured pass. `force_compute` = the pre-fix baseline (always re-solve
-    // taffy every frame). `false` = the scroll fast path (apply_layout only when
-    // nothing needs re-measuring). Returns (compute[], apply[], draw[]) in µs.
-    let run_pass = |force_compute: bool| -> ScrollBenchPass {
-        let theme = Theme::dark();
-        let presence = PresenceCtx::empty();
-        let permission = PermissionContext::permissive();
-        let mut tr = TextRenderer::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let model = big_model();
-        let watch_id = match &model.route {
-            Route::Watch(id) => id.clone(),
-            _ => String::new(),
-        };
-        let mut app = tube::TubeApp::new()
-            .with_viewport(f64::from(w), f64::from(h))
-            .with_model_for_test(model);
-        // Load + pause a real (synthesized) frame so the bench measures the true
-        // per-frame cost of a paused-but-loaded watch page.
-        if watch && loaded && !watch_id.is_empty() {
-            app = app.with_bench_loaded_watch(&watch_id);
-        }
-        let mut widget: Box<dyn Widget> = Box::new(app);
-        let mut state = ui::State::new();
-        widget.sync(&mut state.doc, &state.root);
-        let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy.new_with_children(
-            Style {
-                size: Size {
-                    width: length(w as f32),
-                    height: length(h as f32),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )?;
-
-        let solve = |taffy: &mut TaffyTree<()>,
-                     node_map: &HashMap<NodeId, *mut dyn Widget>,
-                     tr: &mut TextRenderer|
-         -> Result<(), Box<dyn std::error::Error>> {
-            taffy.compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = node_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )?;
-            Ok(())
-        };
-
-        // Initial full solve + layout + a warm draw (fills the Text/scene caches
-        // so the timed frames measure steady-state scroll, not first-paint).
-        solve(&mut taffy, &node_map, &mut tr)?;
-        widget.apply_layout(&taffy, child, Point::ORIGIN);
-        {
-            let mut scene = Scene::new();
-            widget.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
-            widget.mark_drawn();
-        }
-
-        let mods = winit::event::Modifiers::default();
-        let mut sync = Vec::with_capacity(frames);
-        let mut compute = Vec::with_capacity(frames);
-        let mut apply = Vec::with_capacity(frames);
-        let mut draw = Vec::with_capacity(frames);
-        let mut ever_reposition_only = false;
-
-        for _ in 0..frames {
-            // Sync first, exactly as the live event loop does: this pumps the
-            // media engine (pulling the freshest frame + playhead), so a loaded
-            // watch page's per-frame engine cost is measured, not just layout.
-            let t = ui::time::now();
-            widget.sync(&mut state.doc, &state.root);
-            sync.push(t.elapsed().as_micros());
-
-            // Real scroll: a wheel notch routed through the widget tree, exactly
-            // as the live event loop delivers it.
-            let wheel = WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
-                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
-                phase: TouchPhase::Moved,
-            };
-            let mut handled = false;
-            let mut focus_target = None;
-            widget.handle_event(
-                &wheel,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut state.doc,
-                    path: &state.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: child,
-                    taffy: &taffy,
-                },
-            );
-
-            // The fast path skips the solve when nothing needs re-measuring.
-            let needs_measure = widget.layout_needs_measure();
-            if !needs_measure {
-                ever_reposition_only = true;
-            }
-            if force_compute || needs_measure {
-                let t = ui::time::now();
-                solve(&mut taffy, &node_map, &mut tr)?;
-                compute.push(t.elapsed().as_micros());
-            } else {
-                compute.push(0);
-            }
-            let t = ui::time::now();
-            widget.apply_layout(&taffy, child, Point::ORIGIN);
-            apply.push(t.elapsed().as_micros());
-
-            let t = ui::time::now();
-            let mut scene = Scene::new();
-            let prev = presence.push_viewport(vello::kurbo::Rect::new(
-                0.0,
-                0.0,
-                f64::from(w),
-                f64::from(h),
-            ));
-            widget.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
-            presence.pop_viewport(prev);
-            widget.mark_drawn();
-            draw.push(t.elapsed().as_micros());
-        }
-        Ok((sync, compute, apply, draw, ever_reposition_only))
+    let model = if watch { watch_model() } else { home_model() };
+    let watch_id = match &model.route {
+        Route::Watch(id) => id.clone(),
+        _ => String::new(),
     };
+    let mut app = tube::TubeApp::new()
+        .with_viewport(f64::from(w), f64::from(h))
+        .with_route_shot(model.route.clone())
+        .with_model_for_test(model);
+    // Load + pause a real (synthesized) frame so the bench measures the true
+    // per-frame cost of a paused-but-loaded watch page.
+    if watch && loaded && !watch_id.is_empty() {
+        app = app.with_bench_loaded_watch(&watch_id);
+    }
+    let mut harness = ui::headless::FrameHarness::new(ui::State::new(), Box::new(app), (w, h));
+    harness.relayout();
+    harness.dispatch_to_root(&WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: PhysicalPosition::new(f64::from(w) * 0.6, f64::from(h) * 0.6),
+    });
+    harness.relayout();
 
-    let report = |label: &str, s: &[u128], c: &[u128], a: &[u128], d: &[u128]| {
-        let total: Vec<u128> = s
-            .iter()
-            .zip(c)
-            .zip(a)
-            .zip(d)
-            .map(|(((s, c), a), d)| s + c + a + d)
-            .collect();
-        println!(
-            "  {label:<20} frame(total)  median {:>5.2}ms  avg {:>5.2}ms  max {:>5.2}ms",
-            median_us(&total) as f64 / 1000.0,
-            avg_us(&total) as f64 / 1000.0,
-            max_us(&total) as f64 / 1000.0,
-        );
-        println!(
-            "  {:<20}   sync med/max {:>5.2}/{:>6.2} | compute med/max {:>5.2}/{:>6.2} | apply med/max {:>5.2}/{:>6.2} | draw med/max {:>5.2}/{:>6.2} ms",
-            "",
-            median_us(s) as f64 / 1000.0,
-            max_us(s) as f64 / 1000.0,
-            median_us(c) as f64 / 1000.0,
-            max_us(c) as f64 / 1000.0,
-            median_us(a) as f64 / 1000.0,
-            max_us(a) as f64 / 1000.0,
-            median_us(d) as f64 / 1000.0,
-            max_us(d) as f64 / 1000.0,
-        );
-    };
+    let mut samples = Vec::with_capacity(frames);
+    for _ in 0..frames {
+        let t = ui::time::now();
+        harness.dispatch_to_root(&WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+            phase: TouchPhase::Moved,
+        });
+        harness.relayout();
+        samples.push(t.elapsed().as_micros());
+    }
 
     let loaded_note = if watch && loaded {
         " [loaded+paused player]"
@@ -1742,37 +1543,18 @@ fn run_bench_scroll(
         format!("{CARDS} Home cards")
     };
     println!("tube scroll bench: {scene_label}, {w}x{h}, {frames} scroll frames\n");
-    let (bs, bc, ba, bd, _) = run_pass(true)?;
-    report("BASELINE (re-solve)", &bs, &bc, &ba, &bd);
-    let (fs, fc, fa, fd, repos) = run_pass(false)?;
-    report("FAST (reposition)", &fs, &fc, &fa, &fd);
     println!(
-        "\n  scroll frames took the reposition-only fast path: {}",
-        if repos {
-            "yes (compute_layout skipped)"
-        } else {
-            "NO — investigate"
-        }
+        "  frame (input + update + layout + draw)  median {:>5.2}ms  avg {:>5.2}ms  max {:>5.2}ms",
+        median_us(&samples) as f64 / 1000.0,
+        avg_us(&samples) as f64 / 1000.0,
+        max_us(&samples) as f64 / 1000.0,
     );
-    let fast_total: Vec<u128> = fs
-        .iter()
-        .zip(&fc)
-        .zip(&fa)
-        .zip(&fd)
-        .map(|(((s, c), a), d)| s + c + a + d)
-        .collect();
-    println!(
-        "  FAST-path median frame (incl. sync): {:.2}ms  (sync med {:.2}ms)",
-        median_us(&fast_total) as f64 / 1000.0,
-        median_us(&fs) as f64 / 1000.0,
-    );
-    Ok(())
 }
 
 /// Parse a route specification into a starting [`tube::model::Route`] for a
 /// screen-specific shot. Recognises `home`, `trending`, `subs`/
-/// `subscriptions`, `history`, `settings`, `watch:<video_id>`, and
-/// `queue`, `search:<query>`.
+/// `subscriptions`, `queue`, `history`, `settings`, `watch:<video_id>`,
+/// `channel:<channel_id>` and `playlist:<playlist_id>`.
 fn route_from_spec(spec: &str) -> tube::model::Route {
     use tube::model::Route;
     let lower = spec.to_ascii_lowercase();
@@ -1786,10 +1568,12 @@ fn route_from_spec(spec: &str) -> tube::model::Route {
         _ => {
             if let Some(id) = spec.strip_prefix("watch:") {
                 Route::Watch(id.to_string())
-            } else if let Some(q) = spec.strip_prefix("search:") {
-                Route::Search(q.to_string())
+            } else if let Some(id) = spec.strip_prefix("channel:") {
+                Route::Channel(id.to_string())
+            } else if let Some(id) = spec.strip_prefix("playlist:") {
+                Route::Playlist(id.to_string())
             } else {
-                Route::Search(spec.to_string())
+                Route::Home
             }
         }
     }

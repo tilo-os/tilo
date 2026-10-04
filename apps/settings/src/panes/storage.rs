@@ -238,10 +238,7 @@ impl StoragePane {
                 );
                 card_with_action(
                     &t("settings-storage-synced-card"),
-                    Box::new(
-                        Button::new("storage.sync.free", &free, Some(SYNC_FREE_KEY))
-                            .content_sized(),
-                    ),
+                    Box::new(Button::new("storage.sync.free", &free, Some(SYNC_FREE_KEY))),
                     rows(sync_rows),
                 )
             } else {
@@ -265,24 +262,19 @@ impl StoragePane {
         }
     }
 
+    /// The apps using the most space, each once: its installed files, data
+    /// and cache together.
     fn apps_card(&self) -> El {
-        let mut largest = self.snapshot.entries.clone();
-        largest.sort_by_key(|e| std::cmp::Reverse(e.bytes));
+        let mut by_owner: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+        for entry in &self.snapshot.entries {
+            *by_owner.entry(entry.owner.as_str()).or_default() += entry.bytes;
+        }
+        let mut largest: Vec<(&str, u64)> = by_owner.into_iter().collect();
+        largest.sort_by_key(|(owner, bytes)| (std::cmp::Reverse(*bytes), *owner));
         let largest_rows = largest
             .into_iter()
             .take(8)
-            .map(|e| {
-                value_row(
-                    &e.owner,
-                    &t_args(
-                        "settings-storage-item-meta",
-                        &[
-                            ("size", ui::format::bytes_si(e.bytes).into()),
-                            ("category", category_label(e.category).into()),
-                        ],
-                    ),
-                )
-            })
+            .map(|(owner, bytes)| value_row(owner, &ui::format::bytes_si(bytes)))
             .collect();
         card(
             &t("settings-storage-largest"),
@@ -301,10 +293,8 @@ impl StoragePane {
                     "settings-storage-remove",
                     &[("size", ui::format::bytes_si(preview.total_bytes).into())],
                 );
-                let action = Box::new(
-                    Button::new("storage.clean", &remove, Some(CLEAN_KEY)).content_sized(),
-                );
-                let mut preview_rows = vec![caption(&t("settings-storage-cleanup-caption"))];
+                let action = Box::new(Button::new("storage.clean", &remove, Some(CLEAN_KEY)));
+                let mut preview_rows = Vec::new();
                 let cache_item = t("settings-storage-cache-item");
                 preview_rows.extend(preview.items.iter().take(8).map(|i| {
                     value_row(
@@ -337,19 +327,17 @@ impl StoragePane {
                 crate::widgets::setting_row_described(
                     &t("settings-storage-disks"),
                     &t("settings-storage-disks-desc"),
-                    Box::new(
-                        Button::new("storage.disks", &open_disks, Some(DISKS_KEY)).content_sized(),
-                    ),
+                    Box::new(Button::new("storage.disks", &open_disks, Some(DISKS_KEY))),
                 ),
                 crate::widgets::setting_row_described(
                     &t("settings-storage-backups"),
                     &t("settings-storage-backups-desc"),
-                    Box::new(
-                        Button::new("storage.backups", &open_backups, Some(BACKUPS_KEY))
-                            .content_sized(),
-                    ),
+                    Box::new(Button::new(
+                        "storage.backups",
+                        &open_backups,
+                        Some(BACKUPS_KEY),
+                    )),
                 ),
-                caption(&t("settings-storage-tools-caption")),
             ]),
         )
     }
@@ -655,6 +643,131 @@ impl Widget for StoragePane {
     }
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+/// Fixture data for captures: a device with some apps, their data and cache.
+#[cfg(not(feature = "thin"))]
+mod fixture {
+    use super::StoragePane;
+    use desktop_policy::{StorageCategory, StorageEntry, StorageRoots, StorageSnapshot};
+    use runtime_fs::storage::{StorageAggregate, SyncStorageSnapshot, SyncedFileState};
+    use std::path::PathBuf;
+
+    fn entry(
+        category: StorageCategory,
+        owner: &str,
+        megabytes: u64,
+        files: u64,
+        reclaimable: bool,
+    ) -> StorageEntry {
+        StorageEntry {
+            category,
+            owner: owner.to_string(),
+            path: PathBuf::from(format!("/var/lib/tilo/{owner}")),
+            bytes: megabytes * 1_000_000,
+            files,
+            reclaimable,
+        }
+    }
+
+    fn synced_file(
+        workspace: &str,
+        path: &str,
+        megabytes: u64,
+        reclaimable_megabytes: u64,
+    ) -> SyncedFileState {
+        SyncedFileState {
+            workspace: workspace.into(),
+            app: None,
+            logical_path: path.into(),
+            identity: format!("{workspace}:{path}"),
+            inode: 1,
+            version: "1".into(),
+            logical_bytes: megabytes * 1_000_000,
+            hydrated_bytes: megabytes * 1_000_000,
+            remote_only: false,
+            dirty: false,
+            pinned: false,
+            in_flight: false,
+            remotely_durable: true,
+            reclaimable_bytes: reclaimable_megabytes * 1_000_000,
+        }
+    }
+
+    fn aggregate(
+        owner: &str,
+        logical: u64,
+        local: u64,
+        remote: u64,
+        reclaimable: u64,
+    ) -> StorageAggregate {
+        StorageAggregate {
+            owner: owner.into(),
+            logical_bytes: logical * 1_000_000,
+            local_bytes: local * 1_000_000,
+            remote_only_bytes: remote * 1_000_000,
+            reclaimable_bytes: reclaimable * 1_000_000,
+            files: 0,
+        }
+    }
+
+    /// Two workspaces that sync to this device, part of them kept local.
+    fn synced_fixture() -> SyncStorageSnapshot {
+        SyncStorageSnapshot {
+            online: true,
+            files: vec![
+                synced_file("Studio", "Footage/Interview take 2.mov", 1_900, 1_900),
+                synced_file("Studio", "Exports/Brand film.mp4", 1_100, 1_100),
+                synced_file("Personal", "Photos/Lisbon trip.zip", 400, 400),
+            ],
+            workspaces: vec![
+                aggregate("Studio", 18_400, 6_200, 12_200, 3_000),
+                aggregate("Personal", 3_400, 2_700, 700, 400),
+            ],
+            apps: Vec::new(),
+        }
+    }
+
+    impl StoragePane {
+        /// The pane over a fixed storage snapshot: what a capture shows, the
+        /// same on every machine.
+        pub(crate) fn for_shot() -> Self {
+            let mut pane = Self::with_roots(StorageRoots {
+                app_payloads: None,
+                room_data: None,
+                app_cache: None,
+                sync_replica: None,
+            });
+            pane.snapshot = StorageSnapshot {
+                entries: vec![
+                    entry(StorageCategory::InstalledApps, "Browser", 312, 1_840, false),
+                    entry(StorageCategory::InstalledApps, "Photos", 148, 920, false),
+                    entry(StorageCategory::InstalledApps, "Mail", 64, 410, false),
+                    entry(StorageCategory::AppData, "Photos", 4_820, 12_406, false),
+                    entry(StorageCategory::AppData, "Mail", 1_260, 38_220, false),
+                    entry(StorageCategory::AppData, "Notes", 86, 1_204, false),
+                    entry(StorageCategory::Cache, "Browser", 540, 9_310, true),
+                    entry(StorageCategory::Cache, "Photos", 210, 3_480, true),
+                ],
+                unavailable: Vec::new(),
+            };
+            // The cleanup preview is measured from real (sparse) files so the
+            // pane runs its production path, not a hand-built preview.
+            let cache =
+                std::env::temp_dir().join(format!("settings-shot-cache-{}", std::process::id()));
+            if std::fs::create_dir_all(&cache).is_ok() {
+                for (name, megabytes) in [("Browser", 540_u64), ("Photos", 210)] {
+                    if let Ok(file) = std::fs::File::create(cache.join(name)) {
+                        let _ = file.set_len(megabytes * 1_000_000);
+                    }
+                }
+                pane.cleanup = desktop_policy::preview_cache_cleanup(&cache).ok();
+                let _ = std::fs::remove_dir_all(&cache);
+            }
+            pane.sync_snapshot = Some(synced_fixture());
+            pane
+        }
     }
 }
 

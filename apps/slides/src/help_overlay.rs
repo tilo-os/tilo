@@ -1,30 +1,33 @@
-//! Modal keyboard-shortcuts overlay.
+//! The keyboard reference, presented in the shared modal sheet.
 //!
-//! The overlay owns its visibility, input policy, and rendering. The root app
+//! The overlay owns its visibility, input policy and scroll. The root app
 //! only decides whether opening it is currently allowed (text editors reserve
-//! `?` for typing) and supplies the current viewport and palette when drawing.
+//! `?` for typing) and hands it the window to lay the sheet out against.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::{BlendMode, Fill};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::TextRole;
 use ui::paint::PaintCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::modal_dialog::{self, ModalLayout, ModalSpec};
+use ui::widget::{PropertyListFace, PropertyRow};
 
-use crate::chrome;
-use crate::model::Palette;
-
-/// How far the shortcuts dialog dims the editor behind it
-/// (`ui::chrome::fill_scrim` strength).
-const SCRIM_STRENGTH: f32 = 0.6;
+use crate::strings::tr;
 
 #[derive(Default)]
 pub(super) struct HelpOverlay {
     visible: bool,
-    /// First shortcut row exposed in the large-text single-column viewport.
-    /// This stays local like every other modal viewport concern.
-    scroll_row: usize,
+    /// How far the sheet's body is scrolled, in logical pixels.
+    scroll: f64,
+    /// The furthest the body scrolled at the last paint.
+    max_scroll: f64,
+    /// Lines a key press scrolls by, measured at the last paint.
+    step: f64,
+    layout: Option<ModalLayout>,
 }
 
 impl HelpOverlay {
@@ -34,225 +37,213 @@ impl HelpOverlay {
 
     pub(super) fn show(&mut self) {
         self.visible = true;
-        self.scroll_row = 0;
+        self.scroll = 0.0;
     }
 
     pub(super) fn hide(&mut self) {
         self.visible = false;
-        self.scroll_row = 0;
+        self.scroll = 0.0;
+        self.layout = None;
     }
 
-    /// Route a key through the modal overlay.
+    /// Route a key through the modal sheet.
     ///
     /// While visible, every key is consumed so presentation navigation and
     /// editor shortcuts cannot leak through it. When hidden, `?` opens it only
     /// when the caller says the current editing context permits that shortcut.
     pub(super) fn on_key(&mut self, key: &Key, allow_open: bool) -> bool {
         if self.visible {
+            let step = self.step.max(1.0);
             if matches!(key, Key::Named(NamedKey::Escape))
                 || matches!(key, Key::Character(c) if c.as_str() == "?")
             {
                 self.hide();
             } else if matches!(key, Key::Named(NamedKey::PageDown | NamedKey::ArrowDown)) {
-                self.scroll_row = (self.scroll_row + 1).min(HELP_ROWS.len().saturating_sub(1));
+                self.scroll = (self.scroll + step).min(self.max_scroll);
             } else if matches!(key, Key::Named(NamedKey::PageUp | NamedKey::ArrowUp)) {
-                self.scroll_row = self.scroll_row.saturating_sub(1);
+                self.scroll = (self.scroll - step).max(0.0);
             }
             return true;
         }
 
         if allow_open && matches!(key, Key::Character(c) if c.as_str() == "?") {
-            self.visible = true;
+            self.show();
             return true;
         }
         false
     }
 
-    /// A visible overlay is modal over the whole viewport: the first pointer
-    /// press dismisses it and is swallowed rather than activating content
-    /// underneath.
-    pub(super) fn on_pointer_press(&mut self, point: Point, viewport: Rect) -> bool {
-        if !self.visible || !viewport.contains(point) {
+    /// A visible sheet is modal over the whole window: a press on its close
+    /// control or on the scrim dismisses it, and every press is swallowed
+    /// rather than activating content underneath.
+    pub(super) fn on_pointer_press(&mut self, point: Point, window: Rect) -> bool {
+        if !self.visible || !window.contains(point) {
             return false;
         }
-        self.visible = false;
+        let dismisses = self
+            .layout
+            .as_ref()
+            .is_none_or(|layout| layout.dismisses(point));
+        if dismisses {
+            self.hide();
+        }
         true
     }
 
+    /// The reference as plain lines, for assistive technology.
+    pub(super) fn spoken_rows() -> Vec<String> {
+        sections()
+            .into_iter()
+            .flat_map(|(_, rows)| rows)
+            .map(|(key, action)| format!("{key}: {action}"))
+            .collect()
+    }
+
+    /// Paint the sheet over `window`.
     pub(super) fn draw(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
         theme: &Theme,
-        viewport: Rect,
-        palette: &Palette,
+        window: Rect,
     ) {
         if !self.visible {
             return;
         }
-
-        let colors = &theme.tokens.colors;
-        // Dim the editor in the theme's own scrim, then the dialog panel
-        // (HIG §9.1 Panel role) — not a literal black wash under a raised
-        // card with a declared-alpha ink stroke.
-        ui::chrome::fill_scrim(scene, transform, viewport, SCRIM_STRENGTH, theme);
-
-        let scale = f64::from(theme.text_scale);
-        // At 200% a single 20-row column cannot fit in an ordinary desktop
-        // height. Give the dialog almost the available frame and arrange the
-        // reference in two columns; this keeps its modal content readable
-        // rather than silently clipping half the keyboard contract.
-        let large_text = scale >= 1.5;
-        let width = if large_text {
-            1_080.0_f64.min(viewport.width() - 40.0)
+        let title = tr("slides-shortcuts-title");
+        let sections = sections();
+        let sp = &theme.tokens.spacing;
+        let gap = f64::from(sp.s6);
+        let label_gap = f64::from(sp.s2);
+        let heading = f64::from(theme.text(TextRole::Subheading).line_height_px());
+        let lists: Vec<(String, Vec<PropertyRow<'_>>)> = sections
+            .iter()
+            .map(|(name, rows)| {
+                (
+                    name.clone(),
+                    rows.iter()
+                        .map(|(key, action)| PropertyRow::new(key, action))
+                        .collect(),
+                )
+            })
+            .collect();
+        // The sections stand side by side where the sheet is wide enough
+        // for two readable columns, else one under the other.
+        let wide = modal_dialog::body_width(window, wide_sheet(), theme);
+        let column_min = f64::from(theme.tokens.metrics.panel_width_utility);
+        let columns = if wide >= 2.0 * column_min + gap {
+            lists.len().max(1)
         } else {
-            580.0_f64.min(viewport.width() - 80.0)
+            1
         };
-        let height = if large_text {
-            (viewport.height() - 40.0).max(200.0)
+        let max_width = if columns > 1 {
+            wide_sheet()
         } else {
-            588.0_f64.min(viewport.height() - 60.0)
+            modal_dialog::MODAL_MAX_WIDTH
         };
-        let x = viewport.x0 + (viewport.width() - width) / 2.0;
-        let y = viewport.y0 + (viewport.height() - height) / 2.0;
-        let card = Rect::new(x, y, x + width, y + height);
-        chrome::panel(scene, transform, theme, card, 16.0);
-
-        let content_x = card.x0 + 32.0 * scale;
-        text.draw_text_weighted(
-            scene,
-            "Keyboard shortcuts",
-            20.0,
-            colors.text_primary,
-            transform * Affine::translate((content_x, card.y0 + 24.0 * scale)),
-            None,
-            TextWeight::Bold,
-        );
-        text.draw_text_weighted(
-            scene,
-            "Press ?  or Esc to close",
-            12.0,
-            colors.text_dim,
-            transform * Affine::translate((content_x, card.y0 + 50.0 * scale)),
-            None,
-            TextWeight::Regular,
-        );
-
-        self.draw_rows(
-            &mut PaintCtx::new(scene, transform, text, theme),
-            palette,
-            card,
-            content_x,
-            large_text,
-        );
-    }
-
-    fn draw_rows(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        palette: &Palette,
-        card: Rect,
-        content_x: f64,
-        large_text: bool,
-    ) {
-        let PaintCtx {
-            scene,
-            transform,
-            text,
-            theme,
-        } = ctx;
-        let (transform, colors) = (*transform, &theme.tokens.colors);
-        let scroll_row = self.scroll_row;
-        let scale = f64::from(text.text_scale());
-        let top = card.y0 + 84.0 * scale;
-        let column_width = card.width() - 64.0 * scale;
-        let key_width = if large_text { 280.0 } else { 186.0 };
-        let row_height = if large_text { 32.0 * scale } else { 25.0 };
-        let section_gap = if large_text { 6.0 * scale } else { 6.0 };
-        let max_rows = if large_text { 10 } else { HELP_ROWS.len() };
-        let start = if large_text {
-            scroll_row.min(HELP_ROWS.len().saturating_sub(max_rows))
+        let body_w = modal_dialog::body_width(window, max_width, theme);
+        let column_w = (body_w - gap * (columns as f64 - 1.0)) / columns as f64;
+        let heights: Vec<f64> = lists
+            .iter()
+            .map(|(_, rows)| {
+                heading + label_gap + PropertyListFace::new(rows).height(text, theme, column_w)
+            })
+            .collect();
+        let body_h = if columns > 1 {
+            heights.iter().copied().fold(0.0_f64, f64::max)
         } else {
-            0
+            heights.iter().sum::<f64>() + gap * (heights.len().saturating_sub(1)) as f64
         };
-        for (row, (key, description)) in HELP_ROWS.iter().skip(start).take(max_rows).enumerate() {
-            let x = content_x;
-            let mut y = top + row as f64 * row_height;
-            if description.is_empty() {
-                y += section_gap;
-                text.draw_text_weighted(
-                    scene,
-                    &key.to_uppercase(),
-                    11.0,
-                    colors.text_dim,
-                    transform * Affine::translate((x, y + 2.0 * scale)),
-                    None,
-                    TextWeight::Semibold,
-                );
-                continue;
-            }
-            text.draw_text_weighted(
-                scene,
-                key,
-                13.0,
-                palette.accent,
-                transform * Affine::translate((x, y)),
-                Some(key_width as f32),
-                TextWeight::Semibold,
-            );
-            text.draw_text_weighted(
-                scene,
-                description,
-                13.0,
-                colors.text_primary,
-                transform * Affine::translate((x + key_width, y)),
-                Some((column_width - key_width - 10.0 * scale) as f32),
-                TextWeight::Regular,
-            );
-        }
-        if large_text {
-            text.draw_text_weighted(
-                scene,
-                "Use Page Up / Page Down or ↑ / ↓ to browse all shortcuts",
-                11.0,
-                colors.text_dim,
-                transform * Affine::translate((content_x, card.y1 - 30.0 * scale)),
+
+        let spec = ModalSpec::new(&title)
+            .body_height(body_h)
+            .max_width(max_width);
+        let layout = modal_dialog::layout(window, &spec, text, theme);
+        modal_dialog::paint_backdrop(scene, transform, text, theme, &layout, &spec);
+        let body = layout.body;
+        self.max_scroll = (body_h - body.height()).max(0.0);
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll);
+        self.step = f64::from(theme.text(TextRole::Body).line_height_px()) * 2.0;
+
+        let sheet = theme.on_ground(ui::chrome::panel_ground(theme));
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
+        let mut ctx = PaintCtx::new(scene, transform, text, &sheet);
+        let mut x = body.x0;
+        let mut y = body.y0 - self.scroll;
+        for ((name, rows), h) in lists.iter().zip(&heights) {
+            ctx.text_role(
+                name,
+                TextRole::Subheading,
+                sheet.tokens.colors.text_primary,
+                Point::new(x, y),
                 None,
-                TextWeight::Regular,
             );
+            let top = y + heading + label_gap;
+            PropertyListFace::new(rows).paint(&mut ctx, Rect::new(x, top, x + column_w, y + h));
+            if columns > 1 {
+                x += column_w + gap;
+            } else {
+                y += h + gap;
+            }
         }
+        scene.pop_layer();
+        self.layout = Some(layout);
     }
 }
 
-const HELP_ROWS: [(&str, &str); 20] = [
-    ("N", "New slide"),
-    ("Click title", "Rename the deck"),
-    ("P", "Present from current slide"),
-    ("G", "Slide-sorter overview"),
-    ("T / R / O / L", "Insert text · rect · ellipse · line"),
-    ("Tab", "Cycle selection on the slide"),
-    ("Enter", "Edit selected text box"),
-    ("Drag", "Move · resize (snaps to guides)"),
-    ("Arrows", "Nudge selection (Shift = 1px)"),
-    ("[  /  ]", "Send back · bring to front"),
-    ("Ctrl-D", "Duplicate element"),
-    ("Del / Backspace", "Delete element"),
-    ("Ctrl-Z / Ctrl-Y", "Undo · redo"),
-    ("Present mode", ""),
-    ("← → / Space / click", "Previous · next slide"),
-    ("Home / End / 1-9", "First · last · jump to slide N"),
-    ("P", "Toggle presenter dashboard"),
-    ("S  ·  B / W", "Speaker notes · black / white out"),
-    ("K  ·  0", "Pause timer · reset timer"),
-    ("?", "Toggle this help"),
-];
+/// Widest the sheet is drawn when the sections stand side by side: two
+/// list panels.
+fn wide_sheet() -> f64 {
+    2.0 * f64::from(ui::tokens::Metrics::BASE.panel_width_list)
+}
+
+/// The reference, by section: `(key, what it does)`.
+fn sections() -> Vec<(String, Vec<(String, String)>)> {
+    let rows = |keys: &[(&str, &str)]| -> Vec<(String, String)> {
+        keys.iter()
+            .map(|(key, action)| ((*key).to_owned(), tr(action)))
+            .collect()
+    };
+    vec![
+        (
+            tr("slides-shortcuts-editing"),
+            rows(&[
+                ("N", "slides-key-new-slide"),
+                ("P", "slides-key-present"),
+                ("G", "slides-key-overview"),
+                ("T, R, O, L", "slides-key-insert"),
+                ("Tab", "slides-key-cycle"),
+                ("Enter", "slides-key-edit-text"),
+                ("Arrows", "slides-key-nudge"),
+                ("[ and ]", "slides-key-restack"),
+                ("Ctrl+D", "slides-key-duplicate"),
+                ("Delete", "slides-key-delete"),
+                ("Ctrl+Z, Ctrl+Y", "slides-key-undo"),
+                ("?", "slides-key-help"),
+            ]),
+        ),
+        (
+            tr("slides-shortcuts-presenting"),
+            rows(&[
+                ("Left, Right, Space", "slides-key-step"),
+                ("Home, End", "slides-key-first-last"),
+                ("1 to 9", "slides-key-jump"),
+                ("P", "slides-key-presenter"),
+                ("S", "slides-key-notes"),
+                ("B, W", "slides-key-blank"),
+                ("K, 0", "slides-key-timer"),
+                ("Esc", "slides-key-exit"),
+            ]),
+        ),
+    ]
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The help overlay toggles without leaking keys and owns the next pointer press.
+    /// The sheet toggles without leaking keys and owns the next pointer press.
     #[test]
     fn help_overlay_owns_its_keys_and_the_next_press() {
         // Case `shortcut_toggles_and_modal_keys_do_not_leak`.
@@ -283,6 +274,12 @@ mod tests {
             assert!(overlay.on_pointer_press(inside, viewport));
             assert!(!overlay.is_visible());
             assert!(!overlay.on_pointer_press(inside, viewport));
+        }
+
+        // Case `every_row_is_spoken`.
+        {
+            let spoken = HelpOverlay::spoken_rows();
+            assert!(spoken.iter().any(|row| row.starts_with("N: ")));
         }
     }
 }

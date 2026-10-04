@@ -3380,6 +3380,22 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         }
         scene.pop_layer();
         self.paint_scroll_thumb(scene, transform, theme);
+    }
+
+    /// The open context menu is a floating Panel in the window's top layer,
+    /// above every pane and the window's chrome.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        for row in &mut self.mounted_rows {
+            row.widget
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
         self.paint_context_menu(scene, transform, text_renderer, theme, presence);
     }
 

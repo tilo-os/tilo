@@ -247,7 +247,7 @@ pub(crate) fn publish_policy_document(policy: &RetentionPolicy) -> Resource {
         let mut fr = Resource::new(
             format!("backups.retention:{}", field.key()),
             "backups.retention",
-            format!("{}: keep {} ({})", field.label(), cur, field.unit()),
+            format!("{}: keep {cur} snapshots", field.label()),
         );
 
         let set_label = format!("Set {} retention", field.label().to_ascii_lowercase());
@@ -321,7 +321,11 @@ fn catalog_source_set(catalog: &Catalog) -> Resource {
         let mut source_resource = Resource::new(
             format!("backups.source:{}", source.id),
             "backups.source",
-            format!("{} · {}", source.kind.label(), source.cadence.label()),
+            format!(
+                "{}, backed up {}",
+                source.kind.label(),
+                source.schedule.label().to_lowercase()
+            ),
         );
         if let Some(spec) = operation_spec(
             "open",
@@ -337,9 +341,9 @@ fn catalog_source_set(catalog: &Catalog) -> Resource {
             format!("backups.schedule:{}", source.id),
             "backups.schedule",
             format!(
-                "{} cadence · {} (observed)",
-                source.kind.label(),
-                source.cadence.label()
+                "{} schedule of the {}",
+                source.schedule.label(),
+                source.kind.label().to_lowercase()
             ),
         );
         if let Some(spec) = operation_spec(
@@ -365,7 +369,7 @@ fn catalog_destination_set(catalog: &Catalog) -> Resource {
         let mut destination_resource = Resource::new(
             format!("backups.destination:{}", destination.id),
             "backups.destination",
-            format!("{} · {}", destination.name, destination.kind.label()),
+            destination.name.clone(),
         );
         if let Some(spec) = operation_spec(
             "open",
@@ -386,7 +390,7 @@ fn catalog_snapshot_set(catalog: &Catalog, configured: bool, unavailable_reason:
     let mut snapshots = Resource::new(
         "backups.snapshots",
         "backups.snapshot-set",
-        "Snapshot versions and runs · recent page",
+        "Recent snapshots",
     );
     for snapshot in catalog.snapshots.iter().take(128) {
         snapshots =
@@ -534,15 +538,30 @@ fn find_backup(resources: &[Resource], id: &str) -> Option<Resource> {
     None
 }
 
+/// The absolute local time a snapshot was taken: `30 June 2026 at 10:00`.
+/// Resource labels outlive the moment they were read, so never "today".
+pub(crate) fn taken_label(snapshot: &Snapshot) -> String {
+    use chrono::{Datelike, Timelike};
+    let at = snapshot.taken;
+    format!(
+        "{} {} {} at {:02}:{:02}",
+        at.day(),
+        ui::format::month_name(at.month0() as usize),
+        at.year(),
+        at.hour(),
+        at.minute()
+    )
+}
+
 fn snapshot_resource(snapshot: &Snapshot, configured: bool, unavailable_reason: &str) -> Resource {
     let mut resource = Resource::new(
         format!("backups.snapshot:{}", snapshot.id),
         "backups.snapshot",
         format!(
-            "{} · {} · {}",
-            snapshot.time,
+            "{} snapshot of {}, {}",
             snapshot.kind.label(),
-            ui::format::bytes(snapshot.size_bytes)
+            ui::format::bytes_si(snapshot.size_bytes),
+            taken_label(snapshot)
         ),
     );
     if let Some(spec) = operation_spec(
@@ -587,9 +606,9 @@ fn snapshot_resource(snapshot: &Snapshot, configured: bool, unavailable_reason: 
         format!("backups.run:{}", snapshot.id),
         "backups.run",
         format!(
-            "Completed {} run · {}",
+            "{} run completed {}",
             snapshot.kind.label(),
-            snapshot.time
+            taken_label(snapshot)
         ),
     );
     if let Some(spec) = operation_spec(
@@ -609,7 +628,7 @@ fn snapshot_resource(snapshot: &Snapshot, configured: bool, unavailable_reason: 
     let mut restore_target = Resource::new(
         format!("backups.restore-target:{}", snapshot.id),
         "backups.restore-target",
-        "Restore target · choose a new or empty local folder",
+        "Restore target: a new or empty local folder",
     );
     if let Some(spec) = operation_spec(
         "restore",
@@ -743,8 +762,11 @@ mod tests {
         assert!(flat.contains(&"Increase by one"), "{flat:?}");
         assert!(flat.iter().any(|l| l.starts_with("Set daily")), "{flat:?}");
 
-        let catalog_resources =
-            provide_resources(&BackupsDoc::policy(&doc, &ROOT), &Catalog::sample(), false);
+        let catalog_resources = provide_resources(
+            &BackupsDoc::policy(&doc, &ROOT),
+            &Catalog::sample(ui::clock::local_now().naive_local()),
+            false,
+        );
         let workspace = catalog_resources
             .iter()
             .find(|resource| resource.kind == "backups.workspace")
@@ -844,7 +866,11 @@ mod tests {
 
     /// Case of `resource_tree_publishes_retention_catalog_and_honest_contracts`.
     fn local_effects_publish_honest_retry_risk_and_restore_target_contracts() {
-        let resources = provide_resources(&RetentionPolicy::default(), &Catalog::sample(), true);
+        let resources = provide_resources(
+            &RetentionPolicy::default(),
+            &Catalog::sample(ui::clock::local_now().naive_local()),
+            true,
+        );
         let workspace = resources
             .iter()
             .find(|resource| resource.kind == "backups.workspace")

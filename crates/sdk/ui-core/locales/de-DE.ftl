@@ -391,3 +391,9 @@ history-day-today = Heute
 history-day-yesterday = Gestern
 history-day-this-week = Diese Woche
 history-day-earlier = Früher
+
+save-status-saving = Wird gespeichert…
+save-status-saved = Gespeichert
+save-status-failed = Speichern fehlgeschlagen
+save-status-retry = Erneut versuchen
+save-status-dismiss = Schließen

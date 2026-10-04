@@ -90,50 +90,60 @@ mod tests {
         {
             for key in [
                 "slides-present",
-                "slides-close",
-                "slides-add",
-                "slides-dup",
-                "slides-del",
+                "slides-show-slides",
+                "slides-show-properties",
                 "slides-slides",
-                "slides-bring-front",
-                "slides-send-back",
-                "slides-duplicate",
-                "slides-delete",
-                "slides-custom-colour",
-                "slides-fill",
-                "slides-stroke",
-                "slides-type",
-                "slides-align",
-                "slides-arrange",
-                "slides-layout",
-                "slides-background",
-                "slides-speaker-notes",
-                "slides-deck-theme",
-                "slides-notes-placeholder",
-                "slides-toast-image-import-failed",
-                "slides-toast-opening-pptx",
-                "slides-toast-shared-limit",
-                "slides-pick-presentations-filter",
-                "slides-speaker-notes-editing",
-                "slides-fill-colour",
+                "slides-hide-slides",
                 "slides-drop-to-delete",
-                "slides-tool-slide",
-                "slides-tool-new-slide",
                 "slides-tool-text",
-                "slides-tool-text-box",
-                "slides-tool-rect",
                 "slides-tool-rectangle",
                 "slides-tool-ellipse",
                 "slides-tool-line",
                 "slides-tool-image",
-                "slides-presenter-view",
-                "slides-elapsed",
-                "slides-paused",
+                "slides-hide-properties",
+                "slides-fill",
+                "slides-stroke",
+                "slides-font",
+                "slides-alignment",
+                "slides-arrange",
+                "slides-layout",
+                "slides-background",
+                "slides-deck-theme",
+                "slides-speaker-notes",
+                "slides-notes-placeholder",
+                "slides-custom-colour",
+                "slides-fill-colour",
+                "slides-bold",
+                "slides-italic",
+                "slides-bring-front",
+                "slides-send-back",
+                "slides-duplicate",
+                "slides-delete",
+                "slides-colour-none",
+                "slides-colour-accent",
+                "slides-colour-accent-soft",
+                "slides-colour-surface",
+                "slides-colour-deep",
+                "slides-colour-text",
+                "slides-colour-white",
+                "slides-colour-green",
+                "slides-colour-amber",
+                "slides-colour-red",
+                "slides-colour-violet",
+                "slides-prompt-title",
+                "slides-prompt-text",
+                "slides-image-loading",
+                "slides-image-unavailable",
                 "slides-current",
                 "slides-next",
                 "slides-end-of-deck",
                 "slides-no-notes",
                 "slides-presenter-keys",
+                "slides-shortcuts-title",
+                "slides-shortcuts-editing",
+                "slides-shortcuts-presenting",
+                "slides-key-new-slide",
+                "slides-key-exit",
                 "slides-a11y-new-slide",
                 "slides-a11y-duplicate-slide",
                 "slides-a11y-delete-slide",
@@ -150,11 +160,6 @@ mod tests {
                 "slides-a11y-slides-panel",
                 "slides-a11y-properties-panel",
                 "slides-a11y-more-tools",
-                "slides-tip-toggle-slides",
-                "slides-tip-toggle-properties",
-                "slides-tip-overview",
-                "slides-tip-theme",
-                "slides-tip-more-tools",
                 "slides-toast-open-failed",
                 "slides-toast-import-failed",
                 "slides-toast-export-failed",
@@ -164,6 +169,9 @@ mod tests {
                 "slides-toast-saved",
                 "slides-toast-process-failed",
                 "slides-toast-image-chooser-failed",
+                "slides-toast-image-import-failed",
+                "slides-toast-opening-pptx",
+                "slides-toast-shared-limit",
                 "slides-pick-image-title",
                 "slides-pick-image-accept",
                 "slides-pick-images-filter",
@@ -171,6 +179,7 @@ mod tests {
                 "slides-open-accept",
                 "slides-save-title",
                 "slides-save-accept",
+                "slides-pick-presentations-filter",
             ] {
                 let text = tr(key);
                 assert_ne!(text, key, "{key} has no English text");
@@ -179,28 +188,22 @@ mod tests {
         }
 
         // Case `formatted_keys_interpolate_their_arguments`.
-        // Placeables interpolate: the overview hint carries the slide count and
-        // the presenter position line carries its three values.
+        // Placeables interpolate: the presenter position line carries the
+        // slide and the total, the custom colour its hex.
         {
-            let hint = tr_args(
-                "slides-overview-hint",
-                &[("count", ArgValue::from(5_usize))],
-            );
-            assert!(hint.starts_with("5 slides"), "{hint}");
             let pos = tr_args(
                 "slides-position",
                 &[
-                    ("state", ArgValue::from(tr("slides-elapsed"))),
                     ("current", ArgValue::from(2_usize)),
                     ("total", ArgValue::from(5_usize)),
                 ],
             );
-            assert_eq!(pos, "ELAPSED  ·  slide 2 / 5");
+            assert_eq!(pos, "Slide 2 of 5");
             let custom = tr_args(
                 "slides-custom-colour-hex",
                 &[("hex", ArgValue::from("#ff0000"))],
             );
-            assert_eq!(custom, "Custom  ·  #ff0000");
+            assert_eq!(custom, "Custom colour #ff0000");
         }
     }
 }

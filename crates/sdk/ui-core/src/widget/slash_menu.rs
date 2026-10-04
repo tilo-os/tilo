@@ -586,10 +586,8 @@ impl SlashMenu {
         );
 
         let font_style = tokens.typography.style(TextRole::Caption);
-        // The armed row's ink is resolved against the accent it sits on, the
-        // same way `Popover` and `Dropdown` do; `text_primary` is only legible
-        // there on a dark theme.
-        let armed_ink = tokens.colors.intent.on_inverted;
+        // The armed row is the panel's strong lift, as in every menu.
+        let armed_ink = crate::widget::floating_surface::armed_row(theme).1;
         for (i, &row_idx) in self.visible.iter().enumerate() {
             let Some(row) = self.rows.get(row_idx) else {
                 continue;
@@ -598,13 +596,12 @@ impl SlashMenu {
             let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
             let armed = i == self.cursor;
             if armed {
-                let hl = RoundedRect::from_rect(row_rect, f64::from(tokens.radii.detail));
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+                crate::widget::floating_surface::paint_armed_row(
+                    scene,
                     transform,
-                    tokens.colors.intent.inverted,
-                    None,
-                    &hl,
+                    row_rect,
+                    row_rect.x0 - rect.x0,
+                    theme,
                 );
             }
             // Centre on the measured line, not the font size — the two differ

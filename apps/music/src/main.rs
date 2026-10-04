@@ -49,21 +49,25 @@ const SHOT_SCENARIOS: &[&str] = &[
     "context",
     "new-playlist",
     "empty",
-    "search-focus",
     "skeleton",
     "nowplaying",
+    "player-menu",
     "queue",
     "lyrics",
     "downloading",
     "offline-cached",
     "offline-error",
-    "search-tabs",
-    "search-songs",
-    "search-artists",
     "artist-page",
     "album-page",
+    "playlist-page",
     "error",
     "membership-open",
+    "songs",
+    "albums",
+    "artists",
+    "playlists",
+    "liked",
+    "browse",
 ];
 
 #[cfg(feature = "thin")]
@@ -560,7 +564,9 @@ fn render_widget_frame(frame: &mut ShotFrame, widget: &mut dyn Widget) -> Scene 
         reason = "the frame builds a fresh tree from this widget, so taffy cannot reject it"
     )]
     frame.layout(widget).expect("shot layout");
-    frame.draw(widget)
+    let mut scene = frame.draw(widget);
+    frame.draw_overlay(widget, &mut scene);
+    scene
 }
 
 /// Write a rendered scene out as a PNG.

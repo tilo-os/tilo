@@ -701,23 +701,6 @@ fn the_problems_panel_closes_with_its_own_button() {
 }
 
 #[test]
-fn the_bar_carries_the_history_button_so_the_window_draws_none_of_its_own() {
-    let app = TypstApp::with_demo_documents();
-    assert!(
-        app.children()
-            .iter()
-            .any(|child| child.test_id() == Some("history-button")),
-        "the window finds the History button in the app's tree"
-    );
-    assert!(
-        !app.without_history_button()
-            .children()
-            .iter()
-            .any(|child| child.test_id() == Some("history-button"))
-    );
-}
-
-#[test]
 fn the_status_bar_reads_the_caret_and_the_pages() {
     let (mut app, _doc) = fresh();
     assert_eq!(app.status_left_label(), "Ln 1, Col 1");
