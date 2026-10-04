@@ -4052,22 +4052,18 @@ fn standalone_history_restore_returns_the_calendar_to_a_chosen_version() {
 
     harness.click_named("standalone-history-restore").unwrap();
     let inspection = harness.presentation_inspection();
-    let confirm = restore_review(&inspection.root)
-        .and_then(|node| node.semantics.as_ref())
+    // The confirm action is the review's footer button.
+    let (owner, confirm) = restore_review(&inspection.root)
         .and_then(|dialog| {
-            dialog
-                .children
-                .iter()
-                .filter_map(|child| child.action_target.clone())
-                .find(|target| target.ends_with(":primary"))
+            dialog.children.iter().find_map(|child| {
+                let target = child.semantics.as_ref()?.action_target.clone()?;
+                let owner = child.test_id.clone()?;
+                target.ends_with(":primary").then_some((owner, target))
+            })
         })
         .expect("the review publishes its confirm action");
     harness
-        .perform_semantic_named(
-            "standalone-history-restore-review",
-            Some(&confirm),
-            &ui::a11y::Action::Activate,
-        )
+        .perform_semantic_named(&owner, Some(&confirm), &ui::a11y::Action::Activate)
         .unwrap();
     harness.relayout();
 

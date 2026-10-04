@@ -761,10 +761,7 @@ fn dialog_dismisses_and_invokes_actions_by_key_and_pointer() {
         let fired = Rc::new(Cell::new(0usize));
         let f = Rc::clone(&fired);
         let (mut d, _) = laid_out_counting(true);
-        d.primary_action = Some(DialogAction {
-            label: "Save".into(),
-            on_click: Box::new(move || f.set(f.get() + 1)),
-        });
+        d.primary_action = Some(DialogAction::new("Save", move || f.set(f.get() + 1)));
         lay_out(&mut d, WINDOW, &Theme::dark());
         let p = d.primary_rect().center();
         dispatch(&mut d, &cursor_at(p));
@@ -864,6 +861,15 @@ fn wheel(dy: f32) -> WindowEvent {
         delta: winit::event::MouseScrollDelta::LineDelta(0.0, dy),
         phase: winit::event::TouchPhase::Moved,
     }
+}
+
+/// The buttons a laid-out dialog's footer focus nodes expose.
+fn footer_buttons<C: Widget + 'static>(d: &ModalDialog<C>) -> Vec<crate::a11y::AccessNode> {
+    Widget::children(d)
+        .into_iter()
+        .filter(|child| child.name() == "ModalAction")
+        .filter_map(Widget::accessibility)
+        .collect()
 }
 
 fn counter() -> (Rc<Cell<usize>>, impl FnMut() + 'static) {
@@ -1020,9 +1026,8 @@ fn a_three_way_question_stands_in_the_platform_order() {
     dispatch(&mut d, &cursor_at(t));
     dispatch(&mut d, &left_press());
     assert_eq!(discarded.get(), 1);
-    let node = Widget::accessibility(&d).unwrap();
     assert!(
-        node.children
+        footer_buttons(&d)
             .iter()
             .any(|c| c.name.as_deref() == Some("Don't save")),
         "the third answer is announced"
@@ -1047,15 +1052,16 @@ fn a_disabled_or_gated_primary_action_is_inert_and_announced() {
         0,
         "neither Enter nor a click takes a disabled action"
     );
-    let node = Widget::accessibility(&d).unwrap();
-    assert!(node.children[0].state.disabled);
+    assert!(footer_buttons(&d)[0].state.disabled);
     d.set_primary_enabled(true);
     d.set_primary_label("Erase 2 partitions");
     lay_out(&mut d, WINDOW, &Theme::dark());
     dispatch(&mut d, &key_press_event(NamedKey::Enter));
     assert_eq!(fired.get(), 1);
-    let node = Widget::accessibility(&d).unwrap();
-    assert_eq!(node.children[0].name.as_deref(), Some("Erase 2 partitions"));
+    assert_eq!(
+        footer_buttons(&d)[0].name.as_deref(),
+        Some("Erase 2 partitions")
+    );
 
     // A gate reads the content every time.
     let mut gated = ModalDialog::new("Erase disk", crate::widget::PromptBody::new("Name", "sdb"))
@@ -1241,5 +1247,155 @@ fn footer_actions_are_addressable_by_name() {
         primary,
         d.primary_rect(),
         "the address stands where the action is painted"
+    );
+}
+
+#[test]
+fn a_focused_switch_in_the_content_takes_space_and_enter_before_the_sheet() {
+    use crate::headless::Framed;
+    use crate::widget::{Column, TextInput, Toggle};
+    let (saved, save) = counter();
+    let on = crate::LocalState::new(false);
+    let content = Column::new()
+        .push(Box::new(TextInput::local().with_placeholder("Name")))
+        .push(Box::new(
+            Toggle::from_state(&on).with_accessible_name("Sync"),
+        ));
+    let dialog = ModalDialog::new("Account", content)
+        .primary_action("Save", save)
+        .secondary_action("Cancel", || {})
+        .open(true);
+    let mut framed = Framed::new(crate::State::new(), dialog, (800, 600), Theme::dark());
+    let _ = Framed::harness_mut(&mut framed).poll_frame();
+    let switch_focused =
+        |framed: &Framed<ModalDialog<Column>>| framed.content().children()[1].is_focused();
+    for _ in 0..4 {
+        if switch_focused(&framed) {
+            break;
+        }
+        Framed::harness_mut(&mut framed).tab(false);
+    }
+    assert!(switch_focused(&framed), "Tab reaches the switch");
+
+    Framed::harness_mut(&mut framed).key("Space");
+    assert!(on.get(), "Space flips the focused switch");
+    assert_eq!(saved.get(), 0, "and does not save");
+
+    Framed::harness_mut(&mut framed).key("Enter");
+    assert!(!on.get(), "Enter operates the focused switch too");
+    assert_eq!(
+        saved.get(),
+        0,
+        "the switch took Enter, so the sheet does not save"
+    );
+
+    // A control that does not take the key leaves Enter to the sheet.
+    let name = framed.content().children()[0].get_rect().center();
+    Framed::harness_mut(&mut framed).click_at(name.x, name.y);
+    Framed::harness_mut(&mut framed).key("Enter");
+    assert_eq!(saved.get(), 1, "Enter in a field saves");
+}
+
+#[test]
+fn every_footer_action_is_one_focusable_button() {
+    use crate::headless::Framed;
+    use crate::widget::{Column, TextInput};
+    let (connected, connect) = counter();
+    let content = Column::new().push(Box::new(TextInput::local().with_placeholder("Name")));
+    let dialog = ModalDialog::new("Connection", content)
+        .with_test_id("connect")
+        .primary_action("Connect", connect)
+        .secondary_action("Cancel", || {})
+        .open(true);
+    let mut framed = Framed::new(crate::State::new(), dialog, (800, 600), Theme::dark());
+    let _ = Framed::harness_mut(&mut framed).poll_frame();
+    let issues = Framed::harness(&framed).accessibility_audit().issues;
+    assert!(issues.is_empty(), "the open sheet audits clean: {issues:?}");
+    let nodes = Framed::harness(&framed).a11y_nodes();
+    for label in ["Connect", "Cancel"] {
+        let buttons = nodes
+            .iter()
+            .filter(|(_, node)| {
+                format!("{:?}", node.role()) == "Button" && node.label() == Some(label)
+            })
+            .count();
+        assert_eq!(buttons, 1, "{label} is exactly one button");
+    }
+    // Tab onto a footer action and the reader is on that button.
+    let mut focused = None;
+    for _ in 0..3 {
+        Framed::harness_mut(&mut framed).tab(false);
+        focused = Framed::harness(&framed)
+            .focused_access_node()
+            .filter(|node| node.role == crate::a11y::Role::Button);
+        if focused.is_some() {
+            break;
+        }
+    }
+    let focused = focused.expect("Tab reaches a footer button");
+    assert_eq!(focused.name.as_deref(), Some("Cancel"));
+    assert!(focused.state.focused, "the reader is on the focused action");
+    // The footer's address still operates the action.
+    Framed::harness_mut(&mut framed)
+        .click_named("connect.primary")
+        .expect("the primary action has an address");
+    assert_eq!(connected.get(), 1, "its address still operates the action");
+    // A reader activating the footer button runs the action itself.
+    let primary = footer_buttons(&framed)
+        .into_iter()
+        .find(|node| node.name.as_deref() == Some("Connect"))
+        .and_then(|node| node.action_target)
+        .expect("the primary button has a semantic address");
+    Framed::harness_mut(&mut framed)
+        .perform_semantic_named(
+            "connect.primary",
+            Some(&primary),
+            &crate::a11y::Action::Activate,
+        )
+        .expect("the reader's activation lands");
+    assert_eq!(
+        connected.get(),
+        2,
+        "the button's activation runs the action"
+    );
+}
+
+#[test]
+fn an_unpainted_sheet_centres_on_the_window_not_its_parent() {
+    // A dialog mounted beside a sidebar is centred on the window it will be
+    // painted over, so its content is placed and hit there from the first
+    // frame instead of under the parent's centre.
+    let mut taffy = TaffyTree::<()>::new();
+    let pane = taffy
+        .new_leaf(Style {
+            flex_grow: 1.0,
+            ..Default::default()
+        })
+        .unwrap();
+    let root = taffy
+        .new_with_children(
+            Style {
+                padding: taffy::Rect {
+                    left: taffy::LengthPercentage::length(140.0),
+                    right: taffy::LengthPercentage::length(0.0),
+                    top: taffy::LengthPercentage::length(0.0),
+                    bottom: taffy::LengthPercentage::length(0.0),
+                },
+                size: Size {
+                    width: Dimension::length(1280.0),
+                    height: Dimension::length(800.0),
+                },
+                ..Default::default()
+            },
+            &[pane],
+        )
+        .unwrap();
+    taffy
+        .compute_layout(root, taffy::Size::max_content())
+        .unwrap();
+    assert_eq!(
+        tree_window(&taffy, pane),
+        Some(Rect::new(0.0, 0.0, 1280.0, 800.0)),
+        "the pane's window is the root of its tree"
     );
 }

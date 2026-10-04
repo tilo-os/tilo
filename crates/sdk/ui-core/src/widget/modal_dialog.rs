@@ -29,7 +29,9 @@
 
 use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
@@ -947,11 +949,25 @@ impl ModalSheet {
     }
 }
 
-/// One footer action of a [`ModalDialog`]; boxed `FnMut` so the dialog can
-/// invoke it from `handle_event` without taking ownership.
+/// One footer action of a [`ModalDialog`]. The dialog runs it from its own
+/// events, and the action's focus node runs it when it is operated through
+/// the accessibility tree, so both hold the callback.
 pub struct DialogAction {
     pub label: String,
-    pub on_click: Box<dyn FnMut()>,
+    on_click: Rc<RefCell<dyn FnMut()>>,
+}
+
+impl DialogAction {
+    pub fn new(label: impl Into<String>, on_click: impl FnMut() + 'static) -> Self {
+        Self {
+            label: label.into(),
+            on_click: Rc::new(RefCell::new(on_click)),
+        }
+    }
+
+    fn run(&self) {
+        (self.on_click.borrow_mut())();
+    }
 }
 
 impl std::fmt::Debug for DialogAction {
@@ -982,11 +998,19 @@ struct LayoutKey {
     content_h: f64,
 }
 
-/// A footer action's place in the window's keyboard focus order. The dialog
-/// paints the action and runs it; this node only holds focus, so Tab moves
-/// from the content to the footer and on around inside the trap.
+/// A footer action's place in the window's keyboard focus order and its
+/// button in the accessibility tree. The dialog paints the action and runs
+/// it; this node holds focus, so Tab moves from the content to the footer and
+/// on around inside the trap, and a reader lands on a named button. An
+/// activation it is sent lands where the action stands, so the dialog runs it
+/// as it would a press.
 struct FooterKey {
     slot: Slot,
+    label: String,
+    /// The action's callback, shared with the dialog.
+    run: Option<Rc<RefCell<dyn FnMut()>>>,
+    /// The semantic address a reader or agent operates the action by.
+    action_target: String,
     rect: Rect,
     focused: bool,
     enabled: bool,
@@ -996,7 +1020,12 @@ struct FooterKey {
 }
 
 impl FooterKey {
-    fn new(slot: Slot, dialog: Option<&str>) -> Self {
+    fn new(
+        slot: Slot,
+        action: Option<&DialogAction>,
+        dialog: Option<&str>,
+        target: String,
+    ) -> Self {
         let name = match slot {
             Slot::Primary => "primary",
             Slot::Secondary => "secondary",
@@ -1004,6 +1033,9 @@ impl FooterKey {
         };
         Self {
             slot,
+            label: action.map(|a| a.label.clone()).unwrap_or_default(),
+            run: action.map(|a| Rc::clone(&a.on_click)),
+            action_target: target,
             rect: Rect::ZERO,
             focused: false,
             enabled: true,
@@ -1042,6 +1074,44 @@ impl Widget for FooterKey {
 
     fn name(&self) -> &'static str {
         "ModalAction"
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let mut state = AccessState::new().focusable(self.enabled);
+        state.focused = self.focused;
+        state.disabled = !self.enabled;
+        Some(
+            AccessNode::new(Role::Button)
+                .with_name(crate::i18n!(&self.label))
+                .with_semantic_key(&self.test_id)
+                .with_state(state)
+                .with_action_target(self.action_target.clone()),
+        )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _: &mut AppModel,
+        _: &ModelPath,
+    ) -> bool {
+        if !self.enabled || !matches!(action, crate::a11y::Action::Activate) {
+            return false;
+        }
+        let Some(run) = &self.run else { return false };
+        (run.borrow_mut())();
+        true
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut AppModel,
+        path: &ModelPath,
+    ) -> bool {
+        target == self.action_target && self.perform_action(action, state, path)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -1222,10 +1292,7 @@ impl<C: Widget> ModalDialog<C> {
         label: impl Into<String>,
         on_click: impl FnMut() + 'static,
     ) -> Self {
-        self.primary_action = Some(DialogAction {
-            label: label.into(),
-            on_click: Box::new(on_click),
-        });
+        self.primary_action = Some(DialogAction::new(label, on_click));
         self.footer_changed();
         self
     }
@@ -1238,10 +1305,7 @@ impl<C: Widget> ModalDialog<C> {
         label: impl Into<String>,
         on_click: impl FnMut() + 'static,
     ) -> Self {
-        self.secondary_action = Some(DialogAction {
-            label: label.into(),
-            on_click: Box::new(on_click),
-        });
+        self.secondary_action = Some(DialogAction::new(label, on_click));
         self.footer_changed();
         self
     }
@@ -1256,10 +1320,7 @@ impl<C: Widget> ModalDialog<C> {
         label: impl Into<String>,
         on_click: impl FnMut() + 'static,
     ) -> Self {
-        self.tertiary_action = Some(DialogAction {
-            label: label.into(),
-            on_click: Box::new(on_click),
-        });
+        self.tertiary_action = Some(DialogAction::new(label, on_click));
         self.footer_changed();
         self
     }
@@ -1415,6 +1476,24 @@ impl<C: Widget> ModalDialog<C> {
         self.pointer_inside && rect.contains(self.last_cursor)
     }
 
+    fn slot_action(&self, slot: Slot) -> Option<&DialogAction> {
+        match slot {
+            Slot::Primary => self.primary_action.as_ref(),
+            Slot::Secondary => self.secondary_action.as_ref(),
+            Slot::Tertiary => self.tertiary_action.as_ref(),
+        }
+    }
+
+    /// The semantic address of a footer action.
+    fn slot_target(&self, slot: Slot) -> String {
+        let name = match slot {
+            Slot::Primary => "primary",
+            Slot::Secondary => "secondary",
+            Slot::Tertiary => "tertiary",
+        };
+        format!("dialog:{}:{name}", self.action_identity)
+    }
+
     fn slot_enabled(&self, slot: Slot) -> bool {
         match slot {
             Slot::Primary => self.primary_enabled(),
@@ -1499,7 +1578,17 @@ impl<C: Widget> ModalDialog<C> {
         self.scroll = self.scroll.clamp(0.0, max_scroll);
         self.slots = slots;
         let primary_enabled = self.primary_enabled();
-        for key in &mut self.keys {
+        let actions: Vec<_> = self
+            .keys
+            .iter()
+            .map(|key| {
+                self.slot_action(key.slot)
+                    .map(|a| (a.label.clone(), Rc::clone(&a.on_click)))
+            })
+            .collect();
+        for (key, action) in self.keys.iter_mut().zip(actions) {
+            key.label = action.as_ref().map(|a| a.0.clone()).unwrap_or_default();
+            key.run = action.map(|a| a.1);
             key.enabled = key.slot != Slot::Primary || primary_enabled;
             key.rect = self
                 .slots
@@ -1640,7 +1729,7 @@ impl<C: Widget> ModalDialog<C> {
             cb();
         } else if let Some(cancel) = self.secondary_action.as_mut() {
             // Escape is Cancel when the sheet names its way out.
-            (cancel.on_click)();
+            cancel.run();
         }
     }
 
@@ -1654,7 +1743,7 @@ impl<C: Widget> ModalDialog<C> {
             Slot::Tertiary => self.tertiary_action.as_mut(),
         };
         if let Some(action) = action {
-            (action.on_click)();
+            action.run();
         }
     }
 
@@ -1833,7 +1922,14 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         self.keys = self
             .slots_in_focus_order()
             .into_iter()
-            .map(|slot| FooterKey::new(slot, dialog.as_deref()))
+            .map(|slot| {
+                FooterKey::new(
+                    slot,
+                    self.slot_action(slot),
+                    dialog.as_deref(),
+                    self.slot_target(slot),
+                )
+            })
             .collect();
 
         let mut children = vec![content_node];
@@ -1876,7 +1972,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         let window_w = if self.presented {
             self.window.width()
         } else {
-            node_w
+            tree_window(taffy, node).map_or(node_w, |window| window.width())
         };
         let body_w = body_width(
             Rect::new(0.0, 0.0, window_w, 1.0),
@@ -1900,15 +1996,19 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).copied().unwrap_or_default();
         // Until the top layer has been painted over the window once, the
-        // node's own rect (its parent's) stands in for it.
+        // root of the tree the dialog stands in is the window: the sheet is
+        // centred where the first paint will put it, so the content is
+        // placed where it is drawn and hit from the first frame.
         if !self.presented {
-            self.window = Rect::from_origin_size(
-                (
-                    origin.x + f64::from(l.location.x),
-                    origin.y + f64::from(l.location.y),
-                ),
-                (f64::from(l.size.width), f64::from(l.size.height)),
-            );
+            self.window = tree_window(taffy, node).unwrap_or_else(|| {
+                Rect::from_origin_size(
+                    (
+                        origin.x + f64::from(l.location.x),
+                        origin.y + f64::from(l.location.y),
+                    ),
+                    (f64::from(l.size.width), f64::from(l.size.height)),
+                )
+            });
         }
         let Some(content_node) = taffy
             .children(node)
@@ -2082,7 +2182,12 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                     // Focus on a footer action: Enter and Space take it.
                     self.activate(slot);
                 } else {
-                    let content_handled = self.forward_to_content(event, ctx);
+                    // The focused control has the first refusal: a widget
+                    // that reads the key itself, then the window's own
+                    // activation of the focused control (a switch, a check
+                    // box). Only a key nobody took is the sheet's Enter.
+                    let content_handled = self.forward_to_content(event, ctx)
+                        || activate_focused(&mut self.content, ctx.state, ctx.path);
                     if !content_handled && *key == NamedKey::Enter {
                         self.activate(Slot::Primary);
                     }
@@ -2245,7 +2350,9 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 hidden: !self.open,
                 ..Default::default()
             });
-        if self.open {
+        // Footer actions a host laid out are buttons of their own focus
+        // nodes; a dialog no host has built names them itself.
+        if self.open && self.keys.is_empty() {
             for (key, index, action, bounds, enabled) in [
                 (
                     "primary",
@@ -2282,16 +2389,16 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                     );
                 }
             }
-            if self.closable() {
-                node.children.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(crate::i18n!("Close"))
-                        .with_key(3)
-                        .with_state(AccessState::new().focusable(true))
-                        .with_bounds(self.close_rect().unwrap_or(Rect::ZERO))
-                        .with_action_target(format!("dialog:{}:close", self.action_identity)),
-                );
-            }
+        }
+        if self.open && self.closable() {
+            node.children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(crate::i18n!("Close"))
+                    .with_key(3)
+                    .with_state(AccessState::new().focusable(true))
+                    .with_bounds(self.close_rect().unwrap_or(Rect::ZERO))
+                    .with_action_target(format!("dialog:{}:close", self.action_identity)),
+            );
         }
         Some(node)
     }
@@ -2335,6 +2442,32 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             .bounds
             .map(super::super::a11y::AccessBounds::to_rect)
     }
+}
+
+/// The window a node stands in: the root of its layout tree.
+fn tree_window(taffy: &TaffyTree<()>, node: NodeId) -> Option<Rect> {
+    let mut root = node;
+    while let Some(parent) = taffy.parent(root) {
+        root = parent;
+    }
+    let l = taffy.layout(root).ok()?;
+    let window = Rect::from_origin_size(
+        (f64::from(l.location.x), f64::from(l.location.y)),
+        (f64::from(l.size.width), f64::from(l.size.height)),
+    );
+    (window.width() > 0.0 && window.height() > 0.0).then_some(window)
+}
+
+/// Offer the focused control under `widget` the activation the window gives a
+/// focused control on Enter or Space. Returns whether it took it.
+fn activate_focused(widget: &mut dyn Widget, state: &mut AppModel, path: &ModelPath) -> bool {
+    if widget.is_focused() && widget.is_focusable() {
+        return widget.perform_action(&crate::a11y::Action::Activate, state, path);
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .any(|child| activate_focused(child, state, path))
 }
 
 /// How far one wheel notch scrolls a sheet's body: three lines of body text.
