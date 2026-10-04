@@ -946,6 +946,17 @@ fn personal_device_peer_path() -> PathBuf {
     home_peer_registry_path().with_file_name("personal-device-peers.json")
 }
 
+/// The role a device of the person acts with in their own room: its owner,
+/// unless it is a foreign device, which the foreign-device cap holds below
+/// governing even there.
+fn person_room_role(foreign: bool) -> collab_types::Role {
+    if foreign {
+        collab_types::foreign_device::foreign_device_role(collab_types::Role::Owner, &[], 0)
+    } else {
+        collab_types::Role::Owner
+    }
+}
+
 fn personal_room_ids(path: &Path) -> Vec<RoomId> {
     let Ok(bytes) = std::fs::read(path) else {
         return Vec::new();
@@ -2723,22 +2734,18 @@ impl ShellNetwork {
             tracing::warn!(author = %author, "person room document from another person's device; dropping");
             return;
         }
-        self.dispatch_person_document(
-            author,
-            identity.device_pubkey,
-            app_id,
-            &record_id,
-            *envelope,
-        );
+        self.dispatch_person_document(author, &identity, app_id, &record_id, *envelope);
     }
 
     /// A person-room document from one of this person's other devices,
     /// authenticated by its personal route: queued for the local apps holding
-    /// the record, as written by the room's owner.
+    /// the record, as written by the room's owner — or, from a device on an
+    /// operating system Tilo does not control (`foreign`), with the
+    /// foreign-device cap's role.
     fn dispatch_person_document(
         &self,
         peer: iroh::EndpointId,
-        device: [u8; 32],
+        sender: &crate::network::identity::PeerIdentity,
         app_id: String,
         wire: &str,
         envelope: collab_types::SignedOp,
@@ -2746,7 +2753,7 @@ impl ShellNetwork {
         let Some(room) = self.local_person_room() else {
             return;
         };
-        if *envelope.author.as_bytes() != device {
+        if *envelope.author.as_bytes() != sender.device_pubkey {
             tracing::warn!(peer = %peer, "person room document is not signed by its sending device; dropping");
             return;
         }
@@ -2758,7 +2765,7 @@ impl ShellNetwork {
             );
             return;
         };
-        if collab_types::validate_whole_document_payload_route(
+        if collab_types::validate_document_payload_route(
             &app_id,
             &cluster_id,
             &record_id,
@@ -2775,7 +2782,7 @@ impl ShellNetwork {
             app_id,
             cluster_id,
             record_id,
-            collab_types::Role::Owner,
+            person_room_role(sender.capabilities.foreign),
             false,
             envelope,
         );
@@ -5704,13 +5711,7 @@ impl ShellNetwork {
                 record_id,
                 envelope,
             } => {
-                self.dispatch_person_document(
-                    peer,
-                    identity.device_pubkey,
-                    app_id,
-                    &record_id,
-                    *envelope,
-                );
+                self.dispatch_person_document(peer, &identity, app_id, &record_id, *envelope);
             }
         }
     }
@@ -7057,10 +7058,8 @@ impl ShellNetwork {
             .iter()
             .find(|workspace| workspace.room == room)?;
         let role = workspace.role_of(&person)?;
-        if collab_types::validate_whole_document_payload_route(
-            app_id, cluster_id, record_id, envelope,
-        )
-        .is_err()
+        if collab_types::validate_document_payload_route(app_id, cluster_id, record_id, envelope)
+            .is_err()
         {
             return None;
         }
@@ -12307,6 +12306,148 @@ mod tests {
         assert_eq!(document.cluster_id, cluster);
         assert_eq!(document.record_id, record);
         assert_eq!(document.role, collab_types::Role::Owner);
+    }
+
+    /// A person record larger than one frame travels as the segments its
+    /// app signed, each well under the personal fabric's frame, and every
+    /// segment reaches the other device's apps to be reassembled there.
+    #[test]
+    fn a_person_record_larger_than_a_frame_travels_as_segments() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xC5; 32]);
+        let user = root.verifying_key().to_bytes();
+        let cluster = collab_types::person_room(&user).to_string();
+        let laptop = iroh::SecretKey::from_bytes(&[0xC6; 32]);
+        let laptop_signing = ed25519_dalek::SigningKey::from_bytes(&[0xC6; 32]);
+        let phone = iroh::SecretKey::from_bytes(&[0xC7; 32]);
+        let large = collab_types::DocumentMutation::Snapshot(vec![
+            7;
+            crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES
+                + 1
+        ]);
+        let frames = large.encode_frames().expect("segments");
+        assert!(frames.len() > 4, "more than one frame's worth");
+        let segments: Vec<_> = frames
+            .into_iter()
+            .enumerate()
+            .map(|(seq, frame)| {
+                let mut envelope = collab_types::SignedOp::new_unsigned(
+                    frame,
+                    collab_types::document_artifact_id("so.tilo.tube", &cluster, "history"),
+                    collab_types::Ed25519PublicKey::from_bytes(
+                        laptop_signing.verifying_key().to_bytes(),
+                    ),
+                    collab_types::document_attestation_id("so.tilo.tube", &cluster, "history"),
+                    collab_types::OpClass::Splice,
+                    std::time::SystemTime::now(),
+                    u64::try_from(seq).unwrap() + 1,
+                );
+                collab_types::sign_op(&mut envelope, &laptop_signing).expect("signed segment");
+                envelope
+            })
+            .collect();
+
+        let (sender, mut sent) = personal_continuity_network_for_test(user);
+        authenticated_personal_peer(&sender, &root, &phone);
+        while sent.try_recv().is_ok() {}
+        for segment in &segments {
+            sender.publish_document(
+                "so.tilo.tube".into(),
+                cluster.clone(),
+                "history",
+                segment.clone(),
+            );
+        }
+        let frames: Vec<_> = std::iter::from_fn(|| sent.try_recv().ok())
+            .filter_map(|command| match command {
+                NetCmd::PublishPersonalFabricTarget { payload, .. } => Some(payload),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            frames.len(),
+            segments.len(),
+            "every segment is sent, none dropped"
+        );
+
+        let (receiver, _commands) = personal_continuity_network_for_test(user);
+        receiver.register_local_record("so.tilo.tube", &cluster, "history");
+        authenticated_personal_peer(&receiver, &root, &laptop);
+        for payload in frames {
+            receiver.dispatch_personal_fabric(
+                personal_continuity_topic_id(&user),
+                laptop.public(),
+                crate::network::actor::MembershipEpoch::for_test(1),
+                user,
+                payload,
+            );
+        }
+        assert_eq!(
+            receiver.inbound_documents_handle().lock().unwrap().len(),
+            segments.len(),
+            "every segment reaches the apps that reassemble it"
+        );
+    }
+
+    /// A device of the person on an operating system Tilo does not control
+    /// writes their records with the foreign-device cap's role, not as the
+    /// room's owner.
+    #[test]
+    fn a_foreign_device_writes_person_records_capped() {
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xC1; 32]);
+        let user = root.verifying_key().to_bytes();
+        let cluster = collab_types::person_room(&user).to_string();
+        let continuity = personal_continuity_topic_id(&user);
+        let tablet = iroh::SecretKey::from_bytes(&[0xC2; 32]);
+        let tablet_signing = ed25519_dalek::SigningKey::from_bytes(&[0xC2; 32]);
+        let (phone, _sent) = personal_continuity_network_for_test(user);
+        phone.register_local_record("so.tilo.tube", &cluster, "history");
+        let mut cert = DeviceCert {
+            user_public_key: user,
+            device_public_key: *tablet.public().as_bytes(),
+            device_label: "Tablet".into(),
+            capabilities: DeviceCapabilities {
+                foreign: true,
+                ..DeviceCapabilities::member()
+            },
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).expect("valid foreign device certificate");
+        phone.dispatch_neighbour_msg(
+            continuity,
+            tablet.public(),
+            Some(crate::network::actor::MembershipEpoch::for_test(1)),
+            false,
+            NeighbourMsg::IdentityHello {
+                cert: Box::new(cert),
+                revocations: Vec::new(),
+            },
+        );
+        phone.dispatch_neighbour_msg(
+            continuity,
+            tablet.public(),
+            None,
+            true,
+            NeighbourMsg::AppDocument {
+                peer: 7,
+                app_id: "so.tilo.tube".into(),
+                cluster_id: cluster.clone(),
+                record_id: crate::network::wire_record::wire_record_id(
+                    &cluster,
+                    "so.tilo.tube",
+                    "history",
+                ),
+                envelope: Box::new(person_document(&user, "history", &tablet_signing)),
+            },
+        );
+        let inbound = phone.inbound_documents_handle();
+        let queued = inbound.lock().unwrap();
+        let [document] = queued.as_slice() else {
+            panic!("the foreign device's write reaches the broker queue once");
+        };
+        assert_eq!(document.role, collab_types::Role::Editor);
     }
 
     /// History of a person-room record kept by an earlier session is
