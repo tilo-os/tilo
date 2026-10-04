@@ -559,7 +559,8 @@ done
 requester_start=$(/proc/self/fd/6 '{print $22}' "/proc/$requester/stat")
 "$TILO_HELPER" approve-device --identity-root "$TILO_APPROVER_ROOT" --identity-dir "$TILO_APPROVER_IDENTITIES" --expected-device "$TILO_RECIPIENT_ID" --expected-service "$TILO_RECIPIENT_SERVICE" &
 approval=$!
-"$TILO_HELPER" pair-device --identity-root "$TILO_RECIPIENT_ROOT" --identity-dir "$TILO_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$TILO_RECIPIENT_IDENTITIES/pairing-status.json" --requester-pid "$requester" --requester-start-time "$requester_start"
+# The joining device runs as the person, never through the broker.
+/proc/self/fd/8 --reuid=42424 --regid=42424 --clear-groups /usr/bin/tilo-enroll pair-device --identity-root "$TILO_RECIPIENT_ROOT" --identity-dir "$TILO_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$TILO_RECIPIENT_IDENTITIES/pairing-status.json" --requester-pid "$requester" --requester-start-time "$requester_start"
 wait "$approval"
 "#;
         let output = Command::new("unshare")
