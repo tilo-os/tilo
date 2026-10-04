@@ -263,8 +263,20 @@ impl Gallery {
         self.name_input.value()
     }
 
-    /// Open the actions menu for the selected row — used by the `--shots`
-    /// renderer to capture the menu without a live right-click.
+    /// Whether the actions menu is open.
+    #[cfg(test)]
+    pub(crate) fn menu_is_open(&self) -> bool {
+        self.menu.is_open()
+    }
+
+    /// Queue `command` as if a row or the actions menu had reported it.
+    #[cfg(test)]
+    pub(crate) fn queue_command(&mut self, command: &str) {
+        self.commands.push(command.to_owned());
+    }
+
+    /// Open the actions menu for the selected row — staged by the menu
+    /// screenshot scenario, which has no live right-click.
     pub fn open_menu_for_shot(&mut self) {
         let sel = self.selected.clone();
         let target = self
