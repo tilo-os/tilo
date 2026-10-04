@@ -8280,6 +8280,20 @@ impl ShellOverlayHost {
         out
     }
 
+    /// Pan every strip to `scroll` layout pixels.
+    #[cfg(test)]
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the rows are written through pointers this host owns; `&mut self` keeps the write exclusive"
+    )]
+    pub(crate) fn set_strip_scroll_for_test(&mut self, scroll: f64) {
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: as in `strip_row_rect`, and `&mut self` makes the
+            // access exclusive.
+            unsafe { (&mut *ptr).set_scroll_x_for_test(scroll) };
+        }
+    }
+
     /// Where `strip` is drawn on screen, as laid out last. `None` while the
     /// strip has no row yet or its row is collapsed (another strip's window
     /// is fullscreen).
