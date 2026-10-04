@@ -338,7 +338,7 @@ impl Widget for BrowserWindow {
                 style.inset = taffy::Rect {
                     left: length(0.0_f32),
                     right: length(0.0_f32),
-                    top: length(24.0_f32),
+                    top: length(theme.tokens.spacing.s6),
                     bottom: auto(),
                 };
                 let _ = taffy.set_style(hint, style);
