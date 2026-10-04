@@ -6,6 +6,24 @@ from pathlib import Path
 import shutil
 import tomllib
 
+# Licences the catalog admits: SIL OFL 1.1; the GUST Font License, which is
+# LPPL 1.3c with a naming request; and GPL 3 or later with the font exception
+# (plus New Computer Modern's distribution exception) for NewCM10-Regular.
+LICENSES = {"OFL-1.1", "LPPL-1.3c", "GPL-3.0-or-later WITH Font-exception-2.0"}
+# What the SDK's standalone catalog, shipped next to third-party app builds,
+# may carry: fonts any app can bundle.
+STANDALONE_LICENSES = {"OFL-1.1", "LPPL-1.3c"}
+
+# The manifest scopes each staged catalog carries, its file count, and the
+# manifest field that totals its bytes. `product` is the SDK's standalone
+# catalog; `os` is what the Tilo OS image installs; `fixtures` is the
+# checked-in test catalog.
+SCOPES = {
+    "product": ({"product"}, 35, "product_bytes"),
+    "os": ({"product", "os"}, 36, "os_bytes"),
+    "fixtures": ({"product", "os", "fixture"}, 37, "fixture_bytes"),
+}
+
 AUTHORITATIVE = Path(__file__).resolve().parents[1] / "crates/sdk/ui-core/assets/fonts/manifest.toml"
 
 def manifest(root):
@@ -21,7 +39,7 @@ def manifest(root):
     return result
 
 def selected(data, scope):
-    return [f for f in data["font"] if scope == "fixtures" or f["scope"] == "product"]
+    return [f for f in data["font"] if f["scope"] in SCOPES[scope][0]]
 
 def checked_path(root, name):
     relative = Path(name)
@@ -45,12 +63,14 @@ def verify(root, scope):
         if actual != entry["sha256"]:
             raise ValueError(f"SHA-256 mismatch: {path}")
     count, total = len(fonts), sum(f["bytes"] for f in fonts)
-    expected = (21, data["fixture_bytes"]) if scope == "fixtures" else (20, data["product_bytes"])
+    _, files, field = SCOPES[scope]
+    expected = (files, data[field])
     if (count, total) != expected:
         raise ValueError(f"invalid catalog payload: {(count, total)} != {expected}")
     licensed = {entry["file"] for entry in data["license"]}
+    admitted = STANDALONE_LICENSES if scope == "product" else LICENSES
     for entry in fonts:
-        if entry["license_spdx"] != "OFL-1.1" or not set(entry["license_files"]) <= licensed:
+        if entry["license_spdx"] not in admitted or not set(entry["license_files"]) <= licensed:
             raise ValueError(f"invalid license mapping: {entry['file']}")
     return count, total
 
@@ -72,11 +92,11 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     check = commands.add_parser("verify")
     check.add_argument("root", type=Path)
-    check.add_argument("--scope", choices=["product", "fixtures"], required=True)
+    check.add_argument("--scope", choices=list(SCOPES), required=True)
     copy = commands.add_parser("stage")
     copy.add_argument("source", type=Path)
     copy.add_argument("dest", type=Path)
-    copy.add_argument("--scope", choices=["product", "fixtures"], required=True)
+    copy.add_argument("--scope", choices=list(SCOPES), required=True)
     args = parser.parse_args()
     try:
         if args.command == "verify":

@@ -199,7 +199,7 @@ and presence palette. There is no accent colour any more: nothing in
 | `border_white_10` / `_20` | `overlay_border_subtle` / `overlay_border_strong` |
 | `PaletteSpec`, `Colors::themed`, `Colors::set_accent`, `Colors::set_overlays` | delete; colours come from a theme document (`Theme::from_document`, `Theme::preset`, `Colors::of_palette`) |
 | `Colors::tilo_blue()`, `Theme::{tilo_blue, dracula, nord, gruvbox, gruvbox_light, catppuccin_mocha, catppuccin_latte, solarized, oled, warm_light, rose_pine}` | `Theme::dark()` / `Theme::light()` (`Theme::ALL` is now `Dark`, `Light`, `High Contrast`); a different temperature is `theme.with_neutral_hue(h)` |
-| `CustomThemeSpec` (every schema), `Theme::from_custom_spec`, `appearance.theme`, `appearance.custom_theme` | `ThemeDocument` schema 5 (`Theme::from_document`); see [Theming](#theming) |
+| `CustomThemeSpec` (every schema), `Theme::from_custom_spec`, `appearance.theme`, `appearance.custom_theme` | `ThemeDocument` schema 6 (`Theme::from_document`); see [Theming](#theming) |
 | `ContentSurface::accent` | delete |
 | `QueryInk::accented(text, placeholder, accent)` | `QueryInk::of(&theme.tokens.colors)` (caret and selection in your colour) |
 | `palette.surface_radius_px()` (`CommandPalette`) | `CommandPalette::surface_radius_px(theme)` (the panel radius) |
@@ -297,6 +297,8 @@ section).
 | `RichSpan::kind(TextKind)` | A rich-text run that knows what it is; mention marks are `Identifier` and external link marks `Url` already. |
 | `TextInputKind::Secret`, `TextInputKind::text_kind()` | A code or key typed in the clear; every field kind sets its text kind while typing. |
 | `ui::UiFace::{Default, Hyperlegible}`, `Typography::set_face(name)`, `Typography::face_name()`, `UI_HYPERLEGIBLE_FAMILY` | Theme authors: the UI face by the name a theme document stores. |
+| `ui::ReadingFace::{Default, Libertinus, Literata, Garamond, SourceSerif}`, `ReadingFace::{ALL, name, family, from_name}`, `Typography::set_reading_face(name)` / `with_reading_face(name)` / `reading_face_name()` | The `Reading` role's face, by name ([Reading faces](#reading-faces)). |
+| `ui::TextGround::{Light, Dark}`, `TextGround::of(colour)`, `TextStyle::with_ground` | The ground text is set on. Theme roles carry their theme's; a surface that paints its own page (a sepia book page in a dark theme) sets it, so the reading face keeps its sturdier cut on a dark page. |
 | `TextStyle::with_content_size(px)` / `Text::with_content_size(px)` / `TextStyle::content(px)` | Text sized by its content (a canvas, a slide, a document's own type): the size is used as given and never grown by the text scale. |
 | `PaintCtx::text_role`, `measure_role`, `line_box`, `text_role_in_band` | Custom painters: paint, measure, size a row, or centre one line in a band in a role. |
 | `ui::widget::ControlSize::{Small, Regular, Large}` | A control's size: label role (`Label`, `Label`, `Body`) and height (`bar_control_height`, `min_pointer_target`, `bar_height`). |
@@ -369,6 +371,7 @@ set it themselves.
 | `.with_font_family(FontChoice::Monospace)` on source or terminal text | `.with_kind(TextKind::Code)`, or the `Code` role |
 | A numeric `DataTable` column drawn by hand to line digits up | `ColumnDef::with_text(…).with_kind(TextKind::Numeric)` |
 | `.with_font_feature(*b"ss01", 1)` or any stylistic set for a look | Delete; the face is the theme's |
+| `.with_numeric_style(NumericStyle::ProportionalOldstyle)` on `Reading` text | Delete; the `Reading` role sets old-style proportional figures itself, and `.numeric()` turns them tabular lining |
 
 ### The UI face
 
@@ -379,6 +382,27 @@ accessibility layer may choose the built-in `Hyperlegible` face instead. Code
 never names a family: `TextRole` picks sans, serif (`Reading`) or mono
 (`Code`), and `FontChoice::{SansSerif, Serif, Monospace}` remains for the rare
 explicit choice.
+
+### Reading faces
+
+The `Reading` role is set in New Computer Modern, the way TeX sets it: the
+toolkit picks its 8 pt, Book or Regular cut for the size each run is set at
+(`docs/typography.md`, Reading faces). Noto Serif is gone; `FontChoice::Serif`
+is New Computer Modern. A theme document's `type.reading` names the face, and
+an app that lets a reader choose (Books) passes the chosen face by name:
+
+| Old | New |
+|---|---|
+| `FontChoice::Named("Noto Serif".into())`, any serif family literal for long-form text | `theme.text(TextRole::Reading)` |
+| A reader's serif choice stored as a family or file name | `ui::ReadingFace::name()` stored, `ReadingFace::from_name(stored)` read back; set with `.with_family(FontChoice::Named(face.family().to_owned()))` on the `Reading` style |
+| `"Noto Serif"` / `"New Computer Modern Book"` / a cut's family in app code | Delete; name the face (`ReadingFace`), the toolkit picks the cut |
+| `.with_small_caps(true)` on a book's opening words or a chapter label | Keep in document engines (Books, the word processor): small caps, ligatures and kerning reach every reading face through the shaping path |
+
+The reading faces a theme or reader can choose are `ReadingFace::ALL`: New
+Computer Modern (default), Libertinus, Literata, EB Garamond and Source Serif.
+Books lists each as an entry of its font registry (`FontKind::Reading(name)`,
+id `reading-<name>`), so the typography popover offers them beside the system
+reading face, the UI face, mono and families the reader added.
 
 ## Ground & regions
 
@@ -2016,7 +2040,7 @@ A host that draws floating surfaces and renders the result itself:
 
 ## Theming
 
-A theme is one versioned document (`ui::theme::ThemeDocument`, schema 5) of
+A theme is one versioned document (`ui::theme::ThemeDocument`, schema 6) of
 semantic roles; `docs/architecture/theming.md` is the contract. Apps read
 tokens and never a theme's name, and Settings and Theme Studio are the only
 writers of the appearance state.
@@ -2026,7 +2050,7 @@ writers of the appearance state.
 | Old | New |
 |---|---|
 | `CustomThemeSpec`, `CUSTOM_THEME_SCHEMA_VERSION`, `CUSTOM_THEME_SCHEMA_MIN`, `Theme::from_custom_spec` | `ThemeDocument`, `THEME_SCHEMA_VERSION`, `Theme::from_document` (`None` for a document this build does not admit) |
-| `CustomThemeSpec::{spacing_px, font, motion_scale, material_scale, icon_scale, chrome_weight, motion_character, dark_base, neutral_hue}` | `density.spacing` (a multiple of the 4 px scale), `type.{face, base_size, distinct_letters}`, `motion.character`, `material.{blur, tint_opacity}`, `palette.{dark, hue, chroma}`; icon scale, chrome weight and the duration scale are not theme roles |
+| `CustomThemeSpec::{spacing_px, font, motion_scale, material_scale, icon_scale, chrome_weight, motion_character, dark_base, neutral_hue}` | `density.spacing` (a multiple of the 4 px scale), `type.{face, reading, base_size, distinct_letters}`, `motion.character`, `material.{blur, tint_opacity}`, `palette.{dark, hue, chroma}`; icon scale, chrome weight and the duration scale are not theme roles |
 | `tokens::Material`, `Colors::of_material`, `Tokens::of_material`, `colors.material`, `colors.neutral_hue` | `tokens::Palette` (`Palette::dark()` …), `Colors::of_palette` / `Colors::stock`, `Tokens::around`, `colors.palette`, `colors.palette.hue` |
 | `Theme::high_contrast()` as the accessibility track | `theme.with_high_contrast()` (the high-contrast palette of the theme's own polarity); `Theme::high_contrast()` is the dark preset |
 | `Theme::ALL = ["Dark", "Light", "High Contrast"]`, the name `"High Contrast"` | `Preset::ALL` / `Theme::ALL` (seven presets, sentence case: `"High contrast"`, `"High contrast light"`). Never compare `theme.name`; ask `theme.colors_are_forced()` |
