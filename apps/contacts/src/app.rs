@@ -1304,6 +1304,9 @@ pub struct ContactsApp {
     import_rx: Option<ImportChannel>,
     import_parse_rx: Option<Receiver<ParsedImport>>,
     import_generation: u64,
+    /// The vCards of a file the app was opened with, imported once the
+    /// address book is presented.
+    opened_cards: Option<String>,
     /// In-flight export Save dialog: the portal worker's receiver.
     export_rx: Option<ExportChannel>,
     /// The contacts + vCard version parked while the export Save dialog is up,
@@ -1387,6 +1390,7 @@ impl ContactsApp {
             seeded: false,
             import_rx: None,
             import_parse_rx: None,
+            opened_cards: None,
             import_generation: 0,
             export_rx: None,
             pending_export: None,
@@ -2164,6 +2168,28 @@ impl ContactsApp {
                 tracing::warn!(error = %error, "contacts: import action refused");
             }
         }
+    }
+
+    /// Import the vCards the app was opened with, as an import the person
+    /// picked would: new cards in one step, changed known ones held for
+    /// review.
+    pub(crate) fn open_cards(&mut self, text: String) {
+        self.opened_cards = Some(text);
+    }
+
+    fn import_opened_cards(&mut self) {
+        let Some(text) = self.opened_cards.take() else {
+            return;
+        };
+        let report = vcard::parse_vcards_report(&text);
+        let mut contacts = report.contacts;
+        let overflow = contacts.len().saturating_sub(MAX_IMPORT_TOTAL_CARDS);
+        contacts.truncate(MAX_IMPORT_TOTAL_CARDS);
+        self.apply_parsed_import(ParsedImport {
+            generation: self.import_generation,
+            contacts,
+            errors: report.skipped_cards + usize::from(report.limit_reached) + overflow,
+        });
     }
 
     /// Absorb one parsed import: every new card is created in one step, so
@@ -6305,6 +6331,7 @@ impl Widget for ContactsApp {
         // Drain any in-flight file-chooser portal request first, so a chosen
         // import/export is submitted before this frame lays out.
         self.drain_portal();
+        self.import_opened_cards();
         self.announce_refusal();
 
         self.search.sync(state, path);
