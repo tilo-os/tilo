@@ -74,6 +74,7 @@ pub mod hdr_surface;
 pub mod hdr_tonemap;
 pub mod history_narrative;
 pub mod host_apps;
+pub mod host_shell_allow;
 pub mod hosted_inputs;
 pub mod i18n;
 pub mod identity_provisioning;
