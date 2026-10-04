@@ -388,8 +388,11 @@ impl NotesDoc {
                 });
                 crate::actions::StoredBlock {
                     id: block.id,
+                    kind: block.kind,
                     text: block.text,
                     marks,
+                    nesting: block.nesting,
+                    code_group: block.code_group,
                 }
             })
             .collect()

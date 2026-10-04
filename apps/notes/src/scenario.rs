@@ -325,6 +325,15 @@ pub fn actions(scenario: Option<&str>) -> Vec<NotesAction> {
             },
         ));
     }
+    if scenario == Some("import_success") {
+        // The note a Markdown file became, the moment its import succeeded.
+        out.push(actions::import_markdown_action(
+            page(8),
+            "Project brief",
+            "Imported through Notes' semantic Markdown action.\n\n- [x] Preserve headings\n- [x] Preserve lists\n",
+            Vec::new(),
+        ));
+    }
     // Tags are notebook metadata, not syntax hidden in the note body.
     for (id, name) in [(tag(1), "Release"), (tag(2), "Writing")] {
         out.push(actions::new_tag_action(id, name));
@@ -587,27 +596,6 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
                 .ok_or("status edit target missing")?;
             driver.click_at(first.x0 + first.width() * 0.8, first.center().y);
             driver.type_text("!");
-        }
-        Some("import_success") => {
-            let arguments = serde_json::json!({
-                "title": "Project brief",
-                "body": "# Project brief\n\nImported through Notes' semantic Markdown action.\n\n- [x] Preserve headings\n- [x] Preserve lists\n"
-            });
-            let instance_id = driver
-                .component_instance_id()
-                .ok_or("Notes is not hosted here")?;
-            driver
-                .invoke_bound_action(
-                    &ui::bound_dispatch::BoundActionAddress {
-                        instance_id,
-                        address: tilo_actions::ActionAddress::new(
-                            "notes.notebook",
-                            "import-markdown-content",
-                        ),
-                    },
-                    arguments.as_object().ok_or("invalid import arguments")?,
-                )
-                .map_err(|error| error.to_string())?;
         }
         _ => {}
     }
