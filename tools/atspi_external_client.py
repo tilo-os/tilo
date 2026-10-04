@@ -17,8 +17,8 @@ field, and ``click BUS NAME`` invokes the click action of the node named NAME
 once it appears.
 
 ``page`` opens Browser the same way and serves a page from this machine. Once
-the address field is on the bus it prints ``ready URL``; the caller types that
-address on the real keyboard. The check passes when Browser's engine fetched
+the address field holds keyboard focus it prints ``ready URL``; the caller
+types that address on the real keyboard. The check passes when Browser's engine fetched
 the page and Browser names the loaded document after its title.
 
 ``settings-network`` opens Settings' Network pane and requires what it reads
@@ -675,6 +675,47 @@ def wait_for_names(client: AtspiClient, names: tuple[str, ...], timeout: float) 
     raise GateError(f"Browser never exposed {', '.join(names)}; it exposed: {observed}")
 
 
+ADDRESS_FIELD = "Address and search"
+
+
+def wait_for_keyboard_focus(client: AtspiClient, field: str, timeout: float) -> None:
+    """Give the editable FIELD keyboard focus and wait until it has it.
+
+    An app publishes its accessibility tree from its first layout, but the
+    compositor maps its window, and hands it the keyboard, only once its first
+    frame is presented. On a software-rendered VM that is seconds later, and
+    keys pressed in between land on whatever had focus before: an address
+    typed then reaches Browser with its first characters missing, and
+    ``tp://…`` is no web address. AccessKit reports a node focused only while
+    its window holds keyboard focus, so the focused state is the signal that
+    real key presses will arrive."""
+    deadline = time.monotonic() + timeout
+    target = None
+    while True:
+        if target is None:
+            try:
+                tree = client.tree(BROWSER_TREE_NODE_LIMIT)
+            except GateError:
+                tree = {}
+            target = next(
+                (path for path, name in tree.items()
+                 if is_typing_target(client, path, name, field)),
+                None,
+            )
+            if target is not None:
+                client.call(target, "org.a11y.atspi.Component.GrabFocus", check=False)
+        if target is not None:
+            reply = client.call(target, "org.a11y.atspi.Accessible.GetState", check=False)
+            word = re.search(r"uint32\s+(\d+)", reply)
+            if word and int(word.group(1)) & FOCUSED_STATE_BIT:
+                return
+        if time.monotonic() >= deadline:
+            what = "never appeared" if target is None else "never took keyboard focus"
+            raise GateError(f"Browser's editable {field!r} {what}; "
+                            f"session log: {app_log('Browser')}")
+        time.sleep(POLL_SECONDS * 4)
+
+
 def load_page(address: str, title: str) -> str:
     """Open Browser, hand the address to the caller's keyboard, and require the
     engine to load the page this process serves."""
@@ -683,7 +724,8 @@ def load_page(address: str, title: str) -> str:
         bus_name, pid = open_in_session(address, "Browser")
         try:
             client = AtspiClient(address, bus_name)
-            wait_for_names(client, ("Address and search",), START_TIMEOUT_SECONDS * 3)
+            wait_for_names(client, (ADDRESS_FIELD,), START_TIMEOUT_SECONDS * 3)
+            wait_for_keyboard_focus(client, ADDRESS_FIELD, START_TIMEOUT_SECONDS * 3)
             print(f"ready {url}", flush=True)
             try:
                 wait_for_names(client, (title,), PAGE_TIMEOUT_SECONDS)
