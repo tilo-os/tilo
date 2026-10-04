@@ -15,9 +15,8 @@
 //! the same pattern the toolkit's `DataTable` uses for its column rects.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use ui::framework::LiveRow;
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchProvider, SearchResult};
 use ui::time::{Duration, Instant, UNIX_EPOCH};
 use ui::widget::{AppModel, ModelPath};
 
@@ -38,7 +37,7 @@ use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::tilo_actions::{ActionAddress, Resource};
+use ui::tilo_actions::ActionAddress;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::popover::Popover;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
@@ -379,89 +378,35 @@ pub(crate) fn process_row(process: &ProcessInfo) -> LiveRow {
     .fold(row, LiveRow::effect)
 }
 
-/// Retained, bounded-search index over the current live process snapshot.
-/// It is refreshed only when the sampler replaces that snapshot, never while
-/// the user types, and search hits resolve back to the exact PID generation.
-#[derive(Clone)]
-struct MonitorProcessSearchProvider {
-    catalog: SearchCatalog,
-    snapshot: Arc<RwLock<HashMap<String, ProcessInfo>>>,
+/// `value` as one line of searchable text, bounded like a published label.
+fn indexed_text(value: &str) -> String {
+    value
+        .chars()
+        .take(MAX_PROCESS_RESOURCE_LABEL_CHARS)
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
 }
 
-impl MonitorProcessSearchProvider {
-    fn new(processes: &[ProcessInfo]) -> Self {
-        let provider = Self {
-            catalog: SearchCatalog::new("Processes"),
-            snapshot: Arc::new(RwLock::new(HashMap::new())),
-        };
-        provider.refresh(processes);
-        provider
-    }
-
-    fn indexed_text(value: &str) -> String {
-        value
-            .chars()
-            .take(MAX_PROCESS_RESOURCE_LABEL_CHARS)
-            .map(|ch| if ch.is_control() { ' ' } else { ch })
-            .collect()
-    }
-
-    fn refresh(&self, processes: &[ProcessInfo]) {
-        let mut current = HashMap::with_capacity(processes.len());
-        for process in processes {
-            let id = process_resource_id(process.pid, process.started_at);
-            let _ = self.catalog.upsert(
-                id.clone(),
-                format!(
-                    "{}\u{1f}{}\u{1f}{}",
-                    Self::indexed_text(&process.name),
-                    Self::indexed_text(&process.user),
-                    process.pid
-                ),
-                SearchResult::for_action(
-                    "Processes",
-                    process_resource_label(process),
-                    ActionAddress::new(id.clone(), "inspect"),
-                )
-                .with_subtitle(format!(
-                    "PID {} · {}",
-                    process.pid,
-                    Self::indexed_text(&process.user)
-                )),
-            );
-            current.insert(id, process.clone());
-        }
-        let mut snapshot = self
-            .snapshot
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for id in snapshot.keys().filter(|id| !current.contains_key(*id)) {
-            self.catalog.remove(id);
-        }
-        *snapshot = current;
-    }
-}
-
-impl CatalogSearchProvider for MonitorProcessSearchProvider {
-    fn provider_name(&self) -> &'static str {
-        "Processes"
-    }
-
-    fn catalog(&self) -> Option<SearchCatalog> {
-        Some(self.catalog.clone())
-    }
-
-    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
-        (address.action == "inspect")
-            .then(|| {
-                self.snapshot
-                    .read()
-                    .ok()?
-                    .get(&address.resource)
-                    .map(|process| process_row(process).into_resource())
-            })
-            .flatten()
-    }
+/// `process` as a search hit: found by its name, user or PID, and opening
+/// the exact PID generation it names.
+fn process_search_entry(process: &ProcessInfo) -> ui::tilo_resource::SearchEntry {
+    let id = process_resource_id(process.pid, process.started_at);
+    ui::tilo_resource::SearchEntry::new(
+        process_resource_label(process),
+        format!(
+            "{} {} {}",
+            indexed_text(&process.name),
+            indexed_text(&process.user),
+            process.pid
+        ),
+    )
+    .invoking(ActionAddress::new(id, "inspect"))
+    .grouped("Processes")
+    .subtitled(format!(
+        "PID {} · {}",
+        process.pid,
+        indexed_text(&process.user)
+    ))
 }
 
 /// A scrollbar's on-screen geometry, recorded during `draw` so `handle_event`
@@ -613,7 +558,6 @@ pub struct MonitorApp {
     sampler: Sampler,
     /// Retained global-search/directory index. Its entries carry the same
     /// PID-generation ids as every resource action and update only per sample.
-    process_search: MonitorProcessSearchProvider,
     prefs: Prefs,
     /// The person's Monitor preferences when hosted, and the value last
     /// stored, which tells a change made here from one made elsewhere.
@@ -820,11 +764,9 @@ impl MonitorApp {
         last_refresh: Instant,
         sampler: Sampler,
     ) -> Self {
-        let process_search = MonitorProcessSearchProvider::new(&model.processes);
         Self {
             model,
             sampler,
-            process_search,
             prefs: Prefs::default(),
             preferences: None,
             tab: Tab::Processes,
@@ -897,7 +839,6 @@ impl MonitorApp {
     fn refresh_live_snapshot(&mut self) {
         let selected_before = self.selected_identity();
         self.sampler.refresh(&mut self.model);
-        self.process_search.refresh(&self.model.processes);
         self.last_refresh = ui::time::now();
         self.clear_recycled_selection(selected_before);
         self.record_proc_cpu();
@@ -1170,6 +1111,15 @@ impl MonitorApp {
             .collect()
     }
 
+    /// Every process running here as a search hit.
+    pub(crate) fn process_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.model
+            .processes
+            .iter()
+            .map(process_search_entry)
+            .collect()
+    }
+
     /// The live row of the exact process generation `id` names.
     pub(crate) fn live_process_row(&self, id: &str) -> Option<LiveRow> {
         let (pid, started_at) = parse_process_resource_id(id)?;
@@ -1308,7 +1258,6 @@ impl MonitorApp {
             self.model
                 .processes
                 .retain(|p| p.pid != pid || p.started_at != started_at);
-            self.process_search.refresh(&self.model.processes);
             if self.selected_pid == Some(pid) {
                 self.selected_pid = None;
             }
@@ -5244,8 +5193,6 @@ impl MonitorApp {
 }
 
 impl Widget for MonitorApp {
-    ui::provides!(dyn ui::search::capability::SearchSource);
-
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         // The preferences follow the person's settings, never the shared
         // document.
@@ -5649,12 +5596,6 @@ impl Widget for MonitorApp {
         if reduced {
             self.proc_push.snap(self.proc_push.pane());
         }
-    }
-}
-
-impl ui::search::capability::SearchSource for MonitorApp {
-    fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
-        vec![Box::new(self.process_search.clone())]
     }
 }
 
@@ -8149,13 +8090,11 @@ mod tests {
             tail.started_at = 88_881;
             tail.name = "searchable-tail-worker".into();
             a.model.processes.push(tail.clone());
-            a.process_search.refresh(&a.model.processes);
 
-            let provider = ui::search::capability::search_providers(&a)
-                .pop()
-                .expect("process provider");
-            let hit = provider
-                .search_limited("tail-worker", 1)
+            let provider = ui::framework::testing::search_source::<crate::resource::Monitor>(
+                a.process_search_entries(),
+            );
+            let hit = ui::search::SearchProvider::search_limited(&provider, "tail-worker", 1)
                 .pop()
                 .expect("the omitted catalogue tail remains globally searchable");
             let address = hit.action_address().expect("search result has an action");
@@ -8165,7 +8104,7 @@ mod tests {
             );
             assert_eq!(address.action, "inspect");
             assert!(
-                provider.resolve_action_resource(&address).is_some(),
+                a.live_process_row(&address.resource).is_some(),
                 "the search address materializes the exact resource, not a PID-only fallback"
             );
         }
