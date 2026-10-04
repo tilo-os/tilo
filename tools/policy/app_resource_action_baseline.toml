@@ -22,7 +22,6 @@
 "apps/file-explorer/src/resource.rs" = 2
 "apps/photos/src/resource.rs" = 2
 "apps/settings/src/resource.rs" = 2
-"apps/slides/src/app.rs" = 1
 
 [ratchets.standalone_launch]
 "apps/imager/src/main.rs" = 1

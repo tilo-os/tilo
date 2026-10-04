@@ -10,7 +10,7 @@ use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 
-use crate::actions::{self, ElementResource, SlideResource, SlidesResourceCtx};
+use crate::actions::{self, SlidesResourceCtx};
 use crate::model::{Deck, Element, ElementKind, Slide};
 
 pub const SLIDE_KIND: &str = "Slides";
@@ -169,31 +169,7 @@ impl SlideSearchProvider {
     }
 
     fn resource_context(&self) -> SlidesResourceCtx {
-        let slides = self
-            .deck
-            .slides
-            .iter()
-            .enumerate()
-            .map(|(idx, slide)| SlideResource {
-                idx,
-                data: actions::SlideData::from_slide(slide),
-                elements: slide
-                    .z_sorted()
-                    .into_iter()
-                    .map(|element| ElementResource {
-                        id: element.id.clone(),
-                        kind: element.kind,
-                        text: element.text.clone(),
-                        z: element.z,
-                    })
-                    .collect(),
-            })
-            .collect();
-        SlidesResourceCtx {
-            deck_title: self.deck.title.clone(),
-            slides,
-            selection: None,
-        }
+        SlidesResourceCtx::from_deck(&self.deck)
     }
 }
 
@@ -214,10 +190,8 @@ impl CatalogSearchProvider for SlideSearchProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::{AutoCommit, ROOT};
     use ui::search::SearchProvider;
     use ui::search::SearchRegistry;
-    use ui::widget::Widget;
 
     fn large_deck(count: usize, last: &str) -> Deck {
         let mut deck = Deck {
@@ -324,37 +298,35 @@ mod tests {
 
         // Case `search_address_resolves_through_the_published_resource_tree`.
         {
-            let mut app = crate::app::SlidesApp::sample();
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &ROOT);
-            let target = ui::resources::resources(&app, &doc)[0].children[2]
-                .id
-                .0
-                .clone();
-            let slide_id = target.strip_prefix("slides.slide:").unwrap();
-            let hit = ui::search::capability::search_providers(&app)[0]
+            let mut app = ui::framework::testing::TestApp::<crate::SlidesShell>::new().unwrap();
+            app.invoke(
+                ui::tilo_resource::Invoke::apply(&actions::replace_deck_action(
+                    &crate::model::seed_deck(),
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+            let deck = app.state().deck();
+            let slide_id = deck.slides[2].id.clone();
+            let hit = SlideSearchProvider::new(&deck)
                 .search("")
                 .into_iter()
-                .find(|hit| hit.action_address() == Some(actions::open_slide_address(slide_id)))
+                .find(|hit| hit.action_address() == Some(actions::open_slide_address(&slide_id)))
                 .unwrap();
-            let address = hit.action_address().unwrap();
-            let resource = ui::resources::resource(&app, &doc, &address.resource).unwrap();
-            let encoded = tilo_actions::door::encode(&[resource], &address, None).unwrap();
-            assert!(matches!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        &encoded.type_id,
-                        &encoded.payload
-                    ),
-                    &mut doc,
-                    &ROOT
+            let instance_id = app.harness().component_instance_id().unwrap();
+            app.harness()
+                .invoke_bound_action(
+                    &ui::bound_dispatch::BoundActionAddress {
+                        instance_id,
+                        address: hit.action_address().unwrap(),
+                    },
+                    &serde_json::Map::new(),
                 )
-                .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            ));
-            assert_eq!(app.current_slide(), 2);
+                .unwrap();
+            let current = app
+                .with_surface::<crate::SlidesApp, _>(|editor| editor.current_slide())
+                .unwrap();
+            assert_eq!(current, 2);
         }
     }
 }
