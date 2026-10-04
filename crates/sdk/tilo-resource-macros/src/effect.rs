@@ -104,6 +104,7 @@ struct VariantOptions {
     privileged: bool,
     sensitive: bool,
     device_only: bool,
+    risk: Option<syn::Path>,
     permission: Option<String>,
 }
 
@@ -135,10 +136,13 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.sensitive = true;
             } else if meta.path.is_ident("device_only") {
                 options.device_only = true;
+            } else if meta.path.is_ident("risk") {
+                options.risk = Some(meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?);
             } else {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, \
-                     `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only` or `permission`",
+                     `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
+                     `risk` or `permission`",
                 ));
             }
             Ok(())
@@ -304,6 +308,20 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         };
         let idempotent = options.idempotent;
         let device_only = all_device_only || options.device_only;
+        let risk_of = if let Some(classify) = &options.risk {
+            quote! {
+                ::std::option::Option::Some(
+                    (|args: &#krate::__private::ActionArgs| -> #krate::__private::RiskLevel {
+                        match <Self as #krate::Effect>::decode(#id, &args.to_json()) {
+                            ::std::result::Result::Ok(effect) => #classify(&effect),
+                            ::std::result::Result::Err(_) => #krate::__private::RiskLevel::Destructive,
+                        }
+                    }) as fn(&#krate::__private::ActionArgs) -> #krate::__private::RiskLevel,
+                )
+            }
+        } else {
+            quote!(::std::option::Option::None)
+        };
         let row = options.row;
         let kind = if options.view {
             quote!(View)
@@ -323,6 +341,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 idempotent: #idempotent,
                 permission: #krate::__private::PermissionRequirement::#permission,
                 device_only: #device_only,
+                risk_of: #risk_of,
             }
         });
 

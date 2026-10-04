@@ -287,9 +287,6 @@ pub struct NotesApp {
     /// Some referenced image's bytes are still on their way from a
     /// collaborator's device; retried at most once a second.
     canonical_assets_waiting: Option<ui::time::Instant>,
-    /// Whether this instance already offered to move inline images into the
-    /// content store.
-    inline_assets_offered: bool,
     /// View/legacy callback intents that must wait for a mutable bound record admission.
     pending_events: Vec<OutEvent>,
     /// Last mouse position in logical coords. Used to hit-test
@@ -453,7 +450,6 @@ impl NotesApp {
             canonical_assets: Arc::new(std::sync::RwLock::new(HashMap::new())),
             canonical_asset_manifest: Vec::new(),
             canonical_assets_waiting: None,
-            inline_assets_offered: false,
             pending_events: Vec::new(),
             last_mouse: Point::ZERO,
             bound_page: None,
@@ -1490,26 +1486,6 @@ impl NotesApp {
         }
     }
 
-    /// Notebooks written before images moved into the content store carry
-    /// them inline. Once this process has a content store, move them out
-    /// through the ordinary action path so the change is attributed and
-    /// syncs like any other; the bytes stay in the notebook until the store
-    /// has them.
-    fn offer_inline_asset_move(&mut self, state: &mut AutoCommit) {
-        if self.inline_assets_offered || !crate::notebook::content().shared() {
-            return;
-        }
-        self.inline_assets_offered = true;
-        let digests = match crate::notebook::inline_asset_digests(state) {
-            Ok(digests) if !digests.is_empty() => digests,
-            _ => return,
-        };
-        let action = NotesAction::MoveAssetsToContentStore { digests };
-        if let Err(error) = self.dispatch(state, &action) {
-            tracing::warn!(%error, "notes: inline images stay in the notebook for now");
-        }
-    }
-
     fn drain_title_rename(&mut self, state: &mut AutoCommit) {
         let Some(new_title) = self.main.take_title_rename() else {
             return;
@@ -1950,7 +1926,6 @@ impl Widget for NotesApp {
             self.refresh_status();
         }
         self.refresh_canonical_assets(state);
-        self.offer_inline_asset_move(state);
         self.drain_title_rename(state);
         for event in std::mem::take(&mut self.pending_events) {
             self.apply_and_dispatch(state, event);

@@ -575,6 +575,12 @@ impl ResourceSurface<Store, StoreEffect> for StoreApp {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.live_row(id)
     }
+
+    /// Every app of the complete catalogue, not only the rows the current
+    /// filter shows, each opening its details.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.catalogue_search_entries()
+    }
 }
 
 /// The resource as the palette sees it without a window: its declarations

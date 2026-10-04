@@ -702,6 +702,71 @@ fn a_view_and_a_surface_start_jobs_nobody_invoked_and_the_latest_wins() {
     assert!(capture.state().outbox.is_empty());
 }
 
+thread_local! {
+    /// The jobs of the running [`ProgressApp`], for the test to read.
+    static PROGRESS_JOBS: RefCell<Option<tilo_app::framework::Jobs<Mailbox>>> =
+        const { RefCell::new(None) };
+}
+
+/// Lets the reporting job finish.
+static RELEASE_SYNC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A view whose sync job says how far it is, then waits to be let go.
+struct ProgressApp;
+
+impl ResourceApp for ProgressApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-progress";
+    const TITLE: &'static str = "Progress";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        let jobs = cx.jobs();
+        jobs.start::<()>("sync", |cx| {
+            Ok(cx.thread(
+                |progress| {
+                    progress.report("syncing", Some(1), Some(2));
+                    while !RELEASE_SYNC.load(std::sync::atomic::Ordering::Acquire) {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                },
+                |(), (), _| Ok(Effected::done()),
+            ))
+        });
+        PROGRESS_JOBS.with(|slot| *slot.borrow_mut() = Some(jobs));
+        Box::new(cx.text(|mail| mail.fetched.clone()))
+    }
+}
+
+#[test]
+fn a_job_nobody_invoked_says_how_far_it_is_until_it_ends() {
+    let mut app = TestApp::<ProgressApp>::new().unwrap();
+    let progress = || PROGRESS_JOBS.with(|slot| slot.borrow().as_ref().unwrap().progress("sync"));
+    for _ in 0..500 {
+        app.settle();
+        if progress().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        progress(),
+        Some(tilo_app::framework::JobProgress {
+            phase: "syncing".into(),
+            completed: Some(1),
+            total: Some(2),
+        })
+    );
+    RELEASE_SYNC.store(true, std::sync::atomic::Ordering::Release);
+    for _ in 0..500 {
+        app.settle();
+        if !PROGRESS_JOBS.with(|slot| slot.borrow().as_ref().unwrap().is_running("sync")) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(progress(), None, "an ended job reports nothing");
+}
+
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "test.mailbox.device")]
 pub enum DeviceEffect {
@@ -797,4 +862,106 @@ fn a_launch_invokes_a_view_effect_even_for_a_viewer() {
         "",
         "a viewer's launch fetches nothing"
     );
+}
+
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "test.mailbox.disks")]
+pub enum DiskEffect {
+    /// Erase a disk.
+    #[effect(risk = "erase_risk")]
+    Erase { disk: String },
+}
+
+/// Erasing the system disk is destructive; any other disk is not.
+fn erase_risk(effect: &DiskEffect) -> tilo_app::tilo_actions::RiskLevel {
+    let DiskEffect::Erase { disk } = effect;
+    if disk == "system" {
+        tilo_app::tilo_actions::RiskLevel::Destructive
+    } else {
+        tilo_app::tilo_actions::RiskLevel::Low
+    }
+}
+
+/// A surface recording right now, so sending is not available.
+#[derive(Default)]
+struct Recorder {
+    tally: Tally,
+}
+
+impl Widget for Recorder {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.tally.build_layout(taffy, theme, nodes)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.tally.apply_layout(taffy, node, origin);
+    }
+
+    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
+    }
+
+    fn name(&self) -> &'static str {
+        "Recorder"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.tally.get_rect()
+    }
+}
+
+impl ResourceSurface<Mailbox> for Recorder {
+    fn present(&mut self, _: &std::rc::Rc<Mailbox>) {}
+
+    fn availability(&self) -> Vec<EffectStatus> {
+        vec![EffectStatus::unavailable(
+            Mailbox::SEND,
+            "recording",
+            "Nothing is sent while recording",
+        )]
+    }
+}
+
+struct DiskApp;
+
+impl ResourceApp for DiskApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-disks";
+    const TITLE: &'static str = "Disks";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        cx.effects(|effect: DiskEffect, cx| {
+            let DiskEffect::Erase { disk } = effect;
+            cx.invoke(Mailbox::FETCHED.with(format!("erased {disk}")));
+            Ok(Effected::done())
+        });
+        cx.surface(Recorder::default())
+    }
+}
+
+#[test]
+fn confirmation_follows_the_arguments_and_a_surface_withholds_an_action() {
+    let mut app = TestApp::<DiskApp>::new().unwrap();
+    app.effect(&DiskEffect::Erase { disk: "usb".into() })
+        .expect("erasing a stick needs no confirmation");
+    let unconfirmed = app.effect(&DiskEffect::Erase {
+        disk: "system".into(),
+    });
+    assert!(unconfirmed.is_err(), "the system disk asks first");
+    app.effect_confirmed(&DiskEffect::Erase {
+        disk: "system".into(),
+    })
+    .expect("confirmed, it runs");
+    app.settle();
+    assert_eq!(app.state().fetched, "erased system");
+
+    let refused = app
+        .invoke(Mailbox::SEND.with("hello".into()))
+        .expect_err("sending is unavailable while recording");
+    assert!(format!("{refused:?}").contains("recording"), "{refused:?}");
+    assert!(app.state().outbox.is_empty());
 }
