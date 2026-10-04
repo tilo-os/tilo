@@ -35,6 +35,10 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     ))
 }
 
+fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
+    feeds::shot_viewport(args.scenario.as_deref())
+}
+
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
@@ -75,6 +79,7 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("so.tilo.feeds", feeds::app_root)
             .shot_root(shot_root)
+            .shot_viewport(shot_viewport)
             .scenarios(&[
                 "sidebar-open",
                 "detail",

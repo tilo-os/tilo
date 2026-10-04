@@ -196,14 +196,6 @@ impl Model {
         self.changed();
     }
 
-    pub(crate) fn toggle(&mut self) {
-        if self.is_running() {
-            self.stop();
-        } else {
-            self.start();
-        }
-    }
-
     fn cancel(&mut self) {
         if let Some(task) = self.task.take() {
             task.abort();
