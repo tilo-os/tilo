@@ -55,7 +55,7 @@ The CLI teaches its own use: `tilo-control --help` leads with the action
 model, a socket it cannot reach is explained (and how to get one), and
 `unknown_action` / `invalid_arguments` refusals print the next command to try.
 
-`os/tests/installed_admin_actions.sh` proves this on a booted image in
+`os/tests/installed-admin-actions.sh` proves this on a booted image in
 `build-image.yml`: after first login, over the admin's ssh and with no
 `TILO_TEST_CONTROL`, it invokes Notes by address, lists it, and reads the window
 back through `tilo-control windows`.

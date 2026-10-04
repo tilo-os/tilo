@@ -1526,6 +1526,10 @@ pub const ADMIN_CONTROL_NOT_PERMITTED: &str = "the admin control socket serves t
      (actions list/invoke/status/cancel, state-dump, foreign-frames); synthetic input and \
      screenshots exist only on a development session's test-control socket ($TILO_TEST_CONTROL)";
 
+/// Protocol error for an action or screenshot asked for while the session
+/// is locked: nothing ran, and only the person at the device can unlock it.
+pub const SESSION_LOCKED: &str = "the session is locked; unlock it at the device, then retry";
+
 impl Command {
     /// Whether the device admin's control socket serves this command: the
     /// action model — enumerate, invoke, status, cancel — and read-only state.
