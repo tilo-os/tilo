@@ -1,7 +1,7 @@
 # Disks — Tilo application manifest.
 #
-# Two independent gates gate the privileged half: the `DISKS_LIVE` env
-# var (runtime) and cargo feature `live` (UDisks2 on the SYSTEM bus).
+# The privileged half runs only in a live window, through the cargo
+# feature `live` (UDisks2 on the SYSTEM bus) or the CLI fallback.
 #
 # Beyond the system read profile it needs, as consented capabilities:
 # read+exec on the host bin dirs (lsblk/smartctl/udisksctl/mount/mkfs)

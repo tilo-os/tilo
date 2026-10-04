@@ -261,7 +261,7 @@ impl ActionHost for RuntimeActionHost {
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.0.state().action_observe(caller, id)
+        self.0.state().action_observe(&on_this_device(caller), id)
     }
 
     fn cancel(
@@ -269,7 +269,7 @@ impl ActionHost for RuntimeActionHost {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
-        self.0.state().action_cancel(caller, id)
+        self.0.state().action_cancel(&on_this_device(caller), id)
     }
 }
 
