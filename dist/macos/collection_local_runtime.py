@@ -235,16 +235,25 @@ def compile_adapters(work, plan, guard):
               'TILO_GLIB_LOCALE': plan['locale_prefixes']['glib'],
               'TILO_INTL_NAME': Path(plan['intl']).name,
               'TILO_PROFILE_KEY': plan['profile_sha256']}
+    if plan.get('extended_locale_catalogs'):
+        config['TILO_GST_EXTENDED_CATALOGS'] = '1'
     scratch = work / 'adapter-build'
     scratch.mkdir()
     header = scratch / 'local_runtime_config.h'
     header.write_text(''.join(f'#define {key} {json.dumps(value)}\n' for key, value in config.items()))
     base = [guard, '/usr/bin/clang', '-arch', 'arm64', '-mmacosx-version-min=27.0',
             '-Wall', '-Wextra', '-Werror', '-O2', '-I', scratch, '-Wl,-no_adhoc_codesign']
-    for source, target in [('local_runtime_intl.c', SHIM), ('local_runtime_launcher.c', LAUNCHER)]:
+    sources = [('local_runtime_intl.c', SHIM), ('local_runtime_launcher.c', LAUNCHER)]
+    if plan.get('app_launcher'):
+        sources.append(('local_runtime_launcher.c', plan['app_launcher']))
+    for source, target in sources:
         if digest(HERE / source) != plan['adapter_sources'][source]:
             raise ValueError('adapter source changed')
         command = base + [HERE / source, '-o', work / target]
+        if target == plan.get('app_launcher'):
+            name = Path(target).name
+            command += ['-DTILO_LAUNCH_NAME=' + json.dumps(name),
+                        '-DTILO_EXEC_NAME=' + json.dumps(name + '.real')]
         if target == SHIM:
             command += ['-dynamiclib', '-Wl,-install_name,@loader_path/libtilo-local-intl.dylib',
                         '-Xlinker', '-reexport_library', '-Xlinker', plan['intl']]
