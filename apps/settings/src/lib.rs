@@ -74,7 +74,7 @@ pub(crate) mod input_sources;
 pub mod panes;
 pub mod prefs;
 pub mod region;
-pub mod search_provider;
+pub mod search;
 pub mod settings_app;
 pub mod sidebar;
 pub mod speaker_setup;
