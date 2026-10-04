@@ -139,7 +139,6 @@ jobs:
       # sandbox creates a user namespace and mounts an overlay in it.
       options: --privileged
     env:
-      CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: "0"
       TILO_SCCACHE_KEY_PREFIX: tilo/env-tools/v1/${{ matrix.arch }}
     steps:

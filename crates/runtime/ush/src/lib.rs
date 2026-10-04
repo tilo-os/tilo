@@ -81,6 +81,7 @@ pub mod host;
 pub mod images;
 pub mod policy;
 pub mod records;
+pub mod relay;
 pub mod seccomp;
 pub mod store;
 pub mod supervisor;

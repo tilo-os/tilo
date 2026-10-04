@@ -184,20 +184,6 @@ impl SecretBackend for SecretService {
     fn delete(&self, app: &str, key: &str) -> Result<(), SecretError> {
         remove(&attributes(app, key))
     }
-
-    fn legacy_get(&self, attributes: &[(&str, &str)]) -> Result<Option<Secret>, SecretError> {
-        if attributes.is_empty() {
-            return Ok(None);
-        }
-        lookup(&attributes.iter().copied().collect())
-    }
-
-    fn legacy_delete(&self, attributes: &[(&str, &str)]) -> Result<(), SecretError> {
-        if attributes.is_empty() {
-            return Ok(());
-        }
-        remove(&attributes.iter().copied().collect())
-    }
 }
 
 /// The first item carrying `attributes`, in search order, as `secret-tool

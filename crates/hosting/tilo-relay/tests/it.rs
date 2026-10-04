@@ -38,6 +38,9 @@ mod device_certification;
 mod durable_host_restart;
 #[path = "end_to_end_sync.rs"]
 mod end_to_end_sync;
+#[cfg(target_os = "linux")]
+#[path = "environment_from_a_device.rs"]
+mod environment_from_a_device;
 #[path = "environment_sessions.rs"]
 mod environment_sessions;
 #[path = "federation_cross_user_reject.rs"]
