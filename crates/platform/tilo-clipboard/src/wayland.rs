@@ -284,8 +284,8 @@ mod image_worker_impl {
     use std::os::unix::io::AsRawFd;
     use std::sync::Arc;
 
-    use sctk::data_device_manager::data_device::{DataDevice, DataDeviceHandler};
-    use sctk::data_device_manager::data_offer::{DataOfferHandler, DragOffer};
+    use sctk::data_device_manager::data_device::{DataDevice, DataDeviceData, DataDeviceHandler};
+    use sctk::data_device_manager::data_offer::{DataOfferData, DataOfferHandler, DragOffer};
     use sctk::data_device_manager::data_source::DataSourceHandler;
     use sctk::data_device_manager::{DataDeviceManagerState, WritePipe};
     use sctk::reexports::calloop::{self, EventLoop, LoopHandle, PostAction};
@@ -294,6 +294,7 @@ mod image_worker_impl {
     use sctk::reexports::client::globals::registry_queue_init;
     use sctk::reexports::client::protocol::wl_data_device::WlDataDevice;
     use sctk::reexports::client::protocol::wl_data_device_manager::DndAction;
+    use sctk::reexports::client::protocol::wl_data_offer::WlDataOffer;
     use sctk::reexports::client::protocol::wl_data_source::WlDataSource;
     use sctk::reexports::client::protocol::wl_keyboard::WlKeyboard;
     use sctk::reexports::client::protocol::wl_pointer::WlPointer;
@@ -304,9 +305,7 @@ mod image_worker_impl {
     use sctk::seat::pointer::{PointerData, PointerEvent, PointerEventKind, PointerHandler};
     use sctk::seat::touch::{TouchData, TouchHandler};
     use sctk::seat::{Capability, SeatHandler, SeatState};
-    use sctk::{
-        delegate_data_device, delegate_pointer, delegate_registry, delegate_seat, delegate_touch,
-    };
+    use sctk::{delegate_pointer, delegate_registry, delegate_seat, delegate_touch};
     use smithay_client_toolkit as sctk;
 
     use super::{ClipboardCommand, PastedImage, RichClipboard};
@@ -871,6 +870,19 @@ mod image_worker_impl {
             }
         }
 
+        fn rich_selection_event(&mut self, conn: &Connection, device: &WlDataDevice) {
+            if let Some(data) = self.seats.values_mut().find(|data| {
+                data.data_device
+                    .as_ref()
+                    .is_some_and(|data| data.inner() == device)
+            }) {
+                // Selection precedes Enter. Retain offer identity, including
+                // NULL; reading still requires this seat's keyboard focus.
+                data.rich_offer_seen = true;
+            }
+            self.read_selection_rich(conn, device);
+        }
+
         fn read_selection_rich(&mut self, conn: &Connection, device: &WlDataDevice) {
             let Some(seat) = self.seats.iter().find_map(|(seat, data)| {
                 data.data_device
@@ -1036,16 +1048,7 @@ mod image_worker_impl {
         }
         fn selection(&mut self, conn: &Connection, _: &QueueHandle<Self>, device: &WlDataDevice) {
             self.read_selection_image(conn, device);
-            if let Some(data) = self.seats.values_mut().find(|data| {
-                data.data_device
-                    .as_ref()
-                    .is_some_and(|data| data.inner() == device)
-            }) {
-                // Selection precedes Enter. Retain only protocol offer
-                // identity here; payload reads still require keyboard focus.
-                data.rich_offer_seen = true;
-            }
-            self.read_selection_rich(conn, device);
+            self.rich_selection_event(conn, device);
         }
         fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
     }
@@ -1342,7 +1345,44 @@ mod image_worker_impl {
 
     delegate_seat!(State);
     delegate_pointer!(State);
-    delegate_data_device!(State);
+    // Keep SCTK's offer/source bookkeeping and child-object initialization.
+    // Its pinned 0.20 handler omits DataDeviceHandler::selection for NULL,
+    // although NULL must cancel the rich cache and both pending readers.
+    sctk::reexports::client::delegate_dispatch!(State: [
+        sctk::reexports::client::protocol::wl_data_device_manager::WlDataDeviceManager: sctk::globals::GlobalData
+    ] => DataDeviceManagerState);
+    sctk::reexports::client::delegate_dispatch!(State: [
+        WlDataOffer: DataOfferData
+    ] => DataDeviceManagerState);
+    sctk::reexports::client::delegate_dispatch!(State: [
+        WlDataSource: sctk::data_device_manager::data_source::DataSourceData
+    ] => DataDeviceManagerState);
+
+    impl Dispatch<WlDataDevice, DataDeviceData> for State {
+        sctk::reexports::client::event_created_child!(State, WlDataDevice, [
+            0 => (WlDataOffer, DataOfferData::default())
+        ]);
+
+        fn event(
+            state: &mut Self,
+            device: &WlDataDevice,
+            event: sctk::reexports::client::protocol::wl_data_device::Event,
+            data: &DataDeviceData,
+            conn: &Connection,
+            qh: &QueueHandle<Self>,
+        ) {
+            let cleared = matches!(
+                event,
+                sctk::reexports::client::protocol::wl_data_device::Event::Selection { id: None }
+            );
+            <DataDeviceManagerState as Dispatch<WlDataDevice, DataDeviceData, Self>>::event(
+                state, device, event, data, conn, qh,
+            );
+            if cleared {
+                state.rich_selection_event(conn, device);
+            }
+        }
+    }
     delegate_registry!(State);
     delegate_touch!(State);
 }
