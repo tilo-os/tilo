@@ -10,7 +10,9 @@
 
 use automerge::AutoCommit;
 use tilo_document::RichText;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{
+    Dispatcher, Fixture, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
+};
 use ui::tilo_actions::{ActionSpec, EncodedAction, Resource as PublishedResource};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry, publish_child};
 use ui::widget::Element;
@@ -22,6 +24,7 @@ use crate::actions::{
 use crate::app::MailApp;
 use crate::doc::MailDoc;
 use crate::model::Folder;
+use crate::sample::MailFixture;
 
 /// Lightweight mailbox projection for search and the published tree.
 #[derive(Clone, Debug, Default)]
@@ -162,45 +165,86 @@ pub(crate) fn live_extras(app: &MailApp) -> Vec<PublishedResource> {
 /// Framework app: the mail widget is the surface over [`Mail`].
 pub struct MailShell;
 
+/// Every screenshot scenario. Each shows the sample mailbox and accounts
+/// (`firstrun` none, `empty` an account with no mail yet) with the view state
+/// its name says, staged by the surface.
+const SCENARIOS: &[&str] = &[
+    "wide",
+    "narrow",
+    "narrow_detail",
+    "narrow_drawer",
+    "mid",
+    "compose",
+    "compose_narrow",
+    "setup",
+    "setup_narrow",
+    "setup_add",
+    "setup_oauth",
+    "firstrun",
+    "html_mail",
+    "search",
+    "preview",
+    "bulk",
+    "bulk_purge_confirmation",
+    "reply",
+    "context_menu",
+    "loading",
+    "empty",
+    "offline",
+    "error",
+];
+
 impl ResourceApp for MailShell {
     type Resource = Mail;
     const ID: &'static str = "so.tilo.mail";
     const TITLE: &'static str = "Mail";
     const ICON: Option<&'static str> = Some("mail");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
 
+    /// Only a live window reaches mail servers and the account store; History
+    /// shows what each past version of the document held, and a screenshot
+    /// its scenario's fixture.
     fn view(cx: &mut ViewCx<Mail>) -> Element {
-        cx.surface(MailApp::new_live())
+        let app = match cx.mode() {
+            RunMode::Live => MailApp::for_window(cx.storage(), cx.content()),
+            RunMode::Past => MailApp::for_past_version(),
+            RunMode::Capture => {
+                let fixture = cx
+                    .fixture::<MailFixture>()
+                    .unwrap_or_else(|| std::rc::Rc::new(MailFixture::without_accounts()));
+                MailApp::for_capture(&fixture)
+            }
+        };
+        cx.surface(app)
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &[
-            "wide",
-            "narrow",
-            "narrow_detail",
-            "narrow_drawer",
-            "mid",
-            "compose",
-            "compose_narrow",
-            "setup",
-            "setup_narrow",
-            "setup_add",
-            "setup_oauth",
-            "firstrun",
-            "html_mail",
-            "search",
-            "preview",
-            "bulk",
-            "bulk_purge_confirmation",
-            "reply",
-            "context_menu",
-            "loading",
-            "empty",
-            "offline",
-            "error",
-        ]
+        SCENARIOS
+    }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        match scenario {
+            Some(
+                "narrow" | "narrow_detail" | "narrow_drawer" | "compose_narrow" | "setup_narrow",
+            ) => (560, 860),
+            Some("mid") => (1000, 720),
+            Some("compose" | "reply") => (1180, 820),
+            Some("setup" | "setup_add" | "setup_oauth" | "firstrun" | "error") => (1100, 780),
+            Some("html_mail") => (1280, 820),
+            _ => (1280, 800),
+        }
+    }
+
+    fn fixture(fixture: &mut Fixture<Mail>) {
+        let mail = match fixture.scenario() {
+            Some("firstrun") => MailFixture::without_accounts(),
+            Some("empty") => MailFixture::before_first_fetch(),
+            _ => MailFixture::bundled(),
+        };
+        fixture.provide(mail);
+    }
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(crate::i18n::catalog())
     }
 }
 
@@ -213,6 +257,12 @@ impl ResourceSurface<Mail> for MailApp {
 
     fn attach(&mut self, cx: SurfaceCx<Mail>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        if let Some(scenario) = scenario {
+            self.request_stage(scenario);
+        }
     }
 }
 
@@ -394,6 +444,92 @@ mod tests {
             before,
             "empty present must not clear unpublished local mail"
         );
+    }
+
+    mod captures {
+        use ui::framework::ResourceApp as _;
+        use ui::framework::testing::TestApp;
+
+        use super::super::MailShell;
+        use crate::model::Folder;
+
+        /// Every scenario captures through the framework at its own
+        /// viewport, from the bundled sample accounts rather than the
+        /// person's.
+        #[test]
+        fn every_scenario_captures_the_fixture_at_its_viewport() {
+            ui::i18n::I18nManager::init("en-US");
+            for scenario in MailShell::scenarios() {
+                let mut app = TestApp::<MailShell>::capture(Some(scenario))
+                    .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+                let (width, height) = MailShell::shot_viewport(Some(scenario));
+                assert_eq!(
+                    app.harness().inspection().viewport,
+                    [width, height],
+                    "{scenario}"
+                );
+                let frame = app.harness().inspection_json().unwrap();
+                match *scenario {
+                    "firstrun" => assert!(frame.contains("Welcome to Mail"), "{frame}"),
+                    "setup" | "setup_narrow" => {
+                        assert!(frame.contains("you@example.test"), "{scenario}: {frame}");
+                    }
+                    "error" => assert!(frame.contains("Couldn’t connect to IMAP"), "{frame}"),
+                    _ => {}
+                }
+            }
+        }
+
+        /// The purge confirmation shows messages that really are in Trash:
+        /// staging moved them there through the resource's own action.
+        #[test]
+        fn the_purge_confirmation_stages_its_messages_in_trash_through_actions() {
+            ui::i18n::I18nManager::init("en-US");
+            let mut app = TestApp::<MailShell>::capture(Some("bulk_purge_confirmation")).unwrap();
+            let trashed = app
+                .state()
+                .messages
+                .iter()
+                .filter(|message| message.folder == Folder::Trash)
+                .count();
+            let sample_trash = crate::sample::sample_mailbox()
+                .messages
+                .values()
+                .filter(|message| message.folder == Folder::Trash)
+                .count();
+            assert_eq!(trashed, sample_trash + 2);
+            let frame = app.harness().inspection_json().unwrap();
+            assert!(frame.contains("Delete permanently"), "{frame}");
+        }
+
+        /// A capture is the same on every run: the sample mailbox's ids do
+        /// not change between captures.
+        #[test]
+        fn the_sample_mailbox_is_the_same_on_every_run() {
+            let ids = |mailbox: crate::model::Mailbox| {
+                let mut ids: Vec<_> = mailbox.messages.keys().copied().collect();
+                ids.sort();
+                ids
+            };
+            assert_eq!(
+                ids(crate::sample::sample_mailbox()),
+                ids(crate::sample::sample_mailbox())
+            );
+        }
+
+        /// History previews a past version from the document alone: it reads
+        /// no accounts and starts no engine, so the preview of a version is
+        /// the onboarding over that version's state.
+        #[test]
+        fn a_past_version_reads_no_accounts() {
+            ui::i18n::I18nManager::init("en-US");
+            let app = TestApp::<MailShell>::capture(Some("wide")).unwrap();
+            let latest = app.versions().last().map(|version| version.hash).unwrap();
+            let past = app.past_version(&[latest]).unwrap();
+            let shown = past.texts().join("\n");
+            assert!(shown.contains("Welcome to Mail"), "{shown}");
+            assert!(!shown.contains("you@example.test"), "{shown}");
+        }
     }
 
     mod draft_body {

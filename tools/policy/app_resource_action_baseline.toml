@@ -42,7 +42,6 @@
 "apps/code-editor/src/main.rs" = 1
 "apps/ebook/src/main.rs" = 1
 "apps/imager/src/main.rs" = 1
-"apps/mail/src/main.rs" = 2
 "apps/music/src/lib.rs" = 2
 "apps/osk/src/main.rs" = 1
 "apps/pdf-viewer/src/lib.rs" = 2
