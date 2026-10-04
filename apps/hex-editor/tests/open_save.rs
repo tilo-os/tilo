@@ -1,65 +1,231 @@
-//! End-to-end proof of the real file lifecycle: open a file, edit a byte,
-//! and save it back to disk — all through the production widget code paths
-//! (`view_for_path`, the portal drain, and `handle_event`), with real disk
-//! I/O and no mocked buffer.
+//! The file lifecycle through the production paths: a file named on the
+//! command line opens as its own buffer, keystrokes edit it through the
+//! framework's door (undone per run of typing), the palette and agents edit
+//! it through the same actions, and Ctrl+S writes it back to disk.
 
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use automerge::{AutoCommit, ReadDoc};
-use hex_editor::HexView;
-use taffy::{NodeId, Style, TaffyTree};
-use ui::Widget;
+use hex_editor::HexEditorShell;
+use hex_editor::actions::{HexEditorAction, HexEffect};
+use ui::a11y::Action as A11yAction;
+use ui::framework::testing::TestApp;
 use ui::portal::PortalOutcome;
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+use ui::record::RecordId;
+use ui::tilo_resource::Invoke;
 
-/// Build a synthetic key-press. `handle_event` only inspects `logical_key` +
-/// `state`; the rest tolerate the zero pattern (mirrors the toolkit's own
-/// widget tests).
-fn key_press(logical: Key) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = logical;
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+fn file(name: &str, bytes: &[u8]) -> (tempfile::TempDir, String) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join(name);
+    std::fs::write(&path, bytes).unwrap();
+    (directory, path.to_str().unwrap().to_owned())
 }
 
-fn dummy_layout() -> (TaffyTree<()>, NodeId) {
-    let mut t = TaffyTree::<()>::new();
-    let n = t.new_leaf(Style::default()).unwrap();
-    (t, n)
+fn launched(path: &str) -> TestApp<HexEditorShell> {
+    let mut app = TestApp::<HexEditorShell>::launched(&[path]).unwrap();
+    app.harness().relayout();
+    app
 }
 
-fn tmp(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("hex_{name}_{}.bin", std::process::id()))
+fn ctrl(app: &mut TestApp<HexEditorShell>, key: &str) {
+    app.harness().set_modifiers(&["Ctrl".to_owned()]);
+    app.harness().key(key);
+    app.harness().set_modifiers(&[]);
+    app.settle();
 }
 
 #[test]
-fn executable_opens_a_unicode_path_edits_and_saves_without_replicating_bytes() {
-    let nonce = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
+fn a_launched_file_is_its_own_buffer_typed_into_undone_and_saved_back() {
+    let (_directory, path) = file("Bytes Grün with spaces.bin", &[0x00, 0x11, 0x22, 0x33]);
+    let mut app = launched(&path);
+    assert_eq!(
+        app.record(),
+        &RecordId::derived("hex", &RecordId::identify_file(&path))
+    );
+    let state = app.state();
+    assert_eq!(state.name.as_deref(), Some("Bytes Grün with spaces.bin"));
+    assert_eq!(state.bytes, [0x00, 0x11, 0x22, 0x33]);
+
+    // Two nibbles over the first byte, then one more byte: one run of
+    // typing, one undo step.
+    app.harness()
+        .perform_named("hex_view", &A11yAction::Focus)
+        .unwrap();
+    app.harness().type_text("ab1");
+    app.settle();
+    assert_eq!(app.state().bytes, [0xAB, 0x11, 0x22, 0x33]);
+    assert!(app.undo());
+    assert_eq!(app.state().bytes, [0x00, 0x11, 0x22, 0x33]);
+    assert!(app.redo());
+    assert_eq!(app.state().bytes, [0xAB, 0x11, 0x22, 0x33]);
+
+    // Moving the cursor ends the run: the next typing is a step of its own.
+    app.harness().key("ArrowRight");
+    app.harness().type_text("ff");
+    app.settle();
+    assert_eq!(app.state().bytes, [0xAB, 0x11, 0xFF, 0x33]);
+    assert!(app.undo());
+    assert_eq!(app.state().bytes, [0xAB, 0x11, 0x22, 0x33]);
+
+    // Ctrl+S writes the buffer back to the file it was launched on.
+    ctrl(&mut app, "s");
+    assert_eq!(std::fs::read(&path).unwrap(), [0xAB, 0x11, 0x22, 0x33]);
+
+    // Launching on the file again reads it afresh into the same buffer.
+    std::fs::write(&path, [9, 8, 7]).unwrap();
+    let again = app.relaunch(&[path.as_str()]).unwrap();
+    assert_eq!(again.state().bytes, [9, 8, 7]);
+}
+
+#[test]
+fn agents_edit_the_bytes_through_the_published_actions() {
+    let (_directory, path) = file("agent.bin", &[0x00, 0x11, 0x22, 0x33]);
+    let mut app = launched(&path);
+
+    let surface = app.agent_surface();
+    let published: Vec<(String, String)> = surface
+        .as_array()
         .unwrap()
-        .as_nanos();
-    let directory = std::env::temp_dir().join(format!("hex_cli_{}_{nonce}", std::process::id()));
-    std::fs::create_dir(&directory).unwrap();
-    let path = directory.join("Bytes Grün with spaces.bin");
-    let dump = directory.join("document.json");
-    std::fs::write(&path, [0x00u8, 0x11, 0x22, 0x33]).unwrap();
+        .iter()
+        .map(|row| {
+            (
+                row["action"].as_str().unwrap().to_owned(),
+                row["operation"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    for (id, operation) in [
+        ("insert-bytes", "Document"),
+        ("overwrite-bytes", "Document"),
+        ("delete-bytes", "Document"),
+        ("insert-byte", "Document"),
+        ("overwrite-byte", "Document"),
+        ("delete-byte", "Document"),
+        ("open", "Effect"),
+        ("save", "Effect"),
+        ("save-as", "Effect"),
+        ("search", "View"),
+        ("goto-offset", "View"),
+    ] {
+        assert!(
+            published
+                .iter()
+                .any(|(action, kind)| action == id && kind == operation),
+            "{id} ({operation}) in {published:?}"
+        );
+    }
+
+    app.call(
+        "overwrite-bytes",
+        serde_json::json!({"offset": 1, "bytes": "ff ee"}),
+    )
+    .unwrap();
+    assert_eq!(app.state().bytes, [0x00, 0xFF, 0xEE, 0x33]);
+    // Bound to the cursor, which starts on the first byte.
+    app.call("insert-byte", serde_json::json!({"byte": "7f"}))
+        .unwrap();
+    assert_eq!(app.state().bytes, [0x7F, 0x00, 0xFF, 0xEE, 0x33]);
+    assert!(
+        app.call(
+            "overwrite-bytes",
+            serde_json::json!({"offset": 9, "bytes": "01"})
+        )
+        .is_err(),
+        "an offset past the end is refused"
+    );
+    assert!(
+        app.call("delete-byte", serde_json::json!({})).is_err(),
+        "a delete waits for confirmation"
+    );
+    app.invoke(Invoke::apply(&HexEditorAction::DeleteBytes { offset: 0, len: 2 }).unwrap())
+        .unwrap();
+    assert_eq!(app.state().bytes, [0xFF, 0xEE, 0x33]);
+    assert!(app.undo());
+    assert_eq!(app.state().bytes, [0x7F, 0x00, 0xFF, 0xEE, 0x33]);
+
+    // The views open on the editor without touching the bytes.
+    app.call("search", serde_json::json!({})).unwrap();
+    app.call("goto-offset", serde_json::json!({})).unwrap();
+    assert_eq!(app.state().bytes, [0x7F, 0x00, 0xFF, 0xEE, 0x33]);
+
+    // Saving to a path an agent names writes there.
+    let (_out, target) = file("copy.bin", &[]);
+    app.effect_confirmed(&HexEffect::SaveAs {
+        path: target.clone(),
+    })
+    .unwrap();
+    assert_eq!(
+        std::fs::read(&target).unwrap(),
+        [0x7F, 0x00, 0xFF, 0xEE, 0x33]
+    );
+}
+
+#[test]
+fn opening_a_file_replaces_the_buffer_and_the_chooser_answers_the_effect() {
+    let mut app = TestApp::<HexEditorShell>::new().unwrap();
+    app.harness().relayout();
+    assert!(!app.state().has_file(), "starts in the honest empty state");
+    assert!(app.effect(&HexEffect::Save).is_err(), "nothing to save yet");
+
+    let (_directory, path) = file("named.bin", b"HELLO-HEX");
+    app.effect(&HexEffect::Open { path: Some(path) }).unwrap();
+    app.settle();
+    assert_eq!(app.state().name.as_deref(), Some("named.bin"));
+    assert_eq!(app.state().bytes, b"HELLO-HEX");
+    assert!(
+        !app.undo(),
+        "a file's bytes come from outside: no undo takes them back"
+    );
+
+    // Ctrl+O opens the host's file chooser; its pick becomes the buffer.
+    let (_chosen_directory, chosen) = file("chosen.bin", &[1, 2, 3]);
+    let (services, recorder) = ui::host::HostServices::recording();
+    recorder.respond_to_pick(PortalOutcome::Opened(chosen.clone().into()));
+    ui::host::scoped(&services, || {
+        app.harness()
+            .perform_named("hex_view", &A11yAction::Focus)
+            .unwrap();
+        ctrl(&mut app, "o");
+        app.settle();
+    });
+    assert_eq!(recorder.pick_requests().len(), 1);
+    assert_eq!(app.state().name.as_deref(), Some("chosen.bin"));
+    assert_eq!(app.state().bytes, [1, 2, 3]);
+
+    // The chosen file is where a save writes back to.
+    app.harness().type_text("ff");
+    ctrl(&mut app, "s");
+    assert_eq!(std::fs::read(&chosen).unwrap(), [0xFF, 2, 3]);
+}
+
+#[test]
+fn captures_stage_the_sample_through_the_resource() {
+    let mut sample = TestApp::<HexEditorShell>::capture(None).unwrap();
+    let targets = sample.harness().targets();
+    assert_eq!(
+        targets["hex_view"], targets["BoundComponent[0]/ResourceApp[0]"],
+        "the editor fills the app's area"
+    );
+    let state = sample.state();
+    assert_eq!(state.name.as_deref(), Some("sample.png"));
+    assert_eq!(&state.bytes[..4], &[0x89, 0x50, 0x4E, 0x47]);
+
+    for scenario in ["search", "error"] {
+        let app = TestApp::<HexEditorShell>::capture(Some(scenario)).unwrap();
+        assert!(app.state().has_file(), "{scenario}");
+    }
+    let empty = TestApp::<HexEditorShell>::capture(Some("empty")).unwrap();
+    assert!(!empty.state().has_file());
+}
+
+#[test]
+fn the_executable_opens_a_path_edits_and_saves_it() {
+    let (directory, path) = file("Bytes Grün with spaces.bin", &[0x00, 0x11, 0x22, 0x33]);
     let spec = serde_json::json!({
         "actions": [
             {"perform": {"target": "hex_view", "action": "focus"}},
@@ -68,15 +234,14 @@ fn executable_opens_a_unicode_path_edits_and_saves_without_replicating_bytes() {
             {"key": "s"},
             {"modifiers": []}
         ],
-        "dump": dump,
     });
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_hex-editor"));
     command
         .args(["--headless-drive", &spec.to_string()])
         .arg(&path)
-        .env("XDG_STATE_HOME", directory.join("state"))
-        .env("XDG_CONFIG_HOME", directory.join("config"))
-        .env("XDG_DATA_HOME", directory.join("data"));
+        .env("XDG_STATE_HOME", directory.path().join("state"))
+        .env("XDG_CONFIG_HOME", directory.path().join("config"))
+        .env("XDG_DATA_HOME", directory.path().join("data"));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -89,187 +254,4 @@ fn executable_opens_a_unicode_path_edits_and_saves_without_replicating_bytes() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(std::fs::read(&path).unwrap(), [0xAB, 0x11, 0x22, 0x33]);
-    let document = std::fs::read_to_string(&dump).unwrap();
-    let value: serde_json::Value = serde_json::from_str(&document).unwrap();
-    assert!(value.get("bytes").is_none());
-    assert!(
-        !document.contains("Grün"),
-        "the file path must stay device-local"
-    );
-    std::fs::remove_dir_all(&directory).unwrap();
-}
-
-/// The in-process lifecycle through the production widget paths: open via
-/// the portal drain, edit then save to disk, and raw typing stays local.
-#[test]
-fn widget_file_lifecycle_opens_edits_saves_and_keeps_bytes_local() {
-    open_via_portal_loads_real_bytes_through_the_drain_path();
-    edit_then_save_writes_back_to_disk();
-    keystroke_keeps_raw_bytes_local();
-}
-
-fn open_via_portal_loads_real_bytes_through_the_drain_path() {
-    let path = tmp("portal_open");
-    std::fs::write(&path, b"HELLO-HEX").unwrap();
-
-    let mut view = HexView::empty();
-    assert!(!view.has_file(), "starts in the honest empty state");
-    assert!(view.model().is_empty(), "no fabricated buffer");
-
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    let (taffy, node) = dummy_layout();
-    let ctrl = Modifiers::from(ModifiersState::CONTROL);
-
-    // Ctrl+O opens the host file chooser; the recording host answers it with
-    // the chosen path over the same channel a real chooser would use.
-    let (services, recorder) = ui::host::HostServices::recording();
-    recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
-    ui::host::scoped(&services, || {
-        let mut handled = false;
-        let mut focus = None;
-        view.handle_event(
-            &key_press(Key::Character("o".into())),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &ctrl,
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        assert!(handled, "Ctrl+O is consumed in the empty state");
-    });
-    let picks = recorder.pick_requests();
-    assert_eq!(picks.len(), 1, "exactly one file chooser was requested");
-    assert_eq!(picks[0].title(), "Open file");
-
-    view.sync(&mut doc, &root); // drains the pick -> open_path()
-
-    assert!(view.has_file(), "opening a file leaves the empty state");
-    assert_eq!(
-        view.model().bytes(),
-        b"HELLO-HEX",
-        "the real file bytes are loaded"
-    );
-    assert_eq!(view.path(), Some(path.as_path()));
-    assert!(
-        doc.get(&automerge::ROOT, "bytes").unwrap().is_none(),
-        "raw local bytes are never persisted into Automerge"
-    );
-
-    std::fs::remove_file(&path).ok();
-}
-
-fn edit_then_save_writes_back_to_disk() {
-    let path = tmp("edit_save");
-    std::fs::write(&path, [0x00u8, 0x11, 0x22, 0x33]).unwrap();
-
-    // Real open via the CLI/path production path.
-    let mut view = hex_editor::app::view_for_path(&path);
-    assert!(view.has_file());
-    assert_eq!(view.model().bytes(), &[0x00, 0x11, 0x22, 0x33]);
-    assert_eq!(view.path(), Some(path.as_path()));
-
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    let (taffy, node) = dummy_layout();
-    let no_mods = Modifiers::default();
-    let ctrl = Modifiers::from(ModifiersState::CONTROL);
-
-    view.sync(&mut doc, &root); // synchronize local portal/view state
-
-    // Type "a" then "b" over byte 0 (hex column, overwrite) -> 0xAB.
-    for ch in ["a", "b"] {
-        let mut handled = false;
-        let mut focus = None;
-        view.handle_event(
-            &key_press(Key::Character(ch.into())),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &no_mods,
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-    }
-    assert_eq!(
-        view.model().bytes()[0],
-        0xAB,
-        "hex input edited the first byte"
-    );
-    assert!(view.model().dirty_count() > 0, "the edit is marked dirty");
-
-    // Ctrl+S saves straight back to the known path.
-    let mut handled = false;
-    let mut focus = None;
-    view.handle_event(
-        &key_press(Key::Character("s".into())),
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &ctrl,
-            state: &mut doc,
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-
-    let on_disk = std::fs::read(&path).unwrap();
-    assert_eq!(
-        on_disk,
-        vec![0xAB, 0x11, 0x22, 0x33],
-        "Ctrl+S wrote the edit to disk"
-    );
-    assert_eq!(
-        view.model().dirty_count(),
-        0,
-        "a successful save clears the dirty markers"
-    );
-
-    std::fs::remove_file(&path).ok();
-}
-
-/// Raw typing remains in the local model: it must neither seed nor mutate the
-/// collaboration document, and it creates a device-local undo boundary.
-fn keystroke_keeps_raw_bytes_local() {
-    let mut view = HexView::new(vec![0x00, 0x11, 0x22, 0x33], "buf.bin");
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    let (taffy, node) = dummy_layout();
-    let no_mods = Modifiers::default();
-
-    view.sync(&mut doc, &root); // local model only
-
-    // Type "a" (hex 0xA) over byte 0 (0x00) — the high nibble → 0xA0.
-    let mut handled = false;
-    let mut focus = None;
-    view.handle_event(
-        &key_press(Key::Character("a".into())),
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &no_mods,
-            state: &mut doc,
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    assert!(handled, "the hex-digit keystroke was consumed");
-
-    assert!(
-        doc.get(&automerge::ROOT, "bytes").unwrap().is_none(),
-        "the byte stays local"
-    );
 }

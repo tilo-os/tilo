@@ -1,9 +1,10 @@
 # Hex Editor — Tilo application manifest.
 #
-# Opens exactly one file, named on argv, and has no save path at all.
+# Opens one file — named on argv or chosen with the file picker — and saves
+# it back.
 #
-# Beyond the system read profile it needs, as a consented capability:
-# read on the file it was asked to open.
+# Beyond the system read profile it needs, as consented capabilities: read
+# on the file it was asked to open, and write where the person saves it.
 #
 
 

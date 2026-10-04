@@ -1,30 +1,47 @@
-//! Hex editor as a [`tilo_resource::Resource`]: bytes stay device-local;
-//! open/save/goto/search are Effects and Views in [`local_operations`].
-//! Hosted [`PublishesResources`](ui::resources::PublishesResources) must not
-//! republish a second `hex_editor.document` beside [`ResourceRoot`] — only live
-//! cursor / selection byte extras.
+//! The hex buffer as a [`Resource`]: a file's bytes, kept in the record so
+//! they sync, undo and show in history like any document.
+//!
+//! The bytes are stored as a list of pages of a few KiB each. An edit
+//! rewrites only the pages it touches: typing over one byte of a large file
+//! writes one page, an insert grows one page (split when it gets long), and
+//! collaborators editing different pages merge cleanly. Two people editing
+//! the same page concurrently keep one of their versions of it.
 
-use std::rc::Rc;
-
-use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, OperationKind};
-use ui::tilo_resource::{Doc, ModelError, Resource};
+use automerge::transaction::Transactable as _;
+use automerge::{ObjId, ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
+use ui::framework::{LaunchInput, ResourceApp, ViewCx};
+use ui::record::RecordId;
+use ui::tilo_actions::{ActionError, ActionSpec};
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
-use crate::actions::{
-    HEX_EDITOR_ACTION_TYPE, HexEditorAction, document_local_operations,
-    refuses_collaborative_replay, register,
-};
+use crate::actions::{HEX_EDITOR_ACTION_TYPE, HexEditorAction};
+use crate::model::common_suffix;
 use crate::view::HexView;
 
-/// Empty document projection — the buffer never enters Automerge.
-#[derive(Clone, Debug, Default)]
+/// The bytes a page holds when a file is opened or a long page is split.
+const PAGE: usize = 4096;
+/// The longest a page grows by inserts before it is split.
+const MAX_PAGE: usize = 2 * PAGE;
+
+/// The open buffer.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HexState {
-    pub label: String,
+    /// The opened file's name; `None` until a file is opened.
+    pub name: Option<String>,
+    pub bytes: Vec<u8>,
+    /// How many times a file was opened into this record: a view takes the
+    /// bytes after a change of it as freshly loaded, not as edits.
+    pub opened: u64,
 }
 
-/// The hex document resource (device-local bytes; collaborative kind for the door).
+impl HexState {
+    pub fn has_file(&self) -> bool {
+        self.name.is_some()
+    }
+}
+
+/// The hex buffer resource.
 pub struct HexEditor;
 
 impl Resource for HexEditor {
@@ -35,388 +52,491 @@ impl Resource for HexEditor {
     type State = HexState;
     type Action = HexEditorAction;
 
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
-    }
-
-    fn read(_doc: &Doc) -> Result<HexState, ModelError> {
+    fn read(doc: &Doc) -> Result<HexState, ModelError> {
+        let name = match doc.get(ROOT, "name")? {
+            Some((Value::Scalar(value), _)) => match value.as_ref() {
+                ScalarValue::Str(name) => Some(name.to_string()),
+                _ => return Err(ModelError::shape("text").at("name")),
+            },
+            Some(_) => return Err(ModelError::shape("text").at("name")),
+            None => None,
+        };
+        let opened = match doc.get(ROOT, "opened")? {
+            Some((Value::Scalar(value), _)) => match value.as_ref() {
+                ScalarValue::Uint(count) => *count,
+                _ => return Err(ModelError::shape("count").at("opened")),
+            },
+            _ => 0,
+        };
+        let bytes = read_pages(doc)?.concat();
         Ok(HexState {
-            label: "Untitled".into(),
+            name,
+            bytes,
+            opened,
         })
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        // Open/save/search/goto/undo/redo — local Views and Effects. Legacy
-        // HexEditorAction::apply refuses collaborative replay; palette clients
-        // use HexOperation. Cursor-targeted byte edits ride live extras.
-        document_local_operations()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
+    fn coalesces(previous: &HexEditorAction, next: &HexEditorAction) -> bool {
+        previous.continues(next)
+    }
+
+    fn declarations() -> Vec<ActionDecl<Self>> {
+        crate::actions::declarations()
     }
 }
 
-/// Framework app: the hex view over [`HexEditor`].
+/// The pages list, when the record holds one.
+fn pages_list(doc: &Doc) -> Result<Option<ObjId>, ModelError> {
+    match doc.get(ROOT, "pages")? {
+        Some((Value::Object(ObjType::List), id)) => Ok(Some(id)),
+        Some(_) => Err(ModelError::shape("list").at("pages")),
+        None => Ok(None),
+    }
+}
+
+fn read_pages(doc: &Doc) -> Result<Vec<Vec<u8>>, ModelError> {
+    let Some(list) = pages_list(doc)? else {
+        return Ok(Vec::new());
+    };
+    (0..doc.length(&list))
+        .map(|index| match doc.get(&list, index)? {
+            Some((Value::Scalar(value), _)) => match value.as_ref() {
+                ScalarValue::Bytes(page) => Ok(page.clone()),
+                _ => Err(ModelError::shape("bytes").at("pages")),
+            },
+            _ => Err(ModelError::shape("bytes").at("pages")),
+        })
+        .collect()
+}
+
+/// Write `new` over the pages `old` read from the document, touching only
+/// the pages that differ.
+fn write_pages(doc: &mut Doc, old: &[Vec<u8>], new: &[Vec<u8>]) -> Result<(), ActionError> {
+    let list = match pages_list(doc).map_err(refused)? {
+        Some(list) => list,
+        None => doc.put_object(ROOT, "pages", ObjType::List)?,
+    };
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let old_rest = old.get(prefix..).unwrap_or_default();
+    let new_rest = new.get(prefix..).unwrap_or_default();
+    let suffix = common_suffix(old_rest, new_rest);
+    let old_middle = old_rest.get(..old_rest.len() - suffix).unwrap_or_default();
+    let new_middle = new_rest.get(..new_rest.len() - suffix).unwrap_or_default();
+    for (index, (was, page)) in old_middle.iter().zip(new_middle).enumerate() {
+        if was != page {
+            doc.put(&list, prefix + index, ScalarValue::Bytes(page.clone()))?;
+        }
+    }
+    let common = old_middle.len().min(new_middle.len());
+    for _ in common..old_middle.len() {
+        doc.delete(&list, prefix + common)?;
+    }
+    for (index, page) in new_middle.iter().enumerate().skip(common) {
+        doc.insert(&list, prefix + index, ScalarValue::Bytes(page.clone()))?;
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the shape `map_err` hands an error to"
+)]
+fn refused(error: ModelError) -> ActionError {
+    ActionError::Refused(error.to_string())
+}
+
+fn paginate(bytes: &[u8]) -> Vec<Vec<u8>> {
+    bytes.chunks(PAGE).map(<[u8]>::to_vec).collect()
+}
+
+/// The page holding `offset` and where in it; the end of the buffer is the
+/// end of its last page.
+fn locate(pages: &[Vec<u8>], offset: usize) -> Option<(usize, usize)> {
+    let mut start = 0;
+    for (index, page) in pages.iter().enumerate() {
+        if offset < start + page.len() {
+            return Some((index, offset - start));
+        }
+        start += page.len();
+    }
+    let (last, page) = pages.iter().enumerate().next_back()?;
+    (offset == start).then_some((last, page.len()))
+}
+
+/// Apply `action` to the record.
+pub(crate) fn apply(action: &HexEditorAction, doc: &mut Doc) -> Result<(), ActionError> {
+    let old = read_pages(doc).map_err(refused)?;
+    let len: usize = old.iter().map(Vec::len).sum();
+    let mut pages = old.clone();
+    match action {
+        HexEditorAction::Open { name, bytes } => {
+            let state = HexEditor::read(doc).map_err(refused)?;
+            if state.name.as_deref() == Some(name.as_str()) && state.bytes == *bytes {
+                return Ok(());
+            }
+            if state.name.as_deref() != Some(name.as_str()) {
+                doc.put(ROOT, "name", name.as_str())?;
+            }
+            doc.put(
+                ROOT,
+                "opened",
+                ScalarValue::Uint(state.opened.saturating_add(1)),
+            )?;
+            pages = paginate(bytes);
+        }
+        HexEditorAction::InsertBytes { offset, bytes } => {
+            if *offset > len {
+                return Err(beyond(*offset, len));
+            }
+            if bytes.is_empty() {
+                return Ok(());
+            }
+            match locate(&pages, *offset) {
+                Some((index, at)) => {
+                    let Some(page) = pages.get_mut(index) else {
+                        return Err(beyond(*offset, len));
+                    };
+                    page.splice(at..at, bytes.iter().copied());
+                    if page.len() > MAX_PAGE {
+                        let split = paginate(page);
+                        pages.splice(index..=index, split);
+                    }
+                }
+                None => pages = paginate(bytes),
+            }
+        }
+        HexEditorAction::DeleteBytes { offset, len: count } => {
+            if *count == 0 {
+                return Ok(());
+            }
+            if *offset >= len {
+                return Err(beyond(*offset, len));
+            }
+            let end = offset.saturating_add(*count).min(len);
+            let mut start = 0;
+            for page in &mut pages {
+                let (from, to) = (start, start + page.len());
+                start = to;
+                let cut_from = (*offset).max(from);
+                let cut_to = end.min(to);
+                if cut_from < cut_to {
+                    page.drain(cut_from - from..cut_to - from);
+                }
+            }
+            pages.retain(|page| !page.is_empty());
+        }
+        HexEditorAction::OverwriteBytes { offset, bytes } => {
+            if bytes.is_empty() {
+                return Ok(());
+            }
+            if *offset >= len {
+                return Err(beyond(*offset, len));
+            }
+            let mut start = 0;
+            for page in &mut pages {
+                for (index, slot) in page.iter_mut().enumerate() {
+                    if let Some(byte) = (start + index)
+                        .checked_sub(*offset)
+                        .and_then(|at| bytes.get(at))
+                    {
+                        *slot = *byte;
+                    }
+                }
+                start += page.len();
+            }
+        }
+    }
+    write_pages(doc, &old, &pages)
+}
+
+fn beyond(offset: usize, len: usize) -> ActionError {
+    ActionError::Refused(format!(
+        "offset {offset} is beyond the end of the {len}-byte buffer"
+    ))
+}
+
+/// The hex editor app: one buffer per file, edited through [`HexView`].
 pub struct HexEditorShell;
+
+/// The bundled sample a capture shows.
+const SAMPLE_NAME: &str = "sample.png";
 
 impl ResourceApp for HexEditorShell {
     type Resource = HexEditor;
     const ID: &'static str = "so.tilo.hex-editor";
     const TITLE: &'static str = "Hex Editor";
     const ICON: Option<&'static str> = Some("hex-editor");
+    const OPENS: &'static [&'static str] = &[ui::application::ANY_MEDIA_TYPE];
+    const ARGUMENTS: usize = 1;
+
+    fn view(cx: &mut ViewCx<HexEditor>) -> Element {
+        let path = cx.launch_arguments().first().map(std::path::PathBuf::from);
+        // In a container, the surface is a widget of the view's tree that
+        // tests and headless drives address by name.
+        Box::new(ui::widget::Stack::new().push(cx.surface(HexView::empty().with_path(path))))
+    }
+
+    fn label(state: &HexState) -> String {
+        state
+            .name
+            .clone()
+            .unwrap_or_else(|| HexEditor::LABEL.to_owned())
+    }
+
+    fn local_operations() -> Vec<ActionSpec> {
+        crate::actions::view_operations()
+    }
+
+    /// The buffer of a file is a record of its own, derived from the
+    /// file's, so another app's record of the same file is left alone.
+    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+        input
+            .argument()
+            .map(|path| RecordId::derived("hex", &RecordId::identify_file(path)))
+    }
+
+    /// The file is read afresh on every launch: what is on disk is what the
+    /// buffer shows. Unchanged bytes change nothing.
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<HexEditor>> {
+        input
+            .file()
+            .and_then(|file| {
+                Invoke::apply(&HexEditorAction::Open {
+                    name: file.name().to_owned(),
+                    bytes: file.bytes().to_vec(),
+                })
+                .ok()
+            })
+            .into_iter()
+            .collect()
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        &["empty", "search", "error"]
+    }
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1100, 720)
     }
 
-    fn view(cx: &mut ViewCx<HexEditor>) -> Element {
-        cx.surface(HexView::empty())
-    }
-}
-
-impl ResourceSurface<HexEditor> for HexView {
-    /// Bytes are device-local and never projected from Automerge. An empty
-    /// `HexState` must not wipe an unpublished local buffer.
-    fn present(&mut self, _state: &Rc<HexState>) {}
-
-    fn attach(&mut self, cx: SurfaceCx<HexEditor>) {
-        self.actions.attach(cx.dispatcher());
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-///
-/// Raw hex bytes never take the dispatcher: [`HexEditorAction::apply`] refuses
-/// collaborative replay. A document action that `apply` accepts uses
-/// [`Dispatcher::apply_now_with`] while hosted, and the local host otherwise.
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<HexEditor>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    hosted: bool,
-    /// How many times a hosted replayable action reached `apply_now_with`.
-    /// Raw byte edits must leave this at zero.
-    #[cfg(test)]
-    framework_applies: u32,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            #[cfg(test)]
-            framework_applies: 0,
+    /// Every capture but the empty state shows the bundled sample.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<HexEditor>> {
+        if name == Some("empty") {
+            return Vec::new();
         }
+        Invoke::apply(&HexEditorAction::Open {
+            name: SAMPLE_NAME.into(),
+            bytes: crate::sample::png_header(),
+        })
+        .into_iter()
+        .collect()
     }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<HexEditor>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-        #[cfg(test)]
-        remember_attached(self);
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted || self.framework.is_some()
-    }
-
-    /// Submit one document action. Hosted replayable edits go through the
-    /// framework dispatcher. Raw hex bytes return before that call.
-    pub(crate) fn dispatch_document(
-        &mut self,
-        doc: &mut AutoCommit,
-        action: &HexEditorAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        if refuses_collaborative_replay(action) {
-            return;
-        }
-        match &self.framework {
-            Some(dispatcher) => {
-                #[cfg(test)]
-                {
-                    self.framework_applies = self.framework_applies.saturating_add(1);
-                }
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => self
-                .local
-                .dispatch_with_context(doc, HEX_EDITOR_ACTION_TYPE, action, context),
-        }
-    }
-
-    /// Test-only: mark hosted without constructing a framework dispatcher.
-    /// Standalone resource tests stay on the local host.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
-}
-
-#[cfg(test)]
-struct AttachedDispatcher {
-    hosted: bool,
-    framework: Option<Dispatcher<HexEditor>>,
-}
-
-#[cfg(test)]
-thread_local! {
-    static ATTACHED: std::cell::RefCell<Option<AttachedDispatcher>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-fn remember_attached(sink: &ActionSink) {
-    let shot = AttachedDispatcher {
-        hosted: sink.is_hosted(),
-        framework: sink.framework.clone(),
-    };
-    ATTACHED.with(|slot| *slot.borrow_mut() = Some(shot));
-}
-
-#[cfg(test)]
-fn take_attached_dispatcher() -> Option<AttachedDispatcher> {
-    ATTACHED.with(|slot| slot.borrow_mut().take())
-}
-
-/// Live launch through the framework host.
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<HexEditorShell>()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::live_buffer_extras;
-    use ui::resources::PublishesResources;
-    use ui::tilo_actions::OperationKind;
-    use ui::widget::Widget;
+    use ui::tilo_resource::Replica;
+
+    fn open(bytes: &[u8]) -> HexEditorAction {
+        HexEditorAction::Open {
+            name: "buf.bin".into(),
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    fn apply(
+        replica: &mut Replica<HexEditor>,
+        action: &HexEditorAction,
+    ) -> Result<(), ActionError> {
+        replica.apply_action(action, "edit").map(|_| ())
+    }
+
+    fn state(replica: &Replica<HexEditor>) -> HexState {
+        replica.state().unwrap()
+    }
+
+    fn pages(replica: &Replica<HexEditor>) -> Vec<usize> {
+        read_pages(replica.doc())
+            .unwrap()
+            .iter()
+            .map(Vec::len)
+            .collect()
+    }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
-    )]
-    fn publish_owns_document_door_and_hosted_keeps_only_live_extras() {
-        let published = ui::tilo_resource::publish::<HexEditor>(
-            "hex_editor.document",
-            "Hex document",
-            &HexState {
-                label: "Untitled".into(),
+    fn edits_change_the_bytes_and_rewrite_only_the_pages_they_touch() {
+        let file: Vec<u8> = (0..3 * PAGE + 10).map(|i| (i % 251) as u8).collect();
+        let mut replica = Replica::<HexEditor>::new();
+        apply(&mut replica, &open(&file)).unwrap();
+        assert_eq!(state(&replica).bytes, file);
+        assert_eq!(state(&replica).name.as_deref(), Some("buf.bin"));
+        assert_eq!(state(&replica).opened, 1);
+        assert_eq!(pages(&replica), [PAGE, PAGE, PAGE, 10]);
+
+        let mut expected = file;
+        apply(
+            &mut replica,
+            &HexEditorAction::OverwriteBytes {
+                offset: PAGE - 1,
+                bytes: vec![0xAA, 0xBB],
             },
-        );
-        assert_eq!(published.kind, HexEditor::KIND);
-        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
-        for expected in [
-            "open",
-            "save",
-            "undo",
-            "redo",
-            "search",
-            "goto-offset",
-            ui::tilo_resource::APPLY,
-            ui::tilo_resource::GROUP,
-        ] {
-            assert!(
-                ids.contains(&expected),
-                "palette `{expected}` must ride publish via local_operations: {ids:?}"
-            );
-        }
-        for id in [
-            "insert-byte",
-            "overwrite-byte",
-            "delete-byte",
-            "delete-selection",
-        ] {
-            assert!(
-                !ids.contains(&id),
-                "cursor byte edits stay on live extras, not publish: {ids:?}"
-            );
-        }
-        let search = published
-            .actions
-            .iter()
-            .find(|action| action.id == "search")
-            .expect("search");
-        assert_eq!(search.kind, OperationKind::View);
-        assert!(
-            search.contract.availability.is_available(),
-            "publish door must not mark search unavailable from an empty projection"
-        );
+        )
+        .unwrap();
+        expected[PAGE - 1] = 0xAA;
+        expected[PAGE] = 0xBB;
+        assert_eq!(state(&replica).bytes, expected);
 
-        let mut view = HexView::new(vec![0x00, 0x11, 0x22, 0x33], "buf.bin");
-        view.model_mut().move_to(1, false);
-        let mut state = ui::State::new();
-        Widget::sync(&mut view, &mut state.doc, &state.root);
-        assert!(
-            !view.is_framework_hosted(),
-            "standalone publishes the document door"
-        );
+        let before = replica.heads();
+        apply(
+            &mut replica,
+            &HexEditorAction::InsertBytes {
+                offset: 5,
+                bytes: vec![1, 2, 3],
+            },
+        )
+        .unwrap();
+        expected.splice(5..5, [1, 2, 3]);
+        assert_eq!(state(&replica).bytes, expected);
+        assert_eq!(pages(&replica), [PAGE + 3, PAGE, PAGE, 10]);
+        let changes = replica.doc_mut().get_changes(&before);
+        let ops: usize = changes.iter().map(automerge::Change::len).sum();
+        assert_eq!(ops, 1, "an insert rewrites the one page it lands in");
 
-        let standalone = view.resources(&state.doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, HexEditor::KIND);
-        let cursor = standalone[0]
-            .children
-            .iter()
-            .find(|child| child.kind == "hex_editor.cursor")
-            .expect("cursor edits stay a live child");
-        assert!(
-            cursor
-                .actions
-                .iter()
-                .any(|action| action.id == "insert-byte"),
-            "standalone keeps cursor edits beside the document door"
-        );
+        apply(
+            &mut replica,
+            &HexEditorAction::DeleteBytes {
+                offset: PAGE,
+                len: PAGE + 10,
+            },
+        )
+        .unwrap();
+        expected.drain(PAGE..2 * PAGE + 10);
+        assert_eq!(state(&replica).bytes, expected);
 
-        view.mark_hosted_for_test();
-        assert!(view.is_framework_hosted());
-        assert!(ui::resources::resource(&view, &state.doc, "hex_editor.document").is_none());
+        // Appending at the end grows the last page; a long page splits.
+        let end = expected.len();
+        let tail = vec![7; MAX_PAGE];
+        apply(
+            &mut replica,
+            &HexEditorAction::InsertBytes {
+                offset: end,
+                bytes: tail.clone(),
+            },
+        )
+        .unwrap();
+        expected.extend(&tail);
+        assert_eq!(state(&replica).bytes, expected);
         assert!(
-            ui::resources::resource(&view, &state.doc, "hex_editor.cursor").is_some_and(|cursor| {
-                cursor
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "insert-byte")
-            }),
-            "a hosted cursor stays the published row"
-        );
-        let extras = view.resources(&state.doc);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != HexEditor::KIND
-                    && resource.id.as_str() != "hex_editor.document"),
-            "hosted must not republish hex_editor.document beside [`ResourceRoot`]: {:?}",
-            extras
-                .iter()
-                .map(|resource| resource.id.as_str())
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            extras.len(),
-            1,
-            "hosted returns the cursor / selection slice alone"
-        );
-        assert_eq!(extras[0].kind, "hex_editor.cursor");
-        for id in ["insert-byte", "overwrite-byte", "delete-byte"] {
-            assert!(
-                extras[0].actions.iter().any(|action| action.id == id),
-                "hosted keeps live byte edit `{id}`: {:?}",
-                extras[0]
-                    .actions
-                    .iter()
-                    .map(|a| a.id.as_str())
-                    .collect::<Vec<_>>()
-            );
-        }
-        assert!(
-            !extras[0].actions.iter().any(|action| matches!(
-                action.id.as_str(),
-                "open" | "save" | "search" | "goto-offset" | "undo" | "redo"
-            )),
-            "hosted cursor must not copy document door ops already on publish"
-        );
-
-        view.model_mut().move_to(2, false);
-        view.model_mut().move_to(3, true);
-        let with_sel = view.resources(&state.doc);
-        assert_eq!(with_sel.len(), 1);
-        assert!(
-            with_sel[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "delete-selection"),
-            "hosted selection binds delete-selection"
-        );
-        let from_helper = live_buffer_extras(&view.hex_resource_ctx());
-        assert_eq!(from_helper.len(), 1);
-        assert_eq!(from_helper[0].kind, "hex_editor.cursor");
-    }
-
-    #[test]
-    fn present_empty_does_not_wipe_unpublished_local_bytes() {
-        let mut view = HexView::new(vec![0xCA, 0xFE, 0xBA, 0xBE], "local.bin");
-        assert_eq!(view.model().bytes(), &[0xCA, 0xFE, 0xBA, 0xBE]);
-        assert!(view.has_file());
-
-        ResourceSurface::<HexEditor>::present(&mut view, &Rc::new(HexState::default()));
-        assert_eq!(
-            view.model().bytes(),
-            &[0xCA, 0xFE, 0xBA, 0xBE],
-            "empty present must not wipe unpublished local bytes"
-        );
-        assert!(
-            view.has_file(),
-            "empty present must keep the local file projection"
+            pages(&replica).iter().all(|len| *len <= MAX_PAGE),
+            "{:?}",
+            pages(&replica)
         );
     }
 
     #[test]
-    fn hosted_attach_retains_dispatcher_without_raw_byte_replay() {
-        let mut view = HexView::new(vec![0x00, 0x11, 0x22], "buf.bin");
-        view.model_mut().move_to(1, false);
-        let mut state = ui::State::new();
-        Widget::sync(&mut view, &mut state.doc, &state.root);
-        assert!(
-            !view.is_framework_hosted() && view.actions.framework.is_none(),
-            "standalone tests stay on the local host"
-        );
-
-        view.mark_hosted_for_test();
-        let extras = view.resources(&state.doc);
-        assert!(
-            extras.iter().all(|resource| {
-                resource.kind != HexEditor::KIND && resource.id.as_str() != "hex_editor.document"
-            }),
-            "hosted resources() must not include a second document root: {:?}",
-            extras
-                .iter()
-                .map(|resource| resource.id.as_str())
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "hex_editor.cursor"),
-            "selection / cursor extras stay on the widget"
-        );
-
-        // The framework constructs the only Dispatcher a surface can hold.
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let _host = ui::framework::testing::HeadlessApp::<HexEditorShell>::new()
-                .expect("hex editor framework host opens");
-            let attached = take_attached_dispatcher().expect("attach retains the dispatcher");
-            assert!(attached.hosted, "is_hosted");
-            let dispatcher = attached.framework.expect("framework.is_some()");
-
-            let mut sink = ActionSink::default();
-            sink.attach(dispatcher);
-            assert!(sink.is_hosted());
-            assert!(sink.framework.is_some());
-
-            let mut doc = automerge::AutoCommit::new();
-            let context = ui::tilo_actions::ActionContext::default();
-            for action in [
-                crate::actions::insert_bytes_action(0, vec![0xAB]),
-                crate::actions::overwrite_bytes_action(0, vec![0xCD]),
-                crate::actions::delete_bytes_action(0, 1),
-            ] {
-                sink.dispatch_document(&mut doc, &action, context.clone());
-            }
-            assert_eq!(
-                sink.framework_applies, 0,
-                "raw hex bytes must not be applied through the framework dispatcher"
-            );
-            assert!(
-                doc.get_heads().is_empty(),
-                "raw bytes must not be written into the shared document"
-            );
+    fn offsets_beyond_the_buffer_are_refused_and_empty_edits_change_nothing() {
+        let mut replica = Replica::<HexEditor>::new();
+        apply(&mut replica, &open(&[1, 2, 3])).unwrap();
+        for action in [
+            HexEditorAction::InsertBytes {
+                offset: 4,
+                bytes: vec![9],
+            },
+            HexEditorAction::OverwriteBytes {
+                offset: 3,
+                bytes: vec![9],
+            },
+            HexEditorAction::DeleteBytes { offset: 3, len: 1 },
+        ] {
+            assert!(apply(&mut replica, &action).is_err(), "{action:?}");
         }
+        // Overwriting across the end keeps the length; deleting past it
+        // stops at the end; appending at the end is allowed.
+        apply(
+            &mut replica,
+            &HexEditorAction::OverwriteBytes {
+                offset: 2,
+                bytes: vec![8, 9],
+            },
+        )
+        .unwrap();
+        assert_eq!(state(&replica).bytes, [1, 2, 8]);
+        apply(
+            &mut replica,
+            &HexEditorAction::DeleteBytes { offset: 1, len: 9 },
+        )
+        .unwrap();
+        assert_eq!(state(&replica).bytes, [1]);
+        apply(
+            &mut replica,
+            &HexEditorAction::InsertBytes {
+                offset: 1,
+                bytes: vec![5],
+            },
+        )
+        .unwrap();
+        assert_eq!(state(&replica).bytes, [1, 5]);
+
+        let heads = replica.heads();
+        apply(
+            &mut replica,
+            &HexEditorAction::DeleteBytes { offset: 0, len: 0 },
+        )
+        .unwrap();
+        apply(&mut replica, &open(&[1, 5])).unwrap();
+        assert_eq!(
+            replica.heads(),
+            heads,
+            "reopening unchanged bytes and an empty delete write nothing"
+        );
+    }
+
+    #[test]
+    fn an_empty_record_has_no_file_and_typing_starts_its_first_page() {
+        let mut replica = Replica::<HexEditor>::new();
+        assert!(!state(&replica).has_file());
+        apply(&mut replica, &open(&[])).unwrap();
+        assert!(state(&replica).has_file());
+        assert!(state(&replica).bytes.is_empty());
+        apply(
+            &mut replica,
+            &HexEditorAction::InsertBytes {
+                offset: 0,
+                bytes: vec![0xAB],
+            },
+        )
+        .unwrap();
+        assert_eq!(state(&replica).bytes, [0xAB]);
+    }
+
+    #[test]
+    fn collaborators_editing_different_pages_merge() {
+        let file = vec![0u8; 2 * PAGE];
+        let mut ours = Replica::<HexEditor>::new();
+        apply(&mut ours, &open(&file)).unwrap();
+        let mut theirs = ours.fork();
+        apply(
+            &mut ours,
+            &HexEditorAction::OverwriteBytes {
+                offset: 1,
+                bytes: vec![1],
+            },
+        )
+        .unwrap();
+        apply(
+            &mut theirs,
+            &HexEditorAction::InsertBytes {
+                offset: PAGE + 1,
+                bytes: vec![2],
+            },
+        )
+        .unwrap();
+        ours.sync_with(&mut theirs).unwrap();
+        let bytes = state(&ours).bytes;
+        assert_eq!(bytes.len(), 2 * PAGE + 1);
+        assert_eq!(bytes[1], 1);
+        assert_eq!(bytes[PAGE + 1], 2);
+        assert_eq!(state(&theirs).bytes, bytes);
     }
 }
