@@ -18,6 +18,8 @@ mod execution_activity;
 mod execution_activity_tests;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
+#[cfg(test)]
+mod app_settings_tests;
 mod committed_document;
 mod durable_local_invocation;
 #[path = "invocation_journal.rs"]
@@ -5900,6 +5902,33 @@ impl CapnpChannelHandle {
     }
 }
 
+/// The `AppSettings` capability of the app `route` certifies: its own
+/// entries and the shared sections, in the host's settings source, for as
+/// long as the channel stays admitted.
+fn app_settings_capability(
+    state: &Arc<CapnpBrokerState>,
+    route: CrdtRoute,
+    identity: AdmittedJoinIdentity,
+) -> Result<runtime_collab::collab_capnp::app_settings::Client, capnp::Error> {
+    if route.app_id.is_empty() {
+        return Err(capnp::Error::failed(
+            "settings belong to a certified app route".into(),
+        ));
+    }
+    let Some(source) = state.services.settings.clone() else {
+        return Err(capnp::Error::failed(
+            "this host keeps no settings for apps".into(),
+        ));
+    };
+    let app_id = route.app_id.clone();
+    let state = Arc::clone(state);
+    let revalidate: runtime_collab::settings::host::Revalidate =
+        Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
+    Ok(capnp_rpc::new_client(
+        runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate),
+    ))
+}
+
 fn delegate_realtime_command(
     services: &HostServices,
     context: &crate::services::RealtimeRequestContext,
@@ -6304,6 +6333,27 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         results.get().set_reply_json(&reply);
         Promise::ok(())
+    }
+
+    fn settings(
+        self: Rc<Self>,
+        _params: channel_handle::SettingsParams,
+        mut results: channel_handle::SettingsResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        match app_settings_capability(&self.state, route, self.verified_identity.clone()) {
+            Ok(settings) => {
+                results.get().set_settings(settings);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(error),
+        }
     }
 
     fn wifi_continuity_command(
