@@ -132,6 +132,15 @@
 //!   one document item (a profile's password) is
 //!   `secrets().item(purpose, id)`, so the document names the item and the
 //!   secret stays on the device.
+//! * **The person's own data** — what they watched, the words they taught
+//!   the keyboard, where they stopped reading: data that grows, has history
+//!   and is undone, but belongs to the person rather than the room — is a
+//!   resource kept in the person's own room ([`ViewCx::person`],
+//!   [`SurfaceCx::person`]). The [`PersonRecord`] is one record per kind on
+//!   all of the person's devices, edited with the resource's actions,
+//!   attributed, in its history and undone per step, and synced to the
+//!   person's devices only — never to a collaborator, whatever room the app
+//!   is open in. A preference is still a setting.
 //! * **Effects** — work with no document delta (reload, back up now,
 //!   connect, run a query) — are a typed vocabulary: `#[derive(Effect)]` on
 //!   an enum, one variant per effect. A view answers it with
