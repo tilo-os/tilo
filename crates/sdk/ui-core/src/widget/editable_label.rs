@@ -399,14 +399,12 @@ impl Widget for EditableLabel {
             reason = "label width in logical pixels is far below f32::MAX for any realistic UI element"
         )]
         let width = self.rect.width() as f32 + 1.0;
-        text_renderer.draw_style(
-            scene,
-            shown,
-            color,
-            text_transform,
-            Some(width),
-            &TextStyle::new(self.size).with_family(self.family.clone()),
-        );
+        // A label is one line, as the field it turns into is: a value
+        // longer than its room is cut short with an ellipsis rather than
+        // wrapped onto a second line its band has no height for.
+        let style = TextStyle::new(self.size).with_family(self.family.clone());
+        let shown = text_renderer.elide_to_width_style(shown, width, &style);
+        text_renderer.draw_style(scene, &shown, color, text_transform, Some(width), &style);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
