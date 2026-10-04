@@ -35,6 +35,7 @@ from ci.workspace_graph import (
     cargo_metadata, changed_files, closure, comparison_merge_base, file_at,
     lockfile_change, owner_for, package_maps, reverse_dependencies, run,
 )
+from ci import runner_labels
 from ci import suites as path_suites
 
 
@@ -80,12 +81,10 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/ci/nextest_report.py": "tools/tests/test_nextest_report.py",
     "tools/ci/run_scoped_tests.py": "tools/tests/test_ci_scoped_tests.py",
-    "tools/ci/merge_pr.py": "tools/tests/test_ci_merge_pr.py",
     "tools/ci/builder_workflow_plan.py": "tools/tests/test_builder_workflow_plan.py",
     "tools/ci/resolve_promoted_builder.py": "tools/tests/test_resolve_promoted_builder.py",
     "tools/ci/native-mold-linker.sh": "tools/tests/test_ci_native_mold.py",
     "tools/ci/verify-native-mold.sh": "tools/tests/test_ci_native_mold.py",
-    "tools/ci/dispatch_merge.py": "tools/tests/test_ci_merge_dispatch.py",
     "tools/ci/suites.py": "tools/tests/test_suites.py",
     "tools/ci/suites.toml": "tools/tests/test_suites.py",
     "tools/policy/run.sh": "tools/tests/test_ci_select.py",
@@ -139,7 +138,7 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "os/tests/workflow_dependency_invariants.sh",
     ),
 }
-NATIVE_RUNNERS = {"x86_64": "runner", "aarch64": "runner-arm64"}
+NATIVE_RUNNERS = runner_labels.NATIVE
 GLOBAL_FILES = {
     "Cargo.toml",
     "Cargo.lock",

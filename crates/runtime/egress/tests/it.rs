@@ -10,6 +10,7 @@
 //! Skipped, with the reason, where the machine cannot make a user namespace
 //! or has no `pasta`.
 
+#![cfg(target_os = "linux")]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
