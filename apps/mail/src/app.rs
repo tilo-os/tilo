@@ -237,10 +237,6 @@ impl AccountsPersist {
     }
 }
 
-/// Why Mail does not change an account the person's record keeps.
-const KEPT_IN_SETTINGS: &str =
-    "Your accounts are kept in Settings, on all of your devices; add or change them there";
-
 /// The configuration directory of the profile `storage` belongs to: the
 /// person's own in a session, else the directory of the settings document a
 /// test, capture or `--data-dir` host gave the app, so such a profile never
@@ -1841,11 +1837,6 @@ impl MailApp {
             return;
         }
         self.setup_error = None;
-        if self.accounts_kept_by_person() {
-            self.setup_error = Some(KEPT_IN_SETTINGS.into());
-            self.dirty = true;
-            return;
-        }
         {
             let mut st = self.shared.borrow_mut();
             let mut account = match self.setup_editing.and_then(|i| st.accounts.accounts.get(i)) {
@@ -1863,10 +1854,10 @@ impl MailApp {
             };
             let mut updated = st.accounts.clone();
             updated.upsert(account);
-            // Persist to the shared on-disk store + vault so the account (and
-            // its password) survive a restart. Routed through `accounts_persist`
-            // so sample / shots / test builds never touch the real store.
-            if let Err(error) = self.accounts_persist.persist(&updated) {
+            // Keep it in the person's accounts, on all of their devices, and
+            // its password in this device's vault; sample / shots / test
+            // builds keep it in a store of their own.
+            if let Err(error) = self.persist_accounts(&updated) {
                 let message = format!("Couldn’t save account: {error}");
                 self.setup_error = Some(message.clone());
                 st.status = Some(message);
@@ -1886,18 +1877,13 @@ impl MailApp {
         self.close_setup();
     }
 
-    /// Remove the account currently being edited, persist the removal to disk
-    /// (dropping it from the shared store + purging its vault secret), and close
-    /// the sheet. A no-op on the add flow (no editing target).
+    /// Remove the account currently being edited from the person's accounts
+    /// (dropping its secret from this device's vault), and close the sheet.
+    /// A no-op on the add flow (no editing target).
     fn remove_editing_account(&mut self, _doc: &mut AutoCommit) {
         let Some(idx) = self.setup_editing else {
             return;
         };
-        if self.accounts_kept_by_person() {
-            self.setup_error = Some(KEPT_IN_SETTINGS.into());
-            self.dirty = true;
-            return;
-        }
         {
             let mut st = self.shared.borrow_mut();
             let Some(id) = st.accounts.accounts.get(idx).map(|a| a.id.clone()) else {
@@ -1905,7 +1891,7 @@ impl MailApp {
             };
             let mut updated = st.accounts.clone();
             updated.remove(&id);
-            if let Err(error) = self.accounts_persist.persist(&updated) {
+            if let Err(error) = self.persist_accounts(&updated) {
                 let message = format!("Couldn’t remove account: {error}");
                 self.setup_error = Some(message.clone());
                 st.status = Some(message);
@@ -2544,7 +2530,7 @@ impl MailApp {
         self.shared.borrow_mut().ingest_messages(doc, &messages);
     }
 
-    /// Flush an active-account change to the device-local shared account store.
+    /// Keep an active-account change in the person's accounts.
     /// This runs after every input path (pane pointer/keyboard, accessibility,
     /// or canonical resource operation) has selected an account. It never
     /// touches the Automerge document.
@@ -2559,10 +2545,10 @@ impl MailApp {
                 state.accounts.clone(),
             )
         };
-        if active == self.persisted_active_account || self.accounts_kept_by_person() {
+        if active == self.persisted_active_account {
             return;
         }
-        match self.accounts_persist.persist(&accounts) {
+        match self.persist_accounts(&accounts) {
             Ok(()) => self.persisted_active_account = active,
             Err(error) => {
                 self.shared.borrow_mut().status = Some(format!(
@@ -2572,24 +2558,49 @@ impl MailApp {
         }
     }
 
-    /// Follow the person's accounts, which Settings keeps, in this window.
+    /// Follow the person's accounts in this window. What this device's file
+    /// held before it followed the record is taken in first, and the file
+    /// then follows the record.
     pub(crate) fn follow_person_accounts(&mut self, accounts: PersonRecord<PersonAccounts>) {
+        if let Some(root) = self.accounts_persist.root() {
+            let device = accounts::AccountStore::load_in(&root);
+            for edit in accounts.get().taking_in(&device) {
+                if let Err(error) = accounts.invoke(&edit) {
+                    tracing::warn!(%error, "an account of this device could not be taken in");
+                }
+            }
+            if let Err(error) = accounts.get().project_in(&root) {
+                tracing::warn!(%error, "the device's account file could not follow the person's accounts");
+            }
+        }
         self.person_accounts = Some((accounts, None));
         self.adopt_person_accounts();
     }
 
-    /// Whether the person's accounts record holds the accounts shown: they
-    /// are added, changed and removed in Settings then.
-    fn accounts_kept_by_person(&self) -> bool {
-        self.person_accounts
-            .as_ref()
-            .is_some_and(|(accounts, _)| !accounts.get().accounts.is_empty())
+    /// Keep `updated` as the person's mail accounts: through their accounts
+    /// record, which follows them to every device, with each password in
+    /// this device's vault and the device's account file following the
+    /// record. Outside a live window, in the store this window keeps.
+    fn persist_accounts(&self, updated: &AccountStore) -> std::io::Result<()> {
+        let Some((record, _)) = &self.person_accounts else {
+            return self.accounts_persist.persist(updated);
+        };
+        let (edits, removed) = updated.edits_for(&record.get());
+        for edit in &edits {
+            record
+                .invoke(edit)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+        }
+        if let Some(root) = self.accounts_persist.root() {
+            updated.keep_secrets_in(&root, &removed)?;
+            record.get().project_in(&root)?;
+        }
+        Ok(())
     }
 
     /// Show the person's accounts when their record moved: each account's
-    /// settings from the record, its password from this device's vault. An
-    /// empty record leaves the accounts this device's file holds. A newly
-    /// shown active account is connected.
+    /// settings from the record, its password from this device's vault. A
+    /// newly shown active account is connected.
     fn adopt_person_accounts(&mut self) {
         let Some((record, seen)) = &mut self.person_accounts else {
             return;
@@ -2600,9 +2611,6 @@ impl MailApp {
         }
         *seen = Some(revision);
         let person = record.get();
-        if person.accounts.is_empty() {
-            return;
-        }
         let vault = self
             .accounts_persist
             .root()

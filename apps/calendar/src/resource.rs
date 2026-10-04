@@ -618,8 +618,7 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
             cx.fixture::<SampleAccounts>().is_some(),
         );
         if cx.mode().is_live()
-            && let Some(accounts) =
-                cx.person_of::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+            && let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>()
         {
             self.follow_person_accounts(accounts);
         }
@@ -1002,7 +1001,7 @@ mod person_account_tests {
         kept.invoke(&PersonAccounts::saving(&stored)).unwrap();
 
         let read = calendar
-            .person_of::<PersonAccounts>(ACCOUNTS_OWNER)
+            .shared_person::<PersonAccounts>()
             .expect("Calendar reads the person's accounts");
         assert!(!read.editable());
         read.record()
