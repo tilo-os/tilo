@@ -410,6 +410,16 @@ suites = [
 ]
 
 [[group]]
+name = "browser-compute-web"
+inputs = ["crates/browser/tilo-browser-compute/", "crates/browser/tilo-browser-runtime/scripts/build.sh", "crates/dev/tilo-app-cli/src/targets/web.rs"]
+suites = [
+  "crates/browser/tilo-browser-compute/web/compute-domains.test.mjs",
+  "crates/browser/tilo-browser-compute/scripts/artifact.test.mjs",
+  "crates/browser/tilo-browser-compute/scripts/stage.test.mjs",
+  "crates/browser/tilo-browser-compute/scripts/test_packaging.py",
+]
+
+[[group]]
 name = "browser-runtime-web"
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
 # and the scripts that assemble the web core. app-installer reads the Rust
@@ -429,6 +439,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/membership.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs",
   "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs",
   "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",
@@ -550,11 +561,14 @@ inputs = [
   "rust-toolchain.toml", "Cargo.lock",
   # The outside-repository test builds a generated app against the checkout.
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
+  # Canonical worker builder sources and the real packaging manifest fixture.
+  "crates/browser/tilo-browser-compute/", "apps/calculator/tilo-app.toml",
 ]
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
   "crates/dev/tilo-app-cli/src/capability_usage.rs",
+  "crates/dev/tilo-app-cli/src/targets/web.rs",
 ]
 
 [[cargo]]
@@ -889,6 +903,11 @@ workflow = "build-image.yml"
 [[unrequired]]
 suite = "os/dev/test-joined-device-startup.sh"
 reason = "boots the installed OS image in a VM and signs in"
+workflow = "build-image.yml"
+
+[[unrequired]]
+suite = "os/dev/test-nearby-pairing.sh"
+reason = "boots two VMs (KVM) from the gated dev disk"
 workflow = "build-image.yml"
 
 [[unrequired]]

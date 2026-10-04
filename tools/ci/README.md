@@ -40,3 +40,78 @@ not listed here.
 | `imager-windows-aarch64` | aarch64 | `imager-windows-x86_64` on native ARM64 | self-hosted |
 | `imager-macos-x86_64` | x86_64 | Imager and runtime builds on Intel macOS with Xcode | macos-15-intel |
 | `imager-macos-aarch64` | aarch64 | Imager and runtime builds on Apple silicon with Xcode | macos-15 |
+
+## Running pull-request CI locally
+
+Each pull-request job runs commands from this repository; the workflow only
+chooses the runner and container and passes the event. Run them from the checkout on Linux, in
+the builder image (`os/Containerfile.builder`) or a developer image with the
+same tools (`dist/dev/Containerfile.fedora44`). Lint and planning jobs run in
+the smaller `os/Containerfile.ci-fast`.
+
+| Workflow / job | Local command |
+|---|---|
+| `check.yml` select | `python3 tools/ci/affected_packages.py --base origin/main` prints the plan: packages per shard, suites, examples |
+| `check.yml` security | `bash tools/run-security-boundary-invariants.sh` |
+| `check.yml` suites | `python3 tools/ci/suites.py run <suite>...` (`suites.py list` names them) |
+| `check.yml` test | `scripts/test-local.sh -p <package>...` (see [Running tests like CI](../../DEVELOPMENT.md#running-tests-like-ci)) |
+| `check.yml` check | `cargo check --locked --all-targets -p <package>...` |
+| `check.yml` clippy | `tools/ci/clippy-check.sh -p <package>...` or `--workspace` |
+| `check.yml` android | `bash tools/ci/install-android-ndk.sh`, then `cargo clippy --locked -p <app> --examples --features android --target aarch64-linux-android -- -D warnings` |
+| `check.yml` wasm | `tools/ci/check-wasm.sh`; `tools/ci/build-web-examples.sh example-<name>...` builds the web examples |
+| `lint.yml` | `tools/policy/run.sh`, `bash tools/ci/check-changed-rustfmt.sh origin/main`, `python3 tools/ci/check_changed_rust_allows.py origin/main`, `cargo deny --workspace check`, `cargo hakari generate --diff && cargo hakari manage-deps --dry-run`, `bash tools/ci/check-unused-dependencies.sh --changed origin/main ''` |
+| `app-sdk.yml` policy | `python3 tools/policy/check_app_portability.py`, `python3 tools/policy/check_app_capabilities.py`, `python3 tools/web/generate_web_desktop.py --check` |
+| `app-sdk.yml` linux | `cargo build -p tilo-app-cli --bin tilo-app`, then `target/debug/tilo-app build --target linux apps/calculator` and `target/debug/tilo-app package --target linux apps/calculator --output calculator.tapp` |
+| `app-sdk.yml` web | `target/debug/tilo-app build --target web --bundle desktop apps/calculator`; `node --test crates/platform/*/web/*.test.mjs` |
+| `app-sdk.yml` web-size | `target/debug/tilo-app build --target web --bundle desktop --release apps/calculator`, then `python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle` |
+| `app-sdk.yml` macos | the linux lane's commands with `--target macos`, on macOS with Xcode |
+| `ci-filesystem.yml` real-fuse | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the job's other named tests |
+| `ci-filesystem.yml` native-tier1 | `tools/native-tier1.sh` on a host that meets `runner-native-storage` |
+
+`scripts/ci-run.sh` and `tools/ci/measure.sh`, which wrap most job commands,
+only label and time a command; leave them out locally.
+
+## Forks on GitHub Actions or stock Forgejo
+
+Workflows live in `.forgejo/workflows/` and use only GitHub-compatible syntax
+and actions pinned by commit, so a fork can copy them to
+`.github/workflows/` or run them on a Forgejo instance with stock runners.
+They need:
+
+- **Runners.** Register runners with the [runner labels](#runner-labels), or
+  replace each `runs-on` label with its hosted equivalent. Forgejo runners map
+  a label to a container image in their `labels:` list. The labels emitted
+  into matrices come from `runner_labels.py`.
+- **Images.** `images.toml` pins the CI images by digest. They are public, so
+  a fork can pull them as they are. To build its own, publish
+  `os/Containerfile.ci-fast`, `os/Containerfile.ci-control` and
+  `os/Containerfile.builder` (`build-ci-fast-images.yml`,
+  `build-ci-builder.yml`), change the pins, and set `TILO_CI_REGISTRY`,
+  `TILO_CI_BUILDER_REPOSITORY` and `TILO_CI_REGISTRY_TOKEN_REALM` for the
+  builder lookup.
+- **Artifact actions.** The `actions/upload-artifact` and
+  `actions/download-artifact` v4 pins are Forgejo's builds (tag `forgejo/v4`),
+  since upstream's v4 accepts only GitHub-hosted servers. A copy on GitHub
+  replaces those two commit pins with upstream's v4. A Forgejo instance must
+  resolve `actions/upload-artifact` and `actions/download-artifact` to
+  Forgejo's forks (`code.forgejo.org/forgejo/`), or name the forks in the
+  steps.
+- **Caches, optional.** Cargo downloads use `actions/cache` keyed on
+  `Cargo.lock` under `$CARGO_HOME`. `tools/ci/sccache.sh` enables a compiler
+  cache only when the runner provides one; without it jobs compile cold.
+  Neither changes a result.
+- **Secrets, only for publication.** Pull-request jobs need no secret beyond
+  the job token. Image, package and release publication on main need registry,
+  signing and release credentials and are not expected to run in a fork.
+
+Jobs that need more than an unprivileged container:
+
+| Job | Needs |
+|---|---|
+| `ci-filesystem.yml` real-fuse | `/dev/fuse` and `CAP_SYS_ADMIN` in the job container |
+| `ci-filesystem.yml` native-tier1 | a privileged container on Linux 6.14+ with pre-content fanotify, Btrfs and loop devices |
+| `ci-staging-loop.yml`, `build-env-tools.yml` | a privileged container |
+| `ci-development-signing.yml` | Docker that can start privileged containers |
+| `dev-disk.yml`, `build-legacy-guest.yml` | `/dev/fuse`, loop devices and, for speed, `/dev/kvm` |
+| `release-imager.yml` | `/dev/kvm` |
+| Image, kernel and buildroot builds | Docker with Buildx |

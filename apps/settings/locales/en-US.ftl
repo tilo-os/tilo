@@ -795,7 +795,6 @@ a11y-thick-caret-desc = Use a wider insertion caret in Tilo applications
 a11y-typing-title = Typing
 a11y-osk = On-screen keyboard
 a11y-osk-desc = Automatic shows it for text fields while you use touch without typing on a keyboard
-a11y-osk-missing = Not installed — add the signed so.tilo.osk system package
 a11y-sticky-keys = Sticky keys
 a11y-sticky-keys-desc = Type shortcuts one key at a time instead of holding a chord
 a11y-slow-keys = Slow keys
