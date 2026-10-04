@@ -144,6 +144,7 @@ fn canonical_navigation_and_overlay_captures_use_real_input_paths() {
         ("drawer", (390, 844)),
         ("drag", (1000, 700)),
         ("block_drag", (1000, 700)),
+        ("block_handle_hover", (1000, 700)),
         ("menu", (1000, 700)),
         ("sidebar_hover", (1000, 700)),
         ("note_menu", (1000, 700)),

@@ -99,6 +99,7 @@ pub fn supports(scenario: Option<&str>) -> bool {
                 | "drawer"
                 | "drag"
                 | "block_drag"
+                | "block_handle_hover"
                 | "block_type_menu"
                 | "menu"
                 | "sidebar_hover"
@@ -644,6 +645,13 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 vello::kurbo::Point::new(from.center().x, destination.center().y),
             );
         }
+        Some("block_handle_hover") => {
+            let handle = semantic_target_rect(driver, |target| {
+                target.starts_with("notes.block-move:") && target.ends_with(":down")
+            })
+            .ok_or_else(|| LaunchError::Operation("block drag handle missing".into()))?;
+            move_pointer(driver, handle.center());
+        }
         Some("block_type_menu") => {
             driver.relayout();
             let target = semantic_target(driver, |name| name.starts_with("notes.block-type:"))
@@ -1133,6 +1141,7 @@ fn validate_capture(
                     | "drawer"
                     | "drag"
                     | "block_drag"
+                    | "block_handle_hover"
                     | "block_type_menu"
                     | "menu"
                     | "sidebar_hover"
