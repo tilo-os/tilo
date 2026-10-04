@@ -12,7 +12,7 @@ use super::{caption, heading, icon_button, percent};
 use crate::brushes::Preset;
 use crate::model::{Artwork, BLENDS, Mark, Shadow, Shape};
 use crate::resource::ArtworkResource;
-use crate::tools::{Erasing, Tool, Tools};
+use crate::tools::{Erasing, Sampling, Tool, Tools};
 
 /// Inks for plain layers: document colours, the same in every theme.
 const INKS: [u32; 14] = [
@@ -152,6 +152,9 @@ fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         let tools = tools.clone();
         cx.switch(&tools.tool.clone(), move |cx, tool| {
             let erasing = *tool == Tool::Eraser;
+            if matches!(tool, Tool::Wand | Tool::Bucket) {
+                return sampling(&tools);
+            }
             let tools = tools.clone();
             cx.switch(&tools.layer.clone(), move |cx, layer| {
                 if erasing {
@@ -404,6 +407,26 @@ fn dynamics_sliders(tools: &Tools, preset: Preset) -> Element {
         "canvas-brush-taper",
     ));
     section(rows)
+}
+
+/// Where the magic wand and the bucket find colour: in every layer as the
+/// artwork shows, or in the chosen layer alone.
+fn sampling(tools: &Tools) -> Element {
+    let segment = |key: &str| {
+        ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(key))
+    };
+    let choices = vec![
+        (Sampling::All, segment("canvas-sample-all")),
+        (Sampling::Layer, segment("canvas-sample-layer")),
+    ];
+    section(vec![
+        heading("canvas-sample"),
+        Box::new(
+            ui::widget::ToggleGroup::from_state(choices, &tools.sampling)
+                .with_flexible_width()
+                .with_id("canvas-sampling"),
+        ),
+    ])
 }
 
 /// The eraser: whether it takes paint or whole strokes, its size, and for

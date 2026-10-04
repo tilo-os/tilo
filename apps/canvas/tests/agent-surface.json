@@ -457,7 +457,7 @@
     "action": "draw",
     "resource_kind": "canvas.artwork",
     "label": "Draw shapes",
-    "description": "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
+    "description": "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Answers the new ids; or give your own. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
     "operation": "Document",
     "params": [
       {
@@ -1028,29 +1028,7 @@
                   "object",
                   "null"
                 ],
-                "properties": {
-                  "offset": {
-                    "type": "array",
-                    "items": {
-                      "type": "number"
-                    },
-                    "minItems": 2,
-                    "maxItems": 2,
-                    "description": "`[dx, dy]` in units."
-                  },
-                  "blur": {
-                    "type": "number",
-                    "description": "Softness in units; 0 is hard."
-                  },
-                  "colour": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  }
-                },
-                "additionalProperties": false,
-                "description": "Inside the mark from its edge; light colour = highlight."
+                "description": "As shadow, inside the mark from its edge; light colour = highlight."
               },
               "grain": {
                 "type": [
@@ -1232,13 +1210,13 @@
         "name": "mask",
         "ty": "text",
         "required": false,
-        "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides.",
+        "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides; `unlink` keeps it put as the layer's marks move (`link` again).",
         "schema": {
           "type": [
             "string",
             "null"
           ],
-          "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides."
+          "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides; `unlink` keeps it put as the layer's marks move (`link` again)."
         },
         "nullable": true
       },
@@ -1381,35 +1359,13 @@
         "name": "shadow",
         "ty": "object",
         "required": false,
-        "description": "Zero offset and blur removes it.",
+        "description": "As draw's; zero offset and blur removes it.",
         "schema": {
           "type": [
             "object",
             "null"
           ],
-          "properties": {
-            "offset": {
-              "type": "array",
-              "items": {
-                "type": "number"
-              },
-              "minItems": 2,
-              "maxItems": 2,
-              "description": "`[dx, dy]` in units."
-            },
-            "blur": {
-              "type": "number",
-              "description": "Softness in units; 0 is hard."
-            },
-            "colour": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "additionalProperties": false,
-          "description": "Zero offset and blur removes it."
+          "description": "As draw's; zero offset and blur removes it."
         },
         "nullable": true
       },
@@ -1417,35 +1373,13 @@
         "name": "inner_shadow",
         "ty": "object",
         "required": false,
-        "description": "Zero offset and blur removes it.",
+        "description": "As draw's; zero offset and blur removes it.",
         "schema": {
           "type": [
             "object",
             "null"
           ],
-          "properties": {
-            "offset": {
-              "type": "array",
-              "items": {
-                "type": "number"
-              },
-              "minItems": 2,
-              "maxItems": 2,
-              "description": "`[dx, dy]` in units."
-            },
-            "blur": {
-              "type": "number",
-              "description": "Softness in units; 0 is hard."
-            },
-            "colour": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "additionalProperties": false,
-          "description": "Zero offset and blur removes it."
+          "description": "As draw's; zero offset and blur removes it."
         },
         "nullable": true
       },
@@ -1523,63 +1457,13 @@
         "name": "gradient",
         "ty": "object",
         "required": false,
-        "description": "A colour gradient across a mark.",
+        "description": "As draw's.",
         "schema": {
           "type": [
             "object",
             "null"
           ],
-          "required": [
-            "kind",
-            "from",
-            "to",
-            "stops"
-          ],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "description": "`linear` (from → to) or `radial` (centre `from`, radius to `to`)."
-            },
-            "from": {
-              "type": "array",
-              "items": {
-                "type": "number"
-              },
-              "minItems": 2,
-              "maxItems": 2
-            },
-            "to": {
-              "type": "array",
-              "items": {
-                "type": "number"
-              },
-              "minItems": 2,
-              "maxItems": 2
-            },
-            "stops": {
-              "type": "array",
-              "items": {
-                "type": "array",
-                "minItems": 2,
-                "maxItems": 2
-              },
-              "description": "Colour stops: `[[0, \"#ffd27a\"], [1, \"#e0603a\"]]`; a stop's alpha (`#ffd27a00`) fades the paint out, for a glow or mist."
-            },
-            "focal": {
-              "type": [
-                "array",
-                "null"
-              ],
-              "items": {
-                "type": "number"
-              },
-              "minItems": 2,
-              "maxItems": 2,
-              "description": "Radial only: where the light sits inside the circle, off its centre."
-            }
-          },
-          "additionalProperties": false,
-          "description": "A colour gradient across a mark."
+          "description": "As draw's."
         },
         "nullable": true
       },
@@ -2319,7 +2203,7 @@
     "action": "history",
     "resource_kind": "canvas.artwork",
     "label": "History",
-    "description": "List the versions, oldest first: change id, action and its arguments, run, author, time, undone, checkpoints.",
+    "description": "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, run, author, time, undone, checkpoints.",
     "operation": "View",
     "params": [
       {
@@ -2811,7 +2695,7 @@
     "action": "paint",
     "resource_kind": "canvas.artwork",
     "label": "Paint strokes",
-    "description": "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
+    "description": "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). Answers the new ids. One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
     "operation": "Document",
     "params": [
       {
@@ -2965,6 +2849,20 @@
           }
         },
         "nullable": false
+      },
+      {
+        "name": "group",
+        "ty": "text",
+        "required": false,
+        "description": "Put them in this group, to edit or remove them as one.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Put them in this group, to edit or remove them as one."
+        },
+        "nullable": true
       }
     ]
   },
@@ -3393,6 +3291,20 @@
         "nullable": true
       },
       {
+        "name": "layer",
+        "ty": "text",
+        "required": false,
+        "description": "at or colour: on this layer alone, not as all show.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "at or colour: on this layer alone, not as all show."
+        },
+        "nullable": true
+      },
+      {
         "name": "mode",
         "ty": "text",
         "required": false,
@@ -3650,7 +3562,7 @@
     "action": "undo",
     "resource_kind": "canvas.artwork",
     "label": "Undo",
-    "description": "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps.",
+    "description": "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with to, all after a version.",
     "operation": "Document",
     "params": [
       {
@@ -3665,6 +3577,13 @@
         "ty": "text",
         "required": false,
         "description": "An agent run id from history",
+        "nullable": true
+      },
+      {
+        "name": "to",
+        "ty": "text",
+        "required": false,
+        "description": "A change id from history, or a checkpoint name",
         "nullable": true
       }
     ]
