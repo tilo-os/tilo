@@ -430,6 +430,15 @@ impl<R: Resource> SurfaceCx<R> {
         self.storage.person::<P>()
     }
 
+    /// Another app's record of the person's, as
+    /// [`ViewCx::person_of`](super::ViewCx::person_of) opens it.
+    pub fn person_of<P: tilo_resource::Resource>(
+        &self,
+        owner: &'static str,
+    ) -> Option<super::PersonRecord<P>> {
+        self.storage.person_of::<P>(owner)
+    }
+
     /// The app's files, secrets and settings documents, as its host gave
     /// them.
     pub fn storage(&self) -> ui_core::storage::AppStorage {

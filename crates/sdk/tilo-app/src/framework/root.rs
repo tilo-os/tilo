@@ -193,6 +193,14 @@ impl<R: Resource> ResourceRoot<R> {
         self.storage.person::<P>()
     }
 
+    /// The person's record of `P` that the app `owner` keeps.
+    pub(crate) fn person_of<P: Resource>(
+        &self,
+        owner: &'static str,
+    ) -> Option<super::PersonRecord<P>> {
+        self.storage.person_of::<P>(owner)
+    }
+
     pub(crate) fn drawing_past(mut self, past: super::preview::DrawPast) -> Self {
         self.past = Some(past);
         self

@@ -40,6 +40,9 @@ impl<P: Resource> Clone for PersonRecord<P> {
 
 struct Shared<P: Resource> {
     record: StoredRecord,
+    /// The app whose record this is, when it is another app's: this one
+    /// reads it and its edits are refused.
+    owner: Option<&'static str>,
     app_id: &'static str,
     app_title: &'static str,
     me: String,
@@ -101,6 +104,12 @@ impl<P: Resource> PersonRecord<P> {
     /// The action refused to apply, or the record is unavailable.
     pub fn apply(&self, action: &P::Action) -> Result<(), ActionError> {
         let shared = &self.shared;
+        if let Some(owner) = shared.owner {
+            return Err(ActionError::Refused(format!(
+                "the person's {} are edited in {owner}",
+                P::LABEL.to_lowercase()
+            )));
+        }
         let encoded = tilo_resource::encode::<P>(action)?;
         let label = tilo_resource::action_label::<P>(action)
             .unwrap_or_else(|| ActionContext::for_action("", "", action).action_label);
@@ -135,6 +144,12 @@ impl<P: Resource> PersonRecord<P> {
         self.apply(&action)
     }
 
+    /// Whether this app edits the record; another app's is read here.
+    #[must_use]
+    pub fn editable(&self) -> bool {
+        self.shared.owner.is_none()
+    }
+
     /// Undo the person's last edit of the record. Whether there was one.
     pub fn undo(&self) -> bool {
         let undone = self.shared.record.undo();
@@ -165,6 +180,9 @@ impl<P: Resource> PersonRecord<P> {
     }
 }
 
+/// An open record: the app that owns it, and its kind.
+type OpenKey = (&'static str, &'static str);
+
 /// The person's records a root's views opened, shared by every scope of the
 /// root: one [`PersonRecord`] per resource kind.
 pub(crate) struct PersonState {
@@ -172,7 +190,11 @@ pub(crate) struct PersonState {
     app_id: &'static str,
     app_title: &'static str,
     me: String,
-    opened: RefCell<HashMap<&'static str, Rc<dyn Any>>>,
+    /// The open records, by the app that owns them and their kind.
+    opened: RefCell<HashMap<OpenKey, Rc<dyn Any>>>,
+    /// Other apps' records of the person's, read here: replicas that store
+    /// nothing and follow the owner's over the records' routes.
+    others: RefCell<HashMap<&'static str, PersonRecords>>,
     owners: RefCell<Vec<HistoryOwner>>,
     refreshers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
     /// The open records' undo and redo, as the palette and agents reach
@@ -282,6 +304,7 @@ impl PersonState {
             app_title,
             me,
             opened: RefCell::default(),
+            others: RefCell::default(),
             owners: RefCell::default(),
             refreshers: RefCell::default(),
             published: RefCell::default(),
@@ -290,15 +313,38 @@ impl PersonState {
 
     /// The person's record of `P`, opened on first use.
     pub(crate) fn open<P: Resource>(&self) -> Option<PersonRecord<P>> {
-        if let Some(open) = self.opened.borrow().get(P::KIND) {
+        self.open_of::<P>(self.app_id)
+    }
+
+    /// The person's record of `P` that the app `owner` keeps, opened on
+    /// first use: this app's own, or another app's, read here and edited
+    /// only there.
+    pub(crate) fn open_of<P: Resource>(&self, owner: &'static str) -> Option<PersonRecord<P>> {
+        if let Some(open) = self.opened.borrow().get(&(owner, P::KIND)) {
             return open
                 .clone()
                 .downcast::<Shared<P>>()
                 .ok()
                 .map(|shared| PersonRecord { shared });
         }
-        let record = self
-            .records
+        let own = owner == self.app_id;
+        let records = if own {
+            self.records.clone()
+        } else {
+            let mut others = self.others.borrow_mut();
+            if let Some(records) = others.get(owner) {
+                records.clone()
+            } else {
+                let records = PersonRecords::replica(owner, self.records.author().clone())
+                    .map_err(|error| {
+                        tracing::warn!(owner, %error, "the person's records of another app are unavailable");
+                    })
+                    .ok()?;
+                others.insert(owner, records.clone());
+                records
+            }
+        };
+        let record = records
             .open_record(RecordKind::new(P::KIND), |doc| {
                 P::initialize(doc).map_err(|error| error.to_string())
             })
@@ -309,6 +355,7 @@ impl PersonState {
         self.owners.borrow_mut().push(record.history_owner());
         let shared = Rc::new(Shared::<P> {
             record,
+            owner: (!own).then_some(owner),
             app_id: self.app_id,
             app_title: self.app_title,
             me: self.me.clone(),
@@ -320,6 +367,12 @@ impl PersonState {
         self.refreshers.borrow_mut().push(Box::new(move || {
             weak.upgrade().is_some_and(|shared| shared.refresh())
         }));
+        if !own {
+            self.opened
+                .borrow_mut()
+                .insert((owner, P::KIND), Rc::clone(&shared) as Rc<dyn Any>);
+            return Some(PersonRecord { shared });
+        }
         let weak = Rc::downgrade(&shared);
         self.published.borrow_mut().push(Published {
             kind: P::KIND,
@@ -333,7 +386,7 @@ impl PersonState {
         });
         self.opened
             .borrow_mut()
-            .insert(P::KIND, Rc::clone(&shared) as Rc<dyn Any>);
+            .insert((owner, P::KIND), Rc::clone(&shared) as Rc<dyn Any>);
         Some(PersonRecord { shared })
     }
 
