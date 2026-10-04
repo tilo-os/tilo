@@ -260,6 +260,9 @@ impl ActiveFilePicker {
         if let Some(name) = request.current_name.as_deref() {
             widget = widget.with_filename(name);
         }
+        // The modal takes every key from the moment it is up, so it holds
+        // the keyboard focus its painted ring and its semantics report.
+        widget.set_focus(true);
         Self {
             widget,
             app_id: request.caller.app_id.clone(),
