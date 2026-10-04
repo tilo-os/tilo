@@ -35,6 +35,9 @@ pub fn load_offers(path: &Path) -> RelayOffers {
         .unwrap_or_default()
 }
 
+/// How long closing the asking endpoint may take before it is dropped.
+const ENDPOINT_CLOSE_GRACE: Duration = Duration::from_millis(250);
+
 /// Ask each of the identity's own relays for its status, all at once, and
 /// record what they said at `offers`. Returns the offers as recorded.
 ///
@@ -85,7 +88,9 @@ pub async fn refresh_offers(
             offer.environments = environments;
         }
     }
-    endpoint.close().await;
+    // Closing waits for the silent relay's half-open connection to drain,
+    // seconds past the budget the caller was promised; the answers are in.
+    let _ = tokio::time::timeout(ENDPOINT_CLOSE_GRACE, endpoint.close()).await;
     if let Some(parent) = offers.parent() {
         std::fs::create_dir_all(parent)?;
     }
