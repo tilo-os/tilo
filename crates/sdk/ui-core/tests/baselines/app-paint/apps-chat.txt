@@ -3,5 +3,5 @@
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
 apps/chat/src/actions.rs glyph_icon 2
 apps/chat/src/doc.rs glyph_icon 9
-apps/chat/src/render_call.rs raw_paint 3
+apps/chat/src/render_call.rs raw_paint 2
 apps/chat/src/render_chat.rs glyph_icon 1

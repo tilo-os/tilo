@@ -10,7 +10,7 @@
 use ui::text_render::TextStyle;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::{AvatarSize, ButtonFace, ControlSize};
+use ui::widget::{AvatarSize, ButtonFace, ChipFace, ControlSize};
 use vello::kurbo::Rect;
 
 /// A band of `content_h + 2 * pad` centred vertically inside `container`,
@@ -68,6 +68,15 @@ pub(crate) struct Chrome {
     pub rail_w: f64,
     /// The body text style the composer measures its draft with.
     pub body: TextStyle,
+    /// The floating call window around its video: the title bar above it,
+    /// the inset beside and below it, the gap between its parts, its
+    /// connection line, one participant chip and its controls row.
+    pub call_title_h: f64,
+    pub call_inset: f64,
+    pub call_gap: f64,
+    pub call_status_h: f64,
+    pub call_chip_h: f64,
+    pub call_controls_h: f64,
 }
 
 impl Chrome {
@@ -91,6 +100,14 @@ impl Chrome {
             composer_pad: f64::from(sp.s4),
             rail_w: f64::from(metrics.rail_width),
             body,
+            call_title_h: f64::from(theme.text(TextRole::Label).line_height_px())
+                + 2.0 * f64::from(sp.s3),
+            call_inset: f64::from(sp.s3),
+            call_gap: f64::from(sp.s2),
+            call_status_h: f64::from(theme.text(TextRole::Caption).line_height_px())
+                .max(f64::from(metrics.icon_sm)),
+            call_chip_h: ChipFace::height(theme),
+            call_controls_h: ButtonFace::height(ControlSize::Small, theme),
         }
     }
 

@@ -643,6 +643,9 @@ pub struct ChatApp {
     pub(crate) call_overlay_metrics_key: Option<(u32, u32, u64)>,
     pub(crate) realtime: crate::continuity::ChatRealtimeContinuity,
     pub(crate) call_chrome_motion: CallChromeMotion,
+    /// How many rows the floating call window's participant chips take,
+    /// measured by the paint pass.
+    pub(crate) huddle_chip_rows: usize,
     pub(crate) pending_floating: Option<ui::floating_surface::FloatingSurfaceRequest>,
     /// Authoritative combined-output bounds supplied by the shell. Standalone
     /// app/test hosts leave this empty and fall back to the app rect.
@@ -679,6 +682,11 @@ pub struct ChatApp {
     /// and message id, with the mention colours it was painted with.
     pub(crate) body_views:
         std::cell::RefCell<HashMap<(u32, Id), (u64, tilo_rich_text::RichTextView)>>,
+    /// How far the body view sets its text inside the rect it is laid out
+    /// in, as last read back from a laid-out paragraph. Bodies are laid out
+    /// that far to the leading side, so their text starts on the message
+    /// column's edge.
+    pub(crate) body_text_inset: std::cell::Cell<f64>,
     /// The colours mentions are painted in, and what they were built from.
     pub(crate) mention_paint_cache:
         std::cell::RefCell<Option<(u64, ui::widget::marks::MentionPaint)>>,
@@ -946,6 +954,7 @@ impl ChatApp {
             call_overlay_metrics_key: None,
             realtime: crate::continuity::ChatRealtimeContinuity::default(),
             call_chrome_motion: CallChromeMotion::default(),
+            huddle_chip_rows: 0,
             pending_floating: None,
             floating_surface_bounds: Rect::ZERO,
             search_opener: ui::search::SearchOpener::new(),
@@ -958,6 +967,7 @@ impl ChatApp {
             room_colors: HashMap::new(),
             agent_authors: HashMap::new(),
             body_views: std::cell::RefCell::new(HashMap::new()),
+            body_text_inset: std::cell::Cell::new(0.0),
             mention_paint_cache: std::cell::RefCell::new(None),
             participant_labels: HashMap::new(),
             former_ids: Vec::new(),
@@ -1017,6 +1027,12 @@ impl ChatApp {
     /// ungranted embed shows a locked card and never requests shared bytes.
     pub(crate) fn embed_allowed(&self, blob: &str) -> bool {
         self.perms.can_embed(blob)
+    }
+
+    /// The poster frame of the video behind `blob`, once the image store has
+    /// it; `None` for a clip with no poster to show.
+    pub(crate) fn video_poster(&self, blob: &str) -> Option<vello::peniko::ImageData> {
+        crate::images::poster_key(blob).and_then(|key| self.images.get(&key))
     }
 
     // --- action dispatch ----------------------------------------------------
@@ -1284,6 +1300,7 @@ impl ChatApp {
                 self.thread_open = Some("m_concept".into());
                 self.right_flap.open();
                 self.call.join("c_huddle");
+                self.stage_connected_call();
             }
             "starter" => {
                 // The real first-run empty workspace (no demo content).
@@ -1306,6 +1323,7 @@ impl ChatApp {
                 self.thread_open = None;
                 self.call.join("c_huddle");
                 self.call.expanded = true;
+                self.stage_connected_call();
             }
             "floating-call-attached"
             | "floating-call"
@@ -1319,6 +1337,7 @@ impl ChatApp {
                 self.thread_open = None;
                 self.call.join("c_huddle");
                 self.call.expanded = false;
+                self.stage_connected_call();
             }
             "share" => {
                 // The expanded call while screen-sharing: the featured screen
@@ -1332,6 +1351,7 @@ impl ChatApp {
                 self.call.join("c_huddle");
                 self.call.expanded = true;
                 self.call.sharing = true;
+                self.stage_connected_call();
             }
             "attach" => {
                 // Show the workspace file picker with real, decodable
@@ -1425,6 +1445,15 @@ impl ChatApp {
                 self.history_open = Some("m_sora".into());
                 self.history_anchor = Point::new(424.0, 420.0);
             }
+            "no-access" => {
+                // A reader the workspace has not granted its files: every
+                // attachment shows what it is and that it cannot open. The
+                // restricted grant itself is the shot's permission context
+                // (`shot_permission`).
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+            }
             "msgmenu" => {
                 // The right-click action menu over one of your own messages,
                 // offering Edit — the discoverable entry point to editing.
@@ -1456,7 +1485,9 @@ impl ChatApp {
     /// narrow window (a choice the drawer records per size class).
     #[doc(hidden)]
     pub fn stage_after_layout_for_shot(&mut self, scenario: &str) {
-        if scenario == "sidebar-narrow" {
+        // A channel's menu opens on its row, so the channel list is out
+        // (floating over a narrow window).
+        if scenario == "sidebar-narrow" || scenario == "context" {
             self.reconcile_flaps();
             self.left_flap.snap(true);
             self.reconcile_flaps();
@@ -1467,6 +1498,67 @@ impl ChatApp {
             self.reconcile_flaps();
         }
         self.debug_stage_floating_call_for_shot(scenario);
+    }
+
+    /// The permission context a scenario is captured under, when it is not
+    /// the local unrestricted user: `no-access` is a person the workspace
+    /// has granted nothing, so its attachments cannot be opened.
+    #[doc(hidden)]
+    pub fn shot_permission(scenario: &str) -> Option<ui::permissions::PermissionContext> {
+        (scenario == "no-access").then(|| {
+            ui::permissions::PermissionContext::from_capabilities(
+                ui::permissions::Actor::person(None, crate::model::ME),
+                Vec::new(),
+            )
+        })
+    }
+
+    /// Whether `scenario` stages something on the rows a first frame placed
+    /// ([`Self::stage_after_draw_for_shot`]).
+    #[doc(hidden)]
+    pub fn stages_after_draw(&self, scenario: &str) -> bool {
+        matches!(scenario, "context" | "msgmenu")
+    }
+
+    /// Open a scenario's context menu where a right-click on its row would:
+    /// at the pointer, on the row the menu acts on, read from the frame that
+    /// was just drawn.
+    #[doc(hidden)]
+    pub fn stage_after_draw_for_shot(&mut self, scenario: &str) {
+        let (target, items) = match scenario {
+            "context" => (
+                MenuTarget::Channel("c_frontend".into()),
+                MenuAction::for_channel().to_vec(),
+            ),
+            "msgmenu" => (
+                MenuTarget::Message("m_me2".into()),
+                MenuAction::for_message().to_vec(),
+            ),
+            _ => return,
+        };
+        let row = self
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| match (hit, &target) {
+                (Hit::Channel(id), MenuTarget::Channel(want)) if id == want => Some(*rect),
+                (Hit::MessageMenu { msg }, MenuTarget::Message(want)) if msg == want => Some(*rect),
+                _ => None,
+            });
+        let Some(row) = row else {
+            return;
+        };
+        // The pointer rests on the row's text, a third of the way in.
+        let pointer = Point::new(row.x0 + row.width() / 3.0, row.center().y);
+        self.menu = Some(self.context_menu(target, pointer, items));
+    }
+
+    /// Show the call as the voice service reports a joined call: connected,
+    /// with nobody else's audio arriving yet.
+    fn stage_connected_call(&mut self) {
+        self.native_voice.channel = Some(self.call.channel.clone());
+        self.native_voice.snapshot.state = ui::native_media::State::Live;
+        self.native_voice.snapshot.issue = None;
+        self.native_voice.snapshot.muted = self.call.muted;
     }
 
     #[doc(hidden)]
@@ -1486,7 +1578,16 @@ impl ChatApp {
         // that the production pointer path never performs.
         let detached_size = self.call_video_rect().size();
         self.call.placement.set_preferred_size(detached_size);
-        let detached = Rect::from_origin_size(Point::new(760.0, 300.0), detached_size);
+        // Out over the desktop at the window's trailing side, whole at any
+        // window size.
+        let r = self.rect;
+        let detached = Rect::from_origin_size(
+            Point::new(
+                (r.x0 + r.width() * 0.6).min(r.x1 - detached_size.width - self.chrome.gutter),
+                r.y0 + r.height() * 0.375,
+            ),
+            detached_size,
+        );
         self.call.placement.detach_to_desktop(detached);
         self.call.placement.set_desktop_transfer_covered(true);
         self.call.placement.confirm_desktop_adoption();
@@ -1508,12 +1609,17 @@ impl ChatApp {
             scenario,
             "floating-call-returning" | "floating-call-returned"
         ) {
-            let pointer = Point::new(detached.center().x, detached.y0 - 18.0);
+            // Grabbed by its title bar and drawn back up and in, over the
+            // conversation.
+            let pointer = Point::new(
+                detached.center().x,
+                detached.y0 - self.chrome.call_title_h / 2.0,
+            );
             self.call
                 .placement
                 .begin_drag(pointer, self.rect, self.desktop_floating_bounds());
             let _ = self.call.placement.update_drag(
-                Point::new(720.0, 210.0),
+                Point::new(r.x0 + r.width() * 0.5625, r.y0 + r.height() * 0.2625),
                 self.rect,
                 self.desktop_floating_bounds(),
             );
@@ -2526,11 +2632,15 @@ impl ChatApp {
         // including threaded replies and the thread parent, so one pass covers
         // the timeline and the open thread panel.
         for m in &self.messages {
-            if let Some(crate::model::Attachment::Image { blob, .. }) = &m.attachment {
+            match &m.attachment {
                 // Never hydrate the bytes of an embed this peer isn't granted.
-                if self.embed_allowed(blob) {
+                Some(crate::model::Attachment::Image { blob, .. }) if self.embed_allowed(blob) => {
                     let _ = self.images.get(&crate::images::blob_key(blob));
                 }
+                Some(crate::model::Attachment::Video { blob, .. }) if self.embed_allowed(blob) => {
+                    let _ = self.video_poster(blob);
+                }
+                _ => {}
             }
         }
         // Also warm any thumbnails visible in an open attachment picker.
@@ -3578,13 +3688,12 @@ impl Widget for ChatApp {
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         if !self.call.expanded {
-            let lower_chrome = self.huddle_attached_lower_chrome();
             self.call
                 .placement
                 .set_preferred_size(frac_rect(self.rect, HUDDLE_VIDEO).size());
             self.call
                 .placement
-                .set_attached_chrome([12.0, 40.0, 12.0, lower_chrome]);
+                .set_attached_chrome(self.huddle_attached_chrome());
         }
         if let Some(vn) = self.video_node {
             // The docked tile's taffy node retains its responsive fractional
@@ -3616,7 +3725,7 @@ impl Widget for ChatApp {
         // Adopt this theme's chrome and advance the drawers for this frame.
         self.layout_text_scale = theme.text_scale;
         self.advance_flaps(theme);
-        self.reconcile_huddle_motion(theme);
+        self.reconcile_huddle_motion(tr, theme);
         self.tooltips.tick(ui::time::now());
 
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
