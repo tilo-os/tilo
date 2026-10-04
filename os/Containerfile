@@ -157,6 +157,8 @@ FROM windows-provider-${TILO_WINDOWS_ARCH}-${TILO_WITH_WINDOWS} AS windows-provi
 # offline, digest-pinned build input.
 # tilo-rpm-snapshot-package: virtio-win
 FROM ${BASE_REF} AS virtio-win-media
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo,ro \
     /bin/bash -euo pipefail -c '\
       rpm_path=$(find /repo -maxdepth 1 -type f -name "virtio-win-*.rpm" -print -quit); \
@@ -235,6 +237,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Build/test FluxCast from its pinned Python source on the target architecture
 # instead of shipping the project's x86-64-only AppImage.
 FROM ${BASE_REF} AS fluxcast-builder
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     dnf install -y --setopt=reposdir=/repo python3 \
     && dnf clean all
@@ -256,6 +260,8 @@ RUN PYTHONPATH=/src/src python3 -m unittest discover -s /src/tests -p 'test_wfd.
 # its modules-load snippet moves from /etc to the immutable /usr/lib.
 # tilo-rpm-snapshot-package: libevdev-devel
 FROM ${BASE_REF} AS joycond-builder
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     dnf install -y --setopt=reposdir=/repo \
       cmake gcc-c++ make pkgconf-pkg-config libevdev-devel systemd-devel \
@@ -342,6 +348,8 @@ COPY os/app-runtime /build/os/app-runtime
 # BASE_REF, re-run `snapshot-rpms`.
 FROM ${BASE_REF} AS builder-base
 
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
 # against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
 # toolchain a minimal bootc image lacks: cmake/perl/clang etc. that
@@ -1025,6 +1033,8 @@ RUN --mount=type=secret,id=browser_app_identity \
             /build/os/scripts/pack-apps.sh \
             && rm -rf /tmp/browser-package-repo; }; }
 
+# Buildah leaves the env-runtime mount out of the layer cache key; this ARG keys it on ENV_RUNTIME_REF.
+ARG ENV_RUNTIME_REF
 # The env-runtime environment image joins the apps in the read-only store, so
 # the first environment opens offline. It takes the path every image takes on
 # a device (`tilo-install image add`); see os/scripts/install-env-runtime.sh.
@@ -1291,6 +1301,8 @@ RUN test "$(command -v dnf)" = /usr/local/bin/dnf \
     && test "$(command -v rpm)" = /usr/local/bin/rpm
 ARG FINALIZE_RPMDB="/usr/libexec/tilo/finalize-rpmdb"
 
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 # Graphics stack. `at-spi2-core` supplies the D-Bus-activated org.a11y.Bus
 # service discovered by AccessKit providers at runtime. `harfbuzz-icu` and
 # `libatomic` own libharfbuzz-icu.so.0 and libatomic.so.1, which the copied
@@ -1400,11 +1412,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # and falls back to a direct bind of the raw session bus — degraded
 # security, no functional regression.
 #
-# `passt` provides `pasta`, the unprivileged connection between a shell
-# environment's own network namespace and the host's network (see
-# crates/runtime/egress). An environment granted hosts does not start
-# without it; podman's rootless networking uses the same binary.
-#
 # The developer Git CLI is intentionally absent from the immutable host. It
 # pulls libcurl/OpenSSL into the trusted OS for a convenience already provided
 # by the sandboxed Git app, which embeds its own Rust-managed libgit2 path.
@@ -1427,7 +1434,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # stdout, which must never become removal arguments. Removal needs no mirrors.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     bubblewrap \
-    passt \
     flatpak \
     dbus-tools \
     xdg-dbus-proxy \
@@ -3075,6 +3081,8 @@ RUN test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf \
 # self-contained: its EFI stub comes from this stage's systemd-boot and does not
 # have to match the systemd in the rootfs.
 FROM ${BASE_REF} AS uki-tools
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-ukify \
         systemd-boot-unsigned \
