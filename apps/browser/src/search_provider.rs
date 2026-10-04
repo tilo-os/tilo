@@ -1,18 +1,15 @@
-//! Bounded, cursor-paged global search for the person's browsing history and
-//! device-local download resources. Bookmarks are the browser resource's own
-//! search entries.
+//! The person's browsing history and the device-local downloads as the
+//! search entries the browser surface contributes to the app's one search
+//! source. Bookmarks are the browser resource's own search entries.
 //!
-//! The retained index is refreshed only after a durable corpus revision.
-//! Providers then clone it cheaply, so opening global search does not clone
-//! or remap the full browser library.  A provider resolves action resources
-//! against the current index, which refuses an address that went stale after
-//! the result was rendered.
+//! The entries are rebuilt only after a durable corpus revision, so opening
+//! global search does not remap the full browser library. A hit's row is
+//! resolved against the current entries, which refuses an address that went
+//! stale after the result was rendered.
 
 use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
-
-const DEFAULT_RESULT_LIMIT: usize = 100;
+use ui::tilo_resource::SearchEntry;
 
 #[derive(Clone)]
 struct Row {
@@ -33,7 +30,7 @@ struct Row {
 struct IndexState {
     history_revision: u64,
     download_revision: u64,
-    catalog: SearchCatalog,
+    entries: Vec<SearchEntry>,
     rows: std::collections::BTreeMap<String, Row>,
 }
 
@@ -42,7 +39,7 @@ impl Default for IndexState {
         Self {
             history_revision: u64::MAX,
             download_revision: u64::MAX,
-            catalog: SearchCatalog::new("Browser"),
+            entries: Vec::new(),
             rows: std::collections::BTreeMap::new(),
         }
     }
@@ -88,7 +85,7 @@ impl BrowserSearchIndex {
             return;
         }
 
-        let catalog = SearchCatalog::new("Browser");
+        let mut entries = Vec::new();
         let mut rows = std::collections::BTreeMap::new();
         for entry in history.entries() {
             let row = Row {
@@ -105,7 +102,7 @@ impl BrowserSearchIndex {
                 icon: Icon::History,
                 score: i32::try_from(entry.visit_count.min(20)).unwrap_or(20),
             };
-            Self::index_row(&catalog, &mut rows, row);
+            Self::index_row(&mut entries, &mut rows, row);
         }
         for entry in downloads.entries() {
             let destination = entry
@@ -127,7 +124,7 @@ impl BrowserSearchIndex {
                     20
                 },
             };
-            Self::index_row(&catalog, &mut rows, row);
+            Self::index_row(&mut entries, &mut rows, row);
         }
 
         let mut state = self
@@ -136,56 +133,56 @@ impl BrowserSearchIndex {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.history_revision = history_revision;
         state.download_revision = download_revision;
-        state.catalog = catalog;
+        state.entries = entries;
         state.rows = rows;
     }
 
     fn index_row(
-        catalog: &SearchCatalog,
+        entries: &mut Vec<SearchEntry>,
         rows: &mut std::collections::BTreeMap<String, Row>,
         row: Row,
     ) {
-        let result = SearchResult::for_action(
-            row.search_kind,
-            &row.title,
-            ActionAddress::new(
-                &row.resource_id,
-                if row.download.is_some() {
-                    "show-download"
-                } else {
-                    "open"
-                },
-            ),
-        )
-        .with_subtitle(&row.url)
-        .with_icon(row.icon)
-        .with_score(row.score);
-        let searchable = format!("{} {}", row.title, row.url);
-        // Both values were constructed from a non-empty stable URL hash and
-        // canonical action address directly above; an error would signal a
-        // programming bug, not user data.  Refuse that row rather than
-        // risking an opaque activation.
-        if catalog.upsert(&row.resource_id, searchable, result).is_ok() {
-            rows.insert(row.resource_id.clone(), row);
+        if rows.contains_key(&row.resource_id) {
+            return;
         }
+        entries.push(
+            SearchEntry::new(row.title.clone(), String::new())
+                .invoking(ActionAddress::new(
+                    &row.resource_id,
+                    if row.download.is_some() {
+                        "show-download"
+                    } else {
+                        "open"
+                    },
+                ))
+                .grouped(row.search_kind)
+                .subtitled(row.url.clone())
+                .with_icon(row.icon.name())
+                .boosted(row.score),
+        );
+        rows.insert(row.resource_id.clone(), row);
     }
 
-    pub fn provider(&self) -> BrowserSearchProvider {
-        BrowserSearchProvider {
-            index: self.clone(),
-        }
+    /// Every history page and download as a search entry.
+    pub fn entries(&self) -> Vec<SearchEntry> {
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
+            .clone()
     }
-}
 
-pub struct BrowserSearchProvider {
-    index: BrowserSearchIndex,
-}
-
-impl BrowserSearchProvider {
     /// The row a hit opens: the same row, with the same effect, the window
-    /// publishes for it.
-    fn row_resource(row: &Row) -> Resource {
+    /// publishes for it. `None` once the entry is gone.
+    pub fn resource(&self, id: &str) -> Option<Resource> {
         use ui::tilo_resource::Effect as _;
+        let row = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .rows
+            .get(id)
+            .cloned()?;
         let action = match &row.download {
             Some(id) => crate::effects::BrowserEffect::ShowDownload { id: id.clone() }.bound(),
             None => crate::effects::BrowserEffect::Open {
@@ -193,48 +190,61 @@ impl BrowserSearchProvider {
             }
             .bound(),
         };
-        Resource::new(&row.resource_id, row.resource_kind, &row.title).with_action(action)
+        Some(Resource::new(&row.resource_id, row.resource_kind, &row.title).with_action(action))
+    }
+
+    /// The search source the framework builds over these entries, resolving
+    /// hits the way the browser surface does.
+    #[cfg(test)]
+    pub fn provider(&self) -> TestSearch {
+        TestSearch {
+            index: self.clone(),
+            source: Box::new(ui::framework::testing::search_source::<
+                crate::resource::Browser,
+            >(self.entries())),
+        }
     }
 }
 
-impl CatalogSearchProvider for BrowserSearchProvider {
-    const RESULT_LIMIT: usize = DEFAULT_RESULT_LIMIT;
+/// See [`BrowserSearchIndex::provider`].
+#[cfg(test)]
+pub struct TestSearch {
+    index: BrowserSearchIndex,
+    source: Box<dyn ui::search::SearchProvider>,
+}
 
-    fn provider_name(&self) -> &'static str {
-        "Browser"
+#[cfg(test)]
+impl ui::search::SearchProvider for TestSearch {
+    fn name(&self) -> &str {
+        self.source.name()
     }
 
-    fn catalog(&self) -> Option<SearchCatalog> {
-        Some(
-            self.index
-                .state
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .catalog
-                .clone(),
-        )
+    fn search(&self, query: &str) -> Vec<ui::search::SearchResult> {
+        self.source.search(query)
     }
 
-    fn limited_work_budget(&self, limit: usize) -> usize {
-        // A one-shot query inspects no more candidates than results it asked for.
-        limit
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<ui::search::SearchResult> {
+        self.source.search_limited(query, limit)
     }
 
-    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
-        let row = self
-            .index
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .rows
-            .get(&address.resource)
-            .cloned()?;
-        let expected = if row.download.is_some() {
-            "show-download"
-        } else {
-            "open"
-        };
-        (address.action == expected).then(|| Self::row_resource(&row))
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&ui::search::SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> ui::search::SearchPage {
+        self.source
+            .search_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        let resource = self.index.resource(&address.resource)?;
+        resource
+            .actions
+            .iter()
+            .any(|action| action.id == address.action)
+            .then_some(resource)
     }
 }
 

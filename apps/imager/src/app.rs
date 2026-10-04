@@ -505,6 +505,9 @@ struct Layout {
     clippy::struct_excessive_bools,
     reason = "the bools split across unrelated concerns (internal-disk visibility, the system-disk destructive-write ack, and seed/repaint bookkeeping), so grouping them would need a real design pass rather than a mechanical lint fix"
 )]
+/// The key of the image write among the window's jobs.
+const WRITE_JOB: &str = "image-write";
+
 /// The key of the installer download among the window's jobs.
 const RELEASE_DOWNLOAD: &str = "release-download";
 
@@ -539,8 +542,11 @@ pub struct ImagerApp {
     status: String,
     step: Step,
     // ---- transient job / portal plumbing (not in the doc) ----
-    job_rx: Option<std::sync::mpsc::Receiver<Progress>>,
+    /// The running write's stop switch; the write itself is the window's
+    /// [`WRITE_JOB`].
     job_control: Option<JobControl>,
+    /// The bytes the running write last reported, and when: its rate.
+    write_mark: Option<(u64, ui::time::Instant)>,
     /// The caller of the running write effect, answered when it ends.
     write_reply: Option<EffectReply>,
     /// The installer download running as this window's job.
@@ -626,8 +632,8 @@ impl ImagerApp {
                 .with_enter_submits(true),
             status: String::new(),
             step: Step::Source,
-            job_rx: None,
             job_control: None,
+            write_mark: None,
             write_reply: None,
             release_download: None,
             jobs: None,
@@ -4528,7 +4534,7 @@ impl ImagerApp {
         if !self.startup_write_state_reconciled {
             return Err(("restoring_write_state", "Restoring the previous image-write state; wait for drive review before starting another write".into()));
         }
-        if self.job_rx.is_some() {
+        if self.job_control.is_some() {
             return Err((
                 "write_in_progress",
                 "An image write is already in progress".into(),
@@ -4624,6 +4630,7 @@ impl ImagerApp {
             } else {
                 None
             };
+        let src_size = src.size;
         let req = WriteRequest {
             source: src,
             target: tgt.clone(),
@@ -4640,8 +4647,12 @@ impl ImagerApp {
         };
         match start {
             crate::write::JobStart::Started => {
-                self.job_rx = rx;
-                self.job_control = control;
+                let (Some(rx), Some(control), Some(jobs)) = (rx, control, self.jobs.clone()) else {
+                    return refuse("The writer could not start in this window.".into());
+                };
+                Self::start_write_job(&jobs, rx, control.clone(), src_size);
+                self.job_control = Some(control);
+                self.write_mark = None;
                 self.progress = Progress {
                     phase: JobPhase::Writing,
                     write_frac: 0.0,
@@ -4687,8 +4698,50 @@ impl ImagerApp {
         Ok(())
     }
 
-    /// Drain live job progress into the write station and the write
-    /// effect's caller. Called each `sync`.
+    /// Run the started writer as the window's job: its progress, in bytes
+    /// of the active phase, reaches the write station and the caller; it
+    /// stops when cancelled; it ends with the writer's last word.
+    fn start_write_job(
+        jobs: &Jobs<Imager>,
+        events: std::sync::mpsc::Receiver<Progress>,
+        control: JobControl,
+        size: u64,
+    ) {
+        jobs.start::<Self>(WRITE_JOB, move |cx| {
+            Ok(cx.thread(
+                move |progress| {
+                    let mut last = None;
+                    for event in &events {
+                        if progress.is_cancelled() {
+                            control.cancel();
+                        }
+                        let fraction = match event.phase {
+                            JobPhase::Verifying => event.verify_frac,
+                            _ => event.write_frac,
+                        };
+                        progress.report(
+                            event.phase.key(),
+                            Some((fraction.clamp(0.0, 1.0) * size as f64) as u64),
+                            Some(size),
+                        );
+                        let ended = matches!(event.phase, JobPhase::Success | JobPhase::Failed);
+                        last = Some(event);
+                        if ended {
+                            break;
+                        }
+                    }
+                    last
+                },
+                |app: &mut Self, last, _| {
+                    app.finish_write(last);
+                    Ok(Effected::done())
+                },
+            ))
+        });
+    }
+
+    /// Follow the running write into the write station and tell the write
+    /// effect's caller where it is. Called each `sync`.
     fn drain_job(&mut self) {
         if self
             .write_reply
@@ -4701,38 +4754,121 @@ impl ImagerApp {
         {
             let _ = self.cancel_write();
         }
-        self.drain_job_progress();
-        self.answer_write_caller();
-    }
-
-    /// Tell the caller of the running write where it is, and how it ended
-    /// once it has.
-    fn answer_write_caller(&mut self) {
-        let Some(reply) = &self.write_reply else {
+        let Some(progress) = self.jobs.as_ref().and_then(|jobs| jobs.progress(WRITE_JOB)) else {
             return;
         };
-        if self.job_rx.is_some() {
+        self.follow_write(&progress, ui::time::now());
+        if let Some(reply) = &self.write_reply {
             reply.progress().report(
                 self.progress.phase.key(),
                 Some((self.progress.overall().clamp(0.0, 1.0) * 1000.0) as u64),
                 Some(1000),
             );
+        }
+    }
+
+    /// Show the write at `progress`, as reported `at`: its phase, how far
+    /// the active phase is and how fast it goes.
+    fn follow_write(&mut self, progress: &JobProgress, at: ui::time::Instant) {
+        let phase = JobPhase::from_key(&progress.phase);
+        if !phase.is_active() {
             return;
         }
-        let Some(reply) = self.write_reply.take() else {
-            return;
+        let done = progress.completed.unwrap_or(0);
+        let fraction = progress
+            .total
+            .filter(|total| *total > 0)
+            .map_or(0.0, |total| done as f64 / total as f64);
+        let (write_frac, verify_frac) = if phase == JobPhase::Verifying {
+            (1.0, fraction)
+        } else {
+            (fraction, 0.0)
         };
-        reply.finish(match self.progress.phase {
-            JobPhase::Success => Ok(tilo_actions::ActionOutput {
-                value: Some(self.status_value()),
-                resources: Vec::new(),
-            }),
-            _ => Err(self
-                .progress
-                .error
-                .clone()
-                .unwrap_or_else(|| self.status.clone())),
-        });
+        let rate_bps = match self.write_mark {
+            Some((before, then)) if done >= before && phase == self.progress.phase => {
+                let seconds = at.saturating_duration_since(then).as_secs_f64();
+                if seconds > 0.0 {
+                    ((done - before) as f64 / seconds) as u64
+                } else {
+                    self.progress.rate_bps
+                }
+            }
+            _ => 0,
+        };
+        if self.write_mark.is_none_or(|(before, _)| before != done) {
+            self.write_mark = Some((done, at));
+        }
+        self.progress = Progress {
+            phase,
+            write_frac,
+            verify_frac,
+            rate_bps,
+            error: None,
+        };
+        self.dirty = true;
+    }
+
+    /// The write ended with the writer's last word, `last`: show the
+    /// outcome and answer the write effect's caller.
+    fn finish_write(&mut self, last: Option<Progress>) {
+        let cancelled = self
+            .job_control
+            .as_ref()
+            .is_some_and(JobControl::is_cancelled);
+        self.job_control = None;
+        self.write_mark = None;
+        let mut outcome = last
+            .filter(|last| !last.phase.is_active())
+            .unwrap_or_else(|| Progress {
+                phase: JobPhase::Failed,
+                error: Some(
+                    "The writer stopped unexpectedly. Reconnect the drive, then review and retry."
+                        .into(),
+                ),
+                ..self.progress.clone()
+            });
+        // Cancellation may race with a terminal helper event already in
+        // the pipe. Honour the user's stop request conservatively: never
+        // turn that race into a claim that the medium is ready to use.
+        if outcome.phase == JobPhase::Success && cancelled {
+            outcome.phase = JobPhase::Failed;
+            outcome.error = Some(
+                "Image writing was cancelled. The drive may be incomplete; review and retry before using it."
+                    .into(),
+            );
+        }
+        let name = self
+            .source
+            .as_ref()
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        let message = if outcome.phase == JobPhase::Success {
+            format!("Done — {name} {} and verified", self.action.past())
+        } else {
+            outcome.error.clone().unwrap_or_else(|| {
+                format!(
+                    "{} failed. Reconnect the drive, then review and retry.",
+                    self.action.title()
+                )
+            })
+        };
+        self.progress = outcome;
+        self.set_status(&message);
+        self.goto(Step::Done);
+        self.dirty = true;
+        if let Some(reply) = self.write_reply.take() {
+            reply.finish(match self.progress.phase {
+                JobPhase::Success => Ok(tilo_actions::ActionOutput {
+                    value: Some(self.status_value()),
+                    resources: Vec::new(),
+                }),
+                _ => Err(self
+                    .progress
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| self.status.clone())),
+            });
+        }
     }
 
     /// The write job as callers read it.
@@ -4742,78 +4878,6 @@ impl ImagerApp {
             "progress": self.progress.overall(),
             "message": self.status,
         })
-    }
-
-    fn drain_job_progress(&mut self) {
-        let Some(rx) = &self.job_rx else { return };
-        let mut latest = None;
-        loop {
-            match rx.try_recv() {
-                Ok(p) => latest = Some(p),
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    // The worker finished; if we never saw a terminal phase,
-                    // treat a non-success as a failure.
-                    if self.progress.phase.is_active() {
-                        self.progress.phase = JobPhase::Failed;
-                        self.progress.error = Some(
-                            "The writer stopped unexpectedly. Reconnect the drive, then review and retry."
-                                .into(),
-                        );
-                        self.set_status("The writer stopped unexpectedly. Reconnect the drive, then review and retry.",
-                        );
-                        self.goto(Step::Done);
-                    }
-                    self.job_rx = None;
-                    self.job_control = None;
-                    self.dirty = true;
-                    return;
-                }
-            }
-        }
-        if let Some(mut p) = latest {
-            // Cancellation may race with a terminal helper event already in
-            // the pipe. Honour the user's stop request conservatively: never
-            // turn that race into a claim that the medium is ready to use.
-            if p.phase == JobPhase::Success
-                && self
-                    .job_control
-                    .as_ref()
-                    .is_some_and(JobControl::is_cancelled)
-            {
-                p.phase = JobPhase::Failed;
-                p.error = Some(
-                    "Image writing was cancelled. The drive may be incomplete; review and retry before using it."
-                        .into(),
-                );
-            }
-            let terminal_phase = p.phase;
-            let terminal_error = p.error.clone();
-            self.progress = p;
-            self.dirty = true;
-            if matches!(terminal_phase, JobPhase::Success | JobPhase::Failed) {
-                self.job_rx = None;
-                self.job_control = None;
-                let name = self
-                    .source
-                    .as_ref()
-                    .map(|s| s.name.clone())
-                    .unwrap_or_default();
-                let msg = if terminal_phase == JobPhase::Success {
-                    format!("Done — {name} {} and verified", self.action.past())
-                } else {
-                    terminal_error.unwrap_or_else(|| {
-                        format!(
-                            "{} failed. Reconnect the drive, then review and retry.",
-                            self.action.title()
-                        )
-                    })
-                };
-                self.set_status(&msg);
-                // Terminal phase → show the outcome station.
-                self.goto(Step::Done);
-            }
-        }
     }
 
     fn write_another(&mut self) {
@@ -5479,7 +5543,7 @@ impl Widget for ImagerApp {
     /// Keep the event loop ticking while a job or file picker is in flight, so
     /// the progress bars animate and the portal result is drained promptly.
     fn needs_animation_frame(&self) -> bool {
-        self.job_rx.is_some()
+        self.job_control.is_some()
     }
 
     fn draw_with_presence(
@@ -6899,7 +6963,7 @@ mod tests {
                 .begin_write("/dev/sdb", "sdb")
                 .expect_err("an invalid profile refuses the write");
             assert_eq!(app.step, Step::Confirm);
-            assert!(app.job_rx.is_none());
+            assert!(app.job_control.is_none());
             assert!(error.contains("Hostname"));
         }
 
@@ -6964,7 +7028,7 @@ mod tests {
                 err.to_lowercase().contains("disabled") || err.to_lowercase().contains("backend"),
                 "expected write-disabled after staging handoff, got: {err}"
             );
-            assert!(app.job_rx.is_none());
+            assert!(app.job_control.is_none());
             assert_eq!(app.step, Step::Confirm);
         }
 
@@ -6978,7 +7042,7 @@ mod tests {
                 .begin_write("/dev/sdb", "wrong")
                 .expect_err("a mistyped device name refuses the write");
             assert_eq!(app.progress.phase, JobPhase::Idle, "no job started");
-            assert!(app.job_rx.is_none());
+            assert!(app.job_control.is_none());
             assert_eq!(app.step, Step::Confirm, "stays on the Confirm station");
             assert!(error.to_lowercase().contains("confirm"));
         }
@@ -7116,7 +7180,7 @@ mod tests {
         click_at(&mut app, &mut doc, center(primary));
         assert_eq!(app.step, Step::Confirm);
         assert_eq!(app.progress.phase, JobPhase::Idle);
-        assert!(app.job_rx.is_none());
+        assert!(app.job_control.is_none());
     }
 
     #[test]
@@ -7132,7 +7196,7 @@ mod tests {
         app.start_write();
         assert_eq!(app.progress.phase, JobPhase::Idle);
         assert_eq!(app.step, Step::Confirm);
-        assert!(app.job_rx.is_none());
+        assert!(app.job_control.is_none());
         assert!(app.status.contains("disabled"));
     }
 
@@ -7287,9 +7351,8 @@ mod tests {
                 rate_bps: 0,
                 error: None,
             };
-            let (tx, rx) = std::sync::mpsc::channel();
-            app.job_rx = Some(rx);
-            tx.send(Progress {
+            app.job_control = Some(JobControl::new());
+            app.finish_write(Some(Progress {
                 phase: JobPhase::Failed,
                 write_frac: 0.4,
                 verify_frac: 0.0,
@@ -7297,10 +7360,7 @@ mod tests {
                 error: Some(
                     "Could not write the drive: the selected drive was disconnected.".into(),
                 ),
-            })
-            .unwrap();
-
-            app.drain_job();
+            }));
             assert_eq!(app.step, Step::Done);
             assert_eq!(app.progress.phase, JobPhase::Failed);
             assert!(
@@ -7348,6 +7408,38 @@ mod tests {
             assert!(cancel.state.disabled);
         }
 
+        // Phase `the_job_reports_bytes_of_the_active_phase_and_its_rate_follows`.
+        {
+            let (mut app, _doc) = seeded_app();
+            let start = ui::time::now();
+            let report = |phase: &str, completed| JobProgress {
+                phase: phase.into(),
+                completed: Some(completed),
+                total: Some(1_000),
+            };
+            app.follow_write(&report("writing", 100), start);
+            app.follow_write(
+                &report("writing", 300),
+                start + std::time::Duration::from_secs(2),
+            );
+            assert_eq!(app.progress.phase, JobPhase::Writing);
+            assert!((app.progress.write_frac - 0.3).abs() < 1e-9);
+            assert_eq!(app.progress.rate_bps, 100, "200 bytes in two seconds");
+            app.follow_write(
+                &report("verifying", 500),
+                start + std::time::Duration::from_secs(3),
+            );
+            assert_eq!(app.progress.phase, JobPhase::Verifying);
+            assert!((app.progress.write_frac - 1.0).abs() < 1e-9);
+            assert!((app.progress.verify_frac - 0.5).abs() < 1e-9);
+
+            app.job_control = Some(JobControl::new());
+            app.finish_write(None);
+            assert_eq!(app.progress.phase, JobPhase::Failed);
+            assert!(app.status.contains("stopped unexpectedly"));
+            assert!(app.job_control.is_none());
+        }
+
         // Phase `cancel_wins_a_race_with_an_already_queued_success`.
         {
             let (mut app, _doc) = seeded_app();
@@ -7356,18 +7448,13 @@ mod tests {
             app.job_control = Some(control);
             app.progress.phase = JobPhase::Verifying;
             app.goto(Step::Write);
-            let (tx, rx) = std::sync::mpsc::channel();
-            app.job_rx = Some(rx);
-            tx.send(Progress {
+            app.finish_write(Some(Progress {
                 phase: JobPhase::Success,
                 write_frac: 1.0,
                 verify_frac: 1.0,
                 rate_bps: 0,
                 error: None,
-            })
-            .unwrap();
-
-            app.drain_job();
+            }));
 
             assert_eq!(app.progress.phase, JobPhase::Failed);
             assert!(app.progress.error.as_deref().is_some_and(|message| {
