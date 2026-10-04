@@ -2502,3 +2502,23 @@ fn a_mention_replaces_its_typed_query_as_one_marked_run() {
     e.set_read_only(true);
     assert!(!e.insert_text("x"), "a read-only editor takes nothing");
 }
+
+#[test]
+fn a_block_fields_suggestion_timer_wakes_the_editor() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("so beautifull")]);
+    assert_eq!(Widget::next_wake_deadline(&editor), None);
+
+    // Far enough ahead that a slow test run never sees the deadline pass.
+    let now = crate::time::now() + crate::time::Duration::from_secs(3600);
+    let field = editor.blocks[0].line.inner_mut();
+    Widget::set_focus(field, true);
+    field.set_cursor_pos("so beautifull".len());
+    field.refresh_suggestion_at(now);
+
+    // Block lines are not widget children; their timers still reach the host.
+    assert_eq!(
+        Widget::next_wake_deadline(&editor),
+        Some(now + crate::text_edit::SUGGESTION_SETTLE)
+    );
+}
