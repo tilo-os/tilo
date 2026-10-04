@@ -241,6 +241,17 @@ mod tests {
                 "TILO_VM_CARGO",
                 "registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci",
                 "vm upgrade opi",
+                // A laptop: its owner's account through sudo, and its display through seat0.
+                "tilo-vm vm add yoga --ssh me@",
+                "--grant-sudo",
+                "/etc/sudoers.d/tilo-vm-<user>",
+                "tilo-vm seat claim",
+                "ends whoever is logged in",
+                "tilo-vm shot",
+                // Board images of a build, and private ones through this host.
+                "tilo-vm:<ref>-<sha7>-<board>",
+                "credentials never reach the device",
+                "passphrase",
             ] {
                 assert!(devices.contains(needle), "devices guide lacks {needle}");
             }

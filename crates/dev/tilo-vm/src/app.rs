@@ -21,9 +21,9 @@ use crate::build;
 use crate::ci;
 use crate::cicache;
 use crate::cli::{
-    Builder, Command, CreateArgs, FlightCommand, GamepadCommand, ImageCommand, InputCommand,
-    PenCommand, ScenarioCommand, SeatCommand, SlotAppsCommand, SlotCommand, TouchCommand,
-    UpgradeArgs, VmCommand,
+    AddArgs, Builder, Command, CreateArgs, FlightCommand, GamepadCommand, ImageCommand,
+    InputCommand, PenCommand, ScenarioCommand, SeatCommand, SlotAppsCommand, SlotCommand,
+    TouchCommand, UpgradeArgs, VmCommand,
 };
 use crate::config::{self, DirectKernel, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
@@ -43,6 +43,7 @@ use crate::sshguard;
 use crate::sshkey;
 use crate::vmbuild;
 
+mod device;
 mod kernel;
 mod scenario;
 
@@ -1134,7 +1135,7 @@ impl App {
             } => self.vm_ssh(name.or(vm).as_deref(), raw, &command),
             VmCommand::Status { name } => self.vm_status(name.as_deref()),
             VmCommand::Create(args) => self.vm_create(args),
-            VmCommand::Add { name, ssh } => self.vm_add(&name, &ssh),
+            VmCommand::Add(args) => self.vm_add(&args),
             VmCommand::Start { name } => self.vm_start(name.as_deref()),
             VmCommand::Restart { name } => {
                 let vm = self.resolve_vm(name.as_deref())?;
@@ -2026,21 +2027,24 @@ impl App {
         Ok(())
     }
 
-    /// Register a device that runs a Tilo dev image: its address and its
-    /// own root key, which is installed once with the dev account.
-    fn vm_add(&mut self, name: &str, ssh: &str) -> Result<Outcome, CliError> {
+    /// Register a device that runs a Tilo dev image: as root, its address
+    /// and its own root key, which is installed once with the dev account;
+    /// as another account, that account's key and sudo ([`device`]).
+    fn vm_add(&mut self, args: &AddArgs) -> Result<Outcome, CliError> {
+        let (name, ssh) = (args.name.as_str(), args.ssh.as_str());
         let endpoint = SshEndpoint::parse(ssh).ok_or_else(|| CliError::Config {
             path: "--ssh".into(),
             detail: format!("'{ssh}' is not [user@]host[:port]"),
         })?;
         if endpoint.user != "root" {
+            return self.vm_add_account(args, &endpoint);
+        }
+        if args.key.is_some() || args.grant_sudo {
             return Err(CliError::Unsupported {
-                what: format!("reaching the device as {}", endpoint.user),
+                what: "--key or --grant-sudo with --ssh root@".into(),
                 alternative: format!(
-                    "tilo-vmd runs as root: tilo-vm vm add {name} --ssh root@{}:{}   (vm add prints how to install root's key with the {} account)",
-                    endpoint.host,
-                    endpoint.port,
-                    sshkey::DEV_ACCOUNT
+                    "as root, vm add makes the device's own key: tilo-vm vm add {name} --ssh {ssh}   |   to log in as your own account with your key: --ssh <user>@{} --key <file>",
+                    endpoint.host
                 ),
             });
         }
@@ -2175,7 +2179,7 @@ impl App {
         if !up {
             return Err(CliError::Unreachable {
                 vm: vm.name.clone(),
-                detail: "no SSH answer from a new boot within 600s of the reboot; if it is still booting, tilo-vm vm status tells when it answers".into(),
+                detail: "no SSH answer from a new boot within 600s of the reboot; a device whose disk asks for a passphrase waits for it at its own keyboard, and tilo-vm vm status tells when it answers".into(),
                 debug: Vec::new(),
             });
         }
@@ -2722,19 +2726,22 @@ impl App {
                     });
                 }
                 // Fail on an unreachable or non-bootc VM before looking for images.
-                self.vm_facts(vm, endpoint, "vm upgrade")?;
+                let facts = self.vm_facts(vm, endpoint, "vm upgrade")?;
+                let target = CiTarget {
+                    arch: facts
+                        .arch()
+                        .unwrap_or_else(|| std::env::consts::ARCH.to_owned()),
+                    board: facts.board,
+                };
                 // WHPX on Windows needs no host-side image tools. Main dev
                 // tags are deterministic, and bootc pulls inside the VM.
                 if cfg!(windows)
                     && tag.starts_with("main-")
-                    && let Some(image) = imageup::ci_candidates(&tag, std::env::consts::ARCH)
-                        .dev_images
-                        .into_iter()
-                        .next()
+                    && let Some(image) = target.candidates(&tag).dev_images.into_iter().next()
                 {
                     return Ok(UpgradeSource::Published(image));
                 }
-                Ok(match self.resolve_ci_upgrade(&tag)? {
+                Ok(match self.resolve_ci_upgrade(&tag, &target)? {
                     CiUpgrade::Published(image) => UpgradeSource::Published(image),
                     CiUpgrade::Base(base) => UpgradeSource::Local {
                         image: imageup::ci_dev_image(&base),
@@ -2749,8 +2756,8 @@ impl App {
     /// `--from ci:<tag>`: the dev image dev-disk.yml published for that build,
     /// which the VM pulls itself; else the production image it was built FROM,
     /// pulled here so a dev image can be built on top of it.
-    fn resolve_ci_upgrade(&mut self, tag: &str) -> Result<CiUpgrade, CliError> {
-        let candidates = imageup::ci_candidates(tag, std::env::consts::ARCH);
+    fn resolve_ci_upgrade(&mut self, tag: &str, target: &CiTarget) -> Result<CiUpgrade, CliError> {
+        let candidates = target.candidates(tag);
         let runner = &mut self.runner;
         let found = self.receipt.phase("resolve", || -> Result<_, CliError> {
             for image in &candidates.dev_images {
@@ -2777,7 +2784,13 @@ impl App {
             };
             let vm_tags = listing("registry.tilo.so/tilo/tilo-vm")?;
             let ci_tags = listing("registry.tilo.so/tilo/tilo-ci")?;
-            let refs = imageup::ci_ref_candidates(sha, std::env::consts::ARCH, &vm_tags, &ci_tags);
+            let refs = imageup::ci_ref_candidates(
+                sha,
+                &target.arch,
+                target.board.as_deref(),
+                &vm_tags,
+                &ci_tags,
+            );
             if let Some(image) = refs.dev_images.first() {
                 return Ok(Some(CiUpgrade::Published(image.clone())));
             }
@@ -2793,7 +2806,12 @@ impl App {
                 .join(", ");
             return Err(CliError::ImageRefused {
                 image: format!("ci:{tag}"),
-                problem: format!("names no CI build this host can pull (tried {tried})"),
+                problem: match &target.board {
+                    Some(board) => format!(
+                        "names no {board} board image this host can pull (tried {tried}); CI builds one in each Build / OS dev run with an aarch64 lane"
+                    ),
+                    None => format!("names no CI build this host can pull (tried {tried})"),
+                },
                 fix: "list the builds CI pushed: skopeo list-tags docker://registry.tilo.so/tilo/tilo-ci   |   main and pull request builds are tagged <ref>-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
             });
         };
@@ -2801,11 +2819,9 @@ impl App {
             eprintln!(
                 "tilo-vm: no dev image is published for ci:{tag}; pulling its base {base} to build one here"
             );
-            let pull = CommandLine::new(
-                "podman",
-                &["pull", "--arch", ci::podman_arch(std::env::consts::ARCH)],
-            )
-            .arg(base.clone());
+            let pull =
+                CommandLine::new("podman", &["pull", "--arch", ci::podman_arch(&target.arch)])
+                    .arg(base.clone());
             let runner = &mut self.runner;
             let pulled = self.receipt.phase("pull", || runner.interactive(&pull))?;
             if !pulled {
@@ -2845,11 +2861,84 @@ impl App {
         self.receipt.set("image", &imgref);
         let stage = Stage {
             transport,
-            imgref,
+            imgref: imgref.clone(),
             expected: None,
             no_reboot: args.no_reboot,
         };
-        self.stage_and_boot(vm, endpoint, &facts, &stage)
+        match self.stage_and_boot(vm, endpoint, &facts, &stage) {
+            Err(CliError::CommandFailed { stderr, .. })
+                if transport == "registry"
+                    && !imgref.is_empty()
+                    && imageup::is_auth_failure(&stderr) =>
+            {
+                if !self.json {
+                    eprintln!(
+                        "tilo-vm: VM {} may not pull {imgref} without a login; copying it through this host's registry login instead",
+                        vm.name
+                    );
+                }
+                let arch = facts
+                    .arch()
+                    .unwrap_or_else(|| std::env::consts::ARCH.to_owned());
+                self.relay_private(vm, endpoint, args, &imgref, &arch)
+            }
+            other => other,
+        }
+    }
+
+    /// A private registry image: this host pulls it with its own login into
+    /// the VM's host-side layout, and the VM gets only the new layers, as for
+    /// a local image. The credentials never leave this host.
+    fn relay_private(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        args: &UpgradeArgs,
+        image: &str,
+        arch: &str,
+    ) -> Result<Outcome, CliError> {
+        let run = |runner: &mut SystemRunner, command: CommandLine| -> Result<String, CliError> {
+            let output = runner.output(&command)?;
+            if output.success {
+                Ok(output.stdout)
+            } else {
+                Err(CliError::CommandFailed {
+                    command: command.display(),
+                    status: output.status,
+                    stderr: format!(
+                        "{}   (this host needs a login too: podman login registry.tilo.so)",
+                        output.stderr.trim()
+                    ),
+                })
+            }
+        };
+        let inspect = run(
+            &mut self.runner,
+            imageup::registry_inspect_command(image, arch),
+        )?;
+        // A board dev image is sealed by design (its UKI carries the board's
+        // device tree) and the device already boots one, so only the flavour
+        // is checked, as for any image the VM pulls itself.
+        let facts = imageup::ImageFacts {
+            flavour: imageup::registry_flavour(&inspect),
+            ..imageup::ImageFacts::default()
+        };
+        let layout = imageup::host_layout(&vm.name);
+        if let Some(parent) = layout.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(CliError::io(format!("create {}", parent.display())))?;
+        }
+        let digest_file = layout.with_extension("digest");
+        let copy = imageup::registry_export_command(image, arch, &layout, &digest_file);
+        let runner = &mut self.runner;
+        self.receipt.phase("export", || run(runner, copy))?;
+        let digest = std::fs::read_to_string(&digest_file)
+            .map_err(CliError::io(format!("read {}", digest_file.display())))?
+            .trim()
+            .to_owned();
+        imageup::prune_layout(&layout)
+            .map_err(CliError::io(format!("prune {}", layout.display())))?;
+        self.move_onto_layout(vm, endpoint, args, image, &facts, &layout, digest)
     }
 
     /// rsync the layout into the VM; the bytes that crossed, when rsync says.
@@ -3351,7 +3440,11 @@ impl App {
         if !up {
             return Err(CliError::Unreachable {
                 vm: vm.name.clone(),
-                detail: "no SSH answer from a new boot within 600s of the reboot; if it is still booting, tilo-vm vm status tells when it answers".into(),
+                detail: if vm.entry.hypervisor == hypervisor::DEVICE {
+                    "no SSH answer from a new boot within 600s of the reboot; a device whose disk asks for a passphrase waits for it at its own keyboard, and tilo-vm vm status tells when it answers".into()
+                } else {
+                    "no SSH answer from a new boot within 600s of the reboot; if it is still booting, tilo-vm vm status tells when it answers".into()
+                },
                 debug: Self::debug_commands(adapter.as_ref(), &vm.name),
             });
         }
@@ -4615,6 +4708,22 @@ impl App {
 
 /// How `stage_and_boot` stages: bootc's transport and reference, and the
 /// manifest digest it must stage when that is known in advance.
+/// What a CI tag resolves to for one VM: its architecture, and the board
+/// its image was built for, if any.
+struct CiTarget {
+    arch: String,
+    board: Option<String>,
+}
+
+impl CiTarget {
+    fn candidates(&self, tag: &str) -> imageup::CiCandidates {
+        match &self.board {
+            Some(board) => imageup::board_candidates(tag, board),
+            None => imageup::ci_candidates(tag, &self.arch),
+        }
+    }
+}
+
 struct Stage {
     transport: &'static str,
     imgref: String,
@@ -4811,7 +4920,9 @@ fn key_refusal(
     else {
         return error;
     };
-    if !detail.contains("Permission denied") {
+    // A device reached as its owner's account (through sudo) uses that
+    // account's key; tilo-vm has no root key to install there.
+    if !detail.contains("Permission denied") || endpoint.user != "root" {
         return error;
     }
     let install = sshkey::read_public(Path::new(key)).map_or_else(
@@ -5723,6 +5834,12 @@ pub fn connect_failure(
 }
 
 fn unsupported(adapter: &dyn Hypervisor, what: &str) -> CliError {
+    if adapter.name() == hypervisor::DEVICE {
+        return CliError::Unsupported {
+            what: format!("{what} on a device"),
+            alternative: "a device has no hypervisor, only SSH: tilo-vm shot is a slot compositor's own frame (on a laptop, tilo-vm seat claim first puts your slot on its display), tilo-vm logs its journal, tilo-vm vm ssh a shell, tilo-vm vm restart a reboot (tilo-vm guide devices)".into(),
+        };
+    }
     let caps = adapter.capabilities();
     CliError::Unsupported {
         what: format!("{what} with the {} adapter", adapter.name()),
@@ -6711,6 +6828,15 @@ mod tests {
         assert!(error.render().contains("see: tilo-vm guide quickstart"));
     }
 
+    fn add(name: &str, ssh: &str) -> AddArgs {
+        AddArgs {
+            name: name.into(),
+            ssh: ssh.into(),
+            key: None,
+            grant_sudo: false,
+        }
+    }
+
     /// `vm add` registers a device with its own key and refuses what cannot work.
     #[test]
     fn a_device_is_registered_with_its_own_key() {
@@ -6729,7 +6855,7 @@ mod tests {
         // Phase `registered_with_its_address_and_key`.
         {
             // Nothing answers on port 1: registered, but not usable yet.
-            let added = app.vm_add("opi", "root@127.0.0.1:1").unwrap();
+            let added = app.vm_add(&add("opi", "root@127.0.0.1:1")).unwrap();
             let registry = app.registry().unwrap();
             let entry = &registry.vms["opi"];
             assert_eq!(entry.hypervisor, "device");
@@ -6749,15 +6875,31 @@ mod tests {
         }
         // Phase `again_changes_nothing_and_bad_addresses_are_refused`.
         {
-            let again = app.vm_add("opi", "root@127.0.0.1:1").unwrap();
+            let again = app.vm_add(&add("opi", "root@127.0.0.1:1")).unwrap();
             assert_eq!(again.data["added"], json!(false));
-            let error = app.vm_add("pi2", "tester@10.0.0.109").err().unwrap();
+            // Another account: its own key, checked before anything connects.
+            let error = app
+                .vm_add(&AddArgs {
+                    key: Some(dir.path().join("missing")),
+                    ..add("pi2", "tester@10.0.0.109")
+                })
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains("no such file"), "{error}");
+            // As root, vm add makes the device's key itself.
+            let error = app
+                .vm_add(&AddArgs {
+                    grant_sudo: true,
+                    ..add("pi2", "root@10.0.0.109")
+                })
+                .err()
+                .unwrap();
             assert!(
-                error.hint().contains("--ssh root@10.0.0.109:22"),
+                error.hint().contains("--ssh <user>@10.0.0.109"),
                 "{}",
                 error.hint()
             );
-            assert!(app.vm_add("pi2", "root@").is_err());
+            assert!(app.vm_add(&add("pi2", "root@")).is_err());
             let error = app
                 .vm_create(CreateArgs {
                     hypervisor: Some("device".into()),

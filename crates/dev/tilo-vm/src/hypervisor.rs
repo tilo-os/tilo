@@ -190,6 +190,15 @@ impl SshEndpoint {
             port,
         })
     }
+
+    /// `user@host`, with `:port` when it is not 22: what [`Self::parse`] reads.
+    pub fn ssh_spec(&self) -> String {
+        if self.port == 22 {
+            format!("{}@{}", self.user, self.host)
+        } else {
+            format!("{}@{}:{}", self.user, self.host, self.port)
+        }
+    }
 }
 
 /// What an adapter can do beyond the required five operations.
@@ -434,7 +443,7 @@ impl Hypervisor for Device {
             .ok_or_else(|| CliError::Config {
                 path: crate::config::registry_path().display().to_string(),
                 detail: format!(
-                    "device '{}' has no `ssh` address; register it again: tilo-vm vm add {} --ssh root@<address>",
+                    "device '{}' has no `ssh` address; register it again: tilo-vm vm add {} --ssh <user>@<address>",
                     vm.name, vm.name
                 ),
             })
