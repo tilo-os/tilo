@@ -138,6 +138,39 @@ pub trait Effect: Sized + 'static {
         }
     }
 
+    /// This effect bound to the item it acts on, as [`bound`](Self::bound),
+    /// still asking its caller for the arguments named in `asking`: rename
+    /// *this* file, to a name the caller gives. The bound arguments are this
+    /// effect's own; an asked one the caller supplies replaces it.
+    fn bound_asking(&self, asking: &[&str]) -> ActionSpec {
+        let id = self.id();
+        let Some(decl) = Self::declarations().into_iter().find(|decl| decl.id == id) else {
+            return self.bound();
+        };
+        let params = decl
+            .params
+            .iter()
+            .filter(|param| asking.contains(&&*param.name))
+            .cloned()
+            .collect();
+        let bound = self.arguments();
+        decl.spec_with(Self::OPERATION, params, move |args| {
+            let mut merged = bound.clone();
+            merged.extend(args.to_json());
+            EncodedAction::encode_operation(
+                Self::OPERATION,
+                &Payload {
+                    effect: id.to_owned(),
+                    args: merged,
+                },
+            )
+            .unwrap_or_else(|_| EncodedAction {
+                type_id: Self::OPERATION.to_owned(),
+                payload: Vec::new(),
+            })
+        })
+    }
+
     /// Decode one invocation's payload, as the operation's specs encode it.
     ///
     /// # Errors
@@ -452,6 +485,26 @@ mod tests {
             Sample::Wipe { passes: 3 }
         );
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
+
+        // Bound to the thing it acts on, it still asks for the rest.
+        let asking = Sample::RenameThing {
+            thing: "a".into(),
+            label: None,
+        }
+        .bound_asking(&["label"]);
+        assert_eq!(asking.id, "rename-thing");
+        let asked: Vec<&str> = asking.params().iter().map(|param| &*param.name).collect();
+        assert_eq!(asked, ["label"]);
+        let mut label = serde_json::Map::new();
+        label.insert("label".into(), "b".into());
+        let encoded = asking.build_json(&label).unwrap();
+        assert_eq!(
+            Sample::from_payload(&encoded.payload).unwrap(),
+            Sample::RenameThing {
+                thing: "a".into(),
+                label: Some("b".into()),
+            }
+        );
     }
 
     /// A vocabulary with presentation-only effects and effects offered only
