@@ -41,6 +41,7 @@
 pub mod actions;
 pub mod app;
 pub mod capture;
+mod columns;
 pub mod component;
 mod continuation;
 pub mod framework_history;
@@ -55,6 +56,7 @@ pub mod main_panel;
 pub mod markdown;
 pub mod metadata;
 pub mod model;
+pub mod note_header;
 pub mod notebook;
 pub use ui::num;
 pub mod search_provider;

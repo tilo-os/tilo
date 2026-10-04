@@ -2,6 +2,15 @@ use crate::component_support::*;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use notes::{actions, doc::NotesDoc};
 
+/// Open History from the window's own bar: a headless component host serves
+/// that button, not a click on the glyph the notebook's header row carries.
+fn open_history(driver: &mut ui::headless::Driver) {
+    notes::app::present_history_in_shell_for_test(false);
+    driver.relayout();
+    driver.click_named("history-open").unwrap();
+    driver.relayout();
+}
+
 fn select(driver: &mut ui::headless::Driver, hash: automerge::ChangeHash) {
     let id = ui::history_source::entry_id_from_hash(&hash.to_string());
     let target = format!("timeline-entry:{}", ui::widget::history_group::hex16(&id));
@@ -11,7 +20,17 @@ fn select(driver: &mut ui::headless::Driver, hash: automerge::ChangeHash) {
             Some(&target),
             &ui::a11y::Action::Activate,
         )
-        .unwrap();
+        .unwrap_or_else(|error| {
+            let mut targets: Vec<String> = driver.targets().into_keys().collect();
+            targets.sort();
+            let history: Vec<String> = driver
+                .a11y_nodes()
+                .into_iter()
+                .filter(|(_, node)| node.label() == Some("History"))
+                .map(|(_, node)| format!("{node:?}"))
+                .collect();
+            panic!("{error}: {history:?} {targets:?}")
+        });
 }
 
 #[allow(
@@ -81,10 +100,10 @@ fn notebook_history_previews_restores_and_refuses_a_second_writer() {
             .read(&checkout.id, Transactable::base_heads)
             .unwrap();
         assert!(
-            d.targets().contains_key("history-open"),
+            d.targets().contains_key("nav-shell-history"),
             "actual canonical Notes needs shared History"
         );
-        d.click_named("history-open").unwrap();
+        open_history(&mut d);
         select(&mut d, selected);
         d.click_named("history-next-page").unwrap();
         let preview = format!("{:?}", d.a11y_nodes());
@@ -242,7 +261,7 @@ fn production_preparation_imports_once_and_reopens_the_same_graph() {
             renderer(),
             f.author.clone(),
         );
-        assert!(d.targets().contains_key("history-open"));
+        assert!(d.targets().contains_key("nav-shell-history"));
         records
             .with_owned_action(
                 &checkout.id,
@@ -268,7 +287,7 @@ fn production_preparation_imports_once_and_reopens_the_same_graph() {
         let selected = records
             .read(&checkout.id, |doc| doc.base_heads()[0])
             .unwrap();
-        d.click_named("history-open").unwrap();
+        open_history(&mut d);
         select(&mut d, selected);
         let pinned = format!("{:?}", d.a11y_nodes());
         assert!(pinned.contains("Saved production change"));
@@ -432,7 +451,7 @@ fn notebook_restore_rechecks_stale_frontier_and_current_authority() {
             "rename",
             Some("Live"),
         );
-        d.click_named("history-open").unwrap();
+        open_history(&mut d);
         select(&mut d, selected);
         d.click_named("history-restore").unwrap();
         if revoke {
@@ -481,7 +500,7 @@ fn actual_binary_normal_launch_prepares_default_canonical_notebook_and_history()
     let profile = temp.path().join("application-state");
     let workspace = "00000000-0000-0000-0000-000000000023";
     let dump = temp.path().join("inspection.json");
-    let spec = serde_json::json!({"actions":[{"click_named":"history-open"}],"inspect":dump});
+    let spec = serde_json::json!({"actions":[],"inspect":dump});
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_notes"))
         .env("XDG_DATA_HOME", &profile)
         .env("TILO_PACKAGE_ID", canonical::PACKAGE)
@@ -497,7 +516,8 @@ fn actual_binary_normal_launch_prepares_default_canonical_notebook_and_history()
         String::from_utf8_lossy(&output.stderr)
     );
     let inspection = std::fs::read_to_string(&dump).unwrap();
-    assert!(inspection.contains("activity_timeline"), "{inspection}");
+    // The notebook's header row carries the window's History control.
+    assert!(inspection.contains("nav-shell-history"), "{inspection}");
     // A launch into a workspace opens the room's shared default record.
     let checkout = notes::hosting::launch_notebook(true);
     let directory = app_state::DocStore::room_record_dir_at(
