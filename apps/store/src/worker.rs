@@ -2,6 +2,7 @@
 //! crosses this one queue; the UI only performs non-blocking snapshot drains.
 
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 
 use lru::LruCache;
 use std::sync::mpsc;
@@ -12,6 +13,7 @@ use std::sync::{
 use std::time::Duration;
 
 use getrandom::{SysRng, rand_core::TryRng as _};
+use ui::WakeHandle;
 
 use crate::app::ReportEnvelope;
 use crate::config::{RegistryConfig, load_registries};
@@ -30,11 +32,19 @@ const CACHE_CAP: NonZeroUsize = match NonZeroUsize::new(128) {
     None => NonZeroUsize::MIN,
 };
 
+/// What the worker is asked to do. A request someone is waiting on (an
+/// effect's job) carries a [`Done`] it is answered on.
 #[derive(Clone, Debug)]
 pub enum Request {
     Refresh,
     Search(String),
     Detail(String),
+    /// Show the app a `.flatpakref` describes, ready to install: the file at
+    /// `path`, or the reference's `contents` handed over without one.
+    OpenReference {
+        path: Option<PathBuf>,
+        contents: Option<String>,
+    },
     RefreshRemotes,
     RemoteAdd {
         name: String,
@@ -61,6 +71,29 @@ pub enum Request {
     },
 }
 
+/// How a request someone waits on ended: its status line and, for a
+/// moderation request, the case the registry confirmed; or why it failed.
+pub type Outcome = Result<Finished, String>;
+
+/// Where the worker answers a request someone waits on.
+pub type Done = mpsc::Sender<Outcome>;
+
+/// A request that succeeded.
+#[derive(Clone, Debug, Default)]
+pub struct Finished {
+    pub status: String,
+    pub case: Option<registry_types::ModerationCase>,
+}
+
+impl Finished {
+    fn status(status: impl Into<String>) -> Self {
+        Self {
+            status: status.into(),
+            case: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub items: Vec<StoreItem>,
@@ -69,14 +102,12 @@ pub struct Snapshot {
     pub query: Option<String>,
     pub detail: Option<StoreItem>,
     pub remotes: Vec<Remote>,
-    pub invocation: Option<tilo_actions::InvocationId>,
     pub operation_error: Option<String>,
-    pub moderation_case: Option<registry_types::ModerationCase>,
 }
 
 struct QueuedRequest {
     request: Request,
-    invocation: Option<tilo_actions::InvocationId>,
+    done: Option<Done>,
 }
 
 pub struct StoreWorker {
@@ -86,22 +117,28 @@ pub struct StoreWorker {
 }
 
 impl StoreWorker {
+    /// Start the worker; `wake` is woken whenever a snapshot is ready.
+    ///
     /// # Panics
     /// Panics if the OS refuses to spawn a thread (extreme resource
-    /// exhaustion). The binary's root widget constructor that calls this is
-    /// infallible, so there is no fallible path back through it to report a
-    /// failure to instead.
+    /// exhaustion): a live Store without its worker has nothing to show.
     #[allow(
         clippy::expect_used,
-        reason = "thread spawn failure means the OS is out of resources; there is no fallible path back through the root widget constructor to report it, and no live app to hand back without a worker"
+        reason = "thread spawn failure means the OS is out of resources; the surface attaching the worker has no fallible path to report it on"
     )]
-    pub fn spawn(opened_ref: Option<FlatpakRef>, search_index: StoreSearchIndex) -> Self {
+    pub fn spawn(search_index: StoreSearchIndex, wake: WakeHandle) -> Self {
         let (request_tx, request_rx) = mpsc::channel();
         let (snapshot_tx, snapshot_rx) = mpsc::channel();
         let pending = Arc::new(AtomicUsize::new(1));
         std::thread::Builder::new()
             .name("store-worker".into())
-            .spawn(move || run(&request_rx, &snapshot_tx, opened_ref, search_index))
+            .spawn(move || {
+                let snapshots = Snapshots {
+                    sender: snapshot_tx,
+                    wake,
+                };
+                run(&request_rx, &snapshots, search_index);
+            })
             .expect("spawn store worker");
         Self {
             requests: request_tx,
@@ -110,24 +147,20 @@ impl StoreWorker {
         }
     }
 
+    /// Queue `request`; whether the worker is still there to take it.
     pub fn request(&self, request: Request) -> bool {
-        self.request_with_invocation(request, None)
+        self.queue(request, None)
     }
 
-    pub fn request_with_invocation(
-        &self,
-        request: Request,
-        invocation: Option<tilo_actions::InvocationId>,
-    ) -> bool {
+    /// Queue `request` and answer it on `done`; whether the worker is still
+    /// there to take it.
+    pub fn request_job(&self, request: Request, done: Done) -> bool {
+        self.queue(request, Some(done))
+    }
+
+    fn queue(&self, request: Request, done: Option<Done>) -> bool {
         self.pending.fetch_add(1, Ordering::Relaxed);
-        if self
-            .requests
-            .send(QueuedRequest {
-                request,
-                invocation,
-            })
-            .is_ok()
-        {
+        if self.requests.send(QueuedRequest { request, done }).is_ok() {
             true
         } else {
             self.pending.fetch_sub(1, Ordering::Relaxed);
@@ -150,6 +183,20 @@ impl StoreWorker {
     }
 }
 
+/// The UI's end of the worker's snapshots, woken for each one.
+struct Snapshots {
+    sender: mpsc::Sender<Snapshot>,
+    wake: WakeHandle,
+}
+
+impl Snapshots {
+    fn send(&self, snapshot: Snapshot) -> bool {
+        let sent = self.sender.send(snapshot).is_ok();
+        self.wake.wake();
+        sent
+    }
+}
+
 struct State {
     host: Option<app_host::client::BlockingClient>,
     opened_ref: Option<FlatpakRef>,
@@ -169,8 +216,7 @@ struct State {
 
 fn run(
     requests: &mpsc::Receiver<QueuedRequest>,
-    snapshots: &mpsc::Sender<Snapshot>,
-    opened_ref: Option<FlatpakRef>,
+    snapshots: &Snapshots,
     search_index: StoreSearchIndex,
 ) {
     let staging = crate::actions::tapp_staging_dir()
@@ -183,7 +229,7 @@ fn run(
                 error
             })
             .ok(),
-        opened_ref,
+        opened_ref: None,
         base_items: Vec::new(),
         installed: Vec::new(),
         remotes: Vec::new(),
@@ -205,14 +251,12 @@ fn run(
     }
     loop {
         match requests.recv_timeout(REFRESH_INTERVAL) {
-            Ok(request) => {
-                if !handle(
-                    request.request,
-                    request.invocation,
-                    &mut state,
-                    snapshots,
-                    &staging,
-                ) {
+            Ok(QueuedRequest { request, done }) => {
+                let (alive, outcome) = handle(request, &mut state, snapshots, &staging);
+                if let (Some(done), Some(outcome)) = (done, outcome) {
+                    let _ = done.send(outcome);
+                }
+                if !alive {
                     break;
                 }
             }
@@ -234,187 +278,282 @@ fn run(
     }
 }
 
+/// Carry out `request`: whether the UI is still there, and how it ended
+/// for whoever waits on it.
 #[allow(
     clippy::too_many_lines,
     reason = "the serialized worker owns one exhaustive request dispatch; splitting it would obscure that every blocking Store effect crosses this queue"
 )]
 fn handle(
     request: Request,
-    invocation: Option<tilo_actions::InvocationId>,
     state: &mut State,
-    snapshots: &mpsc::Sender<Snapshot>,
+    snapshots: &Snapshots,
     staging: &std::path::Path,
-) -> bool {
+) -> (bool, Option<Outcome>) {
     match request {
         Request::Refresh => {
             refresh(state);
-            send_tracked(
+            let alive = send(
                 snapshots,
                 state,
                 state.base_items.clone(),
                 "Store refreshed.",
                 None,
                 None,
-                invocation,
-                None,
-            )
+            );
+            (alive, Some(Ok(Finished::status("Store refreshed."))))
         }
-        Request::Search(query) => search(&query, state, snapshots),
-        Request::Detail(id) => detail(&id, state, snapshots),
+        Request::Search(query) => (search(&query, state, snapshots), None),
+        Request::Detail(id) => (detail(&id, state, snapshots), None),
+        Request::OpenReference { path, contents } => {
+            let opened = open_reference(path, contents, state);
+            let (label, detail, error) = match &opened {
+                Ok(item) => (
+                    format!("Opened {} from its reference.", item.name),
+                    Some(item.clone()),
+                    None,
+                ),
+                Err(error) => (error.clone(), None, Some(error.clone())),
+            };
+            let alive = send_tracked(
+                snapshots,
+                state,
+                state.base_items.clone(),
+                &label,
+                None,
+                detail,
+                error,
+            );
+            (alive, Some(opened.map(|_| Finished::status(label))))
+        }
         Request::RefreshRemotes => {
             state.remotes = crate::flathub_client::list_remotes();
             let label = format!("Loaded {} Flatpak remotes.", state.remotes.len());
-            send_tracked(
+            let alive = send(
                 snapshots,
                 state,
                 state.base_items.clone(),
                 &label,
                 None,
                 None,
-                invocation,
-                None,
-            )
+            );
+            (alive, Some(Ok(Finished::status(label))))
         }
         Request::RemoteAdd { name, url } => {
-            let label = state.host.as_ref().map_or_else(
-                || "App service unavailable.".to_string(),
-                |host| {
-                    host.remote(true, &name, Some(&url))
-                        .unwrap_or_else(|error| error)
-                },
+            let result = state.host.as_ref().map_or_else(
+                || Err("App service unavailable.".to_string()),
+                |host| host.remote(true, &name, Some(&url)),
             );
             state.remotes = crate::flathub_client::list_remotes();
-            send_tracked(
-                snapshots,
-                state,
-                state.base_items.clone(),
-                &label,
-                None,
-                None,
-                invocation,
-                None,
-            )
+            remote_result(snapshots, state, result)
         }
         Request::RemoteRemove(name) => {
-            let label = state.host.as_ref().map_or_else(
-                || "App service unavailable.".to_string(),
-                |host| {
-                    host.remote(false, &name, None)
-                        .unwrap_or_else(|error| error)
-                },
+            let result = state.host.as_ref().map_or_else(
+                || Err("App service unavailable.".to_string()),
+                |host| host.remote(false, &name, None),
             );
             state.remotes = crate::flathub_client::list_remotes();
-            send_tracked(
-                snapshots,
-                state,
-                state.base_items.clone(),
-                &label,
-                None,
-                None,
-                invocation,
-                None,
-            )
+            remote_result(snapshots, state, result)
         }
         Request::Act(item, action) => {
             let outcome =
                 crate::actions::execute_with_host(state.host.as_ref(), &item, action, staging);
             refresh(state);
             let operation_error = (!outcome.ok).then(|| outcome.status_line.clone());
-            send_tracked(
+            let alive = send_tracked(
                 snapshots,
                 state,
                 state.base_items.clone(),
                 &outcome.status_line,
                 None,
                 None,
-                invocation,
                 operation_error,
-            )
+            );
+            let finished = if outcome.ok {
+                Ok(Finished::status(outcome.status_line))
+            } else {
+                Err(outcome.status_line)
+            };
+            (alive, Some(finished))
         }
         Request::SubmitReport {
             registry_name,
             envelope,
         } => {
-            let result = submit_report(&registry_name, &envelope);
-            let (label, moderation_case, operation_error) = match result {
-                Ok(case) => (
-                    format!(
+            let outcome = match submit_report(&registry_name, &envelope) {
+                Ok(case) => Ok(Finished {
+                    status: format!(
                         "Report submitted as {}. Status will appear after the registry owner publishes a signed transparency snapshot.",
                         case.case_id
                     ),
-                    None,
-                    None,
-                ),
-                Err(error) => {
-                    let message = format!(
-                        "Report was not submitted. {error} The collaborative draft is unchanged; check your identity or connection and retry."
-                    );
-                    (message.clone(), None, Some(message))
-                }
+                    case: Some(case),
+                }),
+                Err(error) => Err(format!(
+                    "Report was not submitted. {error} The collaborative draft is unchanged; check your identity or connection and retry."
+                )),
             };
-            snapshots
-                .send(Snapshot {
-                    items: state.base_items.clone(),
-                    status_line: label,
-                    query: None,
-                    detail: None,
-                    remotes: state.remotes.clone(),
-                    invocation,
-                    operation_error,
-                    moderation_case,
-                })
-                .is_ok()
+            (
+                moderation_snapshot(snapshots, state, &outcome),
+                Some(outcome),
+            )
         }
         Request::RefreshModeration {
             registry_name,
             case_id,
-        } => send_moderation_result(
-            state,
-            snapshots,
-            invocation,
-            moderation_registry(&registry_name).and_then(|registry| {
-                crate::moderation_client::fetch_verified_case(&registry, &case_id)
-            }),
-            "Moderation status refreshed",
-        ),
+        } => {
+            let outcome = moderation_registry(&registry_name)
+                .and_then(|registry| {
+                    crate::moderation_client::fetch_verified_case(&registry, &case_id)
+                })
+                .map(|case| Finished {
+                    status: format!(
+                        "Moderation status refreshed: {} is {}.",
+                        case.case_id,
+                        crate::app::moderation_status_label(case.status)
+                    ),
+                    case: Some(case),
+                })
+                .map_err(|error| {
+                    format!(
+                        "Registry request failed: {error} The collaborative draft and last confirmed status are unchanged; retry when ready."
+                    )
+                });
+            (
+                moderation_snapshot(snapshots, state, &outcome),
+                Some(outcome),
+            )
+        }
         Request::AppealModeration {
             registry_name,
             case_id,
             reason,
         } => {
-            let result = moderation_registry(&registry_name).and_then(|registry| {
-                let now = ui::time::wall()
-                    .duration_since(ui::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let mut nonce = [0_u8; 16];
-                SysRng.try_fill_bytes(&mut nonce).map_err(|error| {
-                    crate::moderation_client::ModerationClientError::Identity(error.to_string())
-                })?;
-                let request = crate::moderation_client::sign_with_runtime_identity(
-                    crate::moderation_client::report_request_id(&case_id, &reason, now, &nonce),
-                    now,
-                    registry_types::ModerationActorRole::Publisher,
-                    registry_types::ModerationMutation::PublisherAppeal {
-                        case_id,
-                        reason,
-                        evidence_digest_hex: None,
-                    },
-                )?;
-                crate::moderation_client::submit(&registry.base_url, &request)
-            });
-            send_moderation_submission_result(
-                state,
-                snapshots,
-                invocation,
-                result,
-                "Appeal submitted",
+            let outcome = moderation_registry(&registry_name)
+                .and_then(|registry| {
+                    let now = ui::time::wall()
+                        .duration_since(ui::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let mut nonce = [0_u8; 16];
+                    SysRng.try_fill_bytes(&mut nonce).map_err(|error| {
+                        crate::moderation_client::ModerationClientError::Identity(
+                            error.to_string(),
+                        )
+                    })?;
+                    let request = crate::moderation_client::sign_with_runtime_identity(
+                        crate::moderation_client::report_request_id(&case_id, &reason, now, &nonce),
+                        now,
+                        registry_types::ModerationActorRole::Publisher,
+                        registry_types::ModerationMutation::PublisherAppeal {
+                            case_id,
+                            reason,
+                            evidence_digest_hex: None,
+                        },
+                    )?;
+                    crate::moderation_client::submit(&registry.base_url, &request)
+                })
+                .map(|case| {
+                    Finished::status(format!(
+                        "Appeal submitted for {}. The last verified status stays visible until an owner-signed transparency snapshot includes it.",
+                        case.case_id
+                    ))
+                })
+                .map_err(|error| {
+                    format!(
+                        "Registry request failed: {error} The collaborative draft and last verified status are unchanged; retry when ready."
+                    )
+                });
+            (
+                moderation_snapshot(snapshots, state, &outcome),
+                Some(outcome),
             )
         }
     }
 }
 
-fn search(query: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) -> bool {
+/// The reference `path` names, or its `contents` kept in the Store's cache
+/// so a confirmed install can name the file; its app joins the catalogue.
+fn open_reference(
+    path: Option<PathBuf>,
+    contents: Option<String>,
+    state: &mut State,
+) -> Result<StoreItem, String> {
+    let reference = match (path, contents) {
+        (Some(path), _) => FlatpakRef::from_path(&path)
+            .map_err(|error| format!("Could not read {}: {error}", path.display()))?,
+        (None, Some(contents)) => {
+            let directory = crate::config::cache_dir()
+                .map(|cache| cache.join("opened-references"))
+                .ok_or_else(|| "There is no cache to keep the reference in.".to_string())?;
+            std::fs::create_dir_all(&directory)
+                .map_err(|error| format!("Could not keep the reference: {error}"))?;
+            let parsed = FlatpakRef::parse(&contents, PathBuf::new());
+            match parsed {
+                Some(reference) if crate::doc_actions::valid_app_id(&reference.app_id) => {
+                    let path = directory.join(format!("{}.flatpakref", reference.app_id));
+                    tilo_files::native::atomic::write(&path, contents.as_bytes())
+                        .map_err(|error| format!("Could not keep the reference: {error}"))?;
+                    Some(FlatpakRef {
+                        source_path: path,
+                        ..reference
+                    })
+                }
+                _ => None,
+            }
+        }
+        (None, None) => return Err("Name a Flatpak reference to open.".into()),
+    }
+    .ok_or_else(|| "This is not a Flatpak reference.".to_string())?;
+    let version = state
+        .installed
+        .iter()
+        .find_map(|(id, version)| (id == &reference.app_id).then(|| version.clone()));
+    let item = reference.clone().into_store_item(version);
+    state.base_items.retain(|known| known.id != item.id);
+    state.base_items.insert(0, item.clone());
+    state.opened_ref = Some(reference);
+    sync_authoritative_catalogue(state);
+    Ok(item)
+}
+
+fn remote_result(
+    snapshots: &Snapshots,
+    state: &State,
+    result: Result<String, String>,
+) -> (bool, Option<Outcome>) {
+    let (label, error) = match &result {
+        Ok(label) => (label.clone(), None),
+        Err(error) => (error.clone(), Some(error.clone())),
+    };
+    let alive = send_tracked(
+        snapshots,
+        state,
+        state.base_items.clone(),
+        &label,
+        None,
+        None,
+        error,
+    );
+    (alive, Some(result.map(Finished::status)))
+}
+
+fn moderation_snapshot(snapshots: &Snapshots, state: &State, outcome: &Outcome) -> bool {
+    let (label, error) = match outcome {
+        Ok(finished) => (finished.status.clone(), None),
+        Err(error) => (error.clone(), Some(error.clone())),
+    };
+    send_tracked(
+        snapshots,
+        state,
+        state.base_items.clone(),
+        &label,
+        None,
+        None,
+        error,
+    )
+}
+
+fn search(query: &str, state: &mut State, snapshots: &Snapshots) -> bool {
     let query = query.trim().to_string();
     if query.is_empty() {
         return send(
@@ -453,7 +592,7 @@ fn search(query: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) ->
     send(snapshots, state, items, &label, Some(query), None)
 }
 
-fn detail(id: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) -> bool {
+fn detail(id: &str, state: &mut State, snapshots: &Snapshots) -> bool {
     let loaded = if let Some(cached) = state.details.get(id).cloned() {
         Some(cached)
     } else if let Some(item) = state
@@ -489,47 +628,33 @@ fn detail(id: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) -> bo
 }
 
 fn send(
-    snapshots: &mpsc::Sender<Snapshot>,
+    snapshots: &Snapshots,
     state: &State,
     items: Vec<StoreItem>,
     status_line: &str,
     query: Option<String>,
     detail: Option<StoreItem>,
 ) -> bool {
-    send_tracked(
-        snapshots,
-        state,
-        items,
-        status_line,
-        query,
-        detail,
-        None,
-        None,
-    )
+    send_tracked(snapshots, state, items, status_line, query, detail, None)
 }
 
 fn send_tracked(
-    snapshots: &mpsc::Sender<Snapshot>,
+    snapshots: &Snapshots,
     state: &State,
     items: Vec<StoreItem>,
     status_line: &str,
     query: Option<String>,
     detail: Option<StoreItem>,
-    invocation: Option<tilo_actions::InvocationId>,
     operation_error: Option<String>,
 ) -> bool {
-    snapshots
-        .send(Snapshot {
-            items,
-            status_line: status_line.to_string(),
-            query,
-            detail,
-            remotes: state.remotes.clone(),
-            invocation,
-            operation_error,
-            moderation_case: None,
-        })
-        .is_ok()
+    snapshots.send(Snapshot {
+        items,
+        status_line: status_line.to_string(),
+        query,
+        detail,
+        remotes: state.remotes.clone(),
+        operation_error,
+    })
 }
 
 fn submit_report(
@@ -578,80 +703,6 @@ fn moderation_registry(
                 "the app's registry is disabled or no longer configured".into(),
             )
         })
-}
-
-fn send_moderation_result(
-    state: &State,
-    snapshots: &mpsc::Sender<Snapshot>,
-    invocation: Option<tilo_actions::InvocationId>,
-    result: Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError>,
-    success: &str,
-) -> bool {
-    let (status_line, moderation_case, operation_error) = match result {
-        Ok(case) => (
-            format!(
-                "{success}: {} is {}.",
-                case.case_id,
-                crate::app::moderation_status_label(case.status)
-            ),
-            Some(case),
-            None,
-        ),
-        Err(error) => {
-            let message = format!(
-                "Registry request failed: {error} The collaborative draft and last confirmed status are unchanged; retry when ready."
-            );
-            (message.clone(), None, Some(message))
-        }
-    };
-    snapshots
-        .send(Snapshot {
-            items: state.base_items.clone(),
-            status_line,
-            query: None,
-            detail: None,
-            remotes: state.remotes.clone(),
-            invocation,
-            operation_error,
-            moderation_case,
-        })
-        .is_ok()
-}
-
-fn send_moderation_submission_result(
-    state: &State,
-    snapshots: &mpsc::Sender<Snapshot>,
-    invocation: Option<tilo_actions::InvocationId>,
-    result: Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError>,
-    success: &str,
-) -> bool {
-    let (status_line, operation_error) = match result {
-        Ok(case) => (
-            format!(
-                "{success} for {}. The last verified status stays visible until an owner-signed transparency snapshot includes it.",
-                case.case_id
-            ),
-            None,
-        ),
-        Err(error) => {
-            let message = format!(
-                "Registry request failed: {error} The collaborative draft and last verified status are unchanged; retry when ready."
-            );
-            (message.clone(), Some(message))
-        }
-    };
-    snapshots
-        .send(Snapshot {
-            items: state.base_items.clone(),
-            status_line,
-            query: None,
-            detail: None,
-            remotes: state.remotes.clone(),
-            invocation,
-            operation_error,
-            moderation_case: None,
-        })
-        .is_ok()
 }
 
 fn refresh(state: &mut State) {
@@ -795,7 +846,7 @@ mod tests {
     fn worker_cache_is_non_blocking_and_keeps_the_authoritative_directory() {
         // Case `request_and_drain_are_non_blocking`.
         {
-            let worker = StoreWorker::spawn(None, StoreSearchIndex::default());
+            let worker = StoreWorker::spawn(StoreSearchIndex::default(), WakeHandle::new());
             let started = ui::time::now();
             assert!(worker.request(Request::Search("editor".into())));
             assert!(started.elapsed() < Duration::from_millis(50));
@@ -815,7 +866,11 @@ mod tests {
                 search_index.clone(),
             );
             sync_authoritative_catalogue(&state);
-            let (snapshots, received) = mpsc::channel();
+            let (sender, received) = mpsc::channel();
+            let snapshots = Snapshots {
+                sender,
+                wake: WakeHandle::new(),
+            };
 
             assert!(send_tracked(
                 &snapshots,
@@ -823,7 +878,6 @@ mod tests {
                 vec![item("dev.example.alpha", "Alpha")],
                 "1 result for Alpha.",
                 Some("Alpha".into()),
-                None,
                 None,
                 None,
             ));
