@@ -278,14 +278,7 @@ impl ArtworkFile {
                 .map(|mark| FileMark {
                     id: mark.id.clone(),
                     layer: mark.layer.clone(),
-                    body: MarkBody {
-                        name: mark.name.clone(),
-                        shape: mark.shape.clone(),
-                        style: mark.style.clone(),
-                        transform: mark.transform,
-                        group: mark.group.clone(),
-                        clip: mark.clip.clone(),
-                    },
+                    body: mark.body(),
                 })
                 .collect(),
             media: art.media.clone(),

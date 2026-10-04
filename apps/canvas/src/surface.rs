@@ -171,10 +171,9 @@ pub struct CanvasSurface {
     /// Whether the window was narrower than the compact breakpoint the last
     /// time the canvas looked; `None` before it first did.
     was_narrow: Option<bool>,
-    /// The sidebar's state as last measured against, and the canvas's rect
-    /// when it changed: until the canvas is laid out anew, its width still
-    /// counts the sidebar as it was.
-    sidebar_seen: Option<(bool, Rect)>,
+    /// Whether the sidebar was shown, and where the canvas ended, the last
+    /// time the canvas looked at the window's width.
+    width_seen: Option<(bool, f64)>,
     space: bool,
     modifiers: ModifiersState,
     /// What the pen reported with the pointer's newest move or press; none
@@ -226,7 +225,7 @@ impl CanvasSurface {
             focused: false,
             pressed_into_focus: false,
             was_narrow: None,
-            sidebar_seen: None,
+            width_seen: None,
             space: false,
             modifiers: ModifiersState::empty(),
             stylus: None,
@@ -1436,15 +1435,12 @@ impl CanvasSurface {
             return;
         }
         let shown = self.tools.sidebar.with(|shown| *shown);
-        match self.sidebar_seen {
-            Some((seen, _)) if seen != shown => {
-                // Shown or put away just now: wait for the layout that
-                // makes room for it (or takes it back).
-                self.sidebar_seen = Some((shown, self.rect));
-                return;
-            }
-            Some((_, laid_out)) if laid_out == self.rect => return,
-            _ => self.sidebar_seen = Some((shown, Rect::ZERO)),
+        // The sidebar just shown or put away, with the canvas not laid out
+        // again yet: its width says nothing about the window until it is.
+        let seen = self.width_seen.replace((shown, self.rect.x1));
+        if seen.is_some_and(|(was, x1)| was != shown && (x1 - self.rect.x1).abs() < 0.5) {
+            self.width_seen = seen;
+            return;
         }
         let sidebar = if shown {
             f64::from(crate::SIDEBAR)
@@ -1452,6 +1448,16 @@ impl CanvasSurface {
             0.0
         };
         let window = self.rect.x1 + sidebar;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a laid-out width, positive and far below u32::MAX"
+        )]
+        let room =
+            (self.rect.width().max(0.0) as u32) / crate::tools::ROOM_STEP * crate::tools::ROOM_STEP;
+        if self.tools.room.with(|shown| *shown != room) {
+            self.tools.room.writer().set(room);
+        }
         let narrow = window < f64::from(self.metrics.compact_breakpoint);
         if self.was_narrow != Some(narrow) {
             if self.was_narrow.is_some() || narrow {
@@ -1865,6 +1871,7 @@ impl CanvasSurface {
                     transform: None,
                     group: String::new(),
                     clip: String::new(),
+                    area: String::new(),
                 });
             }
         }
@@ -1889,6 +1896,8 @@ impl CanvasSurface {
             .layer
             .clone()
             .or_else(|| self.art.layers.last().map(|layer| layer.id.clone()))?;
+        let (clip, area) =
+            crate::actions::clip_named(&self.art, stroke.clip.as_deref()).unwrap_or_default();
         Some(Mark {
             id: id.clone(),
             layer,
@@ -1906,7 +1915,8 @@ impl CanvasSurface {
             },
             transform: None,
             group: String::new(),
-            clip: stroke.clip.unwrap_or_default(),
+            clip,
+            area,
         })
     }
 
@@ -2597,6 +2607,7 @@ pub(crate) fn embedded_picture(
     let alone = Mark {
         transform: None,
         clip: String::new(),
+        area: String::new(),
         style: crate::model::Style {
             adjust: mark.style.adjust.clone(),
             ..crate::model::Style::default()
