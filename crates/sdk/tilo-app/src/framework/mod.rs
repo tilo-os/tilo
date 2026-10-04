@@ -326,8 +326,8 @@ pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;
 pub use effect::{
-    ChosenFile, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, JobProgress, Jobs,
-    Progress, Projection,
+    ChosenFile, DocumentVersion, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected,
+    JobProgress, Jobs, Progress, Projection,
 };
 pub use kinds::{hosted_kinds, resource_kind, seed_record};
 pub use launch::{Command, LaunchInput, OpenHere};
