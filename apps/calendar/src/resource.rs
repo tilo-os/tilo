@@ -617,6 +617,12 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
             accounts,
             cx.fixture::<SampleAccounts>().is_some(),
         );
+        if cx.mode().is_live()
+            && let Some(accounts) =
+                cx.person_of::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+        {
+            self.follow_person_accounts(accounts);
+        }
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -951,6 +957,72 @@ mod host_undo_tests {
         assert!(
             !app.state().events.is_empty(),
             "hiding changes no calendar content"
+        );
+    }
+}
+
+#[cfg(test)]
+mod person_account_tests {
+    use super::*;
+    use accounts::person::{ACCOUNTS_OWNER, PersonAccounts};
+    use ui::framework::testing::TestApp;
+
+    /// Settings, which keeps the person's accounts.
+    struct AccountsOwner;
+
+    impl ResourceApp for AccountsOwner {
+        type Resource = Calendar;
+        const ID: &'static str = ACCOUNTS_OWNER;
+        const TITLE: &'static str = "Settings";
+
+        fn view(_cx: &mut ViewCx<Calendar>) -> Element {
+            Box::new(ui::widget::Column::new())
+        }
+    }
+
+    fn person() -> String {
+        "ca".repeat(32)
+    }
+
+    /// A `CalDAV` account Settings saved on one device reaches Calendar's
+    /// window through the person's accounts record, and Calendar cannot
+    /// change it.
+    #[test]
+    fn the_persons_caldav_accounts_reach_the_calendar_from_their_record() {
+        let mut settings = TestApp::<AccountsOwner>::for_person(&person()).unwrap();
+        let mut calendar = TestApp::<CalendarShell>::for_person(&person()).unwrap();
+        let kept = settings.person::<PersonAccounts>().unwrap();
+        let mut account = crate::account::CalendarAccount::new(crate::account::CalDavConfig {
+            display_name: "Work calendars".into(),
+            username: "work-dav".into(),
+            ..crate::account::CalDavConfig::default()
+        });
+        account.config.password = "kept-on-the-device".into();
+        let stored = account.to_stored_for_test();
+        kept.invoke(&PersonAccounts::saving(&stored)).unwrap();
+
+        let read = calendar
+            .person_of::<PersonAccounts>(ACCOUNTS_OWNER)
+            .expect("Calendar reads the person's accounts");
+        assert!(!read.editable());
+        read.record()
+            .merge_peer_document(kept.record().document().unwrap())
+            .unwrap();
+        calendar.settle();
+        let shown = calendar
+            .with_widget(|app: &mut crate::app::CalendarApp| {
+                app.configured_for_test()
+                    .accounts
+                    .iter()
+                    .map(|account| account.label().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_eq!(shown, ["Work calendars"]);
+        assert!(
+            !String::from_utf8_lossy(&kept.record().document().unwrap())
+                .contains("kept-on-the-device"),
+            "the password never enters the record"
         );
     }
 }

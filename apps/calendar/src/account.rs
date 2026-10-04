@@ -182,6 +182,13 @@ impl CalendarAccount {
         stored
     }
 
+    /// The account as the shared store holds it, for a test that saves it
+    /// elsewhere.
+    #[cfg(test)]
+    pub(crate) fn to_stored_for_test(&self) -> StoredAccount {
+        self.to_stored()
+    }
+
     /// Rebuild a calendar account from a shared [`StoredAccount`], reading the
     /// password back from `vault`.
     fn from_stored(stored: &StoredAccount, vault: &SecretVault) -> Option<Self> {
@@ -267,6 +274,11 @@ impl AccountStore {
             &SharedStore::load_in(config_root),
             &SecretVault::open_in(config_root),
         )
+    }
+
+    /// The `CalDAV` accounts `shared` holds, each password from `vault`.
+    pub fn from_store(shared: &SharedStore, vault: &SecretVault) -> Self {
+        Self::from_shared(shared, vault)
     }
 
     fn from_shared(shared: &SharedStore, vault: &SecretVault) -> Self {

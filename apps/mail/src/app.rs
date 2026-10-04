@@ -39,7 +39,9 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use accounts::person::PersonAccounts;
 use tilo_content::ContentStore;
+use ui::framework::PersonRecord;
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::portal::{
@@ -243,6 +245,10 @@ impl AccountsPersist {
     }
 }
 
+/// Why Mail does not change an account the person's record keeps.
+const KEPT_IN_SETTINGS: &str =
+    "Your accounts are kept in Settings, on all of your devices; add or change them there";
+
 /// The configuration directory of the profile `storage` belongs to: the
 /// person's own in a session, else the directory of the settings document a
 /// test, capture or `--data-dir` host gave the app, so such a profile never
@@ -367,6 +373,9 @@ pub struct MailApp {
     /// so observing the id here gives every selection path one persistence
     /// boundary without leaking that preference into Automerge.
     persisted_active_account: Option<String>,
+    /// The person's accounts, which Settings keeps and every device of theirs
+    /// shares, followed in a live window; and the revision last shown.
+    person_accounts: Option<(PersonRecord<PersonAccounts>, Option<u64>)>,
     /// The person's Mail preferences, followed in a live window: the compose
     /// format and the folded account sidebars.
     preferences: Option<ui::framework::Setting<crate::resource::MailPreferences>>,
@@ -591,6 +600,7 @@ impl MailApp {
             resending: None,
             accounts_persist,
             persisted_active_account,
+            person_accounts: None,
             preferences: None,
             followed_preferences: crate::resource::MailPreferences::default(),
             connect_requested: false,
@@ -2037,6 +2047,11 @@ impl MailApp {
             return;
         }
         self.setup_error = None;
+        if self.accounts_kept_by_person() {
+            self.setup_error = Some(KEPT_IN_SETTINGS.into());
+            self.dirty = true;
+            return;
+        }
         {
             let mut st = self.shared.borrow_mut();
             let mut account = match self.setup_editing.and_then(|i| st.accounts.accounts.get(i)) {
@@ -2084,6 +2099,11 @@ impl MailApp {
         let Some(idx) = self.setup_editing else {
             return;
         };
+        if self.accounts_kept_by_person() {
+            self.setup_error = Some(KEPT_IN_SETTINGS.into());
+            self.dirty = true;
+            return;
+        }
         {
             let mut st = self.shared.borrow_mut();
             let Some(id) = st.accounts.accounts.get(idx).map(|a| a.id.clone()) else {
@@ -2745,7 +2765,7 @@ impl MailApp {
                 state.accounts.clone(),
             )
         };
-        if active == self.persisted_active_account {
+        if active == self.persisted_active_account || self.accounts_kept_by_person() {
             return;
         }
         match self.accounts_persist.persist(&accounts) {
@@ -2756,6 +2776,66 @@ impl MailApp {
                 ));
             }
         }
+    }
+
+    /// Follow the person's accounts, which Settings keeps, in this window.
+    pub(crate) fn follow_person_accounts(&mut self, accounts: PersonRecord<PersonAccounts>) {
+        self.person_accounts = Some((accounts, None));
+        self.adopt_person_accounts();
+    }
+
+    /// Whether the person's accounts record holds the accounts shown: they
+    /// are added, changed and removed in Settings then.
+    fn accounts_kept_by_person(&self) -> bool {
+        self.person_accounts
+            .as_ref()
+            .is_some_and(|(accounts, _)| !accounts.get().accounts.is_empty())
+    }
+
+    /// Show the person's accounts when their record moved: each account's
+    /// settings from the record, its password from this device's vault. An
+    /// empty record leaves the accounts this device's file holds. A newly
+    /// shown active account is connected.
+    fn adopt_person_accounts(&mut self) {
+        let Some((record, seen)) = &mut self.person_accounts else {
+            return;
+        };
+        let revision = record.revision();
+        if *seen == Some(revision) {
+            return;
+        }
+        *seen = Some(revision);
+        let person = record.get();
+        if person.accounts.is_empty() {
+            return;
+        }
+        let vault = self
+            .accounts_persist
+            .root()
+            .map_or_else(accounts::SecretVault::open, |root| {
+                accounts::SecretVault::open_in(&root)
+            });
+        let mut adopted = AccountStore::from_store(&person.store(), &vault);
+        let changed = {
+            let mut st = self.shared.borrow_mut();
+            if let Some(shown) = st
+                .accounts
+                .active_account()
+                .map(|account| account.id.clone())
+                && let Some(index) = adopted.accounts.iter().position(|a| a.id == shown)
+            {
+                adopted.active = index;
+            }
+            let changed = st.accounts != adopted;
+            st.accounts = adopted;
+            changed
+        };
+        if changed && self.connect_requested && self.engine.is_some() {
+            let cfg = self.shared.borrow().accounts.active_config();
+            self.post_engine(EngineRequest::connect(cfg.clone()));
+            self.post_engine(EngineRequest::fetch(cfg, Folder::Inbox));
+        }
+        self.dirty = true;
     }
 
     /// Follow the person's Mail preferences in this window.
@@ -5036,6 +5116,7 @@ impl Widget for MailApp {
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
         self.background_poll_deadline.set(None);
+        self.adopt_person_accounts();
         if self.first_run.take_action() {
             self.open_setup_edit(None);
         }
