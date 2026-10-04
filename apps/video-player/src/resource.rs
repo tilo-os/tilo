@@ -64,6 +64,7 @@ impl Resource for VideoPlayer {
             anchor: Some(playlist_resource_id(&playlist.id)),
             title: playlist.name.clone(),
             text: "Playlist".to_owned(),
+            ..Default::default()
         });
         let annotations = state.annotations.iter().map(|annotation| SearchEntry {
             anchor: Some(annotation_resource_id(&annotation.id)),
@@ -72,6 +73,7 @@ impl Resource for VideoPlayer {
                 "Bookmark at {}",
                 ui::format::timecode(annotation.time_ms / 1000)
             ),
+            ..Default::default()
         });
         playlists.chain(annotations).collect()
     }

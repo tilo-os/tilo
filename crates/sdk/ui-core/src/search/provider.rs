@@ -758,6 +758,11 @@ pub struct SearchResult {
     /// registry adds a query-match bonus on top. `0` ranks by query match
     /// alone; raise it to float pinned/recent/favourite hits.
     pub score: i32,
+    /// Where the hit lies in the app's anchor path, for scope checks, when
+    /// that is not what its action addresses: a contact addressed by its flat
+    /// id `contact:42` that lies in `group:family`. `None` scopes the hit by
+    /// its action's resource (see [`anchor`](Self::anchor)).
+    pub scope_anchor: Option<String>,
 }
 
 impl SearchResult {
@@ -776,6 +781,7 @@ impl SearchResult {
             icon: None,
             row: None,
             score: 0,
+            scope_anchor: None,
         }
     }
 
@@ -848,10 +854,24 @@ impl SearchResult {
         self
     }
 
-    /// The anchor the hit lies at, for scope checks: the resource its action
+    /// Place the hit at `anchor` in the app's anchor path for scope checks,
+    /// whatever its action addresses: a hit addressed by a flat id
+    /// (`sheets.cell:B4`) lies in the scope its path names (`sheet:2`), so it
+    /// is narrowed without renaming the resource.
+    #[must_use]
+    pub fn within(mut self, anchor: impl Into<String>) -> Self {
+        self.scope_anchor = Some(anchor.into());
+        self
+    }
+
+    /// The anchor the hit lies at, for scope checks: its
+    /// [`within`](Self::within) anchor, else the resource its action
     /// addresses, or the opaque navigation id.
     #[must_use]
     pub fn anchor(&self) -> String {
+        if let Some(anchor) = &self.scope_anchor {
+            return anchor.clone();
+        }
         self.action_address()
             .map_or_else(|| self.action_id.clone(), |address| address.resource)
     }
@@ -1137,6 +1157,12 @@ pub trait CatalogSearchProvider {
         Vec::new()
     }
 
+    /// As [`SearchProvider::search_scopes`]: the parts of the app this
+    /// catalogue's hits can be narrowed to.
+    fn search_scopes(&self) -> Vec<super::ScopeDecl> {
+        Vec::new()
+    }
+
     /// Whether `hit` passes `query`'s facet filters. The catalogue matches
     /// text only; a provider with facets checks the hit's values here
     /// (`query.admits("language", &[..])`). The default admits every hit.
@@ -1196,6 +1222,10 @@ impl<T: CatalogSearchProvider> SearchProvider for T {
 
     fn facets(&self) -> Vec<Facet> {
         CatalogSearchProvider::facets(self)
+    }
+
+    fn search_scopes(&self) -> Vec<super::ScopeDecl> {
+        CatalogSearchProvider::search_scopes(self)
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {

@@ -79,11 +79,13 @@ impl Resource for Music {
             anchor: Some(crate::actions::track_resource_id(&track.id)),
             title: track.title.clone(),
             text: state.artist_name(&track.artist_id).to_owned(),
+            ..Default::default()
         });
         let playlists = state.playlists.iter().map(|playlist| SearchEntry {
             anchor: Some(crate::actions::playlist_resource_id(&playlist.id)),
             title: playlist.name.clone(),
             text: String::new(),
+            ..Default::default()
         });
         tracks.chain(playlists).collect()
     }

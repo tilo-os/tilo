@@ -67,6 +67,7 @@ impl Resource for Totp {
                 anchor: Some(account_resource_id(account.id)),
                 title: account.title().to_owned(),
                 text: account.label.clone(),
+                ..Default::default()
             })
             .collect()
     }

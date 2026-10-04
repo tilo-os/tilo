@@ -58,6 +58,7 @@ impl Resource for Remote {
                     connection.address(),
                     connection.group
                 ),
+                ..Default::default()
             })
             .collect()
     }
