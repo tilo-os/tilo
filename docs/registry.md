@@ -517,8 +517,32 @@ The store keeps each staged package once, as the payload blobs and thin form it
 serves for thin installs plus a record of the package root, and rebuilds and
 re-hashes the exact bytes on read. After every publish the signer deletes the
 staged packages, thin packages and blobs that no published, quarantined,
-pending or staged entry references, such as the versions a full entry just
-dropped. `tilo-registry-server prune-storage` does the same on demand.
+pending or staged entry, retained history snapshot or served version index
+references, such as the versions an entry dropped. `tilo-registry-server
+prune-storage` does the same on demand; with `--dry-run` it only reports what
+it would delete.
+
+### Version retention
+
+Publishers bound their entries: each signed entry keeps the newest versions of
+every target (platform and architecture) and channel (release or pre-release),
+20 by default (`registry_types::retention`), and drops the rest when the next
+version is signed. The registry accepts a dropped version only when at least
+`MIN_RETAINED_PER_CHANNEL` (4) newer versions of its target and channel stay,
+or when the entry is at its 128-version limit and a newer version supersedes
+it, so retention never removes a target's current version or its recent
+rollback targets.
+
+A dropped version leaves the catalogue through an ordinary signed snapshot:
+the compact snapshot and version index stop listing it, `app rollback` stops
+offering it, and the rollback, fork and freeze checks are unchanged. Its
+artifacts stay while a retained history snapshot (which `rollback-snapshot`
+may restore) or the previous version index (which a client one snapshot behind
+may still fetch) lists it; the prune after that deletes them.
+
+`prune-storage --dry-run --keep-releases N --keep-prereleases M` lists the
+published versions that policy drops and what pruning deletes once they are
+gone, without changing anything.
 
 Both seed files are exactly 32 secret bytes encoded as 64 hex characters. The
 root seed exists only in the bootstrap/manual authorization environment. The
