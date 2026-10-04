@@ -487,6 +487,16 @@ struct CertifyArgs {
     /// expanded-copy, 200%-text, and high-contrast modes.
     #[arg(long, requires = "workspace", value_name = "DIR")]
     responsive_artifacts: Option<PathBuf>,
+
+    /// With `--workspace`, certify only the applications of these Cargo
+    /// packages; packages that are no workspace application are ignored.
+    #[arg(
+        long = "package",
+        short = 'p',
+        requires = "workspace",
+        value_name = "SPEC"
+    )]
+    packages: Vec<String>,
 }
 
 #[derive(clap::Args)]
@@ -2380,6 +2390,14 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
             })
             .unwrap_or(package_name);
         packages.push((app.clone(), package_name.to_owned(), binary_name.to_owned()));
+    }
+    if !args.packages.is_empty() {
+        packages.retain(|(_, package, _)| args.packages.contains(package));
+        app_dirs = packages.iter().map(|(app, _, _)| app.clone()).collect();
+        if packages.is_empty() {
+            println!("Certified 0 graphical Tilo applications");
+            return Ok(json!({"certified": app_dirs}));
+        }
     }
 
     // Build the complete application set in one Cargo graph. Apart from being
