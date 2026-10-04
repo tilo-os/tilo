@@ -206,7 +206,7 @@ impl FileDesk {
         let request = PickRequest::save(
             &lookup("canvas-export-title"),
             &lookup("canvas-export"),
-            &document::file_name(&art.title, extension),
+            &document::file_name(&export_stem(art), extension),
         )
         .filter(
             FileFilter::new(settings.format.label())
@@ -344,6 +344,24 @@ impl FileDesk {
             at_ms,
             thumbnail: None,
         }));
+    }
+}
+
+/// What an export is named: the artwork's title, or for an artwork made
+/// from a picture (titled by the picture's file) the title marked as
+/// edited, so the photo it came from is not the name offered to write over.
+fn export_stem(art: &Artwork) -> String {
+    let from_picture = !art.title.is_empty()
+        && art.marks.iter().any(|mark| {
+            matches!(mark.shape, crate::model::Shape::Image { .. }) && mark.name == art.title
+        });
+    if from_picture {
+        ui::i18n::I18nManager::format(
+            "canvas-export-edited",
+            &[("title", art.title.clone().into())],
+        )
+    } else {
+        art.title.clone()
     }
 }
 
@@ -520,5 +538,35 @@ impl ui::widget::Decorator for FileDesk {
 
     fn needs_animation_frame(&self) -> bool {
         self.content.needs_animation_frame() || self.chooser.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test fixtures")]
+
+    use super::*;
+
+    /// A photo opened as an artwork is titled by its file: exporting it
+    /// does not offer that file's name to write over.
+    #[test]
+    fn an_artwork_made_from_a_picture_is_exported_under_a_name_of_its_own() {
+        crate::locales::install();
+        let mut doc = ui::tilo_resource::Doc::new();
+        let open = CanvasAction::OpenPicture(crate::actions::Open {
+            src: "tilo.content:abc".into(),
+            pixels: [10, 10],
+            title: "labrador".into(),
+        });
+        ui::tilo_actions::Action::apply(&open, &mut doc).unwrap();
+        let art = crate::doc::read(&doc);
+        assert_eq!(art.title, "labrador");
+        let stem = export_stem(&art);
+        assert_eq!(stem, "labrador edited");
+        let retitled = Artwork {
+            title: "Bruno".into(),
+            ..art
+        };
+        assert_eq!(export_stem(&retitled), "Bruno");
     }
 }
