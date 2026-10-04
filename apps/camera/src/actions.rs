@@ -26,12 +26,11 @@
 //! [`ActionError::Refused`], so the invoker never mistakes a rejected durable
 //! mutation for success.
 
-use automerge::{AutoCommit, ROOT};
+use automerge::ROOT;
 use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource,
+    Action, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, OperationKind, Resource,
 };
 
 use crate::doc;
@@ -216,11 +215,6 @@ impl Action for CameraAction {
     }
 }
 
-/// Register Camera's action decoder for palette execution + remote replay.
-pub fn register(registry: &mut ActionRegistry) {
-    registry.register::<CameraAction>(CAMERA_ACTION_TYPE);
-}
-
 /// Encode any [`CameraAction`] into the wire form the palette and the on-screen
 /// affordances both dispatch. The single point that turns a Camera action into
 /// a replayable envelope.
@@ -262,7 +256,7 @@ pub struct CaptureItem {
     pub media_id: Option<String>,
 }
 
-/// The compact presentation context Camera hands [`provide_resources`].
+/// The compact presentation context Camera builds its live rows from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -838,122 +832,83 @@ pub(crate) fn live_effect_extras(ctx: &CameraResourceCtx) -> Vec<Resource> {
     ]
 }
 
-fn state_from_ctx(ctx: &CameraResourceCtx) -> crate::resource::CameraState {
-    crate::resource::CameraState {
-        mode: ctx.mode,
-        facing: ctx.facing,
-        settings: ctx.settings,
-        scans: Vec::new(),
-        recent: ctx.recent.as_ref().map(|item| doc::SharedCapture {
-            id: item.id.clone(),
-            media_id: item.media_id.clone().unwrap_or_default(),
-            kind: if item.is_video {
-                CaptureKind::Video
-            } else {
-                CaptureKind::Photo
-            },
-            ts: 0,
-            w: 0,
-            h: 0,
-            dur_ms: 0,
-            label: item.label.clone(),
-            facing: ctx.facing,
-        }),
-    }
-}
-
-/// The published camera door plus live shutter and scanner extras.
-///
-/// Document mode, lens, settings, and the recent handoff come from
-/// [`tilo_resource::publish`]. Capture, code-scanner, and document-scanner
-/// Effects stay beside that root because they are device I/O, not shared state.
-pub fn provide_resources(ctx: &CameraResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    // Mode, lens, and settings are the document once `mode` has been written.
-    // A caller that has not written them yet still publishes its context.
-    // Shutter and scanner Effects stay live extras.
-    let has_document = automerge::ReadDoc::get(doc, &automerge::ROOT, "mode")
-        .ok()
-        .flatten()
-        .is_some();
-    let state = if has_document {
-        <crate::resource::Camera as ui::tilo_resource::Resource>::read(doc)
-            .unwrap_or_else(|_| state_from_ctx(ctx))
-    } else {
-        state_from_ctx(ctx)
-    };
-    let mut resources = vec![ui::tilo_resource::publish::<crate::resource::Camera>(
-        crate::resource::CAMERA_RESOURCE_ID,
-        "Camera",
-        &state,
-    )];
-    resources.extend(live_effect_extras(ctx));
-    resources
-}
-
-fn find_resource(resource: &Resource, id: &str) -> Option<Resource> {
-    if resource.id.as_str() == id {
-        return Some(resource.clone());
-    }
-    resource
-        .children
-        .iter()
-        .find_map(|child| find_resource(child, id))
-}
-
-/// Resolve a stable root or the single recent-capture handoff from the
-/// published camera tree. Camera never enumerates a roll.
-pub fn resolve_resource(ctx: &CameraResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
-    provide_resources(ctx, doc)
-        .iter()
-        .find_map(|resource| find_resource(resource, id))
-}
-
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::CameraApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let state =
-            <crate::resource::Camera as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
-        let mut resources = vec![ui::tilo_resource::publish::<crate::resource::Camera>(
-            crate::resource::CAMERA_RESOURCE_ID,
-            "Camera",
-            &state,
-        )];
-        resources.extend(live_effect_extras(&self.camera_resource_ctx()));
-        resources
-    }
-
-    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        self.resolve_camera_resource(doc, id)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::CameraApp;
+    use automerge::AutoCommit;
     use tilo_actions::ActionInput;
+    use tilo_actions::ActionRegistry;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
-        register(&mut r);
+        <crate::resource::Camera as ui::tilo_resource::Resource>::register(&mut r);
         r
     }
 
-    /// A hermetic Camera app with its sample captures synced into a fresh
-    /// document. The sample set exposes one contextual recent handoff.
+    /// A hermetic Camera app synced with a record holding one recent capture.
     fn seeded() -> (CameraApp, AutoCommit) {
         let mut app = CameraApp::sample();
         let mut doc = AutoCommit::new();
+        crate::resource::sample_capture().apply(&mut doc).unwrap();
         app.sync(&mut doc, &ROOT);
         (app, doc)
     }
 
-    /// The resource tree a sample Camera publishes once it has synced `doc`.
+    /// The resource `state` publishes, with the live rows of `ctx` beside it.
+    fn tree(ctx: &CameraResourceCtx, state: &crate::resource::CameraState) -> Vec<Resource> {
+        let mut resources = vec![ui::tilo_resource::publish::<crate::resource::Camera>(
+            crate::resource::CAMERA_RESOURCE_ID,
+            "Camera",
+            state,
+        )];
+        resources.extend(live_effect_extras(ctx));
+        resources
+    }
+
+    /// The tree for `ctx` alone: its mode, lens, settings and recent capture.
+    fn provide_resources(ctx: &CameraResourceCtx) -> Vec<Resource> {
+        let state = crate::resource::CameraState {
+            mode: ctx.mode,
+            facing: ctx.facing,
+            settings: ctx.settings,
+            scans: Vec::new(),
+            recent: ctx.recent.as_ref().map(|item| doc::SharedCapture {
+                id: item.id.clone(),
+                media_id: item.media_id.clone().unwrap_or_default(),
+                kind: if item.is_video {
+                    CaptureKind::Video
+                } else {
+                    CaptureKind::Photo
+                },
+                ts: 0,
+                w: 0,
+                h: 0,
+                dur_ms: 0,
+                label: item.label.clone(),
+                facing: ctx.facing,
+            }),
+        };
+        tree(ctx, &state)
+    }
+
+    fn find_resource(resource: &Resource, id: &str) -> Option<Resource> {
+        if resource.id.as_str() == id {
+            return Some(resource.clone());
+        }
+        resource
+            .children
+            .iter()
+            .find_map(|child| find_resource(child, id))
+    }
+
+    /// The resource a sample Camera publishes once it has synced `doc`.
     fn published(doc: &AutoCommit) -> Vec<Resource> {
         let mut app = CameraApp::sample();
         app.sync(&mut doc.clone(), &ROOT);
-        ui::resources::resources(&app, doc)
+        let state = <crate::resource::Camera as ui::tilo_resource::Resource>::read(doc).unwrap();
+        tree(&app.camera_resource_ctx(), &state)
     }
 
     fn encoded(action: &CameraAction) -> EncodedAction {
@@ -1022,7 +977,8 @@ mod tests {
         // contextual handoff, never a media library management surface.
         {
             let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = published(&doc);
+            let _ = app;
             assert!(
                 resources.len() >= 3,
                 "capture, scanner, document scanner, settings, and Camera discovery"
@@ -1125,8 +1081,7 @@ mod tests {
                 }),
                 ..CameraResourceCtx::default()
             };
-            let doc = AutoCommit::new();
-            let page = provide_resources(&ctx, &doc);
+            let page = provide_resources(&ctx);
             assert_eq!(
                 page[0]
                     .children
@@ -1135,7 +1090,9 @@ mod tests {
                     .count(),
                 1
             );
-            let recent = resolve_resource(&ctx, &doc, "camera.photo:IMG_latest.jpg")
+            let recent = page
+                .iter()
+                .find_map(|resource| find_resource(resource, "camera.photo:IMG_latest.jpg"))
                 .expect("recent capture resolves");
             let open = recent
                 .actions
@@ -1154,7 +1111,7 @@ mod tests {
     fn provided_resources_are_honest_about_devices_and_expose_every_preference() {
         // Phase `camera_root_is_a_local_reveal_operation_and_discoverable_resource`.
         {
-            let resources = provide_resources(&CameraResourceCtx::default(), &AutoCommit::new());
+            let resources = provide_resources(&CameraResourceCtx::default());
             let camera = resources
                 .iter()
                 .find(|resource| resource.id.as_str() == "camera")
@@ -1169,7 +1126,7 @@ mod tests {
         }
         // Phase `ctrl_k_exposes_every_capture_preference`.
         {
-            let resources = provide_resources(&CameraResourceCtx::default(), &AutoCommit::new());
+            let resources = provide_resources(&CameraResourceCtx::default());
             let settings = resources
                 .iter()
                 .flat_map(|resource| std::iter::once(resource).chain(resource.children.iter()))
@@ -1196,18 +1153,15 @@ mod tests {
         }
         // Phase `device_effects_are_honest_and_unverified_captures_publish_no_action`.
         {
-            let resources = provide_resources(
-                &CameraResourceCtx {
-                    recent: Some(CaptureItem {
-                        id: "IMG_1.jpg".into(),
-                        label: "Capture".into(),
-                        is_video: false,
-                        media_id: None,
-                    }),
-                    ..CameraResourceCtx::default()
-                },
-                &AutoCommit::new(),
-            );
+            let resources = provide_resources(&CameraResourceCtx {
+                recent: Some(CaptureItem {
+                    id: "IMG_1.jpg".into(),
+                    label: "Capture".into(),
+                    is_video: false,
+                    media_id: None,
+                }),
+                ..CameraResourceCtx::default()
+            });
             let capture_root = resources
                 .iter()
                 .find(|resource| resource.id.as_str() == "camera.capture")
@@ -1229,13 +1183,10 @@ mod tests {
                 .expect("recent handoff");
             assert!(unverified.actions.is_empty());
 
-            let available = provide_resources(
-                &CameraResourceCtx {
-                    feed_available: true,
-                    ..CameraResourceCtx::default()
-                },
-                &AutoCommit::new(),
-            );
+            let available = provide_resources(&CameraResourceCtx {
+                feed_available: true,
+                ..CameraResourceCtx::default()
+            });
             let capture = available
                 .iter()
                 .find(|resource| resource.id.as_str() == "camera.capture")
@@ -1248,14 +1199,11 @@ mod tests {
         }
         // Phase `unavailable_camera_publishes_real_recovery_operations`.
         {
-            let resources = provide_resources(
-                &CameraResourceCtx {
-                    camera_permission_denied: true,
-                    camera_devices: vec!["/dev/video0".into(), "/dev/video2".into()],
-                    ..CameraResourceCtx::default()
-                },
-                &AutoCommit::new(),
-            );
+            let resources = provide_resources(&CameraResourceCtx {
+                camera_permission_denied: true,
+                camera_devices: vec!["/dev/video0".into(), "/dev/video2".into()],
+                ..CameraResourceCtx::default()
+            });
             let actions = &resources
                 .iter()
                 .find(|resource| resource.id.as_str() == "camera.capture")
