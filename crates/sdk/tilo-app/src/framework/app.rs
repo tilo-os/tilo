@@ -10,9 +10,10 @@ use ui_core::application::{
     AppComponent, ApplicationDefinition, ComponentBehaviour, HostContext, LaunchTarget,
     RestoreInput,
 };
+use ui_core::i18n::EmbeddedCatalog;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
-use ui_core::record::RecordKind;
+use ui_core::record::{RecordId, RecordKind};
 use ui_core::storage::AppStorage;
 use ui_core::widget::{Element, IconDescriptor};
 
@@ -22,20 +23,21 @@ use ui_core::widget::{Element, IconDescriptor};
 use {
     std::cell::RefCell,
     ui_core::application::{
-        ApplicationHost, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
+        ApplicationHost, Capture, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
     },
     ui_core::headless::FrameHarness,
     ui_core::launch::{LaunchArgs, LaunchSpec},
     ui_core::permissions::{Actor, PermissionContext, Role, UserId},
-    ui_core::record::{RecordCheckout, RecordId},
+    ui_core::record::RecordCheckout,
 };
 
 use super::dispatch::Dispatcher;
 use super::effect::Effects;
+use super::launch::{Command, LaunchInput};
 use super::live::Live;
 use super::root::ResourceRoot;
-use super::stage::Stages;
-use super::view::{Updaters, ViewCx};
+use super::scenario::{Fixture, Run};
+use super::view::ViewCx;
 
 /// A framework app: one resource type and a view of it.
 ///
@@ -51,13 +53,19 @@ pub trait ResourceApp: 'static {
     const TITLE: &'static str;
     /// A named icon; defaults to the app id's last segment.
     const ICON: Option<&'static str> = None;
-    /// The `--shots` viewport.
-    const SHOT_VIEWPORT: (u32, u32) = (1024, 720);
     /// How every window hosting the app treats it: focus after a rebuild,
     /// live appearance, and whether captures withhold it. An app that shows
     /// secrets declares `capture_protected` here, so the live launch, the
     /// shell and every other host of its component protect it alike.
     const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour::DEFAULT;
+    /// Media types (`type/subtype`, lowercase) of the files the app opens
+    /// when a host hands it one (a file association, a file dropped on its
+    /// icon, a path of that type on its command line); [`Self::launch`]
+    /// receives the file.
+    const OPENS: &'static [&'static str] = &[];
+    /// How many arguments (paths, URLs) a launch may name;
+    /// [`Self::launch_record`] and [`Self::launch`] receive them.
+    const ARGUMENTS: usize = 0;
 
     /// Build the view. Called once for the live app, and again for every
     /// historical version History mode shows (with a read-only context), so
@@ -79,9 +87,60 @@ pub trait ResourceApp: 'static {
         Vec::new()
     }
 
-    /// Named screenshot scenarios for `--shots --scenario NAME`.
+    /// The record a launch naming `input` opens: the file's own record
+    /// ([`RecordId::identify_file`]), a record derived from it
+    /// ([`RecordId::derived`]), a minted one. `None`, the default, opens the
+    /// record the app would open anyway: the one the window showed last, else
+    /// the room's default. Asked by a launcher that picks the record (the
+    /// command line, a test host), before the record is opened, so it must
+    /// not depend on anything but `input`.
+    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+        let _ = input;
+        None
+    }
+
+    /// The actions a launch naming `input` takes once its record is open;
+    /// `created` when this launch created the record, so actions that fill
+    /// a new record (the source of a new project) are taken only then. They
+    /// go through the same door as every control: checked against the
+    /// participant's permissions, attributed, undoable and in history.
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Self::Resource>> {
+        let _ = (input, created);
+        Vec::new()
+    }
+
+    /// The commands the app's binary runs instead of opening a window.
+    fn commands() -> &'static [Command] {
+        &[]
+    }
+
+    /// The app's message catalog, loaded before its view is built in every
+    /// host that mounts the app, so the view's lookups find its messages.
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        None
+    }
+
+    /// Named screenshot scenarios for `--shots --scenario NAME`; `--shots-dir`
+    /// captures every one.
     fn scenarios() -> &'static [&'static str] {
         &[]
+    }
+
+    /// The viewport a capture of `scenario` (`None` for a plain `--shots`)
+    /// is drawn at, unless `--viewport` names one: a narrow scenario's
+    /// phone-sized window.
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        let _ = scenario;
+        (1024, 720)
+    }
+
+    /// Prepare what a capture of `fixture.scenario()` shows that its actions
+    /// cannot stage, before the view is built: typed stand-ins for live
+    /// sources, scratch files, content-store blobs, other people's versions
+    /// and collaborators. Runs only for a capture, whose views are built in
+    /// [`RunMode::Capture`](super::RunMode). See [`Fixture`](super::Fixture).
+    fn fixture(fixture: &mut super::Fixture<Self::Resource>) {
+        let _ = fixture;
     }
 
     /// The actions that stage the resource for a capture: `Some(name)` for
@@ -171,7 +230,7 @@ pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
         record_kind: RecordKind::new(<A::Resource as Resource>::KIND),
         required: vec![],
         optional: vec![],
-        opens: &[],
+        opens: A::OPENS,
         create: create::<A>,
     })
 }
@@ -184,23 +243,14 @@ fn icon<A: ResourceApp>() -> IconDescriptor {
     )
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-/// The record a standalone launch opens: one stable default per app and
-/// workspace, created empty on first launch.
-pub(crate) fn default_record<A: ResourceApp>() -> RecordCheckout {
-    RecordCheckout::new(
-        RecordId::derived("default", &RecordId::for_tab(0)),
-        RecordKind::new(<A::Resource as Resource>::KIND),
-    )
-}
-
-/// Who may edit the resource a root shows.
+/// Who may edit the resource a root shows, and what it is built for.
 pub(crate) enum Editing {
     /// The participant (`me`) and their permissions, followed while the app
-    /// runs.
+    /// runs, in a window someone uses or a capture.
     Live {
         permissions: LivePermissions,
         me: String,
+        run: Run,
     },
     /// Never: a past version in History mode.
     ReadOnly,
@@ -219,30 +269,29 @@ pub(crate) fn build_root<A: ResourceApp>(
     storage: AppStorage,
 ) -> ResourceRoot<A::Resource> {
     let scope = write_scope::<A>();
-    let (permissions, read_only, me) = match editing {
-        Editing::Live { permissions, me } => {
+    let (permissions, read_only, me, run) = match editing {
+        Editing::Live {
+            permissions,
+            me,
+            run,
+        } => {
             let read_only = !permissions.check(&scope);
-            (Some(permissions), read_only, Some(me))
+            (Some(permissions), read_only, Some(me), run)
         }
-        Editing::ReadOnly => (None, true, None),
+        Editing::ReadOnly => (None, true, None, Run::past()),
     };
     let label = A::label(reader.state());
     let resource_id = <A::Resource as Resource>::KIND;
     let published = tilo_resource::publish::<A::Resource>(resource_id, &label, reader.state());
     let live = Live::new(reader);
-    let updaters = Updaters::new();
     let alive = Rc::new(());
     let dispatch = Dispatcher::new(A::ID, resource_id, read_only, me.as_deref());
-    let saved = ui_core::LocalState::new(ui_core::record::RecordSaveStatus::Saved);
-    let stages = Stages::new();
     let storage = super::settings::ViewStorage::new(storage);
-    // Effects run in the live app only; History shows a past version.
-    let effects = permissions
-        .is_some()
+    // Effects and projection drains run in a window someone uses only:
+    // History shows a past version, and a capture reaches nothing outside.
+    let effects = (permissions.is_some() && run.mode.is_live())
         .then(|| Effects::live(dispatch.clone(), live.clone()));
-    let mut cx = ViewCx::root(
-        live, updaters, &alive, dispatch, published, saved, stages, storage,
-    );
+    let mut cx = ViewCx::root(live, &alive, dispatch, published, run, storage);
     if let Some(effects) = effects {
         cx.effects = effects;
     }
@@ -318,7 +367,11 @@ fn create<A: ResourceApp>(
     target: LaunchTarget,
     _restore: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
-    if matches!(target, LaunchTarget::New) {
+    if let Some(catalog) = A::catalog() {
+        catalog.ensure();
+    }
+    let created = matches!(target, LaunchTarget::New);
+    if created {
         let seed = A::seed(&SeedCx { context: &context });
         let author = context.author().0.clone();
         context
@@ -328,19 +381,66 @@ fn create<A: ResourceApp>(
             )
             .map_err(LaunchError::Record)?;
     }
+    let run = match context.capture().cloned() {
+        Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
+        None => Run::live(context.content().cloned()),
+    };
     let permissions = context.live_permissions();
     let reader = context
         .read_record(Reader::<A::Resource>::read)
         .map_err(LaunchError::Record)?
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let me = context.author().0.clone();
-    let root = build_root::<A>(reader, Editing::Live { permissions, me }, context.storage());
+    let root = build_root::<A>(
+        reader,
+        Editing::Live {
+            permissions,
+            me,
+            run,
+        },
+        context.storage(),
+    );
+    let file = context.take_open_file();
+    let arguments = context.take_launch_arguments();
+    if let Some(file) = &file {
+        file.report_opened(<A::Resource as Resource>::KIND);
+    }
+    for invoke in A::launch(&LaunchInput::new(&arguments, file.as_ref()), created) {
+        root.dispatcher().invoke(invoke);
+    }
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
     component.set_behaviour(A::BEHAVIOUR);
     component
         .register_document_history(super::preview::history_definition::<A>())
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     Ok(component)
+}
+
+/// Prepare a capture's scene before its view is built: the app's fixture,
+/// then the versions other people wrote, merged as their changes arrive.
+fn prepare_capture<A: ResourceApp>(
+    context: &mut HostContext,
+    scenario: Option<&str>,
+) -> Result<Run, LaunchError> {
+    let mut fixture = Fixture::<A::Resource>::new(scenario, context.content().cloned());
+    A::fixture(&mut fixture);
+    if context.content().is_none()
+        && let Some(content) = fixture.lent_content()
+    {
+        context.provide_content(content.clone());
+    }
+    if fixture.has_history() {
+        let mut peer = context
+            .read_record(|doc| doc.clone().fork())
+            .map_err(LaunchError::Record)?;
+        fixture
+            .write_history(&mut peer, &action_registry::<A>())
+            .map_err(LaunchError::Operation)?;
+        context
+            .merge_peer_document(peer.save())
+            .map_err(LaunchError::Operation)?;
+    }
+    Ok(fixture.into_run())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -387,16 +487,112 @@ fn operation(error: impl std::fmt::Display) -> LaunchError {
     LaunchError::Operation(error.to_string())
 }
 
-/// The record a standalone launch opens: the default one of the definition's kind.
-#[cfg(not(target_arch = "wasm32"))]
-fn default_record_of(definition: &ApplicationDefinition) -> RecordCheckout {
-    RecordCheckout::new(RecordId::room_default(), definition.record_kind.clone())
+/// Prepare `definition` on `host`: the record a launch named, else the one
+/// the instance showed last, else the room's default.
+#[cfg(tilo_native_runner)]
+pub(crate) fn prepare_on(
+    host: &mut ApplicationHost,
+    definition: &ApplicationDefinition,
+    instance: u64,
+    named: Option<RecordId>,
+    inputs: ComponentRunnerInputs,
+) -> Result<PreparedComponentInputs, LaunchError> {
+    let kind = definition.record_kind.clone();
+    match named {
+        Some(id) => {
+            host.prepare_record(definition, instance, RecordCheckout::new(id, kind), inputs)
+        }
+        None => host.prepare_default(
+            definition,
+            instance,
+            RecordCheckout::new(RecordId::room_default(), kind),
+            None,
+            inputs,
+        ),
+    }
+}
+
+/// Prepare `A` for a launch: the record its arguments name, and the
+/// arguments handed to the component for [`ResourceApp::launch`]. A first
+/// argument naming a file of a type the app [opens](ResourceApp::OPENS) is
+/// also handed over as that file, as a desktop handing it the file would.
+#[cfg(tilo_native_runner)]
+fn prepare_app<A: ResourceApp>(
+    definition: &ApplicationDefinition,
+    args: &LaunchArgs,
+) -> Result<PreparedComponentInputs, LaunchError> {
+    let arguments = args.positionals();
+    let named = A::launch_record(&LaunchInput::new(arguments, None));
+    let mut prepared = prepare_named(definition, args, named)?;
+    hand_launch(definition, arguments, &mut prepared)?;
+    Ok(prepared)
+}
+
+/// Hand a prepared component what its launch named: the arguments, and the
+/// file the first one names when the app opens its type.
+///
+/// # Errors
+/// A file of a type the app opens that cannot be read.
+#[cfg(tilo_native_runner)]
+pub(crate) fn hand_launch(
+    definition: &ApplicationDefinition,
+    arguments: &[String],
+    prepared: &mut PreparedComponentInputs,
+) -> Result<(), LaunchError> {
+    if let Some(path) = arguments.first().map(std::path::Path::new)
+        && let Some(file) = launched_file(definition, path)?
+    {
+        prepared.context.provide_open_file(file);
+    }
+    prepared
+        .context
+        .provide_launch_arguments(arguments.to_vec());
+    Ok(())
+}
+
+/// The file at `path` to hand the component, when `definition` opens its
+/// type; `None` for any other argument (a URL, a folder, another type).
+///
+/// # Errors
+/// A file of a type the app opens that cannot be read.
+#[cfg(tilo_native_runner)]
+fn launched_file(
+    definition: &ApplicationDefinition,
+    path: &std::path::Path,
+) -> Result<Option<ui_core::application::OpenFile>, LaunchError> {
+    let Some(media_type) = ui_core::dnd::mime_for_path(path)
+        .filter(|media_type| definition.opens_media_type(media_type))
+    else {
+        return Ok(None);
+    };
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let unreadable = |error: String| {
+        LaunchError::Operation(format!("{} cannot be read: {error}", path.display()))
+    };
+    let bytes = tilo_files::file_at(path)
+        .and_then(|(dir, file)| tilo_files::blocking::read(&dir, &file))
+        .map_err(|error| unreadable(error.to_string()))?;
+    let (file, _receipt) =
+        ui_core::application::OpenFile::new(&name, media_type, bytes).map_err(unreadable)?;
+    Ok(Some(file))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn prepare_definition(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
+) -> Result<PreparedComponentInputs, LaunchError> {
+    prepare_named(definition, args, None)
+}
+
+#[cfg(tilo_native_runner)]
+fn prepare_named(
+    definition: &ApplicationDefinition,
+    args: &LaunchArgs,
+    named: Option<RecordId>,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let inputs = ComponentRunnerInputs::from_native_process();
     // Captures, audits and headless driving never touch the user's profile:
@@ -422,15 +618,15 @@ fn prepare_definition(
             tilo_actions::ActionContext::default(),
             Rc::new(CaptureProfile(profile)),
         )?;
-        return host
-            .prepare_default(
-                definition,
-                CAPTURE_INSTANCE,
-                default_record_of(definition),
-                None,
-                inputs,
-            )
-            .map(|prepared| super::testing::with_settings_file(prepared, settings));
+        let mut prepared = prepare_on(&mut host, definition, CAPTURE_INSTANCE, named, inputs)?;
+        // An audit and a headless drive certify and drive the app someone
+        // uses; only a screenshot is built from fixtures.
+        if args.shots.is_some() || args.responsive_matrix.is_some() {
+            prepared
+                .context
+                .provide_capture(Capture::new(args.scenario.clone()));
+        }
+        return Ok(super::testing::with_settings_file(prepared, settings));
     }
     if let Some(directory) = args.value("--data-dir") {
         let author = ui_core::collaboration::local_user_id();
@@ -439,30 +635,25 @@ fn prepare_definition(
             &author,
             role_permissions(&author.0, Role::Owner),
         )?;
-        return host
-            .prepare_default(
-                definition,
-                DATA_DIR_INSTANCE,
-                default_record_of(definition),
-                None,
-                inputs,
-            )
-            .map(|prepared| {
+        return prepare_on(&mut host, definition, DATA_DIR_INSTANCE, named, inputs).map(
+            |prepared| {
                 super::testing::with_settings_file(
                     prepared,
                     super::testing::data_dir_settings(directory.as_ref()),
                 )
-            });
+            },
+        );
     }
     let mut native = NativeProcessHost::open(definition)?;
     let instance = native.instance_id();
-    native.host_mut().prepare_default(
-        definition,
-        instance,
-        default_record_of(definition),
-        None,
-        inputs,
-    )
+    prepare_on(native.host_mut(), definition, instance, named, inputs)
+}
+
+/// Take the launch's actions ([`ResourceApp::launch`]) as the live host's
+/// first idle tick does, before anything else drives the harness.
+#[cfg(tilo_native_runner)]
+pub(crate) fn settle_launch(harness: &mut FrameHarness) {
+    harness.wait_until(ui_core::time::Duration::ZERO, |_| true);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -470,25 +661,55 @@ fn capture<A: ResourceApp>(
     harness: &mut FrameHarness,
     args: &LaunchArgs,
 ) -> Result<(), LaunchError> {
+    settle_launch(harness);
     super::stage::stage::<A>(harness, args.scenario.as_deref())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn shot_viewport<A: ResourceApp>(_: &LaunchArgs) -> (u32, u32) {
-    A::SHOT_VIEWPORT
+fn shot_viewport<A: ResourceApp>(args: &LaunchArgs) -> (u32, u32) {
+    A::shot_viewport(args.scenario.as_deref())
+}
+
+#[cfg(tilo_native_runner)]
+struct LiveOptionsKey<A>(std::marker::PhantomData<A>);
+
+/// The options a live launch of `A` takes: its profile and its commands.
+#[cfg(tilo_native_runner)]
+fn live_options<A: ResourceApp>() -> &'static [&'static str] {
+    leaked(TypeId::of::<LiveOptionsKey<A>>(), || {
+        let mut options = vec!["--data-dir"];
+        options.extend(A::commands().iter().map(|command| command.option));
+        options
+    })
+    .as_slice()
+}
+
+/// Run the command a launch of `A` names, if it names one.
+#[cfg(tilo_native_runner)]
+fn run_command<A: ResourceApp>(args: &LaunchArgs) -> Result<bool, LaunchError> {
+    for command in A::commands() {
+        if let Some(value) = args.value(command.option) {
+            (command.run)(value)
+                .map_err(|error| LaunchError::Operation(format!("{}: {error}", command.option)))?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(tilo_native_runner)]
 /// The launch specification of `A`, for apps that add options to it.
 pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
     LaunchSpec::from_definition(definition::<A>())
-        .component_host(prepare_definition)
+        .component_host(prepare_app::<A>)
         .native_services()
         .capture_scenario(capture::<A>)
         .shot_viewport(shot_viewport::<A>)
         .scenarios(A::scenarios())
+        .max_positionals(A::ARGUMENTS)
+        .command_handler(run_command::<A>)
         .allowed_options(&["--data-dir"])
-        .allowed_live_options(&["--data-dir"])
+        .allowed_live_options(live_options::<A>())
 }
 
 #[cfg(not(tilo_native_runner))]

@@ -62,7 +62,6 @@ frame delivery and memory without labeling simulated-engine tests as web evidenc
 
 ## Delivery constraints
 
-Work in the existing isolated worktree and preserve unrelated dirty files. Keep
-native runtime, IPC, filtering and Rust UI integration in focused modules. Record
+Keep native runtime, IPC, filtering and Rust UI integration in focused modules. Record
 remaining capabilities and platform verification explicitly; do not mark the
 goal complete until the whole agreed scope has evidence.

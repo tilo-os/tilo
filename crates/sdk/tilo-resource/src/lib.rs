@@ -105,6 +105,7 @@ extern crate self as tilo_resource;
 
 pub mod action;
 pub mod batch;
+pub mod child;
 pub mod collection;
 pub mod delta;
 pub mod diff;
@@ -119,10 +120,12 @@ pub mod replica;
 pub mod resource;
 pub mod schema;
 pub mod shape;
+pub mod text;
 
 pub use action::{
     ActionCx, ActionRef, Binds, Invoke, Mapped, Operation, Outcome, Refusal, Stamped,
 };
+pub use child::{child_resource_id, publish_child};
 pub use collection::{Collection, Id};
 pub use delta::{Delta, Path, Touch, Touched, Tracker};
 pub use effect::{Answers, Effect, EffectDecl, NoEffect};
@@ -134,10 +137,11 @@ pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, SearchEntry, action_label, build_action,
-    encode, origin_now_ms, publish,
+    declaration_spec, encode, origin_now_ms, publish,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
+pub use text::{PlainText, TextEdit};
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, resource};
 
 /// Items the generated code refers to. Not part of the public API.
@@ -161,6 +165,7 @@ pub mod __private {
             anchor: None,
             title: text.first().cloned().unwrap_or_else(|| label.to_owned()),
             text: text.join("\n"),
+            action: None,
         }]
     }
 

@@ -100,7 +100,9 @@ impl ResourceApp for SettingsShell {
     const ID: &'static str = "so.tilo.settings";
     const TITLE: &'static str = "Settings";
     const ICON: Option<&'static str> = Some("settings");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
     // Sidebar filtering rebuilds the widget tree, and the Appearance pane's
     // scale, theme, contrast and motion apply live.
     const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour {
@@ -121,6 +123,12 @@ impl ResourceSurface<Settings> for SettingsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Settings>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    // Preference and device rows publish their document edits as hand-built
+    // rows of the widget's own rather than through the resource.
+    fn publishes_document_actions(&self) -> bool {
+        true
     }
 }
 

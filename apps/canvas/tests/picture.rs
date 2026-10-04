@@ -422,3 +422,12 @@ fn svg_export_lays_a_layers_vignette_over_its_marks() {
         "{markup}"
     );
 }
+
+fn a_click_on_a_picture_picks_it() {
+    let mut app = TestApp::<App>::new().unwrap();
+    placed(&mut app);
+    let art = app.state();
+    let picked =
+        canvas::gesture::edit::pick(&art, ui::vello::kurbo::Point::new(150.0, 150.0), false);
+    assert_eq!(picked, vec!["photo".to_owned()]);
+}

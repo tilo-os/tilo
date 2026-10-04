@@ -567,6 +567,10 @@ impl DeviceContinuationSnapshot {
     /// The resolver is intentionally pull-only and gets no mutable tree
     /// access. Receiving a remote checkpoint therefore cannot change local
     /// focus, launch an app, or start media as a side effect of capture.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one walk over the tree decides every tile kind's launch intent in place"
+    )]
     pub fn capture_with_resume<F>(
         tree: &WorkspaceTree,
         device: DeviceId,
@@ -606,7 +610,8 @@ impl DeviceContinuationSnapshot {
                             .get(&tab.id)
                             .cloned()
                             .or_else(|| match &tab.tile {
-                                TileContent::WorkspaceActivity => None,
+                                TileContent::WorkspaceActivity
+                                | TileContent::HostedWindow { .. } => None,
                                 TileContent::AppPlaceholder { kind, .. }
                                 | TileContent::Stub { kind, .. } => {
                                     LaunchIntent::app(kind.app_id()).ok()

@@ -33,7 +33,7 @@ Search (Super+K, fresh session, then with Notes and Files open):
 History (Super+H, fresh session, then the shots fixtures):
 
 - **Your own setup presented as news.** On a brand-new desktop Catch up says “While you were
-  away · ada kept things moving”: *Updated workspace access*, *Recorded workspace “Home”*.
+  away · <your name> kept things moving”: *Updated workspace access*, *Recorded workspace “Home”*.
   Those are the bootstrap writes of the workspace you just created.
 - **Opening something counts as a change.** “6 changes” includes *Opened Q3 budget*,
   *Opened Retro*. Views are not edits.

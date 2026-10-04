@@ -30,7 +30,9 @@
 //! 2. **The guest** ([`guest`]) is everything the user runs — untrusted. It
 //!    runs as the real uid in its own user namespace, which maps that one id
 //!    and nothing else, so nothing in it is root and a file it writes to a
-//!    granted directory is the user's. Its seccomp filter denies
+//!    granted directory is the user's. It has a network namespace of its
+//!    own, reaching only the hosts its record grants ([`tilo_egress`]),
+//!    owned by a user namespace above its own. Its seccomp filter denies
 //!    `unshare`/`mount`/`pivot_root`/`setns`/`chroot`, so it cannot open a
 //!    second namespace and climb out of the first — `bwrap` installs the
 //!    filter after mounting and immediately before exec, so the supervisor's
@@ -75,6 +77,7 @@ pub mod broker;
 pub mod fleet;
 pub mod guard;
 pub mod guest;
+pub mod host;
 pub mod images;
 pub mod policy;
 pub mod records;
@@ -111,6 +114,32 @@ pub const GUEST_COMMANDS: &[&str] = &[
     "store",
     "system",
 ];
+
+/// Commands for the user's installed legacy apps, from the legacy VM's
+/// registry. A name the runtime already answers to keeps its meaning.
+pub fn legacy_commands() -> Vec<String> {
+    let Some(paths) = legacy_vm::config::Paths::for_user(legacy_vm::GuestOs::Linux) else {
+        return Vec::new();
+    };
+    legacy_command_names(&legacy_vm::apps::Registry::load(&paths.apps()))
+}
+
+/// [`legacy_commands`] for one registry.
+pub fn legacy_command_names(registry: &legacy_vm::apps::Registry) -> Vec<String> {
+    let mut names: Vec<String> = registry
+        .apps
+        .iter()
+        .map(|app| app.command.clone())
+        .filter(|name| {
+            legacy_vm::apps::valid_app_id(name)
+                && name != "tilo-ush"
+                && !GUEST_COMMANDS.contains(&name.as_str())
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
 
 /// Whether a command shim belongs in a guest built from `base`.
 pub fn guest_command_available(base: &std::path::Path, command: &str) -> bool {
@@ -151,5 +180,28 @@ mod tests {
         std::fs::create_dir_all(provider.parent().unwrap()).unwrap();
         std::fs::write(provider, "").unwrap();
         assert!(guest_command_available(dir.path(), "system"));
+    }
+
+    #[test]
+    fn legacy_apps_never_shadow_the_runtimes_own_commands() {
+        let registry = legacy_vm::apps::Registry::from_guest(
+            legacy_vm::GuestOs::Linux,
+            &[
+                installed_app("com.visualstudio.code"),
+                installed_app("org.example.pkg"),
+            ],
+            &[],
+        );
+        assert_eq!(legacy_command_names(&registry), ["code"]);
+    }
+
+    fn installed_app(id: &str) -> legacy_vm::apps::InstalledApp {
+        legacy_vm::apps::InstalledApp {
+            id: id.into(),
+            name: id.into(),
+            window_class: None,
+            comment: None,
+            terminal: false,
+        }
     }
 }

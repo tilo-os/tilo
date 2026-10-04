@@ -51,8 +51,11 @@ TOOLKIT_RESOURCE_VALUE = re.compile(
 # and installs its replay decoder in the component registry.
 FRAMEWORK_APP = re.compile(r"\bimpl\s+(?:[\w:]+::)?ResourceApp\s+for\b")
 # The framework's launch installs the resource's replay decoder
-# (`Resource::register`) into the component registry itself.
-FRAMEWORK_LAUNCH = re.compile(r"\bframework\s*::\s*(?:run|launch_spec)\s*::\s*<")
+# (`Resource::register`) into the component registry itself, whether the
+# binary calls it or `ui::main!` expands to it.
+FRAMEWORK_LAUNCH = re.compile(
+    r"\bframework\s*::\s*(?:run|launch_spec)\s*::\s*<|\b\w+\s*::\s*main\s*!\s*\("
+)
 FRAMEWORK_RESOURCE = re.compile(
     r"#\[\s*resource\s*\(|\bimpl\s+(?:[\w:]+::)?Resource\s+for\b"
 )
@@ -122,6 +125,11 @@ RATCHETS = {
     "opaque_search_activation": (
         re.compile(r"\bfn\s+activate_search_result\s*\("),
         "opaque search activation bypass; return SearchResult::for_action with a published resource action",
+    ),
+    "surface_document_actions": (
+        re.compile(r"\bfn\s+publishes_document_actions\s*\("),
+        "a surface publishing document actions of its own; bind edits to its view state with "
+        "ResourceSurface::bound_declarations and publish live rows with ResourceSurface::live_rows",
     ),
 }
 

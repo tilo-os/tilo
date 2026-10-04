@@ -1,6 +1,7 @@
-//! Rich text as a field of another resource: the editor edits it through
+//! Rich text as a child resource of another: the editor edits it through
 //! the owning resource's own action, so undo, history, permissions and
-//! replay are that resource's.
+//! replay are that resource's, and the palette, agents and scripts address
+//! it like any resource.
 
 #![allow(
     clippy::unwrap_used,
@@ -19,7 +20,7 @@ use ui::framework::testing::TestApp;
 use ui::framework::{ResourceApp, ViewCx};
 use ui::permissions::Role;
 use ui::tilo_actions::{Action, ActionError, Doc};
-use ui::tilo_resource::{ModelError, Resource};
+use ui::tilo_resource::{Invoke, ModelError, Resource, child_resource_id, publish_child};
 use ui::widget::Element;
 
 const ACTION_TYPE: &str = "test.message";
@@ -60,9 +61,14 @@ impl Resource for Message {
         })
     }
 
-    /// Typing a word in the body is one undo step.
-    fn coalesces(previous: &EditBody, next: &EditBody) -> bool {
-        RichText::coalesces(&previous.0, &next.0)
+    /// The body, edited as a rich-text resource of its own.
+    fn children(_state: &String) -> Vec<ui::tilo_actions::Resource> {
+        vec![publish_child::<RichText, Self>(
+            &body_id(),
+            "Body",
+            None,
+            EditBody,
+        )]
     }
 
     fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
@@ -70,6 +76,10 @@ impl Resource for Message {
         doc.put(ROOT, "subject", "untouched")?;
         RichText::initialize_under(doc, &root)
     }
+}
+
+fn body_id() -> String {
+    child_resource_id::<Message>("body")
 }
 
 struct Mail;
@@ -80,7 +90,7 @@ impl ResourceApp for Mail {
     const TITLE: &'static str = "Message";
 
     fn view(cx: &mut ViewCx<Message>) -> Element {
-        cx.rich_text_field(body, EditBody)
+        cx.rich_text_field(&body_id(), body, EditBody)
     }
 }
 
@@ -140,4 +150,42 @@ fn a_viewer_cannot_edit_the_field() {
     app.harness().type_text("nope");
     assert_eq!(text(&app), [""]);
     assert_eq!(app.versions().len(), before);
+}
+
+#[test]
+fn an_agent_edits_the_body_as_a_resource_of_its_own() {
+    let mut app = open(Role::Owner);
+    let declared = app.agent_surface();
+    assert!(
+        declared.as_array().unwrap().iter().any(|row| {
+            row["resource"] == body_id().as_str() && row["resource_kind"] == RichText::KIND
+        }),
+        "the body is published as a rich-text resource: {declared}"
+    );
+    app.invoke_child::<RichText>(
+        &body_id(),
+        Invoke::<RichText>::apply(&RichTextAction::ReplaceBody {
+            markdown: "from an agent".into(),
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(text(&app), ["from an agent"]);
+    assert_eq!(app.state(), "untouched");
+    assert!(app.undo());
+    assert_eq!(text(&app), [""]);
+}
+
+#[test]
+fn a_viewer_cannot_edit_the_body_through_its_address() {
+    let mut app = open(Role::Viewer);
+    let refused = app.invoke_child::<RichText>(
+        &body_id(),
+        Invoke::<RichText>::apply(&RichTextAction::ReplaceBody {
+            markdown: "nope".into(),
+        })
+        .unwrap(),
+    );
+    assert!(refused.is_err());
+    assert_eq!(text(&app), [""]);
 }
