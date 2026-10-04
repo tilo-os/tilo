@@ -847,7 +847,7 @@ mod tests {
             assert_eq!(drives[1].partitions[1].size, 15_900_000_000);
             assert_eq!(
                 drives[1].contents_summary(),
-                "2 partition(s): TRANSFER, data"
+                "2 partitions (TRANSFER, data)"
             );
         }
 
@@ -865,7 +865,7 @@ mod tests {
             assert_eq!(drives[0].stable_id.as_deref(), Some("reader-7"));
             assert_eq!(drives[0].partitions.len(), 1);
             assert_eq!(drives[0].partitions[0].name, "F:");
-            assert_eq!(drives[0].contents_summary(), "1 partition(s): CAMERA");
+            assert_eq!(drives[0].contents_summary(), "1 partition (CAMERA)");
         }
 
         // Phase `successful_windows_probe_can_authoritatively_return_no_drives`.
