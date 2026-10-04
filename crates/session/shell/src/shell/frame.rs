@@ -1248,6 +1248,9 @@ impl FrameBuilder {
         self.layout_osk_overlay();
     }
 
+    /// Dock the keyboard at the bottom of the output it serves. The release
+    /// gate taps its keys from the same placement
+    /// (`keyboard_rect` in `tools/atspi_external_client.py`).
     fn layout_osk_overlay(&mut self) {
         if self.osk_overlay.is_none() {
             return;
