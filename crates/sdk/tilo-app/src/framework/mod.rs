@@ -87,7 +87,10 @@
 //!   it, a minted one) and which of the resource's actions the launch takes
 //!   there ([`ResourceApp::launch`], through the same door as every
 //!   control). [`ResourceApp::OPENS`] names the media types it is handed and
-//!   [`ResourceApp::ARGUMENTS`] how many arguments it takes. A command the
+//!   [`ResourceApp::ARGUMENTS`] how many arguments it takes. A handed file's
+//!   bytes are kept in the launch's content store ([`LaunchInput::content`]),
+//!   which the actions name by hash, so the record never carries the file.
+//!   A command the
 //!   binary runs instead of a window (`--emit-photos DIR`) is a
 //!   [`Command`] in [`ResourceApp::commands`], and the app's messages are
 //!   its [`ResourceApp::catalog`], loaded in every host that mounts it.
