@@ -48,6 +48,18 @@ pub fn uuid(device: &Path) -> Result<String> {
     Ok(uuid)
 }
 
+/// The volume's UUID as its 16 bytes.
+///
+/// # Errors
+/// When cryptsetup cannot read it or it is not a UUID.
+pub fn uuid_bytes(device: &Path) -> Result<[u8; 16]> {
+    let text = uuid(device)?;
+    let digits: String = text.chars().filter(|c| *c != '-').collect();
+    let mut bytes = [0_u8; 16];
+    hex::decode_to_slice(&digits, &mut bytes).with_context(|| format!("{text:?} is not a UUID"))?;
+    Ok(bytes)
+}
+
 /// Whether `passphrase` opens `keyslot` of the volume. Checked before
 /// answering the prompt, so a stale half never costs the person a try.
 pub fn opens(device: &Path, keyslot: u32, passphrase: &str) -> bool {
@@ -145,12 +157,11 @@ pub fn kill_slot(device: &Path, keyslot: u32, authorise: Option<&Path>) -> Resul
     exec::check("cryptsetup", &args, None)
 }
 
-/// Writes `token` into the header, replacing an earlier sibling-unlock token.
+/// Removes the sibling-unlock token, if there is one.
 ///
 /// # Errors
-/// When cryptsetup refuses the token.
-pub fn import_token(device: &Path, token: &Token) -> Result<()> {
-    let json = serde_json::to_vec(token)?;
+/// When cryptsetup refuses.
+pub fn remove_token(device: &Path) -> Result<()> {
     if let Some(existing) = token_id(&metadata(device)?)? {
         exec::check(
             "cryptsetup",
@@ -164,6 +175,16 @@ pub fn import_token(device: &Path, token: &Token) -> Result<()> {
             None,
         )?;
     }
+    Ok(())
+}
+
+/// Writes `token` into the header, replacing an earlier sibling-unlock token.
+///
+/// # Errors
+/// When cryptsetup refuses the token.
+pub fn import_token(device: &Path, token: &Token) -> Result<()> {
+    let json = serde_json::to_vec(token)?;
+    remove_token(device)?;
     exec::check(
         "cryptsetup",
         ["token".as_ref(), "import".as_ref(), device.as_os_str()],

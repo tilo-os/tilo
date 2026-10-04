@@ -6,20 +6,18 @@
 //! * the **sibling half**, held only by the person's other devices, which
 //!   release it for one boot after the owner approves.
 //!
-//! Neither half alone derives anything. The derivation is bound to the volume
-//! and the slot, so a half enrolled for one slot opens no other.
+//! Neither half alone derives anything
+//! ([`tilo_unlock_protocol::derive_slot_key`]); the boot key's certificate
+//! binds the enrolment to this device and one slot.
 
 use anyhow::{Context, Result, bail};
+use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
+use tilo_unlock_protocol::{HALF_LEN, Half};
 use zeroize::{Zeroize, Zeroizing};
 
-/// Length of each half and of the boot key's secret, in bytes.
-pub const HALF_LEN: usize = 32;
-
-const DERIVE_CONTEXT: &str = "tilo sibling unlock 2026-10 luks2 slot passphrase";
-
 /// A network early boot may join to reach a sibling: one the owner chose for
-/// unlocking. The profile is a NetworkManager keyfile, secrets included.
+/// unlocking. The profile is a `NetworkManager` keyfile, secrets included.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Network {
     /// The connection's name, which is also its keyfile's name.
@@ -71,26 +69,39 @@ impl Drop for Material {
 }
 
 impl Material {
-    /// The device half as bytes.
-    ///
-    /// # Errors
-    /// When it is not 32 bytes of hex.
-    pub fn device_half(&self) -> Result<Zeroizing<[u8; HALF_LEN]>> {
-        decode_secret(&self.device_half, "device half")
+    /// Material for a new enrolment.
+    pub fn new(device_half: &Half, boot_key: &SigningKey, networks: Vec<Network>) -> Self {
+        Self {
+            device_half: hex::encode(device_half.expose()),
+            boot_secret: hex::encode(boot_key.to_bytes()),
+            networks,
+        }
     }
 
-    /// The boot key's secret as bytes.
+    /// The device half.
     ///
     /// # Errors
     /// When it is not 32 bytes of hex.
-    pub fn boot_secret(&self) -> Result<Zeroizing<[u8; HALF_LEN]>> {
-        decode_secret(&self.boot_secret, "boot key")
+    pub fn device_half(&self) -> Result<Half> {
+        Ok(Half::from_bytes(*decode_secret(
+            &self.device_half,
+            "device half",
+        )?))
+    }
+
+    /// The boot key.
+    ///
+    /// # Errors
+    /// When it is not 32 bytes of hex.
+    pub fn boot_key(&self) -> Result<SigningKey> {
+        let secret = decode_secret(&self.boot_secret, "boot key")?;
+        Ok(SigningKey::from_bytes(&secret))
     }
 
     /// Serialises the material for sealing.
     ///
     /// # Errors
-    /// Never in practice; serde_json reports allocation failure.
+    /// Never in practice; `serde_json` reports allocation failure.
     pub fn to_json(&self) -> Result<Zeroizing<Vec<u8>>> {
         Ok(Zeroizing::new(serde_json::to_vec(self)?))
     }
@@ -103,7 +114,7 @@ impl Material {
         let material: Self =
             serde_json::from_slice(bytes).context("the unlock material is malformed")?;
         material.device_half()?;
-        material.boot_secret()?;
+        material.boot_key()?;
         for network in &material.networks {
             if !valid_network_id(&network.id) {
                 bail!("unlock network {:?} has an unusable name", network.id);
@@ -130,57 +141,9 @@ fn decode_secret(hex_value: &str, what: &str) -> Result<Zeroizing<[u8; HALF_LEN]
     Ok(out)
 }
 
-/// The passphrase of the sibling key slot: 64 hex characters derived from
-/// both halves, the volume's UUID and the slot.
-pub fn slot_passphrase(
-    device_half: &[u8; HALF_LEN],
-    sibling_half: &[u8; HALF_LEN],
-    luks_uuid: &str,
-    keyslot: u32,
-) -> Zeroizing<String> {
-    let mut input = Zeroizing::new(Vec::with_capacity(HALF_LEN * 2 + 64));
-    input.extend_from_slice(device_half);
-    input.extend_from_slice(sibling_half);
-    input.extend_from_slice(luks_uuid.to_ascii_lowercase().as_bytes());
-    input.extend_from_slice(&keyslot.to_le_bytes());
-    let key = Zeroizing::new(blake3::derive_key(DERIVE_CONTEXT, &input));
-    Zeroizing::new(hex::encode(key.as_slice()))
-}
-
-/// Fresh random bytes for a half or a key.
-///
-/// # Errors
-/// When the OS has no randomness to give.
-pub fn random_half() -> Result<Zeroizing<[u8; HALF_LEN]>> {
-    let mut out = Zeroizing::new([0_u8; HALF_LEN]);
-    getrandom::fill(out.as_mut_slice())
-        .map_err(|error| anyhow::anyhow!("no randomness: {error}"))?;
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_passphrase_needs_both_halves_and_is_bound_to_the_slot() {
-        let device = [1_u8; HALF_LEN];
-        let sibling = [2_u8; HALF_LEN];
-        let uuid = "6f1c5ae2-1111-2222-3333-444455556666";
-        let key = slot_passphrase(&device, &sibling, uuid, 3);
-        assert_eq!(key.len(), 64);
-        assert_eq!(
-            *key,
-            *slot_passphrase(&device, &sibling, &uuid.to_uppercase(), 3)
-        );
-        assert_ne!(*key, *slot_passphrase(&device, &[3; HALF_LEN], uuid, 3));
-        assert_ne!(*key, *slot_passphrase(&[0; HALF_LEN], &sibling, uuid, 3));
-        assert_ne!(*key, *slot_passphrase(&device, &sibling, uuid, 4));
-        assert_ne!(
-            *key,
-            *slot_passphrase(&device, &sibling, "6f1c5ae2-1111-2222-3333-444455556667", 3)
-        );
-    }
 
     #[test]
     fn material_round_trips_and_hides_its_secrets() {
@@ -194,7 +157,8 @@ mod tests {
         };
         let json = material.to_json().unwrap();
         let back = Material::from_json(&json).unwrap();
-        assert_eq!(*back.device_half().unwrap(), [0x11; HALF_LEN]);
+        assert_eq!(back.device_half().unwrap().expose(), &[0x11; HALF_LEN]);
+        assert_eq!(back.boot_key().unwrap().to_bytes(), [0x22; HALF_LEN]);
         let shown = format!("{back:?}");
         assert!(
             !shown.contains("hunter2") && !shown.contains("1111"),

@@ -13,7 +13,9 @@
 //! clear. That blob alone opens nothing; the sibling half is never stored here.
 
 use anyhow::{Context, Result, bail};
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use tilo_unlock_protocol::{BootKeyCert, SiblingContact};
 
 /// The LUKS2 token type. cryptsetup's own token handlers ignore it.
 pub const TOKEN_TYPE: &str = "tilo-sibling-unlock";
@@ -30,17 +32,29 @@ pub enum Sealing {
     Cleartext,
 }
 
-/// One of the person's devices this machine asks for the sibling half.
+/// One of the person's devices this machine asks for the sibling half, as
+/// the enrolment recorded it ([`tilo_unlock_protocol::SiblingContact`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sibling {
-    /// The sibling's device id (its endpoint id on the peer network), hex.
+    /// The sibling's fleet key, hex. It answers challenges as this device.
     pub device: String,
-    /// Addresses the sibling was last seen at, as `ip:port`.
+    /// Its label in the fleet.
     #[serde(default)]
-    pub addrs: Vec<String>,
-    /// The relay the sibling is reachable through, if any.
+    pub label: String,
+    /// Its peer-network address (JSON of an iroh `EndpointAddr`); empty when
+    /// it published none, and it is then found by its key.
     #[serde(default)]
-    pub relay: Option<String>,
+    pub endpoint: String,
+}
+
+impl From<&SiblingContact> for Sibling {
+    fn from(contact: &SiblingContact) -> Self {
+        Self {
+            device: hex::encode(contact.device_public_key),
+            label: contact.label.clone(),
+            endpoint: contact.endpoint.clone(),
+        }
+    }
 }
 
 /// The token as it is stored in the LUKS2 header.
@@ -51,11 +65,10 @@ pub struct Token {
     /// The key slot this token opens, as LUKS2 lists slots: decimal strings.
     pub keyslots: Vec<String>,
     pub tilo_version: u32,
-    /// This machine's device id, hex.
-    pub device: String,
-    /// The boot key's public half, hex. Its certificate is held by the
-    /// siblings, which refuse a boot key they never certified.
-    pub boot_public: String,
+    /// The boot key's certificate, base64 of its postcard encoding. Public:
+    /// it names this device, the boot key and the slot, signed by the
+    /// person's identity.
+    pub cert: String,
     /// Who to ask, in order of preference.
     pub siblings: Vec<Sibling>,
     pub sealing: Sealing,
@@ -79,6 +92,25 @@ impl Token {
         }
     }
 
+    /// The boot key's certificate.
+    ///
+    /// # Errors
+    /// When the stored certificate does not decode.
+    pub fn cert(&self) -> Result<BootKeyCert> {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&self.cert)
+            .context("the boot key certificate is not base64")?;
+        postcard::from_bytes(&bytes).context("the boot key certificate is malformed")
+    }
+
+    /// Encodes `cert` as the token stores it.
+    ///
+    /// # Errors
+    /// When the certificate cannot be encoded.
+    pub fn encode_cert(cert: &BootKeyCert) -> Result<String> {
+        Ok(base64::engine::general_purpose::STANDARD.encode(postcard::to_allocvec(cert)?))
+    }
+
     /// Checks the fields early boot depends on.
     ///
     /// # Errors
@@ -90,7 +122,10 @@ impl Token {
         if self.tilo_version != TOKEN_VERSION {
             bail!("token version {} is not {TOKEN_VERSION}", self.tilo_version);
         }
-        self.keyslot()?;
+        let keyslot = self.keyslot()?;
+        if u32::from(self.cert()?.slot.keyslot) != keyslot {
+            bail!("the boot key certificate is for another key slot");
+        }
         if self.siblings.is_empty() {
             bail!("the token names no device to ask");
         }
@@ -132,18 +167,34 @@ pub fn from_metadata(metadata: &str) -> Result<Option<Token>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_unlock_protocol::SlotId;
+
+    fn cert(keyslot: u16) -> BootKeyCert {
+        BootKeyCert {
+            version: tilo_unlock_protocol::PROTOCOL_VERSION,
+            user_public_key: [1; 32],
+            device_public_key: [2; 32],
+            boot_public_key: [3; 32],
+            slot: SlotId {
+                volume_uuid: [4; 16],
+                keyslot,
+            },
+            attestation_key: None,
+            issued_at_ns: 5,
+            signature: [6; 64],
+        }
+    }
 
     fn token() -> Token {
         Token {
             kind: TOKEN_TYPE.into(),
             keyslots: vec!["3".into()],
             tilo_version: TOKEN_VERSION,
-            device: "aa".repeat(32),
-            boot_public: "bb".repeat(32),
+            cert: Token::encode_cert(&cert(3)).unwrap(),
             siblings: vec![Sibling {
                 device: "cc".repeat(32),
-                addrs: vec!["192.168.231.10:4919".into()],
-                relay: None,
+                label: "Desk".into(),
+                endpoint: String::new(),
             }],
             sealing: Sealing::Cleartext,
             material: "e30=".into(),
@@ -161,6 +212,7 @@ mod tests {
         });
         let found = from_metadata(&metadata.to_string()).unwrap().unwrap();
         assert_eq!(found, token());
+        assert_eq!(found.cert().unwrap(), cert(3));
         assert_eq!(found.keyslot().unwrap(), 3);
     }
 
@@ -182,6 +234,10 @@ mod tests {
         bad.keyslots = vec!["3".into(), "4".into()];
         let metadata = serde_json::json!({ "tokens": { "0": serde_json::to_value(bad).unwrap() } });
         assert!(from_metadata(&metadata.to_string()).is_err());
+
+        let mut other_slot = token();
+        other_slot.cert = Token::encode_cert(&cert(4)).unwrap();
+        assert!(other_slot.validate().is_err());
 
         let mut lonely = token();
         lonely.siblings.clear();
