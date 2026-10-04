@@ -306,3 +306,34 @@ single-line (tabs allowed); Replace all and advanced matching options remain ope
   asserts the controls do not overlap; that regression and strict Clippy pass.
 - Required shell test compilation reproduces the same 22 baseline Darwin
   compositor import errors. No compositor or History implementation was changed.
+
+
+### Independent increment: slash commands from committed text
+
+The shared editor now recognizes a single committed `/` as the same trigger as
+its native slash key. This matches browser `beforeinput` delivery without changing
+browser host routing. Preedit and multi-character inserts remain literal; code
+blocks retain their literal slash behavior. The existing menu owns subsequent
+committed filter text, keyboard navigation and conversion.
+
+- On exact main `945d8345b5`, the new mounted Notes regression inserted `/quote`
+  into the body instead of filtering the menu. It now passes with stable block
+  identity and direct one-step conversion undo/redo.
+- The first three focused Notes tests pass, including preedit/multi-character
+  refusal, literal code slashes and Escape preserving the typed source. The
+  existing Notes slash-menu focus/navigation caller also passes.
+- Review found the existing native slash anchor used the old caret when replacing
+  a forward selection. A new caller regression reproduced the leftover slash.
+  Both input routes now capture the normalized selection start; the regression
+  covers forward/reverse Unicode selections, surrounding source and stable IDs.
+- This does not release the held whole-block/callout conversions: their shared
+  History resurrection defect is independent of how the menu opens.
+- All four new Notes cases, the existing Notes focus case, all 60 shared
+  block-editor cases and four menu tests pass. Strict all-target Notes/UI Clippy
+  passes. Required shell compilation hits the same 22 Darwin-only unresolved
+  Linux compositor imports. Independent review found no remaining issues.
+- The standard offline WASM build and three disposable Chrome checks pass:
+  slash opening/filtering/conversion with direct undo/redo, Unicode with a soft
+  break, and forward-selection replacement preserving surrounding source and
+  one-step conversion undo/redo. No browser errors were recorded. WASM SHA-256:
+  `6a41395b0a98eae232a3c026b8647eb7324770f6499981ca31cfdd4963961231`.
