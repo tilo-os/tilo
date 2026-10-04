@@ -510,6 +510,10 @@ impl Resource for RichText {
     type State = RichTextState;
     type Action = RichTextAction;
 
+    fn least_permission() -> tilo_resource::PermissionRequirement {
+        tilo_resource::PermissionRequirement::Comment
+    }
+
     /// A comment or a reply needs only the right to comment.
     fn permission(action: &RichTextAction) -> tilo_resource::PermissionRequirement {
         match action {

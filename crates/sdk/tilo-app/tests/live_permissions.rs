@@ -6,6 +6,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use tilo_app::framework::{Participant, resource_kind};
+use tilo_app::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
 use tilo_app::prelude::*;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -190,4 +192,50 @@ fn a_commenter_may_take_the_actions_that_need_only_commenting() {
     app.set_role(tilo_app::Role::Viewer);
     assert!(app.invoke(Memo::REMARK.with("no".into())).is_err());
     assert!(!dispatcher.may_apply(&remark));
+}
+
+#[test]
+fn a_commenters_typed_edit_needs_what_its_value_needs() {
+    // Through the window's door: the generic `apply` is offered to a
+    // commenter, and admits the values that need only commenting.
+    let mut app = TestApp::<MemoApp>::new().unwrap();
+    app.set_role(tilo_app::Role::Commenter);
+    let remark = Memo::REMARK.with("typed remark".into()).build(0).unwrap();
+    let line = Memo::ADD_LINE.with("typed line".into()).build(0).unwrap();
+    app.invoke(Invoke::apply(&remark).unwrap())
+        .expect("a commenter's typed remark is admitted");
+    assert!(
+        app.invoke(Invoke::apply(&line).unwrap()).is_err(),
+        "a commenter's typed line is refused"
+    );
+    let group = Invoke::<Memo>::group([
+        Invoke::apply(&remark).unwrap(),
+        Invoke::apply(&line).unwrap(),
+    ]);
+    assert!(
+        app.invoke(group).is_err(),
+        "a group needs what its most demanding member needs"
+    );
+    assert_eq!(app.state().remarks.len(), 1);
+    assert!(app.state().lines.is_empty());
+
+    // Through a participant without a window, by the same rule.
+    let snapshot = app.read_document(|doc| doc.clone().save());
+    let commenting = PermissionContext::from_capabilities(
+        Actor::agent("scribe"),
+        vec![CapOverride::grant(
+            Subject::agent("scribe"),
+            Scope::App(MemoApp::ID.to_owned()),
+            Verb::Comment,
+        )],
+    );
+    let mut participant =
+        Participant::from_snapshot(resource_kind::<MemoApp>(), &snapshot, "scribe", commenting)
+            .unwrap();
+    participant
+        .apply_typed::<Memo>(&remark)
+        .expect("the participant remarks");
+    assert!(participant.apply_typed::<Memo>(&line).is_err());
+    assert_eq!(participant.state::<Memo>().unwrap().remarks.len(), 2);
+    assert!(participant.state::<Memo>().unwrap().lines.is_empty());
 }
