@@ -52,12 +52,19 @@ class LocalRuntimeTests(unittest.TestCase):
         self.assertEqual(local.local_load('Contents/Helpers/scanner', 'Contents/Frameworks/a $().dylib'),
                          '@loader_path/../Frameworks/a $().dylib')
         target = self.root / 'out space/file'
-        local.copy_checked(self.intl, target, digest(self.intl))
+        with patch.object(local, 'floor'):
+            local.copy_checked(self.intl, target, digest(self.intl))
         self.assertEqual(target.read_bytes(), b'intl')
 
     def test_copy_source_mutation_fails(self):
-        with self.assertRaisesRegex(ValueError, 'changed during copy'):
+        with patch.object(local, 'floor'), self.assertRaisesRegex(ValueError, 'changed during copy'):
             local.copy_checked(self.intl, self.root / 'copy', '0' * 64)
+
+    def test_copy_stops_at_resource_floor(self):
+        with patch.object(local, 'floor', side_effect=ValueError('floor reached')):
+            with self.assertRaisesRegex(ValueError, 'floor reached'):
+                local.copy_checked(self.intl, self.root / 'copy', digest(self.intl))
+        self.assertEqual((self.root / 'copy').stat().st_size, 0)
 
     def test_profile_pin_and_smaller_profile_rejected(self):
         path = self.root / 'profile.json'
