@@ -160,6 +160,9 @@ pub struct Tools {
     pub view: LocalState<Option<ViewRequest>>,
     /// Whether the sidebar of inspector, layers and history is shown.
     pub sidebar: LocalState<bool>,
+    /// The canvas's width in logical pixels, in steps of [`ROOM_STEP`], as
+    /// it was last laid out: what the strip over it has room for.
+    pub room: LocalState<u32>,
     /// The stop of a gradient fill the swatches recolour.
     pub stop: LocalState<usize>,
     /// The selected picture's handles crop it, and its turn handle
@@ -289,6 +292,7 @@ impl Default for Tools {
             zoom: LocalState::new(1.0),
             view: LocalState::new(None),
             sidebar: LocalState::new(true),
+            room: LocalState::new(0),
             stop: LocalState::new(0),
             crop: LocalState::new(false),
             live: Rc::default(),
@@ -309,6 +313,10 @@ impl Default for Tools {
         }
     }
 }
+
+/// How finely [`Tools::room`] follows the canvas's width: coarse enough
+/// that resizing the window rebuilds the strip over it only now and then.
+pub const ROOM_STEP: u32 = 24; // a granularity of a measured width, not spacing
 
 /// The ink a brush starts with: ultramarine, a paint colour rather than
 /// chrome, so it does not follow the theme.

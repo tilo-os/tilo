@@ -852,10 +852,13 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
             )
         })
         .collect();
+    // A mask is listed with the layer it masks, as the layers panel shows
+    // it; its id is the layer to name to paint it.
     let layers: Vec<Value> = art
         .layers
         .iter()
         .rev()
+        .filter(|layer| !layer.is_mask())
         .map(|layer| layer_entry(art, layer))
         .collect();
     let mut answer = json!({
@@ -917,7 +920,7 @@ fn layer_entry(art: &Artwork, layer: &Layer) -> Value {
         if let Some(adjust) = &layer.adjust {
             fields.insert("adjust".into(), json!(adjust));
         }
-        mask_fields(layer, fields);
+        mask_fields(art, layer, fields);
     }
     entry
 }
@@ -936,13 +939,22 @@ fn selection_info(art: &Artwork) -> Option<Value> {
 }
 
 /// A layer's mask and clipping as `inspect` lists them.
-fn mask_fields(layer: &Layer, fields: &mut serde_json::Map<String, Value>) {
-    if layer.is_mask() {
-        fields.insert("mask_of".into(), layer.mask_of.clone().into());
-        fields.insert("base".into(), layer.base.into());
-        if layer.invert {
-            fields.insert("invert".into(), true.into());
+fn mask_fields(art: &Artwork, layer: &Layer, fields: &mut serde_json::Map<String, Value>) {
+    if let Some(mask) = art.mask_of(&layer.id) {
+        let mut entry = json!({
+            "id": mask.id,
+            "marks": art.marks_of(&mask.id).count(),
+            "base": mask.base,
+        });
+        if let Value::Object(entry) = &mut entry {
+            if mask.invert {
+                entry.insert("invert".into(), true.into());
+            }
+            if !mask.visible {
+                entry.insert("visible".into(), false.into());
+            }
         }
+        fields.insert("mask".into(), entry);
     }
     if layer.clip {
         fields.insert("clip".into(), true.into());
