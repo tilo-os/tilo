@@ -17,8 +17,6 @@
 - No history preview may acquire live mutation, publication, persistence or invocation authority.
 - Restore requires current authorization and exact reviewed record identity/frontier.
 - Both embedded and standalone hosts and every managed persistent app are in scope.
-- Isolated worktree already exists at /Users/xaver/dev/tilo-macos-shell on codex/macos-shell. Do not create another or switch branches.
-- Capture task-specific diffs before and after because the worktree has unrelated edits; do not stage another owner's changes.
 - Run focused red/green tests and record exact evidence. Do not disturb the coordinated native proof source freeze.
 
 ### Task 1: Shared graph-based History controller
@@ -34,7 +32,7 @@
 - [ ] Implement controller using existing history projection/comparison. Clone/fork for history reads so no implicit commit reaches the live record. Cache by heads. Use complete causal heads for a change or group, never just timestamps or positional indices as identity. Expose factual entries/groups and selected version metadata.
 - [ ] Test comparison reads exact before/after; remote edit followed by refresh preserves preview bytes and flags live updates; back_to_live removes preview. Invalid selections return errors without dropping the existing valid preview.
 - [ ] Implement review tokens and tests: wrong resource/workspace, no preview, stale live heads, and effect-only activity cannot validate restoration. Review invalidates on selection change. Validate without modifying document. Host will separately recheck authority.
-- [ ] Run focused tests, inspect diff, save exact report and task diff. Commit only new files and the isolated export if safe; otherwise report the diff for controller-owned selective commit.
+- [ ] Run focused tests, inspect diff, save exact report and task diff. Commit the new files and the isolated export.
 
 ### Task 2: Transactional content-only restoration engine
 
@@ -106,7 +104,7 @@ After Task3b1 review, integrate the same presentation into native App and TileHo
 
 ### Task 4b: Complete application migration
 
-**Files:** all managed application registration/root files identified by .superpowers/sdd/2026-09-16-framework-history/migration-inventory.md and app-migration-checklist.md; existing Writer history_panel/widget and File Explorer history integration; docs explaining the enforced contract.
+**Files:** all managed application registration/root files identified by a migration inventory of every managed app; existing Writer history_panel/widget and File Explorer history integration; docs explaining the enforced contract.
 
 **Interfaces:** Consume Task 3's finalized preview contract, automatic shared History surface, and host navigation intent. App renderers consume supplied snapshots without live services. Update the task brief with the authoritative complete app checklist before dispatch.
 

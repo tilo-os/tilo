@@ -9,7 +9,7 @@
 
 ## Global Constraints
 
-Preserve unrelated edits and prior UX/blocker behavior. Keep sandbox/TLS enabled. Real retained tabs share one profile. Bounded protocol. No GPU transport rewrite. No pushes/merges.
+Preserve unrelated edits and prior UX/blocker behavior. Keep sandbox/TLS enabled. Real retained tabs share one profile. Bounded protocol. No GPU transport rewrite.
 
 ### Task 1: Real multi-tab runtime and workspace
 

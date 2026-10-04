@@ -18,9 +18,9 @@
 //! them inside its own namespace (a copied-up `/usr/lib64` is mode 0555), so
 //! they are added back there and confer nothing outside.
 //!
-//! The network is shared with the caller. Package downloads are the build's
-//! only traffic, and dnf has no way to reach the launcher's egress gate,
-//! which is a Unix socket.
+//! Package downloads are the build's only traffic. By default it shares the
+//! caller's network; a [`BuildEgress`] replaces that with a gated one that
+//! allows the hosts the runtime's repositories name ([`repo_hosts`]).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -42,6 +42,49 @@ const MERGED_USR: &[(&str, &str)] = &[
 
 /// The subtrees the upper covers; a tool's files live under these.
 pub const UPPER_SUBTREES: &[&str] = &["usr", "etc"];
+
+/// A network for builds other than the caller's: what the sandbox gets in
+/// place of `--share-net`, given the hosts the runtime's repositories name.
+pub trait BuildEgress: Send + Sync + std::fmt::Debug {
+    /// bwrap arguments that give the sandbox its network (`--unshare-net`
+    /// and whatever brings the gate in), and the environment it needs.
+    fn sandbox_args(&self, hosts: &[String]) -> Vec<OsString>;
+}
+
+/// The hosts the runtime's dnf repositories name (`baseurl`, `metalink`,
+/// `mirrorlist`), sorted: what a build's egress must allow. The mirrors a
+/// metalink hands out are not known in advance.
+pub fn repo_hosts(runtime: &Path) -> Vec<String> {
+    let mut hosts = Vec::new();
+    let Ok(dir) = std::fs::read_dir(runtime.join("etc/yum.repos.d")) else {
+        return hosts;
+    };
+    for entry in dir.flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            if !matches!(key.trim(), "baseurl" | "metalink" | "mirrorlist") {
+                continue;
+            }
+            for url in value.split_whitespace() {
+                if let Some(host) = url
+                    .split_once("://")
+                    .and_then(|(_, rest)| rest.split(['/', ':', '?']).next())
+                    .filter(|h| !h.is_empty())
+                {
+                    hosts.push(host.to_owned());
+                }
+            }
+        }
+    }
+    hosts.sort();
+    hosts.dedup();
+    hosts
+}
 
 /// Who the build's root is, outside its namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +156,7 @@ pub struct BuildSandbox {
     dnf_cache: Option<PathBuf>,
     bwrap: PathBuf,
     identity: Identity,
+    egress: Option<std::sync::Arc<dyn BuildEgress>>,
 }
 
 impl BuildSandbox {
@@ -149,6 +193,7 @@ impl BuildSandbox {
             dnf_cache: None,
             bwrap: PathBuf::from("bwrap"),
             identity: Identity::detect(),
+            egress: None,
         })
     }
 
@@ -164,6 +209,13 @@ impl BuildSandbox {
     #[must_use]
     pub fn with_bwrap(mut self, bwrap: PathBuf) -> Self {
         self.bwrap = bwrap;
+        self
+    }
+
+    /// Give the sandbox `egress`'s network instead of the caller's.
+    #[must_use]
+    pub fn with_egress(mut self, egress: std::sync::Arc<dyn BuildEgress>) -> Self {
+        self.egress = Some(egress);
         self
     }
 
@@ -206,11 +258,17 @@ impl BuildSandbox {
             &"--unshare-ipc",
             &"--unshare-uts",
             &"--unshare-cgroup-try",
-            &"--share-net",
             &"--die-with-parent",
             &"--new-session",
             &"--clearenv",
         ]);
+        let network = match &self.egress {
+            Some(egress) => egress.sandbox_args(&repo_hosts(&self.runtime)),
+            None => vec!["--share-net".into()],
+        };
+        for arg in &network {
+            extend(&[arg]);
+        }
         for sub in UPPER_SUBTREES {
             let lower = self.runtime.join(sub);
             if !lower.is_dir() {
@@ -450,5 +508,37 @@ pub fn remove_tree(path: &Path) -> std::io::Result<()> {
         std::fs::remove_dir(path)
     } else {
         std::fs::remove_file(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repo_hosts_are_the_hosts_the_repositories_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let repos = dir.path().join("etc/yum.repos.d");
+        std::fs::create_dir_all(&repos).unwrap();
+        std::fs::write(
+            repos.join("fedora.repo"),
+            "[fedora]\nmetalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-44\n\
+             #baseurl=http://commented.example/\n",
+        )
+        .unwrap();
+        std::fs::write(
+            repos.join("local.repo"),
+            "[a]\nbaseurl = https://dl.example.org:8443/a/ http://mirror.example.net/b\n\
+             [b]\nbaseurl=file:///repo\n",
+        )
+        .unwrap();
+        assert_eq!(
+            repo_hosts(dir.path()),
+            [
+                "dl.example.org",
+                "mirror.example.net",
+                "mirrors.fedoraproject.org"
+            ]
+        );
     }
 }

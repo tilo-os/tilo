@@ -65,6 +65,9 @@ pub enum Area {
     Selection,
 }
 
+/// A JPEG export's quality, as the `export` action's default.
+const JPEG_QUALITY: u8 = 90;
+
 /// The sizes offered, as pixels per artwork unit.
 pub const SCALES: [f64; 5] = [0.5, 1.0, 2.0, 3.0, 4.0];
 /// The longest side a picture may have.
@@ -179,20 +182,13 @@ pub fn encode(
         bare,
         ..Options::default()
     };
+    // Drawn and encoded as the `export` action does.
     let (rgba, width, height) =
-        crate::view_ops::pixels(region, settings.scale, bare, |scene, to| {
-            renderer.draw(art, scene, to, text, &options);
-        })?;
+        crate::view_ops::render_rgba(renderer, text, art, region, settings.scale, &options)?;
     match settings.format {
         Format::Png => crate::view_ops::encode_png(&rgba, width, height),
-        Format::Jpeg => crate::view_ops::encode_jpeg(&rgba, width, height),
-        Format::Webp => {
-            let mut bytes = Vec::new();
-            image::codecs::webp::WebPEncoder::new_lossless(&mut bytes)
-                .encode(&rgba, width, height, image::ExtendedColorType::Rgba8)
-                .map_err(|error| error.to_string())?;
-            Ok(bytes)
-        }
+        Format::Jpeg => crate::view_ops::encode_jpeg_at(&rgba, width, height, JPEG_QUALITY),
+        Format::Webp => crate::view_ops::encode_webp(&rgba, width, height),
         Format::Svg => Ok(Vec::new()),
     }
 }
@@ -222,6 +218,15 @@ pub fn svg(
             (mark.id.clone(), outline)
         })
         .collect();
+    let pictures = art
+        .marks
+        .iter()
+        .filter(|mark| matches!(mark.shape, Shape::Image { .. }))
+        .filter_map(|mark| {
+            let embedded = crate::surface::embedded_picture(renderer, text, art, mark)?;
+            Some((mark.id.clone(), embedded))
+        })
+        .collect();
     let dabbed = renderer.dabbed_pictures(art, 2.0);
     crate::svg::export(
         art,
@@ -237,6 +242,7 @@ pub fn svg(
                 .map(|picture| picture.bytes)
         },
         outlines,
+        pictures,
         dabbed,
     )
 }

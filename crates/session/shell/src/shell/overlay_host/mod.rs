@@ -4062,6 +4062,10 @@ impl ShellOverlayHost {
                             crate::shell::state::TileContent::PeerWindow {
                                 app_id: candidate,
                                 ..
+                            }
+                            | crate::shell::state::TileContent::HostedWindow {
+                                app_id: candidate,
+                                ..
                             } if candidate == app_id
                                 && !self.peer_stream_tabs.values().any(|id| *id == tab.id) =>
                             {

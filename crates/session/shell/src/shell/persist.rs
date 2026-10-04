@@ -738,6 +738,7 @@ mod tests {
                         app_id: "org.example.Missing".into(),
                         label: "Missing".into(),
                         note: "Not installed on this machine".into(),
+                        missing: None,
                     },
                 },
             ];
@@ -785,6 +786,7 @@ mod tests {
                             app_id: "tilo.notes".into(),
                             label: "Notes".into(),
                             note: String::new(),
+                            missing: None,
                         },
                     }],
                     active_tab: survivor,
