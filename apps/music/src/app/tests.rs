@@ -1079,24 +1079,13 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
         let (mut app, mut doc) = app_with_doc();
         assert_eq!(app.cache_state("tk_g2"), CacheState::Streamed);
         let heads = doc.get_heads();
-        let keep = serde_json::to_vec(&crate::actions::MusicOperation::SetOffline {
+        let keep = crate::actions::effect_payload(&crate::actions::MusicEffect::KeepOffline {
             tracks: vec!["tk_g2".into()],
-            keep: true,
-        })
-        .unwrap();
+        });
         assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &keep
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .expect("request queues a real resolver/download lifecycle"),
-            Some(ui::widget::ResourceOperationStart::Accepted)
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &keep)
+                .expect("request queues a real resolver/download lifecycle"),
+            ui::framework::Effected::Pending
         ));
         assert!(matches!(
             app.cache_state("tk_g2"),
@@ -1107,45 +1096,23 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
 
     // Phase `offline_effect_refuses_keep_but_batch_evicts_legacy_metadata_once`.
     {
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, _doc) = app_with_doc();
         app.device_cache.insert("tk_g1".into(), CacheState::Cached);
         app.device_cache.insert("tk_g2".into(), CacheState::Cached);
-        let keep = serde_json::to_vec(&crate::actions::MusicOperation::SetOffline {
+        let keep = crate::actions::effect_payload(&crate::actions::MusicEffect::KeepOffline {
             tracks: vec!["tk_g1".into(), "tk_g2".into()],
-            keep: true,
-        })
-        .unwrap();
+        });
         assert!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &keep
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_ok()
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &keep)
+                .is_ok()
         );
-        let evict = serde_json::to_vec(&crate::actions::MusicOperation::SetOffline {
+        let evict = crate::actions::effect_payload(&crate::actions::MusicEffect::RemoveOffline {
             tracks: vec!["tk_g1".into(), "tk_g2".into()],
-            keep: false,
-        })
-        .unwrap();
+        });
         assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &evict
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &evict)
+                .unwrap(),
+            ui::framework::Effected::Done(_)
         ));
         assert!(
             app.device_cache.is_empty(),
@@ -2134,7 +2101,7 @@ fn queue_edits_insert_remove_reorder_and_refuse_stale_rows() {
 
     // Phase `canonical_queue_item_operation_rejects_a_stale_duplicate_row`.
     {
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, doc) = app_with_doc();
         app.pb.queue = vec!["tk_g1".into(), "tk_g1".into(), "tk_g2".into()];
         app.pb.queue_index = 0;
         app.pb.current = Some("tk_g1".into());
@@ -2151,39 +2118,19 @@ fn queue_edits_insert_remove_reorder_and_refuse_stale_rows() {
             .iter()
             .find(|action| action.id == "remove")
             .expect("second duplicate has its own remove operation");
-        let tilo_actions::ActionInput::Immediate(encoded) = &remove.input else {
-            panic!("queue removal is immediately executable");
-        };
-        let payload = encoded.payload.clone();
+        let payload = remove
+            .build_json(&serde_json::Map::new())
+            .expect("queue removal takes no arguments")
+            .payload;
         assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    &encoded.type_id,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .expect("the observed queue row is removable"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &payload)
+                .expect("the observed queue row is removable"),
+            ui::framework::Effected::Done(_)
         ));
         assert_eq!(app.pb.queue, vec!["tk_g1", "tk_g2"]);
         assert!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    &encoded.type_id,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err(),
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &payload)
+                .is_err(),
             "the old second-occurrence operation cannot remove a recycled row"
         );
     }
@@ -2289,27 +2236,17 @@ fn global_search_and_canonical_views_route_without_mutation() {
         assert_eq!(operation.kind, tilo_actions::OperationKind::Effect);
         let heads = doc.get_heads();
         let invocation = tilo_actions::InvocationId::new();
-        assert_eq!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    operation.kind,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .type_id,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .payload
-                ),
-                &mut doc,
-                &automerge::ROOT
+        assert!(matches!(
+            app.start_effect(
+                invocation,
+                &operation
+                    .encoded()
+                    .expect("test requires prepared encoding")
+                    .payload
             )
             .expect("local playback operation starts"),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        );
+            ui::framework::Effected::Pending
+        ));
         assert_eq!(
             app.pb.current.as_deref(),
             Some(track.id.as_str()),
@@ -2336,25 +2273,15 @@ fn global_search_and_canonical_views_route_without_mutation() {
         let operation = palette.take_operation().expect("artist view queued");
         assert_eq!(operation.kind, tilo_actions::OperationKind::View);
         assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    operation.kind,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .type_id,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .payload
-                ),
-                &mut doc,
-                &automerge::ROOT
+            app.start_effect(
+                ui::tilo_actions::InvocationId::new(),
+                &operation
+                    .encoded()
+                    .expect("test requires prepared encoding")
+                    .payload
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            ui::framework::Effected::Done(_)
         ));
         assert_eq!(
             app.view,
@@ -2398,24 +2325,16 @@ fn global_search_and_canonical_views_route_without_mutation() {
                 .any(|action| { action.id == "open" && action.label == "Open in playlist" })
         );
 
-        let operation = crate::actions::MusicOperation::OpenPlaylistMembership {
-            playlist: playlist.id.clone(),
-            track: track.clone(),
-        };
-        let payload = serde_json::to_vec(&operation).expect("operation encodes");
+        let payload = crate::actions::effect_payload(&crate::actions::MusicEffect::Open {
+            place: crate::actions::Place::Membership {
+                playlist: playlist.id.clone(),
+                track: track.clone(),
+            },
+        });
         assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .expect("current membership opens"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &payload)
+                .expect("current membership opens"),
+            ui::framework::Effected::Done(_)
         ));
         assert_eq!(app.view, View::Playlist(playlist.id.clone()));
         assert_eq!(
@@ -2429,16 +2348,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
         );
         app.reload_library(&mut doc);
         let error = app
-            .start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload,
-                ),
-                &mut doc,
-                &automerge::ROOT,
-            )
+            .start_effect(ui::tilo_actions::InvocationId::new(), &payload)
             .expect_err("stale membership must refuse to open");
         assert!(error.contains("membership is no longer present"));
     }
@@ -2454,47 +2364,24 @@ fn global_search_and_canonical_views_route_without_mutation() {
             .iter()
             .find(|action| action.id == "open")
             .expect("view resource exposes open");
-        let operation = match &open.input {
-            tilo_actions::ActionInput::Immediate(operation) => operation,
-            tilo_actions::ActionInput::Prompted { .. }
-            | tilo_actions::ActionInput::Deferred { .. } => {
-                panic!("open destination is immediate")
-            }
-        };
+        let operation = open
+            .build_json(&serde_json::Map::new())
+            .expect("open destination takes no arguments");
         let heads = doc.get_heads();
         assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    &operation.type_id,
-                    &operation.payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .expect("known canonical destination routes"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &operation.payload)
+                .expect("known canonical destination routes"),
+            ui::framework::Effected::Done(_)
         ));
         assert_eq!(app.view, View::Downloads);
         assert_eq!(doc.get_heads(), heads, "view navigation remains local");
 
-        let forged = serde_json::to_vec(&crate::actions::MusicOperation::OpenView {
-            id: "../../unsafe-local-path".into(),
-        })
-        .expect("operation encodes");
+        let forged = crate::actions::effect_payload(&crate::actions::MusicEffect::Open {
+            place: crate::actions::Place::View("../../unsafe-local-path".into()),
+        });
         assert!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &forged
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err()
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &forged)
+                .is_err()
         );
     }
 
@@ -2518,32 +2405,18 @@ fn global_search_and_canonical_views_route_without_mutation() {
 fn stream_operations_settle_exactly_once_for_their_request() {
     // Phase `changed_track_playback_effect_starts_exactly_one_stream_request`.
     {
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, _doc) = app_with_doc();
         app.disconnect();
-        let mut playback = app.pb.clone();
-        playback.queue = vec!["tk_g1".into()];
-        playback.queue_index = 0;
-        playback.current = Some("tk_g1".into());
-        playback.position_ms = 0;
-        playback.playing = true;
-        let payload =
-            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        let payload = crate::actions::effect_payload(&crate::actions::MusicEffect::Play {
+            track: "tk_g1".into(),
+            queued: None,
+        });
         let before = app.next_request_id;
         let invocation = tilo_actions::InvocationId::new();
-        assert_eq!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        );
+        assert!(matches!(
+            app.start_effect(invocation, &payload).unwrap(),
+            ui::framework::Effected::Pending
+        ));
         assert_eq!(
             app.next_request_id,
             before + 1,
@@ -2554,82 +2427,49 @@ fn stream_operations_settle_exactly_once_for_their_request() {
 
     // Phase `stream_operation_reports_exact_success_failure_and_ignores_stale_completion`.
     {
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, _doc) = app_with_doc();
         app.disconnect();
-        let mut playback = app.pb.clone();
-        playback.queue = vec!["tk_g1".into()];
-        playback.current = Some("tk_g1".into());
-        playback.playing = true;
-        let payload =
-            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        let payload = crate::actions::effect_payload(&crate::actions::MusicEffect::Play {
+            track: "tk_g1".into(),
+            queued: None,
+        });
         let invocation = tilo_actions::InvocationId::new();
-        assert_eq!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        );
+        assert!(matches!(
+            app.start_effect(invocation, &payload).unwrap(),
+            ui::framework::Effected::Pending
+        ));
         let request_id = app.active_resolve_request.unwrap();
-        let competing =
-            serde_json::to_vec(&crate::actions::MusicOperation::PlayTrack { id: "tk_g2".into() })
-                .unwrap();
+        let competing = crate::actions::effect_payload(&crate::actions::MusicEffect::Play {
+            track: "tk_g2".into(),
+            queued: None,
+        });
         assert!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &competing
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err(),
+            app.start_effect(tilo_actions::InvocationId::new(), &competing)
+                .is_err(),
             "concurrent stream start is refused deterministically"
         );
         app.apply_resolve_failure("tk_g1", request_id + 1, "stale failure");
         assert!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none(),
+            app.take_effect_result(invocation).is_none(),
             "a stale worker result cannot settle this invocation"
         );
         app.apply_resolve_failure("tk_g1", request_id, "backend unavailable");
         assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
+            app.take_effect_result(invocation),
             Some(tilo_actions::InvocationUpdate::Failed { .. })
         ));
     }
 
     // Phase `stream_operation_times_out_once_and_late_resolution_is_ignored`.
     {
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, _doc) = app_with_doc();
         app.disconnect();
-        let mut playback = app.pb.clone();
-        playback.queue = vec!["tk_g1".into()];
-        playback.current = Some("tk_g1".into());
-        playback.playing = true;
-        let payload =
-            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        let payload = crate::actions::effect_payload(&crate::actions::MusicEffect::Play {
+            track: "tk_g1".into(),
+            queued: None,
+        });
         let invocation = tilo_actions::InvocationId::new();
-        app.start_operation(
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MUSIC_OPERATION_TYPE,
-                &payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )
-        .unwrap();
+        app.start_effect(invocation, &payload).unwrap();
         let (_, request_id, _, deadline) =
             app.resource_stream_invocation.expect("pending host stream");
 
@@ -2639,14 +2479,13 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             "timeout retires request authority"
         );
         let Some(tilo_actions::InvocationUpdate::Failed { error, .. }) =
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+            app.take_effect_result(invocation)
         else {
             panic!("timeout must settle the accepted operation");
         };
         assert_eq!(error.code, "music.stream_start_timed_out");
         assert!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none(),
+            app.take_effect_result(invocation).is_none(),
             "a terminal operation update is consumed exactly once"
         );
 
@@ -2667,8 +2506,7 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             },
         );
         assert!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none(),
+            app.take_effect_result(invocation).is_none(),
             "a late resolver result cannot overwrite a timeout terminal result"
         );
     }
@@ -2677,25 +2515,21 @@ fn stream_operations_settle_exactly_once_for_their_request() {
     {
         let (mut app, mut doc) = app_with_doc();
         app.disconnect();
-        let mut playback = app.pb.clone();
-        playback.queue = vec!["tk_g1".into(), "tk_g2".into()];
-        playback.queue_index = 0;
-        playback.current = Some("tk_g1".into());
-        playback.playing = true;
-        let payload =
-            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        let payload = crate::actions::effect_payload(&crate::actions::MusicEffect::Play {
+            track: "tk_g1".into(),
+            queued: None,
+        });
         let invocation = tilo_actions::InvocationId::new();
-        app.start_operation(
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MUSIC_OPERATION_TYPE,
-                &payload,
+        app.start_effect(invocation, &payload).unwrap();
+        assert!(matches!(
+            app.start_effect(
+                tilo_actions::InvocationId::new(),
+                &crate::actions::effect_payload(&crate::actions::MusicEffect::AddToQueue {
+                    track: "tk_g2".into(),
+                }),
             ),
-            &mut doc,
-            &automerge::ROOT,
-        )
-        .unwrap();
+            Ok(ui::framework::Effected::Done(_))
+        ));
         let (_, first_request, _, _) = app.resource_stream_invocation.expect("pending host stream");
 
         // This is the normal in-window/media-key next-track route, not a
@@ -2723,41 +2557,27 @@ fn stream_operations_settle_exactly_once_for_their_request() {
         );
         assert_eq!(app.active_resolve_request, Some(second_request));
         let Some(tilo_actions::InvocationUpdate::Failed { error, .. }) =
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+            app.take_effect_result(invocation)
         else {
             panic!("local supersession must settle the old host operation");
         };
         assert_eq!(error.code, "music.stream_start_superseded");
         assert!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none(),
+            app.take_effect_result(invocation).is_none(),
             "supersession terminal update is delivered exactly once"
         );
     }
 
     // Phase `stream_operation_reports_success_only_for_its_bound_request`.
     {
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, _doc) = app_with_doc();
         app.disconnect();
-        let mut playback = app.pb.clone();
-        playback.queue = vec!["tk_g1".into()];
-        playback.current = Some("tk_g1".into());
-        playback.playing = true;
-        let payload =
-            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        let payload = crate::actions::effect_payload(&crate::actions::MusicEffect::Play {
+            track: "tk_g1".into(),
+            queued: None,
+        });
         let invocation = tilo_actions::InvocationId::new();
-        let _ = app
-            .start_operation(
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload,
-                ),
-                &mut doc,
-                &automerge::ROOT,
-            )
-            .unwrap();
+        let _ = app.start_effect(invocation, &payload).unwrap();
         let request_id = app.active_resolve_request.unwrap();
         let stream = crate::backend::ResolvedStream {
             video_id: "yt_tk_g1".into(),
@@ -2774,13 +2594,12 @@ fn stream_operations_settle_exactly_once_for_their_request() {
         app.apply_resolved_stream("tk_g1", request_id, &stream);
         #[cfg(not(feature = "audio"))]
         let update = app
-            .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+            .take_effect_result(invocation)
             .expect("a silent build settles as resolved, never as playing");
         #[cfg(feature = "audio")]
         {
             assert!(
-                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                    .is_none(),
+                app.take_effect_result(invocation).is_none(),
                 "resolver success alone is not audio-start success"
             );
             // Exercise the same settlement branch `tick` uses after its real
@@ -2790,7 +2609,7 @@ fn stream_operations_settle_exactly_once_for_their_request() {
         }
         #[cfg(feature = "audio")]
         let update = app
-            .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+            .take_effect_result(invocation)
             .expect("rendered PCM settles the audio invocation as playing");
 
         let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
@@ -2808,24 +2627,21 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             Some(serde_json::json!({ "state": "playing" })),
             "only post-render settlement may report actual playback"
         );
-        let play = crate::actions::catalog_track_resource(
-            &crate::actions::CatalogTrackResource {
-                id: "tk_g1".into(),
-                label: "Track one".into(),
-                album_id: String::new(),
-                artist_id: String::new(),
-                offline: false,
-                liked: false,
-            },
-            &crate::model::Playback::default(),
-        )
+        let play = crate::actions::catalog_track_resource(&crate::actions::CatalogTrackResource {
+            id: "tk_g1".into(),
+            label: "Track one".into(),
+            album_id: String::new(),
+            artist_id: String::new(),
+            offline: false,
+            liked: false,
+        })
         .actions
         .into_iter()
         .find(|action| action.id == "play")
         .expect("play resource action");
         assert!(
-            play.contract.result.validate(&output).is_ok(),
-            "every terminal lifecycle value must validate against its advertised enum"
+            matches!(play.contract.result, tilo_actions::ResultSpec::Job),
+            "playing a track answers when its audio starts"
         );
     }
 

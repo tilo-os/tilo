@@ -39,20 +39,19 @@ use std::collections::BTreeSet;
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Effect};
 use uuid::Uuid;
 
 use tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
-    Resource, ResultSpec, RetryPolicy,
+    EncodedAction, ExecutionLocus, ParamType, PermissionRequirement, Resource,
 };
 
 use crate::doc as mdoc;
 
 /// Registry `type_id` for every Music action.
 pub const MUSIC_ACTION_TYPE: &str = "music.action";
-pub const MUSIC_OPERATION_TYPE: &str = "music.operation";
 /// The maximum decoded size of a portable embedded playlist cover.
 pub const MAX_PORTABLE_COVER_BYTES: usize = 256 * 1024;
 /// Portal normalization never persists an image wider or taller than this.
@@ -204,93 +203,132 @@ pub fn open_playlist_membership_address(playlist: &str, track: &str) -> ActionAd
     ActionAddress::new(playlist_track_resource_id(playlist, track), "open")
 }
 
-/// Non-document operations exported by Music. Navigation changes only the
-/// local presentation. Playback and queue operations are explicit local-device
-/// effects: stream resolution and audio output must never be replicated into a
-/// collaborator's session.
+/// A place in Music a view effect shows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MusicOperation {
-    /// Ask the host picker for a file; callers cannot supply a raw path.
-    ChooseAudioFile,
-    /// Open one of the stable app-owned destinations in [`NAVIGATION_VIEWS`].
-    /// The receiver validates `id` again before it changes local presentation.
-    OpenView {
-        id: String,
-    },
-    PlayTrack {
-        id: String,
-    },
-    OpenAlbum {
-        id: String,
-    },
-    OpenArtist {
-        id: String,
-    },
-    OpenPlaylist {
-        id: String,
-    },
-    /// Navigate to a playlist and reveal the still-current membership row.
-    OpenPlaylistMembership {
+pub enum Place {
+    /// One of the stable destinations in [`NAVIGATION_VIEWS`]. The receiver
+    /// validates the id again before it changes what is shown.
+    View(String),
+    Album(String),
+    Artist(String),
+    Playlist(String),
+    /// A playlist, with the still-current membership row revealed.
+    Membership {
         playlist: String,
         track: String,
     },
-    /// Apply a fully specified transport snapshot on this device only. This is
-    /// an effect (not a document action): opening a search hit must not make a
-    /// peer start playing audio or inherit this device's volume/queue.
-    SetPlayback {
-        playback: crate::model::Playback,
+}
+
+/// What Music does that changes no document: what is shown, and this
+/// device's player, queue and offline copies. Stream resolution and audio
+/// output are never replicated into a collaborator's session, and the queue
+/// and transport stay this device's own. Effects on one item ride that item;
+/// the ones that take arguments a caller chooses are offered on the library.
+#[derive(Debug, Clone, PartialEq, Effect)]
+#[effect(operation = "music.effects")]
+pub enum MusicEffect {
+    /// Open audio file
+    ///
+    /// Plays a local audio file the person chooses on this device.
+    #[effect(job, device_only)]
+    OpenFile,
+    /// Open
+    #[effect(view, row)]
+    Open { place: Place },
+    /// Open album
+    #[effect(view, row)]
+    OpenAlbum { album: String },
+    /// Open artist
+    #[effect(view, row)]
+    OpenArtist { artist: String },
+    /// Play
+    ///
+    /// Plays a track on its own, or (with `queued`) this exact occurrence of
+    /// it in the queue, which a stale queue result cannot select.
+    #[effect(row, job)]
+    Play {
+        track: String,
+        queued: Option<usize>,
     },
-    /// Start this exact observed queue occurrence. The `(index, track)` pair
-    /// is checked at the local-device authority boundary before it can alter
-    /// playback, preventing a stale queue result from selecting a recycled
-    /// row.
-    PlayQueueItem {
-        index: usize,
+    /// Add to queue
+    #[effect(row)]
+    AddToQueue { track: String },
+    /// Play next
+    #[effect(row, job)]
+    PlayNext { track: String },
+    /// Keep offline
+    ///
+    /// Downloads the tracks' media to this device only.
+    #[effect(row, job, cancellable, idempotent)]
+    KeepOffline { tracks: Vec<String> },
+    /// Remove from offline cache
+    #[effect(row)]
+    RemoveOffline { tracks: Vec<String> },
+    /// Play or pause
+    #[effect(row, job)]
+    PlayPause,
+    /// Previous track
+    #[effect(row, job)]
+    Previous,
+    /// Next queued track
+    #[effect(row, job)]
+    Next,
+    /// Toggle mute
+    #[effect(row)]
+    ToggleMute,
+    /// Toggle shuffle
+    #[effect(row)]
+    ToggleShuffle,
+    /// Change repeat mode
+    #[effect(row)]
+    CycleRepeat,
+    /// Remove from queue
+    #[effect(row, destructive)]
+    Remove { index: usize, track: String },
+    /// Move queue item up
+    #[effect(row)]
+    MoveUp { index: usize, track: String },
+    /// Move queue item down
+    #[effect(row)]
+    MoveDown { index: usize, track: String },
+    /// Seek playback
+    Seek {
+        #[param("absolute playback position in milliseconds")]
+        position_ms: u64,
+    },
+    /// Set volume
+    SetVolume {
+        #[param("volume from 0 to 100")]
+        volume: u8,
+    },
+    /// Add track to queue
+    QueueAdd {
+        #[param("stable music.track resource address")]
         track: String,
     },
-    /// Remove this exact observed queue occurrence. Queue effects are local
-    /// device effects, not document mutations.
-    RemoveQueueItem {
-        index: usize,
+    /// Remove track from queue
+    #[effect(destructive)]
+    QueueRemove {
+        #[param("stable music.track resource address")]
         track: String,
-    },
-    /// Move this exact observed queue occurrence to an absolute queue index.
-    MoveQueueItem {
-        index: usize,
-        track: String,
-        to: usize,
-    },
-    /// Download durable, device-local media bytes or remove them from the
-    /// device-local cache. Neither the bytes nor their paths enter Automerge.
-    SetOffline {
-        tracks: Vec<String>,
-        keep: bool,
     },
 }
 
-/// Decode a host-routed Music operation.
-///
-/// # Errors
-///
-/// Returns the JSON decoding error for a payload addressed to Music's
-/// operation type. Payloads for other operation types return `Ok(None)`.
-pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<MusicOperation>, String> {
-    if type_id != MUSIC_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| error.to_string())
+/// What invoking `effect` where it is bound sends its handler.
+#[cfg(test)]
+pub(crate) fn effect_payload(effect: &MusicEffect) -> Vec<u8> {
+    effect
+        .bound()
+        .build_json(&serde_json::Map::new())
+        .map(|encoded| encoded.payload)
+        .unwrap_or_default()
 }
 
-fn encode_operation(operation: &MusicOperation) -> EncodedAction {
-    match serde_json::to_vec(operation) {
-        Ok(payload) => EncodedAction {
-            type_id: MUSIC_OPERATION_TYPE.to_string(),
-            payload,
-        },
-        Err(error) => invalid_arguments(&error.to_string()),
-    }
+/// `effect` bound to the row it acts on, under the row's own `label`.
+fn bound(effect: &MusicEffect, label: &str) -> ActionSpec {
+    let mut spec = effect.bound();
+    label.clone_into(&mut spec.label);
+    spec
 }
 
 /// Every collaborative operation Music exports on its shared library.
@@ -306,8 +344,6 @@ pub enum MusicAction {
     RenamePlaylist { id: String, name: String },
     /// Delete a playlist by id.
     DeletePlaylist { id: String },
-    /// Remove the first occurrence of a track from a playlist.
-    RemoveTrackFromPlaylist { playlist: String, track: String },
     /// Set a stable playlist membership to an absolute state and sparse rank.
     SetPlaylistMembership {
         playlist: String,
@@ -357,8 +393,7 @@ pub fn history_context(action: &MusicAction) -> tilo_actions::ActionContext {
             "music.playlist",
             playlist,
         ),
-        MusicAction::RemoveTrackFromPlaylist { playlist, track: _ }
-        | MusicAction::SetPlaylistMembership {
+        MusicAction::SetPlaylistMembership {
             playlist,
             present: false,
             ..
@@ -446,17 +481,6 @@ impl Action for MusicAction {
                     "playlist is no longer in the library",
                 )?;
                 mdoc::delete_playlist(doc, id);
-            }
-            MusicAction::RemoveTrackFromPlaylist { playlist, track } => {
-                require(
-                    mdoc::has_playlist(doc, playlist) && mdoc::has_track(doc, track),
-                    "playlist or track is no longer in the library",
-                )?;
-                require(
-                    mdoc::playlist_contains_track(doc, playlist, track),
-                    "playlist membership is no longer present",
-                )?;
-                mdoc::remove_track_from_playlist(doc, playlist, track);
             }
             MusicAction::SetPlaylistMembership {
                 playlist,
@@ -940,6 +964,96 @@ impl MusicResourceCtx {
     }
 }
 
+impl MusicResourceCtx {
+    /// Just what resolving the library row `id` needs, against the whole
+    /// library rather than the published page: a search hit or an agent may
+    /// name any track, album, artist, playlist or membership.
+    pub fn for_document_id(lib: &crate::model::Library, id: &str) -> Option<Self> {
+        let track_label = |track: &crate::model::Track| {
+            let artist = lib.artist_name(&track.artist_id);
+            if artist.is_empty() {
+                track.title.clone()
+            } else {
+                format!("{} — {artist}", track.title)
+            }
+        };
+        let catalog_track = |track: &crate::model::Track| CatalogTrackResource {
+            id: track.id.clone(),
+            label: track_label(track),
+            album_id: track.album_id.clone(),
+            artist_id: track.artist_id.clone(),
+            offline: false,
+            liked: lib.is_liked(&track.id),
+        };
+        let mut ctx = Self::default();
+        if parse_view_resource_id(id).is_some() {
+            return Some(ctx);
+        }
+        if let Some(track_id) = id.strip_prefix("music.track:").filter(|id| !id.is_empty()) {
+            ctx.tracks.push(catalog_track(lib.track(track_id)?));
+            return Some(ctx);
+        }
+        if let Some(album_id) = id.strip_prefix("music.album:").filter(|id| !id.is_empty()) {
+            let album = lib.album(album_id)?;
+            ctx.albums.push(CatalogAlbumResource {
+                id: album.id.clone(),
+                label: album.title.clone(),
+                saved: lib.is_album_saved(&album.id),
+            });
+            return Some(ctx);
+        }
+        if let Some(artist_id) = id.strip_prefix("music.artist:").filter(|id| !id.is_empty()) {
+            let artist = lib.artist(artist_id)?;
+            ctx.artists.push(CatalogArtistResource {
+                id: artist.id.clone(),
+                label: artist.name.clone(),
+                followed: lib.is_artist_followed(&artist.id),
+            });
+            return Some(ctx);
+        }
+        if let Some((playlist_id, track_id)) = parse_playlist_track_resource_id(id) {
+            let playlist = lib.playlist(&playlist_id)?;
+            let index = playlist.track_ids.iter().position(|id| id == &track_id)?;
+            let track = lib.track(&track_id)?;
+            ctx.membership = Some(PlaylistMembershipResource {
+                playlist: playlist.id.clone(),
+                track: TrackRef {
+                    id: track.id.clone(),
+                    label: track_label(track),
+                    liked: lib.is_liked(&track.id),
+                    rank: playlist
+                        .track_ranks
+                        .get(&track.id)
+                        .copied()
+                        .unwrap_or_default(),
+                },
+                index,
+                total: playlist.track_ids.len(),
+                up_rank: playlist
+                    .rank_for_move(&track.id, index.saturating_sub(1))
+                    .unwrap_or_default(),
+                down_rank: playlist
+                    .rank_for_move(&track.id, index.saturating_add(1))
+                    .unwrap_or_default(),
+            });
+            return Some(ctx);
+        }
+        let playlist_id = id
+            .strip_prefix("music.playlist:")
+            .filter(|id| !id.is_empty())?;
+        let playlist = lib.playlist(playlist_id)?;
+        // `add-track` refuses a stale track argument, so it needs the tracks
+        // that are current, once this playlist is asked for.
+        ctx.tracks = lib.tracks.values().map(catalog_track).collect();
+        ctx.playlists.push(PlaylistResource {
+            id: playlist.id.clone(),
+            name: playlist.name.clone(),
+            tracks: Vec::new(),
+        });
+        Some(ctx)
+    }
+}
+
 fn known_track_ids(ctx: &MusicResourceCtx) -> BTreeSet<String> {
     let mut known_tracks = ctx
         .tracks
@@ -970,7 +1084,7 @@ pub(crate) fn document_children(ctx: &MusicResourceCtx) -> Vec<Resource> {
     let mut tracks = ctx.tracks.iter().collect::<Vec<_>>();
     tracks.sort_by(|a, b| a.id.cmp(&b.id));
     for track in tracks.into_iter().take(OPEN_RESOURCE_CATEGORY_LIMIT) {
-        children.push(catalog_track_resource(track, &ctx.playback));
+        children.push(catalog_track_resource(track));
     }
     let mut albums = ctx.albums.iter().collect::<Vec<_>>();
     albums.sort_by(|a, b| a.id.cmp(&b.id));
@@ -991,12 +1105,10 @@ pub(crate) fn document_children(ctx: &MusicResourceCtx) -> Vec<Resource> {
 /// Device-local player, queue and open file. Published beside the framework
 /// root when hosted — never a second copy of the library document door.
 pub(crate) fn live_device_resources(ctx: &MusicResourceCtx) -> Vec<Resource> {
-    let known_tracks = known_track_ids(ctx);
     let mut resources = vec![
-        with_playback_actions(
+        with_transport(
             Resource::new("music.player:player", "music.player", "Player"),
             &ctx.playback,
-            &known_tracks,
         ),
         queue_resource(ctx),
     ];
@@ -1017,78 +1129,6 @@ fn immediate_spec(id: &str, label: &str, action: &MusicAction) -> ActionSpec {
         .reversible()
 }
 
-fn operation_spec(
-    id: &str,
-    label: &str,
-    kind: OperationKind,
-    operation: &MusicOperation,
-) -> ActionSpec {
-    #[allow(
-        clippy::expect_used,
-        reason = "MusicOperation contains only serde-supported owned values and is covered by operation round-trip tests"
-    )]
-    let spec = ActionSpec::operation(id, label, kind, MUSIC_OPERATION_TYPE, operation)
-        .expect("encode music operation");
-    if kind == OperationKind::View {
-        spec.requiring(PermissionRequirement::Read)
-            .retry_policy(RetryPolicy::Idempotent)
-    } else if kind == OperationKind::Effect {
-        spec.requiring(PermissionRequirement::Write)
-            .retry_policy(RetryPolicy::Idempotent)
-    } else {
-        spec
-    }
-}
-
-fn local_playback_spec(
-    id: &str,
-    label: &str,
-    previous: &crate::model::Playback,
-    playback: &crate::model::Playback,
-) -> ActionSpec {
-    let spec = operation_spec(
-        id,
-        label,
-        OperationKind::Effect,
-        &MusicOperation::SetPlayback {
-            playback: playback.clone(),
-        },
-    );
-    if playback.playing && (playback.current != previous.current || !previous.playing) {
-        spec.execution(ExecutionMode::Background { cancellable: false })
-            .returns(ResultSpec::Json {
-                schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["state"],
-                    "properties": {
-                        "state": { "enum": ["resolved", "playing"] }
-                    }
-                }),
-            })
-    } else {
-        spec
-    }
-}
-
-fn local_offline_spec(id: &str, label: &str, tracks: Vec<String>, keep: bool) -> ActionSpec {
-    let spec = operation_spec(
-        id,
-        label,
-        OperationKind::Effect,
-        &MusicOperation::SetOffline { tracks, keep },
-    );
-    spec.execution(ExecutionMode::Background { cancellable: true })
-        .returns(ResultSpec::Json {
-            schema: serde_json::json!({
-                "type": "object",
-                "required": ["state"],
-                "properties": {
-                    "state": { "enum": ["cached", "removed"] }
-                }
-            }),
-        })
-}
-
 fn playlist_label(p: &PlaylistResource) -> String {
     let n = p.name.trim();
     if n.is_empty() {
@@ -1099,163 +1139,62 @@ fn playlist_label(p: &PlaylistResource) -> String {
 }
 
 fn navigation_view_resource(id: &str, label: &str) -> Resource {
-    Resource::new(view_resource_id(id), "music.view", label).with_action(operation_spec(
-        "open",
+    Resource::new(view_resource_id(id), "music.view", label).with_action(bound(
+        &MusicEffect::Open {
+            place: Place::View(id.to_owned()),
+        },
         &format!("Open {label}"),
-        OperationKind::View,
-        &MusicOperation::OpenView { id: id.to_string() },
     ))
 }
 
-fn with_playback_actions(
-    root: Resource,
-    playback: &crate::model::Playback,
-    known_tracks: &BTreeSet<String>,
-) -> Resource {
-    let root = with_transport_settings(root, playback);
-    let root = with_transport_navigation(root, playback);
-    with_queue_actions(root, playback, known_tracks)
-}
-
-fn with_transport_settings(mut root: Resource, playback: &crate::model::Playback) -> Resource {
+/// The player's transport, bound to the player row: what is offered right
+/// now, and why the rest is not.
+fn with_transport(mut root: Resource, playback: &crate::model::Playback) -> Resource {
     if playback.current.is_some() {
-        let mut toggled = playback.clone();
-        toggled.playing = !toggled.playing;
-        root = root.with_action(local_playback_spec(
-            "play-pause",
+        root = root.with_action(bound(
+            &MusicEffect::PlayPause,
             if playback.playing { "Pause" } else { "Play" },
-            playback,
-            &toggled,
         ));
-        let seek = playback.clone();
-        root = root.with_action(
-            ActionSpec::typed_operation(
-                "seek",
-                "Seek playback",
-                "milliseconds",
-                OperationKind::Effect,
-                MUSIC_OPERATION_TYPE,
-                vec![ActionParam::required(
-                    "position_ms",
-                    ParamType::Integer,
-                    "absolute playback position in milliseconds",
-                )],
-                move |args: &ActionArgs| {
-                    let mut next = seek.clone();
-                    next.position_ms = args.integer("position_ms").unwrap_or(0).max(0) as u64;
-                    encode_operation(&MusicOperation::SetPlayback { playback: next })
-                },
-            )
-            .requiring(PermissionRequirement::Write),
-        );
     }
-    let volume = playback.clone();
-    root = root.with_action(
-        ActionSpec::typed_operation(
-            "set-volume",
-            "Set volume",
-            "0–100",
-            OperationKind::Effect,
-            MUSIC_OPERATION_TYPE,
-            vec![
-                ActionParam::required("volume", ParamType::Integer, "volume from 0 to 100")
-                    .with_schema(serde_json::json!({"minimum": 0, "maximum": 100})),
-            ],
-            move |args: &ActionArgs| {
-                let mut next = volume.clone();
-                next.volume = args
-                    .integer("volume")
-                    .unwrap_or_else(|| i64::from(next.volume))
-                    .clamp(0, 100) as u8;
-                encode_operation(&MusicOperation::SetPlayback { playback: next })
+    root = root
+        .with_action(MusicEffect::ToggleMute.bound())
+        .with_action(bound(
+            &MusicEffect::ToggleShuffle,
+            if playback.shuffle {
+                "Turn shuffle off"
+            } else {
+                "Turn shuffle on"
             },
-        )
-        .requiring(PermissionRequirement::Write),
-    );
-    let mut muted = playback.clone();
-    muted.volume = if muted.volume == 0 { 80 } else { 0 };
-    root = root.with_action(local_playback_spec(
-        "toggle-mute",
-        "Toggle mute",
-        playback,
-        &muted,
-    ));
-    let mut shuffled = playback.clone();
-    shuffled.shuffle = !shuffled.shuffle;
-    root = root.with_action(local_playback_spec(
-        "toggle-shuffle",
-        if playback.shuffle {
-            "Turn shuffle off"
-        } else {
-            "Turn shuffle on"
-        },
-        playback,
-        &shuffled,
-    ));
-    let mut repeated = playback.clone();
-    repeated.repeat = repeated.repeat.next();
-    root = root.with_action(local_playback_spec(
-        "cycle-repeat",
-        "Change repeat mode",
-        playback,
-        &repeated,
-    ));
-
-    root
-}
-
-fn with_transport_navigation(mut root: Resource, playback: &crate::model::Playback) -> Resource {
-    let mut previous = playback.clone();
-    if previous.queue_index > 0 {
-        previous.queue_index -= 1;
-        previous.current = previous.queue.get(previous.queue_index).cloned();
-    }
-    previous.position_ms = 0;
-    let previous_spec = local_playback_spec("previous", "Previous track", playback, &previous);
-    root = root.with_action(if playback.current.is_none() {
-        previous_spec.unavailable(
+        ))
+        .with_action(MusicEffect::CycleRepeat.bound());
+    let unavailable = if playback.current.is_none() {
+        Some((
             "nothing_playing",
             "Choose a track before using playback controls",
-        )
+        ))
     } else if playback.queue.is_empty() {
-        previous_spec.unavailable("empty_queue", "There are no queued tracks")
+        Some(("empty_queue", "There are no queued tracks"))
     } else {
-        previous_spec
+        None
+    };
+    let previous = MusicEffect::Previous.bound();
+    root = root.with_action(match unavailable {
+        Some((code, reason)) => previous.unavailable(code, reason),
+        None => previous,
     });
-
     // Music's on-screen shuffle permutation is intentionally device-local so
     // it never leaks a random, non-replayable decision into the CRDT. A remote
     // caller can still select a concrete track, but a generic "next" would be
     // dishonest while that local permutation is active.
-    let mut next = playback.clone();
-    if next.queue_index + 1 < next.queue.len() {
-        next.queue_index += 1;
-        next.current = next.queue.get(next.queue_index).cloned();
-        next.position_ms = 0;
-    } else if next.repeat == crate::model::RepeatMode::All && !next.queue.is_empty() {
-        next.queue_index = 0;
-        next.current = next.queue.first().cloned();
-        next.position_ms = 0;
-    } else {
-        next.playing = false;
-    }
-    let next_spec = local_playback_spec("next", "Next queued track", playback, &next);
-    root = root.with_action(if playback.current.is_none() {
-        next_spec.unavailable(
-            "nothing_playing",
-            "Choose a track before using playback controls",
-        )
-    } else if playback.queue.is_empty() {
-        next_spec.unavailable("empty_queue", "There are no queued tracks")
-    } else if playback.shuffle {
-        next_spec.unavailable(
+    let next = MusicEffect::Next.bound();
+    root.with_action(match unavailable {
+        Some((code, reason)) => next.unavailable(code, reason),
+        None if playback.shuffle => next.unavailable(
             "local_shuffle_order",
             "Choose a concrete track while this device's shuffle order is active",
-        )
-    } else {
-        next_spec
-    });
-    root
+        ),
+        None => next,
+    })
 }
 
 fn track_id_from_resource(address: &str) -> Option<&str> {
@@ -1264,183 +1203,181 @@ fn track_id_from_resource(address: &str) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
-fn with_queue_actions(
-    mut root: Resource,
+/// The playback `effect` leads to from `playback` on this device, for the
+/// transport and queue effects that only change it; `None` for any other
+/// effect. `known` says whether a track can be played here.
+pub(crate) fn next_playback(
+    effect: &MusicEffect,
     playback: &crate::model::Playback,
-    known_tracks: &BTreeSet<String>,
-) -> Resource {
-    let add_queue = playback.clone();
-    let queue_track_ids = known_tracks.clone();
-    root = root.with_action(
-        ActionSpec::typed_operation(
-            "queue-add",
-            "Add track to queue",
-            "track id…",
-            OperationKind::Effect,
-            MUSIC_OPERATION_TYPE,
-            vec![ActionParam::required(
-                "track",
-                ParamType::Resource,
-                "stable music.track resource address",
-            )],
-            move |args: &ActionArgs| {
-                let Some(track) = args.text("track").and_then(track_id_from_resource) else {
-                    return invalid_arguments("track must be a music.track resource");
-                };
-                if !queue_track_ids.contains(track) {
-                    return invalid_arguments("track is no longer in the library");
-                }
-                let mut next = add_queue.clone();
-                next.queue.push(track.to_string());
-                encode_operation(&MusicOperation::SetPlayback { playback: next })
-            },
-        )
-        .requiring(PermissionRequirement::Write),
-    );
-    let remove_queue = playback.clone();
-    let remove_track_ids = known_tracks.clone();
-    let remove = ActionSpec::typed_operation(
-        "queue-remove",
-        "Remove track from queue",
-        "track id…",
-        OperationKind::Effect,
-        MUSIC_OPERATION_TYPE,
-        vec![ActionParam::required(
-            "track",
-            ParamType::Resource,
-            "stable music.track resource address",
-        )],
-        move |args: &ActionArgs| {
-            let Some(track) = args.text("track").and_then(track_id_from_resource) else {
-                return invalid_arguments("track must be a music.track resource");
-            };
-            if !remove_track_ids.contains(track) {
-                return invalid_arguments("track is no longer in the library");
+    known: &dyn Fn(&str) -> bool,
+) -> Option<Result<crate::model::Playback, String>> {
+    let mut next = playback.clone();
+    let known_track = |address: &str| {
+        let track = track_id_from_resource(address)
+            .ok_or_else(|| "track must be a music.track resource".to_string())?;
+        if known(track) {
+            Ok(track.to_owned())
+        } else {
+            Err("track is no longer in the library".to_string())
+        }
+    };
+    let result = match effect {
+        MusicEffect::PlayPause => {
+            if next.current.is_none() {
+                return Some(Err("nothing is playing".into()));
             }
-            let mut next = remove_queue.clone();
-            let Some(index) = next.queue.iter().position(|queued| queued == track) else {
-                return invalid_arguments("track is not in the current queue");
-            };
-            next.queue.remove(index);
-            if index < next.queue_index {
+            next.playing = !next.playing;
+            Ok(())
+        }
+        MusicEffect::Previous => {
+            if next.queue_index > 0 {
                 next.queue_index -= 1;
-            } else if index == next.queue_index {
-                if next.queue.is_empty() {
-                    next.current = None;
-                    next.playing = false;
-                    next.queue_index = 0;
-                    next.position_ms = 0;
-                } else {
-                    next.queue_index = next.queue_index.min(next.queue.len() - 1);
-                    next.current = next.queue.get(next.queue_index).cloned();
-                    next.position_ms = 0;
-                }
+                next.current = next.queue.get(next.queue_index).cloned();
             }
-            encode_operation(&MusicOperation::SetPlayback { playback: next })
-        },
-    )
-    .requiring(PermissionRequirement::Write)
-    .destructive();
-    root = root.with_action(if playback.queue.is_empty() {
-        remove.unavailable("empty_queue", "There are no queued tracks to remove")
-    } else {
-        remove
-    });
-    root
+            next.position_ms = 0;
+            Ok(())
+        }
+        MusicEffect::Next => {
+            if next.queue_index + 1 < next.queue.len() {
+                next.queue_index += 1;
+                next.current = next.queue.get(next.queue_index).cloned();
+                next.position_ms = 0;
+            } else if next.repeat == crate::model::RepeatMode::All && !next.queue.is_empty() {
+                next.queue_index = 0;
+                next.current = next.queue.first().cloned();
+                next.position_ms = 0;
+            } else {
+                next.playing = false;
+            }
+            Ok(())
+        }
+        MusicEffect::ToggleMute => {
+            next.volume = if next.volume == 0 { 80 } else { 0 };
+            Ok(())
+        }
+        MusicEffect::ToggleShuffle => {
+            next.shuffle = !next.shuffle;
+            Ok(())
+        }
+        MusicEffect::CycleRepeat => {
+            next.repeat = next.repeat.next();
+            Ok(())
+        }
+        MusicEffect::Seek { position_ms } => {
+            next.position_ms = *position_ms;
+            Ok(())
+        }
+        MusicEffect::SetVolume { volume } => {
+            next.volume = (*volume).min(100);
+            Ok(())
+        }
+        MusicEffect::AddToQueue { track } => {
+            if known(track) {
+                next.queue.push(track.clone());
+                Ok(())
+            } else {
+                Err("track is no longer in the library".into())
+            }
+        }
+        MusicEffect::PlayNext { track } => {
+            if !known(track) {
+                return Some(Err("track is no longer in the library".into()));
+            }
+            if next.queue.is_empty() || next.current.is_none() {
+                next.queue = vec![track.clone()];
+                next.current = Some(track.clone());
+                next.queue_index = 0;
+                next.playing = true;
+                next.position_ms = 0;
+            } else {
+                let at = (next.queue_index + 1).min(next.queue.len());
+                next.queue.insert(at, track.clone());
+            }
+            Ok(())
+        }
+        MusicEffect::QueueAdd { track } => known_track(track).map(|track| next.queue.push(track)),
+        MusicEffect::QueueRemove { track } => {
+            known_track(track).and_then(|track| remove_from_queue(&mut next, &track))
+        }
+        _ => return None,
+    };
+    Some(result.map(|()| next))
 }
 
-fn queue_item_effect_spec(
-    id: &str,
-    label: &str,
-    operation: &MusicOperation,
-    destructive: bool,
-) -> ActionSpec {
-    let spec = operation_spec(id, label, OperationKind::Effect, operation)
-        .requiring(PermissionRequirement::Write);
-    if destructive {
-        spec.destructive()
-    } else {
-        spec
+/// Take `track`'s first occurrence out of `playback`'s queue; removing the
+/// current one moves on to what follows it, or stops at the end.
+fn remove_from_queue(playback: &mut crate::model::Playback, track: &str) -> Result<(), String> {
+    let index = playback
+        .queue
+        .iter()
+        .position(|queued| queued == track)
+        .ok_or_else(|| "track is not in the current queue".to_string())?;
+    playback.queue.remove(index);
+    if index < playback.queue_index {
+        playback.queue_index -= 1;
+    } else if index == playback.queue_index {
+        if playback.queue.is_empty() {
+            playback.current = None;
+            playback.playing = false;
+            playback.queue_index = 0;
+        } else {
+            playback.queue_index = playback.queue_index.min(playback.queue.len() - 1);
+            playback.current = playback.queue.get(playback.queue_index).cloned();
+        }
+        playback.position_ms = 0;
     }
+    Ok(())
+}
+
+fn open_queue() -> ActionSpec {
+    bound(
+        &MusicEffect::Open {
+            place: Place::View("queue".into()),
+        },
+        "Open queue",
+    )
 }
 
 fn queue_item_resource(item: &QueueItemResource, total: usize) -> Resource {
     let index = item.index;
     let track = item.track.clone();
-    let mut resource = Resource::new(
+    let move_up = MusicEffect::MoveUp {
+        index,
+        track: track.clone(),
+    }
+    .bound();
+    let move_down = MusicEffect::MoveDown {
+        index,
+        track: track.clone(),
+    }
+    .bound();
+    Resource::new(
         queue_item_resource_id(index, &track),
         "music.queue-item",
         item.label.clone(),
     )
-    .with_action(operation_spec(
-        "open",
-        "Open queue",
-        OperationKind::View,
-        &MusicOperation::OpenView { id: "queue".into() },
+    .with_action(open_queue())
+    .with_action(bound(
+        &MusicEffect::Play {
+            track: track.clone(),
+            queued: Some(index),
+        },
+        if item.current {
+            "Restart track"
+        } else {
+            "Play queue item"
+        },
     ))
-    .with_action(
-        queue_item_effect_spec(
-            "play",
-            if item.current {
-                "Restart track"
-            } else {
-                "Play queue item"
-            },
-            &MusicOperation::PlayQueueItem {
-                index,
-                track: track.clone(),
-            },
-            false,
-        )
-        .execution(ExecutionMode::Background { cancellable: false })
-        .returns(ResultSpec::Json {
-            schema: serde_json::json!({
-                "type": "object",
-                "required": ["state"],
-                "properties": { "state": { "enum": ["resolved", "playing"] } }
-            }),
-        }),
-    )
-    .with_action(queue_item_effect_spec(
-        "remove",
-        "Remove from queue",
-        &MusicOperation::RemoveQueueItem {
-            index,
-            track: track.clone(),
-        },
-        true,
-    ));
-
-    let move_up = queue_item_effect_spec(
-        "move-up",
-        "Move queue item up",
-        &MusicOperation::MoveQueueItem {
-            index,
-            track: track.clone(),
-            to: index.saturating_sub(1),
-        },
-        false,
-    );
-    resource = resource.with_action(if index > 0 {
+    .with_action(MusicEffect::Remove { index, track }.bound())
+    .with_action(if index > 0 {
         move_up
     } else {
         move_up.unavailable(
             "first_queue_item",
             "This item is already first in the queue",
         )
-    });
-
-    let move_down = queue_item_effect_spec(
-        "move-down",
-        "Move queue item down",
-        &MusicOperation::MoveQueueItem {
-            index,
-            track,
-            to: index.saturating_add(1),
-        },
-        false,
-    );
-    resource.with_action(if index + 1 < total {
+    })
+    .with_action(if index + 1 < total {
         move_down
     } else {
         move_down.unavailable("last_queue_item", "This item is already last in the queue")
@@ -1450,12 +1387,7 @@ fn queue_item_resource(item: &QueueItemResource, total: usize) -> Resource {
 fn queue_resource(ctx: &MusicResourceCtx) -> Resource {
     let total = ctx.playback.queue.len();
     let mut resource =
-        Resource::new(QUEUE_RESOURCE_ID, "music.queue", "Queue").with_action(operation_spec(
-            "open",
-            "Open queue",
-            OperationKind::View,
-            &MusicOperation::OpenView { id: "queue".into() },
-        ));
+        Resource::new(QUEUE_RESOURCE_ID, "music.queue", "Queue").with_action(open_queue());
     for item in &ctx.queue {
         resource = resource.with_child(queue_item_resource(item, total));
     }
@@ -1472,13 +1404,11 @@ fn playlist_resource(
         "music.playlist",
         playlist_label(playlist),
     )
-    .with_action(operation_spec(
-        "open",
-        "Open playlist",
-        OperationKind::View,
-        &MusicOperation::OpenPlaylist {
-            id: playlist.id.clone(),
+    .with_action(bound(
+        &MusicEffect::Open {
+            place: Place::Playlist(playlist.id.clone()),
         },
+        "Open playlist",
     ));
     let playlist_id = playlist.id.clone();
     resource = resource.with_action(
@@ -1566,14 +1496,14 @@ fn playlist_track_resource(
         "music.playlist-track",
         track.label.clone(),
     )
-    .with_action(operation_spec(
-        "open",
-        "Open in playlist",
-        OperationKind::View,
-        &MusicOperation::OpenPlaylistMembership {
-            playlist: playlist.to_string(),
-            track: track.id.clone(),
+    .with_action(bound(
+        &MusicEffect::Open {
+            place: Place::Membership {
+                playlist: playlist.to_string(),
+                track: track.id.clone(),
+            },
         },
+        "Open in playlist",
     ))
     .with_action(immediate_spec(
         "remove",
@@ -1621,36 +1551,25 @@ fn playlist_track_resource(
     })
 }
 
-pub(crate) fn catalog_track_resource(
-    track: &CatalogTrackResource,
-    playback: &crate::model::Playback,
-) -> Resource {
-    let mut next = playback.clone();
-    next.queue = vec![track.id.clone()];
-    next.queue_index = 0;
-    next.current = Some(track.id.clone());
-    next.position_ms = 0;
-    next.playing = true;
+pub(crate) fn catalog_track_resource(track: &CatalogTrackResource) -> Resource {
+    let tracks = vec![track.id.clone()];
     let mut resource = Resource::new(
         track_resource_id(&track.id),
         "music.track",
         track.label.clone(),
     )
-    .with_action(local_playback_spec("play", "Play track", playback, &next))
-    .with_action(local_offline_spec(
-        if track.offline {
-            "remove-offline"
-        } else {
-            "keep-offline"
+    .with_action(bound(
+        &MusicEffect::Play {
+            track: track.id.clone(),
+            queued: None,
         },
-        if track.offline {
-            "Remove from offline cache"
-        } else {
-            "Keep offline"
-        },
-        vec![track.id.clone()],
-        !track.offline,
+        "Play track",
     ))
+    .with_action(if track.offline {
+        MusicEffect::RemoveOffline { tracks }.bound()
+    } else {
+        MusicEffect::KeepOffline { tracks }.bound()
+    })
     .with_action(immediate_spec(
         "toggle-like",
         if track.liked {
@@ -1660,44 +1579,33 @@ pub(crate) fn catalog_track_resource(
         },
         &set_liked_action(&track.id, !track.liked),
     ))
-    .with_action({
-        let mut queued = playback.clone();
-        queued.queue.push(track.id.clone());
-        local_playback_spec("add-to-queue", "Add to queue", playback, &queued)
-    })
-    .with_action({
-        let mut next = playback.clone();
-        if next.queue.is_empty() || next.current.is_none() {
-            next.queue = vec![track.id.clone()];
-            next.current = Some(track.id.clone());
-            next.queue_index = 0;
-            next.playing = true;
-            next.position_ms = 0;
-        } else {
-            let at = (next.queue_index + 1).min(next.queue.len());
-            next.queue.insert(at, track.id.clone());
+    .with_action(
+        MusicEffect::AddToQueue {
+            track: track.id.clone(),
         }
-        local_playback_spec("play-next", "Play next", playback, &next)
-    });
+        .bound(),
+    )
+    .with_action(
+        MusicEffect::PlayNext {
+            track: track.id.clone(),
+        }
+        .bound(),
+    );
     if !track.album_id.is_empty() {
-        resource = resource.with_action(operation_spec(
-            "open-album",
-            "Open album",
-            OperationKind::View,
-            &MusicOperation::OpenAlbum {
-                id: track.album_id.clone(),
-            },
-        ));
+        resource = resource.with_action(
+            MusicEffect::OpenAlbum {
+                album: track.album_id.clone(),
+            }
+            .bound(),
+        );
     }
     if !track.artist_id.is_empty() {
-        resource = resource.with_action(operation_spec(
-            "open-artist",
-            "Open artist",
-            OperationKind::View,
-            &MusicOperation::OpenArtist {
-                id: track.artist_id.clone(),
-            },
-        ));
+        resource = resource.with_action(
+            MusicEffect::OpenArtist {
+                artist: track.artist_id.clone(),
+            }
+            .bound(),
+        );
     }
     resource
 }
@@ -1708,13 +1616,11 @@ fn catalog_album_resource(album: &CatalogAlbumResource) -> Resource {
         "music.album",
         album.label.clone(),
     )
-    .with_action(operation_spec(
-        "open",
-        "Open album",
-        OperationKind::View,
-        &MusicOperation::OpenAlbum {
-            id: album.id.clone(),
+    .with_action(bound(
+        &MusicEffect::Open {
+            place: Place::Album(album.id.clone()),
         },
+        "Open album",
     ))
     .with_action(immediate_spec(
         "toggle-save",
@@ -1733,13 +1639,11 @@ fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
         "music.artist",
         artist.label.clone(),
     )
-    .with_action(operation_spec(
-        "open",
-        "Open artist",
-        OperationKind::View,
-        &MusicOperation::OpenArtist {
-            id: artist.id.clone(),
+    .with_action(bound(
+        &MusicEffect::Open {
+            place: Place::Artist(artist.id.clone()),
         },
+        "Open artist",
     ))
     .with_action(immediate_spec(
         "toggle-follow",
@@ -1788,10 +1692,9 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
         known_tracks.insert(file.id.clone());
     }
     if id == "music.player:player" {
-        return Some(with_playback_actions(
+        return Some(with_transport(
             Resource::new("music.player:player", "music.player", "Player"),
             &ctx.playback,
-            &known_tracks,
         ));
     }
     if id == QUEUE_RESOURCE_ID {
@@ -1809,7 +1712,7 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
             .tracks
             .iter()
             .find(|track| track.id == track_id)
-            .map(|track| catalog_track_resource(track, &ctx.playback));
+            .map(catalog_track_resource);
     }
     if let Some(album_id) = id.strip_prefix("music.album:").filter(|id| !id.is_empty()) {
         return ctx
@@ -1866,22 +1769,6 @@ impl crate::app::MusicApp {
 /// A device-local source has no collaborative track/catalog identity.
 pub const LOCAL_FILE_RESOURCE_ID: &str = "music.local-file:current";
 
-pub(crate) fn open_local_file_spec() -> ActionSpec {
-    operation_spec(
-        "open-file",
-        "Open audio file",
-        OperationKind::Effect,
-        &MusicOperation::ChooseAudioFile,
-    )
-    .retry_policy(RetryPolicy::AtMostOnce)
-    .execution(ExecutionMode::Background { cancellable: false })
-    .returns(ResultSpec::Json {
-        schema: serde_json::json!({
-            "type":"object", "required":["state"], "properties":{"state":{"enum":["playing"]}}
-        }),
-    })
-}
-
 fn local_file_resource(file: &CatalogTrackResource, playback: &crate::model::Playback) -> Resource {
     let resource = Resource::new(
         LOCAL_FILE_RESOURCE_ID,
@@ -1889,15 +1776,15 @@ fn local_file_resource(file: &CatalogTrackResource, playback: &crate::model::Pla
         file.label.clone(),
     );
     if playback.current.as_deref() == Some(&file.id) {
-        return with_transport_navigation(with_transport_settings(resource, playback), playback);
+        return with_transport(resource, playback);
     }
-    let mut next = playback.clone();
-    next.current = Some(file.id.clone());
-    next.queue = vec![file.id.clone()];
-    next.queue_index = 0;
-    next.position_ms = 0;
-    next.playing = true;
-    resource.with_action(local_playback_spec("play", "Play file", playback, &next))
+    resource.with_action(bound(
+        &MusicEffect::Play {
+            track: file.id.clone(),
+            queued: None,
+        },
+        "Play file",
+    ))
 }
 
 #[cfg(test)]
@@ -1905,7 +1792,9 @@ mod tests {
     use super::*;
     use crate::app::MusicApp;
     use automerge::AutoCommit;
-    use tilo_actions::{ActionInput, ArgValue, LocalTransport};
+    use tilo_actions::{
+        ActionInput, ArgValue, ExecutionMode, LocalTransport, OperationKind, ResultSpec,
+    };
     use tilo_automerge::ApplyIncoming;
     use ui::widget::Widget;
 
@@ -2047,7 +1936,12 @@ mod tests {
         );
         let root_actions: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(root_actions.contains(&"new-playlist"), "{root_actions:?}");
-        assert!(root_actions.contains(&"open-file"), "{root_actions:?}");
+        assert!(
+            MusicEffect::specs()
+                .iter()
+                .any(|effect| effect.id == "open-file"),
+            "the picker is offered beside the library's actions"
+        );
         assert!(
             published
                 .children
@@ -2130,7 +2024,11 @@ mod tests {
                 .iter()
                 .find(|r| r.kind == "music.player")
                 .expect("a stable player resource");
-            assert!(player.actions.iter().any(|action| action.id == "queue-add"));
+            assert!(
+                MusicEffect::specs()
+                    .iter()
+                    .any(|action| action.id == "queue-add")
+            );
             assert!(
                 player
                     .actions
@@ -2239,7 +2137,7 @@ mod tests {
                 offline: false,
                 liked: false,
             };
-            let resource = catalog_track_resource(&track, &crate::model::Playback::default());
+            let resource = catalog_track_resource(&track);
             let album = resource
                 .actions
                 .iter()
@@ -2252,11 +2150,9 @@ mod tests {
                 .expect("track has an exact artist action");
             for (action, wanted) in [(album, "album-9"), (artist, "artist-2")] {
                 let encoded = spec_encoding_of(action);
-                let operation = decode_operation(&encoded.type_id, &encoded.payload)
-                    .expect("operation decodes")
-                    .expect("music operation");
-                match operation {
-                    MusicOperation::OpenAlbum { id } | MusicOperation::OpenArtist { id } => {
+                match MusicEffect::from_payload(&encoded.payload).expect("effect decodes") {
+                    MusicEffect::OpenAlbum { album: id }
+                    | MusicEffect::OpenArtist { artist: id } => {
                         assert_eq!(id, wanted);
                     }
                     other => panic!("unexpected parent action: {other:?}"),
@@ -2313,9 +2209,10 @@ mod tests {
                 assert_eq!(open.contract.permission, PermissionRequirement::Read);
                 let encoded = spec_encoding_of(open);
                 assert_eq!(
-                    decode_operation(&encoded.type_id, &encoded.payload)
-                        .expect("operation decodes"),
-                    Some(MusicOperation::OpenView { id: id.to_string() })
+                    MusicEffect::from_payload(&encoded.payload).expect("effect decodes"),
+                    MusicEffect::Open {
+                        place: Place::View(id.to_string())
+                    }
                 );
                 assert_eq!(
                     open_view_address(id).expect("known view address").resource,
@@ -2335,7 +2232,7 @@ mod tests {
             let (app, doc) = seeded();
             let resources = app.palette_tree(&doc);
             let operation_handlers =
-                std::collections::HashSet::from([MUSIC_OPERATION_TYPE.to_string()]);
+                std::collections::HashSet::from([MusicEffect::OPERATION.to_string()]);
             let violations =
                 tilo_actions::validate_surface(&resources, &registry(), &operation_handlers);
             assert!(violations.is_empty(), "{violations:#?}");
@@ -2449,19 +2346,22 @@ mod tests {
             ctx.playback.current = Some("track-1".into());
             ctx.playback.queue.push("track-1".into());
             let resources = published_tree(&ctx);
-            let root = resources[0]
+            let player = resources[0]
                 .children
                 .iter()
                 .find(|resource| resource.kind == "music.player")
                 .unwrap();
-            for id in [
-                "play-pause",
-                "seek",
-                "set-volume",
-                "queue-add",
-                "queue-remove",
+            // The transport rides the player; what takes a caller's argument
+            // is offered on the library.
+            let library = MusicEffect::specs();
+            for (id, on) in [
+                ("play-pause", &player.actions),
+                ("seek", &library),
+                ("set-volume", &library),
+                ("queue-add", &library),
+                ("queue-remove", &library),
             ] {
-                let action = root.actions.iter().find(|action| action.id == id).unwrap();
+                let action = on.iter().find(|action| action.id == id).unwrap();
                 assert_eq!(action.kind, tilo_actions::OperationKind::Effect, "{id}");
                 assert_eq!(
                     action.contract.permission,
@@ -2474,12 +2374,7 @@ mod tests {
                 );
             }
             assert_eq!(
-                root.actions
-                    .iter()
-                    .find(|a| a.id == "seek")
-                    .unwrap()
-                    .params()[0]
-                    .ty,
+                library.iter().find(|a| a.id == "seek").unwrap().params()[0].ty,
                 ParamType::Integer
             );
             let track = CatalogTrackResource {
@@ -2490,7 +2385,7 @@ mod tests {
                 offline: false,
                 liked: false,
             };
-            let play = catalog_track_resource(&track, &ctx.playback)
+            let play = catalog_track_resource(&track)
                 .actions
                 .into_iter()
                 .find(|action| action.id == "play")
@@ -2499,8 +2394,8 @@ mod tests {
                 play.contract.execution,
                 ExecutionMode::Background { cancellable: false }
             );
-            assert!(matches!(play.contract.result, ResultSpec::Json { .. }));
-            let offline = catalog_track_resource(&track, &ctx.playback)
+            assert!(matches!(play.contract.result, ResultSpec::Job));
+            let offline = catalog_track_resource(&track)
                 .actions
                 .into_iter()
                 .find(|action| action.id == "keep-offline")
@@ -2556,15 +2451,9 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "remove")
                 .expect("queue rows are actionable without pixels");
-            let operation = decode_operation(
-                &spec_encoding_of(remove).type_id,
-                &spec_encoding_of(remove).payload,
-            )
-            .unwrap()
-            .unwrap();
             assert_eq!(
-                operation,
-                MusicOperation::RemoveQueueItem {
+                MusicEffect::from_payload(&spec_encoding_of(remove).payload).unwrap(),
+                MusicEffect::Remove {
                     index: 1,
                     track: "track-1".into(),
                 }
@@ -2578,27 +2467,22 @@ mod tests {
 
         // Phase `resource_arguments_refuse_wrong_kind_and_stale_tracks`.
         {
-            let (app, doc) = seeded();
+            let (mut app, doc) = seeded();
             let resources = app.palette_tree(&doc);
             let library = &resources[0];
-            let player = library
-                .children
-                .iter()
-                .find(|resource| resource.kind == "music.player")
-                .unwrap();
-            let queue_add = player
-                .actions
+            let effects = MusicEffect::specs();
+            let queue_add = effects
                 .iter()
                 .find(|action| action.id == "queue-add")
                 .unwrap();
 
             for address in ["music.album:not-a-track", "music.track:removed"] {
                 let encoded = queue_add
-                    .build_args([(String::from("track"), ArgValue::Resource(address.into()))])
-                    .expect("generic resource shape binds before Music validates its kind/state");
-                assert_eq!(
-                    encoded.type_id,
-                    tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
+                    .build_args([(String::from("track"), ArgValue::Text(address.into()))])
+                    .expect("the address binds before Music validates its kind and state");
+                assert!(
+                    app.start_effect(tilo_actions::InvocationId::new(), &encoded.payload)
+                        .is_err(),
                     "{address}"
                 );
             }
