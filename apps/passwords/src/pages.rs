@@ -8,17 +8,18 @@ use accounts::{SecretItem, SecretItemKind};
 use ui::TextRole;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
+use ui::tokens::SpacingStep;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Actions, Avatar, AvatarSize, Banner, Button, ButtonRole, Checkbox, Column, Element, EmptyState,
-    Field, Form, FormPage, FormSection, LabelPlacement, ListRow, ModalDialog, Property,
-    PropertyList, Row, Scrollable, Section, SectionHeader, Stack, StatGroup, StatTile, Text,
-    TextInput, TextInputKind, ToggleGroup, Tone,
+    Field, Form, FormSection, LabelPlacement, ListRow, ModalDialog, Property, PropertyList, Row,
+    Scrollable, Section, SectionHeader, Spacer, Stack, StatGroup, StatTile, Text, TextInput,
+    TextInputKind, ToggleGroup, Tone,
 };
 
 use crate::vault::{
     Core, Dialog, DraftField, Request, Requests, Screen, Shared, identity, identity_label,
-    is_favorite, origin_label, secret_label,
+    is_favorite, kind_label, origin_label, secret_label,
 };
 
 /// Shown in place of a secret that is not revealed.
@@ -62,6 +63,21 @@ fn page(children: Vec<Element>) -> Element {
     Box::new(Scrollable::new_vertical().with_child(Box::new(column)))
 }
 
+/// A tool page: its title, an optional sentence under it, then `groups`.
+/// Groups stand a group gap apart: an empty spacer between two of them
+/// takes the column's gap twice.
+fn titled_page(title: &str, lead: Option<&str>, groups: Vec<Element>) -> Element {
+    let mut children = vec![text(title, TextRole::Title)];
+    if let Some(lead) = lead {
+        children.push(text(lead, TextRole::Body));
+    }
+    for group in groups {
+        children.push(Box::new(Spacer::token(SpacingStep::S0)));
+        children.push(group);
+    }
+    page(children)
+}
+
 /// The content column: the page for the current screen, and the dialog
 /// over the window when one is open.
 pub(crate) fn content(core: &Core, shared: &Shared, requests: &Requests) -> Element {
@@ -82,12 +98,12 @@ pub(crate) fn content(core: &Core, shared: &Shared, requests: &Requests) -> Elem
 
 fn detail(core: &Core, requests: &Requests) -> Element {
     let Some(item) = core.selected_item() else {
-        let title = if core.items.is_empty() {
-            "Items you save appear here"
-        } else {
-            "No item selected"
-        };
-        return Box::new(EmptyState::new(title).with_icon(Icon::Shield));
+        // The list says why it is empty and offers the next step; the
+        // content stays quiet instead of repeating it.
+        if core.visible().is_empty() {
+            return page(Vec::new());
+        }
+        return Box::new(EmptyState::new("No item selected").with_icon(Icon::Shield));
     };
     let mut children: Vec<Element> = Vec::new();
     if let Some(error) = &core.recovery_error {
@@ -103,29 +119,43 @@ fn detail(core: &Core, requests: &Requests) -> Element {
 fn detail_header(item: &SecretItem, requests: &Requests) -> Vec<Element> {
     let favorite = is_favorite(item);
     let copy = format!("Copy {}", secret_noun(item.kind));
-    // An icon button has no "on" face, so the label says which way it goes.
-    let star = button(
-        "passwords.favorite",
-        if favorite {
-            "Remove from favorites"
-        } else {
-            "Add to favorites"
-        },
-        ButtonRole::Plain,
-        requests,
-        Request::ToggleFavorite(item.id.clone()),
-    )
-    .with_icon(Icon::Star);
+    let star = {
+        let requests = Rc::clone(requests);
+        let id = item.id.clone();
+        Button::icon_only(
+            "passwords.favorite",
+            Icon::Star,
+            if favorite {
+                "Remove from favorites"
+            } else {
+                "Add to favorites"
+            },
+        )
+        .toggled(favorite)
+        .on_click(move || {
+            requests
+                .borrow_mut()
+                .push(Request::ToggleFavorite(id.clone()));
+        })
+    };
+    let name = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(text(&item.title, TextRole::Title))
+        .push(Box::new(
+            Text::new(kind_label(item.kind))
+                .with_role(TextRole::Caption)
+                .dimmed(),
+        ));
     let title = Row::new()
-        .with_align_items(taffy::AlignItems::Center)
+        .no_wrap()
         .push(Box::new(
             Avatar::person(&item.title, &item.id.0)
                 .square()
                 .size(AvatarSize::Large),
         ))
-        .push(text(&item.title, TextRole::Title));
+        .push(Box::new(name));
     let actions = Row::new()
-        .with_align_items(taffy::AlignItems::Center)
         .push(Box::new(button(
             "passwords.copy",
             &copy,
@@ -224,7 +254,7 @@ fn input(shared: &Shared, field: DraftField, value: &str) -> TextInput {
             .with_kind(TextInputKind::Url)
             .with_placeholder("https://example.com"),
         DraftField::Password => input.with_secret(true),
-        DraftField::Notes => input.multiline(true),
+        DraftField::Notes => input.multiline(true).with_placeholder("Add a note"),
         DraftField::Tags => input.with_placeholder("Separate tags with commas"),
         DraftField::CustomFields => input
             .multiline(true)
@@ -353,7 +383,7 @@ fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
     } else {
         "New item"
     };
-    Box::new(FormPage::new(title, form))
+    titled_page(title, None, vec![Box::new(form)])
 }
 
 // --- password review ----------------------------------------------------
@@ -378,8 +408,9 @@ fn count_tone(count: usize) -> Tone {
 
 fn review(core: &Core, requests: &Requests) -> Element {
     let health = core.health;
+    // Every tile is a finding with its verdict; how many were checked is a
+    // fact about the review below.
     let tiles: Vec<Element> = vec![
-        Box::new(StatTile::new("Passwords checked", health.total.to_string())),
         Box::new(
             StatTile::new("Reused", health.reused.to_string()).tone(count_tone(health.reused)),
         ),
@@ -389,10 +420,7 @@ fn review(core: &Core, requests: &Requests) -> Element {
                 .tone(count_tone(health.older_than_year)),
         ),
     ];
-    let mut children: Vec<Element> = vec![
-        text("Password review", TextRole::Title),
-        Box::new(StatGroup::new(tiles)),
-    ];
+    let mut groups: Vec<Element> = vec![Box::new(StatGroup::new(tiles))];
     let rows: Vec<Element> = core
         .findings
         .iter()
@@ -408,7 +436,7 @@ fn review(core: &Core, requests: &Requests) -> Element {
         })
         .collect();
     if rows.is_empty() {
-        children.push(Box::new(
+        groups.push(Box::new(
             Section::new(vec![text(
                 "Every saved password is unique, strong and recent.",
                 TextRole::Body,
@@ -417,22 +445,25 @@ fn review(core: &Core, requests: &Requests) -> Element {
         ));
     } else {
         let count = rows.len();
-        children.push(Box::new(
+        groups.push(Box::new(
             Section::new(rows).with_header(SectionHeader::group("Needs attention").count(count)),
         ));
     }
-    let mut facts = vec![Property::new(
-        "Checked against",
-        "Only the passwords saved here, on this device",
-    )];
+    let mut facts = vec![
+        Property::new("Passwords checked", health.total.to_string()).with_kind(TextKind::Numeric),
+        Property::new(
+            "Checked against",
+            "Only the passwords saved here, on this device",
+        ),
+    ];
     if let Some(custody) = core.custody {
         facts.push(Property::new("Encryption key", custody));
     }
-    children.push(Box::new(
+    groups.push(Box::new(
         Section::new(vec![Box::new(PropertyList::new(facts))])
             .with_header(SectionHeader::group("About this review")),
     ));
-    page(children)
+    titled_page("Password review", None, groups)
 }
 
 // --- app access ---------------------------------------------------------
@@ -443,7 +474,7 @@ fn app_access(core: &Core, requests: &Requests) -> Element {
             EmptyState::new("No app can use your vault without asking").with_icon(Icon::Shield),
         );
     }
-    let rows: Vec<Element> = core
+    let grants: Vec<Property> = core
         .app_grants
         .iter()
         .enumerate()
@@ -451,32 +482,26 @@ fn app_access(core: &Core, requests: &Requests) -> Element {
             let item = core
                 .item(&grant.item_id)
                 .map_or_else(|| "A saved item".to_owned(), |item| item.title.clone());
-            let mut row = ListRow::new(
-                format!("grant:{index}"),
-                crate::vault::app_name(&grant.app_id),
-            )
-            .icon(Icon::LayoutGrid)
-            .secondary(item)
-            .action(
+            let value = match &grant.origin {
+                Some(origin) => format!("{item}\n{}", crate::vault::host_of(origin)),
+                None => item,
+            };
+            Property::new(crate::vault::app_name(&grant.app_id), value).action(
                 Icon::Ban,
                 "Revoke access",
                 ask(requests, Request::Revoke(index)),
-            );
-            if let Some(origin) = &grant.origin {
-                row = row.meta(crate::vault::host_of(origin));
-            }
-            Box::new(row) as Element
+            )
         })
         .collect();
-    let count = rows.len();
-    page(vec![
-        text("App access", TextRole::Title),
-        text(
-            "These apps can fill the item shown without asking you first.",
-            TextRole::Body,
-        ),
-        Box::new(Section::new(rows).with_header(SectionHeader::group("Allowed apps").count(count))),
-    ])
+    let count = grants.len();
+    titled_page(
+        "App access",
+        Some("Each app below can fill the item beside it without asking you first."),
+        vec![Box::new(
+            Section::new(vec![Box::new(PropertyList::new(grants))])
+                .with_header(SectionHeader::group("Allowed apps").count(count)),
+        )],
+    )
 }
 
 // --- import and export ---------------------------------------------------
@@ -490,59 +515,62 @@ fn transfer(requests: &Requests) -> Element {
     let pair = |first: Button, second: Button| -> Element {
         Box::new(Row::new().push(Box::new(first)).push(Box::new(second)))
     };
-    page(vec![
-        text("Import and export", TextRole::Title),
-        Box::new(group(
-            "Encrypted backup",
-            vec![
-                text(
-                    "A backup keeps every item, note and custom field, encrypted with a password you choose.",
-                    TextRole::Body,
-                ),
-                pair(
-                    button(
-                        "passwords.backup",
-                        "Back up vault…",
-                        ButtonRole::Secondary,
-                        requests,
-                        Request::Backup,
+    titled_page(
+        "Import and export",
+        None,
+        vec![
+            Box::new(group(
+                "Encrypted backup",
+                vec![
+                    text(
+                        "A backup keeps every item, note and custom field, encrypted with a password you choose.",
+                        TextRole::Body,
                     ),
-                    button(
-                        "passwords.restore",
-                        "Restore from backup…",
-                        ButtonRole::Secondary,
-                        requests,
-                        Request::Restore,
+                    pair(
+                        button(
+                            "passwords.backup",
+                            "Back up vault…",
+                            ButtonRole::Secondary,
+                            requests,
+                            Request::Backup,
+                        ),
+                        button(
+                            "passwords.restore",
+                            "Restore from backup…",
+                            ButtonRole::Secondary,
+                            requests,
+                            Request::Restore,
+                        ),
                     ),
-                ),
-            ],
-        )),
-        Box::new(group(
-            "Browser passwords",
-            vec![
-                text(
-                    "Move logins between Passwords and a web browser with a CSV file.",
-                    TextRole::Body,
-                ),
-                pair(
-                    button(
-                        "passwords.import",
-                        "Import from CSV…",
-                        ButtonRole::Secondary,
-                        requests,
-                        Request::Import,
+                ],
+            )),
+            Box::new(group(
+                "Browser passwords",
+                vec![
+                    text(
+                        "Move logins between Passwords and a web browser with a CSV file.",
+                        TextRole::Body,
                     ),
-                    button(
-                        "passwords.export",
-                        "Export to CSV…",
-                        ButtonRole::Secondary,
-                        requests,
-                        Request::Export,
+                    pair(
+                        button(
+                            "passwords.import",
+                            "Import from CSV…",
+                            ButtonRole::Secondary,
+                            requests,
+                            Request::Import,
+                        ),
+                        button(
+                            "passwords.export",
+                            "Export to CSV…",
+                            ButtonRole::Secondary,
+                            requests,
+                            Request::Export,
+                        ),
                     ),
-                ),
-            ],
-        )),
-    ])
+                ],
+            )),
+        ],
+    )
 }
 
 // --- dialogs ------------------------------------------------------------
@@ -591,25 +619,36 @@ fn secret_input(shared: &Shared, confirmation: bool, label: &str, error: Option<
 
 fn import_dialog(
     rows: &[crate::transfer::ImportLogin],
-    conflicts: usize,
+    skipped: &[bool],
     requests: &Requests,
 ) -> ModalDialog<Column> {
+    let (new, known): (Vec<_>, Vec<_>) = rows
+        .iter()
+        .zip(skipped.iter().copied().chain(std::iter::repeat(false)))
+        .partition(|(_, skip)| !*skip);
     let mut children: Vec<Element> = Vec::new();
-    if conflicts > 0 {
-        children.push(text(
-            &if conflicts == 1 {
-                "One login is already in your vault and will be skipped.".to_owned()
-            } else {
-                format!("{conflicts} logins are already in your vault and will be skipped.")
-            },
+    match known.as_slice() {
+        [] => {}
+        [(row, _)] => children.push(text(
+            &format!(
+                "{} is already in your vault and will be skipped.",
+                *row.title
+            ),
             TextRole::Body,
-        ));
+        )),
+        more => children.push(text(
+            &format!(
+                "{} logins are already in your vault and will be skipped.",
+                more.len()
+            ),
+            TextRole::Body,
+        )),
     }
-    let listed: Vec<Element> = rows
+    let listed: Vec<Element> = new
         .iter()
         .take(5)
         .enumerate()
-        .map(|(index, row)| {
+        .map(|(index, (row, _))| {
             Box::new(
                 ListRow::new(format!("import:{index}"), row.title.to_string())
                     .icon(Icon::Globe)
@@ -617,19 +656,20 @@ fn import_dialog(
             ) as Element
         })
         .collect();
-    children.push(Box::new(Section::new(listed)));
-    if rows.len() > 5 {
+    if !listed.is_empty() {
+        children.push(Box::new(Section::new(listed)));
+    }
+    if new.len() > 5 {
         children.push(Box::new(
-            Text::new(&format!("And {} more", rows.len().saturating_sub(5)))
+            Text::new(&format!("And {} more", new.len().saturating_sub(5)))
                 .with_role(TextRole::Caption)
                 .dimmed(),
         ));
     }
-    let new = rows.len().saturating_sub(conflicts);
-    let title = if new == 1 {
-        "Import 1 login?".to_owned()
-    } else {
-        format!("Import {new} logins?")
+    let title = match new.len() {
+        0 => "Nothing new to import".to_owned(),
+        1 => "Import 1 login?".to_owned(),
+        n => format!("Import {n} logins?"),
     };
     ModalDialog::new(title, body(children))
         .primary_action("Import", ask(requests, Request::ConfirmImport))
@@ -665,7 +705,7 @@ fn dialog(core: &Core, shared: &Shared, requests: &Requests) -> Option<Element> 
     let dialog = core.dialog.as_ref()?;
     let close = ask(requests, Request::CloseDialog);
     let built = match dialog {
-        Dialog::ImportPreview { rows, conflicts } => import_dialog(rows, *conflicts, requests),
+        Dialog::ImportPreview { rows, skipped } => import_dialog(rows, skipped, requests),
         Dialog::ExportPlaintext {
             acknowledged,
             reminded,

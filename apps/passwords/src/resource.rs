@@ -222,10 +222,14 @@ pub fn provide_resources(state: &VaultState) -> Vec<PublishedResource> {
     )]
 }
 
-/// Live launch with capture protection for stored secrets.
+/// The launch specification of the live app and its captures.
+///
+/// The window is withheld from screen captures by the Tilo shell, which
+/// protects `so.tilo.passwords` by its app id. A framework definition cannot
+/// ask for it itself yet: `LaunchSpec::configure_app` (where
+/// `App::set_capture_protected` lives) is a legacy setup override that a
+/// definition launch refuses.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
-    // Window title / capture protection live in main.rs via configure_app
-    // (native App only). The browser mounts the definition without that path.
     ui::framework::launch_spec::<PasswordsShell>()
 }
 
