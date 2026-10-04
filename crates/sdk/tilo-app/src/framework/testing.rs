@@ -392,6 +392,25 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.harness.as_mut().expect("app is open")
     }
 
+    /// Visit the custom surface of type `S` the app's view hosts
+    /// ([`ViewCx::surface`](super::ViewCx::surface)), as the frame shows it
+    /// now; `None` when the view hosts none. The frame is laid out again
+    /// after the visit, so what the visit changed is what the next frame
+    /// draws.
+    pub fn with_surface<S: 'static, T>(&mut self, visit: impl FnOnce(&mut S) -> T) -> Option<T> {
+        fn find<S: 'static>(widget: &mut dyn ui_core::widget::Widget) -> Option<&mut S> {
+            if widget.as_any_mut().is_some_and(|any| any.is::<S>()) {
+                return widget.as_any_mut()?.downcast_mut::<S>();
+            }
+            widget.children_mut().into_iter().find_map(find::<S>)
+        }
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
+                find::<S>(ui_core::widget::Decorator::inner_mut(root)).map(visit)
+            })
+            .flatten()
+    }
+
     /// Invoke a declared action through the host door, exactly as a control,
     /// the palette, an agent or a script does.
     ///
