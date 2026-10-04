@@ -3933,7 +3933,8 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
         for style_menu in [false, true] {
             let (mut state, mut wp) = bound();
             wp.model_mut().insert_str(&mut state.doc, "Keep my draft");
-            let mut framed = mount(state, wp, 1000, 700);
+            // Narrow enough that the toolbar keeps commands in its More menu.
+            let mut framed = mount(state, wp, 560, 700);
             let (wp, state) = Framed::split(&mut framed);
             wp.lifecycle.focused = true;
             wp.inner.select_all(&state.doc);
@@ -4009,7 +4010,8 @@ fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
             wp.inner.insert_str(&mut state.doc, "Keep this edit");
             state.commit_action(None, None);
             let containers = wp.inner.containers.clone().unwrap();
-            let mut framed = mount(state, wp, 1000, 700);
+            // Narrow enough that the toolbar keeps commands in its More menu.
+            let mut framed = mount(state, wp, 560, 700);
             match menu_kind {
                 0 => framed.open_template_picker(),
                 1 => framed.open_toolbar_overflow(),

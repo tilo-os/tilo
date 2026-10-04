@@ -1210,6 +1210,11 @@ impl Toolbar {
 
     /// The hosted controls' nodes under the toolbar's node, in item order.
     fn element_nodes(&self, taffy: &TaffyTree<()>, node: NodeId) -> Vec<(usize, NodeId)> {
+        // A painted host lays the toolbar out without a node of its own;
+        // only hosted controls have nodes to look up.
+        if !self.has_elements() {
+            return Vec::new();
+        }
         let children = taffy.children(node).unwrap_or_default();
         self.items
             .iter()
