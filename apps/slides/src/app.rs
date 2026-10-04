@@ -12,7 +12,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -23,9 +22,10 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::effects::SlidesEffect;
 use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSurface, SubmitKey};
 use ui::ColorCompat;
-use ui::framework::{Dispatcher, TextControl, ViewCx};
+use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, TextControl, ViewCx};
 use ui::icons::{Icon, draw_icon};
 use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
@@ -108,10 +108,18 @@ fn load_presentation_from_path(
     content: &ContentStore,
 ) -> Result<Deck, String> {
     let bytes = read_presentation_file(path).map_err(|error| error.to_string())?;
-    if is_pptx(path) {
-        crate::pptx::read_pptx(&bytes, content).map_err(|error| error.to_string())
+    parse_presentation(&bytes, is_pptx(path), content)
+}
+
+/// The deck of a presentation file's bytes: PPTX when `pptx`, else ODP.
+fn parse_presentation(bytes: &[u8], pptx: bool, content: &ContentStore) -> Result<Deck, String> {
+    if bytes.len() > MAX_PRESENTATION_FILE_BYTES {
+        return Err("presentation file is larger than 64 MiB".into());
+    }
+    if pptx {
+        crate::pptx::read_pptx(bytes, content).map_err(|error| error.to_string())
     } else {
-        crate::odp::read_odp(&bytes, content).map_err(|error| error.to_string())
+        crate::odp::read_odp(bytes, content).map_err(|error| error.to_string())
     }
 }
 
@@ -136,123 +144,23 @@ fn save_presentation_to_path(
         .map_err(|error| error.to_string())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DocOutcome {
-    Open(PathBuf),
-    Save(PathBuf),
-    Cancelled,
-    Failed(String),
-}
-
-/// The archive parser and ZIP writer never run on a compositor/sync frame.
-/// Generation tags fence stale imports. Dispatched exports retain separate
-/// settlement custody because the worker cannot cancel an external file write.
-enum DocumentJob {
-    Open {
-        generation: u64,
-        path: PathBuf,
-    },
-    Save {
-        generation: u64,
-        path: PathBuf,
-        deck: Deck,
-    },
-}
-
-enum DocumentJobResult {
-    Open {
-        generation: u64,
-        result: Result<Deck, String>,
-    },
-    Save {
-        generation: u64,
-        result: Result<(), String>,
-    },
-}
-
-struct DispatchedSave {
-    generation: u64,
-    invocation: Option<tilo_actions::InvocationId>,
-}
-
-/// Each job carries a wake for the app that queued it: an idle host syncs,
-/// and so drains the result, only when woken.
-struct DocumentWorker {
-    tx: SyncSender<(DocumentJob, ui::wake::WakeHandle)>,
-    rx: Receiver<DocumentJobResult>,
-}
-
-impl DocumentWorker {
-    fn new(content: ContentStore) -> Result<Self, String> {
-        let (tx, jobs) = std::sync::mpsc::sync_channel::<(DocumentJob, ui::wake::WakeHandle)>(1);
-        let (results, rx) = std::sync::mpsc::sync_channel(1);
-        ui::rt::spawn_thread("slides-document-io", move || {
-            while let Ok((job, wake)) = jobs.recv() {
-                let result = match job {
-                    DocumentJob::Open { generation, path } => DocumentJobResult::Open {
-                        generation,
-                        result: load_presentation_from_path(&path, &content),
-                    },
-                    DocumentJob::Save {
-                        generation,
-                        path,
-                        deck,
-                    } => DocumentJobResult::Save {
-                        generation,
-                        result: save_presentation_to_path(&deck, &path, &content),
-                    },
-                };
-                let sent = results.send(result);
-                wake.wake();
-                if sent.is_err() {
-                    break;
-                }
-            }
-        })
-        .map(|_| Self { tx, rx })
-        .map_err(|error| format!("could not start presentation I/O worker: {error}"))
-    }
-}
-
-struct DocPortalChannel {
-    rx: PortalChannel,
-    save: bool,
-}
-
-impl DocPortalChannel {
-    fn try_recv(&self) -> Result<DocOutcome, TryRecvError> {
-        self.rx.try_recv().map(|outcome| match outcome {
-            PortalOutcome::Opened(path) if self.save => DocOutcome::Save(path),
-            PortalOutcome::Opened(path) => DocOutcome::Open(path),
-            PortalOutcome::Cancelled => DocOutcome::Cancelled,
-            PortalOutcome::Failed(error) => DocOutcome::Failed(error),
-        })
-    }
-}
-
-fn open_document_request() -> DocPortalChannel {
-    DocPortalChannel {
-        rx: PickRequest::open(&tr("slides-open-title"), &tr("slides-open-accept"))
-            .thread_name("slides-portal-open-doc")
-            .filter(presentation_filter())
-            .all_files()
-            .send(),
-        save: false,
-    }
-}
-
-fn save_document_request(suggested_name: &str) -> DocPortalChannel {
-    DocPortalChannel {
-        rx: PickRequest::save(
-            &tr("slides-save-title"),
-            &tr("slides-save-accept"),
-            suggested_name,
-        )
-        .thread_name("slides-portal-save-doc")
+/// The host's chooser for a presentation to open.
+fn open_document_request() -> PickRequest {
+    PickRequest::open(&tr("slides-open-title"), &tr("slides-open-accept"))
+        .thread_name("slides-portal-open-doc")
         .filter(presentation_filter())
-        .send(),
-        save: true,
-    }
+        .all_files()
+}
+
+/// The host's chooser for where to save the deck, suggesting `name`.
+fn save_document_request(suggested_name: &str) -> PickRequest {
+    PickRequest::save(
+        &tr("slides-save-title"),
+        &tr("slides-save-accept"),
+        suggested_name,
+    )
+    .thread_name("slides-portal-save-doc")
+    .filter(presentation_filter())
 }
 
 /// 1× floors for the editor chrome. Every row is derived from the measured
@@ -949,20 +857,6 @@ pub struct SlidesApp {
     /// this channel and is drained each frame in [`SlidesApp::drain_portal`].
     /// `None` when idle. Per-peer/transient (not CRDT).
     portal_rx: Option<PortalChannel>,
-    /// An in-flight host file open/save for `.odp` documents. Same
-    /// worker-thread/channel contract as [`Self::portal_rx`]; `save` carries
-    /// the deck bytes to write once the user names a destination.
-    doc_portal_rx: Option<DocPortalChannel>,
-    /// Bounded parser/serializer worker. A missing worker is an explicit
-    /// visible failure rather than a synchronous fallback on the UI thread.
-    document_worker: Option<DocumentWorker>,
-    document_worker_error: Option<String>,
-    next_document_generation: u64,
-    active_document_generation: Option<u64>,
-    dispatched_save: Option<DispatchedSave>,
-    resource_file: Option<(bool, std::path::PathBuf)>,
-    resource_invocation: Option<tilo_actions::InvocationId>,
-    completed_resource_invocation: Option<tilo_actions::InvocationUpdate>,
     /// Visible result of a fallible open/save/image operation. Previously those
     /// paths failed silently, leaving users unsure whether a click worked.
     io_toast: Option<(String, ToastKind)>,
@@ -1022,30 +916,17 @@ enum DemoMenu {
 
 impl SlidesApp {
     /// The editor of the deck the view `cx` shows: its edits go through the
-    /// view's dispatcher, its pictures are in the view's content store, and
-    /// presentation files are read and written only in a window someone
-    /// uses.
+    /// view's dispatcher, and its pictures are in the view's content store.
     pub fn new(cx: &ViewCx<SlidesDeck>) -> Self {
         let content = cx.content().unwrap_or_else(crate::assets::app_content);
         let state = cx.live().get();
-        let mut app = Self::build(cx.dispatcher(), content, cx.mode().is_live());
+        let mut app = Self::build(cx.dispatcher(), content);
         app.adopt_resource_state(&state);
         app
     }
 
-    fn build(dispatch: Dispatcher<SlidesDeck>, content: ContentStore, live: bool) -> Self {
+    fn build(dispatch: Dispatcher<SlidesDeck>, content: ContentStore) -> Self {
         let deck = starter_deck();
-        let (document_worker, document_worker_error) = if live {
-            match DocumentWorker::new(content.clone()) {
-                Ok(worker) => (Some(worker), None),
-                Err(error) => (None, Some(error)),
-            }
-        } else {
-            (
-                None,
-                Some("presentation files open only in a live window".into()),
-            )
-        };
         let notes_slide = Rc::new(RefCell::new(String::new()));
         let located = Rc::clone(&notes_slide);
         let notes = TextControl::view_only(
@@ -1100,15 +981,6 @@ impl SlidesApp {
             inspector_scroll: Scrollable::new_vertical().always_visible(),
             tooltip_text: None,
             portal_rx: None,
-            doc_portal_rx: None,
-            document_worker,
-            document_worker_error,
-            next_document_generation: 0,
-            active_document_generation: None,
-            dispatched_save: None,
-            resource_file: None,
-            resource_invocation: None,
-            completed_resource_invocation: None,
             io_toast: None,
             ctx_menu: ContextMenu::new(),
             ctx_hits: Vec::new(),
@@ -3236,277 +3108,124 @@ impl SlidesApp {
         self.portal_rx = Some(image_open_request().send());
     }
 
-    /// Ask the host to pick a `.odp` presentation to open (Ctrl+O). The chosen
-    /// file is read and decoded when the request drains in
-    /// [`Self::drain_doc_portal`]. One request at a time.
-    fn request_odp_open(&mut self) {
-        if self.doc_portal_rx.is_some() {
-            return;
-        }
-        self.doc_portal_rx = Some(open_document_request());
-    }
-
-    /// Ask the host where to save the current deck as a `.odp` (Ctrl+S).
-    fn request_odp_save(&mut self) {
-        if self.doc_portal_rx.is_some() {
-            return;
-        }
-        let name = format!("{}.odp", sanitize_filename(&self.deck.title));
-        self.doc_portal_rx = Some(save_document_request(&name));
-    }
-
-    /// Drain a completed `.odp` open/save request, loading or writing the deck.
-    /// Called once per frame from [`Widget::sync`].
-    fn drain_doc_portal(&mut self) {
-        let Some(rx) = self.doc_portal_rx.as_ref() else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok(outcome) => {
-                self.doc_portal_rx = None;
-                match outcome {
-                    DocOutcome::Open(path) => {
-                        let power_point = is_pptx(&path);
-                        if !self.queue_document_open(path) {
-                            self.io_toast =
-                                Some((tr("slides-toast-import-failed"), ToastKind::Error));
-                            self.finish_resource_file(
-                                false,
-                                Some("presentation import could not be started".into()),
-                            );
-                        } else if power_point {
-                            self.io_toast =
-                                Some((tr("slides-toast-opening-pptx"), ToastKind::Info));
-                        }
-                    }
-                    DocOutcome::Save(path) => {
-                        if !self.queue_document_save(path) {
-                            self.io_toast =
-                                Some((tr("slides-toast-export-failed"), ToastKind::Error));
-                            self.finish_resource_file(
-                                false,
-                                Some("presentation export could not be started".into()),
-                            );
-                        }
-                    }
-                    DocOutcome::Cancelled => self.finish_resource_file(false, None),
-                    DocOutcome::Failed(reason) => {
-                        eprintln!("slides: file chooser failed: {reason}");
-                        self.io_toast = Some((tr("slides-toast-chooser-failed"), ToastKind::Error));
-                        self.finish_resource_file(false, Some(reason));
-                    }
+    /// Open a presentation file in place of the deck: the file at `path`,
+    /// or the one the person chooses with the host's chooser. It is read off
+    /// the UI thread and lands as one action, one undo step.
+    fn open_presentation(
+        &self,
+        path: Option<String>,
+        cx: &mut EffectCx<SlidesDeck, Self>,
+    ) -> Effected {
+        match path {
+            Some(path) => {
+                let content = self.content.clone();
+                cx.thread(
+                    move |_| load_presentation_from_path(std::path::Path::new(&path), &content),
+                    |app: &mut Self, loaded, cx| app.finish_open(loaded, cx),
+                )
+            }
+            None => cx.choose_file(open_document_request(), |app: &mut Self, chosen, cx| {
+                let Some(file) = chosen else {
+                    return Ok(Effected::done());
+                };
+                let pptx = is_pptx(std::path::Path::new(&file.name));
+                if pptx {
+                    app.io_toast = Some((tr("slides-toast-opening-pptx"), ToastKind::Info));
                 }
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.doc_portal_rx = None;
-            }
+                let content = app.content.clone();
+                Ok(cx.thread(
+                    move |_| parse_presentation(&file.bytes, pptx, &content),
+                    |app: &mut Self, loaded, cx| app.finish_open(loaded, cx),
+                ))
+            }),
         }
     }
 
-    fn finish_resource_file(&mut self, success: bool, error: Option<String>) {
-        let Some(invocation) = self.resource_invocation.take() else {
-            return;
-        };
-        self.finish_file_invocation(invocation, success, error);
-    }
-
-    fn finish_file_invocation(
+    /// Show the outcome of opening a presentation, replacing the deck when
+    /// it was read.
+    fn finish_open(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        success: bool,
-        error: Option<String>,
-    ) {
-        self.completed_resource_invocation = Some(if success {
-            tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
+        loaded: Result<Deck, String>,
+        cx: &EffectCx<SlidesDeck, Self>,
+    ) -> EffectAnswer {
+        match loaded {
+            Ok(deck) => {
+                cx.apply(&actions::replace_deck_action(&deck));
+                self.show_opened_deck();
+                self.io_toast = Some((tr("slides-toast-opened"), ToastKind::Success));
+                Ok(Effected::done())
             }
-        } else if let Some(message) = error {
-            tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "slides.file_failed".into(),
-                    message,
-                    details: None,
-                    retryable: false,
-                },
-            }
-        } else {
-            tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("file selection cancelled".into()),
-            }
-        });
-    }
-
-    fn next_document_generation(&mut self) -> Option<u64> {
-        let next = self.next_document_generation.checked_add(1)?;
-        self.next_document_generation = next;
-        Some(next)
-    }
-
-    fn queue_document_open(&mut self, path: PathBuf) -> bool {
-        if self.dispatched_save.is_some() {
-            return false;
-        }
-        let Some(generation) = self.next_document_generation() else {
-            return false;
-        };
-        let Some(worker) = self.document_worker.as_ref() else {
-            self.io_toast = Some((
-                self.document_worker_error
-                    .clone()
-                    .unwrap_or_else(|| "presentation I/O is unavailable".into()),
-                ToastKind::Error,
-            ));
-            return false;
-        };
-        let queued = worker.tx.try_send((
-            DocumentJob::Open { generation, path },
-            ui::wake::WakeHandle::new(),
-        ));
-        match queued {
-            Ok(()) => {
-                self.active_document_generation = Some(generation);
-                true
-            }
-            Err(TrySendError::Full(_)) => false,
-            Err(TrySendError::Disconnected(_)) => {
-                self.document_worker = None;
-                self.document_worker_error =
-                    Some("presentation I/O worker stopped unexpectedly".into());
-                false
+            Err(error) => {
+                self.io_toast = Some((tr("slides-toast-process-failed"), ToastKind::Error));
+                Err(error)
             }
         }
     }
 
-    fn queue_document_save(&mut self, path: PathBuf) -> bool {
-        if self.dispatched_save.is_some() {
-            return false;
-        }
+    /// Save the deck as a presentation file: at `path` (PPTX by its
+    /// extension, else ODP), or as ODP where the person chooses with the
+    /// host's chooser. It is written off the UI thread.
+    fn save_presentation(
+        &mut self,
+        path: Option<String>,
+        cx: &mut EffectCx<SlidesDeck, Self>,
+    ) -> EffectAnswer {
         if !actions::deck_within_aggregate_limits(&self.deck) {
-            self.io_toast = Some((tr("slides-toast-export-limit"), ToastKind::Error));
-            return false;
+            let message = tr("slides-toast-export-limit");
+            self.io_toast = Some((message.clone(), ToastKind::Error));
+            return Err(message);
         }
-        let Some(generation) = self.next_document_generation() else {
-            return false;
-        };
-        let Some(worker) = self.document_worker.as_ref() else {
-            self.io_toast = Some((
-                self.document_worker_error
-                    .clone()
-                    .unwrap_or_else(|| "presentation I/O is unavailable".into()),
-                ToastKind::Error,
-            ));
-            return false;
-        };
-        let queued = worker.tx.try_send((
-            DocumentJob::Save {
-                generation,
-                path,
-                deck: self.deck.clone(),
-            },
-            ui::wake::WakeHandle::new(),
-        ));
-        match queued {
-            Ok(()) => {
-                self.active_document_generation = Some(generation);
-                self.dispatched_save = Some(DispatchedSave {
-                    generation,
-                    invocation: self.resource_invocation.take(),
-                });
-                true
+        let deck = self.deck.clone();
+        let content = self.content.clone();
+        Ok(match path {
+            Some(path) => cx.thread(
+                move |_| save_presentation_to_path(&deck, std::path::Path::new(&path), &content),
+                |app: &mut Self, saved, _| app.finish_save(saved.map(|()| true)),
+            ),
+            None => {
+                let name = format!("{}.odp", sanitize_filename(&deck.title));
+                cx.thread(
+                    move |_| crate::odp::write_odp(&deck, &content).map_err(|e| e.to_string()),
+                    move |app: &mut Self, bytes, cx| match bytes {
+                        Ok(bytes) => Ok(cx.save_file(
+                            save_document_request(&name),
+                            bytes,
+                            |app: &mut Self, saved, _| app.finish_save(Ok(saved)),
+                        )),
+                        Err(error) => app.finish_save(Err(error)),
+                    },
+                )
             }
-            Err(TrySendError::Full(_)) => false,
-            Err(TrySendError::Disconnected(_)) => {
-                self.document_worker = None;
-                self.document_worker_error =
-                    Some("presentation I/O worker stopped unexpectedly".into());
-                false
+        })
+    }
+
+    /// Show the outcome of saving: saved, cancelled (nothing to say) or
+    /// failed.
+    fn finish_save(&mut self, saved: Result<bool, String>) -> EffectAnswer {
+        match saved {
+            Ok(true) => {
+                self.io_toast = Some(("Presentation saved".into(), ToastKind::Success));
+                Ok(Effected::done())
+            }
+            Ok(false) => Ok(Effected::done()),
+            Err(error) => {
+                self.io_toast = Some((
+                    "Could not process the presentation".into(),
+                    ToastKind::Error,
+                ));
+                Err(error)
             }
         }
     }
 
-    /// Open a presentation file's deck in place of this one: one edit, so
-    /// one undo puts the previous deck back.
-    fn apply_loaded_deck(&mut self, deck: &Deck) {
-        self.submit(&actions::replace_deck_action(deck));
+    /// Show a deck just opened from a file from its first slide, nothing
+    /// selected or being edited.
+    fn show_opened_deck(&mut self) {
         self.cur_slide = 0;
         self.sel = None;
         self.editing_text = false;
         self.editing_notes = false;
         self.presentation.invalidate_cache();
-    }
-
-    fn drain_document_worker(&mut self) {
-        let Some(received) = self
-            .document_worker
-            .as_ref()
-            .map(|worker| worker.rx.try_recv())
-        else {
-            return;
-        };
-        let result = match received {
-            Ok(result) => result,
-            Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => {
-                self.document_worker = None;
-                let error = "presentation I/O worker stopped unexpectedly".to_string();
-                self.document_worker_error = Some(error.clone());
-                self.active_document_generation = None;
-                self.io_toast = Some((error.clone(), ToastKind::Error));
-                if let Some(save) = self.dispatched_save.take()
-                    && let Some(invocation) = save.invocation
-                {
-                    self.finish_file_invocation(invocation, false, Some(error));
-                } else {
-                    self.finish_resource_file(false, Some(error));
-                }
-                return;
-            }
-        };
-        if let DocumentJobResult::Save { generation, result } = result {
-            let Some(save) = self
-                .dispatched_save
-                .take_if(|save| save.generation == generation)
-            else {
-                return;
-            };
-            if self.active_document_generation == Some(generation) {
-                self.active_document_generation = None;
-            }
-            self.io_toast = Some(if result.is_ok() {
-                ("Presentation saved".into(), ToastKind::Success)
-            } else {
-                (
-                    "Could not process the presentation".into(),
-                    ToastKind::Error,
-                )
-            });
-            if let Some(invocation) = save.invocation {
-                self.finish_file_invocation(invocation, result.is_ok(), result.err());
-            }
-            return;
-        }
-        let DocumentJobResult::Open { generation, result } = result else {
-            return;
-        };
-        if self.active_document_generation != Some(generation) {
-            return;
-        }
-        self.active_document_generation = None;
-        match result {
-            Ok(deck) => {
-                self.apply_loaded_deck(&deck);
-                self.io_toast = Some((tr("slides-toast-opened"), ToastKind::Success));
-                self.finish_resource_file(true, None);
-            }
-            Err(error) => {
-                self.io_toast = Some((tr("slides-toast-process-failed"), ToastKind::Error));
-                self.finish_resource_file(false, Some(error));
-            }
-        }
     }
 
     /// Advance the render-cache generation without letting a wrapping integer
@@ -5395,92 +5114,11 @@ impl Widget for SlidesApp {
         dyn ui::resources::PublishesResources
     );
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::SLIDES_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested && self.resource_invocation == Some(invocation) {
-            self.resource_invocation = None;
-            self.resource_file = None;
-            self.doc_portal_rx = None;
-            // Imports can still finish after cancellation; their stale result
-            // is inert. Dispatched saves have separate invocation custody and
-            // settle only with the worker's actual outcome.
-            self.active_document_generation = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("presentation file operation cancelled".into()),
-            });
-        }
-        if self
-            .completed_resource_invocation
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            return self.completed_resource_invocation.take();
-        }
-        None
-    }
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
         self.adopt_deferred();
-        if let Some((save, file)) = self.resource_file.take() {
-            let queued = if save {
-                self.queue_document_save(file)
-            } else {
-                self.queue_document_open(file)
-            };
-            if !queued {
-                self.finish_resource_file(
-                    false,
-                    Some("presentation file operation could not be started".into()),
-                );
-            }
-        }
         // Fold in a completed host image-open, if the portal worker finished.
         self.drain_portal();
-        // Fold in a completed `.odp` open/save.
-        self.drain_doc_portal();
-        self.drain_document_worker();
         // One-time view bootstrap: open on the second slide with its title
         // selected so the editor demonstrates selection + the element
         // inspector immediately (also what `--shots` captures).
@@ -6107,162 +5745,91 @@ impl ui::resources::PublishesResources for SlidesApp {
 }
 
 impl SlidesApp {
-    fn answer_resource_operation(
+    /// Answer one of the editor's effects, from a control, a key, the
+    /// palette or an agent.
+    pub(crate) fn answer_effect(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        use crate::actions::SlidesOperation;
-
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        // Keep the registered wire type on the canonical dispatch path.  This
-        // is both a cheap rejection of foreign operation payloads and makes
-        // the runtime registry auditable independently from the decoder.
-        if type_id != crate::actions::SLIDES_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            SlidesOperation::ShowEditor => self.mode = Mode::Edit,
-            SlidesOperation::ShowOverview => self.mode = Mode::Overview,
-            SlidesOperation::StartPresentation => self.enter_present(),
-            SlidesOperation::StartPresentationOn { output } => {
-                self.presentation_target = match output {
-                    crate::actions::PresentationOutput::LargestExternal => {
-                        ui::fullscreen::FullscreenTarget::Largest
-                    }
-                    crate::actions::PresentationOutput::PrimaryExternal => {
-                        ui::fullscreen::FullscreenTarget::PrimaryExternal
-                    }
-                };
+        effect: SlidesEffect,
+        cx: &mut EffectCx<SlidesDeck, Self>,
+    ) -> EffectAnswer {
+        match effect {
+            SlidesEffect::Editor => self.mode = Mode::Edit,
+            SlidesEffect::Overview => self.mode = Mode::Overview,
+            SlidesEffect::Present => self.enter_present(),
+            SlidesEffect::PresentLargestExternal => {
+                self.presentation_target = ui::fullscreen::FullscreenTarget::Largest;
                 self.enter_present();
             }
-            SlidesOperation::EndPresentation => self.exit_present(),
-            SlidesOperation::RevealSlide { slide } => {
-                let Some(idx) = self.deck.index_of(&slide) else {
-                    return Err("slide no longer exists".into());
-                };
+            SlidesEffect::PresentPrimaryExternal => {
+                self.presentation_target = ui::fullscreen::FullscreenTarget::PrimaryExternal;
+                self.enter_present();
+            }
+            SlidesEffect::EndPresentation => self.exit_present(),
+            SlidesEffect::OpenSlide { slide } => {
+                let idx = self.slide_index(&slide)?;
                 self.mode = Mode::Edit;
                 self.editing_notes = false;
                 self.goto_slide(idx);
                 self.scroll_rail_to_current();
             }
-            SlidesOperation::RevealElement {
-                slide,
-                element,
-                edit_text,
-            } => {
-                let Some(idx) = self.deck.index_of(&slide) else {
-                    return Err("slide no longer exists".into());
-                };
-                let Some(target) = self
-                    .deck
-                    .slides
-                    .get(idx)
-                    .and_then(|candidate| candidate.element(&element))
-                else {
-                    return Err("element no longer exists".into());
-                };
-                if edit_text && target.kind != ElementKind::Text {
-                    return Err("element is not editable text".into());
-                }
-                self.mode = Mode::Edit;
-                self.editing_notes = false;
-                self.goto_slide(idx);
-                self.sel = Some(element);
-                self.editing_text = edit_text;
-                if edit_text {
-                    // A text search result restores an immediately useful edit
-                    // state: the exact text resource is selected in full.
-                    self.begin_text_edit(true);
-                }
-                self.scroll_rail_to_current();
+            SlidesEffect::OpenElement { slide, element } => {
+                self.reveal_element(&slide, element, false)?;
             }
-            SlidesOperation::RevealNotes { slide } => {
-                let Some(idx) = self.deck.index_of(&slide) else {
-                    return Err("slide no longer exists".into());
-                };
+            SlidesEffect::EditText { slide, element } => {
+                self.reveal_element(&slide, element, true)?;
+            }
+            SlidesEffect::OpenNotes { slide } => {
+                let idx = self.slide_index(&slide)?;
                 self.mode = Mode::Edit;
                 self.goto_slide(idx);
-                self.editing_notes = true;
-                self.editing_text = false;
-                self.sel = None;
+                self.begin_notes_edit();
                 self.scroll_rail_to_current();
             }
-            SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => {
-                return Err(
-                    "presentation file operations require the lifecycle-capable host".into(),
-                );
-            }
-            SlidesOperation::Read => return Ok(false),
+            SlidesEffect::Open { path } => return Ok(self.open_presentation(path, cx)),
+            SlidesEffect::SaveAs { path } => return self.save_presentation(path, cx),
+            SlidesEffect::Read => return Ok(Effected::value(crate::outline::of_deck(&self.deck))),
         }
-        Ok(true)
+        Ok(Effected::done())
     }
 
-    fn admit_resource_operation(
+    fn slide_index(&self, slide: &str) -> Result<usize, String> {
+        self.deck
+            .index_of(slide)
+            .ok_or_else(|| "slide no longer exists".to_string())
+    }
+
+    /// Show element `element` of slide `slide` selected; its words selected
+    /// for editing when `edit_text`.
+    fn reveal_element(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if type_id != crate::actions::SLIDES_OPERATION_TYPE {
-            return Ok(None);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        slide: &str,
+        element: String,
+        edit_text: bool,
+    ) -> Result<(), String> {
+        let idx = self.slide_index(slide)?;
+        let Some(target) = self
+            .deck
+            .slides
+            .get(idx)
+            .and_then(|candidate| candidate.element(&element))
+        else {
+            return Err("element no longer exists".into());
         };
-        let save_operation = matches!(&operation, crate::actions::SlidesOperation::SaveAs { .. });
-        match operation {
-            crate::actions::SlidesOperation::Open { path: file }
-            | crate::actions::SlidesOperation::SaveAs { path: file } => {
-                if self.resource_invocation.is_some() || self.dispatched_save.is_some() {
-                    return Err("another presentation file operation is running".into());
-                }
-                let save = save_operation;
-                self.resource_invocation = Some(invocation);
-                let direct = file.is_some();
-                if let Some(file) = file {
-                    self.resource_file = Some((save, file.into()));
-                } else if save {
-                    self.request_odp_save();
-                } else {
-                    self.request_odp_open();
-                }
-                if !direct && self.doc_portal_rx.is_none() {
-                    self.resource_invocation = None;
-                    return Err("presentation picker could not be started".into());
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            crate::actions::SlidesOperation::Read => Ok(Some(
-                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput {
-                    value: Some(
-                        crate::outline::of_document(doc)
-                            .map_or(serde_json::Value::Null, serde_json::Value::String),
-                    ),
-                    ..tilo_actions::ActionOutput::default()
-                }),
-            )),
-            _ => self
-                .answer_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
+        if edit_text && target.kind != ElementKind::Text {
+            return Err("element is not editable text".into());
         }
+        self.mode = Mode::Edit;
+        self.editing_notes = false;
+        self.goto_slide(idx);
+        self.sel = Some(element);
+        self.editing_text = edit_text;
+        if edit_text {
+            // A text search result restores an immediately useful edit
+            // state: the exact text resource is selected in full.
+            self.begin_text_edit(true);
+        }
+        self.scroll_rail_to_current();
+        Ok(())
     }
 }
 
@@ -7500,12 +7067,12 @@ impl SlidesApp {
         // Ctrl+S / Ctrl+O — save / open a LibreOffice `.odp` via the
         // host file chooser.
         if ctrl && lc == "s" {
-            self.request_odp_save();
+            self.dispatch.effect(&SlidesEffect::SaveAs { path: None });
             *handled = true;
             return;
         }
         if ctrl && lc == "o" {
-            self.request_odp_open();
+            self.dispatch.effect(&SlidesEffect::Open { path: None });
             *handled = true;
             return;
         }

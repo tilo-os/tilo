@@ -223,18 +223,13 @@ fn present_mode_outputs_fullscreen_and_audience_lifecycle() {
 
     // Case `presentation_output_resource_policy_is_local_and_selects_primary_external`.
     {
-        // The output policy is a published view operation of the deck.
+        // The output policy is one of the editor's view effects.
         let mut bench = Bench::sample();
-        let instance_id = bench.app.harness().component_instance_id().unwrap();
-        let address = ui::bound_dispatch::BoundActionAddress {
-            instance_id,
-            address: tilo_actions::ActionAddress::new("slides.deck", "present-primary-external"),
-        };
         bench
             .app
-            .harness()
-            .invoke_bound_action(&address, &serde_json::Map::new())
-            .expect("the presentation output operation is accepted");
+            .effect(&crate::effects::SlidesEffect::PresentPrimaryExternal)
+            .expect("the presentation output effect is answered");
+        bench.frame();
         bench.read(|app| {
             assert_eq!(app.mode, Mode::Present);
             assert_eq!(
