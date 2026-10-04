@@ -583,6 +583,15 @@ impl EditCore {
     }
 }
 
+/// Backspace for text typed only at its end (a type-ahead query, a digit
+/// entry): remove the last character as a person sees it, never half of a
+/// combining sequence or an emoji. Returns whether anything was removed.
+pub fn delete_last_grapheme(text: &mut String) -> bool {
+    let mut caret = EditCore::at(text.len());
+    let edit = caret.delete_backward(text, false);
+    !edit.is_noop() && edit.apply(text)
+}
+
 /// How long typing must pause before the burst closes into one undo entry.
 pub const TYPING_RUN_IDLE: Duration = Duration::from_secs(1);
 
