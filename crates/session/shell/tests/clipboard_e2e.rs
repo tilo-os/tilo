@@ -1857,7 +1857,8 @@ fn wayland_rich_clipboard_deadline_closes_stalled_pipe_and_rejects_late_bytes() 
         },
         "deadline did not close both stalled readers",
     );
-    for (mime, fd) in std::mem::take(&mut *held.lock().expect("held pipes")) {
+    let expired_pipes = std::mem::take(&mut *held.lock().expect("held pipes"));
+    for (mime, fd) in expired_pipes {
         let error = std::fs::File::from(fd)
             .write_all(b"late")
             .expect_err("expired pipe must be closed");
