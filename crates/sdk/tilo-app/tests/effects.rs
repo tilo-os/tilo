@@ -59,6 +59,9 @@ pub enum MailEffect {
     /// Note what was read, as an edit.
     #[effect(permission = "read")]
     Note { text: String },
+    /// Show the sent folder.
+    #[effect(view)]
+    ShowSent,
 }
 
 thread_local! {
@@ -76,6 +79,8 @@ impl ResourceApp for MailApp {
     fn view(cx: &mut ViewCx<Mailbox>) -> Element {
         let online = cx.local(false);
         let reached = online.clone();
+        let shown = cx.local(false);
+        let shown_text = shown.clone();
         cx.effects(move |effect: MailEffect, cx| match effect {
             MailEffect::Count => Ok(Effected::value(cx.live().with(|mail| mail.sent.len()))),
             MailEffect::Fetch { from } => {
@@ -96,6 +101,10 @@ impl ResourceApp for MailApp {
             MailEffect::Stall => Ok(Effected::Pending),
             MailEffect::Note { text } => {
                 cx.invoke(Mailbox::FETCHED.with(text));
+                Ok(Effected::done())
+            }
+            MailEffect::ShowSent => {
+                shown.set(true);
                 Ok(Effected::done())
             }
         })
@@ -133,6 +142,14 @@ impl ResourceApp for MailApp {
                 .push(Box::new(
                     cx.text(|mail| format!("Fetched: {}", mail.fetched)),
                 ))
+                .push(Box::new(Text::from_state(&shown_text, |shown| {
+                    if *shown {
+                        "Showing sent"
+                    } else {
+                        "Showing inbox"
+                    }
+                    .to_owned()
+                })))
                 .push(Box::new(Text::from_state(
                     &cx.dispatcher().refused(),
                     |refused| {
@@ -177,6 +194,17 @@ fn effects_are_published_and_answer_every_caller_through_the_door() {
     // phase: an immediate effect answers at once
     let count = app.effect(&MailEffect::Count).unwrap();
     assert_eq!(count.value, Some(serde_json::json!(0)));
+
+    // phase: a view is published as one and reaches its handler the same way
+    assert_eq!(effect(&surface, "show-sent").unwrap()["operation"], "View");
+    app.effect(&MailEffect::ShowSent).unwrap();
+    assert!(
+        app.harness()
+            .inspection_json()
+            .unwrap()
+            .contains("Showing sent"),
+        "the view's handler ran"
+    );
 
     // phase: a job reports progress, then finishes on the UI thread with an
     // action and its result
@@ -303,6 +331,11 @@ pub enum TallyEffect {
     /// Tally.
     #[effect(job)]
     Tally,
+    /// Count a row.
+    Count {
+        #[param("How much the row counts")]
+        by: u32,
+    },
 }
 
 #[derive(Default)]
@@ -346,6 +379,10 @@ impl ResourceSurface<Mailbox, TallyEffect> for Tally {
         cx: &mut EffectCx<Mailbox, Self>,
     ) -> Result<Effected, String> {
         match effect {
+            TallyEffect::Count { by } => {
+                self.counted = self.counted.saturating_add(by);
+                Ok(Effected::done())
+            }
             TallyEffect::Tally => Ok(cx.thread(
                 |_| 1,
                 |tally: &mut Self, step: u32, cx| {
@@ -362,6 +399,10 @@ impl ResourceSurface<Mailbox, TallyEffect> for Tally {
             TallyEffect::TALLY,
             format!("Tally ({})", self.counted),
         )]
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        vec![LiveRow::new("row:5", "test.tally.row", "Five").effect(&TallyEffect::Count { by: 5 })]
     }
 }
 
@@ -393,7 +434,74 @@ fn a_surface_answers_its_effects_and_completes_them_with_its_own_state() {
     let surface = app.agent_surface();
     assert_eq!(effect(&surface, "tally").unwrap()["label"], "Tally (2)");
 
+    // A live row offers the effect bound to its own arguments.
+    app.call_on("row:5", "count", serde_json::json!({}))
+        .unwrap();
+    assert_eq!(
+        app.effect(&TallyEffect::Tally).unwrap().value,
+        Some(serde_json::json!(8))
+    );
+
     // A past version shows the surface without running or publishing it.
     let first = app.versions().first().unwrap().hash;
     assert!(app.past_version(&[first]).is_ok());
+}
+
+thread_local! {
+    /// What a service reports it holds: the outside a mirror drain compares
+    /// the document's sent messages against.
+    static MIRRORED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// The mirror drain's handle, as the view registered it.
+    static MIRROR: RefCell<Option<tilo_app::framework::Projection>> = const { RefCell::new(None) };
+}
+
+struct MirrorApp;
+
+impl ResourceApp for MirrorApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-mirror";
+    const TITLE: &'static str = "Mirror";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        let projection = cx.drain(
+            |mail: &Mailbox| {
+                let mirrored = MIRRORED.with(|mirrored| mirrored.borrow().clone());
+                mail.sent
+                    .iter()
+                    .filter(|(_, text)| !mirrored.contains(text))
+                    .map(|(_, text)| (text.clone(), text.clone()))
+                    .collect()
+            },
+            |text, _| {
+                MIRRORED.with(|mirrored| mirrored.borrow_mut().push(text));
+                Ok(Effected::done())
+            },
+        );
+        MIRROR.with(|mirror| *mirror.borrow_mut() = Some(projection));
+        Box::new(Column::new())
+    }
+}
+
+#[test]
+fn a_projection_looks_again_when_the_outside_it_compares_against_changed() {
+    MIRRORED.with(|mirrored| mirrored.borrow_mut().clear());
+    let mirrored = || MIRRORED.with(|mirrored| mirrored.borrow().clone());
+    let mut app = TestApp::<MirrorApp>::new().unwrap();
+    app.invoke(Mailbox::SEND.with("hello".into())).unwrap();
+    let entry = app.state().outbox.iter().next().unwrap().0.clone();
+    app.invoke(Mailbox::DELIVERED.with(entry)).unwrap();
+    app.settle();
+    assert_eq!(mirrored(), ["hello"]);
+
+    // The service lost what it held; the document did not move.
+    MIRRORED.with(|mirrored| mirrored.borrow_mut().clear());
+    app.settle();
+    assert!(
+        mirrored().is_empty(),
+        "nothing tells the drain to look again"
+    );
+
+    MIRROR.with(|mirror| mirror.borrow().as_ref().unwrap().outside_changed());
+    app.settle();
+    assert_eq!(mirrored(), ["hello"]);
 }

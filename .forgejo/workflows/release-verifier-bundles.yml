@@ -82,7 +82,7 @@ jobs:
           cmp "target/verifier-bundle/$VERIFIER_ARCH.tar.gz" "target/verifier-repeat/$VERIFIER_ARCH.tar.gz"
           cmp "target/verifier-bundle/$VERIFIER_ARCH.tar.descriptor.json" "target/verifier-repeat/$VERIFIER_ARCH.tar.descriptor.json"
       - name: Retain unpublished platform bundle and descriptor
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: canonical-verifiers-${{ matrix.arch }}-${{ github.sha }}
           if-no-files-found: error

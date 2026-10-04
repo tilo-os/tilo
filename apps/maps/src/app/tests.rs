@@ -1,179 +1,110 @@
 use super::*;
-use tilo_automerge::ApplyIncoming;
-use ui::tilo_actions::{ExecutionMode, ResultSpec};
 
-/// An offline sample map is published by map actions, not a whole-model write.
+/// Effects answer from the window's state: locating reports what the
+/// location service really answered, and is unavailable while it can't be
+/// asked; a search an agent runs never writes the shared history.
 #[test]
-fn an_offline_map_is_published_through_map_actions() {
-    let mut app = MapsApp::offline();
-    assert!(!app.actions.is_hosted());
-    let mut doc = automerge::AutoCommit::new();
-    app.sync(&mut doc, &automerge::ROOT);
-    let recorded = app
-        .actions
-        .last_dispatched()
-        .expect("the sample map is submitted through map actions");
-    assert_eq!(recorded.type_id.as_str(), MAPS_ACTION_TYPE);
-    let loaded = MapsDoc::load(&doc).expect("the document holds the sample map");
-    assert!(!loaded.places.is_empty());
-}
+fn effects_answer_from_the_window_state() {
+    use crate::resource::MapsEffect;
+    use ui::framework::EffectStatus;
 
-/// Resource operations: location reports the real portal result, place-open and
-/// search are window-local brokered operations, eager/lazy resources share ids.
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn resource_operations_are_window_local_brokered_and_unique() {
-    // Phase `location_action_reports_the_real_portal_terminal_result`.
+    // Phase `location_availability_follows_the_service`.
     {
         let mut app = MapsApp::offline();
-        app.online = true;
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        let locate = ui::resources::resources(&app, &state.doc)
-            .into_iter()
-            .flat_map(|resource| resource.actions)
-            .find(|action| action.id == "locate")
-            .expect("location action");
-        assert_eq!(
-            locate.contract.execution,
-            ExecutionMode::Background { cancellable: false }
+        assert!(
+            app.effect_statuses().contains(&EffectStatus::unavailable(
+                MapsEffect::LOCATE,
+                "location_service_offline",
+                "The location service is unavailable in this session",
+            )),
+            "a capture or test map has no location service"
         );
-        assert_eq!(locate.contract.result, ResultSpec::Job);
-
-        let invocation = InvocationId::default();
-        app.location_invocation = Some(invocation);
+        app.online = true;
+        assert!(app.effect_statuses().is_empty());
+        app.locating = true;
         app.location_rx = Some(host_location(LocationOutcome::Unavailable(
             "permission denied".into(),
         )));
+        assert!(app.effect_statuses().contains(&EffectStatus::unavailable(
+            MapsEffect::LOCATE,
+            "request_in_progress",
+            "A location request is already in progress",
+        )));
         app.drain_location();
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &state.doc, &state.root),
-            Some(InvocationUpdate::Failed { error, .. }) if error.code == "location_unavailable"
-        ));
-        assert_eq!(app.location_invocation, None);
+        assert_eq!(app.model.status, "Location unavailable — permission denied");
+        assert!(app.effect_statuses().is_empty(), "locate is offered again");
     }
 
-    // Phase `resource_place_open_is_window_local`.
+    // Phase `a_looked_up_search_leaves_the_history_alone`.
     {
         let mut app = MapsApp::offline();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        let id = app
-            .model
-            .places
-            .iter()
-            .find(|place| place.saved)
-            .expect("sample has a saved place")
-            .id
-            .clone();
-        let payload = serde_json::to_vec(&id).unwrap();
-        assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::View,
-                    "maps.open-place",
-                    &payload
-                ),
-                &mut state.doc,
-                &state.root
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert_eq!(app.model.selected.as_deref(), Some(id.as_str()));
-        assert!(
-            MapsDoc::load(&state.doc).is_some_and(|model| model.selected.is_none()),
-            "opening a resource never changes another window's selection"
+        let recents_before = app.model.recents.clone();
+        app.model.query = "Marienplatz".to_string();
+        app.run_search(false);
+        assert!(!app.model.results.is_empty());
+        assert_eq!(app.model.recents, recents_before);
+        app.run_search(true);
+        assert_eq!(
+            app.model.recents.first().map(String::as_str),
+            Some("Marienplatz")
         );
     }
 
-    // Phase `resource_search_is_a_local_brokered_operation`.
-    {
-        let mut app = MapsApp::offline();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        let recents_before = MapsDoc::load(&state.doc).unwrap().recents;
-        let payload = serde_json::to_vec("Marienplatz").unwrap();
-        assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::View,
-                    "maps.search",
-                    &payload
-                ),
-                &mut state.doc,
-                &state.root
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert_eq!(app.model.query, "Marienplatz");
-        assert!(!app.model.results.is_empty());
-        assert_eq!(MapsDoc::load(&state.doc).unwrap().recents, recents_before);
-    }
-
-    // Phase `eager_and_lazy_resources_share_unique_live_operations`.
+    // Phase `rows_are_unique_bounded_and_resolve_exactly`.
     {
         let mut a = app_at(1_280.0, 800.0);
-        let result = a
-            .model
-            .results
-            .first()
-            .expect("sample search result")
-            .clone();
-        let mut saved = result;
-        saved.id = "eager-saved".to_string();
-        saved.saved = true;
-        a.model.places.push(saved.clone());
-        saved.id = "lazy-saved".to_string();
-        a.model.places.push(saved);
-        let mut doc = AutoCommit::new();
-        MapsDoc::save(&mut doc, &a.model);
-
-        let root = ui::resources::resources(&a, &doc)
+        for index in 0..20 {
+            let mut place = a.model.places[0].clone();
+            place.id = format!("saved-{index}");
+            place.saved = true;
+            a.model.places.push(place);
+        }
+        let rows: Vec<_> = a
+            .published_rows()
             .into_iter()
-            .next()
-            .expect("maps root");
-        let result_resource_id = "maps.place:eager-saved".to_string();
-        let eager_result = root
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == result_resource_id)
-            .expect("eager result");
-        let mut ids: Vec<_> = eager_result
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
+            .map(LiveRowParts::of)
             .collect();
+        let mut ids: Vec<_> = rows.iter().map(|row| row.id.clone()).collect();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(
-            ids.len(),
-            eager_result.actions.len(),
-            "action ids are unique"
-        );
+        assert_eq!(ids.len(), rows.len(), "row ids are unique");
+        let result = rows
+            .iter()
+            .find(|row| row.id.starts_with("maps.search-result:"))
+            .expect("a ranked result row");
+        assert_eq!(result.actions, ["open-place", "directions"]);
         assert!(
-            eager_result
-                .actions
-                .iter()
-                .any(|action| action.id == "open")
+            rows.iter()
+                .filter(|row| row.id.starts_with("maps.place:"))
+                .count()
+                <= 12,
+            "saved places are a bounded page"
         );
-        assert!(
-            eager_result
-                .actions
-                .iter()
-                .any(|action| action.id == "directions")
-        );
+        let omitted = a
+            .published_row("maps.place:saved-19")
+            .map(LiveRowParts::of)
+            .expect("an omitted saved place resolves");
+        assert_eq!(omitted.actions, ["open-place", "directions"]);
+    }
+}
 
-        let lazy = ui::resources::resource(&a, &doc, "maps.place:lazy-saved")
-            .expect("exact saved-place resolver");
-        assert!(lazy.actions.iter().any(|action| action.id == "open"));
-        assert!(lazy.actions.iter().any(|action| action.id == "directions"));
+/// A published row's id and action ids.
+struct LiveRowParts {
+    id: String,
+    actions: Vec<String>,
+}
+
+impl LiveRowParts {
+    fn of(row: ui::framework::LiveRow) -> Self {
+        let resource = row.into_resource();
+        Self {
+            id: resource.id.as_str().to_owned(),
+            actions: resource
+                .actions
+                .iter()
+                .map(|action| action.id.clone())
+                .collect(),
+        }
     }
 }
 
@@ -186,20 +117,16 @@ fn app_at(w: f64, h: f64) -> MapsApp {
     a
 }
 
-/// Drive a click `Hit` through the real `dispatch` path with a throwaway
-/// document, for the tests that assert on the resulting in-memory view state.
-/// Doc-mutating hits still flow through the action host (`perform` re-seeds the
-/// throwaway doc from the live model each call, so state carries across taps);
-/// the collaborative doc + undo + replay guarantees are proven separately in
-/// [`crate::actions`] and by [`delete_region_affordance_matches_action_spec`].
+/// Drive a click `Hit` through the real `dispatch` path of an unattached map,
+/// which shows its edits without submitting them; the door, undo and replay
+/// are proven through the framework in [`crate::resource`] and
+/// [`crate::actions`].
 fn tap(a: &mut MapsApp, hit: &Hit) {
-    let mut doc = AutoCommit::new();
-    a.dispatch(hit, &mut doc);
+    a.dispatch(hit);
 }
 
 fn tap_offline(a: &mut MapsApp, action: OfflineAction) {
-    let mut doc = AutoCommit::new();
-    a.dispatch_offline(action, &mut doc);
+    a.dispatch_offline(action);
 }
 
 fn tap_control(a: &mut MapsApp, action: MapControlAction) {
@@ -358,7 +285,7 @@ fn zoom_scroll_and_search_typing_stay_under_frame_budget() {
     {
         use ui::profiling::{PerfScenario, PerfStep, run_scenario_on};
         let mut app = MapsApp::offline();
-        app.set_demo_pois();
+        app.stage_pois();
         app.seed_perf_tiles(1280.0, 800.0);
         let scenario = PerfScenario {
             name: "maps-zoom-scroll".into(),
@@ -420,47 +347,33 @@ fn zoom_scroll_and_search_typing_stay_under_frame_budget() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn local_view_state_never_fabricates_or_overwrites_shared_state() {
-    // Phase `local_pan_cannot_overwrite_a_peer_bookmark`.
+    // Phase `a_peer_bookmark_arrives_without_moving_the_camera`.
     {
         let mut app = app_at(1280.0, 800.0);
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        let bytes = state.doc.save();
-        let mut peer = AutoCommit::load(&bytes).expect("peer replica");
-        let id = app.model.places[0].id.clone();
-        MapsDoc::set_place_saved(&mut peer, &id, true);
         app.pan_by(96.0, 0.0);
-        app.sync(&mut state.doc, &state.root);
-        state
-            .doc
-            .merge_incoming(&mut peer)
-            .expect("merge peer action");
-        app.sync(&mut state.doc, &state.root);
-        assert!(
-            MapsDoc::load(&state.doc)
-                .and_then(|model| model.place(&id).map(|place| place.saved))
-                .unwrap_or(false),
-            "a local camera update must not write stale place data over a peer bookmark"
-        );
+        let center = app.model.center;
+        let mut peer = app.model.clone();
+        let id = peer.places[0].id.clone();
+        MapsAction::SetPlaceSaved {
+            id: id.clone(),
+            saved: true,
+        }
+        .apply_to_model(&mut peer);
+        app.adopt_resource_state(&peer);
+        assert!(app.model.place(&id).is_some_and(|place| place.saved));
+        assert_eq!(app.model.center, center, "the camera stays this window's");
     }
 
-    // Phase `loaded_endpoint_queries_do_not_replace_an_in_progress_local_draft`.
+    // Phase `presented_state_does_not_replace_an_in_progress_local_draft`.
     {
         let mut a = app_at(1280.0, 800.0);
         a.endpoints.begin_edit(Endpoint::Origin);
         a.endpoints.sync_queries("Local draft", "");
-
-        let mut state = ui::State::new();
-        let mut loaded = a.model.clone();
-        loaded.origin_query = "Peer origin".to_string();
-        loaded.dest_query = "Peer destination".to_string();
-        MapsDoc::save(&mut state.doc, &loaded);
-
-        a.sync(&mut state.doc, &state.root);
-
+        let mut presented = a.model.clone();
+        presented.origin_query = "Peer origin".to_string();
+        presented.dest_query = "Peer destination".to_string();
+        a.adopt_resource_state(&presented);
         assert_ne!(a.model.origin_query, "Peer origin");
-        assert_eq!(a.endpoints.test_query(Endpoint::Origin), "");
-        assert_eq!(a.endpoints.test_query(Endpoint::Destination), "");
     }
 
     // Phase `live_app_starts_without_fabricated_content`.
@@ -762,7 +675,7 @@ fn place_search_matches_ranks_and_labels_results() {
     {
         let mut a = app_at(1280.0, 800.0);
         a.model.query = "viktualien".to_string();
-        a.run_search(None);
+        a.run_search(false);
         assert_eq!(a.model.selected.as_deref(), Some("viktualienmarkt"));
         assert!(
             a.model
@@ -776,7 +689,7 @@ fn place_search_matches_ranks_and_labels_results() {
     {
         let mut a = app_at(1280.0, 800.0);
         a.model.query = "coffee".to_string();
-        a.run_search(None);
+        a.run_search(false);
         assert!(a.model.results.iter().any(|p| p.category == Category::Cafe));
     }
 
@@ -911,7 +824,7 @@ fn search_field_overlay_keys_and_history_dispatch() {
         let mut tr = TextRenderer::new();
         let mut a = app_at(1280.0, 720.0);
         let panel_before = a.panel_rect();
-        a.set_demo_search();
+        a.stage_search();
         let mut scene = Scene::new();
         a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
 
@@ -955,7 +868,7 @@ fn search_field_overlay_keys_and_history_dispatch() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut a = app_at(1280.0, 800.0);
-        a.set_demo_search();
+        a.stage_search();
         assert!(
             a.search_overlay_active(),
             "the demo raises the results overlay"
@@ -1099,7 +1012,7 @@ fn search_field_overlay_keys_and_history_dispatch() {
     {
         let mut a = app_at(1280.0, 720.0);
         a.model.query = "café".to_string();
-        a.run_search(None);
+        a.run_search(false);
         assert!(!a.model.results.is_empty(), "search populated results");
         tap(&mut a, &Hit::Search(SearchHit::Clear));
         assert!(a.model.query.is_empty(), "clear empties the query");
@@ -1108,23 +1021,13 @@ fn search_field_overlay_keys_and_history_dispatch() {
 
     // Phase `search_history_affordances_dispatch_canonical_actions`.
     {
-        use crate::actions::encode;
-
         let mut a = app_at(1280.0, 720.0);
-        let mut doc = AutoCommit::new();
         a.model.query = "coffee".to_string();
-        a.run_search(Some(&mut doc));
+        a.run_search(true);
         assert_eq!(
-            a.actions.last_dispatched(),
-            Some(&encode(&MapsAction::CommitSearch {
-                query: "coffee".to_string(),
-            })),
+            a.model.recents.first().map(String::as_str),
+            Some("coffee"),
             "visible search commits history through MapsAction"
-        );
-        assert!(
-            MapsDoc::load(&doc).is_some_and(|model| {
-                model.recents.first().is_some_and(|query| query == "coffee")
-            })
         );
 
         let theme = Theme::dark();
@@ -1137,12 +1040,8 @@ fn search_field_overlay_keys_and_history_dispatch() {
                 .any(|(_, hit)| matches!(hit, Hit::ClearRecents)),
             "durable clear-history operation has an on-screen affordance"
         );
-        a.dispatch(&Hit::ClearRecents, &mut doc);
-        assert_eq!(
-            a.actions.last_dispatched(),
-            Some(&encode(&MapsAction::ClearRecents))
-        );
-        assert!(MapsDoc::load(&doc).is_some_and(|model| model.recents.is_empty()));
+        a.dispatch(&Hit::ClearRecents);
+        assert!(a.model.recents.is_empty());
     }
 
     // Phase `recent_dispatch_runs_search`.
@@ -1204,12 +1103,11 @@ fn transit_time_and_journeys_drive_queries_and_map_fit() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut a = app_at(1280.0, 800.0);
-        let mut doc = AutoCommit::new();
         a.select_place("marienplatz");
         a.enter_directions();
 
         for mode in [TravelMode::Foot, TravelMode::Bike, TravelMode::Car] {
-            a.set_mode(mode, &mut doc);
+            a.set_mode(mode);
             let mut scene = Scene::new();
             a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
             assert!(
@@ -1228,7 +1126,7 @@ fn transit_time_and_journeys_drive_queries_and_map_fit() {
 
         // Changing the anchor for a road mode re-derives the clock but does NOT
         // refetch a transit journey (OSRM is not time-dependent).
-        a.set_mode(TravelMode::Car, &mut doc);
+        a.set_mode(TravelMode::Car);
         let route = a.model.route.clone().expect("road route present");
         a.model.transit_time = crate::model::TransitTime::default();
         let (dep, arr) = a.road_trip_clock(route.duration_s);
@@ -1434,7 +1332,7 @@ fn poi_fetch_debounces_caches_versions_and_clears() {
                 pois: Ok(vec![demo_poi("p1", 48.1, 11.5)]),
             })
             .unwrap();
-        a.drain_net(None);
+        a.drain_net();
         assert_eq!(a.pois.len(), 1, "a current reply populates the layer");
 
         a.net_tx
@@ -1443,7 +1341,7 @@ fn poi_fetch_debounces_caches_versions_and_clears() {
                 pois: Ok(vec![]),
             })
             .unwrap();
-        a.drain_net(None);
+        a.drain_net();
         assert_eq!(
             a.pois.len(),
             1,
@@ -1759,9 +1657,8 @@ fn directions_modes_and_route_replies_recompute_the_route() {
     // Phase `mode_switch_recomputes_route`.
     {
         let mut a = app_at(1280.0, 800.0);
-        let mut doc = AutoCommit::new();
         a.model.selected = Some("marienplatz".to_string());
-        a.set_mode(TravelMode::Foot, &mut doc);
+        a.set_mode(TravelMode::Foot);
         let route = a.model.route.expect("route present");
         assert_eq!(route.mode, TravelMode::Foot);
     }
@@ -1823,7 +1720,6 @@ fn directions_modes_and_route_replies_recompute_the_route() {
     // merely flip a view and render a false "no itineraries found".
     {
         let mut a = app_at(1280.0, 800.0);
-        let mut doc = AutoCommit::new();
         // Select a place other than the sample's default so the stale sample
         // departures are dropped (destination-specific).
         a.select_place("hofgarten");
@@ -1834,7 +1730,7 @@ fn directions_modes_and_route_replies_recompute_the_route() {
         a.model.panel = Panel::Explore;
         a.model.mode = TravelMode::Car;
 
-        a.set_mode(TravelMode::Transit, &mut doc);
+        a.set_mode(TravelMode::Transit);
         assert_eq!(
             a.model.panel,
             Panel::Directions,
@@ -1908,7 +1804,7 @@ fn directions_modes_and_route_replies_recompute_the_route() {
         let dense_len = worker.join().expect("worker thread completes");
 
         // UI thread folds the worker's reply via the production drain path.
-        a.drain_net(None);
+        a.drain_net();
         let landed = a.model.route.clone().expect("route present after drain");
         assert_eq!(
             landed.distance_m, 4200.0,
@@ -2168,7 +2064,7 @@ fn narrow_layout_drawer_reflows_layers_and_toggles() {
         a.set_nav_open(false);
         a.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
         a.model.query = "café".to_string();
-        a.run_search(None);
+        a.run_search(false);
         assert!(a.panel_visible(), "results should reveal the drawer");
     }
 
@@ -2305,7 +2201,7 @@ fn route_endpoints_come_from_ranked_search_or_an_honest_location_fix() {
                 results: Ok(vec![p]),
             })
             .unwrap();
-        a.drain_net(None);
+        a.drain_net();
         assert!(
             a.endpoints
                 .test_results(Endpoint::Destination)
@@ -2350,7 +2246,7 @@ fn route_endpoints_come_from_ranked_search_or_an_honest_location_fix() {
                 results: Ok(vec![far, near]), // far listed first, as importance order would
             })
             .unwrap();
-        a.drain_net(None);
+        a.drain_net();
         assert_eq!(
             a.endpoints
                 .test_results(Endpoint::Destination)
@@ -3030,57 +2926,6 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
             );
         }
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    // Phase `delete_region_affordance_matches_action_spec`.
-    // The on-screen trash affordance dispatches the byte-identical
-    // [`MapsAction`](crate::actions::MapsAction) the Ctrl+K "Delete region" spec
-    // does — one source of truth. Drives the real `dispatch` path against a live
-    // document and reads back the action host's `last_dispatched`, then confirms
-    // the shared document actually changed.
-    {
-        use crate::actions::{MapsAction, encode};
-        let mut a = app_at(1280.0, 800.0);
-        a.model.regions = vec![crate::model::DownloadedRegion {
-            id: "r1".to_string(),
-            name: "Altstadt".to_string(),
-            min: LatLon::new(48.10, 11.55),
-            max: LatLon::new(48.18, 11.62),
-            z0: 14,
-            z1: 15,
-            tiles: 8,
-        }];
-
-        let mut doc = AutoCommit::new();
-        a.dispatch_offline(OfflineAction::DeleteRegion("r1".to_string()), &mut doc);
-
-        // The affordance dispatched exactly the DeleteRegion action a palette row
-        // (its `ActionSpec`) would build for the same id.
-        let dispatched = a
-            .actions
-            .last_dispatched()
-            .expect("the trash affordance dispatched an action");
-        let expected = encode(&MapsAction::DeleteRegion {
-            id: "r1".to_string(),
-        });
-        assert_eq!(
-            dispatched, &expected,
-            "affordance == ActionSpec encoded action"
-        );
-
-        // And it really mutated the shared document + the live model.
-        assert!(
-            !a.model.regions.iter().any(|r| r.id == "r1"),
-            "the region row is gone"
-        );
-        assert!(
-            !MapsDoc::load(&doc)
-                .unwrap()
-                .regions
-                .iter()
-                .any(|r| r.id == "r1"),
-            "the document reflects the removal"
-        );
     }
 }
 

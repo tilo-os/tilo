@@ -34,6 +34,7 @@ BINARY_INPUTS = {
     "os/dev/cache-github-assets.sh",
     "tools/ci/check-build-env.sh",
     "tools/ci/resolve_builder.py",
+    "tools/ci/images.toml",
     "tools/ci/python.py",
     "tools/ci/sccache.sh",
     ".forgejo/actions/restore-cargo-downloads/action.yml",

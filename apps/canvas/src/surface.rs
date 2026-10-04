@@ -47,8 +47,6 @@ use crate::view_ops;
 
 /// The largest SVG `export-svg` also answers inline, in bytes.
 const MAX_INLINE_SVG: usize = 48 * 1024;
-/// The longest gap between the clicks of a double click.
-const DOUBLE_CLICK: ui::time::Duration = ui::time::Duration::from_millis(450);
 /// How big a shape made by a click without a drag is, in screen pixels.
 const CLICKED_SHAPE: f64 = 100.0; // the size of a mark in the artwork, not on-screen spacing
 /// The text size a new text starts at, in screen pixels.
@@ -171,6 +169,9 @@ pub struct CanvasSurface {
     /// Whether the window was narrower than the compact breakpoint the last
     /// time the canvas looked; `None` before it first did.
     was_narrow: Option<bool>,
+    /// Whether the sidebar was shown, and where the canvas ended, the last
+    /// time the canvas looked at the window's width.
+    width_seen: Option<(bool, f64)>,
     space: bool,
     modifiers: ModifiersState,
     /// What the pen reported with the pointer's newest move or press; none
@@ -222,6 +223,7 @@ impl CanvasSurface {
             focused: false,
             pressed_into_focus: false,
             was_narrow: None,
+            width_seen: None,
             space: false,
             modifiers: ModifiersState::empty(),
             stylus: None,
@@ -438,55 +440,6 @@ impl CanvasSurface {
         self.start_text_edit(id) || self.start_points(id)
     }
 
-    /// An export a person asked for: rendered as the `export` action
-    /// renders it and saved where they choose.
-    fn take_export(&mut self) {
-        let finished = self.tools.saving.borrow().as_ref().is_some_and(|channel| {
-            !matches!(
-                channel.try_recv(),
-                Err(std::sync::mpsc::TryRecvError::Empty)
-            )
-        });
-        if finished {
-            *self.tools.saving.borrow_mut() = None;
-        }
-        let format = self.tools.export.with(Clone::clone);
-        if format.is_empty() {
-            return;
-        }
-        self.tools.export.set(String::new());
-        let request = crate::resource::Export {
-            format: Some(format.clone()),
-            ..crate::resource::Export::default()
-        };
-        let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let mut renderer = self.tools.renderer.borrow_mut();
-        renderer.pictures.patient = true;
-        let exported = view_ops::export(&mut renderer, text, &self.art, &request);
-        renderer.pictures.patient = false;
-        drop(renderer);
-        let picture = match exported {
-            Ok((picture, _)) => picture,
-            Err(error) => {
-                tracing::warn!(target: "canvas", %error, "the artwork was not exported");
-                return;
-            }
-        };
-        let title = if self.art.title.is_empty() {
-            ui::i18n::I18nManager::lookup_plain("canvas-untitled")
-        } else {
-            self.art.title.clone()
-        };
-        let extension = if format == "jpeg" { "jpg" } else { &format };
-        let request = ui::portal::PickRequest::save(
-            &ui::i18n::I18nManager::lookup_plain("canvas-export"),
-            &ui::i18n::I18nManager::lookup_plain("canvas-export-confirm"),
-            &format!("{title}.{extension}"),
-        )
-        .send_save_contents(picture.bytes);
-        *self.tools.saving.borrow_mut() = Some(request);
-    }
-
     /// A picture the chooser answered with: the artwork, when the sheet is
     /// empty; else placed on it, fitted inside and selected.
     fn take_picked(&mut self) {
@@ -635,7 +588,7 @@ impl CanvasSurface {
         let now = ui::time::now();
         let double = self.last_press.is_some_and(|(at, then)| {
             at.distance(screen) <= self.click_slop() * 2.0
-                && now.duration_since(then) <= DOUBLE_CLICK
+                && now.duration_since(then) <= ui::gesture::multi_click_interval()
         });
         self.last_press = if double { None } else { Some((screen, now)) };
         double
@@ -706,8 +659,7 @@ impl CanvasSurface {
                 None
             }
             Tool::Eyedropper => {
-                let colour = self.tools.renderer.borrow_mut().sample(&self.art, at);
-                self.tools.pick(colour);
+                self.pick_colour(at);
                 None
             }
             Tool::Marquee | Tool::Oval => {
@@ -732,6 +684,21 @@ impl CanvasSurface {
         };
     }
 
+    /// The eyedropper's click: the brush takes the colour the canvas shows
+    /// at `at`, after masks and erasers, as the eye sees it.
+    fn pick_colour(&mut self, at: Point) {
+        if !self.art.bounds().contains(at) {
+            return;
+        }
+        let text = self.look_text.get_or_insert_with(TextRenderer::new);
+        let shown =
+            view_ops::shown_colour(&mut self.tools.renderer.borrow_mut(), text, &self.art, at);
+        // A canvas that cannot draw a picture of itself picks nothing.
+        if let Ok(colour) = shown {
+            self.tools.pick(colour);
+        }
+    }
+
     /// How a new area meets the selection, from the held keys.
     fn area_mode(&self) -> Option<String> {
         area::mode(self.modifiers.shift_key(), self.modifiers.alt_key())
@@ -743,11 +710,24 @@ impl CanvasSurface {
         if !self.art.bounds().contains(at) {
             return;
         }
+        // The bucket fills inside the selection, and the wand taking from
+        // it or keeping part of it looks only there: what it finds cannot
+        // reach other parts of it through colour outside.
+        let mode = self.area_mode();
+        let within = (fill || matches!(mode.as_deref(), Some("subtract" | "intersect")))
+            .then(|| {
+                self.art
+                    .selection
+                    .as_ref()
+                    .map(crate::model::Selection::region)
+            })
+            .flatten();
         let query = crate::author::ColourQuery {
             at: Some(at),
             tolerance: crate::author::TOLERANCE,
             // Ctrl finds the colour everywhere, touching or not.
             everywhere: !fill && self.modifiers.control_key(),
+            within,
             ..crate::author::ColourQuery::default()
         };
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
@@ -769,7 +749,7 @@ impl CanvasSurface {
                 edit::fresh_id(&self.art, "fill", &[]),
             )
         } else {
-            Some(area::found(&found, self.area_mode()))
+            Some(area::found(&found, mode))
         };
         if let Some(action) = action {
             self.dispatch(&action);
@@ -1452,6 +1432,23 @@ impl CanvasSurface {
             // shows the new zoom in the next frame.
             self.tools.zoom.writer().set(zoom);
         }
+        // What the canvas shows, for exporting just that.
+        let shown = Rect::from_points(
+            self.content_point(self.rect.origin()),
+            self.content_point(Point::new(self.rect.x1, self.rect.y1)),
+        );
+        let moved = self.tools.visible.with(|visible| {
+            visible.is_none_or(|visible| {
+                (visible.x0 - shown.x0).abs()
+                    + (visible.y0 - shown.y0).abs()
+                    + (visible.x1 - shown.x1).abs()
+                    + (visible.y1 - shown.y1).abs()
+                    > 0.5
+            })
+        });
+        if self.rect.width() > 1.0 && moved {
+            self.tools.visible.set(Some(shown));
+        }
     }
 
     /// Put the sidebar away when the window becomes narrower than the
@@ -1463,12 +1460,29 @@ impl CanvasSurface {
             return;
         }
         let shown = self.tools.sidebar.with(|shown| *shown);
+        // The sidebar just shown or put away, with the canvas not laid out
+        // again yet: its width says nothing about the window until it is.
+        let seen = self.width_seen.replace((shown, self.rect.x1));
+        if seen.is_some_and(|(was, x1)| was != shown && (x1 - self.rect.x1).abs() < 0.5) {
+            self.width_seen = seen;
+            return;
+        }
         let sidebar = if shown {
             f64::from(crate::SIDEBAR)
         } else {
             0.0
         };
         let window = self.rect.x1 + sidebar;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a laid-out width, positive and far below u32::MAX"
+        )]
+        let room =
+            (self.rect.width().max(0.0) as u32) / crate::tools::ROOM_STEP * crate::tools::ROOM_STEP;
+        if self.tools.room.with(|shown| *shown != room) {
+            self.tools.room.writer().set(room);
+        }
         let narrow = window < f64::from(self.metrics.compact_breakpoint);
         if self.was_narrow != Some(narrow) {
             if self.was_narrow.is_some() || narrow {
@@ -1478,13 +1492,18 @@ impl CanvasSurface {
         }
     }
 
-    /// The view keys: zoom in and out, to fit, to 100 %, to the selection.
+    /// The view keys: zoom in and out, to fit, to 100 %, to the selection,
+    /// and the overview of the keys.
     fn view_key(&mut self, key: &Key, modifiers: ModifiersState) -> bool {
         let Key::Character(ch) = key else {
             return false;
         };
         let command = modifiers.control_key() || modifiers.super_key();
         match (ch.as_str(), command, modifiers.shift_key()) {
+            // The keys, which a keyboard may report as Shift and slash.
+            ("?", false, _) | ("/", false, true) => {
+                return crate::panels::files::window_key(&self.tools, "?", modifiers);
+            }
             ("+" | "=", _, _) => self.zoom_by(ZOOM_STEP, None),
             ("-" | "_", _, _) => self.zoom_by(1.0 / ZOOM_STEP, None),
             ("0", true, _) | ("!" | "1", false, true) => self.zoom_to_fit(),
@@ -1667,12 +1686,18 @@ impl CanvasSurface {
         true
     }
 
-    /// Ctrl/Cmd with a letter: the clipboard, select all, duplicate, group.
+    /// Ctrl/Cmd with a letter: the clipboard, select all, duplicate, group,
+    /// and opening, saving and exporting the artwork.
     fn command_key(&mut self, ch: &str, shift: bool) -> bool {
         let offset = Vec2::new(
             self.units(self.copy_offset()),
             self.units(self.copy_offset()),
         );
+        let mut held = ModifiersState::CONTROL;
+        held.set(ModifiersState::SHIFT, shift);
+        if crate::panels::files::window_key(&self.tools, ch, held) {
+            return true;
+        }
         match (ch, shift) {
             ("a", _) => {
                 self.select(edit::everything(&self.art));
@@ -1871,6 +1896,7 @@ impl CanvasSurface {
                     transform: None,
                     group: String::new(),
                     clip: String::new(),
+                    area: String::new(),
                 });
             }
         }
@@ -1895,6 +1921,8 @@ impl CanvasSurface {
             .layer
             .clone()
             .or_else(|| self.art.layers.last().map(|layer| layer.id.clone()))?;
+        let (clip, area) =
+            crate::actions::clip_named(&self.art, stroke.clip.as_deref()).unwrap_or_default();
         Some(Mark {
             id: id.clone(),
             layer,
@@ -1912,7 +1940,8 @@ impl CanvasSurface {
             },
             transform: None,
             group: String::new(),
-            clip: stroke.clip.unwrap_or_default(),
+            clip,
+            area,
         })
     }
 
@@ -1986,50 +2015,12 @@ impl CanvasSurface {
         let ground = part.is_none();
         let art = part.as_ref().unwrap_or(art);
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let outline_all = export.outline_text == Some(true);
-        let outlines = art
-            .marks
-            .iter()
-            .filter(|mark| match &mark.shape {
-                Shape::Text { path, .. } => outline_all || path.is_some(),
-                _ => false,
-            })
-            .map(|mark| {
-                let mut outline = ui::vello::kurbo::BezPath::new();
-                for letter in crate::render::letters(&mark.shape, text) {
-                    outline.extend(letter.path);
-                }
-                (mark.id.clone(), outline)
-            })
-            .collect();
-        let mut renderer = self.tools.renderer.borrow_mut();
-        let renderer = &mut *renderer;
-        let pictures = art
-            .marks
-            .iter()
-            .filter(|mark| matches!(mark.shape, Shape::Image { .. }))
-            .filter_map(|mark| {
-                let embedded = embedded_picture(renderer, text, art, mark)?;
-                Some((mark.id.clone(), embedded))
-            })
-            .collect();
-        let dabbed = renderer.dabbed_pictures(art, 2.0);
-        let svg = crate::svg::export(
+        let svg = crate::panels::export::svg(
+            &mut self.tools.renderer.borrow_mut(),
+            text,
             art,
             ground,
-            |layer| {
-                let options = Options {
-                    layers: Some(vec![layer.id.clone()]),
-                    bare: true,
-                    ..Options::default()
-                };
-                view_ops::render(renderer, text, art, (art.bounds(), 1.0), &options, false)
-                    .ok()
-                    .map(|picture| picture.bytes)
-            },
-            outlines,
-            pictures,
-            dabbed,
+            export.outline_text == Some(true),
         );
         let address = crate::resource::store(svg.as_bytes())?;
         let mut value = json!({
@@ -2164,6 +2155,7 @@ impl CanvasSurface {
                 value: Some(view_ops::media(&art)),
                 resources: Vec::new(),
             }),
+            ViewOp::SaveArtwork(save) => saved(crate::document::save(&art, save), &stamp),
         }
     }
 
@@ -2179,7 +2171,7 @@ impl CanvasSurface {
             return None;
         }
         self.art
-            .mark_at(self.content_point(self.cursor))
+            .pick_at(self.content_point(self.cursor))
             .filter(|mark| !self.selection.contains(&mark.id))
     }
 
@@ -2192,6 +2184,7 @@ impl CanvasSurface {
     ) {
         self.overlay_crop(scene, to_screen, theme);
         self.overlay_area(scene, to_screen);
+        self.overlay_erasers(scene, to_screen, theme);
         self.overlay_selection(scene, to_screen, theme);
         self.overlay_drag(scene, to_screen, theme);
         self.overlay_paths(scene, to_screen, theme);
@@ -2284,6 +2277,22 @@ impl CanvasSurface {
         }
     }
 
+    /// Where erasers took paint off, outlined while the eraser or the
+    /// selection tool is in hand: an eraser has no ink to see it by, and
+    /// this is how a person finds one to pick, reshape or take away.
+    fn overlay_erasers(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
+        if !matches!(self.current_tool(), Tool::Select | Tool::Eraser) || self.text.is_some() {
+            return;
+        }
+        let hovered = self.hovered().map(|mark| mark.id.as_str());
+        for mark in self.art.erasers() {
+            let mut outline = crate::render::silhouette(mark);
+            outline.apply_affine(to_screen * mark.affine());
+            let marked = hovered == Some(mark.id.as_str()) || self.selection.contains(&mark.id);
+            crate::render::eraser_outline(scene, &outline, marked.then_some(theme.accent_primary));
+        }
+    }
+
     /// What is hovered and picked: outlines, the frame and its guides.
     fn overlay_selection(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
         let accent = theme.accent_primary;
@@ -2304,7 +2313,7 @@ impl CanvasSurface {
                 shape => shape.path(),
             }
         };
-        if let Some(mark) = self.hovered() {
+        if let Some(mark) = self.hovered().filter(|mark| !mark.erases()) {
             scene.stroke(
                 &line,
                 Affine::IDENTITY,
@@ -2615,7 +2624,7 @@ impl CanvasSurface {
 /// unclipped (the document does that), for an SVG to embed: cropped,
 /// turned and graded, at the picture's own resolution; a JPEG when it is
 /// opaque.
-fn embedded_picture(
+pub(crate) fn embedded_picture(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     art: &Artwork,
@@ -2640,6 +2649,7 @@ fn embedded_picture(
     let alone = Mark {
         transform: None,
         clip: String::new(),
+        area: String::new(),
         style: crate::model::Style {
             adjust: mark.style.adjust.clone(),
             ..crate::model::Style::default()
@@ -2784,7 +2794,6 @@ impl Widget for CanvasSurface {
         self.follow_view();
         self.follow_crop();
         self.take_picked();
-        self.take_export();
         scene.push_layer(
             Fill::NonZero,
             ui::vello::peniko::BlendMode::default(),
@@ -3007,7 +3016,6 @@ impl Widget for CanvasSurface {
         // decoded, is waited for.
         self.wet().is_some()
             || self.tools.picking.borrow().is_some()
-            || self.tools.saving.borrow().is_some()
             || self.tools.renderer.borrow().pictures.decoding()
     }
 
@@ -3152,5 +3160,151 @@ impl ResourceSurface<ArtworkResource> for CanvasSurface {
             }
             _ => {}
         }
+    }
+}
+
+/// The answer of `save-artwork`: where the file went, or the content it
+/// was kept as.
+fn saved(
+    result: Result<Value, String>,
+    stamp: &dyn Fn(&mut Value),
+) -> Result<ActionOutput, String> {
+    let mut value = result?;
+    stamp(&mut value);
+    let resources = value
+        .get("content")
+        .and_then(Value::as_str)
+        .map(|address| vec![address.to_owned()])
+        .unwrap_or_default();
+    Ok(ActionOutput {
+        value: Some(value),
+        resources,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "test assertions over exact, hand-written fixtures"
+    )]
+
+    use super::*;
+    use crate::panels::shortcuts::{GROUPS, tools};
+
+    /// Keys the window's host answers (undo, redo, history, the palette)
+    /// or that need the pointer: the canvas is not where they land.
+    fn elsewhere(keys: &str) -> bool {
+        matches!(keys, "Ctrl+Z" | "Ctrl+Shift+Z" | "Ctrl+Shift+H" | "Ctrl+K")
+            || keys.contains("drag")
+            || keys.contains("scroll")
+    }
+
+    /// The key and modifiers `keys` names, as the canvas receives them.
+    fn parse(keys: &str) -> Vec<(Key, ModifiersState)> {
+        let mut modifiers = ModifiersState::empty();
+        let parts: Vec<&str> = if keys == "+" {
+            vec!["+"]
+        } else {
+            keys.split('+').collect()
+        };
+        let (last, held) = parts.split_last().unwrap();
+        for part in held {
+            modifiers |= match *part {
+                "Ctrl" => ModifiersState::CONTROL,
+                "Shift" => ModifiersState::SHIFT,
+                "Alt" => ModifiersState::ALT,
+                other => panic!("unknown modifier {other}"),
+            };
+        }
+        let character = |text: &str| Key::Character(text.into());
+        let shifted = |text: &str| -> String {
+            if !modifiers.shift_key() {
+                return text.to_owned();
+            }
+            match text {
+                "1" => "!".into(),
+                "0" => ")".into(),
+                "2" => "@".into(),
+                other => other.to_uppercase(),
+            }
+        };
+        match *last {
+            "Arrows" => [
+                NamedKey::ArrowLeft,
+                NamedKey::ArrowRight,
+                NamedKey::ArrowUp,
+                NamedKey::ArrowDown,
+            ]
+            .into_iter()
+            .map(|named| (Key::Named(named), modifiers))
+            .collect(),
+            "Delete" => vec![(Key::Named(NamedKey::Delete), modifiers)],
+            "Enter" => vec![(Key::Named(NamedKey::Enter), modifiers)],
+            "Escape" => vec![(Key::Named(NamedKey::Escape), modifiers)],
+            other => vec![(character(&shifted(&other.to_lowercase())), modifiers)],
+        }
+    }
+
+    #[test]
+    fn every_shortcut_the_overview_lists_does_something() {
+        let mut doc = ui::tilo_resource::Doc::new();
+        for action in crate::sample::shapes() {
+            ui::tilo_actions::Action::apply(&action, &mut doc).unwrap();
+        }
+        let art = crate::doc::read(&doc);
+        let first = art.marks.first().unwrap().id.clone();
+        let mut listed: Vec<String> = GROUPS
+            .iter()
+            .flat_map(|group| {
+                group
+                    .shortcuts
+                    .iter()
+                    .map(|shortcut| shortcut.keys.to_owned())
+            })
+            .collect();
+        listed.extend(tools().into_iter().map(|(keys, _)| keys));
+        let mut checked = 0;
+        for keys in listed.iter().filter(|keys| !elsewhere(keys)) {
+            for (key, modifiers) in parse(keys) {
+                let mut surface = CanvasSurface::new(Tools::default());
+                surface.art = Rc::new(art.clone());
+                surface.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+                surface.selection = vec![first.clone()];
+                // Grouping takes two marks; ungrouping, a group.
+                if keys == "Enter" {
+                    // Entering edits a path's points or a text.
+                    let editable = art
+                        .marks
+                        .iter()
+                        .find(|mark| {
+                            !matches!(mark.shape, Shape::Rect { .. } | Shape::Ellipse { .. })
+                        })
+                        .unwrap();
+                    surface.selection = vec![editable.id.clone()];
+                } else if keys == "Ctrl+G" {
+                    surface.selection = edit::everything(&art);
+                } else if keys == "Ctrl+Shift+G" {
+                    let mut grouped = doc.clone();
+                    let group = edit::group(&art, &edit::everything(&art)).unwrap();
+                    ui::tilo_actions::Action::apply(&group, &mut grouped).unwrap();
+                    surface.art = Rc::new(crate::doc::read(&grouped));
+                }
+                if keys == "Ctrl+V" {
+                    ui::clipboard_copy(&edit::copy(&art, &surface.selection).unwrap());
+                }
+                let text = match &key {
+                    Key::Character(text) => Some(text.to_string()),
+                    _ => None,
+                };
+                assert!(
+                    surface.key(&key, text.as_deref(), modifiers),
+                    "{keys} is listed but the canvas does nothing with it"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 30, "only {checked} keys were checked");
     }
 }

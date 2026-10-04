@@ -154,6 +154,9 @@ pub enum KeyProtection {
     HardwareBacked,
     /// Legacy schema; migration has not completed yet.
     LegacyPlaintext,
+    /// No share of the identity's key is on this device: a device joined to
+    /// the identity acts through its root-signed device certificate.
+    DeviceCertificate,
     /// Metadata names a backend this session cannot safely resolve.
     Unavailable,
 }
@@ -165,6 +168,9 @@ impl KeyProtection {
             Self::BrokerFile => "Private session file + app-scoped signing broker",
             Self::HardwareBacked => "Hardware-backed + app-scoped signing broker",
             Self::LegacyPlaintext => "Migration required",
+            Self::DeviceCertificate => {
+                "No identity key here; this device signs with its certificate"
+            }
             Self::Unavailable => "Protection provider unavailable",
         }
     }
@@ -527,6 +533,9 @@ fn secure_record_unlocked(
     path: &std::path::Path,
 ) -> io::Result<KeyProtection> {
     let record = read_record(path)?;
+    if is_public_member_projection(&record) {
+        return Ok(KeyProtection::DeviceCertificate);
+    }
     #[cfg(not(test))]
     let preferred = secure_store::preferred_provider(dir);
     #[cfg(test)]
@@ -585,6 +594,12 @@ fn secure_record_with_provider_unlocked(
     provider: &dyn SecretProvider,
 ) -> io::Result<KeyProtection> {
     let mut record = read_record(path)?;
+    // A joined device's public projection has no secret to move into a
+    // provider; giving it an empty one would leave a reference that never
+    // loads.
+    if is_public_member_projection(&record) {
+        return Ok(KeyProtection::DeviceCertificate);
+    }
     if record.schema_version == 2 {
         let reference = record.secret_ref.as_ref().ok_or_else(|| {
             io::Error::new(
@@ -802,6 +817,9 @@ mod ondisk {
 
     impl IdentityRecord {
         pub fn protection(&self) -> KeyProtection {
+            if super::is_public_member_projection(self) {
+                return KeyProtection::DeviceCertificate;
+            }
             match self
                 .secret_ref
                 .as_ref()
@@ -2740,6 +2758,33 @@ mod tests {
             let identity = load_from_path(path).unwrap();
             assert_eq!(identity.group_public_key(), [9; 32]);
             assert!(identity.sign(b"must stay public-only").is_err());
+        }
+        // phase: a_joined_public_projection_is_left_as_written_when_secured
+        {
+            let dir = tempfile::tempdir().unwrap();
+            ensure_private_dir(dir.path()).unwrap();
+            let bytes = public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
+            let path = dir.path().join("identity-joined.json");
+            write_private_atomic(&path, &bytes).unwrap();
+
+            // An app launch secures the selected record before brokering it.
+            for _ in 0..2 {
+                assert_eq!(
+                    secure_identity(dir.path(), "identity-joined").unwrap(),
+                    KeyProtection::DeviceCertificate
+                );
+            }
+
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                bytes,
+                "a public projection must not gain a reference to an empty secret"
+            );
+            assert_eq!(load_from_path(path).unwrap().group_public_key(), [9; 32]);
+            assert_eq!(
+                list_identities(dir.path()).unwrap()[0].protection,
+                KeyProtection::DeviceCertificate
+            );
         }
         // phase: schema_two_missing_reference_rejects_private_or_malformed_shapes
         {

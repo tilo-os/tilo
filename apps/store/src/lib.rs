@@ -11,23 +11,27 @@
 //!
 //! Filter chips (`All | Tilo | Flatpak | Installed`), category chips and a
 //! search box sit above a scrolling list of cards. A detail sheet slides
-//! in from the right when a card is clicked. Selection, filters and the
-//! search string all live in the CRDT so the UI is snapshot-restorable
-//! (undo/redo) exactly like the other native apps.
+//! in from the right when a card is clicked. Browsing is this window's own;
+//! the document holds the collaborative report drafts.
 //!
 //! Module map:
 //!
+//!   * [`resource`]        — the [`Store`] resource, its effects and the
+//!     framework app [`StoreShell`].
+//!   * [`doc_actions`]     — the document's actions: report drafts, notes
+//!     and moderation cases.
 //!   * [`model`]           — [`StoreItem`], `Source`, [`ActionKind`]
 //!     and the filter enum shared across the app.
 //!   * [`registry_client`] — HTTP client for the Tilo registry protocol.
 //!   * [`flathub_client`]  — HTTP client for the Flathub JSON API.
-//!   * `installed`       — compatibility parser for legacy install registries.
-//!   * [`config`]          — read/write user config for configured registries.
+//!   * [`config`]          — the registries the user pulls apps from.
 //!   * [`sources`]         — merges the two feeds + installed state into
 //!     one [`StoreItem`] stream.
 //!   * [`actions`]         — dispatches Add / Install / Remove via app-host.
-//!   * [`app`]             — the root `StoreApp` widget.
-//!   * [`shots`]           — headless `--shots` renderer.
+//!   * [`worker`]          — the serialized catalogue and package worker.
+//!   * [`app`]             — the `StoreApp` surface.
+//!   * [`bindings`]        — the surface's controls, bound to the resource.
+//!   * [`fixture`]         — the catalogue screenshots show.
 //!   * [`widgets`]         — small ui-toolkit compositions shared across
 //!     the surface (cards, filter chips, etc).
 
@@ -61,19 +65,18 @@
 
 pub mod actions;
 pub mod app;
-pub mod browse_actions;
+pub mod bindings;
 pub mod config;
 pub mod doc_actions;
+pub mod fixture;
 pub mod flathub_client;
 pub mod flatpakref;
 pub mod images;
-pub mod live;
 pub mod model;
 pub mod moderation_client;
 pub mod registry_client;
 pub mod resource;
 pub mod search_provider;
-pub mod shots;
 pub mod sources;
 pub mod widgets;
 pub mod worker;
@@ -83,11 +86,4 @@ pub use flatpakref::FlatpakRef;
 pub use model::{
     ActionKind, InstalledState, SourceFilter, StoreItem, StoreItemVersion, StoreSource, StoreTrust,
 };
-
-/// Build the standard worker-backed Store root used by the desktop and SDK
-/// harnesses. The binary's deep-link route calls the same live host with its
-/// additional launch context.
-pub fn app_root() -> Box<dyn ui::widget::Widget> {
-    live::app_root()
-}
-pub use resource::{Store, StoreShell};
+pub use resource::{Store, StoreEffect, StoreShell};
