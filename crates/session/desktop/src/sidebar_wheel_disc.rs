@@ -2478,23 +2478,23 @@ mod tests {
                 ("dark", Theme::dark()),
                 ("high-contrast", Theme::high_contrast()),
             ] {
-                for is_active in [false, true] {
-                    let style = SidebarWheelDisc::sector_label_style(&theme, is_active);
-                    let chip = style.resolved.expect("the label carries its own plate");
-                    assert!(
-                        !style.bare,
-                        "{name}: a bare label shows the wallpaper through"
-                    );
-                    assert_eq!(
-                        chip.fill.to_rgba8().a,
-                        255,
-                        "{name}: the plate must hide whatever wallpaper is behind it"
-                    );
-                    let ratio = ui::a11y::contrast_ratio(chip.ink, chip.fill);
-                    assert!(
-                        ratio >= 4.5,
-                        "{name} (active: {is_active}): label ink reads {ratio:.2}:1 on its plate"
-                    );
+                // The label is a neutral chip; its plate is drawn over
+                // whatever wallpaper sits behind it.
+                for wallpaper in [Color::BLACK, Color::WHITE] {
+                    for is_active in [false, true] {
+                        let chip = ui::widget::ChipStyle::Neutral
+                            .colors(&theme, wallpaper, is_active, false);
+                        assert_eq!(
+                            chip.fill.to_rgba8().a,
+                            255,
+                            "{name}: the plate must hide whatever wallpaper is behind it"
+                        );
+                        let ratio = ui::a11y::contrast_ratio(chip.ink, chip.fill);
+                        assert!(
+                            ratio >= 4.5,
+                            "{name} (active: {is_active}): label ink reads {ratio:.2}:1 on its plate"
+                        );
+                    }
                 }
             }
         }
