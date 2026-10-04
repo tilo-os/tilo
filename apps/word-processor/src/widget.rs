@@ -4483,6 +4483,25 @@ impl WordProcessorWidget {
             .map(|b| b.id.clone())
     }
 
+    /// The content hash of the picture the editor would share: the one at
+    /// the caret, else the document's only one; `None` with several and the
+    /// caret on none of them, or with none.
+    pub(crate) fn shared_image(&self) -> Option<String> {
+        let images: Vec<&BlockView> = self.blocks.iter().filter(|b| b.kind == "image").collect();
+        let chosen =
+            images
+                .iter()
+                .find(|b| b.id == self.inner.caret.block)
+                .or(match images.as_slice() {
+                    [only] => Some(only),
+                    _ => None,
+                })?;
+        match chosen.attrs.get("blob") {
+            Some(AttrVal::Str(hash)) if !hash.is_empty() => Some(hash.clone()),
+            _ => None,
+        }
+    }
+
     /// The current on-page display size `(w, h)` of the selected image, read from
     /// this frame's laid geometry (post fit-to-column), or `None` when unknown.
     fn selected_image_dims(&self) -> Option<(f64, f64)> {
