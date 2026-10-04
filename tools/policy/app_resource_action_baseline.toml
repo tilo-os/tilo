@@ -39,7 +39,6 @@
 "apps/osk/src/main.rs" = 1
 "apps/photos/src/lib.rs" = 2
 "apps/settings/src/main.rs" = 1
-"apps/word-processor/src/main.rs" = 3
 
 [ratchets.direct_document_api]
 "apps/word-processor/src/actions/editing.rs" = 1
