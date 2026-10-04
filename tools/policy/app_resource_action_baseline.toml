@@ -110,7 +110,6 @@
 "apps/contacts/src/resource.rs" = 1
 "apps/ebook/src/resource.rs" = 1
 "apps/settings/src/resource.rs" = 1
-"apps/sheets/src/resource.rs" = 1
 "apps/slides/src/resource.rs" = 1
 "apps/tube/src/resource.rs" = 1
 "apps/video-editor/src/app.rs" = 1
