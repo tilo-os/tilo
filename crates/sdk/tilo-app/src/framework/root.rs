@@ -646,6 +646,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             None,
             &self.content.get_rect(),
         );
+        self.run.people.follow(presence);
         self.content.draw(scene, transform, text, theme, presence);
     }
 

@@ -160,6 +160,12 @@ impl<R: Resource> ViewCx<R> {
 }
 
 impl<R: Resource, T: 'static> ViewCx<R, T> {
+    /// The names of the participants, for showing the ids actions record
+    /// ([`People::name`](super::People::name)).
+    pub fn people(&self) -> super::People {
+        self.run.people.clone()
+    }
+
     /// The live resource state, for reads a binding does not cover.
     pub fn live(&self) -> &Live<R> {
         &self.live
