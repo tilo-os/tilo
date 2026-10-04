@@ -511,6 +511,8 @@ pub struct EmptyState {
     inline: bool,
     /// Something is on its way: a spinner in the hero slot.
     spinner: Option<crate::widget::Spinner>,
+    /// Whether the spinner shows (kept apart from it while it paints).
+    busy: bool,
     /// The title, message and action label through the i18n layer.
     resolved: (String, Option<String>, Option<String>),
     i18n_revision: u64,
@@ -544,6 +546,7 @@ impl EmptyState {
             scroll_content: false,
             inline: false,
             spinner: None,
+            busy: false,
             resolved: (String::new(), None, None),
             i18n_revision: crate::i18n::I18nManager::revision(),
             layout_dirty: true,
@@ -576,6 +579,7 @@ impl EmptyState {
     #[must_use]
     pub fn busy(mut self) -> Self {
         self.spinner = Some(crate::widget::Spinner::new());
+        self.busy = true;
         self.layout_dirty = true;
         self
     }
@@ -584,6 +588,7 @@ impl EmptyState {
     pub fn set_busy(&mut self, busy: bool) {
         if busy != self.spinner.is_some() {
             self.spinner = busy.then(crate::widget::Spinner::new);
+            self.busy = busy;
             self.layout_dirty = true;
         }
     }
@@ -810,7 +815,7 @@ impl EmptyState {
 
     fn content(&self) -> EmptyStateContent<'_> {
         EmptyStateContent {
-            icon: if self.spinner.is_some() {
+            icon: if self.busy {
                 // The spinner takes the hero slot; the slot is still sized.
                 self.icon.or(Some(Icon::Info))
             } else {
@@ -819,7 +824,7 @@ impl EmptyState {
             illustration: self
                 .illustration
                 .as_deref()
-                .filter(|_| self.spinner.is_none())
+                .filter(|_| !self.busy)
                 .map(|paint| paint as Illustration<'_>),
             title: &self.resolved.0,
             message: self.resolved.1.as_deref(),

@@ -549,7 +549,11 @@ fn charts() -> Element {
 }
 
 fn shelf_page() -> Element {
-    page(vec![shelf(), charts()])
+    page(vec![shelf()])
+}
+
+fn charts_page() -> Element {
+    page(vec![charts()])
 }
 
 /// A named page and the function that builds it.
@@ -575,12 +579,13 @@ pub fn run(args: &[String]) {
         eprintln!("cannot create {}: {error}", out.display());
         return;
     }
-    let pages: [Page; 5] = [
+    let pages: [Page; 6] = [
         ("lists", lists_page),
         ("objects", objects_page),
         ("states", states_page),
         ("status", status_page),
         ("shelf", shelf_page),
+        ("charts", charts_page),
     ];
     for (theme_name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         for (page, build) in pages {
