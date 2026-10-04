@@ -190,13 +190,6 @@ impl ResourceApp for MapsShell {
                 dest_name: sample.dest_name,
             });
         }
-        if scenario == Scenario::Offline {
-            actions.extend(
-                crate::sample::regions()
-                    .into_iter()
-                    .map(MapsAction::AddRegion),
-            );
-        }
         actions
             .iter()
             .filter_map(|action| Invoke::apply(action).ok())
