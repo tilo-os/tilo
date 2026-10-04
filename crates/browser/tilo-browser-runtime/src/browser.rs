@@ -19,7 +19,7 @@ use ui::permissions::{PermissionContext, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use wasm_bindgen::{JsCast, prelude::*};
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::platform::web::{EventLoopExtWebSys as _, WindowAttributesExtWebSys as _};
 use winit::window::{Window, WindowId};
@@ -249,7 +249,7 @@ struct Desktop {
 }
 
 impl Mount {
-    fn service_owner_models(&mut self) {
+    fn service_owner_models(&mut self, budget: ui::owner_wake::OwnerTurnBudget) {
         let p = crate::background_work::Presentation {
             hidden: self.hidden,
             suspended: self.viewport.suspended(),
@@ -257,8 +257,12 @@ impl Mount {
         };
         let mut attempted = false;
         let result = crate::background_work::run(p, || {
-            let report = self.frame.service_pending_owner_models_report();
-            attempted = report.attempted;
+            let report = self.frame.service_owner_turn(budget);
+            attempted = report.attempted > 0;
+            #[cfg(feature = "owner-turn-controls")]
+            crate::owner_turn_controls::record(
+                serde_json::json!({"phase":"owner-report","attempted":report.attempted,"completed":report.completed,"remaining":report.remaining,"cutoff":format!("{:?}",report.cutoff),"elapsedMs":report.elapsed.as_secs_f64()*1000.0,"overrunMs":report.overrun.as_secs_f64()*1000.0}),
+            );
             report.result.map(|()| report.completed)
         });
         if attempted {
@@ -375,7 +379,7 @@ fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
     let event_loop = EventLoop::<u64>::with_user_event().build().map_err(error)?;
     let proxy = event_loop.create_proxy();
     LOOP.with_borrow_mut(|p| *p = Some(proxy.clone()));
-    event_loop.spawn_app(Runner);
+    event_loop.spawn_app(Runner::default());
     Ok(proxy)
 }
 
@@ -541,8 +545,58 @@ fn finish_shutdown() {
     }
 }
 
-struct Runner;
+#[derive(Default)]
+struct Runner {
+    owners: crate::owner_turn_schedule::OwnerTurns<ui::time::Instant>,
+    #[cfg(feature = "owner-turn-controls")]
+    permit: u64,
+}
 impl Runner {
+    fn arm_owner_deadline(&self, event_loop: &ActiveEventLoop) {
+        if let Some(due) = self.owners.due() {
+            let flow = match event_loop.control_flow() {
+                ControlFlow::Wait => ControlFlow::WaitUntil(due),
+                ControlFlow::WaitUntil(old) => ControlFlow::WaitUntil(old.min(due)),
+                ControlFlow::Poll => ControlFlow::Poll,
+            };
+            event_loop.set_control_flow(flow);
+        }
+    }
+
+    fn service_owner_task(&mut self) {
+        let now = ui::time::now();
+        if !self.owners.ready(now) || admit_runtime().is_err() {
+            return;
+        }
+        let mut ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
+        self.owners.order(&mut ids);
+        for id in ids {
+            let serviced = with_mount(id, |mount| {
+                if !mount.frame.has_pending_owner_models()
+                    || mount
+                        .background_retry
+                        .is_some_and(|due| due > ui::time::now())
+                {
+                    return Ok(false);
+                }
+                #[cfg(feature = "owner-turn-controls")]
+                let _scope = crate::owner_turn_controls::ServiceScope::enter(id, Some(self.permit));
+                // One selected Mount per scheduled task gives a global attempt
+                // bound. The cooperative clock starts after Mount selection;
+                // it cannot bound selection, a callback, or later publication.
+                mount.service_owner_models(ui::owner_wake::OwnerTurnBudget {
+                    max_steps: 8,
+                    deadline: ui::time::now().checked_add(ui::time::Duration::from_millis(2)),
+                });
+                Ok(true)
+            });
+            if matches!(serviced, Ok(true)) {
+                self.owners.returned(id);
+                break;
+            }
+        }
+    }
+
     fn replay_deferred(&mut self, event_loop: &ActiveEventLoop) {
         #[cfg(feature = "cloud")]
         if admit_runtime().is_ok() {
@@ -580,6 +634,18 @@ impl Runner {
 }
 
 impl ApplicationHandler<u64> for Runner {
+    fn new_events(&mut self, _: &ActiveEventLoop, cause: StartCause) {
+        // Init and WaitCancelled can be delivered by a proxy microtask. Only
+        // winit's scheduled WaitUntil callback grants an owner-service turn.
+        if matches!(cause, StartCause::ResumeTimeReached { .. }) {
+            #[cfg(feature = "owner-turn-controls")]
+            {
+                self.permit = self.permit.saturating_add(1);
+            }
+            self.service_owner_task();
+        }
+    }
+
     fn resumed(&mut self, _: &ActiveEventLoop) {}
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, id: u64) {
@@ -613,7 +679,19 @@ impl ApplicationHandler<u64> for Runner {
             return;
         }
         let result = with_mount(id, |m| {
-            m.service_owner_models();
+            if m.frame.has_pending_owner_models() {
+                self.owners
+                    .request(m.background_retry.unwrap_or_else(ui::time::now));
+                // A proxy can be drained after AboutToWait's scan. Preserve
+                // current semantic/render deadlines and arm that late demand.
+                self.arm_owner_deadline(event_loop);
+                #[cfg(feature = "owner-turn-controls")]
+                crate::owner_turn_controls::record(serde_json::json!({
+                    "phase":"owner-arm", "mount":id.to_string(),
+                    "permit":self.permit.to_string(),
+                    "ownerDue":self.owners.due().map(|due| format!("{due:?}")),
+                }));
+            }
             if let Some(failure) = m.gpu.as_ref().and_then(Gpu::failure) {
                 m.error = Some(failure);
                 m.publish(id);
@@ -684,6 +762,10 @@ impl ApplicationHandler<u64> for Runner {
                         }
                         _ => {}
                     }
+                    #[cfg(feature = "owner-turn-controls")]
+                    crate::owner_turn_controls::record(
+                        serde_json::json!({"phase":"window-input", "mount":id.to_string()}),
+                    );
                     let start = m.metric_start();
                     crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
                     m.metric_end("input", start);
@@ -704,7 +786,7 @@ impl ApplicationHandler<u64> for Runner {
             return;
         }
         let now = ui::time::now();
-        let mut model_wakes = Vec::new();
+        let mut owner_due: Option<ui::time::Instant> = None;
         let mut deadline: Option<ui::time::Instant> = None;
         let mut wake =
             |at: ui::time::Instant| deadline = Some(deadline.map_or(at, |old| old.min(at)));
@@ -713,11 +795,7 @@ impl ApplicationHandler<u64> for Runner {
             let _ = with_mount(id, |m| {
                 if m.frame.has_pending_owner_models() {
                     let due = m.background_retry.unwrap_or(now);
-                    if due <= now {
-                        model_wakes.push(id);
-                    } else {
-                        wake(due);
-                    }
+                    owner_due = Some(owner_due.map_or(due, |old| old.min(due)));
                 }
                 // A throttled semantics tree is delivered at its deadline even
                 // when no further frame is presented.
@@ -759,13 +837,23 @@ impl ApplicationHandler<u64> for Runner {
                 Ok(())
             });
         }
-        if let Some(proxy) = LOOP.with_borrow(Clone::clone) {
-            for id in model_wakes {
-                let _ = proxy.send_event(id);
-            }
-        }
+        self.owners.reconcile(now, owner_due);
         self.replay_deferred(event_loop);
+        // Replay can add demand after the scan. Merge its preserved absolute
+        // deadline only after replay has returned under original custody.
+        if let Some(due) = self.owners.due() {
+            wake(due);
+        }
         event_loop.set_control_flow(deadline.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+        #[cfg(feature = "owner-turn-controls")]
+        crate::owner_turn_controls::record(serde_json::json!({
+            "phase":"about-wait-return", "permit":self.permit.to_string(),
+            "ownerDue":self.owners.due().map(|due| format!("{due:?}")),
+        }));
+        #[cfg(feature = "owner-turn-controls")]
+        if self.owners.due().is_none() && admit_runtime().is_ok() {
+            crate::owner_turn_controls::after_scan();
+        }
     }
 
     fn exiting(&mut self, _: &ActiveEventLoop) {
@@ -2732,4 +2820,66 @@ pub fn complete_media_request(id: u64, ticket: u64, response: &str) -> Result<bo
         }
         Ok(completed)
     })
+}
+
+/// Wake an existing scoped Scratch owner in an explicitly enabled correctness bundle.
+/// # Errors
+/// Refuses runtime reentry, closed slots and requests exceeding diagnostic caps.
+#[cfg(feature = "owner-turn-controls")]
+#[wasm_bindgen]
+pub fn owner_turn_wake(slot: u64, self_wakes: u32) -> Result<(), JsValue> {
+    admit_runtime()?;
+    crate::owner_turn_controls::wake(slot, self_wakes).map_err(error)
+}
+
+/// Drain bounded original-consumer diagnostics; diagnostic IDs are lossless strings.
+/// # Errors
+/// Refuses runtime reentry and trace overflow.
+#[cfg(feature = "owner-turn-controls")]
+#[wasm_bindgen]
+pub fn owner_turn_trace() -> Result<String, JsValue> {
+    admit_runtime()?;
+    let mounts = MOUNTS.with_borrow(|mounts| {
+        let census: Vec<_> = mounts
+            .iter()
+            .take(33)
+            .map(|(id, mount)| {
+                serde_json::json!({
+                    "id": id.to_string(),
+                    "pendingOwners": mount.frame.has_pending_owner_models(),
+                    "hidden": mount.hidden,
+                    "suspended": mount.viewport.suspended(),
+                    "gpuReady": mount.gpu.is_some(),
+                })
+            })
+            .collect();
+        if census.len() > 32 {
+            Err(error("owner-turn Mount census cap exceeded"))
+        } else {
+            Ok(census)
+        }
+    })?;
+    crate::owner_turn_controls::drain(&mounts).map_err(error)
+}
+
+/// Arm one fixed original Scratch wake after a subsequent empty owner scan.
+/// # Errors
+/// Refuses runtime reentry, closed owners/Mounts and a second outstanding control.
+#[cfg(feature = "owner-turn-controls")]
+#[wasm_bindgen]
+pub fn owner_turn_wake_after_scan(slot: u64) -> Result<(), JsValue> {
+    admit_runtime()?;
+    let id = MOUNTS
+        .with_borrow(|mounts| mounts.keys().next().copied())
+        .ok_or_else(|| error("closed diagnostic Mount"))?;
+    with_mount(id, |_| Ok(()))?;
+    let proxy = LOOP
+        .with_borrow(Clone::clone)
+        .ok_or_else(|| error("closed event loop"))?;
+    crate::owner_turn_controls::arm_after_scan(slot).map_err(error)?;
+    if let Err(failure) = proxy.send_event(id) {
+        crate::owner_turn_controls::cancel_after_scan();
+        return Err(error(failure));
+    }
+    Ok(())
 }

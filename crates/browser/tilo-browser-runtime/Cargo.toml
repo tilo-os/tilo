@@ -57,6 +57,8 @@ workspace = true
 
 [features]
 default = []
+# Explicit, bounded original-owner correctness controls; absent from normal bundles.
+owner-turn-controls = []
 # Kept for LIVE_V1 cfg gates in browser.rs while the Cloud/relay peer
 # paths are reattached to the current page runtime.
 cloud = []

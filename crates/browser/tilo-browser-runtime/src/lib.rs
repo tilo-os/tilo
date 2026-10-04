@@ -65,3 +65,9 @@ mod storage;
 mod throttle;
 #[cfg(target_arch = "wasm32")]
 mod viewport;
+
+#[cfg(all(target_arch = "wasm32", feature = "owner-turn-controls"))]
+mod owner_turn_controls;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod owner_turn_schedule;

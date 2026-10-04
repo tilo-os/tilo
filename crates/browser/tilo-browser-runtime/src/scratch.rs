@@ -44,9 +44,15 @@ fn create(mut context: HostContext, target: &LaunchTarget) -> Result<AppComponen
     let root = surface()
         .build(&Theme::dark())
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    #[cfg(feature = "owner-turn-controls")]
+    let control = crate::owner_turn_controls::ScratchControl::new(context.wake_handle())?;
     Ok(AppComponent::new(
         context,
-        Box::new(Page(root)),
+        Box::new(Page(
+            root,
+            #[cfg(feature = "owner-turn-controls")]
+            control,
+        )),
         tilo_actions::ActionRegistry::new(),
     ))
 }
@@ -55,7 +61,12 @@ fn create(mut context: HostContext, target: &LaunchTarget) -> Result<AppComponen
 /// layout node around the surface's, so traversal pairs widgets with nodes,
 /// and forwards input, updates and presence, whose `Widget` defaults do not
 /// reach children.
-struct Page(ui::widget::Element);
+struct Page(
+    ui::widget::Element,
+    #[cfg(feature = "owner-turn-controls")] Rc<crate::owner_turn_controls::ScratchControl>,
+);
+#[cfg(feature = "owner-turn-controls")]
+use std::rc::Rc;
 
 impl AppWidget for Page {
     fn app_kind(&self) -> AppKind {
@@ -86,7 +97,10 @@ impl Widget for Page {
         self.0.sync(state, path);
     }
     fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
-        self.0.update(state, path)
+        let changed = self.0.update(state, path);
+        #[cfg(feature = "owner-turn-controls")]
+        self.1.after_update();
+        changed
     }
     fn handle_event(
         &mut self,

@@ -13289,6 +13289,9 @@ mod owner_background_work;
 #[cfg(test)]
 #[path = "../../../browser/tilo-browser-runtime/src/mount_service_custody.rs"]
 mod owner_mount_service_custody;
+#[cfg(test)]
+#[path = "../../../browser/tilo-browser-runtime/src/owner_turn_schedule.rs"]
+mod owner_turn_schedule;
 
 #[cfg(test)]
 #[path = "headless/activation_scene_consistency_tests.rs"]
