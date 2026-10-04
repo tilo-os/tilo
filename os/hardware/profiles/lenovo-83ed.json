@@ -4,7 +4,10 @@
   "architecture": "aarch64",
   "devicetree": "qcom/x1e80100-lenovo-yoga-slim7x.dtb",
   "system_firmware": [
-    "qcom/a740_sqe.fw"
+    "qcom/a740_sqe.fw",
+    "qcom/gen70500_sqe.fw",
+    "qcom/gen70500_gmu.bin",
+    "qcom/x1e80100/gen70500_zap.mbn"
   ],
   "firmware": {
     "qcdxkmsuc8380.mbn": "qcom/x1e80100/LENOVO/83ED/qcdxkmsuc8380.mbn",
