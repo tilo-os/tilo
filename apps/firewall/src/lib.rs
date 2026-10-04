@@ -8,9 +8,9 @@
 //! `firewall-cmd` (gated, see [`backend`]); `--shots` bundles a realistic
 //! sample ruleset so the headless screenshot is fully populated offline.
 //!
-//! `app_root()` is the live integration point (reads the real firewall via
-//! `firewall-cmd`); `app_root_demo()` is the sample-seeded build used by the
-//! `--shots` renderer so the headless screenshot is populated offline.
+//! Each device running the app applies the stored configuration to its own
+//! firewalld after every change (see [`resource`]); a screenshot shows a
+//! bundled sample ruleset and never touches the host.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -46,19 +46,9 @@ pub mod resource;
 pub mod sample;
 
 pub use app::FirewallApp;
+pub use resource::{Firewall, FirewallShell};
 
-use ui::widget::Widget;
-
-/// Build the live app: read the host's real firewalld configuration. On a
-/// machine without firewalld it starts on an honest unavailable state — it
-/// never fabricates a ruleset.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(FirewallApp::new())
+/// The app as every host mounts it.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<FirewallShell>()
 }
-
-/// Build the sample-seeded app for the hermetic `--shots` / demo path. This
-/// is the ONLY entry point that fabricates a ruleset.
-pub fn app_root_demo() -> Box<dyn Widget> {
-    Box::new(FirewallApp::new_demo())
-}
-pub use resource::{Firewall, FirewallShell, launch_spec};

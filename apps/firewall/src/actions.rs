@@ -15,9 +15,11 @@
 //! ## What is *not* an action
 //!
 //! * **The live apply** — pushing the ruleset to the kernel via
-//!   `firewall-cmd`/`nft` (see [`crate::backend`]) is an external side effect
-//!   *driven by* the document state, never part of `Action::apply`, which only
-//!   mutates the CRDT deterministically. It stays a separate step.
+//!   `firewall-cmd`/`nft` (see [`crate::backend`]) is the projection of the
+//!   document onto each device: after every change, every device running the
+//!   app applies the stored configuration (see [`crate::resource`]). It is
+//!   never part of `Action::apply`, which only mutates the CRDT
+//!   deterministically.
 //! * **Presentation** — which zone tab is selected in the UI, the rule filter,
 //!   the add-rule form's field focus, scroll — never leaves the machine and
 //!   never becomes an action.
@@ -31,14 +33,13 @@
 //! rule that isn't there is a **no-op** rather than an error, so a bad replay
 //! can't wedge a peer.
 
-use automerge::AutoCommit;
-
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
-    ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, ConfirmationPolicy,
-    DiscoveryScope, Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType,
-    PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
+    ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, ChangeKind,
+    ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, ParamType, PermissionRequirement,
+    Resource, RetryPolicy, RiskLevel,
 };
+use ui::tilo_resource::ActionDecl;
 
 use crate::doc::FirewallDoc;
 use crate::model::{
@@ -47,7 +48,6 @@ use crate::model::{
 
 /// Registry `type_id` for every firewall action.
 pub const FIREWALL_ACTION_TYPE: &str = "firewall.action";
-pub const FIREWALL_APPLY_TYPE: &str = "firewall.apply";
 
 /// Every collaborative operation the firewall exports on its shared ruleset.
 ///
@@ -99,16 +99,17 @@ pub enum FirewallAction {
     SetPanic { on: bool },
     /// Set the master switch — whether the firewall runs at all.
     SetEnabled { on: bool },
-    /// Publish a configuration read from the host, or promote a legacy document
-    /// to native maps. Rule edits stay field actions; this is only that import.
-    PublishImported { config: FirewallConfig },
+    /// Take in the configuration firewalld reported on this device: written
+    /// whole into an empty document, reconciled into an existing one (absent
+    /// members turn off, absent rules are deleted, a deleted rule stays
+    /// deleted). Rule edits stay field actions; this is only that import.
+    Import { config: FirewallConfig },
 }
 
 impl tilo_actions::Action for FirewallAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        // Field edits address one scalar, map, or text object. `PublishImported`
-        // is the one whole-config write: the host import, or a legacy document
-        // promoted to native maps.
+        // Field edits address one scalar, map, or text object. `Import` is
+        // the one whole-config write: what firewalld reported on a device.
         match self {
             FirewallAction::AddRule { zone, rule } => FirewallDoc::add_rule(doc, *zone, rule),
             FirewallAction::EditRule { zone, id, source } => {
@@ -130,11 +131,18 @@ impl tilo_actions::Action for FirewallAction {
             }
             FirewallAction::SetPanic { on } => FirewallDoc::set_panic(doc, *on),
             FirewallAction::SetEnabled { on } => FirewallDoc::set_enabled(doc, *on),
-            FirewallAction::PublishImported { config } => {
-                let _ = FirewallDoc::store(doc, config);
-            }
+            FirewallAction::Import { config } => FirewallDoc::import(doc, config),
         }
         Ok(())
+    }
+
+    /// An import is what a device reported, not anyone's edit: it syncs like
+    /// any change, but no undo takes it back.
+    fn change_kind(&self) -> ChangeKind {
+        match self {
+            FirewallAction::Import { .. } => ChangeKind::External,
+            _ => ChangeKind::Content,
+        }
     }
 
     fn locus(&self) -> ExecutionLocus {
@@ -268,40 +276,6 @@ fn rule_label(r: &Rule) -> String {
     }
 }
 
-/// Push the stored configuration through `firewall-cmd` / the host apply path.
-/// Published from [`crate::resource::Firewall::local_operations`] so hosted
-/// surfaces keep the palette row without a second config root.
-///
-/// # Panics
-///
-/// Panics only if serializing the empty-string operation payload fails, which
-/// the JSON encoder does not.
-#[allow(
-    clippy::expect_used,
-    reason = "the empty string operation payload is always serializable"
-)]
-pub fn apply_effect_spec() -> ActionSpec {
-    ActionSpec::operation(
-        "apply-config",
-        "Apply firewall configuration",
-        OperationKind::Effect,
-        FIREWALL_APPLY_TYPE,
-        &"",
-    )
-    .expect("firewall apply payload is serializable")
-    .with_contract(ActionContract {
-        permission: PermissionRequirement::Admin,
-        risk: RiskLevel::Privileged,
-        confirmation: ConfirmationPolicy::Confirm,
-        retry: RetryPolicy::Idempotent,
-        discovery: DiscoveryScope::Launchable,
-        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-        result: ResultSpec::Job,
-        tags: vec!["security".into(), "firewall".into()],
-        ..ActionContract::default()
-    })
-}
-
 #[allow(
     clippy::expect_used,
     reason = "FirewallAction always serializes; there is no meaningful fallback ActionSpec to return instead"
@@ -324,66 +298,43 @@ fn config_contract() -> ActionContract {
     }
 }
 
-/// Build the resource tree the firewall currently has open: the configuration
-/// (start/stop + panic), each zone (make-active, set-policy, add-rule), and each
-/// rule (toggle, edit, delete, move). Every document-mutating operation is
-/// exported as the same action the on-screen affordance dispatches.
-#[allow(
-    clippy::expect_used,
-    clippy::missing_panics_doc,
-    reason = "the only expects encode fixed primitive payloads; ActionSpec cannot fail for them"
-)]
-/// Start/stop and panic. Labels follow the saved on/off state.
-pub(crate) fn toggle_specs(config: &FirewallConfig) -> Vec<ActionSpec> {
-    let enable_label = if config.enabled {
-        "Stop firewall"
-    } else {
-        "Start firewall"
-    };
-    let panic_label = if config.panic_mode {
-        "Exit panic mode"
-    } else {
-        "Enter panic mode"
-    };
-    vec![
-        ActionSpec::operation(
-            "toggle-enabled",
-            enable_label,
-            OperationKind::Effect,
-            "firewall.set-enabled",
-            &(!config.enabled),
-        )
-        .expect("firewall enabled state is serializable")
-        .with_contract(ActionContract {
-            permission: PermissionRequirement::Admin,
-            risk: RiskLevel::Privileged,
-            confirmation: ConfirmationPolicy::Confirm,
-            retry: RetryPolicy::Idempotent,
-            discovery: DiscoveryScope::Launchable,
-            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-            result: tilo_actions::ResultSpec::Job,
-            tags: vec!["security".into(), "firewall".into()],
-            ..ActionContract::default()
-        }),
-        ActionSpec::operation(
-            "toggle-panic",
-            panic_label,
-            OperationKind::Effect,
-            "firewall.set-panic",
-            &(!config.panic_mode),
-        )
-        .expect("firewall panic state is serializable")
-        .with_contract(ActionContract {
-            confirmation: ConfirmationPolicy::Confirm,
-            permission: PermissionRequirement::Admin,
-            risk: RiskLevel::Privileged,
-            retry: RetryPolicy::Idempotent,
-            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-            result: tilo_actions::ResultSpec::Job,
-            tags: vec!["security".into(), "firewall".into()],
-            ..ActionContract::default()
-        }),
-    ]
+/// Start/stop and panic, as declarations bound to the stored on/off: each
+/// sets the opposite of what the configuration holds now. Turning the
+/// firewall off or dropping all traffic asks for confirmation.
+pub(crate) fn toggle_declarations(
+    config: &FirewallConfig,
+) -> Vec<ActionDecl<crate::resource::Firewall>> {
+    let enable = !config.enabled;
+    let panic = !config.panic_mode;
+    let mut toggle_enabled = ActionDecl::new(
+        "toggle-enabled",
+        if enable {
+            "Start firewall"
+        } else {
+            "Stop firewall"
+        },
+        Vec::new(),
+        move |_, _| Ok(set_enabled_action(enable)),
+    )
+    .requiring(PermissionRequirement::Admin);
+    if !enable {
+        toggle_enabled = toggle_enabled.destructive();
+    }
+    let mut toggle_panic = ActionDecl::new(
+        "toggle-panic",
+        if panic {
+            "Enter panic mode"
+        } else {
+            "Exit panic mode"
+        },
+        Vec::new(),
+        move |_, _| Ok(set_panic_action(panic)),
+    )
+    .requiring(PermissionRequirement::Admin);
+    if panic {
+        toggle_panic = toggle_panic.destructive();
+    }
+    vec![toggle_enabled, toggle_panic]
 }
 
 /// Zones and their rules, children of the published firewall config.
@@ -395,17 +346,8 @@ pub(crate) fn zone_children(config: &FirewallConfig) -> Vec<Resource> {
         .collect()
 }
 
-/// The published firewall configuration.
-pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
-    vec![ui::tilo_resource::publish::<crate::resource::Firewall>(
-        "firewall.config",
-        "Firewall",
-        config,
-    )]
-}
-
 /// Build one zone's resource: make-active/set-policy/add-rule actions plus a
-/// child per rule. Split out of [`provide_resources`] purely to keep that
+/// child per rule. Split out of [`zone_children`] purely to keep that
 /// function short — same tree, same actions.
 fn zone_resource(config: &FirewallConfig, z: &Zone) -> Resource {
     let kind = z.kind;
@@ -588,34 +530,12 @@ fn rule_resource(kind: ZoneKind, idx: usize, n: usize, r: &Rule) -> Resource {
     rr
 }
 
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::FirewallApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        // Unavailable, or a live reading with no zones, publishes nothing.
-        // Once sync has written the config, that document is the door; an
-        // unsynced window still uses the firewalld reading on the widget.
-        let Some(widget) = self.firewall_resource_ctx() else {
-            return Vec::new();
-        };
-        let config = FirewallDoc::load(doc).unwrap_or(widget);
-        if config.zones.is_empty() {
-            return Vec::new();
-        }
-        vec![ui::tilo_resource::publish::<crate::resource::Firewall>(
-            "firewall.config",
-            "Firewall",
-            &config,
-        )]
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::FirewallApp;
-    use automerge::ROOT;
-    use tilo_actions::{ActionInput, LocalTransport};
-    use ui::widget::Widget;
+    use crate::resource::Firewall;
+    use automerge::AutoCommit;
+    use tilo_actions::{ActionInput, LocalTransport, OperationKind};
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -632,16 +552,27 @@ mod tests {
         }
     }
 
-    /// The demo (sample-seeded) firewall synced into a fresh document, plus the
-    /// app that owns it. The document is the source of truth every action reads.
-    fn seeded() -> (FirewallApp, AutoCommit) {
-        let mut app = FirewallApp::new_demo();
+    /// A document holding the sample ruleset, imported through the action
+    /// itself. The document is the source of truth every action reads.
+    fn seeded() -> AutoCommit {
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        (app, doc)
+        let action = FirewallAction::Import {
+            config: crate::sample::sample_config(),
+        };
+        tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
+        doc
     }
 
-    /// The palette publishes the firewall tree (or only recovery when unavailable), ignores out-of-range targets and creates rules through the add-allow action.
+    /// The tree the palette, agents and scripts see for `doc`.
+    fn published(doc: &AutoCommit) -> Vec<Resource> {
+        vec![ui::tilo_resource::publish::<Firewall>(
+            "firewall.config",
+            "Firewall",
+            &config(doc),
+        )]
+    }
+
+    /// The palette publishes the firewall tree, ignores out-of-range targets and creates rules through the add-allow action.
     #[allow(
         clippy::too_many_lines,
         reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
@@ -652,10 +583,10 @@ mod tests {
         // Ctrl+K on the firewall yields the tree: the configuration (start/stop +
         // panic), a `firewall.zone` child per zone exporting make-active/set-policy/
         // add-rule, and a `firewall.rule` child per rule exporting toggle/edit/
-        // delete. Drives the real resource hook.
+        // delete.
         {
-            let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let doc = seeded();
+            let resources = published(&doc);
             assert_eq!(resources.len(), 1, "one configuration root");
             let cfg = &resources[0];
             assert_eq!(cfg.kind, "firewall.config");
@@ -666,11 +597,20 @@ mod tests {
                 .actions
                 .iter()
                 .find(|action| action.id == "toggle-enabled")
-                .expect("start/stop operation");
-            assert_eq!(enabled.kind, OperationKind::Effect);
+                .expect("start/stop action");
+            // Stopping the firewall is a document edit the devices then
+            // apply, never an effect that writes the document on the side.
+            assert_eq!(enabled.kind, OperationKind::Document);
+            assert_eq!(enabled.label, "Stop firewall");
             assert_eq!(enabled.contract.permission, PermissionRequirement::Admin);
             assert_eq!(enabled.contract.confirmation, ConfirmationPolicy::Confirm);
-            assert_eq!(enabled.contract.discovery, DiscoveryScope::Launchable);
+            let panic = cfg
+                .actions
+                .iter()
+                .find(|action| action.id == "toggle-panic")
+                .expect("panic action");
+            assert_eq!(panic.kind, OperationKind::Document);
+            assert_eq!(panic.label, "Enter panic mode");
             assert_eq!(cfg.children.len(), 9, "all nine stock zones are published");
 
             // The public zone carries rules in the sample; find it and check both
@@ -746,24 +686,11 @@ mod tests {
             assert!(flat.contains(&"Set default policy"), "{flat:?}");
         }
 
-        // --- phase: unavailable_firewall_publishes_only_recovery ---
-        // The unavailable firewall publishes only its read-only recovery action;
-        // it never exposes rule mutations against an unknown host state.
-        {
-            let app = FirewallApp::new(); // no firewalld on the test host → unavailable
-            let doc = AutoCommit::new();
-            let resources = ui::resources::resources(&app, &doc);
-            assert_eq!(resources.len(), 1);
-            assert_eq!(resources[0].kind, "firewall.recovery");
-            assert_eq!(resources[0].actions.len(), 1);
-            assert_eq!(resources[0].actions[0].id, "retry");
-        }
-
         // --- phase: out_of_range_action_is_a_no_op ---
         // A malformed / out-of-range payload is a no-op, not an error: deleting a
         // rule id that isn't there leaves the document (its heads) untouched.
         {
-            let (_app, mut doc) = seeded();
+            let mut doc = seeded();
             let zone = FirewallDoc::load(&doc).unwrap().default_zone;
             let before = doc.get_heads();
             let action = delete_rule_action(zone, RuleId::from_u128(0xDEAD_BEEF));
@@ -782,8 +709,8 @@ mod tests {
         // Dispatching the zone-level "Add allow rule" prompted action creates a
         // rule in the document with the committed port.
         {
-            let (app, mut doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let mut doc = seeded();
+            let resources = published(&doc);
             let public = resources[0]
                 .children
                 .iter()
@@ -841,16 +768,9 @@ mod tests {
     }
 
     ui::action_contract_tests! {
-        seed: seeded().1,
+        seed: seeded(),
         registry: registry(),
-        resources: |doc| {
-            let config = config(doc);
-            vec![ui::tilo_resource::publish::<crate::resource::Firewall>(
-                "firewall.config",
-                "Firewall",
-                &config,
-            )]
-        },
+        resources: |doc| published(doc),
         palette: ["Delete rule", "Make active zone", "Set default policy"],
         replay: [
             toggle_rule => |doc| {
