@@ -2195,46 +2195,55 @@ fn sheet_document_resource(
                 row: thread.start.1,
             },
         ))
-        .with_action(ActionSpec::prompted(
-            "edit",
-            "Edit comment",
-            "Comment",
-            "comment…",
-            ExecutionLocus::ClientLocal,
-            {
-                let stable = stable.clone();
-                let comment_id = comment_id.clone();
-                move |body: &str| {
-                    encode(&edit_comment_action(
-                        idx,
-                        stable.clone(),
-                        comment_id.clone(),
-                        body.trim(),
-                    ))
-                }
-            },
-        ))
-        .with_action(ActionSpec::prompted(
-            "reply",
-            "Reply to comment",
-            "Reply",
-            "reply…",
-            ExecutionLocus::ClientLocal,
-            {
-                let stable = stable.clone();
-                let comment_id = comment_id.clone();
-                move |body: &str| {
-                    encode(&reply_comment_action(
-                        idx,
-                        stable.clone(),
-                        comment_id.clone(),
-                        "You",
-                        body.trim(),
-                    ))
-                }
-            },
-        ))
-        .with_action(immediate_spec("toggle-resolved", label, &action))
+        .with_action(
+            ActionSpec::prompted(
+                "edit",
+                "Edit comment",
+                "Comment",
+                "comment…",
+                ExecutionLocus::ClientLocal,
+                {
+                    let stable = stable.clone();
+                    let comment_id = comment_id.clone();
+                    move |body: &str| {
+                        encode(&edit_comment_action(
+                            idx,
+                            stable.clone(),
+                            comment_id.clone(),
+                            body.trim(),
+                        ))
+                    }
+                },
+            )
+            .requiring(tilo_actions::PermissionRequirement::Comment),
+        )
+        .with_action(
+            ActionSpec::prompted(
+                "reply",
+                "Reply to comment",
+                "Reply",
+                "reply…",
+                ExecutionLocus::ClientLocal,
+                {
+                    let stable = stable.clone();
+                    let comment_id = comment_id.clone();
+                    move |body: &str| {
+                        encode(&reply_comment_action(
+                            idx,
+                            stable.clone(),
+                            comment_id.clone(),
+                            "You",
+                            body.trim(),
+                        ))
+                    }
+                },
+            )
+            .requiring(tilo_actions::PermissionRequirement::Comment),
+        )
+        .with_action(
+            immediate_spec("toggle-resolved", label, &action)
+                .requiring(tilo_actions::PermissionRequirement::Comment),
+        )
         .with_action(immediate_spec(
             "delete",
             "Delete comment",

@@ -146,6 +146,17 @@ pub trait Resource: Sized + 'static {
         false
     }
 
+    /// The least a participant must be allowed to do for `action` to apply:
+    /// [`Write`](PermissionRequirement::Write) by default, `Comment` for a
+    /// reply or a note someone who may only comment can still add. The
+    /// dispatcher a view or surface edits through checks it, and a declared
+    /// action that builds it names the same level with
+    /// [`ActionDecl::requiring`].
+    fn permission(action: &Self::Action) -> PermissionRequirement {
+        let _ = action;
+        PermissionRequirement::Write
+    }
+
     /// Mutations offered by name. The generic [`APPLY`] action is always
     /// offered in addition, so any typed value can reach the host.
     fn declarations() -> Vec<ActionDecl<Self>> {

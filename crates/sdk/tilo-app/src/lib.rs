@@ -145,7 +145,7 @@ pub mod prelude {
     };
     pub use tilo_resource::{
         self, ActionCx, ActionDecl, Atom, Collection, Delta, Demand, Effect, Id, Invoke, Json,
-        Model, PlainText, Refusal, Replica, Resource, TextEdit, resource,
+        Model, PermissionRequirement, PlainText, Refusal, Replica, Resource, TextEdit, resource,
     };
 
     pub use ui_core::application::{
