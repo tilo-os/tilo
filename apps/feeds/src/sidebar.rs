@@ -2,7 +2,8 @@
 //!
 //! Smart lists first (all, unread, starred), then the folders with their
 //! feeds nested under them and the feeds outside any folder, then the tags.
-//! Counts are unread articles (articles for a tag), quiet and tabular. A
+//! Counts are unread articles (articles for a tag), quiet and tabular; all
+//! articles carries none, since Unread counts the same articles. A
 //! feed's actions open from its row's More button or a right click, in a
 //! menu that marks the row it acts on.
 
@@ -77,9 +78,9 @@ impl Core {
     pub(crate) fn nav_sections(&self) -> Vec<NavSection> {
         let store = &self.store;
         let smart = vec![
+            // Unread, below, already counts what is new everywhere.
             NavItem::new(nav_id(Filter::All), "All articles")
                 .icon(Icon::Layers)
-                .counted(store.total_unread())
                 .without_actions(),
             NavItem::new(nav_id(Filter::Unread), "Unread")
                 .icon(Icon::Inbox)
@@ -145,6 +146,14 @@ impl Core {
     }
 }
 
+/// How far a list row's lift sits inside the row in `theme`.
+fn lift_inset(theme: &ui::theme::Theme) -> (f64, f64) {
+    (
+        f64::from(theme.tokens.spacing.s2),
+        f64::from(theme.tokens.metrics.chrome_rule_px),
+    )
+}
+
 /// The sidebar widget: the shared [`NavList`], kept in step with the library.
 pub(crate) struct SidebarNav {
     list: NavList,
@@ -155,6 +164,9 @@ pub(crate) struct SidebarNav {
     /// Feeds whose More button was pressed this event.
     more: Rc<RefCell<Vec<String>>>,
     pointer: Point,
+    /// How far a row's lift sits inside its row: the list's inset across,
+    /// a hairline down.
+    lift_inset: (f64, f64),
     /// The list has had its first layout, so it knows its row metrics.
     laid_out: bool,
 }
@@ -191,6 +203,7 @@ impl SidebarNav {
             selected: Some(selected),
             more,
             pointer: Point::ZERO,
+            lift_inset: (0.0, 0.0),
             laid_out: false,
         }
     }
@@ -219,14 +232,24 @@ impl SidebarNav {
         }
     }
 
-    /// Open the menu of the feed whose row holds `id`.
-    fn open_menu(&self, id: &str) {
-        let (Some(Filter::Feed(feed)), Some(row)) = (filter_of(id), self.list.row_rect(id)) else {
+    /// The lift of `id`'s row: where the list paints its hover and
+    /// selection, so a menu marks the row with the same edges.
+    fn lift_rect(&self, id: &str) -> Option<vello::kurbo::Rect> {
+        let (across, down) = self.lift_inset;
+        self.list
+            .row_rect(id)
+            .map(|row| row.inset((-across, -down)))
+    }
+
+    /// Open the menu of the feed whose row holds `id`: under the row, or at
+    /// `at` for a right click.
+    fn open_menu(&self, id: &str, at: Option<Point>) {
+        let (Some(Filter::Feed(feed)), Some(row)) = (filter_of(id), self.lift_rect(id)) else {
             return;
         };
         self.requests
             .borrow_mut()
-            .push(Request::FeedMenu(feed, row));
+            .push(Request::FeedMenu(feed, row, at));
     }
 
     /// The feed row under the pointer.
@@ -249,8 +272,7 @@ impl SidebarNav {
             .first()
             .map(|f| f.id)
             .and_then(|id| {
-                self.list
-                    .row_rect(&nav_id(Filter::Feed(id)))
+                self.lift_rect(&nav_id(Filter::Feed(id)))
                     .map(|row| (id, row))
             });
     }
@@ -293,14 +315,14 @@ impl ui::widget::Decorator for SidebarNav {
         } = event
             && let Some(id) = self.feed_at(self.pointer)
         {
-            self.open_menu(&id);
+            self.open_menu(&id, Some(self.pointer));
             *ctx.handled = true;
             return;
         }
         Widget::handle_event(&mut self.list, event, ctx);
         let more = std::mem::take(&mut *self.more.borrow_mut());
         for id in more {
-            self.open_menu(&id);
+            self.open_menu(&id, None);
         }
     }
 
@@ -312,6 +334,7 @@ impl ui::widget::Decorator for SidebarNav {
         theme: &ui::theme::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
+        self.lift_inset = lift_inset(theme);
         Widget::draw(&mut self.list, scene, transform, text, theme, presence);
         self.record_first_feed_row();
     }
@@ -325,6 +348,7 @@ impl ui::widget::Decorator for SidebarNav {
         presence: &ui::presence::PresenceCtx,
         permissions: &ui::permissions::PermissionContext,
     ) {
+        self.lift_inset = lift_inset(theme);
         Widget::draw_with_presence(
             &mut self.list,
             scene,

@@ -128,27 +128,27 @@ pub fn store() -> Store {
         &mut s,
         SampleArticle::new(
             rust,
-            "Announcing Rust 1.84.0",
+            "Announcing Rust 1.96.1",
             "The Rust Release Team",
-            "https://blog.rust-lang.org/2026/06/20/Rust-1.84.0.html",
+            "https://blog.rust-lang.org/2026/06/30/Rust-1.96.1/",
             now - 5 * HOUR,
-            "The Rust team is happy to announce a new version of Rust, 1.84.0.",
+            "The Rust team has published a new point release of Rust, 1.96.1.",
             vec![
             para(
-                "The Rust team is happy to announce a new version of Rust, 1.84.0. Rust is a programming language empowering everyone to build reliable and efficient software.",
+                "The Rust team has published a new point release of Rust, 1.96.1. Rust is a programming language empowering everyone to build reliable and efficient software.",
             ),
-            h2("What's in 1.84.0 stable"),
+            h2("What's in 1.96.1"),
             para(
-                "This release stabilises the next-generation trait solver for coherence checking, delivering more predictable error messages and faster compiles on large crate graphs.",
+                "Rust 1.96.1 resolves a few regressions reported since 1.96.0 was released at the end of May.",
             ),
-            bullet("Strict provenance APIs for pointers are now stable."),
+            bullet("Incremental builds again notice changes to items re-exported through glob imports."),
             bullet(
-                "Cargo now resolves dependencies with a minimum supported Rust version (MSRV) aware algorithm.",
+                "Cargo respects the build target set in a workspace's configuration file once more.",
             ),
-            bullet("New #[diagnostic] attributes let library authors tailor error messages."),
-            h2("Migrating"),
+            bullet("Rustdoc shows the documentation of trait aliases again."),
+            h2("Updating"),
             para(
-                "If you have a previous version of Rust installed via rustup, getting Rust 1.84.0 is as easy as running:",
+                "If you have a previous version of Rust installed via rustup, getting Rust 1.96.1 is as easy as running:",
             ),
             code("rustup update stable"),
             para(
@@ -564,7 +564,7 @@ mod tests {
                     .unwrap()
             };
 
-            let release = article("Announcing Rust 1.84.0");
+            let release = article("Announcing Rust 1.96.1");
             assert!(!release.read);
             assert!(release.starred);
             assert_eq!(release.tags, ["rust"]);

@@ -15,16 +15,16 @@ use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
+use ui::time::Instant;
 use ui::tokens::TextRole;
 use ui::widget::chip::ChipFace;
 use ui::widget::{
-    ChipLead, EmptyState, EmptyStateContent, PressOutcome, ScrollMetrics, Scrollbar, TaffyTreeExt,
-    Widget,
+    AppModel, ChipLead, EmptyState, EmptyStateContent, ModelPath, Scrollable, TaffyTreeExt, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::app::{Core, Shared};
 use crate::model::{BlockKind, ContentBlock, Filter, Id, ReadFont, TagKey};
@@ -63,12 +63,9 @@ pub(crate) fn leaf_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> R
 /// What the reader painted last frame, for hit-testing and scrolling.
 pub(crate) struct ReaderState {
     pub(crate) rect: Rect,
-    pub(crate) scroll: f64,
-    content: f64,
-    line: f64,
-    bar: Scrollbar,
-    /// How far the thumb sits inside the scroll gutter.
-    bar_inset: f64,
+    /// Scrolls the painted article: offset, wheel, momentum and the overlay
+    /// scroll bar that fades when idle.
+    pub(crate) scroller: Scrollable,
     /// Links, one rect per line they cover, with their target.
     pub(crate) links: Vec<(Rect, usize, String)>,
     /// Tag chips and the tag each shows.
@@ -81,11 +78,7 @@ impl Default for ReaderState {
     fn default() -> Self {
         Self {
             rect: Rect::ZERO,
-            scroll: 0.0,
-            content: 0.0,
-            line: 0.0,
-            bar: Scrollbar::vertical(),
-            bar_inset: 0.0,
+            scroller: Scrollable::new_vertical(),
             links: Vec::new(),
             tags: Vec::new(),
             shown: None,
@@ -94,21 +87,9 @@ impl Default for ReaderState {
 }
 
 impl ReaderState {
-    fn metrics(&self) -> ScrollMetrics {
-        ScrollMetrics::new(self.content, self.rect.height(), self.scroll)
-    }
-
-    fn track(&self, gutter: f64) -> Rect {
-        Rect::new(
-            self.rect.x1 - gutter + self.bar_inset,
-            self.rect.y0 + self.bar_inset,
-            self.rect.x1 - self.bar_inset,
-            self.rect.y1 - self.bar_inset,
-        )
-    }
-
-    fn max_scroll(&self) -> f64 {
-        (self.content - self.rect.height()).max(0.0)
+    /// Back to the top of the article.
+    pub(crate) fn scroll_to_top(&mut self) {
+        self.scroller.set_offset_y(0.0);
     }
 }
 
@@ -177,9 +158,10 @@ impl Core {
         if area.width() <= 0.0 || area.height() <= 0.0 {
             return;
         }
+        self.reader.scroller.set_viewport_rect(area);
         if self.reader.shown != self.selected {
             self.reader.shown = self.selected;
-            self.reader.scroll = 0.0;
+            self.reader.scroll_to_top();
         }
         let palette = ReaderPalette::resolve(self.settings.theme, theme);
         if let Some(page) = palette.page {
@@ -187,7 +169,9 @@ impl Core {
         }
         let page_theme = palette.page_theme(theme);
         let Some(article) = self.open_article().cloned() else {
-            self.reader.content = 0.0;
+            self.reader
+                .scroller
+                .set_content_size(area.width() as f32, 0.0);
             // An empty library has one empty state, in the list.
             if !self.store.feeds.is_empty() {
                 let content = EmptyStateContent {
@@ -214,13 +198,11 @@ impl Core {
         let x = area.x0 + (area.width() - width) / 2.0;
         let w = width as f32;
         let gap = f64::from(spacing.s4) * scale;
-        self.reader.line = f64::from(text.measure_style("Ag", None, &styles.body).1);
-        // The thumb stands half a step inside its gutter, as a scroll view's does.
-        self.reader.bar_inset = f64::from(spacing.s1) / 2.0;
+        let scroll = f64::from(self.reader.scroller.offset_y());
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &area);
         let top = area.y0 + gutter;
-        let mut y = top - self.reader.scroll;
+        let mut y = top - scroll;
 
         // Title.
         text.draw_style(
@@ -302,21 +284,11 @@ impl Core {
         }
         y += gutter;
         scene.pop_layer();
-        self.reader.content = y + self.reader.scroll - area.y0;
-        self.reader.scroll = self.reader.scroll.clamp(0.0, self.reader.max_scroll());
-
-        let metrics = self.reader.metrics();
-        if metrics.overflows() {
-            let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
-            self.reader.bar.draw(
-                scene,
-                t,
-                self.reader.track(gutter),
-                metrics,
-                &page_theme,
-                false,
-            );
-        }
+        let content = y + scroll - area.y0;
+        self.reader
+            .scroller
+            .set_content_size(area.width() as f32, content as f32);
+        self.reader.scroller.draw_bar_overlay(scene, t, &page_theme);
     }
 
     /// Paint one block at `y`; returns where the next one starts.
@@ -487,78 +459,45 @@ impl Core {
     pub(crate) fn reader_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &ui::widget::EventCtx<'_>,
-        gutter: f64,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        let inside = self.reader.rect.contains(self.pointer);
-        match event {
-            WindowEvent::CursorMoved { .. } => {
-                let track = self.reader.track(gutter);
-                let metrics = self.reader.metrics();
-                if let Some(offset) = self.reader.bar.drag_to(track, metrics, self.pointer) {
-                    self.reader.scroll = offset;
-                    return true;
-                }
-                self.reader.bar.update_hover(track, metrics, self.pointer);
-                false
-            }
-            WindowEvent::MouseWheel { delta, .. } if inside => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.reader.line * 3.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
-                };
-                self.reader.scroll = (self.reader.scroll - dy).clamp(0.0, self.reader.max_scroll());
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if inside => {
-                let metrics = self.reader.metrics();
-                if metrics.overflows() {
-                    match self
-                        .reader
-                        .bar
-                        .press(self.reader.track(gutter), metrics, self.pointer)
-                    {
-                        PressOutcome::Thumb => return true,
-                        PressOutcome::Page(offset) => {
-                            self.reader.scroll = offset;
-                            return true;
-                        }
-                        PressOutcome::Miss => {}
-                    }
-                }
-                if let Some(key) = self
-                    .reader
-                    .tags
-                    .iter()
-                    .find(|(rect, _)| rect.contains(self.pointer))
-                    .map(|(_, key)| *key)
-                {
-                    self.set_filter(Filter::Tag(key));
-                    return true;
-                }
-                if let Some(href) = self
-                    .reader
-                    .links
-                    .iter()
-                    .find(|(rect, _, _)| rect.contains(self.pointer))
-                    .map(|(_, _, href)| href.clone())
-                {
-                    self.open_url(&href);
-                    return true;
-                }
-                false
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => self.reader.bar.release(),
-            _ => false,
+        // The scroll view takes the wheel, touchpad gestures and its bar.
+        self.reader.scroller.handle_event(event, ctx);
+        if *ctx.handled {
+            return true;
         }
+        let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        if !self.reader.rect.contains(self.pointer) {
+            return false;
+        }
+        if let Some(key) = self
+            .reader
+            .tags
+            .iter()
+            .find(|(rect, _)| rect.contains(self.pointer))
+            .map(|(_, key)| *key)
+        {
+            self.set_filter(Filter::Tag(key));
+            return true;
+        }
+        if let Some(href) = self
+            .reader
+            .links
+            .iter()
+            .find(|(rect, _, _)| rect.contains(self.pointer))
+            .map(|(_, _, href)| href.clone())
+        {
+            self.open_url(&href);
+            return true;
+        }
+        false
     }
 
     pub(crate) fn reader_accessibility(&self) -> AccessNode {
@@ -634,7 +573,6 @@ struct BlockFrame<'a> {
 pub(crate) struct ReaderPane {
     core: Shared,
     rect: Rect,
-    gutter: f64,
 }
 
 impl ReaderPane {
@@ -642,19 +580,21 @@ impl ReaderPane {
         Self {
             core: std::rc::Rc::clone(core),
             rect: Rect::ZERO,
-            gutter: 0.0,
         }
     }
 }
 
 impl Widget for ReaderPane {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        self.core.borrow_mut().reader.scroller.update(state, path)
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        theme: &Theme,
+        _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
         fill_leaf(taffy, node_map, self)
     }
 
@@ -680,7 +620,7 @@ impl Widget for ReaderPane {
             self.core.borrow_mut().pointer =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
-        if self.core.borrow_mut().reader_event(event, ctx, self.gutter) {
+        if self.core.borrow_mut().reader_event(event, ctx) {
             *ctx.handled = true;
         }
     }
@@ -710,7 +650,26 @@ impl Widget for ReaderPane {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.core.borrow().reader.bar.is_dragging()
+        self.core
+            .try_borrow()
+            .is_ok_and(|core| core.reader.scroller.wants_pointer_capture())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.core
+            .try_borrow()
+            .is_ok_and(|core| core.reader.scroller.needs_animation_frame())
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.core
+            .try_borrow()
+            .ok()
+            .and_then(|core| core.reader.scroller.next_wake_deadline())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.core.borrow_mut().reader.scroller.mark_drawn();
     }
 
     fn name(&self) -> &'static str {

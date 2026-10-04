@@ -33,6 +33,7 @@ pub(crate) struct HeaderButton {
     anchor: Option<Anchor>,
     enabled: fn(&Core) -> bool,
     named: Option<fn(&Core) -> &'static str>,
+    toggled: Option<fn(&Core) -> bool>,
 }
 
 impl HeaderButton {
@@ -43,6 +44,7 @@ impl HeaderButton {
             anchor: None,
             enabled: |_| true,
             named: None,
+            toggled: None,
         }
     }
 
@@ -58,6 +60,12 @@ impl HeaderButton {
         self
     }
 
+    /// A toggle that reads as on (the selection lift) while `f` holds.
+    pub(crate) fn toggled_by(mut self, f: fn(&Core) -> bool) -> Self {
+        self.toggled = Some(f);
+        self
+    }
+
     /// Record where the button sits, for the menu or panel it opens.
     pub(crate) fn anchor(mut self, anchor: Anchor) -> Self {
         self.anchor = Some(anchor);
@@ -70,7 +78,13 @@ impl HeaderButton {
         };
         let enabled = (self.enabled)(&core);
         let name = self.named.map(|f| f(&core));
+        let toggled = self.toggled.map(|f| f(&core));
         drop(core);
+        if let Some(on) = toggled
+            && self.button.is_toggled() != on
+        {
+            self.button.set_toggled(on);
+        }
         if self.button.is_enabled() != enabled {
             self.button.set_enabled(enabled);
         }
