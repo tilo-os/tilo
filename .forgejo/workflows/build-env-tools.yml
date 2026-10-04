@@ -105,7 +105,7 @@ jobs:
   signing-preflight:
     needs: plan
     if: needs.plan.outputs.publish == 'true'
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
@@ -226,7 +226,9 @@ jobs:
             echo "## env tool catalog (${{ matrix.arch }}, runtime: ${{ needs.plan.outputs.runtime }})"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
-          TILO_ENV_TOOLS_STATE="$state" ./os/dev/build-env-tools.sh \
+          # The builder has no /dev/net/tun for the gated network; a fixed
+          # list on a disposable builder takes the job's own network.
+          TILO_ENV_TOOLS_NETWORK=host TILO_ENV_TOOLS_STATE="$state" ./os/dev/build-env-tools.sh \
             "$RUNNER_TEMP/runtime.tapp" "$out" "${identity[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
           mv "$out/catalog.json" "$out/catalog-${{ matrix.arch }}.json"
           mv "$out/report.json" "$out/report-${{ matrix.arch }}.json"

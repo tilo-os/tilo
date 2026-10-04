@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use tilo_actions::{Action, ActionParam, ActionSpec, OperationKind, ParamType};
 use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
@@ -73,6 +73,11 @@ impl SheetsState {
 /// The sheets workbook resource.
 pub struct SheetsWorkbook;
 
+/// The identity of a new workbook's first sheet. The genesis is the same
+/// change on every device, so two people creating the room's workbook before
+/// they sync converge on one first sheet rather than two.
+const FIRST_SHEET_ID: &str = "00000000-0000-4000-8000-000000000001";
+
 impl Resource for SheetsWorkbook {
     const KIND: &'static str = "sheets.workbook";
     const LABEL: &'static str = "Workbook";
@@ -136,7 +141,7 @@ impl Resource for SheetsWorkbook {
         if SheetsDoc::is_empty(doc) {
             SheetsAction::AddSheet {
                 name: "Sheet1".into(),
-                new_sheet_id: uuid::Uuid::new_v4().to_string(),
+                new_sheet_id: FIRST_SHEET_ID.into(),
             }
             .apply(doc)
             .map_err(|error| ModelError::invalid(error.to_string()))?;
@@ -319,13 +324,55 @@ fn workbook_local_operations() -> Vec<ActionSpec> {
 /// Framework app: the sheets grid is the surface over [`SheetsWorkbook`].
 pub struct SheetsShell;
 
+/// Every screenshot scenario: the sample workbook with one surface of the app
+/// in view.
+const SCENARIOS: &[&str] = &[
+    "file",
+    "format",
+    "more",
+    "docsettings",
+    "editing",
+    "pointmode",
+    "summary",
+    "multiselect",
+    "tabmenu",
+    "fbarselect",
+    "commandpalette",
+    "fillseries",
+    "scrollbars",
+    "pasteformula",
+    "error",
+    "conflict",
+    "reducedmotion",
+    "charts",
+    "comments",
+];
+
 impl ResourceApp for SheetsShell {
     type Resource = SheetsWorkbook;
     const ID: &'static str = "so.tilo.sheets";
     const TITLE: &'static str = "Sheets";
     const ICON: Option<&'static str> = Some("sheets");
+
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
+    }
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1200, 800)
+        (1280, 800)
+    }
+
+    fn scenario(name: Option<&str>) -> Vec<Invoke<SheetsWorkbook>> {
+        let mut actions = vec![crate::sample::workbook()];
+        match name {
+            Some("charts" | "comments") => actions.extend(crate::sample::charts_and_comments()),
+            Some("fillseries") => actions.push(crate::sample::fill_seeds()),
+            _ => {}
+        }
+        actions
+            .iter()
+            .filter_map(|action| Invoke::apply(action).ok())
+            .collect()
     }
 
     fn view(cx: &mut ViewCx<SheetsWorkbook>) -> Element {
@@ -340,6 +387,10 @@ impl ResourceSurface<SheetsWorkbook> for SheetsApp {
 
     fn attach(&mut self, cx: SurfaceCx<SheetsWorkbook>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 
     // Edits bound to where the user is publish as hand-built rows of the
@@ -424,5 +475,71 @@ impl ActionSink {
             return self.last.as_ref();
         }
         self.local.last_dispatched()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::framework::testing::TestApp;
+
+    /// A new workbook is one empty first sheet; nothing is fabricated.
+    #[test]
+    fn a_new_workbook_opens_one_blank_sheet() {
+        let app = TestApp::<SheetsShell>::new().unwrap();
+        let state = app.state();
+        let names: Vec<&str> = state
+            .sheets
+            .iter()
+            .map(|sheet| sheet.name.as_str())
+            .collect();
+        assert_eq!(names, ["Sheet1"]);
+        assert!(state.sheets[0].cells.is_empty());
+        assert_eq!(state.sheets[0].id, FIRST_SHEET_ID);
+    }
+
+    /// Screenshots show the sample workbook, staged through its actions.
+    #[test]
+    fn a_capture_stages_the_sample_workbook() {
+        let plain = TestApp::<SheetsShell>::capture(None).unwrap();
+        let state = plain.state();
+        let names: Vec<&str> = state
+            .sheets
+            .iter()
+            .map(|sheet| sheet.name.as_str())
+            .collect();
+        assert_eq!(names, ["Budget", "Sales"]);
+        assert!(state.sheets[0].charts.is_empty());
+
+        let charts = TestApp::<SheetsShell>::capture(Some("charts")).unwrap();
+        let budget = &charts.state().sheets[0];
+        assert_eq!(budget.charts.len(), 2);
+        assert_eq!(budget.comments.len(), 1);
+        assert!(budget.comments[0].resolved);
+    }
+
+    /// The fill-series scenario extends its seeds through the real fill
+    /// handle, and the paste scenario adjusts the copied formula: both are
+    /// edits the capture's document holds.
+    #[test]
+    fn document_scenarios_edit_through_the_dispatcher() {
+        let fill = TestApp::<SheetsShell>::capture(Some("fillseries")).unwrap();
+        let raw = |app: &TestApp<SheetsShell>, a1: &str| {
+            let (col, row) = crate::model::a1_to_addr(a1).unwrap();
+            app.state().sheets[0]
+                .cells
+                .iter()
+                .find(|cell| (cell.col, cell.row) == (col, row))
+                .map(|cell| cell.raw.clone())
+        };
+        assert_eq!(raw(&fill, "B21").as_deref(), Some("6"));
+        assert_eq!(raw(&fill, "C21").as_deref(), Some("Sat"));
+        assert_eq!(raw(&fill, "D21").as_deref(), Some("Task 6"));
+
+        let _clipboard = crate::app::tests::CLIP_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let paste = TestApp::<SheetsShell>::capture(Some("pasteformula")).unwrap();
+        assert_eq!(raw(&paste, "F2").as_deref(), Some("=SUM(C2:E2)"));
     }
 }
