@@ -1,10 +1,15 @@
 //! `swap --from sha:<commit>` and `--from ci:<tag>`: take a component's
-//! files out of the published CI image `registry.tilo.so/tilo/tilo:<tag>`.
+//! files out of CI's dev image of that build,
+//! `registry.tilo.so/tilo/tilo-vm:<tag>-ci`, the image `vm upgrade --from
+//! sha:` moves a VM onto. It holds the CI OS image's binaries with the
+//! dev-overrides rebuilds (the shell) on top, and dev images accept it
+//! (os/dev-image's container policy rejects the bare `tilo-ci` OS image).
 //!
-//! CI tags main commits `main-<sha7>` (`build-image.yml`, docker
-//! metadata-action `type=sha,prefix=main-`) and releases `<version>`.
-//! The pull happens inside the VM when its image has podman; otherwise on
-//! this host with podman, and the layer is uploaded.
+//! CI tags main commits `main-<sha7>` and pull requests `pr-<n>-<sha7>`
+//! (`build-image.yml`), each an index of the architectures that built, so a
+//! pull takes the one the VM or device runs. The pull happens inside the VM
+//! when its image has podman; otherwise on this host with podman, for the
+//! VM's architecture, and the layer is uploaded.
 
 use std::path::Path;
 
@@ -12,7 +17,7 @@ use crate::context::Worktree;
 use crate::error::CliError;
 use crate::hypervisor::{CommandLine, Runner};
 
-pub const IMAGE: &str = "registry.tilo.so/tilo/tilo";
+pub const IMAGE: &str = "registry.tilo.so/tilo/tilo-vm";
 
 /// What `--from` names, resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,8 +78,9 @@ pub fn parse(from: &str, worktree: Option<&Worktree>) -> Result<Source, CliError
     Err(CliError::InvalidSource(from.into()))
 }
 
+/// CI's dev image of build `tag` (`main-1a2b3c4`, or with its `-ci`).
 pub fn image(tag: &str) -> String {
-    format!("{IMAGE}:{tag}")
+    format!("{IMAGE}:{}-ci", tag.strip_suffix("-ci").unwrap_or(tag))
 }
 
 /// podman's name for an architecture.
@@ -87,14 +93,15 @@ pub fn podman_arch(arch: &str) -> &str {
 }
 
 /// Host-side extraction commands: pull, create a stopped container, copy
-/// each path out (a trailing `/` copies the directory), remove it.
+/// each path out (a trailing `/` copies the directory); then the cleanup
+/// that removes the container and the image, which only the layer outlives.
 pub fn host_commands(
     image: &str,
     arch: &str,
     container: &str,
     paths: &[String],
     tree: &Path,
-) -> (Vec<CommandLine>, CommandLine) {
+) -> (Vec<CommandLine>, Vec<CommandLine>) {
     let mut commands = vec![
         CommandLine::new("podman", &["pull", "--arch", podman_arch(arch), image]),
         CommandLine::new(
@@ -110,8 +117,91 @@ pub fn host_commands(
                 .arg(tree.join(relative).display().to_string()),
         );
     }
-    let cleanup = CommandLine::new("podman", &["rm", "--force", container]);
+    let cleanup = vec![
+        CommandLine::new("podman", &["rm", "--force", container]),
+        CommandLine::new("podman", &["rmi", image]),
+    ];
     (commands, cleanup)
+}
+
+/// What the pulled image says about itself, for the layer's provenance.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Pulled {
+    pub digest: Option<String>,
+    /// `org.opencontainers.image.revision`: the commit CI built.
+    pub revision: Option<String>,
+}
+
+/// The registry's manifest of `image`, without pulling it.
+pub fn manifest_command(image: &str) -> CommandLine {
+    CommandLine::new("skopeo", &["inspect", "--raw"]).arg(format!("docker://{image}"))
+}
+
+/// The digest of `arch`'s image in a [`manifest_command`] answer: the
+/// matching entry of an index, or the digest of a single-image manifest.
+/// It is the digest a pull for `arch` reports, so it names the content.
+pub fn arch_digest(raw: &str, arch: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let Some(manifests) = value.get("manifests").and_then(serde_json::Value::as_array) else {
+        use sha2::Digest as _;
+        return Some(format!(
+            "sha256:{}",
+            hex::encode(sha2::Sha256::digest(raw.trim_end_matches('\n')))
+        ));
+    };
+    manifests
+        .iter()
+        .find(|m| {
+            let platform = m.get("platform");
+            let field = |key: &str| {
+                platform
+                    .and_then(|p| p.get(key))
+                    .and_then(serde_json::Value::as_str)
+            };
+            field("architecture") == Some(podman_arch(arch))
+                && field("os").is_none_or(|os| os == "linux")
+        })
+        .and_then(|m| m.get("digest")?.as_str())
+        .map(str::to_owned)
+}
+
+/// The digest `image` has for `arch` in the registry now, or `None` when
+/// the registry (or skopeo) cannot say.
+pub fn registry_digest(runner: &mut dyn Runner, image: &str, arch: &str) -> Option<String> {
+    let output = runner.output(&manifest_command(image)).ok()?;
+    output
+        .success
+        .then(|| arch_digest(&output.stdout, arch))
+        .flatten()
+}
+
+/// `podman image inspect` of the pulled image: its digest and revision.
+pub fn inspect_command(image: &str) -> CommandLine {
+    CommandLine::new(
+        "podman",
+        &[
+            "image",
+            "inspect",
+            "--format",
+            "{{.Digest}} {{index .Labels \"org.opencontainers.image.revision\"}}",
+            image,
+        ],
+    )
+}
+
+/// The [`inspect_command`] answer.
+pub fn parse_inspect(output: &str) -> Pulled {
+    let mut words = output.split_whitespace();
+    let mut next = || {
+        words
+            .next()
+            .filter(|w| !w.is_empty() && *w != "<no" && *w != "<no value>")
+            .map(str::to_owned)
+    };
+    Pulled {
+        digest: next().filter(|d| d.starts_with("sha256:")),
+        revision: next().filter(|r| r.bytes().all(|b| b.is_ascii_hexdigit())),
+    }
 }
 
 /// Run the host extraction; `tree` receives `usr/...`.
@@ -124,7 +214,7 @@ pub fn extract_on_host(
     arch: &str,
     paths: &[String],
     tree: &Path,
-) -> Result<Option<String>, CliError> {
+) -> Result<Pulled, CliError> {
     let container = format!("tilo-vm-ci-{}", uuid::Uuid::new_v4().simple());
     let (commands, cleanup) = host_commands(image, arch, &container, paths, tree);
     let mut result = Ok(());
@@ -173,18 +263,18 @@ pub fn extract_on_host(
             break;
         }
     }
-    let _ = runner.output(&cleanup);
-    result?;
-    let digest = runner
-        .output(&CommandLine::new(
-            "podman",
-            &["image", "inspect", "--format", "{{.Digest}}", image],
-        ))
+    // Read before the cleanup removes the image.
+    let pulled = runner
+        .output(&inspect_command(image))
         .ok()
         .filter(|o| o.success)
-        .map(|o| o.stdout.trim().to_owned())
-        .filter(|d| !d.is_empty());
-    Ok(digest)
+        .map(|o| parse_inspect(&o.stdout))
+        .unwrap_or_default();
+    for command in &cleanup {
+        let _ = runner.output(command);
+    }
+    result?;
+    Ok(pulled)
 }
 
 #[cfg(test)]
@@ -245,13 +335,51 @@ mod tests {
             assert_eq!(
                 text,
                 [
-                    "podman pull --arch arm64 registry.tilo.so/tilo/tilo:main-1a2b3c4",
-                    "podman create --name c1 registry.tilo.so/tilo/tilo:main-1a2b3c4 /bin/true",
+                    "podman pull --arch arm64 registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci",
+                    "podman create --name c1 registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci /bin/true",
                     "podman cp c1:/usr/bin/app /s/tree/usr/bin/app",
                     "podman cp c1:/usr/lib/tilo-runtime /s/tree/usr/lib/tilo-runtime",
                 ]
             );
-            assert_eq!(cleanup.display(), "podman rm --force c1");
+            let cleanup: Vec<String> = cleanup.iter().map(CommandLine::display).collect();
+            assert_eq!(
+                cleanup,
+                [
+                    "podman rm --force c1",
+                    "podman rmi registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci"
+                ]
+            );
+            assert_eq!(
+                parse_inspect("sha256:ab12 fff3babf03ebbefb1e3757b8a9e0263c2c815943\n"),
+                Pulled {
+                    digest: Some("sha256:ab12".into()),
+                    revision: Some("fff3babf03ebbefb1e3757b8a9e0263c2c815943".into()),
+                }
+            );
+            let index = r#"{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[
+                {"digest":"sha256:5988","platform":{"architecture":"arm64","os":"linux"}},
+                {"digest":"sha256:8b92","platform":{"architecture":"amd64","os":"linux"}}]}"#;
+            assert_eq!(
+                arch_digest(index, "aarch64").as_deref(),
+                Some("sha256:5988")
+            );
+            assert_eq!(arch_digest(index, "x86_64").as_deref(), Some("sha256:8b92"));
+            assert_eq!(arch_digest(index, "riscv64"), None);
+            assert_eq!(
+                arch_digest("{}", "aarch64").as_deref(),
+                Some("sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a")
+            );
+            assert_eq!(
+                manifest_command("registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci").display(),
+                "skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci"
+            );
+            assert_eq!(
+                parse_inspect("sha256:ab12 <no value>\n"),
+                Pulled {
+                    digest: Some("sha256:ab12".into()),
+                    revision: None,
+                }
+            );
         }
     }
 }

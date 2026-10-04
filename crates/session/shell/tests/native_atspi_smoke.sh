@@ -5,9 +5,12 @@
 set -euo pipefail
 
 mode=${1:-}
+usage="usage: $0 {oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|clipboard-is TEXT|clipboard-keeps TEXT SECRET|desktop|established|lock}"
 case "$mode" in
-  oobe|oobe-actions|desktop|established|lock) ;;
-  *) echo "usage: $0 {oobe|oobe-actions|desktop|established|lock}" >&2; exit 2 ;;
+  oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|desktop|established|lock) ;;
+  clipboard-is) (($# == 2)) || { echo "$usage" >&2; exit 2; } ;;
+  clipboard-keeps) (($# == 3)) || { echo "$usage" >&2; exit 2; } ;;
+  *) echo "$usage" >&2; exit 2 ;;
 esac
 
 command -v busctl >/dev/null
@@ -114,6 +117,16 @@ collect_tree() {
       | grep -Eo '/org/a11y/atspi/accessible/[0-9/]+' || true)
   done
   ((${#node_names[@]} > 0))
+}
+
+# One complete walk, retried while a tree transaction is in flight.
+collect_settled_tree() {
+  for _ in $(seq 1 400); do
+    collect_tree && return 0
+    sleep 0.05
+  done
+  echo "AT-SPI $mode tree never settled" >&2
+  return 1
 }
 
 node_named() {
@@ -299,32 +312,100 @@ assert_password_role() {
   }
 }
 
-case "$mode" in
-  oobe|oobe-actions)
-    wait_for_names "Use existing" "Create identity"
-    if [[ $mode == oobe-actions ]]; then
-      # Prove the complete external-reader contract before making the
-      # irreversible identity choice. The disposable Connect branch gives us
-      # a visible, non-secret editable field: focus and write it solely over
-      # AT-SPI, observe the value through that same bus, then return to Intro.
-      click_named "Use existing"
-      wait_for_names "Identity backup file" "Back"
-      focus_named "Identity backup file"
-      set_text_named "Identity backup file" "tilo-atspi-edit-probe"
-      click_named "Back"
-      wait_for_names "Use existing" "Create identity"
+# The session's clipboard as a clipboard manager sees it: through the
+# compositor's privileged socket, where data-control is offered. A sentinel
+# put there first tells "nothing was copied" apart from an empty clipboard.
+clipboard_socket="tilo-privileged-$shell_pid"
+clipboard_seed() {
+  WAYLAND_DISPLAY=$clipboard_socket wl-copy -- "$1" </dev/null >/dev/null 2>&1
+}
+clipboard_read() {
+  WAYLAND_DISPLAY=$clipboard_socket wl-paste "$@" --no-newline 2>/dev/null || true
+}
+clipboard_sentinel=tilo-clipboard-sentinel
 
-      # Each remaining transition is made through org.a11y.atspi.Action, then
-      # observed back through the live AT-SPI tree. It catches a provider that
-      # advertises controls but drops ActionRequest messages before the
-      # compositor's widget dispatcher.
-      click_named "Create identity"
-      wait_for_names \
-        "I understand that losing this device without a backup means losing this identity." \
-        "Create local identity"
-      click_named "I understand that losing this device without a backup means losing this identity."
-      wait_for_names "Create local identity"
-      click_named "Create local identity"
+# Walk the disposable Connect branch to its non-secret field and focus it.
+# Proves the complete external-reader contract before the irreversible
+# identity choice: focus and write the field solely over AT-SPI and observe
+# the value through that same bus.
+oobe_to_connect_field() {
+  wait_for_names "Use existing" "Create identity"
+  click_named "Use existing"
+  wait_for_names "Identity backup file" "Back"
+  focus_named "Identity backup file"
+  set_text_named "Identity backup file" "tilo-atspi-edit-probe"
+}
+
+# From Intro (or the Connect branch) to the backup step, where the identity
+# exists and the backup passphrase is a secret field. Each transition is made
+# through org.a11y.atspi.Action, then observed back through the live AT-SPI
+# tree. It catches a provider that advertises controls but drops
+# ActionRequest messages before the compositor's widget dispatcher.
+oobe_to_backup() {
+  if node_named "Back" >/dev/null && node_named "Identity backup file" >/dev/null; then
+    click_named "Back"
+  fi
+  wait_for_names "Use existing" "Create identity"
+  click_named "Create identity"
+  wait_for_names \
+    "I understand that losing this device without a backup means losing this identity." \
+    "Create local identity"
+  click_named "I understand that losing this device without a backup means losing this identity."
+  wait_for_names "Create local identity"
+  click_named "Create local identity"
+  wait_for_names \
+    "I understand that without an encrypted backup, losing this device means losing this identity." \
+    "Continue without backup"
+}
+
+case "$mode" in
+  oobe-copy-plain)
+    # The control for `oobe-copy-secret`: keys typed and copied in an
+    # ordinary chrome field do reach the clipboard this script reads.
+    oobe_to_connect_field
+    set_text_named "Identity backup file" ""
+    clipboard_seed "$clipboard_sentinel"
+    ;;
+  oobe-copy-secret)
+    wait_for_names "Identity backup file" "Back"
+    oobe_to_backup
+    focus_named "New backup passphrase"
+    clipboard_seed "$clipboard_sentinel"
+    ;;
+  clipboard-is)
+    for _ in $(seq 1 100); do
+      [[ $(clipboard_read) == "$2" ]] && break
+      sleep 0.05
+    done
+    copied=$(clipboard_read)
+    [[ $copied == "$2" ]] || {
+      echo "the clipboard holds '$copied', not the copied '$2'" >&2
+      exit 1
+    }
+    ;;
+  clipboard-keeps)
+    # Give a copy that should not have happened time to land first.
+    sleep 1
+    copied=$(clipboard_read)
+    primary=$(clipboard_read --primary)
+    [[ $copied != *"$3"* && $primary != *"$3"* ]] || {
+      echo "a password field's value reached the clipboard" >&2
+      exit 1
+    }
+    [[ $copied == "$2" ]] || {
+      echo "the clipboard changed while copying from a password field: '$copied'" >&2
+      exit 1
+    }
+    ;;
+  oobe|oobe-actions)
+    collect_settled_tree
+    if [[ $mode == oobe-actions ]] && ! node_named "Continue without backup" >/dev/null; then
+      oobe_to_connect_field
+      oobe_to_backup
+    elif [[ $mode == oobe ]]; then
+      wait_for_names "Use existing" "Create identity"
+    fi
+    if [[ $mode == oobe-actions ]]; then
       # No backup in a disposable release VM; say so explicitly, as a person
       # skipping it would.
       wait_for_names \

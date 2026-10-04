@@ -50,7 +50,7 @@ class PlanProducerTests(unittest.TestCase):
                 tools.mkdir()
                 (tools / 'ci').mkdir()
                 (tools / 'apps').mkdir()
-                for name in ('ci/python.py', 'ci/__init__.py', 'ci/resolve_builder.py',
+                for name in ('ci/python.py', 'ci/__init__.py', 'ci/resolve_builder.py', 'ci/images.toml',
                              'app_packaging_plan.py', 'app_packaging_qualification.py',
                              'app_packaging_contract.py'):
                     shutil.copyfile(Path(plan.__file__).parent / name, tools / name)

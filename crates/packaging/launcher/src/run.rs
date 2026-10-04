@@ -1474,6 +1474,29 @@ fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(
     Ok(())
 }
 
+/// The image-owned system authority grant ([`crate::system_authority`]):
+/// bind the control panel's host binaries, configuration and authority
+/// sockets. A no-op for every other package. The returned guard keeps the
+/// system-bus proxy alive and must outlive the child.
+fn splice_system_authority(
+    argv: &mut Vec<String>,
+    package_id: &str,
+) -> Result<
+    (
+        Option<crate::system_authority::SystemAuthorityPlan>,
+        Option<DBusProxyGuard>,
+    ),
+    RunError,
+> {
+    let Some((plan, guard)) = crate::system_authority::resolve(package_id, current_uid()) else {
+        return Ok((None, None));
+    };
+    let entry = pop_entry(argv)?;
+    crate::system_authority::push_binds(argv, &plan);
+    argv.push(entry);
+    Ok((Some(plan), guard))
+}
+
 /// Mount Files' live room-governance identity directory read-only. The
 /// projection is package-scoped and must remain visible across atomic host
 /// replacement, so the containing directory—not one inode—is bound.
@@ -1557,6 +1580,7 @@ struct ShimSpliceCtx<'a> {
     egress: &'a crate::netgate::EgressDecision,
     capabilities: &'a CapabilityPlan,
     dbus_plan: &'a Option<DBusBindPlan>,
+    system_authority: &'a Option<crate::system_authority::SystemAuthorityPlan>,
     wayland_bind: &'a Option<crate::sandbox::WaylandBind>,
     gpu: &'a Option<crate::gpu::GpuSelection>,
     keep_fds: &'a [RawFd],
@@ -1650,6 +1674,11 @@ fn splice_sandbox_shim(
     if let Some(plan) = ctx.dbus_plan {
         argv.push("--ro".to_string());
         argv.push(plan.sandbox_path.display().to_string());
+    }
+    // The control panel's host binaries, configuration and authority
+    // sockets, from the same plan its binds came from.
+    if let Some(plan) = ctx.system_authority {
+        crate::system_authority::push_landlock_rules(argv, plan);
     }
     // Wayland needs read+write in Landlock: connect(2) on a unix socket is
     // write-flavoured, so read-only surfaces as EACCES at `wl_display_connect`.
@@ -2236,6 +2265,8 @@ fn run_with_context(
     }
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
     splice_session_settings(&mut argv, &manifest.package_id)?;
+    let (system_authority, _system_bus_guard) =
+        splice_system_authority(&mut argv, &manifest.package_id)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
@@ -2251,6 +2282,7 @@ fn run_with_context(
             egress: &egress,
             capabilities: &capabilities,
             dbus_plan: &dbus_plan,
+            system_authority: &system_authority,
             wayland_bind: &wayland_bind,
             gpu: &gpu,
             keep_fds: &keep_fds,
@@ -2724,6 +2756,10 @@ pub fn run_with_captured_bounded(
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the captured launch mirrors `run_with_context`'s ordered pipeline step for step"
+)]
 fn run_with_capture_spawn<T>(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -2821,6 +2857,8 @@ fn run_with_capture_spawn<T>(
     let app_dir = resolve_app_dir(manifest, opts)?;
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
     splice_session_settings(&mut argv, &manifest.package_id)?;
+    let (system_authority, _system_bus_guard) =
+        splice_system_authority(&mut argv, &manifest.package_id)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
@@ -2835,6 +2873,7 @@ fn run_with_capture_spawn<T>(
             egress: &egress,
             capabilities: &capabilities,
             dbus_plan: &dbus_plan,
+            system_authority: &system_authority,
             wayland_bind: &wayland_bind,
             gpu: &gpu,
             keep_fds: &keep_fds,

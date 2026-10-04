@@ -36,6 +36,9 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The device test drives tilo-vm's own commands against this daemon.
+tilo-test-env = { path = "../test-env" }
+tilo-vm = { path = "../tilo-vm" }
 
 [[test]]
 name = "it"

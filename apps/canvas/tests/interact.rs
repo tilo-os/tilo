@@ -26,6 +26,9 @@ struct Desk {
 
 impl Desk {
     fn open() -> Self {
+        // A double click is two clicks within the session's interval; a
+        // busy test machine takes its time between them.
+        ui::gesture::set_multi_click_interval(std::time::Duration::from_secs(10));
         let mut app = TestApp::<App>::new().expect("the app opens");
         for action in canvas::sample::shapes() {
             app.invoke(Invoke::apply(&action).unwrap())

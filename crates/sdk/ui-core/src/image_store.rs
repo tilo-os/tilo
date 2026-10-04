@@ -540,25 +540,16 @@ fn decoded_slot(bytes: Option<&[u8]>, max_dimension: u32) -> Slot {
 }
 
 /// Decode encoded image bytes (JPEG/PNG/WebP) into 8-bit RGBA + dimensions.
-/// Oversized sources are downscaled to the store's bounded decode size.
+/// Oversized sources are downscaled after native decoding to the store's output
+/// dimension limit; resizing does not bound source decoder allocations.
 fn decode_rgba(bytes: &[u8], max_dimension: u32) -> Option<(Vec<u8>, u32, u32)> {
-    let max_dimension = max_dimension.clamp(1, IMAGE_MAX_DIMENSION);
-    let img = image::load_from_memory(bytes).ok()?;
-    let img = if img.width().max(img.height()) > max_dimension {
-        img.resize(
-            max_dimension,
-            max_dimension,
-            image::imageops::FilterType::Triangle,
-        )
-    } else {
-        img
-    };
-    let rgba = img.to_rgba8();
-    let (w, h) = rgba.dimensions();
-    if w == 0 || h == 0 {
-        return None;
+    let decoded = tilo_image_codec::DecodeImage {
+        encoded: bytes,
+        max_dimension,
     }
-    Some((rgba.into_raw(), w, h))
+    .decode_native()
+    .ok()?;
+    Some((decoded.rgba, decoded.width, decoded.height))
 }
 
 /// Paint `img` into `rect` with a `cover` fit (fill the rect, preserve aspect,

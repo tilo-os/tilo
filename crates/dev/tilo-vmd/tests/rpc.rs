@@ -26,11 +26,15 @@ struct Daemon {
 
 impl Daemon {
     fn spawn(root: &std::path::Path) -> Self {
+        Self::spawn_with(root, "record")
+    }
+
+    fn spawn_with(root: &std::path::Path, apply: &str) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_tilo-vmd"))
             .args([
                 "rpc",
                 "--apply",
-                "record",
+                apply,
                 "--manifest",
                 "/nonexistent",
                 "--base",
@@ -549,5 +553,187 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
             source: LayerSource::Upload(upload),
         }));
         assert!(error.hint.contains("headful or headless"), "{}", error.hint);
+    }
+}
+
+#[test]
+fn the_device_slot_is_the_machines_own_session() {
+    // Phase `a_machine_without_its_own_session_has_no_device_slot`.
+    {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::spawn(root.path());
+        let client = &mut daemon.client;
+        client.hello("test").unwrap();
+        let layer = import(client, "shell", &tarball("usr/bin/shell", b"v1"));
+        let error = rpc_error(client.call(Swap {
+            slot: "device".into(),
+            component: "shell".into(),
+            layer,
+            info: Some(ComponentInfo::new(Scope::Session, vec![])),
+        }));
+        assert_eq!(error.code, code::NOT_FOUND);
+        assert!(error.hint.contains("board"), "{}", error.hint);
+        assert_eq!(error.see.as_deref(), Some("tilo-vm guide devices"));
+    }
+    // Phase `swaps_restart_the_devices_session_and_roll_back`.
+    {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::spawn_with(root.path(), "record-device");
+        let client = &mut daemon.client;
+        client.hello("test").unwrap();
+        let unit = "tilo-board-headless-session@tester.service";
+        // Listed before anything was swapped into it: it is the machine's session.
+        let fresh = client.call(Status { slot: None }).unwrap();
+        assert_eq!(fresh.slots.len(), 1, "{:?}", fresh.slots);
+        assert_eq!(
+            (
+                fresh.slots[0].name.as_str(),
+                fresh.slots[0].kind,
+                fresh.slots[0].generation
+            ),
+            ("device", SlotKind::Device, 0)
+        );
+        let v1 = import(client, "shell", &tarball("usr/bin/shell", b"v1"));
+        let v2 = import(client, "shell", &tarball("usr/bin/shell", b"v2"));
+        let swap = |layer: &str| Swap {
+            slot: "device".into(),
+            component: "shell".into(),
+            layer: layer.into(),
+            info: Some(ComponentInfo::new(Scope::Session, vec![])),
+        };
+        let applied = client.call(swap(&v1)).unwrap();
+        assert_eq!(
+            (applied.generation, applied.policy, applied.changed),
+            (1, Policy::SessionRestart, true)
+        );
+        for unit in ["user@1000.service", unit, "tilo-board-drm-session.service"] {
+            assert!(
+                applied
+                    .actions
+                    .contains(&Action::WriteDropIn { unit: unit.into() }),
+                "{unit}: {:?}",
+                applied.actions
+            );
+        }
+        let restart = [
+            Action::StopUnit { unit: unit.into() },
+            Action::RestartUnit {
+                unit: "user@1000.service".into(),
+            },
+            Action::StartUnit { unit: unit.into() },
+        ];
+        assert!(
+            applied.actions.windows(3).any(|w| w == restart),
+            "{:?}",
+            applied.actions
+        );
+        assert!(
+            !applied
+                .actions
+                .iter()
+                .any(|a| matches!(a, Action::EnsureUser { .. })),
+            "the device's account is never a slot user: {:?}",
+            applied.actions
+        );
+        assert_eq!(client.call(swap(&v2)).unwrap().generation, 2);
+
+        let status = client
+            .call(Status {
+                slot: Some("device".into()),
+            })
+            .unwrap();
+        let device = &status.slots[0];
+        assert_eq!(device.kind, SlotKind::Device);
+        assert_eq!(device.user.as_deref(), Some("tester"));
+        assert_eq!(device.components["shell"], v2);
+        assert_eq!(device.generations, [0, 1, 2]);
+        assert!(status.issues.is_empty(), "{:?}", status.issues);
+        let listed = client.call(SlotList {}).unwrap();
+        assert_eq!(
+            listed.iter().filter(|s| s.name == "device").count(),
+            1,
+            "{listed:?}"
+        );
+
+        let back = client
+            .call(Rollback {
+                slot: "device".into(),
+                to: Some(0),
+            })
+            .unwrap();
+        assert_eq!((back.generation, back.policy), (0, Policy::SessionRestart));
+        assert!(
+            back.actions
+                .contains(&Action::StartUnit { unit: unit.into() })
+        );
+        let forward = client
+            .call(Rollback {
+                slot: "device".into(),
+                to: Some(2),
+            })
+            .unwrap();
+        assert_eq!(forward.generation, 2);
+
+        let shown = client
+            .call(SlotShow {
+                name: "device".into(),
+            })
+            .unwrap();
+        assert_eq!(shown.files.len(), 1, "{:?}", shown.files);
+        assert_eq!(shown.files[0].layer, v2);
+        let picture = client
+            .call(Shot {
+                slot: "device".into(),
+            })
+            .unwrap();
+        assert!(!picture.png.is_empty());
+    }
+    // Phase `the_device_slot_is_neither_created_removed_nor_moved`.
+    {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::spawn_with(root.path(), "record-device");
+        let client = &mut daemon.client;
+        client.hello("test").unwrap();
+        let errors = [
+            rpc_error(client.call(SlotCreate {
+                name: "device".into(),
+                kind: SlotKind::Headless,
+                owner: Owner::default(),
+                outputs: vec![],
+                identity: false,
+            })),
+            rpc_error(client.call(SlotRm {
+                name: "device".into(),
+            })),
+            rpc_error(client.call(SeatClaim {
+                slot: "device".into(),
+                owner: Owner::default(),
+                steal: false,
+            })),
+            rpc_error(client.call(SeatRelease {
+                slot: "device".into(),
+            })),
+        ];
+        for error in errors {
+            assert_eq!(error.code, code::INVALID, "{error:?}");
+            assert!(
+                error.hint.contains("rollback --slot device --to 0"),
+                "{}",
+                error.hint
+            );
+        }
+        // Other slots on the same machine are ordinary slots.
+        let created = client
+            .call(SlotCreate {
+                name: "agent-a".into(),
+                kind: SlotKind::Headless,
+                owner: Owner::default(),
+                outputs: vec![],
+                identity: false,
+            })
+            .unwrap();
+        assert!(created.actions.contains(&Action::StartUnit {
+            unit: "tilo-vm-session@agent-a.service".into()
+        }));
     }
 }

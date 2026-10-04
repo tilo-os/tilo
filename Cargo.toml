@@ -224,6 +224,7 @@ members = [
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
     "crates/platform/tilo-location",
+    "crates/platform/tilo-image-codec",
     "crates/platform/tilo-media",
     "crates/platform/tilo-net",
     "crates/platform/tilo-host-search",

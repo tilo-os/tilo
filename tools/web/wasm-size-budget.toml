@@ -7,14 +7,14 @@
 # lane prints the lower budget to commit.
 headroom = 0.01
 
-# All web-capable Tilo apps, as the app-sdk web lane builds them:
+# All web-capable Tilo apps, as the app-sdk web-size lane builds them:
 # `tilo-app build --target web --bundle desktop --release apps/calculator`.
 # (`build.sh --profile release` optimizes less and comes out about 2 MB
 # larger.)
 [bundles.desktop]
-bytes = 83427328
+bytes = 84738048
 
 [bundles.desktop.rebaseline]
-run = 61359
-measured = 82551833
-reason = "feature growth: snippets runs on the framework, with its body as a text child (#2417)"
+run = 63010
+measured = 83881907
+reason = "feature growth: the canvas's new-artwork, export and shortcut dialogs, file desk and artwork files (#2389)"

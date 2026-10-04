@@ -57,8 +57,6 @@ jobs:
       exists: ${{ steps.fp.outputs.exists }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Install registry tools
         run: |
           if ! command -v skopeo >/dev/null; then
@@ -129,8 +127,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Require a native build host
         run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
@@ -228,7 +224,7 @@ jobs:
           PY
 
       - name: Upload the native child descriptor
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: rpms-native-${{ matrix.arch }}
           path: native-child/
@@ -246,7 +242,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
           filter: blob:none
 
@@ -262,7 +257,7 @@ jobs:
 
       - name: Download native child descriptors
         if: env.skip != 'true'
-        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: native-children
 
@@ -411,8 +406,6 @@ jobs:
       rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Install verification tools
         run: |
           ./os/dev/install-cached-cosign.sh

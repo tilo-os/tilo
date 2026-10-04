@@ -3394,6 +3394,9 @@ pub struct DrmRuntime {
     last_display_transaction_check: std::time::Instant,
     last_icc_profile_refresh: std::time::Instant,
     icc_profiles: IccProfileWorker,
+    /// Second handle on the udev-seat libinput context registered in
+    /// `event_loop`, used only to see whether it still has work queued.
+    libinput: Libinput,
 }
 
 /// One live output: its public [`OutputId`], top-left position in the combined coordinate space (laid out side-by-side), and the [`DrmScanout`] driving its crtc.
@@ -3628,6 +3631,44 @@ fn bring_up_all_devices(
 /// [`DrmDispatchState::handle_session_event`],
 /// [`DrmDispatchState::handle_udev_event`], and
 /// [`DrmDispatchState::handle_libinput_event`] for what each one actually does.
+/// Upper bound on the extra libinput passes one [`DrmRuntime::dispatch_pending`]
+/// makes. One device plug raises about four uevents; a dock or a KVM switch a
+/// few dozen at most.
+const LIBINPUT_DRAIN_LIMIT: usize = 64;
+
+/// Run `dispatch` again while `fd` still polls readable, at most `limit` times,
+/// and return how many extra passes ran.
+///
+/// libinput's udev seat takes a single monitor message per `libinput_dispatch`,
+/// and the compositor wakes on this backend's loop fd as an edge. When several
+/// uevents land within one wake — every device plug and unplug raises a burst
+/// of them — one pass leaves the rest queued, the fd stays readable, and no
+/// further edge arrives. A keyboard or mouse plugged in after login then stayed
+/// unopened until unrelated input woke the loop once per stuck message, and the
+/// backlog carried over to the next plug.
+fn redispatch_while_readable(
+    fd: std::os::fd::BorrowedFd<'_>,
+    limit: usize,
+    mut dispatch: impl FnMut(),
+) -> usize {
+    (0..limit)
+        .take_while(|_| fd_readable(fd))
+        .map(|_| dispatch())
+        .count()
+}
+
+fn fd_readable(fd: std::os::fd::BorrowedFd<'_>) -> bool {
+    let mut descriptor = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one valid pollfd for a descriptor the caller keeps borrowed, and
+    // a zero timeout never blocks the compositor thread.
+    let ready = unsafe { libc::poll(&raw mut descriptor, 1, 0) };
+    ready > 0 && descriptor.revents & libc::POLLIN != 0
+}
+
 fn register_event_sources(
     handle: &LoopHandle<'static, DrmDispatchState>,
     session_notifier: LibSeatSessionNotifier,
@@ -3770,6 +3811,7 @@ impl DrmRuntime {
         libinput_ctx
             .udev_assign_seat(&seat_name)
             .map_err(|e| DrmBackendError::Libinput(format!("{e:?}")))?;
+        let libinput = libinput_ctx.clone();
         let libinput_backend = LibinputInputBackend::new(libinput_ctx);
 
         // The session notifier, udev backend, and libinput backend each register as event sources; page-flip/DRM-device sources attach once individual `cardN` devices open.
@@ -3847,6 +3889,7 @@ impl DrmRuntime {
             last_display_transaction_check: std::time::Instant::now(),
             last_icc_profile_refresh: std::time::Instant::now(),
             icc_profiles,
+            libinput,
         })
     }
 
@@ -4199,6 +4242,17 @@ impl DrmRuntime {
     pub fn dispatch_pending(&mut self) {
         use std::time::Duration;
         let _ = self.event_loop.dispatch(Duration::ZERO, &mut self.dispatch);
+        let event_loop = &mut self.event_loop;
+        let dispatch = &mut self.dispatch;
+        let extra = redispatch_while_readable(self.libinput.as_fd(), LIBINPUT_DRAIN_LIMIT, || {
+            let _ = event_loop.dispatch(Duration::ZERO, &mut *dispatch);
+        });
+        if extra == LIBINPUT_DRAIN_LIMIT {
+            tracing::warn!(
+                passes = extra,
+                "DRM input: libinput still has work queued after the drain limit"
+            );
+        }
         if self.dispatch.finish_retired_cards() {
             // A Udev Added that raced removal was deliberately held until
             // libseat closed the old fd.  It is a new physical card from the
@@ -5133,6 +5187,156 @@ where
         }
     }
     Ok(connectors)
+}
+
+#[cfg(test)]
+mod libinput_drain_tests {
+    use std::cell::Cell;
+    use std::os::fd::AsFd;
+    use std::os::unix::net::UnixDatagram;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use smithay::reexports::calloop::generic::Generic;
+    use smithay::reexports::calloop::{EventLoop, Interest, Mode, PostAction};
+
+    use super::{fd_readable, redispatch_while_readable};
+
+    /// The DRM runtime's shape in miniature: an inner loop whose source, like
+    /// libinput's udev seat, takes one queued message per dispatch, watched by
+    /// an outer loop that registers the inner loop's fd as an edge.
+    struct Nested {
+        outer: EventLoop<'static, ()>,
+        inner: EventLoop<'static, ()>,
+        sender: UnixDatagram,
+        source: UnixDatagram,
+        received: Rc<Cell<usize>>,
+        woken: Rc<Cell<usize>>,
+    }
+
+    fn nested() -> Nested {
+        let (sender, source) = UnixDatagram::pair().expect("socket pair");
+        source.set_nonblocking(true).expect("nonblocking");
+        let reader = source.try_clone().expect("clone socket");
+        let received = Rc::new(Cell::new(0_usize));
+        let inner: EventLoop<'static, ()> = EventLoop::try_new().expect("inner loop");
+        let count = received.clone();
+        inner
+            .handle()
+            .insert_source(
+                Generic::new(reader, Interest::READ, Mode::Level),
+                move |_, socket, ()| {
+                    let mut buf = [0u8; 16];
+                    if socket.recv(&mut buf).is_ok() {
+                        count.set(count.get().saturating_add(1));
+                    }
+                    Ok(PostAction::Continue)
+                },
+            )
+            .expect("inner source");
+        let outer: EventLoop<'static, ()> = EventLoop::try_new().expect("outer loop");
+        let wake = inner.as_fd().try_clone_to_owned().expect("dup inner fd");
+        let woken = Rc::new(Cell::new(0_usize));
+        let wakes = woken.clone();
+        outer
+            .handle()
+            .insert_source(
+                Generic::new(wake, Interest::READ, Mode::Edge),
+                move |_, _, ()| {
+                    wakes.set(wakes.get().saturating_add(1));
+                    Ok(PostAction::Continue)
+                },
+            )
+            .expect("outer source");
+        Nested {
+            outer,
+            inner,
+            sender,
+            source,
+            received,
+            woken,
+        }
+    }
+
+    impl Nested {
+        fn plug_burst(&self, messages: usize) {
+            for _ in 0..messages {
+                self.sender.send(b"add").expect("send uevent");
+            }
+        }
+
+        /// One compositor iteration: wait for the edge, then dispatch the
+        /// inner loop the way `DrmRuntime::dispatch_pending` does.
+        fn wake_and_dispatch(&mut self, drain: bool) -> bool {
+            let before = self.woken.get();
+            self.outer
+                .dispatch(Duration::ZERO, &mut ())
+                .expect("outer dispatch");
+            if self.woken.get() == before {
+                return false;
+            }
+            self.inner
+                .dispatch(Duration::ZERO, &mut ())
+                .expect("inner dispatch");
+            if drain {
+                let inner = &mut self.inner;
+                redispatch_while_readable(self.source.as_fd(), 64, || {
+                    inner
+                        .dispatch(Duration::ZERO, &mut ())
+                        .expect("inner dispatch");
+                });
+            }
+            true
+        }
+    }
+
+    #[test]
+    fn one_pass_per_edge_strands_the_rest_of_a_plug_burst() {
+        let mut nested = nested();
+        nested.plug_burst(4);
+        assert!(nested.wake_and_dispatch(false));
+        assert_eq!(nested.received.get(), 1);
+        assert!(
+            !nested.wake_and_dispatch(false),
+            "the outer edge must not fire again for messages already queued"
+        );
+        assert_eq!(nested.received.get(), 1);
+        assert!(fd_readable(nested.source.as_fd()));
+    }
+
+    #[test]
+    fn draining_after_the_edge_delivers_every_message_in_the_burst() {
+        let mut nested = nested();
+        nested.plug_burst(4);
+        assert!(nested.wake_and_dispatch(true));
+        assert_eq!(nested.received.get(), 4);
+        assert!(!fd_readable(nested.source.as_fd()));
+        nested.plug_burst(4);
+        assert!(
+            nested.wake_and_dispatch(true),
+            "the next plug wakes the loop again"
+        );
+        assert_eq!(nested.received.get(), 8);
+    }
+
+    #[test]
+    fn a_source_that_never_drains_is_bounded() {
+        let (sender, source) = UnixDatagram::pair().expect("socket pair");
+        sender.send(b"stuck").expect("send");
+        let mut passes = 0_usize;
+        let extra = redispatch_while_readable(source.as_fd(), 5, || {
+            passes = passes.saturating_add(1);
+        });
+        assert_eq!(extra, 5);
+        assert_eq!(passes, 5);
+    }
+
+    #[test]
+    fn an_idle_source_costs_no_extra_pass() {
+        let (_sender, source) = UnixDatagram::pair().expect("socket pair");
+        let extra = redispatch_while_readable(source.as_fd(), 5, || panic!("nothing queued"));
+        assert_eq!(extra, 0);
+    }
 }
 
 #[cfg(test)]

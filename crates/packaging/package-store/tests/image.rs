@@ -581,11 +581,13 @@ fn an_image_one_device_shelved_is_fetched_by_another_instead_of_rebuilt() {
     assert_eq!(shelved, shelf.path(&tool.meta.id));
     shelf.put(&laptop_store, tool.meta.id).unwrap();
 
-    // The relay reads the same shelf: no registry, no build.
+    // The relay reads the same shelf; its registry, asked only after the
+    // shelf, is offline and does not matter.
     let relay_root = scratch();
     let relay = Store::new(PackageStore::at(relay_root.path()))
         .with_trust(ImageTrust::new().with_fleet(ada.fleet))
-        .with_shelf(shelf.clone());
+        .with_shelf(shelf.clone())
+        .with_fetcher(Offline);
     let tree = materialized_tree(&relay, &tool.meta.id).unwrap();
     assert_eq!(
         std::fs::read(tree.join("usr/bin/pandoc")).unwrap(),
@@ -609,8 +611,32 @@ fn an_image_one_device_shelved_is_fetched_by_another_instead_of_rebuilt() {
         matches!(refused, MaterializeError::Fetch { .. }),
         "{refused}"
     );
+    // Missing everywhere: an unreachable source says so, rather than
+    // passing for "nobody has it".
+    let nowhere = PackageId::from_bytes([9; 32]);
+    let refused = materialized_tree(&relay, &nowhere).unwrap_err();
+    assert!(
+        matches!(&refused, MaterializeError::Fetch { detail, .. } if detail.starts_with("registry")),
+        "{refused}"
+    );
+    let shelf_only = Store::new(PackageStore::at(relay_root.path())).with_shelf(shelf);
     assert!(matches!(
-        materialized_tree(&relay, &PackageId::from_bytes([9; 32])),
+        materialized_tree(&shelf_only, &nowhere),
         Err(MaterializeError::NotFound(_))
     ));
+}
+
+/// A registry that cannot be reached.
+struct Offline;
+
+impl BlobFetcher for Offline {
+    fn fetch(&self, _hashes: &[BlobHash], _sink: &mut dyn BlobSink) -> std::io::Result<()> {
+        Err(std::io::Error::other("offline"))
+    }
+}
+
+impl PackageFetcher for Offline {
+    fn fetch_package(&self, _id: &PackageId) -> std::io::Result<Option<Vec<u8>>> {
+        Err(std::io::Error::other("offline"))
+    }
 }

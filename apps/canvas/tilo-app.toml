@@ -13,7 +13,9 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 # Pictures an agent looks at or exports are kept in the app's content store;
 # an SVG or picture may be named by a path the sandbox lets it read, or
-# chosen in the file chooser.
+# chosen in the file chooser. Artworks are opened and saved, and pictures
+# exported, where the person chooses in Files; the artworks worked on
+# lately are remembered in the app's own state.
 # Marks are copied and pasted through the clipboard.
 [capabilities]
 optional = ["clipboard", "app-files", "files.open", "files.paths", "files.save"]
@@ -41,6 +43,7 @@ bin = "bin/canvas"
 type = "gui"
 splash-budget = 250
 
+# Files opens a saved artwork in Canvas.
 [providers]
-mime = []
-ext = []
+mime = ["application/vnd.tilo.artwork+json"]
+ext = ["artwork"]
