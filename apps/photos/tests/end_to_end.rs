@@ -85,6 +85,32 @@ impl Harness {
         Framed::harness(framed).scene().clone()
     }
 
+    /// The edits of the photograph the window shows.
+    fn edits(&mut self) -> Edits {
+        let id = self
+            .app()
+            .open_photo_id()
+            .expect("a photograph is open")
+            .to_owned();
+        PhotosDoc::photo(&self.state().doc, &id)
+            .expect("the shown photograph is in the library")
+            .edits
+    }
+
+    /// Give the photograph the window shows `edits`, as its edit action does.
+    fn set_edits(&mut self, edits: Edits) {
+        let id = self
+            .app()
+            .open_photo_id()
+            .expect("a photograph is open")
+            .to_owned();
+        tilo_actions::Action::apply(
+            &photos::actions::PhotosAction::set(&id, &edits),
+            &mut self.state().doc,
+        )
+        .expect("the edit applies");
+    }
+
     fn window_rect(&self) -> Rect {
         Rect::new(0.0, 0.0, f64::from(self.size.0), f64::from(self.size.1))
     }
@@ -363,7 +389,8 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         hz.frame();
 
         assert!(!hz.app().has_image());
-        assert!(PhotosDoc::image(&hz.state().doc).is_none());
+        assert!(hz.app().open_photo_id().is_none());
+        assert!(PhotosDoc::library(&hz.state().doc).photos.is_empty());
     }
 }
 
@@ -393,8 +420,8 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         let before = hz.app().edited_pixels().expect("rendered").clone();
         assert_eq!((before.w, before.h), (300, 200));
 
-        let turned = PhotosDoc::edits(&hz.state().doc).rotated_right();
-        PhotosDoc::set_edits(&mut hz.state().doc, &turned);
+        let turned = hz.edits().rotated_right();
+        hz.set_edits(turned);
         hz.frame();
 
         let after = hz.app().edited_pixels().expect("re-rendered").clone();
@@ -462,7 +489,7 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
             w: 0.5,
             h: 0.5,
         });
-        PhotosDoc::set_edits(&mut hz.state().doc, &e);
+        hz.set_edits(e);
         hz.frame();
 
         let after = hz.app().edited_pixels().expect("re-rendered").clone();
@@ -499,11 +526,11 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
             w: 0.5,
             h: 0.5,
         });
-        PhotosDoc::set_edits(&mut hz.state().doc, &e);
+        hz.set_edits(e);
         hz.frame();
         assert_ne!(hz.app().edited_pixels().unwrap().bytes, original.bytes);
 
-        PhotosDoc::set_edits(&mut hz.state().doc, &Edits::default());
+        hz.set_edits(Edits::default());
         hz.frame();
         assert_eq!(
             hz.app().edited_pixels().unwrap().bytes,
@@ -534,8 +561,8 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
             "a 2x zoom should frame about half the width, got {view:?}"
         );
 
-        let e = PhotosDoc::edits(&hz.state().doc).cropped_from_view(view);
-        PhotosDoc::set_edits(&mut hz.state().doc, &e);
+        let e = hz.edits().cropped_from_view(view);
+        hz.set_edits(e);
         hz.frame();
 
         let after = hz.app().edited_pixels().expect("re-rendered");
@@ -617,7 +644,7 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
             w: 0.5,
             h: 0.5,
         });
-        PhotosDoc::set_edits(&mut hz.state().doc, &e);
+        hz.set_edits(e);
         hz.frame();
 
         let shown = hz.app().edited_pixels().expect("rendered").clone();
@@ -656,8 +683,8 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
         app.open_path(&mut state.doc, &path);
         hz.frame();
 
-        let turned = PhotosDoc::edits(&hz.state().doc).rotated_left();
-        PhotosDoc::set_edits(&mut hz.state().doc, &turned);
+        let turned = hz.edits().rotated_left();
+        hz.set_edits(turned);
         hz.frame();
         let shown = hz.app().edited_pixels().expect("rendered").clone();
 
@@ -714,10 +741,20 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
             "enumeration mutated the document"
         );
 
-        assert_eq!(resources.len(), 2, "active photograph plus durable library");
-        assert_eq!(resources[0].label, "harbour.png");
+        assert_eq!(resources.len(), 1, "one durable library");
+        let shown = hz
+            .app()
+            .open_photo_id()
+            .expect("the photograph is open")
+            .to_owned();
+        let photo = resources[0]
+            .children
+            .iter()
+            .find(|child| child.id.0 == shown)
+            .expect("the open photograph is published in the library");
+        assert_eq!(photo.label, "harbour.png");
         // The size is legible from titles alone — no display needed.
-        assert_eq!(resources[0].children[0].label, "400 x 200 pixels");
+        assert_eq!(photo.children[0].label, "400 x 200 pixels");
 
         // Every row is addressable by a composite key with no coordinate in it.
         for row in &flat {
@@ -732,7 +769,7 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         // Invoke rotate-right by id, and the pixels must follow.
         let mut registry = ActionRegistry::new();
         register(&mut registry);
-        let spec = resources[0]
+        let spec = photo
             .actions
             .iter()
             .find(|a| a.id == "rotate-right")
@@ -778,14 +815,23 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         // Address the photograph by the id derived from its content — no
         // enumeration, no coordinate, nothing that needs a screen.
         let resources = PhotosResources.publish_resources(&hz.state().doc);
-        let open = photos::doc::PhotosDoc::image(&hz.state().doc).expect("the harness opened one");
+        let id = hz
+            .app()
+            .open_photo_id()
+            .expect("the harness opened one")
+            .to_owned();
         assert_eq!(
-            resources[0].id.0,
-            photos::actions::resource_id(&open),
+            photos::actions::content_of(&id),
+            Some(tilo_content::hash_bytes(&std::fs::read(&path).unwrap()).as_str()),
             "the published id is not the one derived from the photograph"
         );
+        let photo = resources[0]
+            .children
+            .iter()
+            .find(|child| child.id.0 == id)
+            .expect("the photograph is published by its id");
 
-        let ActionInput::Prompted { build, .. } = &resources[0]
+        let ActionInput::Prompted { build, .. } = &photo
             .actions
             .iter()
             .find(|a| a.id == "crop")

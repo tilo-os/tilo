@@ -282,6 +282,10 @@ pub struct LibraryPhoto {
     /// accepted through a canonical action.
     #[serde(default)]
     pub analysis: Option<ImageAnalysis>,
+    /// The crop and turn this photograph is shown with. Its own: editing one
+    /// photograph never touches another's.
+    #[serde(default)]
+    pub edits: Edits,
 }
 
 impl LibraryPhoto {
@@ -301,6 +305,7 @@ impl LibraryPhoto {
             captured_at: None,
             location: None,
             analysis: None,
+            edits: Edits::default(),
         }
     }
 
@@ -526,7 +531,7 @@ impl Rect01 {
     }
 }
 
-/// What the user has done to the open photograph. Ordered `crop` then
+/// What the user has done to a photograph. Ordered `crop` then
 /// `rotate`; see [`crate::pixels`] for why that order is fixed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Edits {

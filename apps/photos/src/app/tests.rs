@@ -116,10 +116,9 @@ fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let waiting =
             OpenImage::from_path("/not-present/yet.png", 1200, 800).with_content("0".repeat(64));
-        PhotosDoc::set_image(&mut doc, Some(&waiting));
+        app.show_photo(&PhotosDoc::put_image(&mut doc, &waiting));
         app.sync(&mut doc, &ROOT);
         assert_eq!(app.canvas_state, CanvasState::Loading);
         assert!(!app.has_image());
@@ -135,7 +134,7 @@ fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
         let path = dir.path().join("bad.png");
         std::fs::write(&path, b"not image data").unwrap();
         let bad = OpenImage::from_path(&path.to_string_lossy(), 1200, 800);
-        PhotosDoc::set_image(&mut doc, Some(&bad));
+        app.show_photo(&PhotosDoc::put_image(&mut doc, &bad));
         app.sync(&mut doc, &ROOT);
         assert_eq!(app.canvas_state, CanvasState::Error);
         assert_eq!(app.empty_state_text().0, tr("photos-error-title"));
@@ -198,7 +197,6 @@ fn people_review_commits_only_explicit_canonical_actions() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(
             OpenImage::from_path("/photos/person.png", 20, 10)
                 .with_content(tilo_content::hash_bytes(b"people-review")),
@@ -234,7 +232,6 @@ fn people_review_commits_only_explicit_canonical_actions() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let first = LibraryPhoto::from_image(
             OpenImage::from_path("/photos/first.png", 20, 10)
                 .with_content(tilo_content::hash_bytes(b"first-person")),
@@ -287,7 +284,6 @@ fn people_review_commits_only_explicit_canonical_actions() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         assert!(
             app.people_controller_mut().add_cluster(
                 "dismiss-me",
@@ -382,7 +378,6 @@ fn library_masthead_rows_never_overlap_at_200_percent() {
 
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/header.png", 40, 20));
         let photo_id = photo.id.clone();
         PhotosDoc::set_library(
@@ -496,7 +491,6 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
     eprintln!("phase canonical_timeline_day_operation_jumps_to_its_shared_capture_boundary");
     {
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let mut newer = LibraryPhoto::from_image(OpenImage::from_path("newer.png", 20, 10));
         newer.captured_at = Some("2026-09-07 08:14".into());
         let mut older = LibraryPhoto::from_image(OpenImage::from_path("older.png", 20, 10));
@@ -563,7 +557,6 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
         let (sender, receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
         app.analysis_rx = receiver;
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
 
         let cancelled = tilo_actions::InvocationId::new();
         app.cancelled_analysis.insert(cancelled);
@@ -614,7 +607,6 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
         let (sender, receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
         app.analysis_rx = receiver;
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let content = "a".repeat(64);
         let photo = LibraryPhoto::from_image(
             OpenImage::from_path("drain-components.png", 20, 10).with_content(content.clone()),
@@ -692,7 +684,6 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let content = "a".repeat(64);
         let image = OpenImage::from_path("/photos/one.png", 20, 10).with_content(&content);
         let photo = LibraryPhoto::from_image(image);
@@ -882,7 +873,6 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..5 {
             let mut photo = LibraryPhoto::from_image(OpenImage::from_path(
@@ -964,7 +954,6 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
         let mut library = crate::model::PhotoLibrary::default();
         library.photos.push(photo.clone());
@@ -1033,7 +1022,6 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let mut favorite =
             LibraryPhoto::from_image(OpenImage::from_path("/photos/favorite.png", 20, 10));
         favorite.favorite = true;
@@ -1094,7 +1082,6 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let mut in_folder =
             LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
         in_folder.folder = Some("Travel".into());
@@ -1138,7 +1125,6 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..29 {
             let mut photo = LibraryPhoto::from_image(OpenImage::from_path(
@@ -1198,7 +1184,6 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let first = LibraryPhoto::from_image(OpenImage::from_path("/photos/first.png", 20, 10));
         let second = LibraryPhoto::from_image(OpenImage::from_path("/photos/second.png", 20, 10));
         PhotosDoc::set_library(
@@ -1338,7 +1323,6 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
         let albums: Vec<_> = (1..=SELECTION_ALBUMS_PER_PAGE + 1)
             .map(|number| Album {
@@ -1403,7 +1387,6 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..49 {
             library
@@ -1501,7 +1484,6 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(OpenImage::from_path("/pictures/cover.png", 800, 600));
         let photo_id = photo.id.clone();
         let album_id = "photos.album:weekend".to_owned();
@@ -1547,7 +1529,6 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let payload = tilo_actions::EncodedAction::encode_operation(
             PHOTOS_OPERATION_TYPE,
             &PhotosOperation::ShareReference {
@@ -1612,7 +1593,6 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/remove.png", 20, 10));
         let id = photo.id.clone();
         PhotosDoc::set_library(
@@ -1641,7 +1621,6 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         app.sync(&mut doc, &ROOT);
 
         let empty = app.accessibility_tree();
@@ -1679,7 +1658,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         );
 
         let image = OpenImage::from_path("/tmp/accessible.png", 100, 50);
-        PhotosDoc::set_image(&mut doc, Some(&image));
+        app.show_photo(&PhotosDoc::put_image(&mut doc, &image));
         app.original = Some(("/tmp/accessible.png".into(), shots_pattern(100, 50)));
         app.original_identity = Some(decode_key(&image));
         app.refresh(&doc);
@@ -1691,7 +1670,10 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
             &mut doc,
             &ROOT,
         ));
-        assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 1);
+        assert_eq!(
+            PhotosDoc::photo_edits(&doc, app.open_photo_id().unwrap()).rotate_quarters,
+            1
+        );
         assert!(
             ui::undo::take_committed_action(&mut app).is_some(),
             "the semantic route must create the normal undo boundary"
@@ -1715,9 +1697,8 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let image = OpenImage::from_path("/tmp/compact.png", 100, 50);
-        PhotosDoc::set_image(&mut doc, Some(&image));
+        app.show_photo(&PhotosDoc::put_image(&mut doc, &image));
         app.original = Some(("/tmp/compact.png".into(), shots_pattern(100, 50)));
         app.original_identity = Some(decode_key(&image));
         app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
@@ -1877,9 +1858,8 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let image = OpenImage::from_path("/tmp/harbour.png", 1_200, 800);
-        PhotosDoc::set_image(&mut doc, Some(&image));
+        app.show_photo(&PhotosDoc::put_image(&mut doc, &image));
         let mut library = PhotosDoc::library(&doc);
         let photo = library
             .photos
@@ -1935,9 +1915,8 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let image = OpenImage::from_path("/pictures/München-夏.png", 800, 400);
-        PhotosDoc::set_image(&mut doc, Some(&image));
+        app.show_photo(&PhotosDoc::put_image(&mut doc, &image));
         app.sync(&mut doc, &ROOT);
         let before = app.search_provider.stats();
         app.sync(&mut doc, &ROOT);
@@ -1963,7 +1942,6 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
     eprintln!("phase in_app_full_text_search_advances_in_bounded_index_pages");
     {
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photos = (0..400)
             .map(|index| {
                 let path = format!("needle-photo-{index:03}.png");
@@ -1999,7 +1977,6 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let first = LibraryPhoto::from_image(OpenImage::from_path("/photos/first.png", 20, 10));
         let first_id = first.id.clone();
         PhotosDoc::set_library(
@@ -2042,7 +2019,6 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..500 {
             library
@@ -2243,7 +2219,6 @@ fn controls_contain_their_text_share_insets_and_keep_44px_targets() {
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
         let mut library = crate::model::PhotoLibrary::default();
         library.photos.push(photo.clone());
@@ -2606,10 +2581,8 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
             rotate_quarters: 1,
         };
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        PhotosDoc::set_image(&mut doc, Some(&open));
-        PhotosDoc::set_edits(&mut doc, &edits);
-        let resource_id = crate::actions::resource_id(&open);
+        let resource_id = PhotosDoc::put_image(&mut doc, &open);
+        PhotosDoc::set_photo_edits(&mut doc, &resource_id, edits);
 
         let resources = PhotosResources.publish_resources(&doc);
         let exported = tilo_actions::flatten(&resources)
@@ -2675,12 +2648,12 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         // The rendering is an output: the photograph is still its original plus
         // the edits recorded against it.
         assert_eq!(
-            PhotosDoc::image(&doc).and_then(|image| image.content),
+            PhotosDoc::photo(&doc, &resource_id).and_then(|photo| photo.image.content),
             Some(source_hash)
         );
-        assert_eq!(PhotosDoc::edits(&doc), edits);
+        assert_eq!(PhotosDoc::photo_edits(&doc, &resource_id), edits);
 
-        PhotosDoc::set_edits(&mut doc, &crate::model::Edits::default());
+        PhotosDoc::set_photo_edits(&mut doc, &resource_id, crate::model::Edits::default());
         assert!(
             Widget::start_operation(
                 &mut app,
@@ -2703,9 +2676,8 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         let missing = "f".repeat(64);
         let open = OpenImage::from_path("missing.png", 3, 2).with_content(missing.clone());
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        PhotosDoc::set_image(&mut doc, Some(&open));
-        let edits = PhotosDoc::edits(&doc);
+        let photo_id = PhotosDoc::put_image(&mut doc, &open);
+        let edits = PhotosDoc::photo_edits(&doc, &photo_id);
         let encoded = |resource_id: String| {
             tilo_actions::EncodedAction::encode_operation(
                 PHOTOS_OPERATION_TYPE,
@@ -2719,8 +2691,8 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         };
         let mut app = PhotosApp::new();
         for payload in [
-            encoded(crate::actions::resource_id(&open)),
-            encoded("photos.image:wrong-target".into()),
+            encoded(photo_id),
+            encoded("photos.photo:wrong-target".into()),
         ] {
             assert!(
                 Widget::start_operation(
