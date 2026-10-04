@@ -418,3 +418,6 @@ history-day-earlier = Früher
 widget-block-duplicate = Block mit Unterelementen duplizieren
 
 widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren
+
+widget-block-move-selection-up = Ausgewählte Blöcke nach oben verschieben
+widget-block-move-selection-down = Ausgewählte Blöcke nach unten verschieben
