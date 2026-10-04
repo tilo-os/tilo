@@ -377,12 +377,13 @@ impl Checkbox {
 
 /// The edge of an unchecked box: derived from its face and resolved until
 /// it reaches the non-text contrast floor (3:1) against the ground the box
-/// stands on.
+/// stands on. The derived edge is a translucent hairline, so it is measured
+/// as painted — over the face it is stroked on — never as its opaque base.
 fn unchecked_edge(theme: &Theme, face: vello::peniko::Color) -> vello::peniko::Color {
     let colors = &theme.tokens.colors;
     colors.ink_on_any(
         &[colors.surfaces.content],
-        crate::surface::edge_on(face),
+        crate::tokens::colors::composite(crate::surface::edge_on(face), face),
         crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
     )
 }
@@ -771,6 +772,28 @@ mod tests {
             assert_eq!(square.width(), square.height(), "{rect:?}");
             assert_eq!(square.center(), rect.center());
             assert!(rect.contains(square.origin()));
+        }
+    }
+
+    /// The unchecked edge, as painted, holds 3:1 against every region's
+    /// ground in every preset: it is the only thing that shows the box.
+    #[test]
+    fn an_unchecked_edge_reads_on_every_ground() {
+        use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, composite};
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let s = &theme.tokens.colors.surfaces;
+            for ground in [s.content, s.sidebar, s.inspector, s.raised, s.overlay] {
+                let mut region = theme.clone();
+                region.tokens.colors.surfaces.content = ground;
+                let face = region.tokens.colors.surfaces.raised;
+                let edge = composite(unchecked_edge(&region, face), face);
+                let ratio = crate::a11y::contrast_ratio(edge, ground);
+                assert!(
+                    ratio >= NON_TEXT_MIN_CONTRAST - 0.01,
+                    "{}: the unchecked edge reaches only {ratio:.2}:1 on {ground:?}",
+                    theme.name
+                );
+            }
         }
     }
 
