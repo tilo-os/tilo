@@ -1,8 +1,9 @@
-//! List-mode content: a clean, modern file list built on [`FileView`].
+//! List-mode content: the file list, a framework `DataTable` hosted by
+//! [`FileView`].
 //!
-//! No zebra striping — transparent rows, a subtle hover veneer, and a solid
-//! accent highlight for the selection. Columns are Name (flex) / Size /
-//! Modified with an inline type glyph; the header is click-to-sort.
+//! The table paints the header, the rows, the selection lift and the sort
+//! indicator. Columns are Name (flex) / Size / Modified with the file's icon
+//! or preview in the Name column; the header is click-to-sort.
 
 use crate::model::{SortBy, SortOrder, ViewMode};
 use crate::views::file_view::FileView;

@@ -57,9 +57,9 @@ const MIN_DELTA_L: f64 = 4.0;
 /// The floor for an *armed* row (the one Enter / a click activates). The
 /// 10 % veneer that used to paint the context menu's armed row measured
 /// ΔL* 11.6 on dark — the value the user reported as "no highlighting" — so a
-/// floor that the old paint would pass guards nothing. The armed row is an
-/// inverted control, which clears it by far on every material.
-const MIN_ARMED_DELTA_L: f64 = 20.0;
+/// floor that the old paint would pass guards nothing. The armed row is the
+/// panel's overlay lift, which clears this on every material.
+const MIN_ARMED_DELTA_L: f64 = 15.0;
 
 fn color_of(px: (u8, u8, u8, u8)) -> Color {
     Color::from_rgba8(px.0, px.1, px.2, px.3)
@@ -193,8 +193,9 @@ fn assert_highlight_visible(
 }
 
 /// The assertion for an *armed* row: the sampled fill must be exactly the
-/// theme's inverted fill (so a regression back to any veneer fails on the
-/// colour, not on a threshold), the step to the neighbour must clear
+/// panel's overlay lift (`floating_surface::armed_row`), a lift and not an
+/// inverted slab, so a regression to any other paint fails on the colour,
+/// not on a threshold; the step to the neighbour must clear
 /// [`MIN_ARMED_DELTA_L`], and the ink the row draws its label with must meet
 /// the text-contrast floor against the fill actually painted.
 fn assert_armed_row(
@@ -215,11 +216,12 @@ fn assert_armed_row(
         lo.3, 0xff,
         "{surface}/{theme_name}: plain row sample is not opaque"
     );
-    let inverted = theme.tokens.colors.intent.inverted.to_rgba8();
-    assert_eq!(
-        (hi.0, hi.1, hi.2),
-        (inverted.r, inverted.g, inverted.b),
-        "{surface}/{theme_name}: armed row is painted {hi:?}, not the inverted fill"
+    let (fill, ink) = tilo_ui::widget::floating_surface::armed_row(theme);
+    let lift = fill.to_rgba8();
+    let close = |a: u8, b: u8| a.abs_diff(b) <= 1;
+    assert!(
+        close(hi.0, lift.r) && close(hi.1, lift.g) && close(hi.2, lift.b),
+        "{surface}/{theme_name}: armed row is painted {hi:?}, not the overlay lift {lift:?}"
     );
     let delta = (lightness(hi) - lightness(lo)).abs();
     eprintln!("{surface}/{theme_name}: armed {hi:?} vs plain {lo:?} → ΔL*={delta:.2}");
@@ -228,7 +230,6 @@ fn assert_armed_row(
         "{surface}/{theme_name}: armed row {hi:?} vs plain row {lo:?} differ by only \
          ΔL*={delta:.2} (< {MIN_ARMED_DELTA_L})"
     );
-    let ink = theme.tokens.colors.intent.on_inverted;
     let ratio = tilo_ui::a11y::contrast_ratio(ink, color_of(hi));
     assert!(
         ratio >= tilo_ui::tokens::colors::ON_FILL_MIN_CONTRAST,
@@ -267,7 +268,7 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
 
             let presence = PresenceCtx::default();
             let rendered = render(&theme, |scene, tr| {
-                menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
+                menu.draw_overlay(scene, Affine::IDENTITY, tr, &theme, &presence);
             });
             rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
             assert_armed_row(
@@ -302,7 +303,7 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
             let row2 = menu.item_rect(2).unwrap();
 
             let rendered = render(&theme, |scene, tr| {
-                menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
+                menu.draw_overlay(scene, Affine::IDENTITY, tr, &theme, &presence);
             });
             rendered.dump(&format!("menu_highlight_context_menu_keyboard_{name}"));
             assert_armed_row(
@@ -338,7 +339,7 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
 
             let presence = PresenceCtx::default();
             let rendered = render(&theme, |scene, tr| {
-                menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
+                menu.draw_overlay(scene, Affine::IDENTITY, tr, &theme, &presence);
             });
             rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
             assert_armed_row(

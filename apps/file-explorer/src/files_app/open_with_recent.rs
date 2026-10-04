@@ -1,4 +1,4 @@
-//! "Open With" and the Recent place, on the Files widget.
+//! "Open with" and the Recent place, on the Files widget.
 //!
 //! Both are thin: which applications open a type is the host's
 //! [`OpenWithRoute`](crate::open_with::OpenWithRoute) answer, and the Recent
@@ -28,7 +28,7 @@ pub(super) const OPEN_WITH_ACTION: &str = "open-with";
 /// Per-application rows the app chooser lists for its target file.
 const OPEN_ONCE_PREFIX: &str = "open-with-app:";
 const ALWAYS_PREFIX: &str = "always-open-with:";
-/// How many applications the submenu lists before "Other Application…".
+/// How many applications the submenu lists before "Other application…".
 pub(super) const SUBMENU_APPS: usize = 6;
 
 /// The open-with payload: which published resource, which app, and whether
@@ -63,7 +63,7 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Whether "Open With" applies: one regular file, and a host to ask.
+    /// Whether "Open with" applies: one regular file, and a host to ask.
     pub(super) fn open_with_available(&self) -> bool {
         self.open_with_route().is_some() && self.open_with_subject().is_some()
     }
@@ -90,7 +90,7 @@ impl FileExplorerWidget {
         self.open_with_cache.borrow_mut().clear();
     }
 
-    /// The single selected regular file an "Open With" choice applies to.
+    /// The single selected regular file an "Open with" choice applies to.
     pub(super) fn open_with_subject(&self) -> Option<PathBuf> {
         if crate::archive::location(&self.current_path).is_some() || self.is_trash_view() {
             return None;
@@ -146,8 +146,8 @@ impl FileExplorerWidget {
         true
     }
 
-    /// The "Open With" flyout: the default and other claiming apps, then
-    /// "Other Application…" for the full, searchable list.
+    /// The "Open with" flyout: the default and other claiming apps, then
+    /// "Other application…" for the full, searchable list.
     pub(super) fn open_open_with_submenu(&mut self, at: Point) {
         let Some(path) = self.open_with_subject() else {
             self.submenu.close();
@@ -186,7 +186,7 @@ impl FileExplorerWidget {
         layout_menu_widget(&mut self.submenu);
     }
 
-    /// "Other Application…": the shared searchable palette, listing every
+    /// "Other application…": the shared searchable palette, listing every
     /// application that claims the type twice — to open once, and to make it
     /// the default. Its rows are this file's published open-with actions, so
     /// choosing one goes through the same action door automation uses.
@@ -266,13 +266,7 @@ impl FileExplorerWidget {
         if !self.app_chooser_open() {
             return;
         }
-        ui::chrome::fill_scrim(
-            scene,
-            transform,
-            self.rect,
-            ui::widget::modal_frame::MODAL_SCRIM_ALPHA,
-            theme,
-        );
+        ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
         let (width, height) = self.app_chooser.desired_size();
         let gutter = f64::from(theme.tokens.spacing.s4);
         let width = width.min((self.rect.width() - 2.0 * gutter).max(0.0));

@@ -63,10 +63,12 @@ impl SheetSearchProvider {
         for cell in &sheet.cells {
             let reference = format!("{}{}", crate::actions::column_label(cell.col), cell.row + 1);
             let qualified = format!("{}!{reference}", sheet.name);
-            let subtitle = if cell.display.is_empty() || cell.display == cell.raw {
+            // The row's title is the cell; its one secondary line is what the
+            // cell shows, or what was typed into it when it shows nothing.
+            let subtitle = if cell.display.is_empty() {
                 cell.raw.clone()
             } else {
-                format!("{} · {}", cell.display, cell.raw)
+                cell.display.clone()
             };
             let result = SearchResult::for_action(
                 CELL_KIND,
@@ -237,14 +239,14 @@ mod tests {
                 3_000,
             );
             assert_eq!(hit.title, "Large workbook!A3000");
-            let needle = provider.search_page(LATE_HIT_NEEDLE, None, 1, 1);
+            let needle = provider.search_page(&LATE_HIT_NEEDLE.into(), None, 1, 1);
             assert_eq!(needle.results, vec![hit]);
             assert!(needle.inspected <= 1);
 
             let mut cursor = None;
             let mut total = 0;
             loop {
-                let page = provider.search_page("ordinary", cursor.as_ref(), 17, 5);
+                let page = provider.search_page(&"ordinary".into(), cursor.as_ref(), 17, 5);
                 assert!(page.inspected <= 17);
                 assert!(page.results.len() <= 5);
                 total += page.results.len();
