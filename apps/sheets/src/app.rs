@@ -36,7 +36,7 @@ use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::{EditOutcome, EditableLabel, TextInput, Widget};
 use uuid::Uuid;
 
-use crate::actions::{self, SheetsAction, SheetsResourceCtx};
+use crate::actions::{self, SheetsAction};
 use crate::doc::{ChartKind, ChartSnapshot, CommentThread, SheetsDoc};
 use crate::fill;
 use crate::formula;
@@ -46,7 +46,7 @@ use crate::model::{
     Addr, CellFormat, CellValue, Currency, DateStyle, FormatCategory, TimeStyle, a1_to_addr,
     format_value,
 };
-use crate::settings::{DocSettings, EffectiveLocale, GlobalSettings};
+use crate::settings::{DocSettings, EffectiveLocale, Locale};
 
 /// 1× floors for the three chrome bands. Each band is derived from the
 /// measured line box of the text it carries plus spacing tokens (see
@@ -824,16 +824,11 @@ pub struct SheetsApp {
     /// Rebuilt on paint: annotation cards stay a visual projection of the
     /// shared records, while their click routes dispatch canonical actions.
     annotation_clicks: Vec<(Rect, AnnotationClick)>,
-    /// Query-ready workbook projection, rebuilt only when document heads
-    /// change so global search never reads the CRDT synchronously.
-    searchable_sheets: Vec<actions::SearchableSheet>,
-    /// The heads that produced `searchable_sheets`. This is intentionally
-    /// separate from `cache`: changing the active tab must not walk every
-    /// workbook body or rebuild global-search postings.
-    search_projection_heads: Option<Vec<ChangeHash>>,
-    /// Retained, Arc-backed catalogue handed to each Ctrl+K session by clone.
-    /// It is refreshed only with a new search projection, never per query.
-    search_provider: crate::search_provider::SheetSearchProvider,
+    /// Each tab's durable sheet identity, which the edits it offers name.
+    sheet_ids: Vec<String>,
+    /// The heads the tabs were read at. Separate from `cache`: changing the
+    /// active tab must not re-read every tab.
+    tabs_heads: Option<Vec<ChangeHash>>,
     active_sheet: usize,
     /// The latest transient action message (e.g. "Pasted into B2"), surfaced
     /// via the floating [`status_bubble`](Self::status_bubble) rather than a
@@ -863,9 +858,10 @@ pub struct SheetsApp {
     current_active_format: CellFormat,
     open_menu: OpenMenu,
     settings_panel: SettingsPanel,
-    global: GlobalSettings,
-    /// The shared global defaults are read once, by the first `sync`.
-    global_unread: bool,
+    /// The person's locale defaults, as of the last `sync`.
+    global: Locale,
+    /// The shared `locale` setting, followed while the app runs.
+    locale: Option<ui::framework::Setting<Locale>>,
     doc_settings: DocSettings,
     motion: MotionPreference,
     /// Memoised recalculation: `reload` recomputes only when the document
@@ -982,9 +978,8 @@ impl SheetsApp {
             sheet_charts: Vec::new(),
             sheet_comments: Vec::new(),
             annotation_clicks: Vec::new(),
-            searchable_sheets: Vec::new(),
-            search_projection_heads: None,
-            search_provider: crate::search_provider::SheetSearchProvider::new(&[]),
+            sheet_ids: Vec::new(),
+            tabs_heads: None,
             active_sheet: 0,
             status: "Ready".into(),
             status_bubble: ui::StatusBubble::new(),
@@ -997,8 +992,8 @@ impl SheetsApp {
             current_active_format: CellFormat::General,
             open_menu: OpenMenu::None,
             settings_panel: SettingsPanel::None,
-            global: GlobalSettings::default(),
-            global_unread: true,
+            global: Locale::default(),
+            locale: None,
             doc_settings: DocSettings::default(),
             motion: MotionPreference::Full,
             cache: None,
@@ -1028,6 +1023,11 @@ impl SheetsApp {
         dispatcher: ui::framework::Dispatcher<crate::resource::SheetsWorkbook>,
     ) {
         self.dispatch = Some(dispatcher);
+    }
+
+    /// Follow the person's shared locale defaults.
+    pub(crate) fn follow_locale(&mut self, locale: ui::framework::Setting<Locale>) {
+        self.locale = Some(locale);
     }
 
     /// Show the sheet names the framework resource holds.
@@ -1081,66 +1081,43 @@ impl SheetsApp {
         Ok(())
     }
 
-    /// The presentation context the Ctrl+K resource tree is built from: the open
-    /// sheet names. Everything here mirrors state the document already holds.
-    pub(crate) fn sheets_resource_ctx(&self) -> SheetsResourceCtx {
-        let palette_actions = self.native_palette_actions();
-        let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
-        let label = if (c0, r0) == (c1, r1) {
-            crate::model::addr_to_a1(c0, r0)
-        } else {
-            format!(
-                "{}:{}",
-                crate::model::addr_to_a1(c0, r0),
-                crate::model::addr_to_a1(c1, r1)
-            )
-        };
-        let selection =
-            self.searchable_sheets
-                .get(self.active_sheet)
-                .map(|sheet| actions::RangeResourceCtx {
-                    sheet_id: sheet.id.clone(),
-                    label,
-                    // Navigation and formula visibility are workbook views, not
-                    // range mutations. Keeping those two on the workbook avoids
-                    // duplicate prompted Ctrl+K entries while every selection
-                    // operation (sum/fill/format/structure) remains addressable
-                    // through this range resource.
-                    actions: palette_actions
-                        .iter()
-                        .filter(|action| {
-                            action.id != "go-to-cell" && action.id != "toggle-formula-view"
-                        })
-                        .cloned()
-                        .collect(),
-                });
-        SheetsResourceCtx {
-            sheet_names: self.sheet_names.clone(),
-            searchable_sheets: self.searchable_sheets.clone(),
-            palette_actions,
-            selection,
-        }
-    }
-
-    /// Build the context-sensitive command surface once, as resource actions.
-    /// Dense spreadsheet commands can retain their custom UI while still
-    /// sharing byte-identical action values with agents and the search bar.
+    /// The edits bound to where the user is — the selection, the active cell
+    /// and its sheet — as declarations of the workbook's actions: the palette,
+    /// agents and scripts invoke them through the same door as the rest of
+    /// the workbook, and each builds the action for the selection as it is
+    /// when they are published.
     #[allow(
         clippy::too_many_lines,
-        clippy::expect_used,
-        reason = "the palette builds serializable action enum values in one authoritative surface"
+        reason = "every selection-bound edit is declared in one place"
     )]
-    fn native_palette_actions(&self) -> Vec<tilo_actions::ActionSpec> {
-        use tilo_actions::{ActionSpec, OperationKind};
+    pub(crate) fn selection_declarations(
+        &self,
+    ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::SheetsWorkbook>> {
+        use ui::tilo_resource::ActionDecl;
 
-        let immediate = |id: &str, label: &str, action: SheetsAction| {
-            ActionSpec::immediate(id, label, actions::SHEETS_ACTION_TYPE, &action)
-                .expect("SheetsAction is serializable")
-                .reversible()
-        };
         let sheet = self.active_sheet;
         let sheet_id = self.sheet_identity(sheet);
+        if sheet_id.is_empty() {
+            return Vec::new();
+        }
+        let fixed = |id: &'static str, label: &str, action: SheetsAction| {
+            ActionDecl::new(id, label, Vec::new(), move |_, _| Ok(action.clone()))
+        };
         let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
+        let (active_col, active_row) = self.grid.active();
+        let chart = |id: &'static str, label: &str, kind: ChartKind| {
+            let sheet_id = sheet_id.clone();
+            ActionDecl::new(id, label, Vec::new(), move |_, _| {
+                Ok(actions::put_chart_action(
+                    sheet,
+                    sheet_id.clone(),
+                    "Selection chart",
+                    kind,
+                    (c0, r0),
+                    (c1, r1),
+                ))
+            })
+        };
         let target_r = r1.saturating_add(1);
         let sum_writes: Vec<(Addr, String, Option<CellFormat>)> = (c0..=c1)
             .map(|c| {
@@ -1155,68 +1132,60 @@ impl SheetsApp {
                 )
             })
             .collect();
-        let mut specs = vec![
-            immediate(
+        let mut decls = vec![
+            chart(
                 "insert-column-chart",
                 "Create column chart from selection",
-                actions::put_chart_action(
-                    sheet,
-                    sheet_id.clone(),
-                    "Selection chart",
-                    ChartKind::Column,
-                    (c0, r0),
-                    (c1, r1),
-                ),
+                ChartKind::Column,
             ),
-            immediate(
+            chart(
                 "insert-line-chart",
                 "Create line chart from selection",
-                actions::put_chart_action(
-                    sheet,
-                    sheet_id.clone(),
-                    "Selection chart",
-                    ChartKind::Line,
-                    (c0, r0),
-                    (c1, r1),
-                ),
+                ChartKind::Line,
             ),
-            immediate(
-                "comment-selection",
-                "Comment on selection",
-                actions::put_comment_action(
-                    sheet,
-                    sheet_id.clone(),
-                    (c0, r0),
-                    (c1, r1),
-                    "You",
-                    "New comment",
-                ),
-            ),
-            immediate(
+            {
+                let sheet_id = sheet_id.clone();
+                ActionDecl::new(
+                    "comment-selection",
+                    "Comment on selection",
+                    Vec::new(),
+                    move |_, _| {
+                        Ok(actions::put_comment_action(
+                            sheet,
+                            sheet_id.clone(),
+                            (c0, r0),
+                            (c1, r1),
+                            "You",
+                            "New comment",
+                        ))
+                    },
+                )
+            },
+            fixed(
                 "sum-selection",
                 "Sum selection",
                 actions::set_cells_action(sheet, sheet_id.clone(), sum_writes),
             ),
-            immediate(
+            fixed(
                 "insert-row-active",
                 "Insert row above",
-                actions::insert_row_action(sheet, sheet_id.clone(), self.grid.active().1),
+                actions::insert_row_action(sheet, sheet_id.clone(), active_row),
             ),
-            immediate(
+            fixed(
                 "delete-row-active",
                 "Delete row",
-                actions::delete_row_action(sheet, sheet_id.clone(), self.grid.active().1),
+                actions::delete_row_action(sheet, sheet_id.clone(), active_row),
             )
             .destructive(),
-            immediate(
+            fixed(
                 "insert-column-active",
                 "Insert column left",
-                actions::insert_column_action(sheet, sheet_id.clone(), self.grid.active().0),
+                actions::insert_column_action(sheet, sheet_id.clone(), active_col),
             ),
-            immediate(
+            fixed(
                 "delete-column-active",
                 "Delete column",
-                actions::delete_column_action(sheet, sheet_id.clone(), self.grid.active().0),
+                actions::delete_column_action(sheet, sheet_id.clone(), active_col),
             )
             .destructive(),
         ];
@@ -1236,7 +1205,7 @@ impl SheetsApp {
                 .copied()
                 .map(|addr| (addr, format))
                 .collect();
-            specs.push(immediate(
+            decls.push(fixed(
                 id,
                 label,
                 actions::set_formats_action(sheet, sheet_id.clone(), cells),
@@ -1253,7 +1222,7 @@ impl SheetsApp {
                 }
             }
         }
-        specs.push(immediate(
+        decls.push(fixed(
             "fill-down",
             "Fill down",
             actions::set_cells_action(sheet, sheet_id.clone(), down),
@@ -1269,13 +1238,13 @@ impl SheetsApp {
                 }
             }
         }
-        specs.push(immediate(
+        decls.push(fixed(
             "fill-right",
             "Fill right",
             actions::set_cells_action(sheet, sheet_id.clone(), right),
         ));
 
-        let (c, r) = self.grid.active();
+        let (c, r) = (active_col, active_row);
         if r > 0 {
             let mut top = r;
             for rr in (0..r).rev() {
@@ -1291,46 +1260,36 @@ impl SheetsApp {
                     crate::model::addr_to_a1(c, top),
                     crate::model::addr_to_a1(c, r - 1)
                 );
-                specs.push(immediate(
+                decls.push(fixed(
                     "autosum-active",
                     "AutoSum column",
                     actions::set_cell_action(sheet, sheet_id, (c, r), &formula, None),
                 ));
             }
         }
+        decls
+    }
 
-        specs.push(tilo_actions::ActionSpec::prompted_operation(
-            "go-to-cell",
-            "Go to cell…",
-            "Cell reference",
-            "e.g. B12",
-            OperationKind::View,
-            actions::SHEETS_OPERATION_TYPE,
-            |reference| {
-                tilo_actions::EncodedAction::encode_operation(
-                    actions::SHEETS_OPERATION_TYPE,
-                    &actions::SheetsOperation::GoToCell {
-                        reference: reference.to_string(),
-                    },
-                )
-                .expect("SheetsOperation is serializable")
-            },
-        ));
-        specs.push(
-            ActionSpec::operation(
-                "toggle-formula-view",
-                if self.grid.formula_view() {
-                    "Hide formulas"
-                } else {
-                    "Show formulas"
-                },
-                OperationKind::View,
-                actions::SHEETS_OPERATION_TYPE,
-                &actions::SheetsOperation::ToggleFormulaView,
-            )
-            .expect("SheetsOperation is serializable"),
+    /// The workbook as the palette, agents and scripts see it from this
+    /// surface: the resource's publication of `doc` with the edits bound to
+    /// the selection.
+    pub(crate) fn published(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        use ui::tilo_resource::Resource as _;
+
+        let state = crate::resource::SheetsWorkbook::read(doc).unwrap_or_default();
+        let mut workbook = actions::published(&state);
+        workbook.actions.extend(
+            self.selection_declarations()
+                .iter()
+                .map(ui::tilo_resource::declaration_spec),
         );
-        specs
+        vec![workbook]
+    }
+
+    /// Select `from`..`to` as a drag over the grid would.
+    #[cfg(test)]
+    pub(crate) fn select_range_for_test(&mut self, from: Addr, to: Addr) {
+        self.grid.select_range_public(from, to);
     }
 
     /// The index of the active sheet. Lets a test observe where a Ctrl+K
@@ -1464,7 +1423,7 @@ impl SheetsApp {
 
     /// The document's effective locale (per-doc overrides over global).
     fn locale(&self) -> EffectiveLocale {
-        EffectiveLocale::resolve(&self.global.locale, &self.doc_settings)
+        EffectiveLocale::resolve(&self.global, &self.doc_settings)
     }
 
     fn default_currency(&self) -> Currency {
@@ -1475,10 +1434,7 @@ impl SheetsApp {
     /// cache is refreshed from the CRDT before UI actions are offered, so an
     /// encoded UI/palette action never falls back to a positional target.
     fn sheet_identity(&self, idx: usize) -> String {
-        self.searchable_sheets
-            .get(idx)
-            .map(|sheet| sheet.id.clone())
-            .unwrap_or_default()
+        self.sheet_ids.get(idx).cloned().unwrap_or_default()
     }
 
     fn sheet_slot_anchors(
@@ -1486,16 +1442,18 @@ impl SheetsApp {
         at: usize,
         excluding: Option<usize>,
     ) -> (Option<String>, Option<String>) {
-        let ids: Vec<String> = self
-            .searchable_sheets
+        let ids: Vec<&String> = self
+            .sheet_ids
             .iter()
             .enumerate()
             .filter(|(idx, _)| Some(*idx) != excluding)
-            .map(|(_, sheet)| sheet.id.clone())
+            .map(|(_, id)| id)
             .collect();
         (
-            ids.get(at).cloned(),
-            at.checked_sub(1).and_then(|idx| ids.get(idx)).cloned(),
+            ids.get(at).map(|id| (*id).clone()),
+            at.checked_sub(1)
+                .and_then(|idx| ids.get(idx))
+                .map(|id| (*id).clone()),
         )
     }
 
@@ -1521,49 +1479,16 @@ impl SheetsApp {
         }
 
         self.active_sheet = sheet;
-        // A tab switch still needs an active-sheet recalculation below, but it
-        // must not traverse every other sheet body. The complete search
-        // projection and its postings change only with Automerge heads.
-        if self.search_projection_heads.as_ref() != Some(&heads) {
+        // A tab switch recalculates the active sheet below, never the others;
+        // the tabs and the document's settings change only with the heads.
+        if self.tabs_heads.as_ref() != Some(&heads) {
             self.sheet_names = SheetsDoc::sheet_names(doc);
             self.sheet_colors = SheetsDoc::sheet_colors(doc);
-            self.doc_settings = SheetsDoc::doc_settings(doc);
-            let cur = self.default_currency();
-            self.searchable_sheets = (0..self.sheet_names.len())
-                .filter_map(|idx| {
-                    let id = SheetsDoc::sheet_resource_id(doc, idx)?;
-                    let snap = SheetsDoc::snapshot_sheet(doc, idx, cur);
-                    let values = formula::recalculate(&snap.raw);
-                    let mut cells = snap
-                        .raw
-                        .iter()
-                        .map(|(&(col, row), raw)| {
-                            let fmt = snap.fmt.get(&(col, row)).copied().unwrap_or_else(|| {
-                                raw.strip_prefix('=')
-                                    .and_then(|body| formula::infer_result_format(body, &snap.fmt))
-                                    .unwrap_or(CellFormat::General)
-                            });
-                            let display = values
-                                .get(&(col, row))
-                                .map_or_else(String::new, |value| format_value(value, fmt));
-                            actions::SearchableCell {
-                                col,
-                                row,
-                                raw: raw.clone(),
-                                display,
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    cells.sort_by_key(|cell| (cell.row, cell.col));
-                    Some(actions::SearchableSheet {
-                        id,
-                        name: snap.name,
-                        cells,
-                    })
-                })
+            self.sheet_ids = (0..self.sheet_names.len())
+                .map(|idx| SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default())
                 .collect();
-            self.search_provider.refresh(&self.searchable_sheets);
-            self.search_projection_heads = Some(heads.clone());
+            self.doc_settings = SheetsDoc::doc_settings(doc);
+            self.tabs_heads = Some(heads.clone());
         }
         let cur = self.default_currency();
         let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
@@ -2981,16 +2906,8 @@ impl SheetsApp {
     fn switch_sheet(&mut self, doc: &mut AutoCommit, idx: usize) {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
-        let presentation_only = out.is_empty();
         self.apply_cmds(doc, out);
         self.active_sheet = idx.min(SheetsDoc::sheet_count(doc).saturating_sub(1));
-        // The active tab is presentation-only. When this switch did not first
-        // flush an edit, its
-        // new head has exactly the same search corpus; carry the projection
-        // forward so a tab click never re-walks every sheet body.
-        if presentation_only {
-            self.search_projection_heads = Some(doc.get_heads());
-        }
         self.grid.select_only((0, 0));
         self.reload(doc);
         self.status = format!(
@@ -3045,7 +2962,7 @@ impl SheetsApp {
             crate::model::addr_to_a1(c, r)
         };
         self.palette.clear();
-        let resources = actions::provide_resources(&self.sheets_resource_ctx(), doc);
+        let resources = self.published(doc);
         let mut actions = tilo_actions::flatten(&resources);
         actions.sort_by_key(|action| usize::from(action.action.id != "go-to-cell"));
         for action in actions {
@@ -3066,7 +2983,7 @@ impl SheetsApp {
     fn dispatch_palette_view_for_test(&mut self, doc: &AutoCommit) {
         let intent = ui::widget::controls::take_control_invocation(self)
             .expect("palette emitted a resource action");
-        let resources = Self::publish_resources(self, doc);
+        let resources = self.published(doc);
         let spec = tilo_actions::door::resolve(&resources, &intent.address)
             .expect("palette address resolves");
         assert_eq!(spec.kind, tilo_actions::OperationKind::View);
@@ -5200,7 +5117,6 @@ impl Widget for SheetsApp {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource,
         dyn ui::presence::capability::PublishesPresence
     );
 
@@ -5274,9 +5190,8 @@ impl Widget for SheetsApp {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
-        if self.global_unread {
-            self.global = GlobalSettings::load();
-            self.global_unread = false;
+        if let Some(locale) = &self.locale {
+            self.global = locale.get();
         }
         if let Some((invocation, operation)) = self.pending_resource_io.take() {
             let path = match &operation {
@@ -5892,10 +5807,7 @@ impl Widget for SheetsApp {
                 _ => {}
             }
             if let Some(sheet_id) = target.strip_prefix("sheets.tab:")
-                && let Some(index) = self
-                    .searchable_sheets
-                    .iter()
-                    .position(|sheet| sheet.id == sheet_id)
+                && let Some(index) = self.sheet_ids.iter().position(|id| id == sheet_id)
             {
                 self.switch_sheet(state, index);
                 return true;
@@ -5938,42 +5850,7 @@ impl ui::presence::capability::PublishesPresence for SheetsApp {
     }
 }
 
-impl ui::search::capability::SearchSource for SheetsApp {
-    /// Fold sheets and populated cells into unified search. Every hit names an
-    /// exported resource View action; no app-owned activation callback exists.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-}
-
 impl ui::resources::PublishesResources for SheetsApp {
-    /// The live selection beside the workbook the framework publishes.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        crate::actions::live_presentation_resources(&self.sheets_resource_ctx())
-    }
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = if cursor.is_empty() && max_results > 0 {
-            crate::actions::live_presentation_resources(&self.sheets_resource_ctx())
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if id == "sheets.workbook" {
-            return None;
-        }
-        self.publish_resource(doc, id)
-    }
     fn document_action_result(
         &self,
         doc: &AutoCommit,
@@ -6054,24 +5931,14 @@ impl SheetsApp {
             actions::SheetsOperation::GoToCell { reference } => self.go_to_cell(&reference),
             actions::SheetsOperation::ToggleFormulaView => self.toggle_formula_view(),
             actions::SheetsOperation::RevealSheet { sheet_id } => {
-                if !self
-                    .searchable_sheets
-                    .iter()
-                    .any(|sheet| sheet.id == sheet_id)
-                {
+                if !self.sheet_ids.contains(&sheet_id) {
                     return Err("sheet no longer exists".into());
                 }
                 self.pending_reveal = Some(PendingReveal::Sheet { sheet_id });
             }
             actions::SheetsOperation::RevealCell { sheet_id, col, row } => {
-                if !self.searchable_sheets.iter().any(|sheet| {
-                    sheet.id == sheet_id
-                        && sheet
-                            .cells
-                            .iter()
-                            .any(|cell| cell.col == col && cell.row == row)
-                }) {
-                    return Err("cell no longer exists".into());
+                if !self.sheet_ids.contains(&sheet_id) {
+                    return Err("the cell's sheet no longer exists".into());
                 }
                 self.pending_reveal = Some(PendingReveal::Cell {
                     sheet_id,
@@ -6510,7 +6377,7 @@ impl SheetsApp {
         resource_id: &str,
         prefill: String,
     ) -> bool {
-        let resources = actions::provide_resources(&self.sheets_resource_ctx(), doc);
+        let resources = self.published(doc);
         let entry = tilo_actions::flatten(&resources)
             .into_iter()
             .find(|flat| flat.resource_id.as_str() == resource_id && flat.action.id == "edit")
@@ -7699,27 +7566,23 @@ pub(crate) mod tests {
         }
     }
 
-    /// Unchanged syncs keep the search catalogue and reduced motion stops bubble frames.
+    /// Unchanged syncs and tab switches keep the tabs read, and reduced motion
+    /// stops bubble frames.
     #[test]
-    fn search_catalogue_and_idle_frames_do_no_redundant_work() {
-        // Case `unchanged_sync_and_tab_switch_retain_the_search_catalogue`.
+    fn idle_frames_do_no_redundant_work() {
+        // Case `unchanged_sync_and_tab_switch_keep_the_tabs`.
         {
             let (mut app, mut doc) = seeded_app();
-            // Automerge commits the startup seed at the first following sync;
-            // establish the steady-state revision before asserting idle work.
             app.sync(&mut doc, &automerge::ROOT);
-            let first_heads = app.search_projection_heads.clone();
-            let first_projection = app.searchable_sheets.as_ptr();
-            let first_catalogue = app.search_provider.stats();
+            let first_heads = app.tabs_heads.clone();
+            let first_ids = app.sheet_ids.as_ptr();
             app.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(app.search_projection_heads, first_heads);
-            assert_eq!(app.searchable_sheets.as_ptr(), first_projection);
-            assert_eq!(app.search_provider.stats(), first_catalogue);
+            assert_eq!(app.tabs_heads, first_heads);
+            assert_eq!(app.sheet_ids.as_ptr(), first_ids);
 
             app.switch_sheet(&mut doc, 1);
             app.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(app.searchable_sheets.as_ptr(), first_projection);
-            assert_eq!(app.search_provider.stats(), first_catalogue);
+            assert_eq!(app.sheet_ids.as_ptr(), first_ids);
         }
 
         // Case `reduced_motion_stops_status_bubble_animation_frames`.
@@ -7795,7 +7658,7 @@ pub(crate) mod tests {
             // Capture the Ctrl+K delete spec for sheet 1 from the live resource tree,
             // *before* the affordance mutates the workbook (the tree shrinks after).
             let from_spec = {
-                let resources = actions::provide_resources(&app.sheets_resource_ctx(), &doc);
+                let resources = app.published(&doc);
                 let sheet1 = &resources[0].children[1];
                 let spec = sheet1.actions.iter().find(|a| a.id == "delete").unwrap();
                 match &spec.input {
