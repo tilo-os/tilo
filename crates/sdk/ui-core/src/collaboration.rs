@@ -27,6 +27,11 @@ pub use transport::{
     TransportError, TransportStatus,
 };
 
+/// How an app's error begins when it could not join its collaboration route
+/// and stopped. The shell recognises it in a failed launch's output to say
+/// why the app did not open.
+pub const ROUTE_JOIN_FAILED: &str = "joining collaboration route failed";
+
 #[cfg(feature = "broker-transport")]
 mod broker;
 #[cfg(feature = "broker-transport")]

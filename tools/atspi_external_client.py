@@ -843,10 +843,25 @@ def text_nodes(client: AtspiClient) -> dict[str, str]:
     return texts
 
 
-def prepare_typing(address: str, app_name: str, create: str, state: Path) -> None:
+def is_typing_target(client: AtspiClient, path: str, name: str, field: str | None) -> bool:
+    """Whether `path` is where a new document takes typing: the editable text
+    field named FIELD when the app names one, else its document."""
+    if field is not None:
+        return (
+            f"'{field}'" in name
+            and "org.a11y.atspi.EditableText" in client.interfaces(path)
+        )
+    role = client.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
+    return "document" in role and "Component" in client.interfaces(path)
+
+
+def prepare_typing(
+    address: str, app_name: str, create: str, state: Path, field: str | None = None
+) -> None:
     """Open APP_NAME, activate CREATE (its new-document action) and give the
-    document keyboard focus, so the next real key presses type into it. The
-    app's bus, pid and document node are written to STATE for `typed`."""
+    document — or its editable FIELD, for an app whose document is a list of
+    blocks — keyboard focus, so the next real key presses type into it. The
+    app's bus and pid are written to STATE for `typed`."""
     bus_name, pid = open_in_session(address, app_name)
     client = AtspiClient(address, bus_name)
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
@@ -870,10 +885,10 @@ def prepare_typing(address: str, app_name: str, create: str, state: Path) -> Non
             # The app replaces its tree while the new document opens.
             tree = {}
         for path, name in tree.items():
-            role = client.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
-            if "document" in role and "Component" in client.interfaces(path):
+            if is_typing_target(client, path, name, field):
                 document = path
                 break
+            role = client.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
             seen.append(f"{role.strip()} {name.strip()}")
         else:
             if time.monotonic() >= deadline:
@@ -1042,6 +1057,11 @@ def main() -> int:
     typing.add_argument("app_name")
     typing.add_argument("create", help="the accessible name of the app's new-document action")
     typing.add_argument("--state", type=Path, required=True)
+    typing.add_argument(
+        "--field",
+        help="the accessible name of the editable field a new document types into, "
+        "for apps whose document is a list of blocks",
+    )
     typed = sub.add_parser("typed", help="check the document `type-into` opened holds exactly TEXT")
     typed.add_argument("text")
     typed.add_argument("--state", type=Path, required=True)
@@ -1107,7 +1127,7 @@ def main() -> int:
             settings_network(address)
             return 0
         if args.command == "type-into":
-            prepare_typing(address, args.app_name, args.create, args.state)
+            prepare_typing(address, args.app_name, args.create, args.state, args.field)
             return 0
         if args.command == "typed":
             check_typed(address, args.state, args.text, args.status)

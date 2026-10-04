@@ -65,12 +65,11 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 20
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
           filter: blob:none
       - name: Merge onto main
@@ -112,7 +111,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 2
       # Pull requests test the head merged onto main's current tip (a rerun
       # included), and every job merges this same main commit.
@@ -158,7 +156,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
       - name: Merge onto main
         uses: ./.forgejo/actions/merge-main
@@ -221,7 +218,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
       - name: Build tilo-app and tilo-app-package
         run: cargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package
@@ -259,7 +255,7 @@ jobs:
             > "$RUNNER_TEMP/calculator-macos-entry.json"
           python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))["versions"][0]; assert v["target"]["platform"]=="macos" and v["artifact"]["format"]=="macos-app-zip", v' \
             "$RUNNER_TEMP/calculator-macos-entry.json"
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: app-sdk-macos-shots
@@ -285,7 +281,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
       - name: Merge onto main
         uses: ./.forgejo/actions/merge-main
@@ -337,7 +332,7 @@ jobs:
           SHOTS_DIR="$RUNNER_TEMP/web-shots" node crates/browser/tilo-web-desktop/scripts/smoke.mjs \
             http://127.0.0.1:7878 "${apps[@]}" desktop
       - name: Download exact release private image worker
-        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: app-sdk-release-compute
           path: ${{ runner.temp }}/release-compute
@@ -355,13 +350,13 @@ jobs:
           PY
           node crates/browser/tilo-browser-compute/scripts/qualify-packaged.mjs \
             "$RUNNER_TEMP/release-compute" "$RUNNER_TEMP/compute-qualification" --no-sandbox
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: app-sdk-compute-qualification
           path: ${{ runner.temp }}/compute-qualification/qualification.json
           if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: app-sdk-web-shots
@@ -385,7 +380,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
       - name: Merge onto main
         uses: ./.forgejo/actions/merge-main
@@ -424,7 +418,7 @@ jobs:
           (output / 'sha256.json').write_text(json.dumps(hashes, sort_keys=True) + '\n')
           PY
       - name: Upload exact release private image worker
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: app-sdk-release-compute
           path: ${{ runner.temp }}/release-compute
