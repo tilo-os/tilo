@@ -251,9 +251,8 @@ fn pixel_at(app: &mut TestApp<App>, (x, y): (f64, f64)) -> [u8; 4] {
 
 #[test]
 fn choosing_a_past_version_shows_it_in_place_of_the_artwork() {
-    let mut app = TestApp::<App>::new().unwrap();
-    app.harness().resize((WIDTH, 800)).unwrap();
-    app.stage(Some("history")).unwrap();
+    // The history scenario: a landscape, with the history in the dock.
+    let mut app = TestApp::<App>::capture_at(Some("history"), (WIDTH, 800)).unwrap();
     let whole = json!({"kind": "rect", "x": 0, "y": 0, "width": 1200, "height": 900});
     app.call(
         "draw",
