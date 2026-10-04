@@ -94,7 +94,8 @@ containerfile="$repo/os/Containerfile"
 # The image ships one login session and no peer-sync marker unit.
 # The release gate's input hotplug check ships beside them.
 # The boot units gate ships with the rollback units whose confirmation it gates.
-expected_contract=7281dba89f5209852dae4e1dc0db2debe75b9cdde7b0ffe2234eeccdb3238bbc
+# The ush supervisor ships with the two relay helpers it runs for Terminal.
+expected_contract=d615f5edaf3a2c56aa5f3d024ca3f08f21a95d3eb6e2c41041d524934041b59e
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
