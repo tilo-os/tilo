@@ -125,7 +125,8 @@ impl TextInputKind {
     pub const fn text_kind(self) -> TextKind {
         match self {
             Self::Prose | Self::Name | Self::Search => TextKind::Prose,
-            Self::Username | Self::Email | Self::Url | Self::Path => TextKind::Identifier,
+            Self::Username | Self::Email | Self::Path => TextKind::Identifier,
+            Self::Url => TextKind::Url,
             Self::Code => TextKind::Code,
             Self::Number => TextKind::Numeric,
             Self::Password | Self::Secret => TextKind::Secret,
@@ -887,6 +888,7 @@ impl TextInput {
             span.family.hash(&mut hash);
             span.background.hash(&mut hash);
             span.baseline.hash(&mut hash);
+            span.kind.hash(&mut hash);
         }
         hash.finish()
     }

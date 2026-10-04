@@ -100,6 +100,12 @@ impl<R: Resource> SurfaceCx<R> {
         self.live.clone()
     }
 
+    /// Whether the surface shows a past version in History mode
+    /// ([`ViewCx::is_past`](super::ViewCx::is_past)).
+    pub fn is_past(&self) -> bool {
+        self.dispatch.is_past()
+    }
+
     /// Whether the participant may only view, as of now.
     pub fn read_only(&self) -> bool {
         self.dispatch.read_only()

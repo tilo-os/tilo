@@ -517,6 +517,9 @@ pub struct EmptyState {
     resolved: (String, Option<String>, Option<String>),
     i18n_revision: u64,
     layout_dirty: bool,
+    /// What the last draw showed (rect, action hovered, focused, enabled);
+    /// while it still holds there is nothing to redraw.
+    drawn: Option<(Rect, bool, bool, bool)>,
 }
 
 impl EmptyState {
@@ -550,9 +553,21 @@ impl EmptyState {
             resolved: (String::new(), None, None),
             i18n_revision: crate::i18n::I18nManager::revision(),
             layout_dirty: true,
+            drawn: None,
         };
         state.resolve();
         state
+    }
+
+    /// The state a draw paints: where, whether the action is hovered or
+    /// focused, and whether it is enabled.
+    fn painted_state(&self) -> (Rect, bool, bool, bool) {
+        (
+            self.rect,
+            self.action_label.is_some() && self.action_rect.contains(self.last_cursor),
+            self.action_focused,
+            self.is_enabled(),
+        )
     }
 
     /// Something failed to load or open: `title` says what, `detail` says
@@ -590,6 +605,7 @@ impl EmptyState {
             self.spinner = busy.then(crate::widget::Spinner::new);
             self.busy = busy;
             self.layout_dirty = true;
+            self.drawn = None;
         }
     }
 
@@ -713,6 +729,7 @@ impl EmptyState {
         if resolved != self.resolved {
             self.resolved = resolved;
             self.layout_dirty = true;
+            self.drawn = None;
         }
     }
 
@@ -855,6 +872,8 @@ impl Widget for EmptyState {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_style = StackStyle::layout(theme, self.inline);
+        // A rebuild may bring a new theme or text scale.
+        self.drawn = None;
         // Auto height contributes wrapped content to a Scrollable's extent;
         // the percentage minimum still fills a normal definite-height pane.
         // An inline empty state hugs its content.
@@ -1010,6 +1029,17 @@ impl Widget for EmptyState {
 
     fn is_focused(&self) -> bool {
         self.action_focused
+    }
+
+    fn needs_redraw(&self) -> bool {
+        // A spinner moves every frame; new words repaint too.
+        self.drawn != Some(self.painted_state())
+            || self.layout_dirty
+            || self.needs_animation_frame()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.drawn = Some(self.painted_state());
     }
 
     fn perform_action(
