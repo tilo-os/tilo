@@ -61,7 +61,6 @@
 "apps/store/src/resource.rs" = 2
 "apps/terminal/src/main_body.rs" = 2
 "apps/themes/src/resource.rs" = 2
-"apps/totp/src/resource.rs" = 1
 "apps/tube/src/app.rs" = 2
 "apps/tube/src/resource.rs" = 2
 "apps/typst-editor/src/app.rs" = 2
@@ -122,7 +121,6 @@
 "apps/speed-test/src/main.rs" = 2
 "apps/themes/src/lib.rs" = 2
 "apps/themes/src/main.rs" = 2
-"apps/totp/src/main.rs" = 2
 "apps/tube/src/lib.rs" = 2
 "apps/tube/src/main.rs" = 2
 "apps/typst-editor/src/lib.rs" = 2

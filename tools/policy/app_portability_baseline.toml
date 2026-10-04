@@ -176,7 +176,7 @@ R3 = 3
 D2 = 2
 
 [apps.totp]
-D2 = 3
+D2 = 2
 
 [apps.tube]
 D1 = 2
