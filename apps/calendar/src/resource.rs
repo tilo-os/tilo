@@ -432,6 +432,17 @@ fn is_empty_scenario(scenario: Option<&str>) -> bool {
 /// network.
 pub(crate) struct SampleAccounts(pub(crate) crate::AccountStore);
 
+/// The moment a capture shows as now: the same day and time on every run,
+/// so the sample calendar, today's highlight and the now line never move.
+pub(crate) struct ShotNow(pub(crate) chrono::NaiveDateTime);
+
+/// The day and time every capture is taken at: a Tuesday morning.
+pub(crate) fn shot_now() -> chrono::NaiveDateTime {
+    chrono::NaiveDate::from_ymd_opt(2026, 6, 30)
+        .and_then(|day| day.and_hms_opt(10, 30, 0))
+        .unwrap_or_default()
+}
+
 /// The curated notes the sample calendar opens with, by the title their event
 /// starts with.
 const SAMPLE_NOTES: [(&str, &str); 2] = [
@@ -561,17 +572,19 @@ impl ResourceApp for CalendarShell {
     }
 
     fn fixture(fixture: &mut Fixture<Calendar>) {
+        fixture.provide(ShotNow(shot_now()));
         if !is_empty_scenario(fixture.scenario()) {
             fixture.provide(SampleAccounts(crate::AccountStore::sample()));
         }
     }
 
-    /// The sample calendar around today, unless the scenario is a first run.
+    /// The sample calendar around the capture's day, unless the scenario is
+    /// a first run.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Calendar>> {
         if is_empty_scenario(name) {
             return Vec::new();
         }
-        let today = chrono::Local::now().date_naive();
+        let today = shot_now().date();
         sample_actions(&crate::model::seed_demo(today))
             .iter()
             .filter_map(|action| Invoke::apply(action).ok())
@@ -585,6 +598,9 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Calendar>) {
+        if let Some(now) = cx.fixture::<ShotNow>() {
+            self.pin_now(now.0);
+        }
         let accounts = if let Some(sample) = cx.fixture::<SampleAccounts>() {
             Some(sample.0.clone())
         } else if cx.mode().is_live() {
@@ -802,7 +818,7 @@ mod host_undo_tests {
     /// run for the empty ones, with the view state each one names.
     #[test]
     fn every_scenario_stages_its_calendar_and_view() {
-        let sample = crate::model::seed_demo(chrono::Local::now().date_naive());
+        let sample = crate::model::seed_demo(shot_now().date());
         for &name in SCENARIOS {
             let app = TestApp::<CalendarShell>::capture(Some(name)).expect(name);
             let state = app.state();
