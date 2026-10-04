@@ -499,12 +499,7 @@ pub struct BrowserWidget {
     page_operation: Option<PageOperation>,
     page_operation_result: Option<ui::tilo_actions::InvocationUpdate>,
     /// Effects waiting on an operation this window accepted.
-    /// Operations this window accepted, with the effect waiting on each
-    /// (none for a control a window nobody hosts answered itself).
-    pending_replies: Vec<(
-        ui::tilo_actions::InvocationId,
-        Option<ui::framework::EffectReply>,
-    )>,
+    pending_replies: Vec<(ui::tilo_actions::InvocationId, ui::framework::EffectReply)>,
     page_request_seq: u32,
     pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
     pending_pip_region_update: Option<Rect>,
@@ -5343,29 +5338,11 @@ fn live_row(resource: Resource) -> ui::framework::LiveRow {
 
 impl ui::widget::controls::ActionControls for BrowserWidget {
     fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        loop {
-            let invocation = self.pending_controls.pop_front().or_else(|| {
-                self.children_mut()
-                    .into_iter()
-                    .find_map(ui::widget::controls::take_control_invocation)
-            })?;
-            if self.dispatch.is_some() {
-                return Some(invocation);
-            }
-            // A window nobody hosts (the shell's in-process tile) has no
-            // door to send its controls through: it answers its own.
-            let Some(effect) = self.effect_of(&invocation) else {
-                return Some(invocation);
-            };
-            let id = ui::tilo_actions::InvocationId::new();
-            match self.admit(id, effect.operation()) {
-                Ok(ui::widget::ResourceOperationStart::Accepted) => {
-                    self.pending_replies.push((id, None));
-                }
-                Ok(ui::widget::ResourceOperationStart::Completed(_)) => {}
-                Err(error) => tracing::warn!(%error, "browser control refused"),
-            }
-        }
+        self.pending_controls.pop_front().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
     }
 }
 
@@ -5453,9 +5430,7 @@ impl BrowserWidget {
                     continue;
                 }
             };
-            if let Some(reply) = reply {
-                reply.answer(answer);
-            }
+            reply.answer(answer);
         }
     }
 
@@ -5465,31 +5440,7 @@ impl BrowserWidget {
         invocation: ui::tilo_actions::InvocationId,
         reply: ui::framework::EffectReply,
     ) {
-        self.pending_replies.push((invocation, Some(reply)));
-    }
-
-    /// The effect a control's invocation names on this window's rows.
-    fn effect_of(&self, invocation: &ControlInvocation) -> Option<crate::effects::BrowserEffect> {
-        use ui::tilo_resource::Effect as _;
-        fn find<'a>(resources: &'a [Resource], id: &str) -> Option<&'a Resource> {
-            resources.iter().find_map(|resource| {
-                if resource.id.as_str() == id {
-                    Some(resource)
-                } else {
-                    find(&resource.children, id)
-                }
-            })
-        }
-        let published = [self.published()];
-        let resource = find(&published, invocation.address.resource.as_str())?;
-        let spec = resource
-            .actions
-            .iter()
-            .find(|spec| spec.id == invocation.address.action)?;
-        let encoded = spec.build_json(&invocation.arguments).ok()?;
-        (encoded.type_id == crate::effects::BrowserEffect::OPERATION)
-            .then(|| crate::effects::BrowserEffect::from_payload(&encoded.payload).ok())
-            .flatten()
+        self.pending_replies.push((invocation, reply));
     }
 
     fn sync_frame(&mut self, state: &mut AppModel, path: &ModelPath) {
