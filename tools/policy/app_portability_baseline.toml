@@ -135,7 +135,7 @@ D2 = 8
 
 [apps.print-centre]
 D1 = 1
-D2 = 6
+D2 = 5
 
 [apps.publisher]
 D2 = 2

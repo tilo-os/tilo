@@ -1,10 +1,9 @@
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use taffy::{NodeId, TaffyTree};
-use tilo_actions::{ActionSpec, OperationKind, Resource};
+use ui::framework::{Dispatcher, Effect as _, LiveRow};
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{AppModel, ModelPath};
@@ -26,28 +25,10 @@ use winit::event::WindowEvent;
 
 type El = Box<dyn Widget>;
 
-/// The one typed door for local printer and scanner operations. The commands
-/// remain local because they talk to CUPS/SANE and portals on this machine;
-/// publishing them still lets the shell, search, and a collaborating agent
-/// discover the real controls and receive an invocation receipt.
-pub(crate) const PRINT_CENTRE_OPERATION: &str = "print-centre.operation";
+use crate::resource::{
+    OCR_LANGUAGES, PrintCentreEffect, PrintDefaults, SCAN_COLORS, SCAN_RESOLUTIONS, SCAN_SOURCES,
+};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DemoScenario {
-    Dashboard,
-    Active,
-    Attention,
-    Empty,
-    Queue,
-    Device,
-    Discovery,
-    PrintSetup,
-    ScanSetup,
-    ScanResult,
-    History,
-    Diagnostics,
-    ServiceError,
-}
 pub struct PrintCentre {
     inner: El,
     refresh: Option<mpsc::Receiver<Snapshot>>,
@@ -67,8 +48,12 @@ pub struct PrintCentre {
     scan: ScanState,
     scan_save_picker: Option<ui::portal::PortalChannel>,
     scan_save_document: bool,
-    pub(crate) actions: crate::resource::ActionSink,
-    hosted: bool,
+    /// The person's print and scan defaults, as last presented.
+    defaults: PrintDefaults,
+    /// Where changes to the defaults go.
+    pub(crate) dispatcher: Option<Dispatcher<PrintDefaults>>,
+    /// A command replaced the page since the last layout.
+    replaced: bool,
 }
 
 /// The scan page's controls and the pages scanned so far.
@@ -202,8 +187,9 @@ impl ScannedPage {
     }
 }
 
+/// What CUPS and SANE reported: printers, documents and scanners.
 #[derive(Clone)]
-struct Snapshot {
+pub(crate) struct Snapshot {
     queues: Result<Vec<os_actions::printing::PrinterQueue>, String>,
     jobs: Result<Vec<os_actions::printing::PrintJob>, String>,
     scanners: Result<Vec<os_actions::printing::Scanner>, String>,
@@ -247,6 +233,11 @@ enum UiCommand {
     ApplyScanCrop,
     RecognizeCurrentPage,
     RecognitionFinished(Arc<[u8]>, Result<(Option<String>, String), String>),
+    SetTwoSided(bool),
+    SetScanResolution(usize),
+    SetScanColor(usize),
+    SetScanSource(usize),
+    SetOcrLanguage(usize),
 }
 
 #[derive(Clone)]
@@ -398,124 +389,78 @@ fn action(id: &str, label: &str) -> El {
     )
 }
 
-pub(crate) fn resource_action(
-    id: &str,
-    label: &str,
-    kind: OperationKind,
-    command: &str,
-) -> Option<ActionSpec> {
-    ActionSpec::operation(id, label, kind, PRINT_CENTRE_OPERATION, &command).ok()
-}
-
-/// Resource identifiers are shell-facing rather than display text. Keep the
-/// externally visible address valid and stable even when CUPS reports spaces,
+/// Row ids are shell-facing rather than display text. Keep the externally
+/// visible address valid and stable even when CUPS reports spaces,
 /// punctuation, or non-ASCII queue names.
 fn resource_key(value: &str) -> String {
     hex::encode(value)
 }
 
-fn printer_resource(queue: &os_actions::printing::PrinterQueue) -> Resource {
-    let key = resource_key(&queue.name);
-    let mut resource = Resource::new(
-        format!("print-centre.printer.{key}"),
+fn printer_row(queue: &os_actions::printing::PrinterQueue) -> LiveRow {
+    let printer = || queue.name.clone();
+    let mut row = LiveRow::new(
+        format!("print-centre.printer.{}", resource_key(&queue.name)),
         "print-centre.printer",
         display_name(&queue.name),
-    );
-    if let Some(action) = resource_action(
-        "open",
-        "Open printer",
-        OperationKind::View,
-        &format!("device\0{}", queue.name),
-    ) {
-        resource.actions.push(action);
+    )
+    .operation(PrintCentreEffect::OpenPrinter { printer: printer() }.operation("Open printer"));
+    if !queue.default {
+        row = row.operation(
+            PrintCentreEffect::SetDefaultPrinter { printer: printer() }
+                .operation("Set as default printer"),
+        );
     }
-    if !queue.default
-        && let Some(action) = resource_action(
-            "set-default",
-            "Set as default printer",
-            OperationKind::Effect,
-            &format!("default\0{}", queue.name),
-        )
-    {
-        resource.actions.push(action);
-    }
-    let (label, command) = if queue.accepting_jobs {
-        ("Pause printer", "pause")
+    row.operation(if queue.accepting_jobs {
+        PrintCentreEffect::PausePrinter { printer: printer() }.operation("Pause printer")
     } else {
-        ("Resume printer", "resume")
-    };
-    if let Some(action) = resource_action(
-        "toggle-enabled",
-        label,
-        OperationKind::Effect,
-        &format!("{command}\0{}", queue.name),
-    ) {
-        resource.actions.push(action);
-    }
-    resource
+        PrintCentreEffect::ResumePrinter { printer: printer() }.operation("Resume printer")
+    })
 }
 
-fn job_resource(job: &os_actions::printing::PrintJob) -> Resource {
-    let key = resource_key(&job.id);
-    let mut resource = Resource::new(
-        format!("print-centre.job.{key}"),
+fn job_row(job: &os_actions::printing::PrintJob) -> LiveRow {
+    use os_actions::printing::JobState;
+    let mut row = LiveRow::new(
+        format!("print-centre.job.{}", resource_key(&job.id)),
         "print-centre.job",
         job_title(job),
     );
-    if let Some(action) = resource_action("open-queue", "Open queue", OperationKind::View, "queue")
-    {
-        resource.actions.push(action);
+    if matches!(
+        job.state,
+        Some(JobState::Pending | JobState::Held | JobState::Processing | JobState::Stopped)
+    ) {
+        row = row.operation(
+            PrintCentreEffect::CancelDocument {
+                job: job.id.clone(),
+            }
+            .operation("Cancel document"),
+        );
     }
     if matches!(
         job.state,
-        Some(
-            os_actions::printing::JobState::Pending
-                | os_actions::printing::JobState::Held
-                | os_actions::printing::JobState::Processing
-                | os_actions::printing::JobState::Stopped
-        )
-    ) && let Some(action) = resource_action(
-        "cancel",
-        "Cancel document",
-        OperationKind::Effect,
-        &format!("cancel\0{}", job.id),
+        Some(JobState::Stopped | JobState::Canceled | JobState::Aborted)
     ) {
-        resource.actions.push(action);
+        row = row.operation(
+            PrintCentreEffect::RetryDocument {
+                job: job.id.clone(),
+            }
+            .operation("Print again"),
+        );
     }
-    if matches!(
-        job.state,
-        Some(
-            os_actions::printing::JobState::Stopped
-                | os_actions::printing::JobState::Canceled
-                | os_actions::printing::JobState::Aborted
-        )
-    ) && let Some(action) = resource_action(
-        "retry",
-        "Print again",
-        OperationKind::Effect,
-        &format!("retry\0{}", job.id),
-    ) {
-        resource.actions.push(action);
-    }
-    resource
+    row
 }
 
-fn scanner_resource(scanner: &os_actions::printing::Scanner) -> Resource {
-    let key = resource_key(&scanner.device);
-    let mut resource = Resource::new(
-        format!("print-centre.scanner.{key}"),
+fn scanner_row(scanner: &os_actions::printing::Scanner) -> LiveRow {
+    LiveRow::new(
+        format!("print-centre.scanner.{}", resource_key(&scanner.device)),
         "print-centre.scanner",
         scanner.description.clone(),
-    );
-    if let Some(action) = resource_action(
-        "scan",
-        "Scan a document",
-        OperationKind::View,
-        &format!("scan-device\0{}", scanner.device),
-    ) {
-        resource.actions.push(action);
-    }
-    resource
+    )
+    .operation(
+        PrintCentreEffect::ScanWith {
+            scanner: scanner.device.clone(),
+        }
+        .operation("Scan a document"),
+    )
 }
 
 fn command_action(id: &str, label: &str, tx: &mpsc::Sender<UiCommand>, command: UiCommand) -> El {
@@ -1714,7 +1659,12 @@ fn print_setup_view(
                     Row::new()
                         .push(copy("Print on both sides"))
                         .push(Box::new(Spacer::new()))
-                        .push(Box::new(Toggle::from_state(two_sided))),
+                        .push(Box::new({
+                            let tx = tx.clone();
+                            Toggle::from_state(two_sided).on_change(move |two_sided| {
+                                let _ = tx.send(UiCommand::SetTwoSided(two_sided));
+                            })
+                        })),
                 )),
         ),
     ));
@@ -2040,8 +1990,12 @@ fn scan_setup_view(
     )
     .with_flexible_width()
     .with_id("print-centre.scan.resolution")
-    .on_view("print-centre.scan.resolution.select", move |index| {
-        resolution_state.set(index);
+    .on_view("print-centre.scan.resolution.select", {
+        let tx = tx.clone();
+        move |index| {
+            resolution_state.set(index);
+            let _ = tx.send(UiCommand::SetScanResolution(index));
+        }
     });
     let color_state = color.clone();
     let color_control = ToggleGroup::new(
@@ -2054,8 +2008,12 @@ fn scan_setup_view(
     )
     .with_flexible_width()
     .with_id("print-centre.scan.color")
-    .on_view("print-centre.scan.color.select", move |index| {
-        color_state.set(index);
+    .on_view("print-centre.scan.color.select", {
+        let tx = tx.clone();
+        move |index| {
+            color_state.set(index);
+            let _ = tx.send(UiCommand::SetScanColor(index));
+        }
     });
     let source_state = source.clone();
     let source_control = ToggleGroup::new(
@@ -2068,8 +2026,12 @@ fn scan_setup_view(
     )
     .with_flexible_width()
     .with_id("print-centre.scan.source")
-    .on_view("print-centre.scan.source.select", move |index| {
-        source_state.set(index);
+    .on_view("print-centre.scan.source.select", {
+        let tx = tx.clone();
+        move |index| {
+            source_state.set(index);
+            let _ = tx.send(UiCommand::SetScanSource(index));
+        }
     });
     let language_state = language.clone();
     let language_control = ToggleGroup::new(
@@ -2083,8 +2045,12 @@ fn scan_setup_view(
     )
     .with_flexible_width()
     .with_id("print-centre.scan.language")
-    .on_view("print-centre.scan.language.select", move |index| {
-        language_state.set(index);
+    .on_view("print-centre.scan.language.select", {
+        let tx = tx.clone();
+        move |index| {
+            language_state.set(index);
+            let _ = tx.send(UiCommand::SetOcrLanguage(index));
+        }
     });
     let settings = Column::new()
         .with_no_padding()
@@ -2246,101 +2212,83 @@ fn demo_print_preview() -> PrintPreview {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the deterministic demo catalogue keeps each workflow fixture visible in one dispatcher"
-)]
-fn workflow_demo(scenario: DemoScenario) -> Option<El> {
-    let (tx, _rx) = mpsc::channel();
-    if scenario == DemoScenario::Queue {
-        return Some(queue_view(&demo_snapshot(), &tx, None, None));
+/// Two printers a discovery found nearby.
+fn demo_discovered_printers() -> Vec<os_actions::printing::DiscoveredPrinter> {
+    vec![
+        os_actions::printing::DiscoveredPrinter {
+            uri: "ipps://studio.local/ipp/print".into(),
+            name: "Studio printer".into(),
+            location: Some("Upstairs workspace".into()),
+        },
+        os_actions::printing::DiscoveredPrinter {
+            uri: "ipps://office.local/ipp/print".into(),
+            name: "Office laser".into(),
+            location: Some("Downstairs office".into()),
+        },
+    ]
+}
+
+/// A scanned receipt whose text was recognized.
+fn demo_scanned_page() -> ScannedPage {
+    ScannedPage {
+        png: Arc::from(Vec::<u8>::new()),
+        rgba: Arc::from(demo_scanned_page_pixels(320, 440)),
+        width: 320,
+        height: 440,
+        recognized_text: Some(
+            "Travel receipt\nCoffee and breakfast  €12.40\nMonday, 7 September".into(),
+        ),
+        ocr_note: "Recognized 8 words.".into(),
+        ocr_language: "English".into(),
+        ocr_needs_refresh: false,
+        ocr_in_progress: false,
     }
-    if scenario == DemoScenario::Device {
-        let snapshot = demo_snapshot();
-        if let Some(queue) = snapshot
-            .queues
-            .as_ref()
-            .ok()
-            .and_then(|queues| queues.first())
-        {
-            return Some(device_view(queue, &tx));
+}
+
+/// What CUPS and SANE report in screenshot `scenario`; `None` shows a
+/// machine without printers.
+pub(crate) fn scenario_snapshot(scenario: Option<&str>) -> Option<Snapshot> {
+    use os_actions::printing::{JobState, QueueState};
+    let mut snapshot = demo_snapshot();
+    match scenario {
+        Some("empty") => return None,
+        Some("service-error" | "service-error-narrow") => {
+            snapshot.queues = Err("service unavailable".into());
+            snapshot.jobs = Err("service unavailable".into());
+            snapshot.scanners = Err("service unavailable".into());
         }
+        // The dashboard of a quiet printer.
+        None | Some("narrow") => {
+            if let Ok(queues) = &mut snapshot.queues
+                && let Some(queue) = queues.first_mut()
+            {
+                queue.state = QueueState::Ready;
+            }
+            if let Ok(jobs) = &mut snapshot.jobs
+                && let Some(job) = jobs.first_mut()
+            {
+                job.state = Some(JobState::Completed);
+                job.impressions_completed = job.impressions_total;
+            }
+        }
+        Some("attention") => {
+            if let Ok(queues) = &mut snapshot.queues
+                && let Some(queue) = queues.first_mut()
+            {
+                queue.state = QueueState::Paused;
+                queue.accepting_jobs = false;
+                queue.telemetry.state_reasons = vec!["media-empty-warning".into()];
+            }
+            if let Ok(jobs) = &mut snapshot.jobs
+                && let Some(job) = jobs.first_mut()
+            {
+                job.state = Some(JobState::Stopped);
+                job.state_reasons = vec!["media-empty-warning".into()];
+            }
+        }
+        Some(_) => {}
     }
-    if scenario == DemoScenario::Discovery {
-        let printers = Ok(vec![
-            os_actions::printing::DiscoveredPrinter {
-                uri: "ipps://studio.local/ipp/print".into(),
-                name: "Studio printer".into(),
-                location: Some("Upstairs workspace".into()),
-            },
-            os_actions::printing::DiscoveredPrinter {
-                uri: "ipps://office.local/ipp/print".into(),
-                name: "Office laser".into(),
-                location: Some("Downstairs office".into()),
-            },
-        ]);
-        return Some(discovery_view(Some(&printers), &tx));
-    }
-    if scenario == DemoScenario::PrintSetup {
-        let snapshot = demo_snapshot();
-        let copies = ui::LocalState::new(1.0);
-        let two_sided = ui::LocalState::new(true);
-        return Some(print_setup_view(
-            &snapshot,
-            std::path::Path::new("Travel itinerary.pdf"),
-            &demo_print_preview(),
-            Some("Studio_printer"),
-            &copies,
-            &two_sided,
-            &tx,
-        ));
-    }
-    if scenario == DemoScenario::ScanSetup {
-        let snapshot = demo_snapshot();
-        return Some(scan_setup_view(
-            &snapshot,
-            Some("scanner0"),
-            &ScanState::default(),
-            None,
-            &tx,
-        ));
-    }
-    if scenario == DemoScenario::ScanResult {
-        let snapshot = demo_snapshot();
-        let pixels: Arc<[u8]> = Arc::from(demo_scanned_page_pixels(320, 440));
-        let page = ScannedPage {
-            png: Arc::from(Vec::<u8>::new()),
-            rgba: pixels,
-            width: 320,
-            height: 440,
-            recognized_text: Some(
-                "Travel receipt\nCoffee and breakfast  €12.40\nMonday, 7 September".into(),
-            ),
-            ocr_note: "Recognized 8 words.".into(),
-            ocr_language: "English".into(),
-            ocr_needs_refresh: false,
-            ocr_in_progress: false,
-        };
-        let scan = ScanState {
-            result: Some(page.clone()),
-            pages: vec![page],
-            ..ScanState::default()
-        };
-        return Some(scan_setup_view(
-            &snapshot,
-            Some("scanner0"),
-            &scan,
-            None,
-            &tx,
-        ));
-    }
-    if scenario == DemoScenario::History {
-        return Some(history_view(&demo_snapshot(), &tx));
-    }
-    if scenario == DemoScenario::Diagnostics {
-        return Some(diagnostics_view(&demo_snapshot(), &tx));
-    }
-    None
+    Some(snapshot)
 }
 
 /// A deterministic, fully opaque receipt-like page for visual regression
@@ -2386,54 +2334,18 @@ fn demo_scanned_page_pixels(width: u32, height: u32) -> Vec<u8> {
     rgba
 }
 
-fn demo_view(scenario: DemoScenario) -> El {
-    if let Some(view) = workflow_demo(scenario) {
-        return view;
-    }
-    if scenario == DemoScenario::Empty {
-        return empty_view();
-    }
-    let mut snapshot = demo_snapshot();
-    if scenario == DemoScenario::ServiceError {
-        snapshot.queues = Err("service unavailable".into());
-        snapshot.jobs = Err("service unavailable".into());
-        snapshot.scanners = Err("service unavailable".into());
-    } else if scenario == DemoScenario::Dashboard {
-        if let Ok(queues) = &mut snapshot.queues
-            && let Some(queue) = queues.first_mut()
-        {
-            queue.state = os_actions::printing::QueueState::Ready;
-        }
-        if let Ok(jobs) = &mut snapshot.jobs
-            && let Some(job) = jobs.first_mut()
-        {
-            job.state = Some(os_actions::printing::JobState::Completed);
-            job.impressions_completed = job.impressions_total;
-        }
-    } else if scenario == DemoScenario::Attention {
-        if let Ok(queues) = &mut snapshot.queues
-            && let Some(queue) = queues.first_mut()
-        {
-            queue.state = os_actions::printing::QueueState::Paused;
-            queue.accepting_jobs = false;
-            queue.telemetry.state_reasons = vec!["media-empty-warning".into()];
-        }
-        if let Ok(jobs) = &mut snapshot.jobs
-            && let Some(job) = jobs.first_mut()
-        {
-            job.state = Some(os_actions::printing::JobState::Stopped);
-            job.state_reasons = vec!["media-empty-warning".into()];
-        }
-    }
-    let (tx, _rx) = mpsc::channel();
-    live_view(&snapshot, &tx, None)
-}
-
 fn request_snapshot() -> Option<mpsc::Receiver<Snapshot>> {
     let (tx, rx) = mpsc::channel();
+    #[cfg(test)]
+    let installed = tests::INSTALLED.with(|installed| installed.borrow().clone());
     std::thread::Builder::new()
         .name("tilo-print-centre-refresh".into())
         .spawn(move || {
+            #[cfg(test)]
+            if let Some(snapshot) = installed {
+                let _ = tx.send(snapshot);
+                return;
+            }
             let _ = tx.send(Snapshot {
                 queues: os_actions::printing::queues(),
                 jobs: os_actions::printing::jobs(),
@@ -2447,33 +2359,9 @@ fn request_snapshot() -> Option<mpsc::Receiver<Snapshot>> {
 impl PrintCentre {
     pub fn new() -> Self {
         let (commands_tx, commands_rx) = mpsc::channel();
+        let defaults = PrintDefaults::default();
         Self {
             inner: loading_view(),
-            refresh: request_snapshot(),
-            commands_tx,
-            commands_rx,
-            snapshot: None,
-            notice: None,
-            pending_cancel: None,
-            picker: None,
-            pending_document: None,
-            print_preview: PrintPreview::default(),
-            print_preview_rx: None,
-            selected_printer: None,
-            print_copies: ui::LocalState::new(1.0),
-            print_two_sided: ui::LocalState::new(false),
-            selected_scanner: None,
-            scan: ScanState::default(),
-            scan_save_picker: None,
-            scan_save_document: false,
-            actions: crate::resource::ActionSink::default(),
-            hosted: false,
-        }
-    }
-    pub fn demo(scenario: DemoScenario) -> Self {
-        let (commands_tx, commands_rx) = mpsc::channel();
-        Self {
-            inner: demo_view(scenario),
             refresh: None,
             commands_tx,
             commands_rx,
@@ -2486,57 +2374,158 @@ impl PrintCentre {
             print_preview_rx: None,
             selected_printer: None,
             print_copies: ui::LocalState::new(1.0),
-            print_two_sided: ui::LocalState::new(false),
+            print_two_sided: ui::LocalState::new(defaults.two_sided),
             selected_scanner: None,
             scan: ScanState::default(),
             scan_save_picker: None,
             scan_save_document: false,
-            actions: crate::resource::ActionSink::default(),
-            hosted: false,
+            defaults,
+            dispatcher: None,
+            replaced: false,
         }
     }
 
-    pub(crate) fn mark_framework_hosted(&mut self) {
-        self.hosted = true;
+    /// Ask CUPS and SANE what this machine has.
+    pub(crate) fn refresh(&mut self) {
+        self.handle_command(UiCommand::Refresh);
     }
 
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn is_framework_hosted(&self) -> bool {
-        self.hosted
+    /// Show `snapshot` as if a refresh had just reported it.
+    pub(crate) fn show(&mut self, snapshot: Option<&Snapshot>) {
+        self.refresh = None;
+        self.snapshot = snapshot.cloned();
+        self.rebuild_dashboard();
     }
 
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-        self.actions.mark_hosted_for_test();
+    /// The person's defaults changed, here or on another device: the scan
+    /// controls and the next document to print start from them.
+    pub(crate) fn present_defaults(&mut self, defaults: &PrintDefaults) {
+        if self.pending_document.is_none() {
+            self.print_two_sided.set(defaults.two_sided);
+        }
+        self.scan.resolution.set(defaults.resolution_index());
+        self.scan.color.set(defaults.color_index());
+        self.scan.source.set(defaults.source_index());
+        self.scan.language.set(defaults.language_index());
+        self.defaults = defaults.clone();
     }
 
-    #[cfg(test)]
-    pub(crate) fn sink_is_hosted(&self) -> bool {
-        self.actions.is_hosted()
+    /// Change the person's defaults through the resource's actions.
+    fn change_defaults(&self, invoke: ui::tilo_resource::Invoke<PrintDefaults>) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.invoke(invoke);
+        }
     }
 
-    /// Printers, jobs, and scanners from the live CUPS/SANE snapshot. Not a
-    /// second `print-centre.dashboard` root; dashboard Views already ride publish.
-    fn live_device_resources(&self) -> Vec<Resource> {
+    /// Answer `effect` the way the matching control does.
+    ///
+    /// # Errors
+    /// Returns why the printer, document or scanner it names is not known.
+    pub(crate) fn perform(&mut self, effect: PrintCentreEffect) -> Result<(), String> {
+        let command = match effect {
+            PrintCentreEffect::Refresh => UiCommand::Refresh,
+            PrintCentreEffect::FindPrinters => UiCommand::Discover,
+            PrintCentreEffect::OpenDashboard => UiCommand::Dashboard,
+            PrintCentreEffect::OpenQueue => UiCommand::Queue,
+            PrintCentreEffect::OpenHistory => UiCommand::History,
+            PrintCentreEffect::RunDiagnostics => UiCommand::Diagnostics,
+            PrintCentreEffect::PrintDocument => UiCommand::ChooseDocument,
+            PrintCentreEffect::ScanDocument => UiCommand::ScanSetup,
+            PrintCentreEffect::OpenPrinter { printer } => {
+                UiCommand::Device(self.known_printer(printer)?)
+            }
+            PrintCentreEffect::SetDefaultPrinter { printer } => {
+                UiCommand::SetDefault(self.known_printer(printer)?)
+            }
+            PrintCentreEffect::PausePrinter { printer } => {
+                UiCommand::SetEnabled(self.known_printer(printer)?, false)
+            }
+            PrintCentreEffect::ResumePrinter { printer } => {
+                UiCommand::SetEnabled(self.known_printer(printer)?, true)
+            }
+            PrintCentreEffect::CancelDocument { job } => {
+                UiCommand::ConfirmCancel(self.known_job(job)?)
+            }
+            PrintCentreEffect::RetryDocument { job } => UiCommand::RetryJob(self.known_job(job)?),
+            PrintCentreEffect::ScanWith { scanner } => {
+                self.handle_command(UiCommand::ScanSetup);
+                UiCommand::SelectScanner(self.known_scanner(scanner)?)
+            }
+        };
+        self.handle_command(command);
+        Ok(())
+    }
+
+    fn known_printer(&self, printer: String) -> Result<String, String> {
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.queues.as_ref().ok())
+            .is_some_and(|queues| queues.iter().any(|queue| queue.name == printer))
+            .then_some(printer)
+            .ok_or_else(|| "Print Centre does not know that printer".to_owned())
+    }
+
+    fn known_job(&self, job: String) -> Result<String, String> {
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.jobs.as_ref().ok())
+            .is_some_and(|jobs| jobs.iter().any(|known| known.id == job))
+            .then_some(job)
+            .ok_or_else(|| "Print Centre does not know that document".to_owned())
+    }
+
+    fn known_scanner(&self, scanner: String) -> Result<String, String> {
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.scanners.as_ref().ok())
+            .is_some_and(|scanners| scanners.iter().any(|known| known.device == scanner))
+            .then_some(scanner)
+            .ok_or_else(|| "Print Centre does not know that scanner".to_owned())
+    }
+
+    /// Open the page screenshot `scenario` shows, through the same commands
+    /// its controls send.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        match scenario {
+            Some("queue") => self.handle_command(UiCommand::Queue),
+            Some("history") => self.handle_command(UiCommand::History),
+            Some("diagnostics") => self.handle_command(UiCommand::Diagnostics),
+            Some("device") => self.handle_command(UiCommand::Device("Studio_printer".into())),
+            Some("discovery") => {
+                self.handle_command(UiCommand::DiscoveryFinished(Ok(demo_discovered_printers())))
+            }
+            Some("print" | "print-narrow") => {
+                self.pending_document = Some(PathBuf::from("Travel itinerary.pdf"));
+                self.selected_printer = Some("Studio_printer".into());
+                self.print_preview = demo_print_preview();
+                self.print_two_sided.set(self.defaults.two_sided);
+                self.rebuild_print_setup();
+            }
+            Some("scan") => self.handle_command(UiCommand::ScanSetup),
+            Some("scan-result" | "scan-result-narrow") => {
+                self.handle_command(UiCommand::ScanSetup);
+                self.handle_command(UiCommand::ScanFinished(Ok(demo_scanned_page())));
+            }
+            _ => {}
+        }
+    }
+
+    /// Printers, documents and scanners from the last CUPS/SANE snapshot.
+    pub(crate) fn device_rows(&self) -> Vec<LiveRow> {
         let Some(snapshot) = &self.snapshot else {
             return Vec::new();
         };
-        let mut extras = Vec::new();
+        let mut rows = Vec::new();
         if let Ok(queues) = &snapshot.queues {
-            extras.extend(queues.iter().map(printer_resource));
+            rows.extend(queues.iter().map(printer_row));
         }
         if let Ok(jobs) = &snapshot.jobs {
-            extras.extend(jobs.iter().map(job_resource).map(|mut job| {
-                job.actions
-                    .retain(|action| action.id.as_str() != "open-queue");
-                job
-            }));
+            rows.extend(jobs.iter().map(job_row));
         }
         if let Ok(scanners) = &snapshot.scanners {
-            extras.extend(scanners.iter().map(scanner_resource));
+            rows.extend(scanners.iter().map(scanner_row));
         }
-        extras
+        rows
     }
 
     fn request_document(&mut self) {
@@ -2544,7 +2533,7 @@ impl PrintCentre {
             return;
         }
         self.print_copies.set(1.0);
-        self.print_two_sided.set(false);
+        self.print_two_sided.set(self.defaults.two_sided);
         self.print_preview = PrintPreview::Unavailable;
         self.print_preview_rx = None;
         self.picker = Some(
@@ -2575,6 +2564,7 @@ impl PrintCentre {
 
     fn rebuild_print_setup(&mut self) {
         if let (Some(snapshot), Some(path)) = (&self.snapshot, &self.pending_document) {
+            self.replaced = true;
             self.inner = print_setup_view(
                 snapshot,
                 path,
@@ -2651,6 +2641,7 @@ impl PrintCentre {
 
     fn rebuild_scan_setup(&mut self) {
         if let Some(snapshot) = &self.snapshot {
+            self.replaced = true;
             self.inner = scan_setup_view(
                 snapshot,
                 self.selected_scanner.as_deref(),
@@ -2724,6 +2715,7 @@ impl PrintCentre {
     }
 
     fn rebuild_dashboard(&mut self) {
+        self.replaced = true;
         self.inner = self.snapshot.as_ref().map_or_else(empty_view, |snapshot| {
             live_view(snapshot, &self.commands_tx, self.notice.as_ref())
         });
@@ -2768,6 +2760,7 @@ impl PrintCentre {
         match command {
             UiCommand::Refresh => {
                 self.notice = None;
+                self.replaced = true;
                 self.inner = loading_view();
                 self.refresh = request_snapshot();
             }
@@ -2778,6 +2771,7 @@ impl PrintCentre {
             }
             UiCommand::Queue => {
                 if let Some(snapshot) = &self.snapshot {
+                    self.replaced = true;
                     self.inner = queue_view(
                         snapshot,
                         &self.commands_tx,
@@ -2788,11 +2782,13 @@ impl PrintCentre {
             }
             UiCommand::History => {
                 if let Some(snapshot) = &self.snapshot {
+                    self.replaced = true;
                     self.inner = history_view(snapshot, &self.commands_tx);
                 }
             }
             UiCommand::Diagnostics => {
                 if let Some(snapshot) = &self.snapshot {
+                    self.replaced = true;
                     self.inner = diagnostics_view(snapshot, &self.commands_tx);
                 }
             }
@@ -2803,10 +2799,12 @@ impl PrintCentre {
                     .and_then(|s| s.queues.as_ref().ok())
                     .and_then(|queues| queues.iter().find(|q| q.name == name))
                 {
+                    self.replaced = true;
                     self.inner = device_view(queue, &self.commands_tx);
                 }
             }
             UiCommand::Discover => {
+                self.replaced = true;
                 self.inner = discovery_view(None, &self.commands_tx);
                 let tx = self.commands_tx.clone();
                 let _ = std::thread::Builder::new()
@@ -2818,6 +2816,7 @@ impl PrintCentre {
                     });
             }
             UiCommand::DiscoveryFinished(result) => {
+                self.replaced = true;
                 self.inner = discovery_view(Some(&result), &self.commands_tx);
             }
             UiCommand::AddPrinter(printer) => {
@@ -2865,6 +2864,7 @@ impl PrintCentre {
             UiCommand::RequestCancel(id) => {
                 self.pending_cancel = Some(id);
                 if let Some(snapshot) = &self.snapshot {
+                    self.replaced = true;
                     self.inner = queue_view(
                         snapshot,
                         &self.commands_tx,
@@ -2905,6 +2905,29 @@ impl PrintCentre {
                 }
             }
             UiCommand::ChooseDocument => self.request_document(),
+            UiCommand::SetTwoSided(two_sided) => {
+                self.change_defaults(PrintDefaults::SET_TWO_SIDED.with(two_sided));
+            }
+            UiCommand::SetScanResolution(index) => {
+                if let Some(dpi) = SCAN_RESOLUTIONS.get(index) {
+                    self.change_defaults(PrintDefaults::SET_SCAN_RESOLUTION.with(*dpi));
+                }
+            }
+            UiCommand::SetScanColor(index) => {
+                if let Some(color) = SCAN_COLORS.get(index) {
+                    self.change_defaults(PrintDefaults::SET_SCAN_COLOR.with((*color).to_owned()));
+                }
+            }
+            UiCommand::SetScanSource(index) => {
+                if let Some(source) = SCAN_SOURCES.get(index) {
+                    self.change_defaults(PrintDefaults::SET_SCAN_SOURCE.with((*source).to_owned()));
+                }
+            }
+            UiCommand::SetOcrLanguage(index) => {
+                if let Some((code, _)) = OCR_LANGUAGES.get(index) {
+                    self.change_defaults(PrintDefaults::SET_OCR_LANGUAGE.with((*code).to_owned()));
+                }
+            }
             UiCommand::SelectPrinter(name) => {
                 self.selected_printer = Some(name);
                 self.rebuild_print_setup();
@@ -2948,7 +2971,7 @@ impl PrintCentre {
                 self.print_preview_rx = None;
                 self.selected_printer = None;
                 self.print_copies.set(1.0);
-                self.print_two_sided.set(false);
+                self.print_two_sided.set(self.defaults.two_sided);
                 self.rebuild_dashboard();
             }
             UiCommand::ScanSetup => {
@@ -2975,7 +2998,7 @@ impl PrintCentre {
                 let Some(device) = self.selected_scanner.clone() else {
                     return;
                 };
-                let resolution_dpi = [150_u16, 300, 600]
+                let resolution_dpi = SCAN_RESOLUTIONS
                     .get(self.scan.resolution.get())
                     .copied()
                     .unwrap_or(300);
@@ -3299,73 +3322,7 @@ impl Default for PrintCentre {
         Self::new()
     }
 }
-impl PrintCentre {
-    fn answer_resource_operation(
-        &mut self,
-        k: OperationKind,
-        id: &str,
-        payload: &[u8],
-        _: &AutoCommit,
-        _: &ObjId,
-    ) -> Result<bool, String> {
-        if id != PRINT_CENTRE_OPERATION || !matches!(k, OperationKind::View | OperationKind::Effect)
-        {
-            return Ok(false);
-        }
-        let command: String = serde_json::from_slice(payload)
-            .map_err(|error| format!("invalid Print Centre operation: {error}"))?;
-        let (verb, value) = command.split_once('\0').unwrap_or((&command, ""));
-        let expected_kind = match verb {
-            "refresh" | "discover" | "default" | "pause" | "resume" | "cancel" | "retry" => {
-                OperationKind::Effect
-            }
-            "dashboard" | "queue" | "history" | "diagnostics" | "print" | "scan" | "device"
-            | "scan-device" => OperationKind::View,
-            _ => return Err("unknown Print Centre operation".into()),
-        };
-        if k != expected_kind {
-            return Err("Print Centre operation has the wrong execution kind".into());
-        }
-        let next = match verb {
-            "refresh" => UiCommand::Refresh,
-            "discover" => UiCommand::Discover,
-            "dashboard" => UiCommand::Dashboard,
-            "queue" => UiCommand::Queue,
-            "history" => UiCommand::History,
-            "diagnostics" => UiCommand::Diagnostics,
-            "print" => UiCommand::ChooseDocument,
-            "scan" => UiCommand::ScanSetup,
-            "device" if !value.is_empty() => UiCommand::Device(value.into()),
-            "scan-device" if !value.is_empty() => UiCommand::SelectScanner(value.into()),
-            "default" if !value.is_empty() => UiCommand::SetDefault(value.into()),
-            "pause" if !value.is_empty() => UiCommand::SetEnabled(value.into(), false),
-            "resume" if !value.is_empty() => UiCommand::SetEnabled(value.into(), true),
-            "cancel" if !value.is_empty() => UiCommand::ConfirmCancel(value.into()),
-            "retry" if !value.is_empty() => UiCommand::RetryJob(value.into()),
-            _ => return Err("Print Centre resource is no longer available".into()),
-        };
-        self.handle_command(next);
-        Ok(true)
-    }
-}
-
-impl ui::undo::CommittedActions for PrintCentre {
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // Hosted edits belong to the framework dispatcher. Standalone stays
-        // on the local host, which has no document action yet.
-        if self.actions.is_hosted() {
-            return None;
-        }
-        self.actions.take_committed()
-    }
-}
-
 impl Widget for PrintCentre {
-    ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
-    );
-
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         if self.poll_picker() {
             self.inner.sync(state, path);
@@ -3430,177 +3387,81 @@ impl Widget for PrintCentre {
         self.inner.get_rect()
     }
     fn take_structure_dirty(&mut self) -> bool {
-        self.inner.take_structure_dirty()
+        // Commands replace the whole page; the new one needs a new layout.
+        self.inner.take_structure_dirty() | std::mem::take(&mut self.replaced)
     }
     fn needs_idle_sync(&self) -> bool {
         self.refresh.is_some() || self.picker.is_some() || self.scan_save_picker.is_some()
-    }
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[PRINT_CENTRE_OPERATION]
-    }
-}
-
-fn find_resource_tree(resources: &[Resource], id: &str) -> Option<Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource_tree(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-impl ui::resources::PublishesResources for PrintCentre {
-    fn resources(&self, _: &AutoCommit) -> Vec<Resource> {
-        if self.hosted {
-            return self.live_device_resources();
-        }
-        let mut root = ui::tilo_resource::publish::<crate::resource::PrintCentreResource>(
-            "print-centre",
-            "Print Centre",
-            &crate::resource::PrintCentreState,
-        );
-        if let Some(snapshot) = &self.snapshot {
-            if let Ok(queues) = &snapshot.queues {
-                root.children.extend(queues.iter().map(printer_resource));
-            }
-            if let Ok(jobs) = &snapshot.jobs {
-                root.children.extend(jobs.iter().map(job_resource));
-            }
-            if let Ok(scanners) = &snapshot.scanners {
-                root.children.extend(scanners.iter().map(scanner_resource));
-            }
-        }
-        vec![root]
-    }
-
-    fn resource(&self, _: &AutoCommit, id: &str) -> Option<Resource> {
-        let mut root = ui::tilo_resource::publish::<crate::resource::PrintCentreResource>(
-            "print-centre",
-            "Print Centre",
-            &crate::resource::PrintCentreState,
-        );
-        if let Some(snapshot) = &self.snapshot {
-            if let Ok(queues) = &snapshot.queues {
-                root.children.extend(queues.iter().map(printer_resource));
-            }
-            if let Ok(jobs) = &snapshot.jobs {
-                root.children.extend(jobs.iter().map(job_resource));
-            }
-            if let Ok(scanners) = &snapshot.scanners {
-                root.children.extend(scanners.iter().map(scanner_resource));
-            }
-        }
-        if self.hosted && id == "print-centre" {
-            return None;
-        }
-        find_resource_tree(&[root], id)
-            .or_else(|| find_resource_tree(&self.live_device_resources(), id))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::ROOT;
+    use crate::resource::PrintCentreShell;
+    use ui::framework::ResourceApp;
+    use ui::prelude::TestApp;
 
-    #[test]
-    fn hosted_resources_keep_devices_without_dashboard_root() {
-        let mut centre = PrintCentre::demo(DemoScenario::Dashboard);
-        centre.snapshot = Some(demo_snapshot());
-        let doc = AutoCommit::new();
-        assert!(!centre.is_framework_hosted());
-        let standalone = ui::resources::resources(&centre, &doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "print-centre.dashboard");
-        assert!(
-            standalone[0]
-                .children
+    fn registry() -> ui::tilo_actions::ActionRegistry {
+        let mut registry = ui::tilo_actions::ActionRegistry::new();
+        <PrintDefaults as ui::tilo_resource::Resource>::register(&mut registry);
+        registry
+    }
+
+    thread_local! {
+        /// What CUPS and SANE report to a live window in a test, instead of
+        /// asking the machine the test runs on.
+        pub(super) static INSTALLED: std::cell::RefCell<Option<Snapshot>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// A live Print Centre whose refresh found the studio printer, its
+    /// documents and its scanner.
+    fn live_with_studio() -> TestApp<PrintCentreShell> {
+        INSTALLED.with(|installed| *installed.borrow_mut() = Some(demo_snapshot()));
+        let mut app = TestApp::<PrintCentreShell>::new().expect("launch");
+        for _ in 0..600 {
+            app.settle();
+            if app
+                .harness()
+                .resources()
                 .iter()
+                .flat_map(|resource| resource.children.iter())
                 .any(|child| child.kind == "print-centre.printer")
-        );
-
-        centre.mark_hosted_for_test();
-        let printer_id = standalone[0]
-            .children
-            .iter()
-            .find(|child| child.kind == "print-centre.printer")
-            .map(|child| child.id.as_str().to_owned())
-            .expect("printer");
-        assert!(ui::resources::resource(&centre, &doc, "print-centre").is_none());
-        assert!(
-            ui::resources::resource(&centre, &doc, &printer_id)
-                .is_some_and(|printer| printer.actions.iter().any(|action| action.id == "open")),
-            "a hosted printer stays the published row"
-        );
-        let extras = ui::resources::resources(&centre, &doc);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "print-centre.dashboard"
-                    && resource.id.as_str() != "print-centre"),
-            "hosted must not republish the dashboard: {:?}",
-            extras
-                .iter()
-                .map(|resource| resource.id.as_str())
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "print-centre.printer")
-        );
-        assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "print-centre.job")
-        );
-        assert!(extras.iter().all(|resource| {
-            resource
-                .actions
-                .iter()
-                .all(|action| action.id.as_str() != "open-queue")
-        }));
+            {
+                return app;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("the refresh never reported the studio printer");
     }
 
-    /// The surface Print Centre publishes once a refresh has found printers,
+    /// The tree Print Centre publishes once a refresh has found printers,
     /// documents and scanners.
-    fn populated_resources(doc: &AutoCommit) -> Vec<Resource> {
-        let mut centre = PrintCentre::demo(DemoScenario::Dashboard);
-        centre.snapshot = Some(demo_snapshot());
-        ui::resources::resources(&centre, doc)
+    fn populated_resources() -> Vec<ui::tilo_actions::Resource> {
+        live_with_studio().harness().resources()
     }
 
-    // Print Centre keeps no document: it publishes only effect and view
-    // operations, so the contract is the surface sweep (protocol validation
-    // over the dashboard and every printer, job and scanner) and Ctrl+K.
+    // The defaults' actions all take an argument; the sweep validates the
+    // whole published surface (the pages, every printer, document and
+    // scanner) and Ctrl+K.
     ui::action_contract_tests! {
-        seed: AutoCommit::new(),
-        registry: tilo_actions::ActionRegistry::new(),
-        resources: |doc| populated_resources(doc),
+        seed: ui::automerge::AutoCommit::new(),
+        registry: registry(),
+        resources: |_| populated_resources(),
         palette: ["Print a document", "Open print queue", "Find network printers", "Open printer"],
+    }
+
+    /// Print Centre's own widget in a captured frame, without the window
+    /// chrome around it.
+    fn print_centre(node: &ui::headless::InspectionNode) -> &ui::headless::InspectionNode {
+        fn find(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
+            if node.widget == "ResourceApp" {
+                return Some(node);
+            }
+            node.children.iter().find_map(find)
+        }
+        find(node).expect("Print Centre in the frame")
     }
 
     fn queue(
@@ -3617,37 +3478,49 @@ mod tests {
         }
     }
 
+    /// The id of the published row of `kind`.
+    fn row_id(surface: &ui::serde_json::Value, kind: &str) -> String {
+        surface
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["resource_kind"] == kind))
+            .and_then(|row| row["resource"].as_str())
+            .unwrap_or_else(|| panic!("no {kind} row in {surface}"))
+            .to_owned()
+    }
+
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
-        eprintln!("phase scenarios_build");
+        eprintln!("phase every_scenario_captures_at_its_viewport");
         {
-            for s in [
-                DemoScenario::Dashboard,
-                DemoScenario::Active,
-                DemoScenario::Attention,
-                DemoScenario::Empty,
-                DemoScenario::PrintSetup,
-                DemoScenario::ScanSetup,
-                DemoScenario::ScanResult,
-                DemoScenario::History,
-                DemoScenario::Diagnostics,
-                DemoScenario::ServiceError,
-            ] {
-                assert_eq!(PrintCentre::demo(s).name(), "PrintCentre");
+            for scenario in PrintCentreShell::scenarios()
+                .iter()
+                .map(|name| Some(*name))
+                .chain([None])
+            {
+                let mut app = TestApp::<PrintCentreShell>::capture(scenario)
+                    .unwrap_or_else(|error| panic!("{scenario:?}: {error}"));
+                let (width, height) = PrintCentreShell::shot_viewport(scenario);
+                assert_eq!(app.harness().inspection().viewport, [width, height]);
             }
+            let mut queue = TestApp::<PrintCentreShell>::capture(Some("queue")).unwrap();
+            let frame = queue.harness().inspection_json().unwrap();
+            assert!(frame.contains("Travel itinerary"), "{frame}");
+            let mut empty = TestApp::<PrintCentreShell>::capture(Some("empty")).unwrap();
+            let frame = empty.harness().inspection_json().unwrap();
+            assert!(frame.contains("Set up your first printer"), "{frame}");
         }
 
-        eprintln!("phase resource_surface_exposes_real_navigation_and_device_operations");
+        eprintln!("phase published_tree_exposes_real_navigation_and_device_operations");
         {
-            let mut centre = PrintCentre::demo(DemoScenario::Dashboard);
-            centre.snapshot = Some(demo_snapshot());
-            let mut doc = AutoCommit::new();
-            let resources = ui::resources::resources(&centre, &doc);
-            let root = resources.first().expect("Print Centre root resource");
-            let action_ids = root
-                .actions
+            let mut app = live_with_studio();
+            let surface = app.agent_surface();
+            let actions = surface
+                .as_array()
+                .unwrap()
                 .iter()
-                .map(|action| action.id.as_str())
+                .filter(|row| row["resource_kind"] == "print-centre.defaults")
+                .filter_map(|row| row["action"].as_str())
                 .collect::<Vec<_>>();
             for expected in [
                 "refresh",
@@ -3657,44 +3530,70 @@ mod tests {
                 "find-printers",
                 "print-document",
                 "scan-document",
+                "set-scan-resolution",
             ] {
-                assert!(action_ids.contains(&expected), "missing {expected} action");
+                assert!(
+                    actions.contains(&expected),
+                    "missing {expected}: {actions:?}"
+                );
             }
+            let printer = row_id(&surface, "print-centre.printer");
+            let job = row_id(&surface, "print-centre.job");
+            let scanner = row_id(&surface, "print-centre.scanner");
+
+            // A page opens through the effect a control sends; a row opens
+            // its own printer.
+            app.effect(&PrintCentreEffect::OpenHistory).unwrap();
+            let frame = app.harness().inspection_json().unwrap();
+            assert!(frame.contains("Shipping labels"), "{frame}");
+            app.call_on(&printer, "open-printer", ui::serde_json::json!({}))
+                .unwrap();
+            let frame = app.harness().inspection_json().unwrap();
+            assert!(frame.contains("print-centre.device"), "{frame}");
+            app.call_on(&scanner, "scan-with", ui::serde_json::json!({}))
+                .unwrap();
+            let frame = app.harness().inspection_json().unwrap();
+            assert!(frame.contains("print-centre.scan.resolution"), "{frame}");
             assert!(
-                root.children
+                app.agent_surface()
+                    .as_array()
+                    .unwrap()
                     .iter()
-                    .any(|resource| resource.kind == "print-centre.printer"),
-                "configured queues are first-class resources"
-            );
-            assert!(
-                root.children
-                    .iter()
-                    .any(|resource| resource.kind == "print-centre.job"),
-                "recent documents are first-class resources"
-            );
-            assert!(
-                root.children
-                    .iter()
-                    .any(|resource| resource.kind == "print-centre.scanner"),
-                "available scanners are first-class resources"
+                    .any(
+                        |row| row["resource"] == job.as_str() && row["action"] == "cancel-document"
+                    ),
+                "a printing document can be cancelled"
             );
 
-            let payload = serde_json::to_vec("queue").expect("operation payload");
+            // A printer the snapshot does not list is refused, not guessed.
             assert!(
-                centre
-                    .start_operation(
-                        &ui::widget::ResourceOperation::local(
-                            ui::tilo_actions::InvocationId::new(),
-                            OperationKind::View,
-                            PRINT_CENTRE_OPERATION,
-                            &payload
-                        ),
-                        &mut doc,
-                        &ROOT
-                    )
-                    .map(|started| started.is_some())
-                    .expect("queue view operation")
+                app.effect(&PrintCentreEffect::OpenPrinter {
+                    printer: "Elsewhere".into()
+                })
+                .is_err()
             );
+        }
+
+        eprintln!("phase scan_controls_change_the_person_s_defaults");
+        {
+            let mut app = live_with_studio();
+            app.effect(&PrintCentreEffect::ScanDocument).unwrap();
+            app.call_on(
+                "tilo.control:print-centre.scan.resolution.select",
+                "select",
+                ui::serde_json::json!({ "index": 2 }),
+            )
+            .unwrap();
+            app.settle();
+            assert_eq!(app.state().scan_resolution, 600);
+            app.call_on(
+                "tilo.control:print-centre.scan.language.select",
+                "select",
+                ui::serde_json::json!({ "index": 1 }),
+            )
+            .unwrap();
+            app.settle();
+            assert_eq!(app.state().ocr_language, "deu");
         }
 
         eprintln!("phase backend_failures_remain_distinct_from_legitimate_empty_results");
@@ -3745,13 +3644,15 @@ mod tests {
             }
 
             for width in [360_u32, 390] {
-                let centre = ui::headless::Driver::new(
-                    ui::State::new(),
-                    Box::new(PrintCentre::demo(DemoScenario::ScanResult)),
-                    (width, 760),
-                );
+                let mut centre =
+                    TestApp::<PrintCentreShell>::capture_at(Some("scan-result"), (width, 760))
+                        .unwrap();
                 let mut buttons = 0;
-                inspect(&centre.inspection().root, f64::from(width), &mut buttons);
+                inspect(
+                    print_centre(&centre.harness().inspection().root),
+                    f64::from(width),
+                    &mut buttons,
+                );
                 assert!(buttons >= 8, "expected the complete scan-review action set");
             }
         }
@@ -3771,15 +3672,14 @@ mod tests {
 
             for width in [360_u32, 520] {
                 let height = 820_u32;
-                let centre = ui::headless::Driver::new(
-                    ui::State::new(),
-                    Box::new(PrintCentre::demo(DemoScenario::PrintSetup)),
-                    (width, height),
-                );
-                let snapshot = centre.inspection();
+                let mut centre =
+                    TestApp::<PrintCentreShell>::capture_at(Some("print"), (width, height))
+                        .unwrap();
+                let snapshot = centre.harness().inspection();
+                let surface = print_centre(&snapshot.root);
 
                 let mut buttons = Vec::new();
-                collect_buttons(&snapshot.root, &mut buttons);
+                collect_buttons(surface, &mut buttons);
                 buttons.sort_by(|left, right| left.y0.total_cmp(&right.y0));
                 let footer_buttons = buttons.iter().skip(1).collect::<Vec<_>>();
                 assert_eq!(
@@ -3787,7 +3687,7 @@ mod tests {
                     2,
                     "Cancel and Print must stay visible; buttons were {buttons:?}"
                 );
-                let root_bottom = snapshot.root.rect[1] + snapshot.root.rect[3];
+                let root_bottom = surface.rect[1] + surface.rect[3];
                 for rect in footer_buttons {
                     assert!(
                         rect.width() >= 44.0,
@@ -3841,13 +3741,12 @@ mod tests {
                 "print-centre.diagnostics.open",
             ];
             for text_scale in [1.0, 2.0] {
-                let centre = ui::headless::Driver::new_with_theme(
-                    ui::State::new(),
-                    Box::new(PrintCentre::demo(DemoScenario::Active)),
-                    (1440, 900),
-                    Theme::dark().with_text_scale(text_scale),
-                );
-                let snapshot = centre.inspection();
+                let mut centre =
+                    TestApp::<PrintCentreShell>::capture_at(Some("active"), (1440, 900)).unwrap();
+                centre
+                    .harness()
+                    .set_theme(Theme::dark().with_text_scale(text_scale));
+                let snapshot = centre.harness().inspection();
                 let root = &snapshot.root;
                 let controls = ids.map(|id| {
                     let rect = rect_for(root, id).unwrap_or_else(|| panic!("missing {id}"));
@@ -4055,7 +3954,9 @@ mod tests {
     fn scan_page_edits_invalidate_ocr_and_export_in_order() {
         eprintln!("phase multipage_scan_session_preserves_reorders_navigates_and_deletes_pages");
         {
-            let mut centre = PrintCentre::demo(DemoScenario::ScanSetup);
+            let mut centre = PrintCentre::new();
+            centre.show(Some(&demo_snapshot()));
+            centre.handle_command(UiCommand::ScanSetup);
             centre.handle_command(UiCommand::ScanFinished(Ok(scanned_page(10))));
             centre.handle_command(UiCommand::ScanAnother);
             assert_eq!(
