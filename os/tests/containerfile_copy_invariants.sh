@@ -93,7 +93,8 @@ containerfile="$repo/os/Containerfile"
 # booted-guest checks in /usr/libexec/tilo.
 # The release gate's input hotplug check ships beside them.
 # The boot units gate ships with the rollback units whose confirmation it gates.
-expected_contract=f77ada33febfb2fa0be5fd41366ecb4f455d40a10d9b6c97d54745e90b6904b9
+# The ush supervisor ships with the two relay helpers it runs for Terminal.
+expected_contract=ad372faa6b5e32a2d4ef4df30a9423b6e6bc54a0c946fbbf97ef61a6ded6e385
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
