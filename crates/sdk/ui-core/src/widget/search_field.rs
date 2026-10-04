@@ -185,7 +185,6 @@ impl SearchField {
             input: input
                 .with_plain_chrome()
                 .with_kind(TextInputKind::Search)
-                .with_persistent_placeholder()
                 .with_placeholder("Search"),
             leading: Icon::Search,
             clearable: true,
@@ -300,7 +299,6 @@ impl SearchField {
         self.input = std::mem::replace(&mut self.input, TextInput::local())
             .with_plain_chrome()
             .with_kind(TextInputKind::Search)
-            .with_persistent_placeholder()
             .with_on_change_path(path);
         self
     }

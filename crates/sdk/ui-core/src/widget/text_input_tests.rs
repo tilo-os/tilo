@@ -860,7 +860,7 @@ fn unfocused_input_shows_start_and_placeholder() {
         );
     }
 
-    // Case `placeholder_visible_only_when_empty_and_unfocused`.
+    // Case `placeholder_visible_while_empty_focused_or_not`.
     {
         let mut ti = TextInput::local().with_placeholder("Search…");
         assert_eq!(ti.placeholder(), "Search…");
@@ -870,7 +870,16 @@ fn unfocused_input_shows_start_and_placeholder() {
         );
 
         ti.set_focus(true);
-        assert!(!ti.shows_placeholder(), "focused input hides placeholder");
+        assert!(
+            ti.shows_placeholder(),
+            "focusing an empty input keeps the placeholder"
+        );
+
+        ti.set_text("h");
+        assert!(
+            !ti.shows_placeholder(),
+            "the first character replaces the placeholder"
+        );
 
         ti.set_focus(false);
         ti.set_text("hello");
@@ -909,21 +918,21 @@ fn unfocused_input_shows_start_and_placeholder() {
             "placeholder must paint a glyph run when shown",
         );
 
-        let mut hidden = TextInput::local().with_placeholder("Type here");
-        hidden.set_focus(true);
-        hidden.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
-        let mut scene2 = Scene::new();
+        let mut focused = TextInput::local().with_placeholder("Type here");
+        focused.set_focus(true);
+        focused.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
+        let mut scene_focused = Scene::new();
         Widget::draw(
-            &mut hidden,
-            &mut scene2,
+            &mut focused,
+            &mut scene_focused,
             Affine::IDENTITY,
             &mut tr,
             &theme,
             &presence,
         );
         assert!(
-            scene2.encoding().resources.glyph_runs.is_empty(),
-            "focused input must not paint the placeholder",
+            !scene_focused.encoding().resources.glyph_runs.is_empty(),
+            "a focused empty input still paints the placeholder",
         );
     }
 

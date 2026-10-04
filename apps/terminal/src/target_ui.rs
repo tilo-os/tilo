@@ -479,7 +479,6 @@ impl TerminalWidget {
         let mut input = TextInput::local()
             .with_id("terminal_environment_name")
             .with_placeholder(&placeholder)
-            .with_persistent_placeholder()
             .with_accessible_name(placeholder.clone());
         input.set_focus(true);
         self.environments_panel = EnvironmentsPanel {

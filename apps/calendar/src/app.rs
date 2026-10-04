@@ -612,7 +612,6 @@ impl CalendarApp {
             title_input: TextInput::local()
                 .with_placeholder(TITLE_PLACEHOLDER)
                 .with_text_role(ui::tokens::TextRole::Heading)
-                .with_persistent_placeholder()
                 .with_id("event_title"),
             location_input: TextInput::local()
                 .with_placeholder("Add location")
