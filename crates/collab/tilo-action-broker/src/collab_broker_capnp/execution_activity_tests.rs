@@ -522,7 +522,8 @@ async fn failed_terminal_journal_barrier_cannot_publish_success() {
 }
 
 /// A workspace whose agent `scribe` may write to the test app but is denied
-/// its `erase` action, and the app publishing `update`, `edit` and `erase`.
+/// its `erase` action, with a second writing person `b2…`, and the app
+/// publishing `update`, `edit` and `erase`.
 fn continuation_fixture() -> (
     Arc<CapnpBrokerState>,
     Caller,
@@ -540,6 +541,11 @@ fn continuation_fixture() -> (
     workspace.grant_capability(CapOverride::grant(
         Subject::agent("scribe"),
         Scope::App("so.tilo.test".into()),
+        Verb::Write,
+    ));
+    workspace.grant_capability(CapOverride::membership(
+        Subject::person("b2".repeat(32)),
+        room.clone(),
         Verb::Write,
     ));
     workspace.grant_capability(CapOverride::new(
@@ -668,6 +674,52 @@ async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
         .await
         .unwrap();
     assert!(state.continuing_caller(7, running.invocation).is_none());
+}
+
+/// Doors that take the caller's own invocation id can admit two callers'
+/// invocations under one id on the same app. An edit submitted on behalf of
+/// that id names no single caller, so it is admitted for neither, never for
+/// whichever one the registry happens to find first.
+#[test]
+fn an_invocation_id_two_callers_share_continues_neither() {
+    let (state, agent, _app) = continuation_fixture();
+    let room = agent.room().unwrap().to_owned();
+    let other = "b2".repeat(32);
+    state
+        .stable_invocation_subscribers
+        .lock()
+        .unwrap()
+        .insert(7);
+    let shared = tilo_actions::InvocationId::new();
+    let start = |person: &str| {
+        let caller = Caller::local_person(person)
+            .in_room(room.clone())
+            .in_new_execution();
+        state
+            .start_invocation_confirmed_for_origin(
+                7,
+                "test:block-a",
+                "update",
+                InvocationInputs {
+                    caller: Some(&caller),
+                    execution: ExecutionScope::for_call(&caller, shared),
+                    argument: None,
+                    actor: &BrokerActor::person(person),
+                    confirmation_token: None,
+                    context: None,
+                },
+                None,
+            )
+            .unwrap();
+        caller
+    };
+    let first = start(&"a1".repeat(32));
+    assert_eq!(state.continuing_caller(7, shared), Some(first));
+    start(&other);
+    assert!(
+        state.continuing_caller(7, shared).is_none(),
+        "an ambiguous invocation continues for nobody"
+    );
 }
 
 #[test]
