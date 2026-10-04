@@ -2732,6 +2732,11 @@ jobs:
           ./os/dev/vm.sh type "$TILO_PASS"
           ./os/dev/vm.sh keys ret
 
+          # Everything above can pass on a degraded system. No unit may have
+          # failed by now, and the rollback confirmation (which refuses to
+          # confirm a degraded generation) must have run and succeeded.
+          ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/boot-units-gate.sh"
+
           if [[ $DEV_GATE == true ]]; then
             # What makes the disk a dev VM: tilo-vm reaches tilo-vmd as root,
             # on this architecture, built on exactly this lane's image.

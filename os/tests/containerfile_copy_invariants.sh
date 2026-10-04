@@ -87,7 +87,8 @@ containerfile="$repo/os/Containerfile"
 # definitions or upstream keys ship, only the generic helper and its units.
 # The build-only Cisco OpenH264 gate is a deliberate addition (removed after it runs).
 # The extension-manifest public key ships beside the helper.
-expected_contract=6eb69e284555227a46dcc65a3eb0c144e4303db619d3e2df99e18358d0fb7482
+# The boot units gate ships with the rollback units whose confirmation it gates.
+expected_contract=506555c11446bcb206551fcfcc7351eea4229c0424ec2aff085b38a553c9847a
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
