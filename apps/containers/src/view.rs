@@ -639,9 +639,12 @@ fn logs(c: &Container) -> Element {
 /// Output as the process wrote it, in a well: one line per line, never
 /// broken inside a word. A line wider than the column scrolls sideways.
 fn output<'a>(lines: impl Iterator<Item = &'a str>) -> Element {
-    let lines: Vec<Element> = lines
+    let mut lines: Vec<Element> = lines
         .map(|line| Box::new(LogLine::new(line)) as Element)
         .collect();
+    // Room under the last line for the sideways scroll bar, which the
+    // scroll view lays over its content.
+    lines.push(Box::new(Spacer::token(SpacingStep::S2)));
     Box::new(
         Well::new().with_background().with_child(Box::new(
             Scrollable::new_horizontal()
@@ -995,7 +998,8 @@ pub(crate) fn distrobox_page(engine: &Engine, controls: bool, intents: &Intents)
         .map(|b: &DistroBox| {
             let mut row = ListRow::new(format!("distrobox-{}", b.name), b.name.clone())
                 .icon(Icon::Terminal)
-                .secondary(b.image.clone());
+                .secondary(b.image.clone())
+                .meta(b.status.label());
             row = with_status(row, b.status);
             if controls {
                 row = row_action(
