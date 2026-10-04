@@ -29,7 +29,7 @@
 //! zeroized buffer shared with a local-mode [`TextInput`]. It never enters an
 //! Automerge object, change history, persistence, presence, or peer sync.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -89,6 +89,9 @@ const FORM_WIDTH: f32 = 360.0;
 /// The passcode field's band at normal text size; the sign-in action beside
 /// it grows with the field.
 const FIELD_HEIGHT: f32 = 40.0;
+/// Roughly the spacing between rows of the keyboard on the screen, for
+/// deciding the form's density before the theme's tokens are at hand.
+const KEYBOARD_GAP_ESTIMATE: f32 = 8.0;
 /// The footer's session picker, wide enough for a session's name.
 const SESSION_PICKER_WIDTH: f32 = 200.0;
 /// Avatar diameter on a roomy display, and when space or large text is tight.
@@ -680,6 +683,15 @@ pub struct GreeterApp {
     /// has, keys typed at the greeter go nowhere, so the console reports
     /// sign-in as accepting input only once this is set.
     keyboard_focus: bool,
+    /// Touch is the input in use: the screen was touched after the last
+    /// physical key.
+    touch_in_use: bool,
+    /// A field of the form has the focus.
+    form_field_focused: bool,
+    /// Whether the composition was built with the keyboard on the screen.
+    touch_keyboard_built: bool,
+    /// The keyboard on the screen's state, kept across rebuilds.
+    touch_keyboard: Rc<RefCell<crate::touch_keyboard::KeyboardModel>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -801,6 +813,10 @@ impl GreeterApp {
             layout_text_scale: 1.0,
             console: None,
             keyboard_focus: false,
+            touch_in_use: false,
+            form_field_focused: false,
+            touch_keyboard_built: false,
+            touch_keyboard: Rc::default(),
         }
     }
 
@@ -951,7 +967,15 @@ impl GreeterApp {
     /// Tight space or large text: a smaller avatar and closer spacing keep
     /// the whole form above the footer.
     fn compact(&self, text_scale: f32) -> bool {
-        (self.rect.height() > 0.0 && self.rect.height() < COMPACT_VIEWPORT_HEIGHT)
+        // The keyboard on the screen takes the bottom of the display; the
+        // form fits in what is left above it.
+        let keyboard = if self.touch_keyboard_wanted() {
+            f64::from(FIELD_HEIGHT + KEYBOARD_GAP_ESTIMATE) * 5.0
+        } else {
+            0.0
+        };
+        let height = self.rect.height() - keyboard;
+        (self.rect.height() > 0.0 && height < COMPACT_VIEWPORT_HEIGHT)
             || text_scale >= COMPACT_TEXT_SCALE
     }
 
@@ -1559,11 +1583,97 @@ impl GreeterApp {
                 .with_child(Box::new(viewport))
                 .with_persisted_offset(self.viewport_offset.clone()),
         );
+        let mut column = vec![view];
+        if self.touch_keyboard_wanted() {
+            column.push(Box::new(crate::touch_keyboard::TouchKeyboard::new(
+                Rc::clone(&self.touch_keyboard),
+                FIELD_HEIGHT,
+                s.s2,
+                FORM_WIDTH * 2.0,
+            )));
+        }
+        column.push(self.build_footer(busy, theme));
         Box::new(
-            Stack::column(s.s2, vec![view, self.build_footer(busy, theme)])
+            Stack::column(s.s2, column)
                 .padding(if compact { s.s2 } else { s.s6 })
                 .fill_height(),
         )
+    }
+
+    /// Whether the keyboard on the screen shows: a field of the form has the
+    /// focus, touch is the input in use, and the form takes input.
+    fn touch_keyboard_wanted(&self) -> bool {
+        self.touch_in_use && self.form_field_focused && !self.phase.is_busy()
+    }
+
+    /// Follow the facts the keyboard on the screen depends on, rebuilding
+    /// the form when it should appear or go.
+    fn follow_touch_keyboard(&mut self) {
+        // A rebuild seats focus again only after this runs; a moment with
+        // nothing focused keeps what was known rather than flicker the
+        // keyboard away and back.
+        if let Some(c) = self.composed.as_mut() {
+            if focused_text_field(c.as_mut()).is_some() {
+                self.form_field_focused = true;
+            } else if any_focused(c.as_ref()) {
+                self.form_field_focused = false;
+            }
+        }
+        if self.touch_keyboard_wanted() != self.touch_keyboard_built {
+            self.dirty_structure = true;
+        }
+    }
+
+    /// Hand what the keyboard on the screen typed to the focused field
+    /// through that field's own editing: text by insertion at the caret,
+    /// Backspace as the key, Enter as the form's sign-in action. Nothing
+    /// reaches the document or the clipboard.
+    fn type_into_focused_field(&mut self, ctx: &mut ui::widget::EventCtx<'_>) {
+        use crate::touch_keyboard::KeyAction;
+        let typed = self.touch_keyboard.borrow_mut().take_actions();
+        for action in typed {
+            if action == KeyAction::Enter {
+                let _ = ctx.state.put(ctx.path, SUBMIT_PATH, true);
+                continue;
+            }
+            let Some(field) = self
+                .composed
+                .as_mut()
+                .and_then(|c| focused_text_field(c.as_mut()))
+            else {
+                continue;
+            };
+            match action {
+                KeyAction::Text(text) => {
+                    if let Some(input) = field
+                        .as_any_mut()
+                        .and_then(|any| any.downcast_mut::<TextInput>())
+                    {
+                        input.insert_at_cursor(&text);
+                    }
+                }
+                KeyAction::Backspace => {
+                    let mut handled = false;
+                    let mut field_ctx = ui::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: ctx.modifiers,
+                        state: ctx.state,
+                        path: ctx.path,
+                        handled: &mut handled,
+                        focus_target: ctx.focus_target,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    };
+                    for state in [ElementState::Pressed, ElementState::Released] {
+                        field.handle_event(
+                            &synthetic_key(Key::Named(NamedKey::Backspace), state),
+                            &mut field_ctx,
+                        );
+                    }
+                }
+                KeyAction::Enter => {}
+            }
+        }
     }
 
     fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
@@ -1944,6 +2054,9 @@ impl Widget for GreeterApp {
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
         }
+        // Focus moves after event dispatch; the keyboard on the screen
+        // follows it here.
+        self.follow_touch_keyboard();
 
         // Submit rising edge — reset the flag *before* attempting so a
         // single click fires exactly one attempt.
@@ -1970,6 +2083,7 @@ impl Widget for GreeterApp {
     ) -> NodeId {
         self.layout_text_scale = theme.text_scale;
         let mut composed = self.build_composition(theme);
+        self.touch_keyboard_built = self.touch_keyboard_wanted();
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 
@@ -2032,7 +2146,13 @@ impl Widget for GreeterApp {
             && let Ok(children) = taffy.children(node)
             && let Some(&child) = children.first()
         {
-            c.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
+            let origin = Point::new(self.rect.x0, self.rect.y0);
+            c.apply_layout(taffy, child, origin);
+            // The keyboard on the screen shortens the form's viewport; keep
+            // the field it types into in view above it.
+            if self.touch_keyboard_built && keep_field_in_view(c.as_mut()) {
+                c.apply_layout(taffy, child, origin);
+            }
         }
     }
 
@@ -2056,7 +2176,12 @@ impl Widget for GreeterApp {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::Focused(focused) => self.keyboard_focus = *focused,
-            WindowEvent::KeyboardInput { .. } => self.keyboard_focus = true,
+            WindowEvent::KeyboardInput { .. } => {
+                self.keyboard_focus = true;
+                // A physical key: a keyboard is at hand.
+                self.touch_in_use = false;
+            }
+            WindowEvent::Touch(_) => self.touch_in_use = true,
             _ => {}
         }
         // Track Caps Lock from typed letters (winit's Modifiers can't report
@@ -2104,6 +2229,9 @@ impl Widget for GreeterApp {
         {
             c.handle_event(event, &mut ctx.reborrow(ctx.path, child));
         }
+        // The keyboard on the screen, part of that tree, queued its presses.
+        self.type_into_focused_field(ctx);
+        self.follow_touch_keyboard();
 
         // A focused control owns Enter. Dropdown consumes it above; buttons
         // deliberately leave it for App's standard focused-control activation.
@@ -2234,6 +2362,89 @@ impl Widget for GreeterApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+/// The text field holding the focus in `widget`'s subtree.
+fn focused_text_field(widget: &mut dyn Widget) -> Option<&mut dyn Widget> {
+    if widget.name() == "TextInput" && widget.is_focused() {
+        return Some(widget);
+    }
+    for child in widget.children_mut() {
+        if let Some(found) = focused_text_field(child) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Scroll the form's viewport (the composition's first child) so the
+/// focused field, or else the passcode field, is fully visible. Returns
+/// whether it scrolled.
+fn keep_field_in_view(composed: &mut dyn Widget) -> bool {
+    let field = focused_text_field(composed)
+        .map(|field| field.get_rect())
+        .or_else(|| find_by_id(composed, "greeter.password").map(Widget::get_rect));
+    let Some(field) = field else {
+        return false;
+    };
+    let Some(view) = composed
+        .children_mut()
+        .into_iter()
+        .next()
+        .and_then(Widget::as_any_mut)
+        .and_then(|any| any.downcast_mut::<Scrollable>())
+    else {
+        return false;
+    };
+    let viewport = view.content_viewport_rect();
+    if viewport.area() <= 0.0 || (field.y0 >= viewport.y0 && field.y1 <= viewport.y1) {
+        return false;
+    }
+    let margin = 8.0_f64;
+    let to_f32 = |value: f64| ui::num::f32_of_f64(value);
+    view.scroll_into_view(
+        to_f32(field.x0 - viewport.x0) + view.offset_x(),
+        to_f32(field.y0 - viewport.y0 - margin) + view.offset_y(),
+        to_f32(field.width()),
+        to_f32(field.height() + margin * 2.0),
+    );
+    true
+}
+
+fn find_by_id<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+    if widget.test_id() == Some(id) {
+        return Some(widget);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| find_by_id(child, id))
+}
+
+/// Whether anything in `widget`'s subtree holds the focus.
+fn any_focused(widget: &dyn Widget) -> bool {
+    widget.is_focused() || widget.children().into_iter().any(any_focused)
+}
+
+/// A key from the keyboard on the screen, as winit reports one.
+fn synthetic_key(logical_key: Key, state: ElementState) -> WindowEvent {
+    // SAFETY: every public field of `KeyEvent` is set below; its private
+    // platform part accepts the all-zero pattern, as for every synthetic key
+    // event the toolkit builds.
+    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+    event.logical_key = logical_key;
+    event.physical_key =
+        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+    event.location = winit::keyboard::KeyLocation::Standard;
+    event.state = state;
+    event.repeat = false;
+    event.text = None;
+    WindowEvent::KeyboardInput {
+        // SAFETY: as above, the inert synthetic device.
+        device_id: unsafe { std::mem::zeroed() },
+        event,
+        is_synthetic: true,
     }
 }
 
@@ -3479,6 +3690,132 @@ mod tests {
                     .is_none()
             );
         }
+    }
+
+    #[test]
+    fn a_touch_device_types_the_passcode_on_the_keyboard_on_the_screen() {
+        use crate::touch_keyboard::Key as Pad;
+        for (viewport, theme) in [
+            ((2944.0, 1840.0), Theme::dark()),
+            ((1280.0, 800.0), Theme::light()),
+            ((640.0, 480.0), Theme::dark().with_text_scale(2.0)),
+        ] {
+            let mut app = pinned(GreeterApp::with_sessions_and_login_user(
+                one_session(),
+                Some(quick_user()),
+            ));
+            let mut doc = AutoCommit::new();
+            let laid = Laid::new(&mut app, &mut doc, viewport, &theme);
+            assert!(find_keyboard(&app).is_none(), "no keyboard before a touch");
+            set_focus_by_id(&mut app, "greeter.password");
+            let touch = WindowEvent::Touch(winit::event::Touch {
+                device_id: unsafe { std::mem::zeroed() },
+                phase: winit::event::TouchPhase::Started,
+                location: winit::dpi::PhysicalPosition::new(4.0, 4.0),
+                force: None,
+                id: 1,
+            });
+            laid.deliver(&mut app, &mut doc, &touch);
+            let mut laid = Laid::new(&mut app, &mut doc, viewport, &theme);
+            set_focus_by_id(&mut app, "greeter.password");
+            let keyboard = find_keyboard(&app).expect("a touch on a field brings the keyboard up");
+            let pad = keyboard.get_rect();
+            assert!(
+                inside(app.get_rect(), pad),
+                "the keyboard is on screen at {viewport:?}: {pad:?}"
+            );
+            assert!(pad.width() <= f64::from(FORM_WIDTH) * 2.0 + 0.5);
+            let field = find(app.composed.as_deref().unwrap(), "greeter.password")
+                .map(Widget::get_rect)
+                .expect("passcode field");
+            assert!(
+                pad.intersect(field).area() <= 0.0,
+                "the keyboard covers the field at {viewport:?}: pad {pad:?} field {field:?}"
+            );
+            paint(&mut app, &theme);
+            Widget::mark_drawn(&mut app);
+
+            for key in [
+                Pad::Char('o'),
+                Pad::Char('k'),
+                Pad::Char('7'),
+                Pad::Backspace,
+            ] {
+                let at = find_keyboard(&app).unwrap().key_center(key).unwrap();
+                tap_at(&laid, &mut app, &mut doc, at);
+                app.sync(&mut doc, &automerge::ROOT);
+                assert!(
+                    !app.take_structure_dirty(),
+                    "a key on the screen rebuilt the form at {viewport:?}"
+                );
+                laid.relayout(&mut app);
+                paint(&mut app, &theme);
+                let mut damage = Vec::new();
+                app.collect_damage(&mut damage);
+                let row = field.union(find_keyboard(&app).unwrap().get_rect());
+                for rect in &damage {
+                    assert!(
+                        inside(row.inflate(2.0, 2.0), *rect),
+                        "damage {rect:?} escapes the field and the keyboard at {viewport:?}"
+                    );
+                }
+                Widget::mark_drawn(&mut app);
+            }
+            assert_eq!(&*app.password_buffer.lock().unwrap(), "ok");
+            assert!(
+                doc.get(&automerge::ROOT, "greeter.password")
+                    .unwrap()
+                    .is_none(),
+                "the passcode never reaches the document"
+            );
+            assert_ne!(
+                read_bool(&doc, &automerge::ROOT, SUBMIT_PATH),
+                Some(true),
+                "typing is not signing in"
+            );
+
+            // A physical key: the keyboard on the screen steps aside.
+            laid.deliver(&mut app, &mut doc, &char_event("x"));
+            app.sync(&mut doc, &automerge::ROOT);
+            assert!(app.take_structure_dirty());
+            let _ = Laid::new(&mut app, &mut doc, viewport, &theme);
+            assert!(find_keyboard(&app).is_none());
+        }
+    }
+
+    /// A finger's tap at `at`, as the toolkit delivers it: the pointer
+    /// moves there, presses and releases.
+    fn tap_at(laid: &Laid, app: &mut GreeterApp, doc: &mut AutoCommit, at: Point) {
+        for event in [
+            WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(at.x, at.y),
+            },
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: winit::event::MouseButton::Left,
+            },
+        ] {
+            laid.deliver(app, doc, &event);
+        }
+    }
+
+    fn find_keyboard(app: &GreeterApp) -> Option<&crate::touch_keyboard::TouchKeyboard> {
+        fn walk(w: &dyn Widget) -> Option<&crate::touch_keyboard::TouchKeyboard> {
+            if w.name() == "TouchKeyboard" {
+                return w
+                    .as_any()
+                    .and_then(|any| any.downcast_ref::<crate::touch_keyboard::TouchKeyboard>());
+            }
+            w.children().into_iter().find_map(walk)
+        }
+        walk(app)
     }
 
     #[test]

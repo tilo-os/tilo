@@ -4288,6 +4288,16 @@ impl Widget for TextInput {
         "TextInput"
     }
 
+    /// A host that edits the focused field itself (a keyboard drawn on the
+    /// screen) reaches [`TextInput::insert_at_cursor`] through this.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn test_id(&self) -> Option<&str> {
         if self.id.is_empty() {
             Some("text_input")

@@ -37,6 +37,7 @@ pub mod greeter_app;
 pub mod i18n;
 pub mod local_users;
 pub mod sessions;
+pub mod touch_keyboard;
 
 pub use greetd_client;
 pub use greeter_app::GreeterApp;
