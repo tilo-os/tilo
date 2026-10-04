@@ -973,7 +973,7 @@ impl SpeedTestApp {
             let now = ui::time::wall();
             for (index, item) in history.iter().take(visible_rows).enumerate() {
                 let y = area.y0 + 262.0 + index as f64 * 52.0;
-                let at = std::time::UNIX_EPOCH
+                let at = ui::time::UNIX_EPOCH
                     + Duration::from_millis(u64::try_from(item.at_ms).unwrap_or_default());
                 tr.draw_text(
                     scene,
