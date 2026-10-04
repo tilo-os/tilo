@@ -39,6 +39,36 @@ use ui_core::widget::{ResourceOperation, ResourceOperationStart};
 use super::dispatch::Dispatcher;
 use super::live::Live;
 
+/// A file the person chose with the host's chooser
+/// ([`EffectCx::choose_file`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChosenFile {
+    /// The name shown to the person.
+    pub name: String,
+    /// The media type the host reported, when it did.
+    pub media_type: Option<String>,
+    pub bytes: Vec<u8>,
+    /// The file's durable identity on this device, when the host chose a
+    /// file it can name: the same file chosen again, even renamed or moved,
+    /// has the same identity, so an import can tell it already came in.
+    /// `None` where files have no paths (a browser page).
+    pub identity: Option<ui_core::record::RecordId>,
+}
+
+impl From<PickedContents> for ChosenFile {
+    fn from(picked: PickedContents) -> Self {
+        Self {
+            identity: picked
+                .location
+                .as_deref()
+                .map(ui_core::record::RecordId::identify_file),
+            name: picked.name,
+            media_type: picked.media_type,
+            bytes: picked.bytes,
+        }
+    }
+}
+
 /// Why a file chooser answered nothing.
 const CHOOSER_GONE: &str = "the file chooser closed without answering";
 
@@ -364,11 +394,13 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     pub fn choose_file(
         &mut self,
         request: PickRequest,
-        then: impl FnOnce(&mut H, Option<PickedContents>, &mut Self) -> EffectAnswer + 'static,
+        then: impl FnOnce(&mut H, Option<ChosenFile>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
         let chosen = request.send_contents();
         self.wait_for(chosen, move |host, outcome, cx| match outcome {
-            Some(ContentsOutcome::Picked(files)) => then(host, files.into_iter().next(), cx),
+            Some(ContentsOutcome::Picked(files)) => {
+                then(host, files.into_iter().next().map(ChosenFile::from), cx)
+            }
             Some(ContentsOutcome::Cancelled) => then(host, None, cx),
             Some(ContentsOutcome::Failed(reason)) => Err(reason),
             None => Err(CHOOSER_GONE.into()),

@@ -521,6 +521,11 @@ pub enum FileEffect {
     SyncDevice,
 }
 
+thread_local! {
+    /// The identity of the file last imported.
+    static CHOSEN: RefCell<Option<RecordId>> = const { RefCell::new(None) };
+}
+
 /// Imports and exports through the host's file chooser.
 struct FilesApp;
 
@@ -537,6 +542,7 @@ impl ResourceApp for FilesApp {
                     let Some(file) = chosen else {
                         return Err("no file was chosen".into());
                     };
+                    CHOSEN.with(|chosen| chosen.borrow_mut().clone_from(&file.identity));
                     cx.invoke(Mailbox::FETCHED.with(String::from_utf8_lossy(&file.bytes).into()));
                     Ok(Effected::done())
                 },
@@ -573,10 +579,15 @@ fn an_effect_imports_and_exports_through_the_hosts_file_chooser() {
     let _host = tilo_app::host::enter(&services);
     let mut app = TestApp::<FilesApp>::new().unwrap();
 
-    recorder.respond_to_pick(PortalOutcome::Opened(incoming));
+    recorder.respond_to_pick(PortalOutcome::Opened(incoming.clone()));
     app.effect(&FileEffect::Import).unwrap();
     app.settle();
     assert_eq!(app.state().fetched, "from a file");
+    assert_eq!(
+        CHOSEN.with(|chosen| chosen.borrow_mut().take()),
+        Some(RecordId::identify_file(&incoming)),
+        "the chosen file is known by its durable identity"
+    );
     assert_eq!(recorder.pick_requests()[0].title(), "Import a message");
 
     let outgoing = directory.path().join("outgoing.txt");
