@@ -47,10 +47,6 @@ fn seed_then_set_bool(pane: &mut dyn Widget, key: &str, value: bool) {
 
 /// Night light, display scale and accounts persist.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "cases merged from separate tests; each case stays self-contained"
-)]
 fn local_prefs_and_accounts_persist_to_disk() {
     // Case `display_night_light_toggle_persists_to_disk`.
     {
@@ -103,18 +99,16 @@ fn local_prefs_and_accounts_persist_to_disk() {
 
         let mut pane = settings::panes::accounts::AccountsPane::in_root(account_root.clone())
             .with_account_tester(std::sync::Arc::new(AcceptAccount));
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
 
         // Open the Add-email form, fill it, and Save.
-        let _ = doc.put(&root, settings::panes::accounts::ADD_MAIL_KEY, true);
-        pane.sync(&mut doc, &root);
+        pane.command(settings::panes::accounts::AccountViewCommand::Add(
+            AccountKind::Mail,
+        ));
         pane.set_form_fields_for_test("Test User", "test@gmail.com", "test@gmail.com", "");
         pane.set_form_password_for_test("s3cret-pw");
         pane.submit_form_for_test();
         assert!(
-            pane.finish_form_submission_for_test(&mut doc, &root),
+            pane.finish_form_submission_for_test(),
             "bounded account probe and disk transaction complete"
         );
 
@@ -153,20 +147,8 @@ fn local_prefs_and_accounts_persist_to_disk() {
             .succeeded()
             .expect("seed sync health");
 
-        // Now request removal via the trash button's key. Destructive account
-        // removal is deliberately a two-stage action, so exercise the same
-        // explicit confirmation the UI requires.
-        let remove_key = format!("settings.accounts.remove.{id}");
-        let _ = doc.put(&root, remove_key.as_str(), true);
-        pane.sync(&mut doc, &root);
-        assert!(
-            !AccountDirectory::load_in(&account_root)
-                .views_of(AccountKind::Mail)
-                .is_empty(),
-            "the first action only opens the removal confirmation"
-        );
-        let _ = doc.put(&root, settings::panes::accounts::REMOVE_CONFIRM_KEY, true);
-        pane.sync(&mut doc, &root);
+        // Remove it, as the confirmed Remove effect does.
+        pane.remove(&id).unwrap();
 
         // The directory now reports empty for the Email kind — the account is gone
         // from the shared store on disk.

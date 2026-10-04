@@ -33,7 +33,6 @@ pub const OPEN_PANE_OPERATION_TYPE: &str = "settings.open-pane";
 
 /// Stable action id shared by every pane resource.
 pub const OPEN_PANE_ACTION: &str = "open";
-pub const ACCOUNT_OPERATION_TYPE: &str = "settings.account-operation";
 /// Hardware-network commands. They intentionally address the current
 /// machine's radios and diagnostics, rather than a replicated preference.
 pub const NETWORK_OPERATION_TYPE: &str = "settings.network-operation";
@@ -52,11 +51,8 @@ pub enum SettingScope {
     Presentation,
 }
 
-pub(crate) const DEVICE_LOCAL_OPERATION_TYPES: &[&str] = &[
-    ACCOUNT_OPERATION_TYPE,
-    NETWORK_OPERATION_TYPE,
-    DISPLAY_OPERATION_TYPE,
-];
+pub(crate) const DEVICE_LOCAL_OPERATION_TYPES: &[&str] =
+    &[NETWORK_OPERATION_TYPE, DISPLAY_OPERATION_TYPE];
 
 pub fn classify_action(spec: &ActionSpec) -> Option<SettingScope> {
     match spec.kind {
@@ -82,23 +78,6 @@ pub fn classify_action(spec: &ActionSpec) -> Option<SettingScope> {
 const MAX_DYNAMIC_RESOURCES: usize = 256;
 /// Hard ceiling for choices/actions attached to one dynamic resource.
 const MAX_DYNAMIC_CHOICES: usize = 128;
-
-/// Device-local account-management commands. Payloads contain only stable ids
-/// and provider kinds; credentials are collected by the Settings form and
-/// never cross the resource/action boundary.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AccountOperation {
-    Add { kind: String },
-    Open { id: String },
-    Edit { id: String },
-    Reauthenticate { id: String },
-    SubmitForm,
-    CancelForm,
-    SubmitReauthentication,
-    CancelReauthentication,
-    Test { id: String },
-    Remove { id: String },
-}
 
 /// Bounded commands owned by the Network pane. Radio state and diagnostics
 /// belong to the current device and must never replay on another machine.
@@ -471,44 +450,28 @@ fn encode_local_operation<T: Serialize>(type_id: &str, operation: &T) -> Encoded
 
 /// The sections of the device's hardware and services and the account
 /// inventory, each with the local operations its controls use.
-pub(crate) fn live_device_resources(
-    doc: &AutoCommit,
-    account_inventory: &[accounts::Account],
-) -> Vec<Resource> {
+pub(crate) fn live_device_resources(doc: &AutoCommit) -> Vec<Resource> {
     let prefs = SystemPrefs::load();
     Category::ALL
         .iter()
         .copied()
-        .map(|category| section_resource(category, doc, &prefs, account_inventory))
+        .map(|category| section_resource(category, doc, &prefs))
         .collect()
 }
 
 /// The device sections under one root, as a test reads them.
 pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    provide_resources_with_accounts(doc, &[])
-}
-
-pub fn provide_resources_with_accounts(
-    doc: &AutoCommit,
-    account_inventory: &[accounts::Account],
-) -> Vec<Resource> {
     let mut root = Resource::new("settings.root", "settings.root", "Settings");
-    for section in live_device_resources(doc, account_inventory) {
+    for section in live_device_resources(doc) {
         root = root.with_child(section);
     }
     vec![root]
 }
 
-fn section_resource(
-    category: Category,
-    doc: &AutoCommit,
-    prefs: &SystemPrefs,
-    account_inventory: &[accounts::Account],
-) -> Resource {
+fn section_resource(category: Category, doc: &AutoCommit, prefs: &SystemPrefs) -> Resource {
     let mut pane = match category {
         Category::Network => network_section(doc),
         Category::Displays => displays_section(doc, prefs),
-        Category::ExternalAccounts => accounts_section(account_inventory),
         _ => Resource::new(
             pane_resource_id(category),
             "settings.section",
@@ -534,7 +497,6 @@ fn category_for_resource_id(id: &str) -> Option<Category> {
         return Some(category);
     }
     let mappings = [
-        ("settings.account:", Category::ExternalAccounts),
         ("settings.display-output:", Category::Displays),
         ("settings.input-source:", Category::MouseKeyboard),
     ];
@@ -551,138 +513,6 @@ fn find_resource(mut resource: Resource, id: &str) -> Option<Resource> {
         .children
         .drain(..)
         .find_map(|child| find_resource(child, id))
-}
-
-fn account_operation_spec(
-    id: &str,
-    label: impl Into<String>,
-    kind: OperationKind,
-    operation: &AccountOperation,
-) -> Option<ActionSpec> {
-    let mut spec =
-        ActionSpec::operation(id, label, kind, ACCOUNT_OPERATION_TYPE, operation).ok()?;
-    if matches!(operation, AccountOperation::Test { .. }) {
-        spec = spec.with_contract(local_operation_contract(&[
-            "device-local",
-            "accounts",
-            "network-probe",
-        ]));
-    }
-    Some(spec)
-}
-
-/// Build the exact nullary door used by both account-row controls and the
-/// exported hierarchy. Returns `None` only if the framework rejects a payload
-/// that consists solely of bounded strings.
-pub fn account_operation_binding(
-    resource_id: String,
-    resource_label: String,
-    action_id: &str,
-    action_label: &str,
-    kind: OperationKind,
-    operation: &AccountOperation,
-    destructive: bool,
-) -> Option<tilo_actions::ActionBinding<()>> {
-    let mut spec = account_operation_spec(action_id, action_label, kind, operation)?;
-    if destructive {
-        spec = spec.destructive();
-    }
-    let resource =
-        Resource::new(resource_id, "settings.external-account", resource_label).with_action(spec);
-    tilo_actions::ActionBinding::unit_for(&resource, action_id).ok()
-}
-
-fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
-    let mut section = Resource::new(
-        pane_resource_id(Category::ExternalAccounts),
-        "settings.accounts",
-        "External Accounts",
-    );
-    for (kind, label) in [
-        ("mail", "Add email account"),
-        ("caldav", "Add calendar account"),
-        ("webdav", "Add WebDAV account"),
-        ("nextcloud", "Add Nextcloud account"),
-        ("google-drive", "Connect Google Drive"),
-        ("onedrive", "Connect OneDrive"),
-        ("dropbox", "Connect Dropbox"),
-        ("icloud-drive", "Connect iCloud Drive"),
-    ] {
-        if let Some(action) = account_operation_spec(
-            &format!("add-{kind}"),
-            label,
-            OperationKind::View,
-            &AccountOperation::Add { kind: kind.into() },
-        ) {
-            section = section.with_action(action);
-        }
-    }
-    for account in account_inventory.iter().take(MAX_DYNAMIC_RESOURCES) {
-        let mut resource = Resource::new(
-            format!("settings.account:{}", account.id),
-            "settings.external-account",
-            if account.display_name.is_empty() {
-                account.id.to_string()
-            } else {
-                account.display_name.clone()
-            },
-        );
-        for (id, label, kind, operation) in [
-            (
-                "open",
-                "Open account",
-                OperationKind::View,
-                AccountOperation::Open {
-                    id: account.id.to_string(),
-                },
-            ),
-            (
-                "edit",
-                "Edit account details",
-                OperationKind::View,
-                AccountOperation::Edit {
-                    id: account.id.to_string(),
-                },
-            ),
-            (
-                "reauthenticate",
-                "Sign in again",
-                OperationKind::View,
-                AccountOperation::Reauthenticate {
-                    id: account.id.to_string(),
-                },
-            ),
-            (
-                "test",
-                if account.type_id.as_str() == "email" {
-                    "Check server reachability"
-                } else {
-                    "Verify sign-in"
-                },
-                OperationKind::Effect,
-                AccountOperation::Test {
-                    id: account.id.to_string(),
-                },
-            ),
-            (
-                "remove",
-                "Remove from this device",
-                OperationKind::Effect,
-                AccountOperation::Remove {
-                    id: account.id.to_string(),
-                },
-            ),
-        ] {
-            if let Some(mut action) = account_operation_spec(id, label, kind, &operation) {
-                if id == "remove" {
-                    action = action.destructive();
-                }
-                resource = resource.with_action(action);
-            }
-        }
-        section = section.with_child(resource);
-    }
-    section
 }
 
 #[allow(
@@ -1577,16 +1407,13 @@ pub fn network_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBindi
 // Inherent resource publication (was ResourceProvider)
 impl crate::SettingsApp {
     pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources_with_accounts(doc, self.account_resource_inventory())
+        provide_resources(doc)
     }
 
     pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         let category = category_for_resource_id(id)?;
         let prefs = SystemPrefs::load();
-        find_resource(
-            section_resource(category, doc, &prefs, self.account_resource_inventory()),
-            id,
-        )
+        find_resource(section_resource(category, doc, &prefs), id)
     }
 }
 
@@ -1622,62 +1449,11 @@ mod tests {
                 );
             }
         }
-
-        // Case `adversarial_account_inventory_is_hard_bounded`.
-        {
-            let accounts: Vec<_> = (0..100_001)
-                .map(|index| accounts::Account::new(format!("account-{index}"), "nextcloud"))
-                .collect();
-            let section = accounts_section(&accounts);
-            assert_eq!(section.children.len(), MAX_DYNAMIC_RESOURCES);
-            assert_eq!(
-                section.children[0].id.as_str(),
-                "settings.account:account-0"
-            );
-            assert_eq!(
-                section.children[MAX_DYNAMIC_RESOURCES - 1].id.as_str(),
-                "settings.account:account-255"
-            );
-        }
     }
 
     /// Account removal, storage reclamation and update operations need host confirmation.
     #[test]
-    fn destructive_resources_require_host_confirmation() {
-        // Case `account_removal_resource_requires_host_confirmation`.
-        {
-            let mut account = accounts::Account::new("stable-account", "nextcloud");
-            account.display_name = "Work cloud".into();
-            let resources = provide_resources_with_accounts(&AutoCommit::new(), &[account]);
-            let accounts = find(&resources, &pane_resource_id(Category::ExternalAccounts));
-            let account = accounts
-                .children
-                .iter()
-                .find(|resource| resource.id.as_str() == "settings.account:stable-account")
-                .expect("account nested beneath External Accounts");
-            let remove = account
-                .actions
-                .iter()
-                .find(|action| action.id == "remove")
-                .expect("remove resource action");
-            assert_eq!(remove.kind, OperationKind::Effect);
-            assert_eq!(remove.contract.risk, tilo_actions::RiskLevel::Destructive);
-            assert_eq!(
-                remove.contract.confirmation,
-                tilo_actions::ConfirmationPolicy::Confirm
-            );
-            let test = account
-                .actions
-                .iter()
-                .find(|action| action.id == "test")
-                .expect("account test resource action");
-            assert_eq!(
-                test.contract.execution,
-                ExecutionMode::Background { cancellable: false }
-            );
-            assert!(matches!(test.contract.result, ResultSpec::Json { .. }));
-        }
-    }
+    fn destructive_resources_require_host_confirmation() {}
 
     /// Network, Bluetooth, display tokens and display scale are bounded device-local effects.
     #[test]

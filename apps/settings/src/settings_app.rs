@@ -109,19 +109,10 @@ pub struct SettingsApp {
     /// same generation instead of rebuilding an index on every frame.
     /// Where the account stores, credential vault and mutation journal live.
     account_root: crate::accounts::AccountRoot,
-    /// Secret-free snapshot for resource enumeration. Refreshes at account
-    /// mutation boundaries, never during the per-frame resource query.
-    account_resources: Vec<accounts::Account>,
-    account_commands: ui::LocalState<Option<crate::panes::accounts::AccountViewCommand>>,
-    account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
     local_operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     local_operation: Option<tilo_actions::InvocationId>,
     local_operation_token: Option<String>,
     local_pane_command: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    account_probe: Option<(
-        tilo_actions::InvocationId,
-        std::sync::mpsc::Receiver<Result<String, String>>,
-    )>,
     rect: vello::kurbo::Rect,
     /// The reusable app-shell, created lazily on the first `build_layout` and
     /// persisted across rebuilds so its collapse/overlay state survives a
@@ -151,6 +142,7 @@ pub struct SettingsApp {
     agent_models: panes::agent_models::AgentModelsArea,
     device_mesh: panes::device_mesh::DeviceMeshArea,
     audio: panes::audio::AudioArea,
+    accounts: panes::accounts::AccountsArea,
     /// The text scale the shell was built for. A large-text preference widens
     /// the docked sidebar and its breakpoint with the type (the same policy
     /// the Store applies to its card grid), so a change rebuilds the shell.
@@ -197,6 +189,7 @@ impl SettingsApp {
             agent_models: panes::agent_models::AgentModelsArea::new(&cx),
             device_mesh: panes::device_mesh::DeviceMeshArea::new(&cx),
             audio: panes::audio::AudioArea::new(&cx),
+            accounts: panes::accounts::AccountsArea::new(&cx),
             selected: Category::DEFAULT,
             structure_dirty: false,
             cx,
@@ -206,15 +199,11 @@ impl SettingsApp {
             sidebar_selection: ui::LocalState::new(None),
             pane_scroll: std::cell::RefCell::default(),
             search_state: ui::LocalState::new(String::new()),
-            account_resources: account_root.store().all().to_vec(),
             account_root,
-            account_commands: ui::LocalState::new(None),
-            account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
             local_operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             local_operation: None,
             local_operation_token: None,
             local_pane_command: ui::LocalState::new(None),
-            account_probe: None,
             rect: vello::kurbo::Rect::ZERO,
             shell: None,
             shell_text_scale: 1.0,
@@ -255,22 +244,6 @@ impl SettingsApp {
 
     pub fn selected(&self) -> Category {
         self.selected
-    }
-
-    pub(crate) fn account_resource_inventory(&self) -> &[accounts::Account] {
-        &self.account_resources
-    }
-
-    fn refresh_account_resources(&mut self) {
-        self.account_resources = self.account_root.store().all().to_vec();
-    }
-
-    #[doc(hidden)]
-    pub fn set_account_tester_for_test(
-        &mut self,
-        tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
-    ) {
-        self.account_tester = tester;
     }
 
     /// Switch the active category. Flags `structure_dirty`, swaps the shell's
@@ -450,7 +423,6 @@ impl SettingsApp {
         // A screenshot never opens the person's accounts.
         if let Some(root) = cx.scene().and_then(|scene| scene.account_root.clone()) {
             self.account_root = crate::accounts::AccountRoot::at(root);
-            self.refresh_account_resources();
         }
         self.notifications = panes::notifications::NotificationsArea::new(&cx);
         self.default_apps = panes::personal_apps::DefaultAppsArea::new(&cx);
@@ -466,6 +438,7 @@ impl SettingsApp {
         self.agent_models = panes::agent_models::AgentModelsArea::new(&cx);
         self.device_mesh = panes::device_mesh::DeviceMeshArea::new(&cx);
         self.audio = panes::audio::AudioArea::new(&cx);
+        self.accounts = panes::accounts::AccountsArea::new(&cx);
         self.software = panes::accessibility::Software::for_host(&cx);
         self.cx = cx;
         self.structure_dirty = true;
@@ -544,6 +517,10 @@ impl SettingsApp {
         &self.audio
     }
 
+    pub(crate) fn accounts(&self) -> &panes::accounts::AccountsArea {
+        &self.accounts
+    }
+
     /// What the panes reach of the host.
     pub(crate) fn host(&self) -> &crate::host::PaneCx {
         &self.cx
@@ -568,10 +545,6 @@ impl SettingsApp {
     }
 
     /// Dispatch to the per-category pane body.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one exhaustive match constructs every category's pane"
-    )]
     fn build_pane_body(&self) -> Box<dyn Widget> {
         match self.selected {
             // A capture never waits for NetworkManager or PipeWire; it shows
@@ -648,24 +621,9 @@ impl SettingsApp {
             Category::Storage => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.storage.model(),
             ))),
-            Category::ExternalAccounts => {
-                let mut pane = match self.cx.scene() {
-                    // A screenshot shows the bundled sample accounts.
-                    Some(_) => panes::accounts::AccountsPane::from_dir_in(
-                        self.account_root.clone(),
-                        crate::accounts::sample_directory(),
-                        false,
-                    ),
-                    None => panes::accounts::AccountsPane::in_root(self.account_root.clone()),
-                };
-                if let Some(kind) = self.cx.scene().and_then(|scene| scene.account_form) {
-                    pane = pane.with_open_form_for_shot(kind);
-                }
-                Box::new(
-                    pane.with_command_state(&self.account_commands)
-                        .with_account_tester(std::sync::Arc::clone(&self.account_tester)),
-                )
-            }
+            Category::ExternalAccounts => Box::new(panes::model::ModelPane::new(
+                std::rc::Rc::clone(self.accounts.model()),
+            )),
             Category::AgentModels => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.agent_models.model(),
             ))),
@@ -1078,7 +1036,6 @@ impl Widget for SettingsApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             crate::actions::OPEN_PANE_OPERATION_TYPE,
-            crate::actions::ACCOUNT_OPERATION_TYPE,
             crate::actions::NETWORK_OPERATION_TYPE,
             crate::actions::DISPLAY_OPERATION_TYPE,
         ]
@@ -1092,6 +1049,7 @@ impl Widget for SettingsApp {
         self.printers.poll();
         self.speakers.poll();
         self.device_mesh.poll();
+        self.accounts.poll();
         // Sidebar selection and search are local presentation state. They do
         // not create CRDT click flags, draft text, collaboration traffic or
         // undo entries. The canonical resource `settings.section:<slug>/open`
@@ -1269,9 +1227,6 @@ impl Widget for SettingsApp {
             .shell
             .as_mut()
             .is_some_and(ui::Widget::take_structure_dirty);
-        if child && self.selected == Category::ExternalAccounts {
-            self.refresh_account_resources();
-        }
         own || child
     }
 
@@ -1369,45 +1324,6 @@ impl Widget for SettingsApp {
                 _ => return None,
             }
         }
-        if self
-            .account_probe
-            .as_ref()
-            .is_some_and(|(id, _)| *id == invocation)
-        {
-            if cancellation_requested {
-                self.account_probe = None;
-                return Some(tilo_actions::InvocationUpdate::Cancelled {
-                    invocation,
-                    message: Some("connection check cancelled".into()),
-                });
-            }
-            let result = self
-                .account_probe
-                .as_ref()
-                .and_then(|(_, receiver)| receiver.try_recv().ok());
-            if let Some(result) = result {
-                self.account_probe = None;
-                return Some(match result {
-                    Ok(message) => tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(serde_json::Value::String(message)),
-                            resources: Vec::new(),
-                        },
-                    },
-                    Err(message) => tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "account_connection_failed".into(),
-                            message,
-                            details: None,
-                            retryable: true,
-                        },
-                    },
-                });
-            }
-            return None;
-        }
         self.shell.as_mut().and_then(|shell| {
             shell.poll_resource_operation(invocation, cancellation_requested, doc, path)
         })
@@ -1418,7 +1334,7 @@ impl ui::resources::PublishesResources for SettingsApp {
     /// The sections of this device's hardware and services, with the local
     /// operations their controls use, and the account inventory.
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        crate::actions::live_device_resources(doc, self.account_resource_inventory())
+        crate::actions::live_device_resources(doc)
     }
     /// Resolve one of them by id when an invocation names it.
     fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
@@ -1439,86 +1355,6 @@ impl SettingsApp {
         _doc: &automerge::AutoCommit,
         _path: &automerge::ObjId,
     ) -> Result<bool, String> {
-        if type_id == crate::actions::ACCOUNT_OPERATION_TYPE {
-            let operation: crate::actions::AccountOperation =
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-            self.select(Category::ExternalAccounts);
-            return match (kind, operation) {
-                (
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::Add { kind },
-                ) => {
-                    let kind = crate::accounts::AccountKind::from_slug(&kind)
-                        .ok_or_else(|| "unknown account kind".to_string())?;
-                    self.account_commands
-                        .set(Some(crate::panes::accounts::AccountViewCommand::Add(kind)));
-                    Ok(true)
-                }
-                (
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::Edit { id },
-                ) => {
-                    self.account_commands
-                        .set(Some(crate::panes::accounts::AccountViewCommand::Edit(id)));
-                    Ok(true)
-                }
-                (
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::Reauthenticate { id },
-                ) => {
-                    self.account_commands.set(Some(
-                        crate::panes::accounts::AccountViewCommand::Reauthenticate(id),
-                    ));
-                    Ok(true)
-                }
-                (
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::AccountOperation::SubmitForm,
-                ) => {
-                    self.account_commands
-                        .set(Some(crate::panes::accounts::AccountViewCommand::Submit));
-                    Ok(true)
-                }
-                (
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::CancelForm,
-                ) => {
-                    self.account_commands
-                        .set(Some(crate::panes::accounts::AccountViewCommand::Cancel));
-                    Ok(true)
-                }
-                (
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::AccountOperation::SubmitReauthentication,
-                ) => {
-                    self.account_commands.set(Some(
-                        crate::panes::accounts::AccountViewCommand::SubmitReauthentication,
-                    ));
-                    Ok(true)
-                }
-                (
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::CancelReauthentication,
-                ) => {
-                    self.account_commands.set(Some(
-                        crate::panes::accounts::AccountViewCommand::CancelReauthentication,
-                    ));
-                    Ok(true)
-                }
-                (
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::Open { id },
-                ) => {
-                    // Accounts have no separate read-only detail surface. Open
-                    // the exact account's settings form instead of discarding
-                    // the canonical id and landing on a generic list.
-                    self.account_commands
-                        .set(Some(crate::panes::accounts::AccountViewCommand::Edit(id)));
-                    Ok(true)
-                }
-                _ => Err("operation kind does not match account operation".into()),
-            };
-        }
         if kind != tilo_actions::OperationKind::View
             || type_id != crate::actions::OPEN_PANE_OPERATION_TYPE
         {
@@ -1558,123 +1394,18 @@ impl SettingsApp {
             }
             return Ok(start);
         }
-        if type_id != crate::actions::ACCOUNT_OPERATION_TYPE {
-            let op = ui::widget::ResourceOperation::local(invocation, kind, type_id, payload);
-            if let Some(started) = ui::widget::start_in_children(self, &op, doc, path)? {
-                return Ok(Some(started));
-            }
-            return self
-                .answer_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                });
+        let op = ui::widget::ResourceOperation::local(invocation, kind, type_id, payload);
+        if let Some(started) = ui::widget::start_in_children(self, &op, doc, path)? {
+            return Ok(Some(started));
         }
-        let operation: crate::actions::AccountOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        self.select(Category::ExternalAccounts);
-        match (kind, operation) {
-            (
-                tilo_actions::OperationKind::View,
-                operation @ (crate::actions::AccountOperation::Add { .. }
-                | crate::actions::AccountOperation::Open { .. }
-                | crate::actions::AccountOperation::Edit { .. }
-                | crate::actions::AccountOperation::Reauthenticate { .. }
-                | crate::actions::AccountOperation::CancelForm
-                | crate::actions::AccountOperation::CancelReauthentication),
-            ) => {
-                self.answer_resource_operation(
-                    kind,
-                    type_id,
-                    &serde_json::to_vec(&operation).map_err(|error| error.to_string())?,
-                    doc,
-                    path,
-                )?;
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                operation @ (crate::actions::AccountOperation::SubmitForm
-                | crate::actions::AccountOperation::SubmitReauthentication),
-            ) => {
-                self.answer_resource_operation(
-                    kind,
-                    type_id,
-                    &serde_json::to_vec(&operation).map_err(|error| error.to_string())?,
-                    doc,
-                    path,
-                )?;
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::AccountOperation::Remove { id },
-            ) => {
-                let stored = self
-                    .account_root
-                    .store()
-                    .get(&accounts::AccountId::from(id.clone()))
-                    .cloned()
-                    .ok_or_else(|| "account no longer exists".to_string())?;
-                let account_kind =
-                    crate::accounts::AccountKind::from_type_id(stored.type_id.as_str())
-                        .ok_or_else(|| "unsupported account type".to_string())?;
-                crate::panes::accounts::AccountsPane::remove_account(
-                    &self.account_root,
-                    &self.account_root.custodian(),
-                    account_kind,
-                    &id,
-                )?;
-                self.refresh_account_resources();
-                self.refresh_shell_children();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::AccountOperation::Test { id },
-            ) => {
-                if self.account_probe.is_some() {
-                    return Err("an account connection check is already running".into());
-                }
-                let account_id = accounts::AccountId::from(id);
-                let account = self
-                    .account_root
-                    .store()
-                    .get(&account_id)
-                    .cloned()
-                    .ok_or_else(|| "account no longer exists".to_string())?;
-                let secret = self.account_root.vault().get(&account_id).ok_or_else(|| {
-                    "this account has no saved credential; sign in again first".to_string()
-                })?;
-                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-                if crate::accounts::AccountKind::from_type_id(account.type_id.as_str())
-                    .is_some_and(crate::accounts::AccountKind::is_cloud_storage)
-                {
-                    // A cloud grant is verified by asking the provider for a
-                    // fresh access token, which custody also hands off.
-                    let custodian = self.account_root.custodian();
-                    std::thread::spawn(move || {
-                        let _ = sender.send(
-                            custodian
-                                .publish(&account_id, true)
-                                .map(|()| "The provider accepted the saved sign-in".to_string())
-                                .map_err(|error| error.to_string()),
-                        );
-                    });
-                } else {
-                    let tester = std::sync::Arc::clone(&self.account_tester);
-                    std::thread::spawn(move || {
-                        let _ = sender.send(tester.test(&account, &secret));
-                    });
-                }
-                self.account_probe = Some((invocation, receiver));
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            _ => return Err("operation kind does not match account operation".into()),
-        }
-        Ok(Some(ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        self.answer_resource_operation(kind, type_id, payload, doc, path)
+            .map(|handled| {
+                handled.then(|| {
+                    ui::widget::ResourceOperationStart::Completed(
+                        tilo_actions::ActionOutput::default(),
+                    )
+                })
+            })
     }
 }
 
@@ -1795,24 +1526,6 @@ mod tests {
                     .set(crate::actions::LocalOperationStatus::Idle);
                 app.local_operation_token = None;
             }
-
-            let heads = doc.get_heads();
-            assert!(matches!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::ACCOUNT_OPERATION_TYPE,
-                        &serde_json::to_vec(&crate::actions::AccountOperation::SubmitForm).unwrap()
-                    ),
-                    &mut doc,
-                    &root
-                )
-                .expect("account form command is admitted"),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            ));
-            assert_eq!(doc.get_heads(), heads, "account command touched Automerge");
-            covered.insert(crate::actions::ACCOUNT_OPERATION_TYPE);
 
             assert_eq!(
                 covered,

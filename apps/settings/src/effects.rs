@@ -107,6 +107,7 @@ settings_effects! {
     AgentModels(crate::panes::agent_models::AgentModelsEffect) => crate::panes::agent_models::answer,
     DeviceMesh(crate::panes::device_mesh::DeviceMeshEffect) => crate::panes::device_mesh::answer,
     Audio(crate::panes::audio::AudioEffect) => crate::panes::audio::answer,
+    Accounts(crate::panes::accounts::AccountsEffect) => crate::panes::accounts::answer,
 }
 
 /// The live rows of every area — the devices, networks, accounts and other
@@ -123,6 +124,7 @@ pub(crate) fn rows(app: &SettingsApp) -> Vec<ui::framework::LiveRow> {
     rows.extend(app.agent_models().rows());
     rows.extend(app.device_mesh().rows());
     rows.extend(app.audio().rows());
+    rows.extend(app.accounts().rows());
     rows
 }
 
