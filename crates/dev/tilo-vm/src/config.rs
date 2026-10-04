@@ -12,6 +12,9 @@
 //! keep_generations = 5     # gc keeps this many per slot
 //! keep_targets = 2         # gc keeps this many in-VM build dirs
 //!
+//! [remote_builders]        # swap --builder remote, by architecture: a cargo
+//! aarch64 = ["remote-cargo", "--on-builder"]   # drop-in whose `run` runs there
+//!
 //! [vms.dev]
 //! hypervisor = "libvirt"   # libvirt | qemu | utm | hyperv | whpx
 //! ssh = "root@127.0.0.1:2223"
@@ -45,6 +48,13 @@ pub struct Registry {
     /// In-VM build dirs gc keeps (the daemon's default is 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_targets: Option<u32>,
+    /// Remote builders by CPU architecture: the command line of a cargo
+    /// drop-in whose `run` runs the program on a machine of that
+    /// architecture, in this worktree, passing its stdout through.
+    /// `swap --builder remote` uses the one for the machine's architecture,
+    /// and is the default for a device that has one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub remote_builders: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub vms: BTreeMap<String, VmEntry>,
 }
