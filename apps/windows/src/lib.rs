@@ -33,6 +33,7 @@ pub mod appliance_owner;
 pub mod model;
 pub mod provider;
 pub mod resource;
+pub mod search;
 pub mod strings;
 
 pub use app::WindowsApp;

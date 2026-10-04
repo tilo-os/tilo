@@ -239,9 +239,9 @@ impl SampleProvider {
         };
         Self { catalogue: Catalogue {
             apps: vec![
-                WindowsApp { id: "adobe-reader".into(), name: "Adobe Acrobat Reader".into(), publisher: "Adobe".into(), route: Route::Wine, recommended_route: Route::Wine, runner: "Wine 11.0 (Tilo pinned)".into(), capsule: "Adobe Reader".into(), prefix: "capsules/adobe-reader".into(), catalogue_source: "Tilo compatibility catalogue".into(), confidence: Confidence::Verified, reason: "A verified recipe runs Reader in Wine, the lightest way to open it in isolation.".into(), status: AppStatus::Ready, grants: grants(&[("Downloads", "Read and write", true), ("Clipboard", "On demand", true), ("Camera", "Not granted", false)]), fallback_detail: "Reader sees only the folders and devices listed above.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for apps in the Windows appliance.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed 12 June 2026".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for apps in the Windows appliance.".into()) },
-                WindowsApp { id: "cyberpunk-2077".into(), name: "Cyberpunk 2077".into(), publisher: "CD PROJEKT RED".into(), route: Route::Proton, recommended_route: Route::Proton, runner: "UMU-Proton 10.0-3".into(), capsule: "Steam library".into(), prefix: "games/cyberpunk-2077".into(), catalogue_source: "Steam + ProtonDB recipe".into(), confidence: Confidence::Community, reason: "Games run best in Proton with the Steam Runtime, which includes the fixes this game is known to need.".into(), status: AppStatus::Running, grants: grants(&[("Games library", "Read and write", true), ("Controller", "Connected devices", true), ("Microphone", "Not granted", false)]), fallback_detail: "The game sees only its library and connected controllers.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for apps in the Windows appliance.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed 3 May 2026".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for apps in the Windows appliance.".into()) },
-                WindowsApp { id: "visual-studio".into(), name: "Visual Studio".into(), publisher: "Microsoft".into(), route: Route::Vm, recommended_route: Route::Vm, runner: "Windows 11 appliance".into(), capsule: "Shared Windows appliance".into(), prefix: "Inside Windows".into(), catalogue_source: "Windows appliance".into(), confidence: Confidence::Fallback, reason: "Visual Studio needs Windows services that Wine can't provide, so it runs in the Windows appliance.".into(), status: AppStatus::Ready, grants: grants(&[("Audio playback", "Allowed", true), ("Files on this computer", "Not shared", false), ("Clipboard", "Not shared", false), ("Microphone and network", "Not shared", false)]), fallback_detail: "Visual Studio opens in its own window; the Windows desktop stays hidden.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("This app window can't receive files from this computer yet.".into()), route_override_available: false, route_override_unavailable_reason: Some("Only an administrator can change how this app opens.".into()), can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: false, can_publish_vm_candidate: false, installation_detail: Some("Installed 21 April 2026".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
+                WindowsApp { id: "adobe-reader".into(), name: "Adobe Acrobat Reader".into(), publisher: "Adobe".into(), route: Route::Wine, recommended_route: Route::Wine, runner: "Wine 11.0".into(), capsule: "Adobe Reader".into(), catalogue_source: "Tilo compatibility catalogue".into(), confidence: Confidence::Verified, reason: "A verified recipe runs Reader in Wine, the lightest way to open it in isolation.".into(), status: AppStatus::Ready, grants: grants(&[("Downloads", "Read and write", true), ("Clipboard", "On demand", true), ("Camera", "Off", false)]), fallback_detail: "Reader sees only the folders and devices listed above.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for apps in the Windows appliance.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed 12 June 2026".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for apps in the Windows appliance.".into()) },
+                WindowsApp { id: "cyberpunk-2077".into(), name: "Cyberpunk 2077".into(), publisher: "CD PROJEKT RED".into(), route: Route::Proton, recommended_route: Route::Proton, runner: "Proton 10.0".into(), capsule: "Steam library".into(), catalogue_source: "Steam + ProtonDB recipe".into(), confidence: Confidence::Community, reason: "Games run best in Proton with the Steam Runtime, which includes the fixes this game is known to need.".into(), status: AppStatus::Running, grants: grants(&[("Games library", "Read and write", true), ("Controller", "Connected devices", true), ("Microphone", "Off", false)]), fallback_detail: "The game sees only its library and connected controllers.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for apps in the Windows appliance.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed 3 May 2026".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for apps in the Windows appliance.".into()) },
+                WindowsApp { id: "visual-studio".into(), name: "Visual Studio".into(), publisher: "Microsoft".into(), route: Route::Vm, recommended_route: Route::Vm, runner: "Windows 11".into(), capsule: "Shared Windows appliance".into(), catalogue_source: "Tilo compatibility catalogue".into(), confidence: Confidence::Verified, reason: "Visual Studio needs Windows services that Wine can't provide, so it runs in the Windows appliance.".into(), status: AppStatus::Ready, grants: grants(&[("Audio playback", "On", true), ("Files on this computer", "Off", false), ("Clipboard", "Off", false), ("Microphone and network", "Off", false)]), fallback_detail: "Files reach Visual Studio only when you open them with it.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("This app window can't receive files from this computer yet.".into()), route_override_available: false, route_override_unavailable_reason: Some("Only an administrator can change how this app opens.".into()), can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: false, can_publish_vm_candidate: false, installation_detail: Some("Installed 21 April 2026".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
             ], vm: ApplianceState { ready: true, detail: "The Windows appliance is ready.".into(), running_apps: 0, shared_session_active: false, shared_session_grants: Vec::new(), shared_session_contributors: Vec::new() }, vm_install_confirmation: None } }
     }
 
@@ -305,15 +305,15 @@ impl CompatibilityProvider for SampleProvider {
             publisher: "Imported application".into(),
             route: Route::Wine,
             recommended_route: Route::Wine,
-            runner: "Wine 11.0 (Tilo pinned)".into(),
+            runner: "Wine 11.0".into(),
             capsule: "imported-sample".into(),
-            prefix: "Private capsule".into(),
-            catalogue_source: "Tilo safe default".into(),
+
+            catalogue_source: "Default settings".into(),
             confidence: Confidence::Heuristic,
-            reason: "The installer is being validated and run in a private capsule.".into(),
+            reason: "Tilo is checking the installer and running it in a private capsule.".into(),
             status: AppStatus::Installing,
             grants: Vec::new(),
-            fallback_detail: "Setup is isolated from the host.".into(),
+            fallback_detail: "Setup can't reach anything else on this computer.".into(),
             launch_available: false,
             launch_unavailable_reason: Some("Setup is still running.".into()),
             portal_file_open_available: false,
@@ -363,8 +363,7 @@ impl CompatibilityProvider for SampleProvider {
             .find(|app| app.capsule == capsule_id)
             .ok_or_else(|| "Unknown Windows app".to_string())?;
         app.status = AppStatus::Installing;
-        app.fallback_detail =
-            "The retained installer is opening in the shared Windows appliance.".into();
+        app.fallback_detail = "The installer is opening in the Windows appliance.".into();
         app.can_escalate_install_to_vm = false;
         Ok(())
     }
@@ -394,9 +393,9 @@ impl CompatibilityProvider for SampleProvider {
             .ok_or_else(|| "Unknown Windows app".to_string())?;
         app.route = route;
         app.runner = match route {
-            Route::Wine => "Wine 11.0 (Tilo pinned)",
-            Route::Proton => "UMU-Proton 10.0-3",
-            Route::Vm => "Windows 11 managed VM",
+            Route::Wine => "Wine 11.0",
+            Route::Proton => "Proton 10.0",
+            Route::Vm => "Windows 11",
         }
         .into();
         Ok(())
@@ -632,16 +631,15 @@ impl CompatibilityProvider for LiveProvider {
             publisher: "Imported application".into(),
             route: Route::Wine,
             recommended_route: Route::Wine,
-            runner: "Selecting from catalogue…".into(),
+            runner: "Choosing…".into(),
             capsule: "Pending private capsule".into(),
-            prefix: "Private capsule".into(),
-            catalogue_source: "Inspecting exact installer digest".into(),
+
+            catalogue_source: "Checking the installer…".into(),
             confidence: Confidence::Heuristic,
-            reason: "Tilo is validating the selected file and choosing its compatibility recipe."
-                .into(),
+            reason: "Tilo is checking the installer and choosing how to run it.".into(),
             status: AppStatus::Installing,
             grants: Vec::new(),
-            fallback_detail: "Setup runs outside the manager in the compatibility service.".into(),
+            fallback_detail: "Setup can't reach anything else on this computer.".into(),
             launch_available: false,
             launch_unavailable_reason: Some("Setup is still running.".into()),
             portal_file_open_available: false,
@@ -654,7 +652,7 @@ impl CompatibilityProvider for LiveProvider {
             can_vendor_uninstall: false,
             can_delete_data: false,
             can_publish_vm_candidate: false,
-            installation_detail: Some("Validating and installing…".into()),
+            installation_detail: Some("Installing…".into()),
             vm_fallback_available: false,
             vm_fallback_unavailable_reason: Some("Setup is still running.".into()),
         });
@@ -1285,26 +1283,25 @@ fn app_from_vm_candidate(candidate: &compat_service::VmInstallCandidate) -> Wind
         publisher: candidate
             .publisher
             .clone()
-            .unwrap_or_else(|| "Windows installer discovery".into()),
+            .unwrap_or_else(|| "Unknown publisher".into()),
         route: Route::Vm,
         recommended_route: Route::Vm,
-        runner: "Windows managed installer".into(),
+        runner: "Windows".into(),
         capsule: "Shared Windows appliance".into(),
-        prefix: "Not added yet".into(),
-        catalogue_source: "Authenticated Windows setup discovery".into(),
+        catalogue_source: "Found by Windows setup".into(),
         confidence: Confidence::Verified,
         reason: candidate.version.as_ref().map_or_else(
-            || "Windows setup discovered this application. Add it to Windows Apps to create a managed guest launcher.".into(),
-            |version| format!("Windows setup discovered version {version}. Add it to Windows Apps to create a managed guest launcher."),
+            || "Windows setup found this app. Add it to Windows Apps to open it from here.".into(),
+            |version| format!("Windows setup found version {version} of this app. Add it to Windows Apps to open it from here."),
         ),
         status: AppStatus::Ready,
         grants: Vec::new(),
-        fallback_detail: "This is an installer discovery, not an executable host entry.".into(),
+        fallback_detail: String::new(),
         launch_available: false,
-        launch_unavailable_reason: Some("Add this discovered application to Windows Apps first.".into()),
+        launch_unavailable_reason: Some("Add this app to Windows Apps first.".into()),
         portal_file_open_available: false,
         portal_file_open_unavailable_reason: Some(
-            "Add this discovered application to Windows Apps first.".into(),
+            "Add this app to Windows Apps first.".into(),
         ),
         route_override_available: false,
         route_override_unavailable_reason: None,
@@ -1314,9 +1311,9 @@ fn app_from_vm_candidate(candidate: &compat_service::VmInstallCandidate) -> Wind
         can_vendor_uninstall: false,
         can_delete_data: false,
         can_publish_vm_candidate: true,
-        installation_detail: Some("Discovered by the active Windows setup transaction.".into()),
+        installation_detail: Some("Found during Windows setup".into()),
         vm_fallback_available: false,
-        vm_fallback_unavailable_reason: Some("This discovered application has not been published yet.".into()),
+        vm_fallback_unavailable_reason: Some("Add this app to Windows Apps first.".into()),
     }
 }
 
@@ -1358,62 +1355,42 @@ fn app_from_managed(
         application.portal_file_open_available && active_vm_uninstall.is_none();
     let portal_file_open_unavailable_reason = active_vm_uninstall
         .map(|status| status.detail.clone())
-        .or_else(|| application.portal_file_open_unavailable_reason.clone());
-    let mut grants = vec![
+        .or_else(|| {
+            // The service names the presentation it uses; the person needs
+            // to know only that files can't reach this window yet.
+            if application.presentation == Some(compat_service::VmPresentation::AppFocusedSpice) {
+                Some(FILES_CANT_REACH_WINDOW.to_owned())
+            } else {
+                application.portal_file_open_unavailable_reason.clone()
+            }
+        });
+    let grants = vec![
         Grant {
-            label: "Read-only files".into(),
-            detail: format!("{} granted location(s)", explanation.access.files_read_only),
+            label: "Files it can read".into(),
+            detail: locations(explanation.access.files_read_only),
             enabled: explanation.access.files_read_only > 0,
         },
         Grant {
-            label: "Writable files".into(),
-            detail: format!(
-                "{} granted location(s)",
-                explanation.access.files_read_write
-            ),
+            label: "Files it can change".into(),
+            detail: locations(explanation.access.files_read_write),
             enabled: explanation.access.files_read_write > 0,
         },
         Grant {
             label: "Network".into(),
-            detail: explanation.access.network.clone(),
+            detail: network_label(&explanation.access.network),
             enabled: explanation.access.network != "none",
         },
         Grant {
             label: "Microphone".into(),
-            detail: if explanation.access.microphone {
-                "Granted"
-            } else {
-                "Not granted"
-            }
-            .into(),
+            detail: on_off(explanation.access.microphone),
             enabled: explanation.access.microphone,
         },
+        Grant {
+            label: "Sound".into(),
+            detail: on_off(application.audio_output_available),
+            enabled: application.audio_output_available,
+        },
     ];
-    grants.push(Grant {
-        label: "Audio output".into(),
-        detail: application
-            .audio_unavailable_reason
-            .clone()
-            .unwrap_or_else(|| {
-                if application.audio_output_available {
-                    "Available"
-                } else {
-                    "Unavailable"
-                }
-                .into()
-            }),
-        enabled: application.audio_output_available,
-    });
-    let mut disabled = Vec::new();
-    if let Some(reason) = &application.vm_unavailable_reason {
-        disabled.push(format!("Windows VM: {reason}"));
-    }
-    if let Some(reason) = &application.audio_unavailable_reason {
-        disabled.push(format!("Audio output: {reason}"));
-    }
-    if let Some(reason) = &portal_file_open_unavailable_reason {
-        disabled.push(format!("Open file: {reason}"));
-    }
     WindowsApp {
         id: application.id,
         name: application.display_name,
@@ -1429,18 +1406,12 @@ fn app_from_managed(
                 .clone()
                 .unwrap_or_else(|| "Unavailable private capsule".into())
         },
-        prefix: if route == Route::Vm {
-            "Inside Windows (no capsule on this computer)".into()
-        } else {
-            "Private capsule".into()
-        },
         catalogue_source: if route == Route::Vm {
-            "Authenticated Windows guest catalogue".into()
+            "Installed in Windows".into()
+        } else if explanation.catalogue_record.is_some() {
+            "Tilo compatibility catalogue".into()
         } else {
-            explanation.catalogue_record.as_deref().map_or_else(
-                || "Tilo safe default".to_string(),
-                |id| format!("Tilo recipe {id}"),
-            )
+            "Default settings".into()
         },
         confidence: match explanation.match_reason {
             MatchReason::DefaultWine => Confidence::Fallback,
@@ -1468,12 +1439,8 @@ fn app_from_managed(
         grants,
         fallback_detail: active_vm_uninstall
             .or(failed_vm_uninstall)
-            .map_or_else(|| disabled.join(" "), |status| status.detail.clone())
-            + if route == Route::Vm {
-                " Windows applications in this appliance share one Windows user session; redirects cannot isolate concurrently running guest apps from each other."
-            } else {
-                ""
-            },
+            .map(|status| status.detail.clone())
+            .unwrap_or_default(),
         launch_available,
         launch_unavailable_reason,
         portal_file_open_available,
@@ -1506,21 +1473,18 @@ fn app_from_installation(installation: &ManagedInstallation) -> WindowsApp {
         recommended_route: route,
         runner: installation.runner.clone(),
         capsule: installation.capsule_id.clone(),
-        prefix: "Private capsule".into(),
-        catalogue_source: "Portal import".into(),
+
+        catalogue_source: "Added from a file".into(),
         confidence: Confidence::Heuristic,
-        reason: "Tilo retained this setup transaction so it can be retried or removed safely."
-            .into(),
+        reason: "Tilo kept this setup so you can retry it or remove it safely.".into(),
         status: app_status(installation.status),
         grants: Vec::new(),
         fallback_detail: installation.detail.clone(),
         launch_available: false,
-        launch_unavailable_reason: Some(
-            "No application launcher is currently available for this installation.".into(),
-        ),
+        launch_unavailable_reason: Some("This setup hasn't added an app to open yet.".into()),
         portal_file_open_available: false,
         portal_file_open_unavailable_reason: Some(
-            "No published guest application matches this retained setup.".into(),
+            "This setup hasn't added an app to open yet.".into(),
         ),
         route_override_available: false,
         route_override_unavailable_reason: None,
@@ -1532,9 +1496,7 @@ fn app_from_installation(installation: &ManagedInstallation) -> WindowsApp {
         can_publish_vm_candidate: false,
         installation_detail: Some(installation.detail.clone()),
         vm_fallback_available: false,
-        vm_fallback_unavailable_reason: Some(
-            "No published guest application matches this retained setup.".into(),
-        ),
+        vm_fallback_unavailable_reason: Some("This setup hasn't added an app to open yet.".into()),
     }
 }
 
@@ -1567,6 +1529,40 @@ fn route_from_kind(route: RouteKind) -> Route {
         RouteKind::Wine => Route::Wine,
         RouteKind::Proton => Route::Proton,
         RouteKind::Vm => Route::Vm,
+    }
+}
+
+const FILES_CANT_REACH_WINDOW: &str =
+    "This app's window can't receive files from this computer yet.";
+
+fn on_off(on: bool) -> String {
+    if on { "On" } else { "Off" }.into()
+}
+
+/// How many places an app was given, in words.
+fn locations(count: usize) -> String {
+    match count {
+        0 => "Off".into(),
+        1 => "1 location".into(),
+        n => format!("{n} locations"),
+    }
+}
+
+/// The service's network shape in words: off, open, or the sites allowed.
+fn network_label(network: &str) -> String {
+    match network {
+        "none" => "Off".into(),
+        "unrestricted" => "On".into(),
+        other => other
+            .strip_suffix(" approved host(s)")
+            .and_then(|count| count.parse::<usize>().ok())
+            .map_or_else(
+                || other.to_owned(),
+                |count| match count {
+                    1 => "1 approved site".into(),
+                    n => format!("{n} approved sites"),
+                },
+            ),
     }
 }
 
@@ -1628,27 +1624,22 @@ mod tests {
                 app.launch_unavailable_reason.as_deref(),
                 Some("Guest bridge unavailable")
             );
-            assert!(app.fallback_detail.contains("Guest bridge unavailable"));
-            assert!(
-                app.fallback_detail
-                    .contains("Playback-only proxy unavailable")
-            );
             assert!(
                 app.grants
                     .iter()
-                    .any(|grant| grant.label == "Audio output" && !grant.enabled)
+                    .any(|grant| grant.label == "Sound" && !grant.enabled && grant.detail == "Off")
             );
             assert_eq!(app.capsule, "Shared Windows appliance");
-            assert!(app.prefix.contains("no capsule on this computer"));
-            assert_eq!(
-                app.catalogue_source,
-                "Authenticated Windows guest catalogue"
-            );
+            assert_eq!(app.catalogue_source, "Installed in Windows");
             assert!(!app.portal_file_open_available);
+            assert_eq!(
+                app.portal_file_open_unavailable_reason.as_deref(),
+                Some(FILES_CANT_REACH_WINDOW),
+                "the person reads why files can't arrive, not the presentation's name"
+            );
             assert!(
-                app.portal_file_open_unavailable_reason
-                    .as_deref()
-                    .is_some_and(|reason| reason.contains("SPICE"))
+                app.fallback_detail.is_empty(),
+                "each unavailable action explains itself where it is"
             );
         }
         // Case `native_rail_is_the_only_vm_presentation_that_enables_open_file`.

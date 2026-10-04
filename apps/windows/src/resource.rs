@@ -120,18 +120,6 @@ impl Resource for Windows {
             .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
             .collect()
     }
-
-    fn search(state: &WindowsState) -> Vec<ui::tilo_resource::SearchEntry> {
-        state
-            .routes
-            .iter()
-            .map(|(app_id, route)| ui::tilo_resource::SearchEntry {
-                anchor: Some(format!("windows.app:{app_id}")),
-                title: app_id.clone(),
-                text: route.label().to_owned(),
-            })
-            .collect()
-    }
 }
 
 /// Hosted-only extras that are not document state: pending install confirmation
