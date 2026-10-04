@@ -251,24 +251,23 @@ pub(super) fn loading_view() -> El {
     ])))
 }
 
-/// A supply gauge turns warning and then danger as the supply runs out, so
-/// the band comes from how much is left rather than how full the bar is.
-fn supply_thresholds(level: f32) -> GaugeThresholds {
+/// A supply gauge stays neutral while there is plenty, then turns warning
+/// and danger as the supply runs out, so the band comes from how much is
+/// left rather than how full the bar is.
+fn supply_gauge(level: f32) -> BarGauge {
+    let gauge = BarGauge::new(level);
     if level <= 0.10 {
-        GaugeThresholds {
+        gauge.with_thresholds(GaugeThresholds {
             warning: 0.0,
             danger: 0.0,
-        }
+        })
     } else if level <= 0.25 {
-        GaugeThresholds {
+        gauge.with_thresholds(GaugeThresholds {
             warning: 0.0,
             danger: 2.0,
-        }
+        })
     } else {
-        GaugeThresholds {
-            warning: 2.0,
-            danger: 2.0,
-        }
+        gauge.neutral()
     }
 }
 
@@ -276,11 +275,7 @@ fn supply_thresholds(level: f32) -> GaugeThresholds {
 /// track that shows the whole scale.
 fn supply_meter(name: &str, level: f32) -> El {
     let percent = (level.clamp(0.0, 1.0) * 100.0).round();
-    Box::new(
-        BarGauge::new(level)
-            .with_label(name, format!("{percent}%"))
-            .with_thresholds(supply_thresholds(level)),
-    )
+    Box::new(supply_gauge(level).with_label(name, format!("{percent}%")))
 }
 
 /// How far a document has printed, with the page it is on.
@@ -294,22 +289,17 @@ fn job_progress(job: &os_actions::printing::PrintJob) -> El {
         let pages = if total == 1 { "page" } else { "pages" };
         format!("{done} of {total} {pages}")
     };
-    // Progress is healthy until the printer stops the document.
-    let thresholds = if matches!(job.state, Some(os_actions::printing::JobState::Stopped)) {
-        GaugeThresholds {
-            warning: 0.0,
-            danger: 2.0,
-        }
-    } else {
-        GaugeThresholds {
-            warning: 2.0,
-            danger: 2.0,
-        }
-    };
+    // Progress is neutral until the printer stops the document.
+    let gauge = BarGauge::new(f32::from(percent) / 100.0).with_label(label, format!("{percent}%"));
     Box::new(
-        BarGauge::new(f32::from(percent) / 100.0)
-            .with_label(label, format!("{percent}%"))
-            .with_thresholds(thresholds),
+        if matches!(job.state, Some(os_actions::printing::JobState::Stopped)) {
+            gauge.with_thresholds(GaugeThresholds {
+                warning: 0.0,
+                danger: 2.0,
+            })
+        } else {
+            gauge.neutral()
+        },
     )
 }
 
@@ -1295,8 +1285,8 @@ fn scan_review_view(
         .align_start()
         .push(Box::new(
             Container::new()
-                .with_min_width(280.0)
-                .with_flex_grow()
+                .with_min_width(editor_width + 24.0)
+                .with_max_width(editor_width + 24.0)
                 .with_no_padding()
                 .with_child(titled_section(
                     "Crop",
