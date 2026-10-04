@@ -4,18 +4,14 @@
 //!
 //! Tags and incoming links are chips that act: they take focus, activate from
 //! the keyboard and assistive technology, and are laid out and painted by the
-//! toolkit. A press only records intent; the app drains it and admits it as the
-//! same operation a command-palette entry would.
-
-use std::cell::Cell;
-use std::rc::Rc;
+//! toolkit. A press invokes the published tag's or note's "open", the same
+//! operation a command-palette entry does.
 
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{Chip, Column, Row, Text};
 
 use crate::main_panel::{BacklinkChip, TagChip};
-use crate::model::{PageId, TagId};
 
 /// What an incoming-link button says: the source note, and how many times it
 /// links here when more than once.
@@ -35,8 +31,6 @@ pub struct NoteHeader {
     captions: Vec<String>,
     column: Option<Column>,
     stale: bool,
-    tag_open: Rc<Cell<Option<TagId>>>,
-    backlink_open: Rc<Cell<Option<PageId>>>,
 }
 
 impl NoteHeader {
@@ -101,16 +95,6 @@ impl NoteHeader {
         self.column.as_mut()
     }
 
-    /// Drain a press of a tag.
-    pub fn take_tag_open(&self) -> Option<TagId> {
-        self.tag_open.take()
-    }
-
-    /// Drain a press of an incoming link.
-    pub fn take_backlink_open(&self) -> Option<PageId> {
-        self.backlink_open.take()
-    }
-
     fn build(&self, theme: &Theme) -> Column {
         let rhythm = theme.tokens.spacing.rhythm;
         let mut group = Column::new()
@@ -124,18 +108,17 @@ impl NoteHeader {
         if !self.tags.is_empty() {
             let mut row = Row::new().with_gap(rhythm.related);
             for tag in &self.tags {
-                let open = Rc::clone(&self.tag_open);
-                let id = tag.id;
-                row = row.push(Box::new(
-                    Chip::new(&tag.name)
-                        .with_id(format!("notes.tag-chip:{}", tag.id))
-                        .with_accessible_name(format!("Tag: {}", tag.name))
-                        .tooltip(ui::i18n::I18nManager::format(
-                            "notes-surface-tag",
-                            &[("tag", tag.name.clone().into())],
-                        ))
-                        .on_click(move || open.set(Some(id))),
-                ));
+                let mut chip = Chip::new(&tag.name)
+                    .with_id(format!("notes.tag-chip:{}", tag.id))
+                    .with_accessible_name(format!("Tag: {}", tag.name))
+                    .tooltip(ui::i18n::I18nManager::format(
+                        "notes-surface-tag",
+                        &[("tag", tag.name.clone().into())],
+                    ));
+                if let Some(open) = crate::actions::open_tag_binding(tag.id, &tag.name) {
+                    chip = chip.on_action(open);
+                }
+                row = row.push(Box::new(chip));
             }
             top = top.push(Box::new(row));
         }
@@ -161,18 +144,19 @@ impl NoteHeader {
             ));
             let mut row = Row::new().with_gap(rhythm.related);
             for backlink in &self.backlinks {
-                let open = Rc::clone(&self.backlink_open);
-                let page = backlink.page;
-                row = row.push(Box::new(
-                    Chip::new(backlink_label(backlink))
-                        .with_id(format!("notes.backlink-chip:{}", backlink.page))
-                        .with_accessible_name(format!("Linked from: {}", backlink.title))
-                        .tooltip(ui::i18n::I18nManager::format(
-                            "notes-surface-backlink",
-                            &[("title", backlink.title.clone().into())],
-                        ))
-                        .on_click(move || open.set(Some(page))),
-                ));
+                let mut chip = Chip::new(backlink_label(backlink))
+                    .with_id(format!("notes.backlink-chip:{}", backlink.page))
+                    .with_accessible_name(format!("Linked from: {}", backlink.title))
+                    .tooltip(ui::i18n::I18nManager::format(
+                        "notes-surface-backlink",
+                        &[("title", backlink.title.clone().into())],
+                    ));
+                if let Some(open) =
+                    crate::actions::open_page_binding(backlink.page, &backlink.title)
+                {
+                    chip = chip.on_action(open);
+                }
+                row = row.push(Box::new(chip));
             }
             links = links.push(Box::new(row));
             group = group.push(Box::new(links));

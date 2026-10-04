@@ -179,24 +179,46 @@ fn a_note_without_metadata_keeps_its_body_gap_under_the_title() {
     );
 }
 
+/// Press the widget `id` and return the resource and action the press
+/// invoked. The events go to the panel directly so the invocation is left
+/// for this test to read instead of being dispatched by the harness.
+fn press(m: &mut Mounted, id: &str) -> Option<(String, String)> {
+    use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+    let at = rect_of(Framed::split(&mut m.panel).0, id).center();
+    let harness = Framed::harness_mut(&mut m.panel);
+    harness.dispatch_to_root(&WindowEvent::CursorMoved {
+        device_id: DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(at.x, at.y),
+    });
+    for state in [ElementState::Pressed, ElementState::Released] {
+        harness.dispatch_to_root(&WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state,
+            button: MouseButton::Left,
+        });
+    }
+    let panel: &mut dyn ui::widget::Widget = Framed::split(&mut m.panel).0;
+    ui::widget::controls::take_control_invocation(panel)
+        .map(|invocation| (invocation.address.resource, invocation.address.action))
+}
+
 #[test]
 fn the_buttons_open_their_tag_and_note() {
     let mut m = mounted(1000, 1.0, &["Release"], &[("Roadmap", 1)]);
     settle(&mut m, 1000);
     let tag_id = format!("notes.tag-chip:{}", m.tags[0]);
     let link_id = format!("notes.backlink-chip:{}", m.sources[0]);
-    let tag = rect_of(Framed::split(&mut m.panel).0, &tag_id);
-    Framed::harness_mut(&mut m.panel).click_at(tag.center().x, tag.center().y);
     assert_eq!(
-        Framed::split(&mut m.panel).0.take_tag_open(),
-        Some(m.tags[0]),
+        press(&mut m, &tag_id),
+        Some((notes::actions::tag_resource_id(m.tags[0]), "open".into())),
         "a press opens the tag it names"
     );
-    let link = rect_of(Framed::split(&mut m.panel).0, &link_id);
-    Framed::harness_mut(&mut m.panel).click_at(link.center().x, link.center().y);
     assert_eq!(
-        Framed::split(&mut m.panel).0.take_backlink_open(),
-        Some(m.sources[0]),
+        press(&mut m, &link_id),
+        Some((
+            notes::actions::page_resource_id(m.sources[0]),
+            "open".into()
+        )),
         "a press opens the note that links here"
     );
 }

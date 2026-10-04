@@ -910,7 +910,7 @@ impl NotesApp {
                 ui::icons::Icon::Plus,
                 &ui::i18n!("notes-affordance-new-note"),
             )
-            .on_click(move || header.new_note.set(true))
+            .on_view(move || header.new_note.set(true))
         };
         let note_menu = {
             let header = Rc::clone(header);
@@ -919,7 +919,7 @@ impl NotesApp {
                 ui::icons::Icon::MoreHorizontal,
                 &ui::i18n!("notes-affordance-note-actions"),
             )
-            .on_click(move || header.note_menu.set(true))
+            .on_view(move || header.note_menu.set(true))
         };
         let actions: Vec<ui::widget::Element> = vec![
             Box::new(note_menu),
@@ -2269,7 +2269,12 @@ impl NotesApp {
         let before = self.meta_map();
         self.apply_event(ev);
         let after = self.meta_map();
-        self.dispatch_tree_diff(doc, &before, &after);
+        // Until the tree is seeded or adopted, a change stays local and is
+        // seeded with the rest; a lone page in the document would be adopted
+        // as the whole tree.
+        if self.adopted {
+            self.dispatch_tree_diff(doc, &before, &after);
+        }
         // The action path removed any deleted page from the document itself, so
         // drop the removals `apply_event` queued for the next `sync` — replaying
         // them would re-delete a page a Ctrl+Z undo has just restored.
@@ -3545,39 +3550,6 @@ impl NotesApp {
         }
     }
 
-    /// Route a note-header tag activation through the durable resource
-    /// operation. It is intentionally a view operation (each collaborator may
-    /// browse a different tag) but still validates the keyed tag record in the
-    /// canonical document before selecting a collection.
-    fn drain_tag_open(&mut self, state: &AutoCommit) {
-        let Some(tag) = self.main.take_tag_open() else {
-            return;
-        };
-        if let Err(error) =
-            self.open_notes_operation(actions::NotesOperation::OpenTag { tag }, state)
-        {
-            tracing::warn!(%error, %tag, "notes: tag chip target went stale");
-        }
-    }
-
-    /// Resolve an incoming-link chip through the same canonical open-page
-    /// operation as global search and ordinary `[[Page]]` activation. The
-    /// relationship row itself remains a local, derived presentation.
-    fn drain_backlink_open(&mut self, state: &AutoCommit) {
-        let Some(page) = self.main.take_backlink_open() else {
-            return;
-        };
-        if let Err(error) = self.open_notes_operation(
-            actions::NotesOperation::OpenPage {
-                page,
-                block_id: None,
-            },
-            state,
-        ) {
-            tracing::warn!(%error, %page, "notes: backlink source went stale");
-        }
-    }
-
     /// Schedule a debounced save of the current workspace.
     fn persist(&self) {
         if let Some(legacy) = &self.legacy_fixture_storage {
@@ -4240,12 +4212,14 @@ impl Widget for NotesApp {
         };
         scope.check()?;
         let (kind, type_id, payload) = (request.kind, request.type_id, request.payload);
-        if self.legacy_fixture_storage.is_some() {
-            return Err("Scoped operations require the canonical Notes record owner".into());
-        }
+        // A control's own operation (a header button) does not touch the
+        // record, so it reaches its owner whoever holds the notes.
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
             return ui::widget::start_in_children(self, op, doc, path);
         };
+        if self.legacy_fixture_storage.is_some() {
+            return Err("Scoped operations require the canonical Notes record owner".into());
+        }
         if matches!(
             operation,
             actions::NotesOperation::ImportMarkdown
@@ -4356,12 +4330,14 @@ impl Widget for NotesApp {
         }
         self.drain_markdown_transfer(state);
         self.drain_external_link_opens();
+        // The header buttons answer through their published controls, which
+        // the host runs between frames, as well as after input.
+        self.drain_header_requests(state);
         if self.legacy_fixture_storage.is_none() {
             self.drain_title_rename(state);
             for event in std::mem::take(&mut self.pending_events) {
                 self.apply_and_dispatch(state, event);
             }
-            self.drain_header_requests(state);
             self.drain_sidebar_events(state);
             self.drain_empty_note_request(state);
             // Project the workspace only when its inputs moved: committed
@@ -4405,8 +4381,6 @@ impl Widget for NotesApp {
         if self.legacy_read_blocked.is_some() {
             return;
         }
-        self.drain_tag_open(state);
-        self.drain_backlink_open(state);
         self.main.set_tags(self.selected_tag_chips());
         self.refresh_transclusion_previews(state);
         self.sidebar.sync(state, path);
