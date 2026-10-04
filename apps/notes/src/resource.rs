@@ -115,6 +115,50 @@ impl Resource for Notebook {
         children
     }
 
+    const READABLE: bool = true;
+
+    /// The notebook as its pages and tags; one page (`notes.page:<id>`) as
+    /// its title and blocks, each with the id the body's edit actions take.
+    fn read_content(
+        _state: &Workspace,
+        doc: &Doc,
+        item: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let pages = NotesDoc::list_pages(doc);
+        let Some(item) = item else {
+            return Ok(serde_json::json!({
+                "kind": Self::KIND,
+                "pages": pages.iter().map(|page| serde_json::json!({
+                    "item": crate::actions::page_resource_id(page.id),
+                    "title": page.title,
+                    "parent": page.parent.map(crate::actions::page_resource_id),
+                })).collect::<Vec<_>>(),
+                "tags": NotesDoc::list_tags(doc).iter().map(|tag| serde_json::json!({
+                    "id": tag.id.to_string(),
+                    "name": tag.name,
+                })).collect::<Vec<_>>(),
+            }));
+        };
+        let page = item
+            .strip_prefix("notes.page:")
+            .and_then(|id| id.parse::<PageId>().ok())
+            .and_then(|id| pages.iter().find(|page| page.id == id))
+            .ok_or_else(|| format!("no note `{item}`; read the notebook for the pages it holds"))?;
+        let blocks = NotesDoc::page_blocks(doc, page.id);
+        Ok(serde_json::json!({
+            "kind": "notes.page",
+            "item": crate::actions::page_resource_id(page.id),
+            "title": page.title,
+            "parent": page.parent.map(crate::actions::page_resource_id),
+            "text": blocks.iter().map(|block| block.text.as_str()).collect::<Vec<_>>().join("\n"),
+            "blocks": blocks.iter().map(|block| serde_json::json!({
+                "id": block.id,
+                "kind": block_kind(&block.kind),
+                "text": block.text,
+            })).collect::<Vec<_>>(),
+        }))
+    }
+
     fn search(state: &Workspace) -> Vec<SearchEntry> {
         state
             .pages()
@@ -126,6 +170,24 @@ impl Resource for Notebook {
                 action: None,
             })
             .collect()
+    }
+}
+
+/// A block's kind as a reader names it.
+fn block_kind(kind: &ui::widget::BlockKind) -> serde_json::Value {
+    use ui::widget::BlockKind;
+    match kind {
+        BlockKind::Paragraph => "paragraph".into(),
+        BlockKind::Quote => "quote".into(),
+        BlockKind::Heading(level) => serde_json::json!({ "heading": level }),
+        BlockKind::Bullet { indent } => serde_json::json!({ "bullet": indent }),
+        BlockKind::Numbered { indent } => serde_json::json!({ "numbered": indent }),
+        BlockKind::Checklist { indent, done } => {
+            serde_json::json!({ "checklist": indent, "done": done })
+        }
+        BlockKind::CodeBlock { lang } => serde_json::json!({ "code": lang }),
+        BlockKind::Table { .. } => "table".into(),
+        BlockKind::Divider => "divider".into(),
     }
 }
 
