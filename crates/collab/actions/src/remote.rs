@@ -72,6 +72,35 @@ pub enum CallerPrincipal {
     App(String),
 }
 
+/// Host-owned execution lifetime. Clones share closure, never authority.
+/// Equality and hashing use the immutable minted identity, not liveness.
+#[derive(Clone, Debug)]
+pub struct ExecutionLease {
+    id: uuid::Uuid,
+    live: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl PartialEq for ExecutionLease {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for ExecutionLease {}
+impl std::hash::Hash for ExecutionLease {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+impl ExecutionLease {
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.live.load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// Retire observation of this run. This does not cancel any app operation.
+    pub fn close(&self) {
+        self.live.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// The authenticated principal behind a request.
 ///
 /// Built only by the transport that authenticated the connection — from the
@@ -87,7 +116,7 @@ pub struct Caller {
     foreign: bool,
     // Transport-issued execution scope, never accepted from request context.
     // It narrows invocation ownership without changing the policy principal.
-    execution: Option<uuid::Uuid>,
+    execution: Option<ExecutionLease>,
 }
 
 impl Caller {
@@ -172,14 +201,34 @@ impl Caller {
     /// This changes invocation ownership, never the caller's permissions.
     #[must_use]
     pub fn in_new_execution(mut self) -> Self {
-        self.execution = Some(uuid::Uuid::new_v4());
+        self.execution = Some(ExecutionLease {
+            id: uuid::Uuid::new_v4(),
+            live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        });
         self
     }
 
     /// Host-issued execution identity. An identifier alone conveys no authority.
     #[must_use]
-    pub const fn execution_id(&self) -> Option<uuid::Uuid> {
-        self.execution
+    pub fn execution_id(&self) -> Option<uuid::Uuid> {
+        self.execution.as_ref().map(|lease| lease.id)
+    }
+
+    #[must_use]
+    pub fn execution_lease(&self) -> Option<ExecutionLease> {
+        self.execution.clone()
+    }
+
+    #[must_use]
+    pub fn execution_is_live(&self) -> bool {
+        self.execution.as_ref().is_some_and(ExecutionLease::is_live)
+    }
+
+    /// A transport ends its own run; retained caller clones cannot reopen it.
+    pub fn retire_execution(&self) {
+        if let Some(lease) = &self.execution {
+            lease.close();
+        }
     }
 
     /// Mark whether the caller acts from a foreign device: a Tilo runtime on
@@ -491,6 +540,12 @@ impl ActionHostError {
 /// with [`ActionHostError::InvocationConflict`]. [`InvocationLedger`]
 /// implements that rule.
 pub trait ActionHost {
+    /// End this admitted transport run's transient presence. This is not an
+    /// action or a wire method, and must not cancel work or end the shared host.
+    fn retire_execution(&self, caller: &Caller) {
+        caller.retire_execution();
+    }
+
     /// One page of what `caller` is offered. An action the caller may not
     /// invoke is absent, not flagged.
     fn query(
@@ -1412,6 +1467,21 @@ mod tests {
             host.cancel(&second, &id),
             Err(ActionHostError::UnknownInvocation)
         );
+        let retained = first.clone();
+        let hash = |caller: &Caller| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(caller, &mut hasher);
+            std::hash::Hasher::finish(&hasher)
+        };
+        let before = hash(&first);
+        host.retire_execution(&first);
+        assert!(!retained.execution_is_live());
+        assert!(second.execution_is_live());
+        assert_eq!(first, retained);
+        assert_eq!(hash(&first), before);
+        let reconnected = retained.in_new_execution();
+        assert!(reconnected.execution_is_live());
+        assert_ne!(reconnected.execution_id(), first.execution_id());
         host.finish(&first, &id);
         assert!(matches!(
             now(host.invoke(&first, archive(id))).unwrap().status,

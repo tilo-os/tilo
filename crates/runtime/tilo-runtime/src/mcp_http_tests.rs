@@ -1430,3 +1430,69 @@ fn continued_history_and_client_names_cannot_select_execution_identity() {
         }
     });
 }
+
+#[test]
+fn session_delete_idle_expiry_and_endpoint_drop_retire_run_lifetimes() {
+    let endpoint = endpoint(StubHost::default(), None);
+    run(async {
+        let first = open(&endpoint, "same label").await;
+        let second = open(&endpoint, "same label").await;
+        let retained = endpoint.find(&first).unwrap();
+        let first_caller = retained.lock().await.execution_caller();
+        let second_caller = endpoint
+            .find(&second)
+            .unwrap()
+            .lock()
+            .await
+            .execution_caller();
+        assert!(first_caller.execution_is_live());
+        assert!(second_caller.execution_is_live());
+        let deleted = endpoint
+            .dispatch(
+                &Method::DELETE,
+                "/mcp",
+                &headers(&[(SESSION_HEADER, &first)]),
+                b"",
+            )
+            .await;
+        assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+        assert!(
+            !first_caller.execution_is_live(),
+            "retained server cannot revive a deleted run"
+        );
+        assert!(second_caller.execution_is_live());
+        endpoint
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut(&second)
+            .unwrap()
+            .last_used = Instant::now().checked_sub(SESSION_IDLE).unwrap();
+        let third = open(&endpoint, "same label").await;
+        assert!(!second_caller.execution_is_live());
+        let third_caller = endpoint
+            .find(&third)
+            .unwrap()
+            .lock()
+            .await
+            .execution_caller();
+        assert!(third_caller.execution_is_live());
+        drop(endpoint);
+        assert!(!third_caller.execution_is_live());
+        assert_ne!(first_caller.execution_id(), third_caller.execution_id());
+    });
+}
+
+#[test]
+fn stdio_server_drop_retires_retained_caller_clones() {
+    let server = McpServer::new(StubHost::default(), "room".into(), "owner".into());
+    let caller = server.execution_caller();
+    let identity = caller.clone();
+    assert!(caller.execution_is_live());
+    drop(server);
+    assert!(!caller.execution_is_live());
+    assert_eq!(
+        caller, identity,
+        "liveness does not mutate invocation ownership keys"
+    );
+}

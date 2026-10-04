@@ -12,6 +12,7 @@ use tilo_actions::remote::{
 
 pub struct McpServer<H> {
     host: H,
+    retire_execution: fn(&H, &Caller),
     room: String,
     actor: String,
     /// One transport-issued execution scope, independent of history labels.
@@ -283,6 +284,12 @@ fn tool_result(result: Result<Value, String>) -> Value {
         Err(message) => json!({"content":[{"type":"text","text":message}],"isError":true}),
     }
 }
+impl<H> Drop for McpServer<H> {
+    fn drop(&mut self) {
+        (self.retire_execution)(&self.host, &self.caller);
+    }
+}
+
 impl<H: ActionHost + Send + Sync> McpServer<H> {
     #[must_use]
     pub fn new(host: H, room: String, actor: String) -> Self {
@@ -291,6 +298,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             .in_new_execution();
         Self {
             host,
+            retire_execution: H::retire_execution,
             room,
             actor,
             caller,
@@ -304,6 +312,10 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             shown: std::sync::Mutex::default(),
         }
     }
+    pub(crate) fn execution_caller(&self) -> Caller {
+        self.caller.clone()
+    }
+
     /// Answer an action that produced image content with the image itself,
     /// read from `media` with the producing app's own scope.
     #[must_use]

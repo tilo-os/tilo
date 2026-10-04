@@ -4541,6 +4541,24 @@ impl CapnpBrokerState {
         Ok(InvocationJob { id, completion: rx })
     }
 
+    /// Retire only this run's transient presence, preserving its pending jobs.
+    pub fn retire_execution(&self, caller: &tilo_actions::remote::Caller) {
+        caller.retire_execution();
+        if let Ok(mut pending) = self.pending_invocations.lock() {
+            for invocation in pending.values_mut() {
+                if invocation
+                    .activity
+                    .as_ref()
+                    .is_some_and(|target| target.belongs_to(caller))
+                {
+                    self.execution_activity
+                        .publish_status(invocation.activity.as_ref(), ExecutionStatus::Ended);
+                    invocation.activity = None;
+                }
+            }
+        }
+    }
+
     /// Observe subsequent broker execution events without scheduling app work.
     /// The fixed 256-event buffer reports `Lagged` rather than concealing loss;
     /// consumers must clear stale presence on lag/closure. Dropping a receiver
