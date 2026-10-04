@@ -3209,10 +3209,10 @@ fn authored_geometry_keeps_gaps_and_scales_with_text() {
             "the map keeps at least 40 % of a docked window"
         );
 
-        let mut mid = app_at(800.0, 900.0);
+        let mut mid = app_at(880.0, 900.0);
         mid.text_scale = 2.0;
         assert!(!mid.overlay_mode());
-        assert_eq!(f64::from(mid.metrics.compact_breakpoint), 720.0);
+        assert_eq!(f64::from(mid.metrics.compact_breakpoint), 840.0);
 
         let mut narrow = app_at(400.0, 800.0);
         narrow.text_scale = 1.0;
@@ -3345,11 +3345,17 @@ fn map_controls_stay_on_screen_clear_of_panel_and_navigation_card() {
             MapControlAction::ToggleTraffic,
         ];
 
-        // Docked, 720×360: beside would overlap the panel, below would run
-        // past the overflow button.
-        let mut docked = app_at(720.0, 360.0);
+        // Docked at the breakpoint, 840×360, with text a quarter larger:
+        // beside would overlap the wider panel, below would run past the
+        // overflow button.
+        let mut docked = app_at(840.0, 360.0);
         let mut scene = Scene::new();
-        docked.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        docked.draw_app(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme.clone().with_text_scale(1.25),
+        );
         assert!(docked.navigation_surface_visible_in_app() && !docked.overlay_mode());
         let panel = docked.panel_rect();
         let overflow = docked.overflow_rect();
