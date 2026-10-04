@@ -738,6 +738,13 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
             sources.append((source, source.read_text(encoding="utf-8")))
         combined_raw = "\n".join(text for _, text in sources)
         combined = rust_code_only(combined_raw)
+        # Hand-built effect/view specs are judged by what ships: a test may
+        # assert the kind of an operation the framework publishes.
+        shipped = "\n".join(
+            production_code(text)
+            for source, text in sources
+            if not is_test_source(source.relative_to(root).as_posix())
+        )
         main_path = manifest_path.parent / "src" / "main.rs"
         main_raw = main_path.read_text(encoding="utf-8") if main_path.is_file() else ""
         main_code = rust_code_only(live_launch_registration_code(main_raw))
@@ -824,7 +831,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                 )
             if (
                 not toolkit_host
-                and OPERATION_KIND.search(combined)
+                and OPERATION_KIND.search(shipped)
                 and not OPERATION_HANDLER.search(combined)
             ):
                 violations.append(
@@ -836,7 +843,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                 )
             if (
                 not toolkit_host
-                and OPERATION_KIND.search(combined)
+                and OPERATION_KIND.search(shipped)
                 and not OPERATION_HANDLER_REGISTRY.search(combined)
             ):
                 violations.append(
@@ -846,7 +853,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         "effect/view actions require an explicit runtime handler registry",
                     )
                 )
-            if not toolkit_host and OPERATION_KIND.search(combined):
+            if not toolkit_host and OPERATION_KIND.search(shipped):
                 for entry in unattached_handler_entries(combined_raw):
                     violations.append(
                         Violation(
