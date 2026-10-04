@@ -354,6 +354,48 @@ pub(crate) fn pack_with_files(
     prepared.finish(signature)
 }
 
+/// [`pack_with_files`] for `publisher`, whose key is not here: the root
+/// carries the placeholder signature it is signed with
+/// ([`sign_placeholder_root`] attaches the real one).
+pub(crate) fn pack_with_files_for(
+    payload_dir: &Path,
+    manifest: &Manifest,
+    publisher: [u8; 32],
+    extra: Vec<(String, Vec<u8>)>,
+) -> Result<Packed, PackError> {
+    prepare(payload_dir, manifest, publisher, extra)?.finish([0u8; 64])
+}
+
+/// Sign a package packed for `identity` by someone without its key
+/// ([`crate::image::seal_image_for`]): the root's placeholder signature is
+/// replaced by `identity`'s, which changes the package id.
+///
+/// # Errors
+///
+/// Returns [`PackError::IdentityMismatch`] when the package names another
+/// publisher, or what signing and reassembling the package return.
+pub fn sign_placeholder_root(
+    meta: &PackageMeta,
+    identity: &SigningIdentity,
+) -> Result<PackageMeta, PackError> {
+    if meta.root.publisher_identity != identity.public_key_bytes() {
+        return Err(PackError::IdentityMismatch);
+    }
+    let placeholder = SignedRoot {
+        signature: Some([0u8; 64]),
+        ..meta.root.clone()
+    };
+    let signature = identity.sign_signed_root(&placeholder)?;
+    Ok(PackageMeta::from_root(
+        SignedRoot {
+            signature: Some(signature),
+            ..placeholder
+        },
+        meta.manifest_bytes.clone(),
+        meta.collection_bytes.clone(),
+    )?)
+}
+
 /// Pack with a pre-computed aggregated threshold signature — used by
 /// the multi-device publisher pipeline where round-2 partials are
 /// collected and aggregated *outside* this crate.

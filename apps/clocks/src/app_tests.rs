@@ -143,7 +143,7 @@ fn a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls() {
             "timers",
             &ui::prelude::Id::from_raw(id.as_str()),
         ),
-        "set-floating",
+        "float-timer",
         serde_json::json!({}),
     )
     .unwrap();

@@ -23,12 +23,56 @@ struct EnvironmentsPanel {
     rect: Rect,
     close_rect: Rect,
     submit_rect: Rect,
-    /// Per environment: its rename and open buttons.
-    rows: Vec<(String, Rect, Rect)>,
+    /// Per environment: its buttons.
+    rows: Vec<EnvironmentRow>,
+    /// A folder picker the person opened for this environment record.
+    picker: Option<(String, ui::portal::PortalChannel)>,
+}
+
+/// One environment's buttons in the panel, as last drawn.
+struct EnvironmentRow {
+    key: String,
+    grant: Rect,
+    rename: Rect,
+    open: Rect,
+}
+
+/// What a click on an environment's row asks for.
+enum RowAction {
+    Grant,
+    Rename,
+    Open,
 }
 
 fn t(key: &str) -> String {
     ui::i18n::I18nManager::lookup(key, None)
+}
+
+/// The tools and granted folders of an environment, as the panel shows them.
+fn environment_details(env: &EnvironmentSummary) -> (String, String) {
+    let tools = if env.tools.is_empty() {
+        t("terminal-env-no-tools")
+    } else {
+        format!("{}: {}", t("terminal-env-tools"), env.tools.join(", "))
+    };
+    let grants = if env.grants.is_empty() {
+        t("terminal-env-no-grants")
+    } else {
+        let read_only = t("terminal-env-read-only");
+        let dirs: Vec<String> = env
+            .grants
+            .iter()
+            .map(|(path, write)| {
+                if *write {
+                    path.clone()
+                } else {
+                    format!("{path} ({read_only})")
+                }
+            })
+            .collect();
+        format!("{}: {}", t("terminal-env-grants"), dirs.join(", "))
+    };
+    (tools, grants)
 }
 
 /// What the chip and the picker call a target.
@@ -451,6 +495,64 @@ impl TerminalWidget {
         };
     }
 
+    fn start_rename(&mut self, key: String) {
+        let name = self
+            .sessions
+            .environments
+            .iter()
+            .find(|env| env.key == key)
+            .map(|env| env.name.clone())
+            .unwrap_or_default();
+        self.environments_panel.renaming = Some(key);
+        if let Some(input) = self.environments_panel.input.as_mut() {
+            input.set_text(&name);
+            input.set_focus(true);
+        }
+    }
+
+    /// Ask the person for a folder to grant the environment `record`,
+    /// through the same folder picker every app uses.
+    fn pick_folder_to_grant(&mut self, record: String) {
+        if self.environments_panel.picker.is_some() {
+            return;
+        }
+        let channel = ui::portal::PickRequest::directory(
+            &t("terminal-env-grant-title"),
+            &t("terminal-env-grant-accept"),
+        )
+        .thread_name("terminal-grant-folder-picker")
+        .send();
+        self.environments_panel.picker = Some((record, channel));
+    }
+
+    /// Grant the folder the person picked, once they have.
+    fn poll_folder_picker(&mut self) {
+        let Some((record, channel)) = self.environments_panel.picker.as_ref() else {
+            return;
+        };
+        let Ok(outcome) = channel.try_recv() else {
+            return;
+        };
+        let record = record.clone();
+        self.environments_panel.picker = None;
+        match outcome {
+            ui::portal::PortalOutcome::Opened(path) => {
+                let path = path.display().to_string();
+                self.environments_panel.error =
+                    self.sessions.grant_folder(&record, &path, true).err();
+            }
+            ui::portal::PortalOutcome::Cancelled => {}
+            ui::portal::PortalOutcome::Failed(reason) => {
+                self.environments_panel.error = Some(reason);
+            }
+        }
+    }
+
+    /// Whether a folder picker is waiting for the person.
+    fn folder_picker_pending(&self) -> bool {
+        self.environments_panel.picker.is_some()
+    }
+
     pub fn environments_panel_is_open(&self) -> bool {
         self.environments_panel.open
     }
@@ -540,37 +642,26 @@ impl TerminalWidget {
                 *ctx.handled = true;
                 return;
             }
-            let hit = self
-                .environments_panel
-                .rows
-                .iter()
-                .find_map(|(key, rename, open)| {
-                    if rename.contains(p) {
-                        Some((key.clone(), false))
-                    } else if open.contains(p) {
-                        Some((key.clone(), true))
-                    } else {
-                        None
-                    }
-                });
-            if let Some((key, open)) = hit {
-                if open {
-                    self.close_environments_panel();
-                    let target = SessionTarget::environment(key);
-                    let _ = self.switch_target(ctx.state, ctx.path, &target, Requester::Person);
+            let hit = self.environments_panel.rows.iter().find_map(|row| {
+                if row.grant.contains(p) {
+                    Some((row.key.clone(), RowAction::Grant))
+                } else if row.rename.contains(p) {
+                    Some((row.key.clone(), RowAction::Rename))
+                } else if row.open.contains(p) {
+                    Some((row.key.clone(), RowAction::Open))
                 } else {
-                    let name = self
-                        .sessions
-                        .environments
-                        .iter()
-                        .find(|env| env.key == key)
-                        .map(|env| env.name.clone())
-                        .unwrap_or_default();
-                    self.environments_panel.renaming = Some(key);
-                    if let Some(input) = self.environments_panel.input.as_mut() {
-                        input.set_text(&name);
-                        input.set_focus(true);
+                    None
+                }
+            });
+            if let Some((key, action)) = hit {
+                match action {
+                    RowAction::Open => {
+                        self.close_environments_panel();
+                        let target = SessionTarget::environment(key);
+                        let _ = self.switch_target(ctx.state, ctx.path, &target, Requester::Person);
                     }
+                    RowAction::Rename => self.start_rename(key),
+                    RowAction::Grant => self.pick_folder_to_grant(key),
                 }
                 *ctx.handled = true;
                 return;
@@ -614,14 +705,29 @@ impl TerminalWidget {
         let title_size = 15.0 * scale as f32;
         let body_size = 13.0 * scale as f32;
         let dim_size = 12.0 * scale as f32;
-        let row_h = line * 3.0 + gap;
         let envs = self.sessions.environments.clone();
-        let rows = envs.len().max(1) as f64;
-        let panel_w = (560.0 * scale)
+        let panel_w = (600.0 * scale)
             .min(self.rect.width() - margin * 2.0)
             .max(0.0);
-        let panel_h = (button_h + gap * 3.0 + rows * row_h + button_h + gap * 2.0 + line)
-            .min(self.rect.height() - margin * 2.0)
+        // Everything an environment has is shown in full: the lists wrap to
+        // the panel's width rather than being cut off.
+        let text_w = (panel_w - margin * 2.0).max(40.0) as f32;
+        let details: Vec<(String, String)> = envs.iter().map(environment_details).collect();
+        let row_heights: Vec<f64> = details
+            .iter()
+            .map(|(tools, grants)| {
+                let (_, tools_h) = tr.measure(tools, dim_size, Some(text_w));
+                let (_, grants_h) = tr.measure(grants, dim_size, Some(text_w));
+                button_h + gap / 2.0 + f64::from(tools_h) + f64::from(grants_h) + gap * 2.0
+            })
+            .collect();
+        let rows_h = if envs.is_empty() {
+            line * 3.0
+        } else {
+            row_heights.iter().sum()
+        };
+        let panel_h = (button_h + gap * 3.0 + rows_h + button_h + gap * 2.0 + line)
+            .min(self.rect.height() - margin * 2.0 - self.header_h())
             .max(0.0);
         let x0 = self.rect.center().x - panel_w / 2.0;
         let y0 = self.rect.y0 + margin + self.header_h();
@@ -671,8 +777,6 @@ impl TerminalWidget {
 
         // One row per environment.
         let mut y = panel_rect.y0 + gap * 2.0 + button_h;
-        let text_w =
-            (panel_w - margin * 2.0 - 2.0 * (96.0 * scale.min(1.25) + gap)).max(40.0) as f32;
         self.environments_panel.rows.clear();
         if envs.is_empty() {
             tr.draw_text(
@@ -681,14 +785,22 @@ impl TerminalWidget {
                 body_size,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((panel_rect.x0 + margin, y)),
-                Some((panel_w - margin * 2.0) as f32),
+                Some(text_w),
             );
-            y += row_h;
         }
-        for env in &envs {
+        let bw = 104.0 * scale.min(1.25);
+        for ((env, (tools, grants)), row_h) in envs.iter().zip(&details).zip(&row_heights) {
             if y + row_h > panel_rect.y1 - button_h - gap * 2.0 {
                 break;
             }
+            let open = Rect::new(
+                panel_rect.x1 - margin - bw,
+                y,
+                panel_rect.x1 - margin,
+                y + button_h,
+            );
+            let rename = Rect::new(open.x0 - gap - bw, y, open.x0 - gap, y + button_h);
+            let grant = Rect::new(rename.x0 - gap - bw, y, rename.x0 - gap, y + button_h);
             let current = self
                 .sessions
                 .target
@@ -700,66 +812,43 @@ impl TerminalWidget {
             } else {
                 env.name.clone()
             };
-            let name = tr.elide_to_width(&name, body_size, text_w);
+            let name_w = (grant.x0 - gap - panel_rect.x0 - margin).max(20.0) as f32;
+            let name = tr.elide_to_width(&name, body_size, name_w);
             tr.draw_text_weighted(
                 scene,
                 &name,
                 body_size,
                 theme.text_primary,
-                transform * Affine::translate((panel_rect.x0 + margin, y)),
+                transform * Affine::translate((panel_rect.x0 + margin, y + gap / 2.0)),
                 None,
                 TextWeight::Medium,
             );
-            let tools = if env.tools.is_empty() {
-                t("terminal-env-no-tools")
-            } else {
-                format!("{}: {}", t("terminal-env-tools"), env.tools.join(", "))
-            };
-            let grants = if env.grants.is_empty() {
-                t("terminal-env-no-grants")
-            } else {
-                let dirs: Vec<String> = env
-                    .grants
-                    .iter()
-                    .map(|(path, write)| {
-                        if *write {
-                            path.clone()
-                        } else {
-                            format!("{path} (ro)")
-                        }
-                    })
-                    .collect();
-                format!("{}: {}", t("terminal-env-grants"), dirs.join(", "))
-            };
-            for (i, text) in [tools, grants].iter().enumerate() {
-                let text = tr.elide_to_width(text, dim_size, text_w);
+            let mut text_y = y + button_h + gap / 2.0;
+            for text in [tools, grants] {
                 tr.draw_text(
                     scene,
-                    &text,
+                    text,
                     dim_size,
                     theme.tokens.colors.text_dim,
-                    transform
-                        * Affine::translate((panel_rect.x0 + margin, y + line * (i as f64 + 1.0))),
-                    None,
+                    transform * Affine::translate((panel_rect.x0 + margin, text_y)),
+                    Some(text_w),
                 );
+                let (_, h) = tr.measure(text, dim_size, Some(text_w));
+                text_y += f64::from(h);
             }
-            let bw = 96.0 * scale.min(1.25);
-            let open = Rect::new(
-                panel_rect.x1 - margin - bw,
-                y,
-                panel_rect.x1 - margin,
-                y + button_h,
-            );
-            let rename = Rect::new(open.x0 - gap - bw, y, open.x0 - gap, y + button_h);
             for (rect, label) in [
+                (grant, t("terminal-env-grant")),
                 (rename, t("terminal-env-rename")),
                 (open, t("terminal-env-open")),
             ] {
                 self.draw_panel_button(scene, transform, tr, theme, rect, &label);
             }
-            self.environments_panel
-                .rows
-                .push((env.key.clone(), rename, open));
+            self.environments_panel.rows.push(EnvironmentRow {
+                key: env.key.clone(),
+                grant,
+                rename,
+                open,
+            });
             y += row_h;
         }
 
@@ -893,6 +982,14 @@ impl TerminalWidget {
             "rename" => self
                 .sessions
                 .rename_environment(&text("record"), &text("name")),
+            "grant-folder" => self.sessions.grant_folder(
+                &text("record"),
+                &text("path"),
+                request
+                    .get("writable")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true),
+            ),
             other => Err(format!("unknown environment operation `{other}`")),
         }
     }

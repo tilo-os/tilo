@@ -266,7 +266,7 @@ fn one_published_tree_offers_every_clock_and_floats_timers_on_this_device_only()
         "resume-timer",
         "add-minute",
         "remove-timer",
-        "set-floating",
+        "float-timer",
     ] {
         assert!(has(&timer, action), "the timer offers {action}");
     }
@@ -275,7 +275,7 @@ fn one_published_tree_offers_every_clock_and_floats_timers_on_this_device_only()
     }
     assert!(has(&city, "remove-world-clock"), "the city can be removed");
     assert!(
-        has("clocks.stopwatch", "set-floating"),
+        has("clocks.stopwatch", "float-stopwatch"),
         "the stopwatch floats"
     );
 
@@ -297,7 +297,7 @@ fn one_published_tree_offers_every_clock_and_floats_timers_on_this_device_only()
 
     // Phase: floating a timer from its row changes this device's settings,
     // not the clocks everyone shares, and the row offers the way back.
-    app.call_on(&timer, "set-floating", serde_json::json!({}))
+    app.call_on(&timer, "float-timer", serde_json::json!({}))
         .unwrap();
     let device = app.settings::<OnThisDevice>().get();
     assert_eq!(
@@ -313,7 +313,8 @@ fn one_published_tree_offers_every_clock_and_floats_timers_on_this_device_only()
     assert!(
         row.actions
             .iter()
-            .any(|action| action.id == "set-floating" && action.label == "Stop floating")
+            .any(|action| action.id == "float-timer" && action.params().is_empty()),
+        "the row offers floating it back, nothing left to supply"
     );
     assert!(
         app.effect(&ClocksEffect::FloatTimer {

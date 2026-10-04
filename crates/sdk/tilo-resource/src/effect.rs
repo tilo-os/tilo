@@ -40,8 +40,8 @@
 //! `#[param("…")]` describes a parameter.
 
 use tilo_actions::{
-    ActionContract, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, ExecutionLocus,
-    ExecutionMode, OperationKind, PermissionRequirement, ResultSpec, RiskLevel,
+    ActionContract, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, ExecutionMode,
+    OperationKind, PermissionRequirement, ResultSpec, RiskLevel,
 };
 
 /// A typed vocabulary of effects. Derive it (`#[derive(Effect)]`); see the
@@ -77,38 +77,35 @@ pub trait Effect: Sized + 'static {
             .collect()
     }
 
-    /// This effect with its arguments bound, published as `id` and `label`
-    /// on the entity it acts on: "keep floating" on one timer's row,
-    /// invoking `FloatTimer { timer, floating: true }` with nothing left to
-    /// supply. It keeps the declaration's permission and confirmation.
-    fn bound(&self, id: &str, label: &str) -> ActionSpec {
-        let effect = self.id();
-        let payload = Payload {
-            effect: effect.to_owned(),
-            args: self.arguments(),
-        };
-        let declared = Self::declarations()
-            .into_iter()
-            .find(|decl| decl.id == effect)
-            .map(|decl| decl.spec(Self::OPERATION));
-        // A payload of a string and a JSON map always encodes.
-        let encoded =
-            EncodedAction::encode_operation(Self::OPERATION, &payload).unwrap_or_else(|_| {
-                EncodedAction {
-                    type_id: Self::OPERATION.to_owned(),
-                    payload: Vec::new(),
-                }
-            });
-        let mut spec =
-            ActionSpec::immediate_encoded(id, label, ExecutionLocus::ClientLocal, encoded);
-        spec.kind = OperationKind::Effect;
-        spec.operation_type = Some(Self::OPERATION.to_owned());
-        if let Some(declared) = declared {
-            spec.locus = declared.locus;
-            spec.contract = declared.contract;
-            spec.description = declared.description;
+    /// This effect with its arguments as one action that takes none: what a
+    /// live row offers (stop *this* process), answered by the vocabulary's
+    /// handler like any other invocation of the effect, under the same
+    /// contract as its declaration.
+    fn bound(&self) -> ActionSpec {
+        let id = self.id();
+        let encoded = EncodedAction::encode_operation(
+            Self::OPERATION,
+            &Payload {
+                effect: id.to_owned(),
+                args: self.arguments(),
+            },
+        )
+        .unwrap_or_else(|_| EncodedAction {
+            type_id: Self::OPERATION.to_owned(),
+            payload: Vec::new(),
+        });
+        match Self::declarations().into_iter().find(|decl| decl.id == id) {
+            Some(decl) => decl.spec_with(Self::OPERATION, Vec::new(), move |_| encoded.clone()),
+            None => ActionSpec::typed_operation(
+                id,
+                id,
+                id,
+                OperationKind::Effect,
+                Self::OPERATION,
+                Vec::new(),
+                move |_| encoded.clone(),
+            ),
         }
-        spec
     }
 
     /// Decode one invocation's payload, as the operation's specs encode it.
@@ -158,26 +155,37 @@ impl EffectDecl {
     /// The published action of this effect under `operation`.
     pub fn spec(&self, operation: &'static str) -> ActionSpec {
         let id = self.id;
+        self.spec_with(operation, self.params.clone(), move |args| {
+            EncodedAction::encode_operation(
+                operation,
+                &Payload {
+                    effect: id.to_owned(),
+                    args: args.to_json(),
+                },
+            )
+            .unwrap_or_else(|_| EncodedAction {
+                type_id: operation.to_owned(),
+                payload: Vec::new(),
+            })
+        })
+    }
+
+    /// The published action of this effect, taking `params` and encoding
+    /// an invocation with `build`.
+    fn spec_with(
+        &self,
+        operation: &'static str,
+        params: Vec<ActionParam>,
+        build: impl Fn(&tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static,
+    ) -> ActionSpec {
         let mut spec = ActionSpec::typed_operation(
-            id,
+            self.id,
             self.label,
             self.label,
             OperationKind::Effect,
             operation,
-            self.params.clone(),
-            move |args| {
-                EncodedAction::encode_operation(
-                    operation,
-                    &Payload {
-                        effect: id.to_owned(),
-                        args: args.to_json(),
-                    },
-                )
-                .unwrap_or_else(|_| EncodedAction {
-                    type_id: operation.to_owned(),
-                    payload: Vec::new(),
-                })
-            },
+            params,
+            build,
         );
         if !self.description.is_empty() {
             spec = spec.with_description(self.description);
@@ -346,6 +354,19 @@ mod tests {
             Sample::Reload
         );
         assert!(Sample::decode("wipe", &serde_json::Map::new()).is_err());
+
+        // Bound to its arguments, the effect takes none and keeps its
+        // declaration's contract.
+        let bound = Sample::Wipe { passes: 3 }.bound();
+        assert_eq!(bound.id, "wipe");
+        assert_eq!(bound.label, "Wipe");
+        assert!(bound.params().is_empty());
+        assert_eq!(bound.contract.confirmation, ConfirmationPolicy::Confirm);
+        let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(
+            Sample::from_payload(&encoded.payload).unwrap(),
+            Sample::Wipe { passes: 3 }
+        );
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
     }
 
@@ -360,19 +381,5 @@ mod tests {
             }
             .arguments()
         );
-    }
-
-    #[test]
-    fn a_bound_effect_carries_its_arguments_and_its_declaration_contract() {
-        let wipe = Sample::Wipe { passes: 3 };
-        let spec = wipe.bound("wipe-three", "Wipe three times");
-        assert_eq!(spec.id, "wipe-three");
-        assert_eq!(spec.label, "Wipe three times");
-        assert_eq!(spec.kind, OperationKind::Effect);
-        assert_eq!(spec.operation_type.as_deref(), Some("test.effects"));
-        assert!(spec.params().is_empty(), "nothing is left to supply");
-        assert_eq!(spec.contract.confirmation, ConfirmationPolicy::Confirm);
-        let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
-        assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), wipe);
     }
 }
