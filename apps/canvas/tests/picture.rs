@@ -378,3 +378,13 @@ fn a_group_of_shapes_clips_a_picture() {
         .to_string();
     assert!(refused.contains("in group"), "{refused}");
 }
+
+#[test]
+fn a_click_on_a_picture_picks_it() {
+    let mut app = TestApp::<App>::new().unwrap();
+    placed(&mut app);
+    let art = app.state();
+    let picked =
+        canvas::gesture::edit::pick(&art, ui::vello::kurbo::Point::new(150.0, 150.0), false);
+    assert_eq!(picked, vec!["photo".to_owned()]);
+}
