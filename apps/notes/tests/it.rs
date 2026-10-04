@@ -128,3 +128,6 @@ mod block_commands;
 
 #[path = "clipboard_safety.rs"]
 mod clipboard_safety;
+
+#[path = "find_replace.rs"]
+mod find_replace;
