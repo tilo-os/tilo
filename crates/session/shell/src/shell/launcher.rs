@@ -2585,6 +2585,21 @@ pub fn queue_launch_in_workspace(
     app: InstalledApp,
     workspace: &Workspace,
 ) -> Result<(), LaunchError> {
+    queue_launch_target_in_workspace(app, workspace, None)
+}
+
+/// [`queue_launch_in_workspace`], asking the app to open `uri` when given —
+/// a link an app opened in a new tab. The app's manifest must claim the
+/// URI's scheme; the launcher refuses one it does not.
+///
+/// # Errors
+///
+/// As [`queue_launch_in_workspace`].
+pub fn queue_launch_target_in_workspace(
+    app: InstalledApp,
+    workspace: &Workspace,
+    uri: Option<String>,
+) -> Result<(), LaunchError> {
     let package_id = app.package_id.clone();
     let display_name = app.display_name.clone();
     let room = workspace.room;
@@ -2596,8 +2611,15 @@ pub fn queue_launch_in_workspace(
                 .into_iter()
                 .filter(|capability| capability.subject == Subject::app(&package_id))
                 .collect();
-            let outcome =
-                execute_installed(app, room, None, None, None, None, Some(app_capabilities));
+            let outcome = execute_installed(
+                app,
+                room,
+                None,
+                uri.as_deref(),
+                None,
+                None,
+                Some(app_capabilities),
+            );
             if let Err(error) = outcome {
                 push_event(LaunchEvent {
                     package_id,
@@ -2978,6 +3000,7 @@ fn start_launch(
                     let mut tail = VecDeque::with_capacity(STDERR_TAIL_LINES);
                     relay_capped_lines(stderr, |line| {
                         eprintln!("[app {stderr_tag} stderr] {line}");
+                        crate::compositor::gpu_health::observe_app_line(&stderr_tag, &line);
                         if tail.len() == STDERR_TAIL_LINES {
                             tail.pop_front();
                         }

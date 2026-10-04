@@ -273,6 +273,19 @@ pub fn push_gpu_selection(
         argv.push(key.to_string());
         argv.push(value);
     }
+    // Read-only: the session writes the seed, apps only start from it, so
+    // no app can plant pipelines another app will run.
+    if let Some(seed) = &selection.pipeline_seed {
+        push_bind(
+            argv,
+            "--ro-bind-try",
+            seed,
+            Path::new(crate::gpu::SANDBOX_PIPELINE_SEED_DIR),
+        );
+        argv.push("--setenv".to_string());
+        argv.push(crate::gpu::PIPELINE_SEED_ENV.to_string());
+        argv.push(crate::gpu::SANDBOX_PIPELINE_SEED_DIR.to_string());
+    }
 }
 
 /// Whether this launch exposes `/dev/dri` at all — consults both
@@ -1770,6 +1783,39 @@ mod tests {
     }
 
     #[test]
+    fn the_session_pipeline_seed_is_bound_read_only() {
+        let sel = crate::gpu::GpuSelection {
+            node: PathBuf::from("/dev/dri/renderD128"),
+            driver: Some("msm_dpu".to_string()),
+            egl_vendor_json: None,
+            vulkan_icd_json: None,
+            vulkan_device: None,
+            pipeline_seed: Some(PathBuf::from("/run/user/1000/tilo/pipeline-seed")),
+            notes: Vec::new(),
+        };
+        let mut argv = Vec::new();
+        push_gpu_selection(&mut argv, &sel, true);
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind-try"
+                && w[1] == "/run/user/1000/tilo/pipeline-seed"
+                && w[2] == crate::gpu::SANDBOX_PIPELINE_SEED_DIR),
+            "{argv:?}"
+        );
+        assert!(
+            !argv
+                .windows(2)
+                .any(|w| w[0].starts_with("--bind") && w[1] == "/run/user/1000/tilo/pipeline-seed"),
+            "an app must never be able to write the seed: {argv:?}"
+        );
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--setenv"
+                && w[1] == crate::gpu::PIPELINE_SEED_ENV
+                && w[2] == crate::gpu::SANDBOX_PIPELINE_SEED_DIR),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -1787,6 +1833,8 @@ mod tests {
                 vulkan_icd_json: Some(PathBuf::from(
                     "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
                 )),
+                vulkan_device: None,
+                pipeline_seed: None,
                 notes: Vec::new(),
             };
             let mut argv = Vec::new();
@@ -1850,6 +1898,8 @@ mod tests {
                 driver: Some("amdgpu".to_string()),
                 egl_vendor_json: Some(PathBuf::from("/usr/share/glvnd/egl_vendor.d/50_mesa.json")),
                 vulkan_icd_json: None,
+                vulkan_device: None,
+                pipeline_seed: None,
                 notes: Vec::new(),
             };
             let mut argv = Vec::new();

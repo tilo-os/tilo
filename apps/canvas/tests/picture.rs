@@ -432,3 +432,31 @@ fn a_click_on_a_picture_picks_it() {
         canvas::gesture::edit::pick(&art, ui::vello::kurbo::Point::new(150.0, 150.0), false);
     assert_eq!(picked, vec!["photo".to_owned()]);
 }
+
+#[test]
+fn a_picture_opened_from_the_desktop_has_an_artwork_of_its_own() {
+    use base64::Engine as _;
+    let data = halves(64, 32);
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(data.split_once(";base64,").unwrap().1)
+        .unwrap();
+    let directory = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("canvas-launch");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("harbour.png");
+    std::fs::write(&path, &png).unwrap();
+    let path = path.to_str().unwrap();
+    let mut app = TestApp::<App>::launched(&[path]).unwrap();
+    let art = app.state();
+    assert_eq!(
+        (art.title.as_str(), art.width, art.height),
+        ("harbour", 64.0, 32.0)
+    );
+    assert!(art.mark("picture").is_some());
+    let record = app.record().clone();
+    app.call("set-artwork", json!({"title": "Harbour at dusk"}))
+        .unwrap();
+    // Opened again, the picture's artwork is as it was left.
+    let app = app.relaunch(&[path]).unwrap();
+    assert_eq!(app.record(), &record);
+    assert_eq!(app.state().title, "Harbour at dusk");
+}

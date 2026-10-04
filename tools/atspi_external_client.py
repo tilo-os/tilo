@@ -409,10 +409,14 @@ def wait_for_new_app(address: str, before: set[str], app_name: str) -> tuple[str
     )
 
 
-def open_from_launchpad_card(address: str, card: str, app_name: str) -> tuple[str, int]:
+def open_from_launchpad_card(
+    address: str, card: str, app_name: str, expected: tuple[str, ...] = (),
+) -> tuple[str, int]:
     """Activate the empty workspace's CARD and require that it opens APP_NAME
     itself. A card that only pre-fills the app launcher starts nothing, so
-    no app joins the bus and this fails."""
+    no app joins the bus and this fails. EXPECTED names nodes the app must
+    then expose: what the card's action did in it, such as the screen it
+    opened on or the call it started."""
     shell = shell_client(address)
     before = set(bus_pids(address))
     _, node = wait_for_shell_node(shell, card)
@@ -429,6 +433,12 @@ def open_from_launchpad_card(address: str, card: str, app_name: str) -> tuple[st
             f"launchpad card {card!r} opened {root_name.strip()} "
             f"({process_command(pid)}), not {app_name}"
         )
+    if expected:
+        try:
+            wait_for_tree(AtspiClient(address, bus), expected, app_name)
+        except GateError as error:
+            close_app(pid)
+            raise GateError(f"launchpad card {card!r} opened {app_name} but not what it names: {error}") from error
     return bus, pid
 
 
@@ -499,7 +509,7 @@ def close_app(pid: int) -> None:
         pass
 
 
-def wait_for_tree(client: AtspiClient, names: tuple[str, ...], scenario: Scenario) -> dict[str, str]:
+def wait_for_tree(client: AtspiClient, names: tuple[str, ...], subject: str) -> dict[str, str]:
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
     latest: dict[str, str] = {}
     while time.monotonic() < deadline:
@@ -513,7 +523,7 @@ def wait_for_tree(client: AtspiClient, names: tuple[str, ...], scenario: Scenari
         time.sleep(POLL_SECONDS)
     observed = "\n".join(sorted(set(latest.values())))
     raise GateError(
-        f"{scenario.app_id}: tree never exposed {', '.join(names)}; "
+        f"{subject}: tree never exposed {', '.join(names)}; "
         f"observed AT-SPI names:\n{observed}"
     )
 
@@ -522,9 +532,9 @@ def exercise(scenario: Scenario, address: str) -> None:
     bus_name, pid = open_in_session(address, scenario.app_name)
     try:
         client = AtspiClient(address, bus_name)
-        initial = wait_for_tree(client, (scenario.root, *scenario.required), scenario)
+        initial = wait_for_tree(client, (scenario.root, *scenario.required), scenario.app_id)
         client.click(initial, scenario.action)
-        wait_for_tree(client, scenario.after_action, scenario)
+        wait_for_tree(client, scenario.after_action, scenario.app_id)
     except GateError as error:
         raise GateError(f"{scenario.app_id}: {error}") from error
     finally:
@@ -802,8 +812,9 @@ def prepare_typing(address: str, app_name: str, create: str, state: Path) -> Non
     print(f"{app_name}: a new document has keyboard focus; type into it now")
 
 
-def check_typed(address: str, state: Path, expected: str) -> None:
-    """The document opened by `prepare_typing` holds exactly EXPECTED."""
+def check_typed(address: str, state: Path, expected: str, status: str | None = None) -> None:
+    """The document opened by `prepare_typing` holds exactly EXPECTED and,
+    with STATUS, the app names its save state STATUS and no other."""
     bus_name, pid_text = state.read_text().split()
     pid = int(pid_text)
     client = AtspiClient(address, bus_name)
@@ -817,6 +828,8 @@ def check_typed(address: str, state: Path, expected: str) -> None:
                 texts = {}
             if expected in texts.values():
                 print(f"typed text reads back exactly: {expected!r}")
+                if status is not None:
+                    check_save_status(client, status, deadline)
                 return
             time.sleep(POLL_SECONDS * 4)
         seen = sorted({text for text in texts.values() if text})
@@ -824,6 +837,26 @@ def check_typed(address: str, state: Path, expected: str) -> None:
     finally:
         close_app(pid)
         state.unlink(missing_ok=True)
+
+
+SAVE_STATES = ("Saved", "Saving…", "Save failed", "Not saved")
+
+
+def check_save_status(client: AtspiClient, expected: str, deadline: float) -> None:
+    """The app's save-state node reads EXPECTED, and none reads another state."""
+    shown: list[str] = []
+    while time.monotonic() < deadline:
+        try:
+            tree = client.tree(TYPING_TREE_NODE_LIMIT)
+        except GateError:
+            time.sleep(POLL_SECONDS * 4)
+            continue
+        shown = [state for state in SAVE_STATES if client.named(tree, state)]
+        if shown == [expected]:
+            print(f"save state reads {expected!r}")
+            return
+        time.sleep(POLL_SECONDS * 4)
+    raise GateError(f"save state should read {expected!r}, but the app shows {shown!r}")
 
 
 def property_text(reply: str) -> str | None:
@@ -893,6 +926,7 @@ def main() -> int:
     typed = sub.add_parser("typed", help="check the document `type-into` opened holds exactly TEXT")
     typed.add_argument("text")
     typed.add_argument("--state", type=Path, required=True)
+    typed.add_argument("--status", help="the save state the app must name once the text reads back")
     described = sub.add_parser(
         "described",
         help="check the document `type-into` opened has a node NAME described as DESCRIPTION",
@@ -905,6 +939,10 @@ def main() -> int:
     )
     card.add_argument("card_name")
     card.add_argument("app_name")
+    card.add_argument(
+        "--expect", action="append", default=[], metavar="NAME",
+        help="an accessible name the app must expose after the card's action (repeatable)",
+    )
     page = sub.add_parser(
         "page", help="open Browser, wait for the caller to type the printed address, require the page to load",
     )
@@ -940,13 +978,15 @@ def main() -> int:
             prepare_typing(address, args.app_name, args.create, args.state)
             return 0
         if args.command == "typed":
-            check_typed(address, args.state, args.text)
+            check_typed(address, args.state, args.text, args.status)
             return 0
         if args.command == "described":
             check_described(address, args.state, args.name, args.description)
             return 0
         if args.command == "card":
-            _bus_name, pid = open_from_launchpad_card(address, args.card_name, args.app_name)
+            _bus_name, pid = open_from_launchpad_card(
+                address, args.card_name, args.app_name, tuple(args.expect),
+            )
             close_app(pid)
             print(f"AT-SPI external client passed: launchpad card {args.card_name!r} opened {args.app_name}")
             return 0

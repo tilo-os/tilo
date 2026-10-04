@@ -36,7 +36,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::common::{TestDevice, TestUser, client_endpoint};
 
-const WORKSPACE: u64 = 77;
+pub(crate) const WORKSPACE: u64 = 77;
 
 /// A guest that prints a prompt, then echoes.
 pub(crate) struct EchoLauncher;
@@ -123,7 +123,7 @@ impl LegacyVmHost for WindowVm {
     }
 }
 
-fn spec() -> EnvironmentSpec {
+pub(crate) fn spec() -> EnvironmentSpec {
     EnvironmentSpec {
         name: "dev".into(),
         runtime: tilo_relay_protocol::environment::RuntimeImages {
@@ -140,16 +140,16 @@ fn spec() -> EnvironmentSpec {
     }
 }
 
-fn record() -> EnvironmentRecordRef {
+pub(crate) fn record() -> EnvironmentRecordRef {
     EnvironmentRecordRef {
         workspace_id: WORKSPACE,
         record_id: "env-1".into(),
     }
 }
 
-const SIZE: PtySize = PtySize { cols: 80, rows: 24 };
+pub(crate) const SIZE: PtySize = PtySize { cols: 80, rows: 24 };
 
-async fn remote(relay: &Relay, device: &TestDevice) -> RemoteRelay {
+pub(crate) async fn remote(relay: &Relay, device: &TestDevice) -> RemoteRelay {
     RemoteRelay {
         endpoint: client_endpoint().await,
         address: relay.node_addr(),
@@ -161,7 +161,10 @@ async fn remote(relay: &Relay, device: &TestDevice) -> RemoteRelay {
 }
 
 /// Read output until `expected` arrived; returns everything read.
-async fn expect_output(stream: &mut tilo_relay_client::PtyStream, expected: &[u8]) -> Vec<u8> {
+pub(crate) async fn expect_output(
+    stream: &mut tilo_relay_client::PtyStream,
+    expected: &[u8],
+) -> Vec<u8> {
     tilo_test_env::within("the expected environment output", async {
         let mut seen = Vec::new();
         while !seen.ends_with(expected) {
@@ -178,17 +181,19 @@ async fn expect_output(stream: &mut tilo_relay_client::PtyStream, expected: &[u8
 pub(crate) struct Worker {
     pub(crate) client: ComputeClient,
     pub(crate) serving: tokio::task::JoinHandle<()>,
+    pub(crate) environments: WorkerEnvironments,
 }
 
 /// Attach the provider's worker, advertise environments and KVM, and serve
 /// every stream the relay opens to it.
-async fn start_worker(
+pub(crate) async fn start_worker(
     relay: &Relay,
     provider: &TestUser,
     worker: &TestDevice,
     root: &std::path::Path,
+    legacy: Arc<dyn LegacyVmHost>,
 ) -> Worker {
-    start_worker_in(relay, provider, worker, root, WORKSPACE).await
+    start_worker_with(relay, provider, worker, root, WORKSPACE, legacy).await
 }
 
 /// [`start_worker`] for the workspace `workspace`.
@@ -198,6 +203,18 @@ pub(crate) async fn start_worker_in(
     worker: &TestDevice,
     root: &std::path::Path,
     workspace: u64,
+) -> Worker {
+    start_worker_with(relay, provider, worker, root, workspace, Arc::new(WindowVm)).await
+}
+
+/// [`start_worker`] for `workspace`, running legacy apps with `legacy`.
+pub(crate) async fn start_worker_with(
+    relay: &Relay,
+    provider: &TestUser,
+    worker: &TestDevice,
+    root: &std::path::Path,
+    workspace: u64,
+    legacy: Arc<dyn LegacyVmHost>,
 ) -> Worker {
     let mut client = ComputeClient::connect(
         client_endpoint().await,
@@ -255,22 +272,32 @@ pub(crate) async fn start_worker_in(
             Arc::new(NoMetering),
         )),
         legacy: Some(LegacyWorker::new(
-            Arc::new(WindowVm),
+            legacy,
             root.to_path_buf(),
             MemberQuota::default(),
         )),
+        legacy_route: Some(tilo_relay::legacy_route::LegacyLaunchRoute::new()),
     };
+    if let (Some(route), Some(host)) = (&environments.legacy_route, &environments.host) {
+        route.set_host(host.downgrade());
+        route.set_relay(client.connection());
+    }
+    let served = environments.clone();
     let connection = client.connection();
     let serving = tokio::spawn(async move {
         while let Ok((mut send, mut receive)) = connection.accept_bi().await {
-            let environments = environments.clone();
+            let environments = served.clone();
             tokio::spawn(async move {
                 let _ = serve_worker_stream(environments, &mut send, &mut receive).await;
                 let _ = send.finish();
             });
         }
     });
-    Worker { client, serving }
+    Worker {
+        client,
+        serving,
+        environments,
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -340,7 +367,14 @@ async fn members_run_reattach_and_launch_legacy_apps_through_a_relay_worker() {
         })
     ));
 
-    let worker = start_worker(&relay, &provider, &worker_device, worker_root.path()).await;
+    let worker = start_worker(
+        &relay,
+        &provider,
+        &worker_device,
+        worker_root.path(),
+        Arc::new(WindowVm),
+    )
+    .await;
 
     // Alice opens a session, types, and walks away.
     let mut first = open_remote_environment(&laptop, &record(), &spec(), SIZE, None)
