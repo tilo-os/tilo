@@ -102,6 +102,16 @@ impl ListMetrics {
         }
     }
 
+    /// Rows sit flush with the column's edge, so labels line up with the
+    /// section heading above them; a striped list insets its text inside
+    /// the stripes.
+    fn inset(mut self, striped: bool) -> Self {
+        if !striped {
+            self.pad_x = 0.0;
+        }
+        self
+    }
+
     fn value_style(&self, row: &PropertyRow<'_>) -> TextStyle {
         self.value.clone().with_kind(row.kind)
     }
@@ -254,7 +264,7 @@ impl<'a> PropertyListFace<'a> {
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         lay_out(
             text,
-            &ListMetrics::new(theme),
+            &ListMetrics::new(theme).inset(self.striped),
             self.rows,
             Point::ZERO,
             width,
@@ -266,7 +276,7 @@ impl<'a> PropertyListFace<'a> {
     pub fn is_stacked(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> bool {
         lay_out(
             text,
-            &ListMetrics::new(theme),
+            &ListMetrics::new(theme).inset(self.striped),
             self.rows,
             Point::ZERO,
             width,
@@ -283,17 +293,23 @@ impl<'a> PropertyListFace<'a> {
         origin: Point,
         width: f64,
     ) -> Vec<(usize, Rect)> {
-        lay_out(text, &ListMetrics::new(theme), self.rows, origin, width)
-            .rows
-            .iter()
-            .enumerate()
-            .filter_map(|(i, row)| row.action.map(|r| (i, r)))
-            .collect()
+        lay_out(
+            text,
+            &ListMetrics::new(theme).inset(self.striped),
+            self.rows,
+            origin,
+            width,
+        )
+        .rows
+        .iter()
+        .enumerate()
+        .filter_map(|(i, row)| row.action.map(|r| (i, r)))
+        .collect()
     }
 
     /// Paint the list from `rect`'s top-left at `rect`'s width.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
-        let m = ListMetrics::new(ctx.theme);
+        let m = ListMetrics::new(ctx.theme).inset(self.striped);
         let layout = lay_out(ctx.text, &m, self.rows, rect.origin(), rect.width());
         paint_layout(
             ctx,
@@ -501,7 +517,7 @@ impl Widget for PropertyList {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.metrics = Some(ListMetrics::new(theme));
+        self.metrics = Some(ListMetrics::new(theme).inset(self.striped));
         let node = taffy.leaf_node(Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
@@ -575,7 +591,7 @@ impl Widget for PropertyList {
         if presence.should_cull(self.rect) {
             return;
         }
-        let metrics = ListMetrics::new(theme);
+        let metrics = ListMetrics::new(theme).inset(self.striped);
         let rows: Vec<PropertyRow<'_>> = self.properties.iter().map(Property::row).collect();
         let layout = lay_out(
             text_renderer,

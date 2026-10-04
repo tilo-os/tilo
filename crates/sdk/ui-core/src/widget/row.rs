@@ -66,6 +66,8 @@ pub struct Row {
     /// See [`Row::with_gap`]. `None` is the theme's `gap_standard` on both
     /// axes (between children, and between wrapped lines).
     gap_override: Option<f32>,
+    /// See [`Row::with_rhythm`]; wins over `gap_override`.
+    gap_rhythm: Option<crate::tokens::RhythmStep>,
     /// See [`Row::with_justify`]. `None` leaves taffy's start packing.
     justify: Option<taffy::JustifyContent>,
     /// See [`Row::with_align_items`]. `None` keeps the fill-height /
@@ -106,6 +108,7 @@ impl Row {
             horizontal_padding: 0.0,
             vertical_padding: 0.0,
             gap_override: None,
+            gap_rhythm: None,
             justify: None,
             align_items_override: None,
             align_start: false,
@@ -180,6 +183,15 @@ impl Row {
     #[must_use]
     pub fn with_gap(mut self, px: f32) -> Self {
         self.gap_override = Some(px.max(0.0));
+        self
+    }
+
+    /// Space the children by a step of the theme's rhythm (`Related` for a
+    /// cluster of controls, `Sibling` for equal neighbours), resolved at
+    /// layout so the gap follows density and scale.
+    #[must_use]
+    pub fn with_rhythm(mut self, step: crate::tokens::RhythmStep) -> Self {
+        self.gap_rhythm = Some(step);
         self
     }
 
@@ -268,7 +280,10 @@ impl Widget for Row {
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
 
-        let gap = self.gap_override.unwrap_or(theme.gap_standard);
+        let gap = self.gap_rhythm.map_or_else(
+            || self.gap_override.unwrap_or(theme.gap_standard),
+            |step| theme.tokens.spacing.rhythm.get(step),
+        );
 
         let node = taffy.parent_node(
             Style {

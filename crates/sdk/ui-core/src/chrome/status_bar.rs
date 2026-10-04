@@ -19,10 +19,17 @@ use vello::kurbo::{Affine, Rect, Vec2};
 use vello::peniko::Fill;
 
 /// Height of the status bar: the compact control height, so a status bar
-/// and a bar control read as the same tier.
+/// and a bar control read as the same tier. Like a control it grows with
+/// the text scale, so its Caption readouts never touch its edges.
 #[must_use]
 pub fn height(theme: &Theme) -> f64 {
-    f64::from(theme.tokens.metrics.bar_control_height)
+    let height = f64::from(theme.tokens.metrics.bar_control_height);
+    let grown = f64::from(
+        theme
+            .text(crate::tokens::TextRole::Caption)
+            .line_height_px(),
+    ) + 2.0 * f64::from(theme.tokens.spacing.s1);
+    if grown > height { grown.ceil() } else { height }
 }
 
 /// Reserve the status bar's band at the bottom of `region`: returns

@@ -268,10 +268,18 @@ impl<'a> AvatarFace<'a> {
 /// `"ada"` gives `"A"`.
 #[must_use]
 pub fn initials_for_name(name: &str) -> String {
-    let letters: Vec<char> = name
+    // Initials are letters: a word that is only digits or punctuation (a
+    // version, a year, "(4.2)") gives none, unless nothing else does.
+    let mut letters: Vec<char> = name
         .split_whitespace()
-        .filter_map(|word| word.chars().find(|c| c.is_alphanumeric()))
+        .filter_map(|word| word.chars().find(|c| c.is_alphabetic()))
         .collect();
+    if letters.is_empty() {
+        letters = name
+            .split_whitespace()
+            .filter_map(|word| word.chars().find(|c| c.is_alphanumeric()))
+            .collect();
+    }
     let picked: Vec<char> = match letters.as_slice() {
         [] => Vec::new(),
         [only] => vec![*only],
@@ -547,6 +555,12 @@ mod tests {
         assert_eq!(initials_for_name("  grace   brewster hopper "), "GH");
         assert_eq!(initials_for_name("(Ops) team"), "OT");
         assert_eq!(initials_for_name(""), "");
+        assert_eq!(
+            initials_for_name("The Donut Tutorial (Blender 4.2)"),
+            "TB",
+            "a version number gives no initial"
+        );
+        assert_eq!(initials_for_name("2026"), "2");
 
         let theme = Theme::dark();
         // The same person is the same colour wherever they appear, and two

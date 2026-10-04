@@ -759,6 +759,8 @@ pub struct ListRow {
     two_line: bool,
     meta: Option<String>,
     leading: Option<Leading>,
+    /// The badge column the rows around it share (set by their `Section`).
+    leading_column: Option<f64>,
     status: Option<(StatusKind, String)>,
     disclosure: bool,
     emphasized: bool,
@@ -794,6 +796,7 @@ impl ListRow {
             two_line: false,
             meta: None,
             leading: None,
+            leading_column: None,
             status: None,
             disclosure: false,
             emphasized: false,
@@ -924,6 +927,23 @@ impl ListRow {
         (self.separator, self.next_selected)
     }
 
+    /// The leading badge, when the row has one.
+    pub(crate) fn badge_label(&self) -> Option<&str> {
+        match &self.leading {
+            Some(Leading::Badge(badge)) => Some(badge),
+            _ => None,
+        }
+    }
+
+    /// Share a badge column with the rows around it, so every title starts
+    /// on one edge.
+    pub(crate) fn set_leading_column(&mut self, width: Option<f64>) {
+        if self.leading_column != width {
+            self.leading_column = width;
+            self.dirty = true;
+        }
+    }
+
     pub(crate) fn set_separator(&mut self, below: bool, next_selected: bool) {
         if (self.separator, self.next_selected) != (below, next_selected) {
             self.separator = below;
@@ -1026,6 +1046,9 @@ impl ListRow {
                 Leading::Icon(icon) => RowLeading::Icon(*icon),
                 Leading::Badge(badge) => RowLeading::Badge(badge),
             });
+            if let Some(width) = self.leading_column {
+                face = face.leading_column(width);
+            }
         }
         if let Some((kind, id)) = &self.status {
             face = face.status(match kind {

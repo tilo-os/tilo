@@ -135,25 +135,35 @@ const SYNTH_H: u32 = 270;
 const SYNTH_ROW_BYTES: usize = SYNTH_W as usize * 4;
 const SYNTH_RGBA_BYTES: usize = SYNTH_ROW_BYTES * SYNTH_H as usize;
 
-/// One channel of the synthesized gradient: `n` scaled to a byte across
-/// `span`, rolling over at 256.
-///
-/// The roll-over is the animation. `n` carries the playhead-driven hue shift,
-/// which grows without bound, and letting the scaled value wrap is what makes
-/// the gradient cycle instead of pinning at white.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "the truncation is the feature, not an accident: `& 0xff` on the \
-              same line asks for the low byte, and rolling over at 256 is what \
-              cycles the hue. Widening the result would pin the gradient at \
-              white instead"
-)]
-fn gradient_byte(n: usize, span: usize) -> u8 {
-    // `span` is a picture dimension. `.max(1)` keeps zero out of the divisor
-    // and `checked_div` is how that guarantee is stated rather than assumed,
-    // so the fallback below never runs.
-    let scaled = n.saturating_mul(255).checked_div(span.max(1)).unwrap_or(0);
-    (scaled & 0xff) as u8
+/// A triangle wave over `n`: rises from 0 to 1 across `span`, falls back
+/// across the next. `n` carries the playhead-driven drift, which grows
+/// without bound; the wave keeps the picture moving without ever jumping.
+fn wave(n: usize, span: usize) -> f32 {
+    let span = span.max(1);
+    let period = span.saturating_mul(2);
+    let phase = n.checked_rem(period).unwrap_or(0);
+    let rising = if phase < span {
+        phase
+    } else {
+        period.saturating_sub(phase)
+    };
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "both values are picture coordinates, far below f32's exact range"
+    )]
+    let t = rising as f32 / span as f32;
+    t
+}
+
+/// A channel value between `lo` and `hi` at `t` in 0..=1.
+fn channel(lo: f32, hi: f32, t: f32) -> u8 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "lo..=hi lies inside 0..=255, so the rounded value fits a byte"
+    )]
+    let byte = (hi - lo).mul_add(t.clamp(0.0, 1.0), lo).round() as u8;
+    byte
 }
 
 /// Process-monotonic millisecond clock for the fallback playhead. A lazily
@@ -990,71 +1000,34 @@ impl SynthState {
         events
     }
 
-    /// Where the playhead sits in the stream, `0.0..=1.0`. Zero while the
-    /// duration is still unknown.
-    fn playhead_fraction(&self) -> f64 {
-        if self.duration == 0 {
-            return 0.0;
-        }
-        // Both are millisecond counts, and `f64` holds every integer below
-        // 2^53 — 285 000 years of milliseconds — exactly, so no stream that
-        // can be played loses precision here.
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "millisecond counts; f64 is exact to 2^53 ms, far past any playable stream"
-        )]
-        let frac = self.position as f64 / self.duration as f64;
-        frac.clamp(0.0, 1.0)
-    }
-
-    /// Draw the synthesized test pattern for the current playhead: a slowly
-    /// drifting hue gradient with diagonal content stripes and a bright scan
-    /// bar at the playhead fraction, so a capture unmistakably shows a moving
-    /// picture and the correct progress.
+    /// Draw the synthesized picture for the current playhead: a calm, muted
+    /// dusk gradient with faint diagonal bands, drifting with the playhead so
+    /// a capture still shows a moving picture.
     fn render_frame(&mut self) {
         let width = SYNTH_W as usize;
         let height = SYNTH_H as usize;
         let mut rgba = vec![0u8; SYNTH_RGBA_BYTES];
-        let frac = self.playhead_fraction();
-        // `frac` is clamped to 0.0..=1.0, so this lands inside the picture.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::cast_precision_loss,
-            reason = "frac is 0.0..=1.0 and SYNTH_W is 480, so the product is \
-                      a non-negative value no larger than 479"
-        )]
-        let scan_x = (frac * (f64::from(SYNTH_W) - 1.0)) as usize;
-        // The playhead drives the hue. Saturating so an absurd position slides
-        // the gradient to its limit instead of overflowing the products below;
-        // the synthesized backend clamps its own duration to an hour, so a real
-        // shift is at most 90 000.
-        let hue_shift = usize::try_from(self.position / 40).unwrap_or(usize::MAX);
+        // The playhead drives a slow drift. Saturating so an absurd position
+        // slides the picture to its limit instead of overflowing the sums
+        // below; the synthesized backend clamps its own duration to an hour,
+        // so a real shift is at most 90 000.
+        let drift = usize::try_from(self.position / 40).unwrap_or(usize::MAX);
         for (y, row) in rgba.chunks_exact_mut(SYNTH_ROW_BYTES).enumerate() {
+            // A calm dusk: a muted blue sky over a warm horizon, its light
+            // drifting slowly across the picture.
+            let sky = wave(y, height);
             for (x, px) in row.chunks_exact_mut(4).enumerate() {
-                // Base gradient: x drives red/green, y drives blue; hue_shift
-                // slides it so the pattern visibly animates over time. The
-                // scaled values are reduced mod 256 rather than clipped —
-                // rolling over is what makes the hue cycle.
-                let red = gradient_byte(x.saturating_add(hue_shift), width);
-                let green = gradient_byte(y, height);
-                let blue = gradient_byte(
-                    x.saturating_add(y).saturating_add(hue_shift),
-                    width.saturating_add(height),
-                );
-                // Diagonal content stripes for texture.
-                let stripe =
-                    if (x.saturating_add(y).saturating_add(hue_shift) / 24).is_multiple_of(2) {
-                        24
-                    } else {
-                        0
-                    };
-                // Bright scan bar at the playhead, otherwise the gradient.
-                if x.abs_diff(scan_x) <= 1 {
-                    px.copy_from_slice(&[255, 255, 255, 255]);
+                let light = wave(x.saturating_add(drift), width.saturating_mul(2));
+                // Faint diagonal bands give the motion something to show.
+                let band = if (x.saturating_add(y).saturating_add(drift) / 32).is_multiple_of(2) {
+                    0.06
                 } else {
-                    px.copy_from_slice(&[red.saturating_add(stripe), green, blue, 255]);
-                }
+                    0.0
+                };
+                let red = channel(48.0, 128.0, sky * 0.7 + light * 0.3 + band);
+                let green = channel(52.0, 96.0, sky * 0.4 + light * 0.2 + band);
+                let blue = channel(72.0, 136.0, (1.0 - sky) * 0.8 + light * 0.2 + band);
+                px.copy_from_slice(&[red, green, blue, 255]);
             }
         }
         let frame = VideoFrame::new(SYNTH_W, SYNTH_H, rgba, self.position);

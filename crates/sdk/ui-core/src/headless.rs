@@ -1869,7 +1869,24 @@ impl FrameHarness {
             None,
         )
         .unwrap_or_default();
-        let _ = crate::bound_dispatch::refresh_bound_controls(self.root.as_mut(), &snapshots);
+        // A registered History serves the window's History door to the
+        // app's own History control, as in the App.
+        let history_door: HashSet<_> = self
+            .history
+            .as_ref()
+            .map(|history| {
+                tilo_actions::door::survey(&[history.door_resource()])
+                    .into_iter()
+                    .filter(|descriptor| descriptor.contract.availability.is_available())
+                    .map(|descriptor| descriptor.address)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let _ = crate::bound_dispatch::refresh_bound_controls(
+            self.root.as_mut(),
+            &snapshots,
+            &history_door,
+        );
         if let Err(error) = crate::bound_dispatch::legacy_document::refresh_legacy_controls(
             self.root.as_mut(),
             &self.permissions,
@@ -4527,6 +4544,14 @@ impl FrameHarness {
         let mut issues = bindings
             .into_iter()
             .filter_map(|binding| match binding.kind {
+                // Opening search and the window's History door are answered
+                // by the host the app runs in, never by the app's resources.
+                ControlBindingKind::Action(address)
+                    if address == crate::search::search_address()
+                        || address.resource == crate::standalone_history_host::HISTORY_RESOURCE =>
+                {
+                    None
+                }
                 ControlBindingKind::Action(address) => {
                     tilo_actions::door::resolve(&resources, &address)
                         .is_none()

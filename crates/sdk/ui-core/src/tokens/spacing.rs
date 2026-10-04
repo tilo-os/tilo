@@ -122,6 +122,41 @@ impl Default for Spacing {
     }
 }
 
+/// A step of the spacing [`Rhythm`]: what two neighbours are to each other,
+/// resolved against the theme a stack is laid out under
+/// (`Column::with_rhythm`, `Row::with_rhythm`), so the gap follows the
+/// person's density and scale instead of a pixel value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RhythmStep {
+    /// Touching neighbours: no gap.
+    None,
+    /// A label over its control; a title over its one secondary line.
+    Tight,
+    /// Controls inside one cluster; a group of related lines.
+    Related,
+    /// Siblings of equal weight.
+    Sibling,
+    /// Between two sections.
+    Section,
+    /// Between groups of sections on a page.
+    Group,
+}
+
+impl Rhythm {
+    /// The gap a [`RhythmStep`] stands for.
+    #[must_use]
+    pub fn get(&self, step: RhythmStep) -> f32 {
+        match step {
+            RhythmStep::None => 0.0,
+            RhythmStep::Tight => self.tight,
+            RhythmStep::Related => self.related,
+            RhythmStep::Sibling => self.sibling,
+            RhythmStep::Section => self.section,
+            RhythmStep::Group => self.group,
+        }
+    }
+}
+
 /// A named step on the [`Spacing`] scale, for APIs that resolve a gap at
 /// layout time from the `Theme` they are handed (`Spacer::token`) rather than
 /// taking an unscaled pixel value from the caller.

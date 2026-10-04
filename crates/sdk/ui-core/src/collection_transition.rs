@@ -149,6 +149,15 @@ impl<K, P> KeyedTransitionSet<K, P> {
             };
         };
         let progress = self.progress(now);
+        // A finished transition hands the row back to its settled geometry:
+        // a later relayout (a resize, a new text scale) must not keep the
+        // geometry captured when the transition started.
+        if progress >= 1.0 {
+            return TransitionVisual {
+                geometry: settled,
+                opacity: 1.0,
+            };
+        }
         let to = track.to.unwrap_or(settled);
         TransitionVisual {
             geometry: interpolate(track.from, to, progress),

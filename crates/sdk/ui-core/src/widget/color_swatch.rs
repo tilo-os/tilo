@@ -151,13 +151,15 @@ impl ColorSwatchFace {
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(Fill::NonZero, transform, self.color, None, &shape);
         let outline = crate::surface::edge_outline(self.rect, radius);
-        // The chosen swatch and keyboard focus are rings in your colour; a
-        // hovered one a ring that reads on its own fill; at rest an edge
-        // derived from the fill (HIG §9.5), so a white swatch on paper or a
-        // black one on a dark panel keeps its outline.
-        let (width, ring) = if self.selected || self.focused {
+        // Keyboard focus is the ring in your colour; a hovered swatch a ring
+        // that reads on its own fill; at rest an edge derived from the fill
+        // (HIG §9.5), so a white swatch on paper or a black one on a dark
+        // panel keeps its outline. The chosen swatch carries a check in an
+        // ink that reads on it: a ring in your colour vanished on a swatch
+        // of that same colour.
+        let (width, ring) = if self.focused {
             (2.0, colors.intent.you)
-        } else if self.hovered {
+        } else if self.hovered || self.selected {
             (
                 1.5,
                 colors.ink_on_any(&[self.color], colors.text_primary, 3.0),
@@ -172,6 +174,16 @@ impl ColorSwatchFace {
             None,
             &outline,
         );
+        if self.selected && self.marker.is_none() {
+            let side = f64::from(theme.tokens.metrics.icon_sm)
+                .min(self.rect.width().min(self.rect.height()) * 0.7);
+            crate::icons::Icon::Check.draw(
+                scene,
+                transform,
+                Rect::from_center_size(self.rect.center(), (side, side)),
+                colors.ink_on_any(&[self.color], colors.text_primary, 3.0),
+            );
+        }
         if let Some(marker) = &self.marker {
             let style = theme.text(TextRole::Caption).strong();
             let ink = colors.ink_on_any(&[self.color], colors.text_primary, 4.5);

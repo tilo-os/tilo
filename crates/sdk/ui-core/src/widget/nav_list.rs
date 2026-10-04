@@ -755,15 +755,21 @@ impl NavList {
         self.tree.restore_expanded(open);
         self.sections = sections;
         self.refresh_keys();
-        self.set_selected(selected.as_deref());
+        // New rows keep the selection where it was, and the scroll too.
+        self.select(selected.as_deref(), false);
     }
 
     fn keys_seen(&self, id: NodeId) -> bool {
         self.shared.borrow().keys.contains_key(&id)
     }
 
-    /// Choose `id` (or nothing) without reporting it.
+    /// Choose `id` (or nothing) without reporting it. The chosen row is
+    /// scrolled into view: a long sidebar shows where the window is.
     pub fn set_selected(&mut self, id: Option<&str>) {
+        self.select(id, true);
+    }
+
+    fn select(&mut self, id: Option<&str>, reveal: bool) {
         let node = id.and_then(|key| self.tree.model().item_id(key));
         match node {
             Some(node) => self.tree.selection_mut().select_only(node),
@@ -771,6 +777,9 @@ impl NavList {
         }
         if let Some(node) = node {
             self.tree.set_focused(Some(node));
+            if reveal {
+                self.tree.reveal(node);
+            }
         }
     }
 

@@ -2206,7 +2206,7 @@ pub use container::Container;
 mod router;
 pub use router::{RouteError, RouteHandle, RouteSnapshot, Router};
 mod document_view;
-pub use document_view::ModelView;
+pub use document_view::{ModelView, nothing};
 mod divider;
 pub use divider::{Divider, DividerAxis};
 mod link;
@@ -2288,7 +2288,7 @@ pub use date_indexed_scrollbar::{
 pub mod drag;
 pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
 mod scrollable;
-pub use scrollable::{ScrollAxis, Scrollable};
+pub use scrollable::{ScrollAxis, Scrollable, WHEEL_LINE_PX, wheel_scroll};
 pub mod panic_scope;
 mod tile_host;
 pub use tile_host::{AppKind, TileContent, TileHost};
@@ -2487,7 +2487,7 @@ pub use synthetic_focus::{
     semantic_focus_order, semantic_target_at_path, semantic_target_bounds,
 };
 pub mod toggle_group;
-pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_colors};
+pub use toggle_group::{Segment, SegmentedFace, SegmentedStyle, ToggleGroup, segment_colors};
 
 // EmptyState / Banner / StatTile also expose an immediate-mode `paint(...)`
 // entry point for apps that render straight to a `Scene` rather than a
@@ -2505,7 +2505,7 @@ pub use search_results::SearchResultsView;
 pub mod stat_tile;
 pub use stat_tile::{StatGroup, StatTile, StatTileFace, Trend};
 pub mod banner;
-pub use banner::{Banner, BannerContent, BannerKind};
+pub use banner::{Banner, BannerContent, BannerHits, BannerKind};
 pub mod chip;
 pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
 pub mod card;

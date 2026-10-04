@@ -595,7 +595,8 @@ fn paint_card_actions(
     Some(y0 - 4.0)
 }
 
-/// Paint a single-line transient toast near the bottom of `area`.
+/// Paint a transient toast near the bottom of `area`: its title, and its
+/// body on a line of its own when it has one.
 ///
 /// This is the immediate-mode counterpart to [`ToastStack`], for apps that
 /// already own their notification lifetime. It standardises card sizing,
@@ -612,21 +613,32 @@ pub fn paint_transient(
     card: &ToastCard<'_>,
 ) -> ToastCardHit {
     const EDGE_GAP: f64 = 24.0;
-    const HEIGHT: f64 = 48.0;
+    const MIN_HEIGHT: f64 = 48.0;
     const MIN_WIDTH: f64 = 160.0;
+    // Measured in the styles the card draws its lines in, plus the close
+    // button's column when there is one, so a short title is never elided
+    // and a body line ("Added to queue" over the song) has its own line.
+    let title_style = theme.text(TextRole::Label).strong();
+    let line_style = theme.text(TextRole::Caption);
+    let mut measure = |text: &str, style: &TextStyle| -> (f64, f64) {
+        let text = single_line_text(text);
+        if text.is_empty() {
+            return (0.0, 0.0);
+        }
+        let (w, h) = text_renderer.measure_style(&text, None, style);
+        (f64::from(w), f64::from(h))
+    };
+    let (title_width, title_h) = measure(card.title, &title_style);
+    let (body_width, body_h) = measure(card.body, &line_style);
+    let (caption_width, caption_h) = measure(card.caption, &line_style);
+    let height = (title_h + body_h + caption_h + 2.0 * CARD_PAD_Y)
+        .ceil()
+        .max(MIN_HEIGHT);
     let available_width = (area.width() - 2.0 * EDGE_GAP).max(0.0);
-    if available_width == 0.0 || area.height() < HEIGHT + EDGE_GAP {
+    if available_width == 0.0 || area.height() < height + EDGE_GAP {
         return ToastCardHit::default();
     }
-
-    // Measured in the style the card draws its title in, plus the close
-    // button's column when there is one, so a short title is never elided.
-    let title_style = theme.text(TextRole::Label).strong();
-    let title_width = f64::from(
-        text_renderer
-            .measure_style(card.title, None, &title_style)
-            .0,
-    );
+    let title_width = title_width.max(body_width).max(caption_width);
     let close_column = if card.closable {
         f64::from(theme.tokens.metrics.bar_control_height) + f64::from(theme.tokens.spacing.s2)
     } else {
@@ -646,7 +658,7 @@ pub fn paint_transient(
         transform,
         text_renderer,
         theme,
-        Rect::new(x0, y1 - HEIGHT, x0 + width, y1),
+        Rect::new(x0, y1 - height, x0 + width, y1),
         card,
     )
 }

@@ -554,8 +554,8 @@ impl PieChart {
             0.0
         };
         match (slice.detail.is_empty(), self.style.tooltip_show_percent) {
-            (true, true) => format!("{percent:.1}%"),
-            (false, true) => format!("{}  ·  {percent:.1}%", slice.detail),
+            (true, true) => percent_text(percent),
+            (false, true) => format!("{} ({})", slice.detail, percent_text(percent)),
             (_, false) => slice.detail.clone(),
         }
     }
@@ -779,7 +779,11 @@ impl Widget for PieChart {
                     Role::StaticText
                 })
                 .with_name(&s.label)
-                .with_description(format!("{percent:.1}% {}", s.detail));
+                .with_description(if s.detail.is_empty() {
+                    percent_text(percent)
+                } else {
+                    format!("{} ({})", s.detail, percent_text(percent))
+                });
                 if s.interactive {
                     node.with_action_target(&s.id).with_state(AccessState {
                         focusable: true,
@@ -838,12 +842,24 @@ impl Widget for PieChart {
 
 /// A legend entry: the slice's label and its share, as a secondary line
 /// would put it ("Photos 42%"), never joined by a dot.
+/// A share as the chart shows it everywhere (legend, tooltip, the spoken
+/// description): one decimal, so the legend and the tooltip agree.
+fn percent_text(percent: f64) -> String {
+    format!("{percent:.1}%")
+}
+
+/// A legend entry: the slice's name, its detail when it has one (a size),
+/// and its share.
 fn legend_label(slice: &PieSlice, total: f64) -> String {
     let value = PieChart::value(slice);
-    if total > 0.0 {
-        format!("{} {}%", slice.label, (value / total * 100.0).round())
+    if total <= 0.0 {
+        return slice.label.clone();
+    }
+    let percent = percent_text(value / total * 100.0);
+    if slice.detail.is_empty() {
+        format!("{} {percent}", slice.label)
     } else {
-        slice.label.clone()
+        format!("{} {} ({percent})", slice.label, slice.detail)
     }
 }
 
@@ -880,7 +896,11 @@ mod tests {
                 assert!(rect.contains(entry.origin()) && entry.x1 <= rect.x1 + 0.5);
             }
         }
-        assert_eq!(legend_label(&slices[0], 76.0), "Photos 55%");
+        assert_eq!(legend_label(&slices[0], 76.0), "Photos 55.3%");
+        assert_eq!(
+            legend_label(&slices[0].clone().with_detail("84.2 GB"), 76.0),
+            "Photos 84.2 GB (55.3%)"
+        );
     }
 
     fn chart() -> PieChart {

@@ -6354,7 +6354,8 @@ impl WordProcessorWidget {
                 &ui::widget::BannerContent::new(ui::widget::BannerKind::Error, &title)
                     .dismissible(true),
                 self.pointer,
-            );
+            )
+            .dismiss;
             self.save_error = Some(close);
             recovery_h += h + 2.0 * along;
         }

@@ -2756,9 +2756,11 @@ impl RecordStore {
             if let Some(error) = snapshot.error {
                 return Ok(RecordSaveStatus::Failed(error));
             }
+            // A record nothing was ever written to has nothing to save.
+            let pristine = snapshot.durable_heads.is_none() && doc.base_heads().is_empty();
             return Ok(
                 if doc.pending_ops() == 0
-                    && snapshot.durable_heads.as_ref() == Some(&doc.base_heads())
+                    && (pristine || snapshot.durable_heads.as_ref() == Some(&doc.base_heads()))
                 {
                     RecordSaveStatus::Saved
                 } else {

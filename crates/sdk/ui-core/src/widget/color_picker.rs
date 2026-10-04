@@ -40,7 +40,15 @@ use winit::keyboard::{Key, NamedKey};
 /// Geometry constants for the inner layout. Pulled out so the test fixture
 /// and the live layout agree on rect positions without poking taffy.
 const PICKER_WIDTH: f64 = 260.0;
-const PICKER_HEIGHT: f64 = 220.0;
+/// The base block: the SV square over the three RGB sliders.
+const PICKER_HEIGHT: f64 = SV_SIZE + SLIDERS_HEIGHT;
+/// The readout column beside the hue strip holds the preview, the hex field
+/// and the rgb readout; this is the field's narrowest.
+const READOUT_MIN_WIDTH: f64 = 96.0;
+/// The narrowest the picker lays out: the SV square, the hue strip and the
+/// readout column.
+const PICKER_MIN_WIDTH: f64 =
+    SV_SIZE + COMPONENT_GAP + HUE_STRIP_WIDTH + COMPONENT_GAP + READOUT_MIN_WIDTH;
 const SV_SIZE: f64 = 120.0;
 const HUE_STRIP_WIDTH: f64 = 16.0;
 const PREVIEW_SIZE: f64 = 40.0;
@@ -425,11 +433,14 @@ impl ColorPicker {
             );
         }
 
+        // The hex field and the rgb readout share the readout column right
+        // of the hue strip, inside the picker's own rect.
         let text_h = 22.0;
+        let column_x0 = self.hue_strip_rect.x1 + COMPONENT_GAP;
         self.hex_input_rect = Rect::new(
-            self.preview_rect.x0,
+            column_x0.min(x1 - READOUT_MIN_WIDTH),
             self.preview_rect.y1 + COMPONENT_GAP,
-            self.preview_rect.x1.max(self.preview_rect.x0 + 96.0),
+            x1,
             self.preview_rect.y1 + COMPONENT_GAP + text_h,
         );
         self.hex_input.apply_layout_external(self.hex_input_rect);
@@ -1026,17 +1037,47 @@ impl Widget for ColorPicker {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // As wide as the column it is in, between the narrowest that holds
+        // its controls and the widest its SV square grows to; its height
+        // follows its width (see `measure`).
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(Self::px(PICKER_WIDTH)),
-                height: Dimension::length(Self::px(self.content_height(PICKER_WIDTH))),
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
             },
-            // Fixed target: never the item that gives in an overflowing row.
+            min_size: Size {
+                width: Dimension::length(Self::px(PICKER_MIN_WIDTH)),
+                height: Dimension::auto(),
+            },
+            max_size: Size {
+                width: Dimension::length(Self::px(PICKER_WIDTH + SV_GROWTH_MAX)),
+                height: Dimension::auto(),
+            },
             flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        available: Size<taffy::AvailableSpace>,
+        _text_renderer: &mut TextRenderer,
+    ) -> Size<f32> {
+        let width = known.width.map_or_else(
+            || match available.width {
+                taffy::AvailableSpace::Definite(width) => f64::from(width),
+                _ => PICKER_WIDTH,
+            },
+            f64::from,
+        );
+        let width = width.clamp(PICKER_MIN_WIDTH, PICKER_WIDTH + SV_GROWTH_MAX);
+        Size {
+            width: Self::px(width),
+            height: Self::px(self.content_height(width)),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1076,7 +1117,7 @@ impl Widget for ColorPicker {
 
         let text_style = theme.text(TextRole::Caption);
         let rgb_label = self.rgb_string();
-        let label_x = self.preview_rect.x0;
+        let label_x = self.hex_input_rect.x0;
         let row_gap = f64::from(theme.tokens.spacing.s2);
         let rgb_y = self.hex_input_rect.y1 + row_gap;
         text_renderer.draw_style(

@@ -356,6 +356,14 @@ pub struct ToggleFace {
 }
 
 impl ToggleFace {
+    /// The switch's own size: lay its rect out at this size (or larger; the
+    /// track stays this size, centred) so a painted switch lines up with the
+    /// retained [`Toggle`].
+    #[must_use]
+    pub fn size(_theme: &Theme) -> vello::kurbo::Size {
+        vello::kurbo::Size::new(f64::from(TRACK_WIDTH), f64::from(TRACK_HEIGHT))
+    }
+
     pub fn new(rect: Rect, on: bool) -> Self {
         Self {
             rect,

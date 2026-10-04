@@ -614,6 +614,13 @@ pub struct ModalDialog<C: Widget> {
     /// The theme from the latest layout build, for the content layout
     /// `apply_layout` runs without one.
     layout_theme: Theme,
+    /// Whether the primary action can run now (a confirmation that waits
+    /// for the person to type the name of what is deleted).
+    primary_enabled: bool,
+    /// How far a body taller than the sheet can show is scrolled.
+    body_scroll: f64,
+    /// The content's full height at the body width.
+    content_height: f64,
 }
 
 impl<C: Widget> ModalDialog<C> {
@@ -640,7 +647,30 @@ impl<C: Widget> ModalDialog<C> {
             content_node: None,
             platform: PlatformConventions::default(),
             layout_theme: Theme::dark(),
+            primary_enabled: true,
+            body_scroll: 0.0,
+            content_height: 0.0,
         }
+    }
+
+    /// Whether the primary action can run now. A disabled primary action is
+    /// shown dimmed, and a click, Enter or assistive technology cannot run
+    /// it.
+    #[must_use]
+    pub fn with_primary_enabled(mut self, enabled: bool) -> Self {
+        self.set_primary_enabled(enabled);
+        self
+    }
+
+    /// [`Self::with_primary_enabled`] after construction.
+    pub fn set_primary_enabled(&mut self, enabled: bool) {
+        self.primary_enabled = enabled;
+    }
+
+    /// Lay the content out again on the next paint, after it changed shape
+    /// (a field shown, a section expanded).
+    pub fn invalidate_layout(&mut self) {
+        self.laid_out_for = None;
     }
 
     /// A stable address for inspection, headless scenarios and `tilo-control`.
@@ -781,11 +811,14 @@ impl<C: Widget> ModalDialog<C> {
             slots.push(Slot::Secondary);
         }
         if let Some(a) = &self.primary_action {
-            actions.push(if self.destructive {
-                ModalAction::danger(&a.label)
-            } else {
-                ModalAction::primary(&a.label)
-            });
+            actions.push(
+                if self.destructive {
+                    ModalAction::danger(&a.label)
+                } else {
+                    ModalAction::primary(&a.label)
+                }
+                .enabled(self.primary_enabled),
+            );
             slots.push(Slot::Primary);
         }
         (actions, slots)
@@ -831,8 +864,14 @@ impl<C: Widget> ModalDialog<C> {
             .closable(self.closable());
         let layout = layout(self.window, &spec, text_renderer, theme);
         drop(actions);
+        // A body taller than the sheet can show scrolls inside it.
+        self.content_height = body_h;
+        self.body_scroll = self
+            .body_scroll
+            .clamp(0.0, (body_h - layout.body.height()).max(0.0));
+        let origin = layout.body.origin() - vello::kurbo::Vec2::new(0.0, self.body_scroll);
         self.content
-            .apply_layout(&content.taffy, content.node, layout.body.origin());
+            .apply_layout(&content.taffy, content.node, origin);
         self.slots = slots;
         self.layout = Some(layout);
         self.content_node = Some(content.node);
@@ -877,7 +916,31 @@ impl<C: Widget> ModalDialog<C> {
         }
     }
 
+    /// Scroll an overflowing body by `dy`; returns whether it moved.
+    fn scroll_body(&mut self, dy: f64) -> bool {
+        let Some(layout) = &self.layout else {
+            return false;
+        };
+        if !layout.body_overflows {
+            return false;
+        }
+        let max = (self.content_height - layout.body.height()).max(0.0);
+        let next = (self.body_scroll + dy).clamp(0.0, max);
+        if (next - self.body_scroll).abs() < f64::EPSILON {
+            return false;
+        }
+        self.body_scroll = next;
+        let origin = layout.body.origin() - vello::kurbo::Vec2::new(0.0, next);
+        if let (Some(taffy), Some(node)) = (self.content_taffy.as_ref(), self.content_node) {
+            self.content.apply_layout(taffy, node, origin);
+        }
+        true
+    }
+
     fn activate(&mut self, slot: Slot) {
+        if slot == Slot::Primary && !self.primary_enabled {
+            return;
+        }
         let action = match slot {
             Slot::Primary => self.primary_action.as_mut(),
             Slot::Secondary => self.secondary_action.as_mut(),
@@ -1076,6 +1139,28 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             WindowEvent::CursorLeft { .. } => {
                 self.pointer_inside = false;
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // A scroll view in the content scrolls first; what it does
+                // not take scrolls a body taller than the sheet.
+                let content_handled = self.forward_to_content(
+                    event,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                );
+                if !content_handled
+                    && self
+                        .layout
+                        .as_ref()
+                        .is_some_and(|layout| layout.card.contains(self.last_cursor))
+                {
+                    let (_, dy) = super::wheel_scroll(delta, ctx.scale_factor);
+                    self.scroll_body(dy);
+                }
+                *ctx.handled = true;
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -1234,11 +1319,16 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 ),
             ] {
                 if let Some(action) = action {
+                    let disabled = key == "primary" && !self.primary_enabled;
                     node.children.push(
                         AccessNode::new(Role::Button)
                             .with_name(crate::i18n!(&action.label))
                             .with_key(index)
-                            .with_state(AccessState::new().focusable(true))
+                            .with_state(AccessState {
+                                focusable: !disabled,
+                                disabled,
+                                ..AccessState::new()
+                            })
                             .with_bounds(bounds)
                             .with_action_target(format!("dialog:{}:{key}", self.action_identity)),
                     );

@@ -45,7 +45,7 @@ const ACRONYMS: &[&str] = &[
     "CPU", "GPU", "RAM", "HDMI", "DVI", "VGA", "OCR", "ROM", "SSD", "HDD", "USB", "HID", "PCI",
     "PCIE", "SATA", "NVME", "BIOS", "UEFI", "EFI", "TPM", "GPT", "MBR", "FAT", "FAT32", "EXT4",
     "NTFS", "EXFAT", "BTRFS", "XFS", "LUKS", "RAID", "LVM", "ACPI", "KVM", "QEMU", "SDK", "CLI",
-    "IDE", "LSP", "LLM", "MCP", // Imaging, colour and media.
+    "IDE", "LSP", "LLM", "MCP", "PID", "PPID", // Imaging, colour and media.
     "HDR", "SDR", "RGB", "RGBA", "HSL", "HSV", "CMYK", "HEX", "DPI", "PPI", "FPS", "BPM", "LUFS",
     // Time zones and standards.
     "UTC", "GMT", "CET", "CEST", "PST", "PDT", "EST", "EDT", "ETA", "FAQ", "RTL", "LTR",

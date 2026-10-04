@@ -2,7 +2,7 @@
 
 use super::{
     Checkbox, ColorPicker, Column, DatePicker, Dropdown, NumberInput, Row, Slider, Text, TextInput,
-    TimePicker, Toggle, Widget,
+    TimePicker, Toggle, ToggleGroup, Widget,
 };
 use crate::tokens::TextRole;
 
@@ -61,6 +61,14 @@ impl FormControl for DatePicker {
 }
 
 impl FormControl for TimePicker {
+    fn with_form_accessible_name(self, name: &str) -> Self {
+        self.with_accessible_name(name)
+    }
+}
+
+/// A short choice among a few options (Quality: Draft, Normal, Best) is a
+/// segmented control; the field's label names the group.
+impl FormControl for ToggleGroup {
     fn with_form_accessible_name(self, name: &str) -> Self {
         self.with_accessible_name(name)
     }

@@ -304,6 +304,17 @@ impl Theme {
         c.text_tertiary = on.ink_tertiary;
         c.intent.selection = c.lift_on(ground, 1.0);
         c.intent.selection_hover = c.lift_on(ground, 0.5);
+        // On a ground of the other polarity (the black letterbox behind
+        // media in a light theme) the inverted fill would vanish into it:
+        // the primary action takes this ground's ink as its fill and the
+        // ground as its label, as it does on the content surface.
+        if crate::color::contrast_ratio(c.intent.inverted, ground)
+            < crate::tokens::colors::NON_TEXT_MIN_CONTRAST
+        {
+            c.intent.inverted = on.ink;
+            c.intent.inverted_hover = crate::tokens::colors::mix8(on.ink, ground, 0.12);
+            c.intent.on_inverted = ground;
+        }
         theme.refresh_colour_shortcuts();
         theme
     }

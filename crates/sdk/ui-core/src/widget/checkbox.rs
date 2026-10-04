@@ -347,7 +347,18 @@ impl Checkbox {
         } else if face.checked {
             None
         } else {
-            Some((1.0, crate::surface::edge_on(box_color)))
+            // An unchecked box is a control's bounds, not a hairline between
+            // two surfaces: its edge meets the non-text contrast floor
+            // against the ground it stands on and its own fill.
+            let colors = &theme.tokens.colors;
+            Some((
+                1.0,
+                colors.ink_on_any(
+                    &[colors.surfaces.content, box_color],
+                    colors.text_tertiary,
+                    crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                ),
+            ))
         };
         if let Some((width, color)) = edge {
             // Rest edge and focus ring share one half-pixel-inset outline.

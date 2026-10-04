@@ -147,6 +147,11 @@ pub struct Dropdown {
     /// When `false`: skipped by focus, rejects input, renders dimmed.
     /// Default `true`.
     enabled: bool,
+    /// As wide as its widest option instead of its row (see
+    /// [`Dropdown::compact`]).
+    compact: bool,
+    /// The label style of the last layout, for measuring a compact control.
+    label_style: Option<crate::text_render::TextStyle>,
 }
 
 impl Dropdown {
@@ -183,7 +188,18 @@ impl Dropdown {
             last_cursor: Point::ZERO,
             viewport: None,
             enabled: true,
+            compact: false,
+            label_style: None,
         }
+    }
+
+    /// A chooser as wide as its widest option, for a choice that sits
+    /// beside other controls (a sort order in a list header, a kind beside
+    /// a field) rather than filling a form row.
+    #[must_use]
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
     }
 
     /// Create a dropdown bound to typed process-local selected state.
@@ -746,20 +762,58 @@ impl Widget for Dropdown {
             0.0
         };
         let field = self.control_size.height(theme);
+        self.label_style = Some(self.control_size.label_style(theme));
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::percent(1.0),
+                width: if self.compact {
+                    Dimension::auto()
+                } else {
+                    Dimension::percent(1.0)
+                },
                 height: Dimension::length(px(field + self.caption_height)),
             },
             min_size: Size {
                 width: Dimension::length(px(PAD_X + CHEVRON_W)),
                 height: Dimension::auto(),
             },
-            flex_shrink: 1.0,
+            flex_shrink: if self.compact { 0.0 } else { 1.0 },
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        _available: Size<taffy::AvailableSpace>,
+        text: &mut TextRenderer,
+    ) -> Size<f32> {
+        let height = known.height.unwrap_or(0.0);
+        if !self.compact {
+            return Size {
+                width: known.width.unwrap_or(0.0),
+                height,
+            };
+        }
+        let Some(style) = self.label_style.clone() else {
+            return Size {
+                width: known.width.unwrap_or(0.0),
+                height,
+            };
+        };
+        let widest = self
+            .options
+            .iter()
+            .chain(std::iter::once(&self.placeholder))
+            .map(|label| f64::from(text.measure_style(label, None, &style).0))
+            .fold(0.0, f64::max);
+        Size {
+            width: known
+                .width
+                .unwrap_or_else(|| px((widest + PAD_X + CHEVRON_W).ceil())),
+            height,
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -841,7 +895,9 @@ impl Widget for Dropdown {
             &crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.control)),
         );
 
-        if self.open {
+        // While the person types to filter the list the field shows the
+        // query; until then an open list keeps showing the current value.
+        if self.open && (!self.filter.is_empty() || self.filter_composition.is_composing()) {
             self.filter_composition.draw(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 QueryView {

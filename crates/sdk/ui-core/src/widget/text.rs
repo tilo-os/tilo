@@ -151,8 +151,9 @@ pub struct Text {
     color: Option<vello::peniko::Color>,
     /// Resolve to the active theme's secondary ink.
     dimmed: bool,
-    /// Resolve to the theme's danger ink: a validation message.
-    danger: bool,
+    /// Resolve to a status ink measured against the ground (a validation
+    /// message, a warning line in a log).
+    tone: Option<crate::widget::Tone>,
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -193,7 +194,7 @@ impl Text {
             engine_revision: 0,
             color: None,
             dimmed: false,
-            danger: false,
+            tone: None,
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -643,10 +644,19 @@ impl Text {
     /// The theme's danger ink, measured against the ground: a validation
     /// message under the control it is about ([`crate::widget::Field::with_error`]).
     #[must_use]
-    pub(crate) fn danger(mut self) -> Self {
+    pub(crate) fn danger(self) -> Self {
+        self.tone(crate::widget::Tone::Danger)
+    }
+
+    /// Set the text in a status ink: `Danger` for an error or a failed
+    /// line, `Warning`, `Success`, `Info`. The ink is resolved from the
+    /// theme when drawn and kept legible on the content ground, so it
+    /// follows a theme switch. `Neutral` is the secondary ink.
+    #[must_use]
+    pub fn tone(mut self, tone: crate::widget::Tone) -> Self {
         self.color = None;
         self.dimmed = false;
-        self.danger = true;
+        self.tone = Some(tone);
         self.dirty = true;
         self
     }
@@ -796,10 +806,10 @@ impl Widget for Text {
         self.observe_engine_revision();
         let color = self.color.unwrap_or({
             let colors = &theme.tokens.colors;
-            if self.danger {
+            if let Some(tone) = self.tone {
                 colors.ink_on_any(
                     &[colors.surfaces.content],
-                    colors.semantic.danger,
+                    tone.colour(theme),
                     crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
                 )
             } else if self.dimmed {

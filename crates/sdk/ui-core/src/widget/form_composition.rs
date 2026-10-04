@@ -138,6 +138,8 @@ impl Form {
 /// ground, separated from the next section by space.
 pub struct FormSection {
     parts: Parts,
+    /// The first part is the section's heading.
+    titled: bool,
     /// Settings rows: label leading, control trailing, inset separators.
     grouped: bool,
     density: Option<Density>,
@@ -155,6 +157,7 @@ impl FormSection {
                     .with_role(TextRole::Heading)
                     .with_heading_level(2),
             )]),
+            titled: true,
             grouped: false,
             density: None,
             field_spacing: None,
@@ -163,6 +166,16 @@ impl FormSection {
             inherited_field_spacing: None,
             effective: None,
         }
+    }
+    /// A section without a heading: the fields of a dialog that already has
+    /// a title, or the one group of a page whose title says it all. It
+    /// takes no heading's room and puts no empty heading in the
+    /// accessibility tree.
+    pub fn untitled() -> Self {
+        let mut section = Self::new("");
+        section.parts.children.clear();
+        section.titled = false;
+        section
     }
     /// Lay the fields out as a settings list: each a row at least one
     /// grouped-row high, its label leading and its control trailing, with an
@@ -560,7 +573,7 @@ impl Widget for FormSection {
                     if is_field {
                         style.min_size.height = length(row);
                         style.align_content = Some(taffy::AlignContent::Center);
-                    } else if index == 0 {
+                    } else if index == 0 && self.titled {
                         style.margin.bottom = length(theme.tokens.spacing.rhythm.related);
                     }
                     let _ = tree.set_style(child_node, style);

@@ -2569,6 +2569,7 @@ impl TileHost {
                 title: "Document switch blocked",
                 message: Some(detail),
                 dismissible: false,
+                action: None,
             },
             Point::ZERO,
         );

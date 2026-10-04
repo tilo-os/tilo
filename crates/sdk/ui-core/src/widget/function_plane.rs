@@ -399,11 +399,18 @@ pub fn format_tick(value: f64, step: f64) -> String {
     } else {
         (-step.log10().floor()) as usize
     };
-    let text = format!("{value:.decimals$}");
-    if decimals == 0 {
-        text
+    let text = format!("{:.decimals$}", value.abs());
+    let digits = if decimals == 0 {
+        text.as_str()
     } else {
-        text.trim_end_matches('0').trim_end_matches('.').to_string()
+        text.trim_end_matches('0').trim_end_matches('.')
+    };
+    // A negative label carries the true minus sign (U+2212), as the
+    // formulas and a keypad do, not a hyphen.
+    if value < 0.0 && digits != "0" {
+        format!("\u{2212}{digits}")
+    } else {
+        digits.to_string()
     }
 }
 
@@ -447,7 +454,7 @@ mod tests {
         assert_eq!(format_tick(0.30000000000000004, 0.1), "0.3");
         assert_eq!(format_tick(2.0, 1.0), "2");
         assert_eq!(format_tick(1e-12, 0.5), "0");
-        assert_eq!(format_tick(-0.25, 0.05), "-0.25");
+        assert_eq!(format_tick(-0.25, 0.05), "\u{2212}0.25");
     }
 
     #[test]

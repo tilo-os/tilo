@@ -39,10 +39,15 @@ pub struct Container {
     /// `Some(px)` switches the taffy width to `length(px)` and disables
     /// horizontal shrink, instead of the default `percent(1.0)` fill.
     fixed_width: Option<f32>,
-    /// Caps a normally fluid container and uses automatic horizontal margins
-    /// to keep it centred in a wider parent. Unlike [`Container::with_width`]
+    /// Caps a normally fluid container. Unlike [`Container::with_width`]
     /// this remains responsive below the cap.
     max_width: Option<f32>,
+    /// Automatic horizontal margins centre a capped container in a wider
+    /// parent; otherwise it keeps the leading edge.
+    centred: bool,
+    /// Bound to the theme's readable measure (`metrics.readable_width`),
+    /// resolved at layout, in place of an app-chosen `max_width`.
+    readable: bool,
     /// Lower horizontal bound used by responsive flex children. Unlike
     /// `fixed_width`, this still lets the container grow to share the row.
     min_width: Option<f32>,
@@ -80,6 +85,8 @@ impl Container {
             fixed_width: None,
             min_width: None,
             max_width: None,
+            centred: false,
+            readable: false,
             fixed_height: None,
             activation: crate::widget::activation::Activation::default(),
             flex_grow: false,
@@ -180,7 +187,19 @@ impl Container {
     #[must_use]
     pub fn with_centered_max_width(mut self, px: f32) -> Self {
         self.max_width = Some(px);
+        self.centred = true;
         self
+    }
+
+    /// Bound reading text, a form or a page of sections to the readable
+    /// measure (`metrics.readable_width`), on the column's leading edge.
+    /// It stays fluid below that width. Data, canvases and media keep the
+    /// full width instead.
+    #[must_use]
+    pub fn readable() -> Self {
+        let mut container = Self::new().with_no_padding();
+        container.readable = true;
+        container
     }
 
     /// Keep this container usable when it participates in a wrapping row,
@@ -191,11 +210,14 @@ impl Container {
         self
     }
 
-    /// Keep readable content from becoming an excessively wide wall while
-    /// still shrinking naturally on compact windows.
+    /// Keep content from becoming an excessively wide wall while still
+    /// shrinking naturally on compact windows. The container stays on the
+    /// leading edge of a wider parent; [`Self::with_centered_max_width`]
+    /// centres it instead. Reading text and forms use [`Self::readable`].
     #[must_use]
     pub fn with_max_width(mut self, px: f32) -> Self {
         self.max_width = Some(px);
+        self.centred = false;
         self
     }
 
@@ -363,6 +385,11 @@ impl Widget for Container {
             None if self.fill_height => percent(1.0_f32),
             None => taffy::Dimension::auto(),
         };
+        let max_width = if self.readable {
+            Some(theme.tokens.metrics.readable_width)
+        } else {
+            self.max_width
+        };
         let style = Style {
             display: taffy::Display::Flex,
             flex_shrink: 0.0, // Prevent vertical squashing
@@ -381,16 +408,16 @@ impl Widget for Container {
                 height: taffy::Dimension::auto(),
             },
             max_size: taffy::Size {
-                width: self.max_width.map_or(taffy::Dimension::auto(), length),
+                width: max_width.map_or(taffy::Dimension::auto(), length),
                 height: taffy::Dimension::auto(),
             },
             margin: taffy::Rect {
-                left: if self.max_width.is_some() {
+                left: if max_width.is_some() && self.centred {
                     auto()
                 } else {
                     length(0.0_f32)
                 },
-                right: if self.max_width.is_some() {
+                right: if max_width.is_some() {
                     auto()
                 } else {
                     length(0.0_f32)

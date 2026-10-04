@@ -246,6 +246,48 @@ pub fn compact_count(n: u64) -> String {
     format!("{compact}{suffix}")
 }
 
+/// A whole count with its digits grouped the way the active locale writes
+/// them: "12,842" in English, "12.842" in German, "12 842" in French.
+/// For a count in running text ("12,842 files"); [`compact_count`] is the
+/// short form for tight places.
+///
+/// ```
+/// use tilo_ui::format::count_in;
+/// assert_eq!(count_in(7, "en-US"), "7");
+/// assert_eq!(count_in(12_842, "en-US"), "12,842");
+/// assert_eq!(count_in(1_284_200, "de-DE"), "1.284.200");
+/// assert_eq!(count_in(84_200, "fr-FR"), "84\u{202f}200");
+/// ```
+#[must_use]
+pub fn count(n: u64) -> String {
+    count_in(n, &crate::i18n::I18nManager::current_locale())
+}
+
+/// [`count`] in an explicit locale (a BCP 47 tag such as `de-DE`).
+#[must_use]
+pub fn count_in(n: u64, locale: &str) -> String {
+    let language = locale
+        .split(['-', '_'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let separator = match language.as_str() {
+        "de" | "nl" | "es" | "it" | "pt" | "da" | "id" | "tr" | "el" | "ro" | "hr" | "sl" => '.',
+        "fr" | "sv" | "nb" | "nn" | "no" | "fi" | "cs" | "sk" | "pl" | "ru" | "uk" | "hu"
+        | "bg" | "et" | "lt" | "lv" => '\u{202f}',
+        _ => ',',
+    };
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(separator);
+        }
+        out.push(digit);
+    }
+    out
+}
+
 const MONTHS_ABBREV: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];

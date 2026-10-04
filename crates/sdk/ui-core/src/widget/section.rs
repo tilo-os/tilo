@@ -392,6 +392,7 @@ impl Widget for Section {
         presence: &PresenceCtx,
     ) {
         self.sync_row_separators();
+        self.sync_badge_columns(text, theme);
         self.parts.draw(scene, transform, text, theme, presence);
     }
 }
@@ -408,6 +409,52 @@ impl Section {
                     .is_some_and(|any| any.downcast_mut::<crate::widget::ListRow>().is_some())
             })
             .collect()
+    }
+
+    /// Each run of consecutive list rows with leading badges shares one
+    /// badge column, as wide as its widest badge, so their titles start on
+    /// one edge.
+    fn sync_badge_columns(&mut self, text: &mut TextRenderer, theme: &Theme) {
+        let badges: Vec<Option<Option<String>>> = self
+            .parts
+            .children
+            .iter_mut()
+            .map(|child| {
+                child
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<crate::widget::ListRow>())
+                    .map(|row| row.badge_label().map(str::to_owned))
+            })
+            .collect();
+        let mut widths = vec![None; badges.len()];
+        let mut start = 0;
+        while start < badges.len() {
+            let mut end = start;
+            while end < badges.len() && matches!(badges[end], Some(Some(_))) {
+                end += 1;
+            }
+            if end > start {
+                let run: Vec<&str> = badges[start..end]
+                    .iter()
+                    .filter_map(|badge| badge.as_ref()?.as_deref())
+                    .collect();
+                let width = crate::widget::list_row::badge_column_width(text, theme, &run);
+                for slot in &mut widths[start..end] {
+                    *slot = Some(width);
+                }
+                start = end;
+            } else {
+                start += 1;
+            }
+        }
+        for (child, width) in self.parts.children.iter_mut().zip(widths) {
+            if let Some(row) = child
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<crate::widget::ListRow>())
+            {
+                row.set_leading_column(width);
+            }
+        }
     }
 
     /// A list row gets a separator when a list row follows it, hidden when

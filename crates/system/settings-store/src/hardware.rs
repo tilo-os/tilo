@@ -72,7 +72,7 @@ pub struct OutputMode {
 impl OutputMode {
     pub fn label(self) -> String {
         format!(
-            "{} × {} · {:.2} Hz",
+            "{} × {}, {:.2} Hz",
             self.width,
             self.height,
             f64::from(self.refresh_mhz) / 1000.0

@@ -76,6 +76,9 @@ pub struct Toolbar {
     menu_indices: Vec<Option<usize>>,
     viewport: Option<Rect>,
     swallow_release: bool,
+    /// Commands that cannot run now: shown dimmed, skipped by the pointer
+    /// and refused by every activation path.
+    disabled: std::collections::HashSet<usize>,
 }
 
 impl Toolbar {
@@ -109,6 +112,7 @@ impl Toolbar {
             menu_indices: Vec::new(),
             viewport: None,
             swallow_release: false,
+            disabled: std::collections::HashSet::new(),
         }
     }
 
@@ -156,6 +160,47 @@ impl Toolbar {
         });
         self
     }
+    /// An icon-only command that is on or off (a layer shown, a guide grid):
+    /// a lift while on; `label` is its accessible name and tooltip.
+    #[must_use]
+    pub fn push_icon_toggle(
+        mut self,
+        icon: crate::icons::Icon,
+        label: &str,
+        active: bool,
+        on_click: impl FnMut() + 'static,
+    ) -> Self {
+        self.items.push(ToolbarItem::Button {
+            label: label.to_string(),
+            icon: Some(icon),
+            active: Some(active),
+            on_click: Box::new(on_click),
+        });
+        self
+    }
+
+    /// Whether the command at `index` can run now. A command that cannot
+    /// (Undo with nothing to undo, an edit with no image) stays in its place,
+    /// dimmed, so the toolbar does not shift.
+    pub fn set_enabled(&mut self, index: usize, enabled: bool) {
+        let changed = if enabled {
+            self.disabled.remove(&index)
+        } else {
+            self.disabled.insert(index)
+        };
+        if changed {
+            self.menu_indices.clear();
+            self.reconcile_menu();
+            self.refresh_hover();
+        }
+    }
+
+    /// Whether the command at `index` can run now.
+    #[must_use]
+    pub fn is_enabled(&self, index: usize) -> bool {
+        !self.disabled.contains(&index)
+    }
+
     /// Turn the toggle at `index` on or off (the host syncing from its model).
     pub fn set_active(&mut self, index: usize, on: bool) {
         if let Some(ToolbarItem::Button { active, .. }) = self.items.get_mut(index)
@@ -461,7 +506,8 @@ impl Toolbar {
                             active,
                             ..
                         }) => {
-                            let mut row = MenuItem::action(label.clone(), || {});
+                            let mut row = MenuItem::action(label.clone(), || {})
+                                .with_enabled(!index.is_some_and(|i| self.disabled.contains(&i)));
                             if let Some(icon) = icon {
                                 row = row.with_icon(*icon);
                             }
@@ -507,6 +553,9 @@ impl Toolbar {
         }
     }
     fn invoke(&mut self, index: usize) {
+        if self.disabled.contains(&index) {
+            return;
+        }
         if let Some(ToolbarItem::Button { on_click, .. }) = self.items.get_mut(index) {
             on_click();
         }
@@ -534,8 +583,10 @@ impl Toolbar {
         } else {
             self.pointer.and_then(|point| {
                 self.targets().into_iter().find(|target| {
-                    self.target_rect(*target)
-                        .is_some_and(|rect| rect.contains(point))
+                    !matches!(target, Target::Item(index) if self.disabled.contains(index))
+                        && self
+                            .target_rect(*target)
+                            .is_some_and(|rect| rect.contains(point))
                 })
             })
         };
@@ -800,6 +851,7 @@ impl Widget for Toolbar {
                     label,
                     *icon,
                     active.unwrap_or(false),
+                    self.disabled.contains(&index),
                 ),
                 ToolbarItem::Separator if !self.separator_shown(index) => {}
                 ToolbarItem::Separator => {
@@ -835,6 +887,7 @@ impl Widget for Toolbar {
                 Target::Overflow,
                 "More commands",
                 Some(crate::icons::Icon::MoreHorizontal),
+                false,
                 false,
             );
         }
@@ -992,6 +1045,7 @@ impl Widget for Toolbar {
                             && self.focus == Some(*target),
                         expanded,
                         checked,
+                        disabled: matches!(target, Target::Item(index) if self.disabled.contains(index)),
                         ..Default::default()
                     })
             })
@@ -1123,6 +1177,7 @@ impl Toolbar {
         label: &str,
         icon: Option<crate::icons::Icon>,
         active: bool,
+        disabled: bool,
     ) {
         let Some(rect) = self.target_rect(target).filter(|rect| !rect.is_zero_area()) else {
             return;
@@ -1134,6 +1189,7 @@ impl Toolbar {
         }
         .role(crate::widget::ButtonRole::Plain)
         .toggled(active)
+        .disabled(disabled)
         .hovered(self.hovered == Some(target))
         .pressed(self.pressed == Some(target))
         .focused(self.focused && self.focus == Some(target) && !self.menu.is_open());

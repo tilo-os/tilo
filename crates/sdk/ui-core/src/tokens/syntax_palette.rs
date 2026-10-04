@@ -29,6 +29,10 @@ const AAA: f64 = 7.0;
 const MAX_CONTRAST_TEXT: f64 = 19.0;
 /// The presence slot keywords and markup start from: the blue at 265°.
 const KEYWORD_SLOT: usize = 8;
+/// The presence slot attributes, macros and keys start from: the magenta at
+/// 325°. Status hues mean status, so a key or a macro is never painted in
+/// the danger red an error uses.
+const ATTRIBUTE_SLOT: usize = 10;
 
 /// Theme-derived colour for every syntax role. Read it from
 /// `theme.tokens.syntax` and resolve a token with [`SyntaxPalette::color`].
@@ -81,7 +85,7 @@ impl SyntaxPalette {
             number: legible(c.semantic.warning),
             comment: legible(c.text_dim),
             operator: legible(c.neutral[7]),
-            attribute: legible(c.semantic.danger),
+            attribute: legible(c.presence.get(ATTRIBUTE_SLOT)),
             markup: legible(blue),
             raw: legible(step(0.5)),
             math: legible(step(0.25)),

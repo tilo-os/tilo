@@ -193,6 +193,23 @@ pub struct Scrollable {
     semantic_key: Option<String>,
 }
 
+/// How far one notch of a mouse wheel scrolls, in logical pixels: the
+/// step every scroll view in the toolkit takes, for a painted host that
+/// scrolls its own region at the same rate.
+pub const WHEEL_LINE_PX: f32 = 60.0;
+
+/// The scroll a wheel or trackpad event asks for, in logical pixels:
+/// `(dx, dy)`, positive toward the end of the content (down, trailing).
+#[must_use]
+pub fn wheel_scroll(delta: &MouseScrollDelta, scale_factor: f64) -> (f64, f64) {
+    match delta {
+        MouseScrollDelta::LineDelta(x, y) => {
+            (f64::from(-x * WHEEL_LINE_PX), f64::from(-y * WHEEL_LINE_PX))
+        }
+        MouseScrollDelta::PixelDelta(p) => (-p.x / scale_factor, -p.y / scale_factor),
+    }
+}
+
 impl Scrollable {
     pub fn new(axis: ScrollAxis) -> Self {
         Self {
@@ -997,7 +1014,7 @@ impl Scrollable {
     ) -> bool {
         // winit y-positive means "scroll up", but content is drawn at
         // (… − offset), so wheel-up must DECREASE offset_y — negate.
-        const LINE_PX: f32 = 60.0;
+        const LINE_PX: f32 = WHEEL_LINE_PX;
         let pixel = matches!(delta, MouseScrollDelta::PixelDelta(_));
         if pixel {
             match phase {

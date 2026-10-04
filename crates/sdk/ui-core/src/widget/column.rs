@@ -39,6 +39,8 @@ pub struct Column {
     horizontal_padding_override: Option<(f32, f32)>,
     /// See [`Column::with_gap`].
     gap_override: Option<f32>,
+    /// See [`Column::with_rhythm`]; wins over `gap_override`.
+    gap_rhythm: Option<crate::tokens::RhythmStep>,
     intrinsic_height: bool,
     /// See [`Column::with_fill_remaining_height`].
     fill_remaining_height: bool,
@@ -81,6 +83,7 @@ impl Column {
             vertical_padding_override: None,
             horizontal_padding_override: None,
             gap_override: None,
+            gap_rhythm: None,
             intrinsic_height: false,
             fill_remaining_height: false,
             subtree_cache: Scene::new(),
@@ -214,12 +217,24 @@ impl Column {
     #[must_use]
     pub fn with_gap(mut self, px: f32) -> Self {
         self.gap_override = Some(px);
+        self.gap_rhythm = None;
         self
     }
 
     /// Update the inter-child gap before the next layout pass.
     pub fn set_gap(&mut self, px: f32) {
         self.gap_override = Some(px);
+        self.gap_rhythm = None;
+    }
+
+    /// Space the children by a step of the theme's rhythm: `Group` between
+    /// the groups of a page, `Related` for lines that belong together,
+    /// `Tight` for a title over its one secondary line, `None` for a band
+    /// whose children carry their own spacing.
+    #[must_use]
+    pub fn with_rhythm(mut self, step: crate::tokens::RhythmStep) -> Self {
+        self.gap_rhythm = Some(step);
+        self
     }
 
     /// Switch from `height: percent(1.0)` to `flex_grow: 1 + flex_basis: 0`.
@@ -296,7 +311,10 @@ impl Widget for Column {
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
 
-        let resolved_gap = self.gap_override.unwrap_or(theme.gap_standard);
+        let resolved_gap = self.gap_rhythm.map_or_else(
+            || self.gap_override.unwrap_or(theme.gap_standard),
+            |step| theme.tokens.spacing.rhythm.get(step),
+        );
 
         let node = taffy.parent_node(
             Style {

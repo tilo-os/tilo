@@ -445,13 +445,15 @@ pub struct EmptyState {
 impl EmptyState {
     /// Construct with just a title (the minimal case). Chain
     /// [`with_icon`](Self::with_icon) / [`with_message`](Self::with_message) /
-    /// [`with_action`](Self::with_action) for the fuller treatment.
+    /// [`with_action`](Self::with_action) for the fuller treatment. Like
+    /// [`Text`](super::Text), the title, message and action label may be
+    /// localization keys; each resolves through the app's catalog.
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             icon: None,
             illustration: None,
             error: false,
-            title: title.into(),
+            title: crate::i18n!(&title.into()),
             message: None,
             action_label: None,
             action_id: None,
@@ -495,15 +497,14 @@ impl EmptyState {
     /// One sentence under the title, in secondary ink.
     #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
-        self.message = Some(message.into());
+        self.message = Some(crate::i18n!(&message.into()));
         self
     }
 
-    /// Add the one primary action under the message. The label is a
-    /// pre-resolved display string (callers do the `i18n!` lookup).
+    /// Add the one primary action under the message.
     #[must_use]
     pub fn with_action(mut self, label: impl Into<String>) -> Self {
-        self.action_label = Some(label.into());
+        self.action_label = Some(crate::i18n!(&label.into()));
         self
     }
 

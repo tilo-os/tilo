@@ -86,6 +86,10 @@ pub struct Metrics {
     /// Narrowest the detail column beside an overview may become before the
     /// two become push screens.
     pub detail_min_width: f32,
+    /// The readable measure: how wide reading text, forms and settings pages
+    /// grow before their lines get too long to follow. Canvases, tables,
+    /// maps and media take the full width instead.
+    pub readable_width: f32,
 }
 
 impl Metrics {
@@ -118,6 +122,7 @@ impl Metrics {
         sidebar_max_width: 420.0,
         content_min_width: 560.0,
         detail_min_width: 360.0,
+        readable_width: 720.0,
     };
 
     /// The factor a **text-sized** width or breakpoint grows by at a given
@@ -172,6 +177,7 @@ impl Metrics {
             sidebar_max_width: self.sidebar_max_width * factor,
             content_min_width: self.content_min_width * factor,
             detail_min_width: self.detail_min_width * factor,
+            readable_width: self.readable_width * factor,
         }
     }
 }

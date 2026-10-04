@@ -97,7 +97,8 @@ pub enum ColumnWidth {
 pub type CellTextRender<Row> =
     Box<dyn Fn(&Row, &mut Scene, &mut TextRenderer, Rect, &Theme, bool) + Send + Sync>;
 
-/// Coordinates are absolute scene space; the table-level transform is already applied.
+/// The painter draws at the cell's rect in the table's own coordinates with
+/// `Affine::IDENTITY`; the table places what it paints under its transform.
 pub type CellRender<Row> =
     Box<dyn Fn(&Row, &mut Scene, &Theme, &mut TextRenderer, Rect) + Send + Sync>;
 
@@ -1538,7 +1539,13 @@ impl<Row> DataTable<Row> {
                             Some(cr) => Rect::new(cr.x0, y0, cr.x1, y1),
                             None => continue,
                         };
-                        (col.render_cell)(row, scene, theme, text_renderer, cell_rect);
+                        // A cell painter works in the table's own space at
+                        // `cell_rect`; the table places it under its
+                        // transform, so a table inside a scrolled or offset
+                        // parent paints its custom cells where its text is.
+                        paint_cell_layer(scene, transform, |layer| {
+                            (col.render_cell)(row, layer, theme, text_renderer, cell_rect);
+                        });
                         if let Some(value) = &col.text {
                             paint_cell_text(
                                 scene,
@@ -1551,7 +1558,9 @@ impl<Row> DataTable<Row> {
                             );
                         }
                         if let Some(tr) = &col.text_render {
-                            tr(row, scene, text_renderer, cell_rect, theme, selected);
+                            paint_cell_layer(scene, transform, |layer| {
+                                tr(row, layer, text_renderer, cell_rect, theme, selected);
+                            });
                         }
                     }
                 }
@@ -1893,6 +1902,18 @@ const HEADER_HEIGHT: f64 = 32.0;
 const ROW_HEIGHT: f64 = 32.0;
 
 /// A column header: `Caption` in its strong weight, sentence case.
+/// Run a custom cell painter, which draws in the table's own coordinates,
+/// under the table's `transform`.
+fn paint_cell_layer(scene: &mut Scene, transform: Affine, paint: impl FnOnce(&mut Scene)) {
+    if transform == Affine::IDENTITY {
+        paint(scene);
+        return;
+    }
+    let mut layer = Scene::new();
+    paint(&mut layer);
+    scene.append(&layer, Some(transform));
+}
+
 fn header_style(theme: &Theme) -> crate::text_render::TextStyle {
     theme.text(TextRole::Caption).strong()
 }
@@ -2150,10 +2171,30 @@ impl<Row: 'static> Widget for DataTable<Row> {
         let next_columns = compute_column_rects(&self.columns, self.columns_band(), &widths);
         let columns_changed = self.col_rects != next_columns;
         self.col_rects = next_columns;
+        // A mounted cell never makes its row shorter than the estimate the
+        // plain text rows use, so retained and text rows stay one height.
+        let row_floor = self.viewport.estimated_height();
+        // Each row is as tall as its tallest mounted cell; a shorter cell
+        // (a badge, a switch) sits centred on the row like the text cells.
+        let mut band_heights = HashMap::<usize, f64>::new();
+        for cell in &self.mounted_cells {
+            let Some(child) = cell.node else { continue };
+            let height = f64::from(taffy.layout(child).map_or(0.0, |l| l.size.height));
+            band_heights
+                .entry(cell.row_index)
+                .and_modify(|band| *band = band.max(height))
+                .or_insert(height);
+        }
         let mut row_heights = HashMap::<usize, f64>::new();
         for cell in &mut self.mounted_cells {
             let Some(child) = cell.node else { continue };
             let child_layout = taffy.layout(child).copied().unwrap_or_default();
+            let band = band_heights
+                .get(&cell.row_index)
+                .copied()
+                .unwrap_or_default()
+                .max(row_floor);
+            let centring = ((band - f64::from(child_layout.size.height)) / 2.0).max(0.0);
             let desired_x = self
                 .col_rects
                 .get(cell.column_index)
@@ -2163,7 +2204,8 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 + self
                     .viewport
                     .item_view_top(cell.row_index)
-                    .unwrap_or_default();
+                    .unwrap_or_default()
+                + centring;
             // Position from live viewport/column geometry rather than only
             // the absolute Taffy style captured at tree-build time. Scroll
             // frames can then reposition retained controls without forcing a
@@ -2178,9 +2220,6 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .and_modify(|height| *height = height.max(cell.widget.get_rect().height()))
                 .or_insert_with(|| cell.widget.get_rect().height());
         }
-        // A mounted cell never makes its row shorter than the estimate the
-        // plain text rows use, so retained and text rows stay one height.
-        let row_floor = self.viewport.estimated_height();
         let mut measured = false;
         for (row_index, height) in row_heights {
             if let Some(key) = self.row_identity_at(row_index) {

@@ -227,21 +227,32 @@ where
         // A dynamic page is a transparent layout boundary, not an intrinsic
         // desktop-width island. Constrain it to its parent so percent-width
         // cards and wrapping rows reflow correctly on narrow windows.
-        let node = taffy.parent_node(
-            Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::auto(),
-                },
-                min_size: taffy::Size {
-                    width: taffy::Dimension::length(0.0),
-                    height: taffy::Dimension::auto(),
-                },
-                flex_shrink: 1.0,
-                ..Style::default()
+        let mut style = Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::auto(),
             },
-            &[child],
-        );
+            min_size: taffy::Size {
+                width: taffy::Dimension::length(0.0),
+                height: taffy::Dimension::auto(),
+            },
+            flex_shrink: 1.0,
+            ..Style::default()
+        };
+        if let Ok(inner) = taffy.style(child) {
+            // Nothing to show takes no place, and no gap, in the parent.
+            if inner.display == taffy::Display::None {
+                style.display = taffy::Display::None;
+            }
+            // A child that fills its parent's height (a scrolling page)
+            // fills through the wrapper too.
+            if inner.size.height == taffy::Dimension::percent(1.0) {
+                style.size.height = inner.size.height;
+            }
+            style.flex_grow = inner.flex_grow;
+            style.flex_basis = inner.flex_basis;
+        }
+        let node = taffy.parent_node(style, &[child]);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -454,6 +465,60 @@ where
 {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         crate::undo::take_committed_action(self.child.as_mut())
+    }
+}
+
+/// What a [`ModelView`] builds when there is nothing to show (no notice, no
+/// error): it takes no place in its parent, so a [`Column`](super::Column)
+/// or [`Row`](super::Row) leaves no gap for it.
+#[must_use]
+pub fn nothing() -> Element {
+    Box::new(Nothing { rect: Rect::ZERO })
+}
+
+struct Nothing {
+    rect: Rect,
+}
+
+impl Widget for Nothing {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style {
+            display: taffy::Display::None,
+            ..Style::default()
+        });
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, origin: Point) {
+        self.rect = Rect::from_origin_size(origin, (0.0, 0.0));
+    }
+
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+    }
+
+    fn needs_redraw(&self) -> bool {
+        false
+    }
+
+    fn name(&self) -> &'static str {
+        "Nothing"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
     }
 }
 

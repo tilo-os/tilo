@@ -1731,7 +1731,8 @@ impl GitClientApp {
             rect,
             &BannerContent::new(kind, &title).dismissible(dismissible),
             hover,
-        );
+        )
+        .dismiss;
         self.semantic.push(Target {
             rect,
             hit: Hit::DismissError,

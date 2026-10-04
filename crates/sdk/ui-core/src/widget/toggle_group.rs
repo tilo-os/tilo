@@ -119,6 +119,9 @@ pub struct ToggleGroup {
     /// Finger owning the current gesture. Selection commits on release, so a
     /// scroll or cancelled touch never changes tabs on initial contact.
     active_touch: Option<u64>,
+    /// What the whole choice is called ("Quality", "Algorithm"): a field's
+    /// label, or a name for a strip that stands alone.
+    accessible_name: Option<String>,
 }
 
 impl ToggleGroup {
@@ -155,7 +158,16 @@ impl ToggleGroup {
             use_short: Vec::new(),
             measured_width: None,
             active_touch: None,
+            accessible_name: None,
         }
+    }
+
+    /// Name the whole choice for assistive technology; a [`Field`]
+    /// (`super::Field`) gives it its label.
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: &str) -> Self {
+        self.accessible_name = Some(name.to_owned());
+        self
     }
 
     /// Stretch to the parent's width, segments sharing it equally. Without
@@ -1299,8 +1311,14 @@ impl Widget for ToggleGroup {
                 }
             })
             .collect();
+        let name = self
+            .accessible_name
+            .as_ref()
+            .map(|name| crate::i18n!(name))
+            .filter(|name| !name.is_empty());
         Some(
             AccessNode::new(Role::Group)
+                .with_optional_name(name)
                 .with_optional_value(value)
                 .with_state(AccessState {
                     focusable: self.is_focusable(),

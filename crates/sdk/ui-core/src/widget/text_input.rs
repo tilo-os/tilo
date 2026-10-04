@@ -318,6 +318,8 @@ pub struct TextInput {
     context_actions: Vec<Option<CtxAction>>,
     accessible_name: String,
     placeholder: String,
+    /// Lines a multiline field shows at least, empty or not.
+    min_lines: Option<u16>,
     /// The placeholder stays while the field is focused and empty (a search
     /// or filter field names what it searches until the first keystroke).
     persistent_placeholder: bool,
@@ -497,6 +499,7 @@ impl TextInput {
             context_actions: Vec::new(),
             accessible_name: String::new(),
             placeholder: String::new(),
+            min_lines: None,
             persistent_placeholder: false,
             mono: false,
             family: None,
@@ -653,6 +656,15 @@ impl TextInput {
         if !self.text.is_empty() {
             let _ = state.splice_text(&obj, 0, 0, self.text.as_str());
         }
+    }
+
+    /// Show at least `lines` lines of a multiline field, so a document body
+    /// reads as room to write in even while it is empty. A multiline field
+    /// with chrome is never shorter than a single-line field.
+    #[must_use]
+    pub fn with_min_lines(mut self, lines: u16) -> Self {
+        self.min_lines = Some(lines);
+        self
     }
 
     /// Set the field's text in `role` (default [`TextRole::Body`]).
@@ -838,10 +850,20 @@ impl TextInput {
         self.family.as_ref()
     }
 
+    /// The family the field sets its text in: an explicit one, else the
+    /// role's (`Reading` is the serif, `Code` the mono).
+    fn resolved_family(&self) -> Option<FontChoice> {
+        self.family.clone().or(match self.text_role {
+            TextRole::Reading => Some(FontChoice::Serif),
+            TextRole::Code => Some(FontChoice::Monospace),
+            _ => None,
+        })
+    }
+
     /// Picks the same family the draw path will use, so `char_x_positions`
     /// and the drawn glyphs agree.
     fn measure_str(&self, tr: &mut TextRenderer, s: &str, size: f32) -> (f32, f32) {
-        if let Some(fam) = &self.family {
+        if let Some(fam) = &self.resolved_family() {
             tr.measure_font(s, size, None, TextWeight::Regular, false, fam)
         } else if self.mono {
             tr.measure_styled(s, size, None, TextWeight::Regular, false, true)
@@ -1874,7 +1896,7 @@ impl TextInput {
         color: vello::peniko::Color,
         origin: Affine,
     ) {
-        if let Some(fam) = &self.family {
+        if let Some(fam) = &self.resolved_family() {
             tr.draw_style(
                 scene,
                 text,
@@ -1959,7 +1981,7 @@ impl TextInput {
     }
 
     fn multiline_style(&self, scale: f32) -> TextStyle {
-        let family = self.family.clone().unwrap_or(if self.mono {
+        let family = self.resolved_family().unwrap_or(if self.mono {
             FontChoice::Monospace
         } else {
             FontChoice::SansSerif
@@ -2290,7 +2312,7 @@ impl TextInput {
                 scene,
                 &placeholder,
                 size,
-                theme.text_dim,
+                theme.tokens.colors.text_tertiary,
                 text_transform,
                 Some(available_width),
             );
@@ -2560,7 +2582,16 @@ impl TextInput {
                     self.rect.x0 + left,
                     self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
                 ));
-            tr.draw_text(scene, &placeholder, size, theme.text_dim, origin, None);
+            // In the field's own face and size: a reading field's hint is
+            // set in its serif, in the quiet placeholder ink.
+            self.draw_text_run(
+                scene,
+                tr,
+                &placeholder,
+                size,
+                theme.tokens.colors.text_tertiary,
+                origin,
+            );
         }
 
         let text_color = if self.effectively_disabled() {
@@ -4052,23 +4083,38 @@ impl Widget for TextInput {
         // which left zero slack in a 40 px band, so the band grows to the
         // line plus the same vertical inset the multiline body keeps
         // (`ML_PAD_Y` each side). At 1× a 20 px line leaves the band at 40.
-        let height = if self.multiline {
-            Dimension::auto()
-        } else {
-            let line_px = f64::from(self.effective_font_size() * LINE_HEIGHT_RATIO)
-                * f64::from(theme.text_scale);
-            let band = (line_px + ML_PAD_Y * 2.0).max(40.0);
+        let line_px =
+            f64::from(self.effective_font_size() * LINE_HEIGHT_RATIO) * f64::from(theme.text_scale);
+        let band = (line_px + ML_PAD_Y * 2.0).max(40.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a control band is a few dozen logical pixels, far inside f32"
+        )]
+        let band = (band as f32).max(self.interaction.minimum_target());
+        let (height, min_height) = if self.multiline {
+            // A field with chrome is never shorter than the single-line band;
+            // `min_lines` reserves room for that many lines.
+            let floor = if self.plain { 0.0 } else { band };
+            let lines = self.min_lines.map_or(0.0, |lines| {
+                f64::from(lines) * line_px + self.multiline_padding_y() * 2.0
+            });
             #[allow(
                 clippy::cast_possible_truncation,
-                reason = "a control band is a few dozen logical pixels, far inside f32"
+                reason = "a few lines of text are far inside f32"
             )]
-            let band = band as f32;
-            Dimension::length(band.max(self.interaction.minimum_target()))
+            let lines = lines.ceil() as f32;
+            (Dimension::auto(), Dimension::length(floor.max(lines)))
+        } else {
+            (Dimension::length(band), Dimension::auto())
         };
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height,
+            },
+            min_size: Size {
+                width: Dimension::auto(),
+                height: min_height,
             },
             ..Default::default()
         });
@@ -4919,7 +4965,7 @@ impl TextInput {
             }
             width
         } else {
-            let family = self.family.clone().unwrap_or(if self.mono {
+            let family = self.resolved_family().unwrap_or(if self.mono {
                 FontChoice::Monospace
             } else {
                 FontChoice::SansSerif
@@ -5129,13 +5175,13 @@ impl TextInput {
                 reason = "Affine transform composition over f64 screen coordinates"
             )]
             let placeholder_origin = transform * Affine::translate((self.single_origin.x, text_y));
-            text_renderer.draw_text(
+            self.draw_text_run(
                 scene,
+                text_renderer,
                 &placeholder,
                 text_size,
-                theme.text_dim,
+                theme.tokens.colors.text_tertiary,
                 placeholder_origin,
-                None,
             );
         }
         #[allow(
@@ -5148,7 +5194,7 @@ impl TextInput {
             if let Some(layout) = &self.single_layout {
                 text_renderer.draw_rich(scene, layout, text_origin, text_color);
             }
-        } else if let Some(fam) = &self.family {
+        } else if let Some(fam) = &self.resolved_family() {
             text_renderer.draw_style(
                 scene,
                 display,

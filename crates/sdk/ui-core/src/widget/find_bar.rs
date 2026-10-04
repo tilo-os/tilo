@@ -142,6 +142,8 @@ pub fn paint_find_match(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Pending {
     search: bool,
+    /// The content changed under the bar: count again, keep the place.
+    refresh: bool,
     step: Option<Step>,
     replace: Option<ReplaceRequest>,
     closed: bool,
@@ -262,6 +264,43 @@ impl FindBar {
         self
     }
 
+    /// Start in `mode` (a byte view searches hex first).
+    #[must_use]
+    pub fn with_mode(mut self, mode: FindMode) -> Self {
+        self.set_mode(mode);
+        self
+    }
+
+    /// Search as text or as hex bytes.
+    pub fn set_mode(&mut self, mode: FindMode) {
+        if self.options.mode != mode {
+            self.options.mode = mode;
+            self.pending.search = true;
+        }
+    }
+
+    /// Carry options (case, whole word, mode) over, as a host that rebuilds
+    /// the bar keeps what the person chose.
+    pub fn set_options(&mut self, options: FindOptions) {
+        if self.options != options {
+            self.options = options;
+            self.pending.search = true;
+        }
+    }
+
+    /// The content under the bar changed (a terminal printed, a log grew, a
+    /// page's text arrived): the next [`drive`](Self::drive) runs the query
+    /// again, keeping the current match and without moving the view to it.
+    pub fn refresh(&mut self) {
+        self.pending.refresh = true;
+    }
+
+    /// Whether the person asked to close the bar, clearing the request: a
+    /// host that shows the bar itself hides it and stops asking.
+    pub fn take_close_requested(&mut self) -> bool {
+        std::mem::take(&mut self.pending.closed)
+    }
+
     /// The query typed so far.
     #[must_use]
     pub fn query(&self) -> &str {
@@ -362,6 +401,8 @@ impl FindBar {
             self.research(target, self.current);
         } else if pending.search || stale {
             self.research(target, Some(0));
+        } else if pending.refresh {
+            self.recount(target);
         }
         if let Some(step) = pending.step
             && self.matches > 0
@@ -386,6 +427,18 @@ impl FindBar {
                     self.matches,
                 )
             }));
+    }
+
+    /// Count the matches again in changed content, keeping the current
+    /// match and leaving the view where the person put it.
+    fn recount(&mut self, target: &mut dyn Findable) {
+        let found = target.find(self.field.value(), self.options);
+        self.matches = found.len();
+        self.current = (self.matches > 0).then(|| {
+            self.current
+                .unwrap_or(0)
+                .min(self.matches.saturating_sub(1))
+        });
     }
 
     /// Run the query again, keeping the current match near `keep`.
@@ -872,6 +925,8 @@ pub struct FindScope {
     bar: FindBar,
     content: Element,
     open: bool,
+    /// Ctrl+F (⌘F) opens the bar; off for content that hands those keys on.
+    shortcut: bool,
     structure_dirty: bool,
     rect: Rect,
     bar_node: Option<NodeId>,
@@ -885,12 +940,22 @@ impl FindScope {
             bar: FindBar::new(),
             content,
             open: false,
+            shortcut: true,
             structure_dirty: false,
             rect: Rect::ZERO,
             bar_node: None,
             content_node: None,
             platform: PlatformConventions::default(),
         }
+    }
+
+    /// Leave Ctrl+F (⌘F) to the content: a terminal or another view that
+    /// hands its keys to a program. The host opens the bar with
+    /// [`Self::open`] from its own command instead.
+    #[must_use]
+    pub fn without_shortcut(mut self) -> Self {
+        self.shortcut = false;
+        self
     }
 
     /// Configure the bar (`FindBar::with_replace`, `with_hex_mode`).
@@ -944,19 +1009,20 @@ impl FindScope {
     }
 
     fn is_find_shortcut(&self, event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
-        matches!(
-            event,
-            WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    logical_key: Key::Character(c),
-                    state: ElementState::Pressed,
+        self.shortcut
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        logical_key: Key::Character(c),
+                        state: ElementState::Pressed,
+                        ..
+                    },
                     ..
-                },
-                ..
-            } if c.eq_ignore_ascii_case("f")
-                && self.platform.command_modifier_down(modifiers.state())
-                && !modifiers.state().shift_key()
-        )
+                } if c.eq_ignore_ascii_case("f")
+                    && self.platform.command_modifier_down(modifiers.state())
+                    && !modifiers.state().shift_key()
+            )
     }
 }
 

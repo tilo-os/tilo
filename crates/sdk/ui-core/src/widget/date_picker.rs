@@ -12,7 +12,7 @@
 //! app-owned durable mutation.
 
 use crate::widget::{AppModel, ModelPath};
-use chrono::{Datelike, Local, NaiveDate};
+use chrono::{Datelike, NaiveDate};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -626,7 +626,7 @@ impl DatePicker {
         let text_color = tokens.colors.text_primary;
         let dim_color = tokens.colors.text_dim;
 
-        let today = Local::now().date_naive();
+        let today = crate::clock::today();
         let (vy, vm) = self.month_view;
 
         for (date, cell_rect) in &self.day_rects {

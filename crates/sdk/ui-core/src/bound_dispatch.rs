@@ -130,9 +130,13 @@ pub(crate) fn has_matching_broker_component(
     found
 }
 
+/// Refresh the availability of every component's bound controls against its
+/// published resources plus `host_doors`: the addresses its host answers
+/// itself (opening search, the window's History door).
 pub(crate) fn refresh_bound_controls(
     root: &mut dyn Widget,
     snapshots: &[BoundResourceSnapshot],
+    host_doors: &std::collections::HashSet<tilo_actions::ActionAddress>,
 ) -> Result<(), BoundDispatchError> {
     let mut visit = |binding: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
@@ -148,8 +152,10 @@ pub(crate) fn refresh_bound_controls(
             .filter(|descriptor| descriptor.contract.availability.is_available())
             .map(|descriptor| descriptor.address)
             .collect();
-        // A component's host — its window or the shell — opens search.
+        // A component's host — its window or the shell — opens search and
+        // serves the window's History door.
         allowed.insert(crate::search::search_address());
+        allowed.extend(host_doors.iter().cloned());
         crate::widget::controls::refresh_control_action_availability(widget, &allowed);
         None
     };

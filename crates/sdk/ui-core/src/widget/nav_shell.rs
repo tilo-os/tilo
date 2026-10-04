@@ -933,6 +933,10 @@ pub struct NavShell {
     inspector: Option<Element>,
     filter: Option<Element>,
     headers: [Header; 4],
+    /// Parts replaced since the last layout. The host's node map may still
+    /// point at them until the tree is rebuilt, so a swap made while an
+    /// event is being handled keeps the old part alive until then.
+    retired: Vec<Element>,
     toggle: Button,
     back: Button,
     inspector_toggle: Button,
@@ -1008,6 +1012,7 @@ impl NavShell {
             inspector: None,
             filter: None,
             headers: Default::default(),
+            retired: Vec::new(),
             toggle,
             back,
             inspector_toggle,
@@ -1120,7 +1125,9 @@ impl NavShell {
         });
         if let Some(header) = self.headers.get_mut(column.index()) {
             header.title = (!title.trim().is_empty()).then_some(title);
-            header.actions = actions;
+            if let Some(old) = std::mem::replace(&mut header.actions, actions) {
+                self.retired.push(old);
+            }
         }
         self.slots_changed();
     }
@@ -1182,22 +1189,29 @@ impl NavShell {
     // here: the shell's responsive state lives on the shell.
 
     pub fn set_sidebar(&mut self, sidebar: Option<Element>) {
-        self.sidebar = sidebar;
+        if let Some(old) = std::mem::replace(&mut self.sidebar, sidebar) {
+            self.retired.push(old);
+        }
         self.slots_changed();
     }
 
     pub fn set_overview(&mut self, overview: Option<Element>) {
-        self.overview = overview;
+        if let Some(old) = std::mem::replace(&mut self.overview, overview) {
+            self.retired.push(old);
+        }
         self.slots_changed();
     }
 
     pub fn set_content(&mut self, content: Element) {
-        self.content = content;
+        let old = std::mem::replace(&mut self.content, content);
+        self.retired.push(old);
         self.slots_changed();
     }
 
     pub fn set_inspector(&mut self, inspector: Option<Element>) {
-        self.inspector = inspector;
+        if let Some(old) = std::mem::replace(&mut self.inspector, inspector) {
+            self.retired.push(old);
+        }
         self.slots_changed();
     }
 
@@ -1209,6 +1223,37 @@ impl NavShell {
     /// Change the overview's title in place.
     pub fn set_overview_title(&mut self, title: impl Into<String>) {
         self.set_title(Column::Overview, title.into());
+    }
+
+    /// Change the sidebar's title in place.
+    pub fn set_sidebar_title(&mut self, title: impl Into<String>) {
+        self.set_title(Column::Sidebar, title.into());
+    }
+
+    /// Change the inspector's title in place (the selected item's name).
+    pub fn set_inspector_title(&mut self, title: impl Into<String>) {
+        self.set_title(Column::Inspector, title.into());
+    }
+
+    /// Replace the sidebar column's header (title and actions) in place.
+    pub fn set_sidebar_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
+        self.set_header(Column::Sidebar, title.into(), actions);
+    }
+
+    /// Replace the overview column's header in place.
+    pub fn set_overview_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
+        self.set_header(Column::Overview, title.into(), actions);
+    }
+
+    /// Replace the content column's header in place: a detail toolbar whose
+    /// actions follow the selection, the screen or the window's width.
+    pub fn set_content_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
+        self.set_header(Column::Content, title.into(), actions);
+    }
+
+    /// Replace the inspector column's header in place.
+    pub fn set_inspector_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
+        self.set_header(Column::Inspector, title.into(), actions);
     }
 
     fn set_title(&mut self, column: Column, title: String) {
@@ -2082,6 +2127,9 @@ impl Widget for NavShell {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // The host rebuilds its node map from this tree: parts swapped out
+        // since the last build are no longer reachable through it.
+        self.retired.clear();
         self.layout_theme = theme.clone();
         let size = if self.rect.width() > 0.0 {
             (self.rect.width(), self.rect.height())
@@ -2316,6 +2364,7 @@ impl Widget for NavShell {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
+        let shell = self.id.as_deref().unwrap_or("nav-shell");
         // The column titles are headings of the window.
         let headings: Vec<AccessNode> = Column::ALL
             .iter()
@@ -2326,10 +2375,17 @@ impl Widget for NavShell {
                     AccessNode::new(Role::Heading { level: 2 })
                         .with_name(title)
                         .with_bounds(header)
+                        .with_semantic_key(format!("{shell}.heading:{}", column.index()))
                 })
             })
             .collect();
-        (!headings.is_empty()).then(|| AccessNode::new(Role::Group).with_children(headings))
+        // The group carries a durable key, so every control in the columns
+        // below keeps its identity for assistive technology and agents.
+        (!headings.is_empty()).then(|| {
+            AccessNode::new(Role::Group)
+                .with_semantic_key(shell)
+                .with_children(headings)
+        })
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {

@@ -151,7 +151,6 @@ pub struct Badge {
     content: BadgeContent,
     style: ChipStyle,
     rect: Rect,
-    cached: vello::Scene,
     dirty: bool,
     cache_rect: Rect,
     /// The geometry seen in `build_layout`, for the measured width.
@@ -164,7 +163,6 @@ impl Badge {
             content,
             style,
             rect: Rect::ZERO,
-            cached: vello::Scene::new(),
             dirty: true,
             cache_rect: Rect::ZERO,
             metrics: None,
@@ -325,20 +323,9 @@ impl Widget for Badge {
         if matches!(self.content, BadgeContent::Count(0)) {
             return;
         }
-        let needs_emit = self.dirty || self.cache_rect == Rect::ZERO;
-        if !needs_emit {
-            let dx = self.rect.x0 - self.cache_rect.x0;
-            let dy = self.rect.y0 - self.cache_rect.y0;
-            out_scene.append(
-                &self.cached,
-                Some(out_transform.pre_translate((dx, dy).into())),
-            );
-            return;
-        }
-        // mem::take dance — `display_text` borrows &self while `cached` needs &mut self.
-        let mut cached = std::mem::take(&mut self.cached);
-        cached.reset();
-        let transform = Affine::IDENTITY;
+        // Painted afresh every frame: a badge is one pill, and its colours
+        // follow the theme it is drawn under (a theme switch must not keep
+        // the previous theme's fill).
         match self.display_text() {
             None => {
                 let colors =
@@ -346,9 +333,9 @@ impl Widget for Badge {
                         .colors(theme, theme.tokens.colors.surfaces.content, false, false);
                 let radius = BadgeMetrics::of(theme).dot / 2.0;
                 let circle = Circle::new(self.rect.center(), radius);
-                cached.fill(
+                out_scene.fill(
                     vello::peniko::Fill::NonZero,
-                    transform,
+                    out_transform,
                     colors.fill,
                     None,
                     &circle,
@@ -356,8 +343,8 @@ impl Widget for Badge {
             }
             Some(label) => {
                 paint_badge_pill(
-                    &mut cached,
-                    transform,
+                    out_scene,
+                    out_transform,
                     self.rect,
                     &label,
                     self.style,
@@ -366,8 +353,6 @@ impl Widget for Badge {
                 );
             }
         }
-        out_scene.append(&cached, Some(out_transform));
-        self.cached = cached;
         self.cache_rect = self.rect;
     }
 

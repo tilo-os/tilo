@@ -6,7 +6,8 @@ use super::{
     spacing,
 };
 
-/// A form page with a compact title/description, one gutter and vertical scroll.
+/// A form page: its title at the top of the content (`LargeTitle`), one
+/// gutter, the readable measure and vertical scroll.
 /// `with_max_content_width(None)` resets only the readable-width override.
 pub struct FormPage {
     parts: Parts,
@@ -14,19 +15,31 @@ pub struct FormPage {
 }
 impl FormPage {
     pub fn new(title: impl Into<String>, form: Form) -> Self {
+        Self::with_head(
+            vec![Box::new(
+                Text::new(&title.into())
+                    .with_role(TextRole::LargeTitle)
+                    .with_heading_level(1),
+            )],
+            form,
+        )
+    }
+    /// A form page whose title is already shown elsewhere (the window's
+    /// header row names the column): the form alone, at the page's gutter,
+    /// measure and scroll.
+    pub fn untitled(form: Form) -> Self {
+        Self::with_head(Vec::new(), form)
+    }
+    fn with_head(mut head: Vec<Element>, form: Form) -> Self {
         let effective = std::rc::Rc::new(std::cell::Cell::new(None));
+        let titled = !head.is_empty();
+        head.push(Box::new(form));
         let body = PageBody {
-            parts: Parts::new(vec![
-                Box::new(
-                    Text::new(&title.into())
-                        .with_role(TextRole::Heading)
-                        .with_heading_level(1),
-                ),
-                Box::new(form),
-            ]),
+            parts: Parts::new(head),
             max_width: None,
             effective: effective.clone(),
             has_description: false,
+            titled,
         };
         Self {
             parts: Parts::new(vec![Box::new(
@@ -51,12 +64,13 @@ impl FormPage {
             return self;
         };
         let text: Element = Box::new(Text::new(&text.into()).with_role(TextRole::Body));
+        let at = usize::from(body.titled);
         if body.has_description {
-            if let Some(slot) = body.parts.children.get_mut(1) {
+            if let Some(slot) = body.parts.children.get_mut(at) {
                 *slot = text;
             }
         } else {
-            body.parts.children.insert(1, text);
+            body.parts.children.insert(at, text);
             body.has_description = true;
         }
         self
@@ -77,6 +91,7 @@ struct PageBody {
     max_width: Option<f32>,
     effective: std::rc::Rc<std::cell::Cell<Option<PageLayout>>>,
     has_description: bool,
+    titled: bool,
 }
 
 impl Widget for FormPage {
@@ -131,7 +146,7 @@ impl Widget for PageBody {
     ) -> NodeId {
         let gutter = theme.tokens.spacing.s6;
         let width = self.max_width.map_or_else(
-            || Effective::new(720.0 * theme.ui_scale, LayoutOrigin::Pattern),
+            || Effective::new(theme.tokens.metrics.readable_width, LayoutOrigin::Pattern),
             |value| Effective::new(value, LayoutOrigin::Page),
         );
         self.effective.set(Some(PageLayout {
@@ -150,7 +165,8 @@ impl Widget for PageBody {
         style.margin.right = auto();
         let node = self.parts.build(style, tree, theme, map);
         // A section-strength gap after the compact heading/description group.
-        if let Some(&form) = self.parts.nodes.last()
+        if self.parts.nodes.len() > 1
+            && let Some(&form) = self.parts.nodes.last()
             && let Ok(current) = tree.style(form)
         {
             let mut style = current.clone();
