@@ -46,6 +46,8 @@ mod page_file_io;
 mod paste_image;
 #[path = "peer_caret_visual.rs"]
 mod peer_caret_visual;
+#[path = "read_content.rs"]
+mod read_content;
 #[path = "responsive_drawer.rs"]
 mod responsive_drawer;
 #[path = "save_failure_status.rs"]

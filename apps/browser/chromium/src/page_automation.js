@@ -29,6 +29,9 @@ globalThis.__tiloPage ||= (() => {
 
   const ids = new WeakMap(), refs = new Map();
   let next = 0, doc = 0;
+  // The outline this tab's agent last saw, for `changes`.
+  let lastLines = null;
+  const MAX_DIFF_CELLS = 4000000, MAX_SETTLE_POLL_MS = 50;
 
   const clean = (text, limit) => {
     const value = String(text ?? '').replace(/\s+/g, ' ').trim();
@@ -181,6 +184,93 @@ globalThis.__tiloPage ||= (() => {
   }
 
   function outline() {
+    const {lines} = outlineLines();
+    lastLines = lines;
+    return {ok: true, message: `Read ${lines.length} lines`, outline: lines.join('\n')};
+  }
+
+  // Lines added and removed since the last read, by longest common
+  // subsequence; refs are stable within a document, so an unchanged element
+  // keeps its line.
+  function changes() {
+    const before = lastLines, {lines} = outlineLines();
+    lastLines = lines;
+    if (!before)
+      return {ok: true, message: `First read: ${lines.length} lines`, outline: lines.join('\n')};
+    if (before.length * lines.length > MAX_DIFF_CELLS)
+      return {ok: true, message: `Too much changed to compare; the whole page, ${lines.length} lines`, outline: lines.join('\n')};
+    const n = before.length, m = lines.length;
+    const table = Array.from({length: n + 1}, () => new Uint32Array(m + 1));
+    for (let i = n - 1; i >= 0; i--)
+      for (let j = m - 1; j >= 0; j--)
+        table[i][j] = before[i] === lines[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
+    const out = [];
+    let i = 0, j = 0, added = 0, removed = 0;
+    while (i < n || j < m) {
+      if (i < n && j < m && before[i] === lines[j]) { i++; j++; }
+      else if (j < m && (i >= n || table[i][j + 1] >= table[i + 1][j])) { out.push('+ ' + lines[j++]); added++; }
+      else { out.push('- ' + before[i++]); removed++; }
+    }
+    return {ok: true, message: added || removed ? `${added} lines added, ${removed} removed` : 'Nothing changed',
+      outline: out.join('\n')};
+  }
+
+  // What a click at viewport point (x, y) would hit.
+  function at(x, y) {
+    const hit = topmost(x, y);
+    if (!hit) return {ok: true, message: `Nothing at ${x}, ${y}`, data: {x, y, element: null}};
+    let target = null;
+    for (let node = hit; node && node.nodeType === 1; node = node.parentNode || node.host) {
+      if (INTERACTIVE.has(role(node)) || node.hasAttribute('onclick')) { target = node; break; }
+    }
+    const data = {x, y, element: describe(hit), interactive: !!target};
+    if (target) Object.assign(data, {ref: refOf(target), target: summary(target)});
+    return {ok: true, message: target ? `${summary(target)} [ref=${data.ref}] is at ${x}, ${y}` : `${describe(hit)} is at ${x}, ${y}`, data};
+  }
+
+  // Resolves once the document stops changing for `quiet` ms after it has
+  // loaded, or after `timeout` ms.
+  function settle(quiet, timeout) {
+    return new Promise(done => {
+      const start = performance.now();
+      let last = start, mutations = 0;
+      let resources = performance.getEntriesByType('resource').length;
+      const observer = new MutationObserver(records => { mutations += records.length; last = performance.now(); });
+      observer.observe(document, {subtree: true, childList: true, attributes: true, characterData: true});
+      const tick = () => {
+        const now = performance.now(), count = performance.getEntriesByType('resource').length;
+        if (count !== resources) { resources = count; last = now; }
+        const settled = document.readyState === 'complete' && now - last >= quiet;
+        if (settled || now - start >= timeout) {
+          observer.disconnect();
+          const waited = Math.round(now - start);
+          done({ok: true, message: settled ? `Settled after ${waited} ms` : `Still changing after ${waited} ms`,
+            data: {settled, waited_ms: waited, mutations, resources}});
+          return;
+        }
+        setTimeout(tick, Math.min(MAX_SETTLE_POLL_MS, quiet));
+      };
+      tick();
+    });
+  }
+
+  // The site a form sends its data to, when another than the page's own.
+  function foreignTarget(form, submitter) {
+    try {
+      // A submitter's `formAction` reads as the page's own URL unless it sets
+      // `formaction`; only then does it override the form's target.
+      const own = submitter && submitter.hasAttribute('formaction') ? submitter.formAction : '';
+      const action = new URL(own || form.action || location.href, location.href);
+      return action.origin !== location.origin && /^https?:$/.test(action.protocol) ? action.origin : null;
+    } catch { return null; }
+  }
+  function guardSubmission(form, submitter, allowed) {
+    const target = form && foreignTarget(form, submitter);
+    if (target && !allowed)
+      throw failure('cross_origin_submit', `This form sends its data to ${target}, another site than ${location.origin}; submit it with cross_origin to allow that`);
+  }
+
+  function outlineLines() {
     const lines = [];
     let chars = 0, visited = 0, truncated = false, pending = '', pendingDepth = 0;
     const emit = (depth, text) => {
@@ -280,7 +370,7 @@ globalThis.__tiloPage ||= (() => {
     flush();
     prune();
     if (truncated) lines.push('- text "… outline truncated; act on what is listed or scroll and read again"');
-    return {ok: true, message: `Read ${lines.length} lines`, outline: lines.join('\n')};
+    return {lines, truncated};
   }
 
   function clip(rect) {
@@ -321,9 +411,13 @@ globalThis.__tiloPage ||= (() => {
       throw failure('disabled', `${ref} is disabled`);
   }
 
-  function locate(ref) {
+  function locate(ref, crossOrigin) {
     const element = resolve(ref);
     enabled(element, ref);
+    // Clicking a submit button submits, so it needs the same consent.
+    if ((element.localName === 'button' || element.localName === 'input') &&
+        (element.type === 'submit' || element.type === 'image') && element.form)
+      guardSubmission(element.form, element, crossOrigin);
     let target = element, center = point(element);
     if (!center || !within(topmost(center.x, center.y), element)) {
       // Styled checkboxes hide the input itself and are operated through
@@ -344,8 +438,10 @@ globalThis.__tiloPage ||= (() => {
     return {ok: true, x: center.x, y: center.y, message: `Clicked ${summary(element)}`};
   }
 
-  function fill(ref, text) {
+  function fill(ref, text, allowSecret) {
     const element = resolve(ref), tag = element.localName, kind = type(element);
+    if (secret(element) && !allowSecret)
+      throw failure('secret_field', `${ref} is a password or card field; fill it with fill_secret, which keeps the text out of logs and history`);
     const field = tag === 'textarea' || (tag === 'input' && !NOT_TEXT.has(kind));
     if (!field && !element.isContentEditable)
       throw failure('not_editable', `${ref} (${summary(element)}) is not a text field; click or select it instead`);
@@ -402,12 +498,13 @@ globalThis.__tiloPage ||= (() => {
     return {ok: true, message: `Selected ${chosen.map(option => quote(label(option))).join(', ')} in ${summary(element)}`};
   }
 
-  function submit(ref) {
+  function submit(ref, crossOrigin) {
     const element = resolve(ref);
     const form = element.localName === 'form' ? element : element.form || element.closest('form');
     if (!form) throw failure('no_form', `${ref} is not in a form; click its submit button or press Enter instead`);
     const submitter = (element.localName === 'button' || element.localName === 'input') &&
       (element.type === 'submit' || element.type === 'image') && element.form === form ? element : null;
+    guardSubmission(form, submitter, crossOrigin);
     const invalid = [...form.elements].find(control => control.willValidate && !control.checkValidity());
     if (invalid)
       throw failure('invalid_form', `${refOf(invalid)} (${summary(invalid)}): ${clean(invalid.validationMessage, 300)}`);
@@ -415,9 +512,11 @@ globalThis.__tiloPage ||= (() => {
     return {ok: true, message: `Submitted ${summary(form)}`};
   }
 
-  function focus(ref) {
+  function focus(ref, key, crossOrigin) {
     const element = resolve(ref);
     enabled(element, ref);
+    // Enter in a form field submits it implicitly.
+    if (key === 'Enter' && element.form) guardSubmission(element.form, null, crossOrigin);
     element.scrollIntoView({block: 'center', behavior: 'instant'});
     element.focus({preventScroll: true});
     if (element.getRootNode().activeElement !== element)
@@ -431,11 +530,14 @@ globalThis.__tiloPage ||= (() => {
         if (!doc) doc = command.doc;
         switch (command.action) {
           case 'outline': return outline();
-          case 'locate': return locate(command.element);
-          case 'fill': return fill(command.element, command.text);
+          case 'changes': return changes();
+          case 'at': return at(command.x, command.y);
+          case 'settle': return settle(command.quiet_ms, command.timeout_ms);
+          case 'locate': return locate(command.element, command.cross_origin);
+          case 'fill': return fill(command.element, command.text, command.secret);
           case 'select': return select(command.element, command.values);
-          case 'submit': return submit(command.element);
-          case 'focus': return focus(command.element);
+          case 'submit': return submit(command.element, command.cross_origin);
+          case 'focus': return focus(command.element, command.key, command.cross_origin);
         }
         return failure('invalid_request', 'Unknown page action');
       } catch (error) {

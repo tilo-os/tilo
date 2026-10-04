@@ -347,7 +347,11 @@ suites = [
 [[group]]
 name = "vm-acceptance"
 inputs = ["scripts/vm-acceptance/"]
-suites = ["scripts/vm-acceptance/test_apps.py", "scripts/vm-acceptance/test_frames.py"]
+suites = [
+  "scripts/vm-acceptance/test_apps.py",
+  "scripts/vm-acceptance/test_app_startup.py",
+  "scripts/vm-acceptance/test_frames.py",
+]
 
 [[group]]
 name = "perf-tools"
@@ -1080,6 +1084,11 @@ reason = "needs squashfs-tools, absent from the ci-fast image"
 [[unrequired]]
 suite = "os/tests/installer-render-smoke.sh"
 reason = "needs a built tilo-installer binary"
+
+[[unrequired]]
+suite = "os/tests/installed-admin-actions.sh"
+reason = "runs inside a booted guest as its device admin, after first login"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/input-hotplug-check.sh"

@@ -850,7 +850,7 @@ fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut
     }
 }
 
-fn wayland_peer_credentials(stream: &UnixStream) -> Option<libc::ucred> {
+pub(crate) fn wayland_peer_credentials(stream: &UnixStream) -> Option<libc::ucred> {
     let mut credentials = libc::ucred {
         pid: 0,
         uid: 0,
@@ -885,7 +885,7 @@ fn peer_executable(stream: &UnixStream) -> Option<String> {
         .ok()
 }
 
-fn peer_shares_host_security_namespaces(pid: u32) -> bool {
+pub(crate) fn peer_shares_host_security_namespaces(pid: u32) -> bool {
     ["user", "mnt"].into_iter().all(|namespace| {
         let host = std::fs::metadata(format!("/proc/self/ns/{namespace}"));
         let peer = std::fs::metadata(format!("/proc/{pid}/ns/{namespace}"));
@@ -2195,11 +2195,17 @@ struct TestControlConn {
     /// Accepted on the agent-control socket: only
     /// [`test_control::Command::agent_permitted`] commands are served.
     agent: bool,
+    /// Accepted on the device admin's control socket: only
+    /// [`test_control::Command::admin_permitted`] commands are served, for
+    /// the session's own person and never on behalf of a seated agent.
+    admin: bool,
     /// Wakes the compositor loop when request bytes arrive on this stream;
     /// removed from the loop together with the connection.
     wake: Option<calloop::RegistrationToken>,
     closed: bool,
     pending_invocation: Option<PendingTestControlInvocation>,
+    /// A `snapshot` answered once its file is complete.
+    pending_snapshot: Option<(SnapshotOutcome, test_control::Response)>,
     output: Vec<u8>,
     output_offset: usize,
 }
@@ -2230,6 +2236,14 @@ impl PendingTestControlInvocation {
 }
 
 impl TestControlConn {
+    /// A connection on the device admin's control socket, already authorised
+    /// by [`crate::compositor::admin_control::authorize`].
+    fn admin(stream: UnixStream) -> Option<Self> {
+        let mut conn = Self::new(stream, false)?;
+        conn.admin = true;
+        Some(conn)
+    }
+
     fn new(stream: UnixStream, agent: bool) -> Option<Self> {
         if let Err(e) = stream.set_nonblocking(true) {
             eprintln!("tilo compositor: test_control conn set_nonblocking: {e}");
@@ -2238,9 +2252,11 @@ impl TestControlConn {
         Some(Self {
             reader: BufReader::new(stream),
             agent,
+            admin: false,
             wake: None,
             closed: false,
             pending_invocation: None,
+            pending_snapshot: None,
             output: Vec::new(),
             output_offset: 0,
         })
@@ -2966,7 +2982,14 @@ struct PendingClientSnapshot {
     path: std::path::PathBuf,
     crop: Option<vello::kurbo::Rect>,
     settle: crate::compositor::client_settle::Settle,
+    /// Filled once the file is written, or failed to be.
+    outcome: SnapshotOutcome,
 }
+
+/// How a screenshot's write went, shared between the deferred write and the
+/// request that asked for it: the request is answered only once the file at
+/// its path is complete, so a caller never reads a PNG still being written.
+type SnapshotOutcome = std::rc::Rc<std::cell::RefCell<Option<Result<(), String>>>>;
 
 /// Per-process state the test-control wire needs to execute
 /// [`PlannedAction`]s, mirroring `ShellDriver`'s fields: modifier snapshot, auxiliary `AutoCommit` doc, root `ObjId`, focus cursor.
@@ -3006,6 +3029,9 @@ struct TestControlCtx {
     /// Screenshot not written yet: the clients in it are still answering
     /// the preceding input.
     pending_snapshot: Option<PendingClientSnapshot>,
+    /// Set by a `snapshot` command whose write was deferred; the connection
+    /// that sent it holds its answer until the outcome is in.
+    deferred_snapshot_reply: Option<SnapshotOutcome>,
 }
 
 impl TestControlCtx {
@@ -3026,6 +3052,7 @@ impl TestControlCtx {
             snapshot_window: None,
             input_since_snapshot: false,
             pending_snapshot: None,
+            deferred_snapshot_reply: None,
         }
     }
 
@@ -3864,9 +3891,16 @@ fn execute_planned_action(
             // returned `Ok`, and crashing on a stray bad path defeats the point of a
             // test surface. A snapshot must show a drag's carried item too, drawn by
             // the live present loop on top of the scene.
-            if !defer_client_snapshot(ctx, fb, path, state.as_deref_mut()) {
+            if let Some(outcome) = defer_client_snapshot(ctx, fb, path, state.as_deref_mut()) {
+                ctx.deferred_snapshot_reply = Some(outcome);
+            } else {
                 let drag = snapshot_drag(state.as_deref());
-                write_snapshot_png(fb, path, drag, ctx.snapshot_crop);
+                if let Err(message) = write_snapshot_png(fb, path, drag, ctx.snapshot_crop) {
+                    return Some(Err(InvokeFailure {
+                        code: "snapshot_failed".into(),
+                        message,
+                    }));
+                }
             }
         }
         PlannedAction::InvokeAction {
@@ -3949,7 +3983,7 @@ fn execute_locked_action(
     lock: &mut LockController,
     state: &mut State,
     ctx: &mut TestControlCtx,
-) {
+) -> Option<InvokeFailure> {
     match action {
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
@@ -3959,11 +3993,21 @@ fn execute_locked_action(
             }
             client_input::consume_keyboard_while_captured(state, &event);
             lock.handle_key(winit_event_to_lock_key(&event));
+            None
         }
-        // Pointer, modifiers, snapshots and action invocations are all swallowed
-        // while locked. `InvokeAction` matters most here: the action API reaches
-        // chrome side-effects with no visible surface, so letting it through would
-        // make the lock screen bypassable by a socket client that renders nothing.
+        // Action invocations and snapshots are refused while locked, and say
+        // so. `InvokeAction` matters most here: the action API reaches chrome
+        // side-effects with no visible surface, so letting it through would
+        // make the lock screen bypassable by a socket client that renders
+        // nothing; answering `ok` for an action that never ran would leave a
+        // caller who cannot see the screen believing it did.
+        PlannedAction::Snapshot { .. } | PlannedAction::InvokeAction { .. } => {
+            Some(InvokeFailure {
+                code: "session_locked".into(),
+                message: test_control::SESSION_LOCKED.into(),
+            })
+        }
+        // Pointer and modifier input is swallowed while locked.
         PlannedAction::CursorMoved { .. }
         | PlannedAction::MouseLeftButton { .. }
         | PlannedAction::MousePointerButton { .. }
@@ -3972,10 +4016,8 @@ fn execute_locked_action(
         | PlannedAction::Touchpad(_)
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
-        | PlannedAction::Snapshot { .. }
         | PlannedAction::SetGroupWidth { .. }
-        | PlannedAction::SeedFilesDrag { .. }
-        | PlannedAction::InvokeAction { .. } => {}
+        | PlannedAction::SeedFilesDrag { .. } => None,
     }
 }
 
@@ -4026,24 +4068,24 @@ fn snapshot_drag(
 }
 
 /// Hold `path` until the clients in it answered the input injected since
-/// the last screenshot. Returns whether the write was deferred; with no
-/// input since, or no client to wait for, the call site writes at once.
+/// the last screenshot. Returns where the deferred write reports its
+/// outcome; `None` when there was no input since, or no client to wait for,
+/// and the call site writes at once.
 fn defer_client_snapshot(
     ctx: &mut TestControlCtx,
     fb: &mut FrameBuilder,
     path: &std::path::Path,
     state: Option<&mut State>,
-) -> bool {
-    let Some(state) = state else {
-        return false;
-    };
+) -> Option<SnapshotOutcome> {
+    let state = state?;
     if !std::mem::take(&mut ctx.input_since_snapshot) {
-        return false;
+        return None;
     }
     // A shot still waiting is the older one: it goes out now, as it is.
     if let Some(pending) = ctx.pending_snapshot.take() {
         let drag = snapshot_drag(Some(state));
-        write_snapshot_png(fb, &pending.path, drag, pending.crop);
+        let written = write_snapshot_png(fb, &pending.path, drag, pending.crop);
+        *pending.outcome.borrow_mut() = Some(written);
     }
     let surfaces = match ctx.snapshot_window {
         Some(window) => foreign::toplevel_surface(state, window)
@@ -4052,14 +4094,16 @@ fn defer_client_snapshot(
         None => foreign::shown_toplevel_surfaces(state),
     };
     if surfaces.is_empty() {
-        return false;
+        return None;
     }
+    let outcome = SnapshotOutcome::default();
     ctx.pending_snapshot = Some(PendingClientSnapshot {
         path: path.to_path_buf(),
         crop: ctx.snapshot_crop,
         settle: crate::compositor::client_settle::Settle::begin(state, &surfaces, Instant::now()),
+        outcome: std::rc::Rc::clone(&outcome),
     });
-    true
+    Some(outcome)
 }
 
 /// Write a deferred screenshot once its clients have answered, or the wait
@@ -4083,13 +4127,14 @@ fn publish_settled_snapshot(ctx: &mut TestControlCtx, fb: &mut FrameBuilder, sta
         return;
     };
     let drag = snapshot_drag(Some(state));
-    write_snapshot_png(fb, &pending.path, drag, pending.crop);
+    let written = write_snapshot_png(fb, &pending.path, drag, pending.crop);
+    *pending.outcome.borrow_mut() = Some(written);
 }
 
 /// Re-paint the current scene into a cached `OffscreenRenderer` and encode
-/// it as a PNG at `path`. Best-effort: bad viewport / missing adapter / I/O
-/// or encoder failures log to stderr and return rather than take the
-/// calloop pump down. Split out of `execute_planned_action` so unit tests
+/// it as a PNG at `path`. A bad viewport, missing adapter, or I/O or
+/// encoder failure is returned to the request that asked for the shot
+/// rather than taking the calloop pump down. Split out of `execute_planned_action` so unit tests
 /// can exercise it against a hand-built `FrameBuilder` directly.
 fn write_snapshot_png(
     fb: &mut FrameBuilder,
@@ -4099,7 +4144,7 @@ fn write_snapshot_png(
         crate::compositor::drag_feedback::DragVisual,
     )>,
     crop: Option<vello::kurbo::Rect>,
-) {
+) -> Result<(), String> {
     let (w, h) = fb.scene_size();
     // Scene dimensions are always non-negative pixel counts; clamped rather
     // than a bare `as u32` so a pathological value saturates instead of wrapping.
@@ -4114,8 +4159,7 @@ fn write_snapshot_png(
         h.round().clamp(0.0, f64::from(u32::MAX)) as u32,
     );
     if w == 0 || h == 0 {
-        eprintln!("tilo compositor: test_control snapshot: viewport is {w}x{h}, nothing to write");
-        return;
+        return Err(format!("the viewport is {w}x{h}, nothing to write"));
     }
     // A test-control snapshot may be the first paint after an input event.
     // Retained overlays retarget their interruptible transitions during
@@ -4173,14 +4217,13 @@ fn write_snapshot_png(
                     *slot = Some(renderer);
                 }
                 Err(e) => {
-                    eprintln!("tilo compositor: test_control snapshot: no offscreen renderer: {e}");
                     *slot = None;
-                    return;
+                    return Err(format!("no offscreen renderer: {e}"));
                 }
             }
         }
         let Some(rgba) = slot.as_mut().map(|renderer| renderer.render_rgba(&scene)) else {
-            return;
+            return Err("no offscreen renderer".to_string());
         };
         // `rgba` is now an owned buffer with no tie to the renderer, so the
         // mutex guard can go before the encode/write work below.
@@ -4192,15 +4235,31 @@ fn write_snapshot_png(
         None => (w, h, rgba),
     };
     if w == 0 || h == 0 {
-        eprintln!("tilo compositor: test_control snapshot: the crop is empty, nothing to write");
-        return;
+        return Err("the crop is empty, nothing to write".to_string());
     }
-    if let Err(e) = ui::png::write_rgba8(path, w, h, &rgba) {
-        eprintln!(
-            "tilo compositor: test_control snapshot: write {}: {e}",
-            path.display()
-        );
+    let png = ui::png::encode_rgba8(w, h, &rgba).map_err(|e| format!("encode: {e}"))?;
+    write_whole(path, &png).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// Write `bytes` to a sibling file and rename it over `path`, so a reader
+/// that opens `path` sees the previous file or the whole new one, never a
+/// PNG cut off mid-write.
+fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} names no file", path.display()),
+        )
+    })?;
+    let mut staging_name = std::ffi::OsString::from(".");
+    staging_name.push(name);
+    staging_name.push(format!(".{}.partial", std::process::id()));
+    let staging = path.with_file_name(staging_name);
+    let written = std::fs::write(&staging, bytes).and_then(|()| std::fs::rename(&staging, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&staging);
     }
+    written
 }
 
 /// The part of a `size` RGBA8 frame inside `crop`, clamped to the frame.
@@ -4308,6 +4367,23 @@ fn pump_pending_test_control_conn(conn: &mut TestControlConn) -> PendingConnecti
     match flush_test_control_output(conn) {
         PendingConnectionProgress::Idle => {}
         progress => return progress,
+    }
+    if let Some((outcome, response)) = conn.pending_snapshot.take() {
+        let written = outcome.borrow_mut().take();
+        return match written {
+            None => {
+                conn.pending_snapshot = Some((outcome, response));
+                PendingConnectionProgress::Waiting
+            }
+            Some(Ok(())) => queue_test_control_response(conn, &response),
+            Some(Err(message)) => queue_test_control_response(
+                conn,
+                &test_control::Response::Err {
+                    code: "snapshot_failed".into(),
+                    message,
+                },
+            ),
+        };
     }
     let Some(pending) = conn.pending_invocation.take() else {
         return PendingConnectionProgress::Idle;
@@ -4852,6 +4928,20 @@ fn pump_test_control_conn(
             Ok(Some(())) => {
                 let mut scope: Option<AgentScope> = None;
                 let (resp, actions) = match parse_request(&line) {
+                    Ok(request)
+                        if conn.admin
+                            && (request.agent.is_some()
+                                || request.window.is_some()
+                                || !request.command.admin_permitted()) =>
+                    {
+                        (
+                            test_control::Response::Err {
+                                code: "not_permitted".to_string(),
+                                message: test_control::ADMIN_CONTROL_NOT_PERMITTED.to_string(),
+                            },
+                            Vec::new(),
+                        )
+                    }
                     Ok(request) if conn.agent && !request.command.agent_permitted() => (
                         test_control::Response::Err {
                             code: "not_permitted".to_string(),
@@ -4942,7 +5032,9 @@ fn pump_test_control_conn(
                     if session.is_locked() {
                         // While locked the socket is captured by the lock surface like live input
                         // — actions go to the password field; `poll_verification` delivers unlock.
-                        execute_locked_action(action, lock, state, ctx);
+                        if let Some(failure) = execute_locked_action(action, lock, state, ctx) {
+                            failed.get_or_insert(failure);
+                        }
                     } else if let Some(outcome) =
                         execute_planned_action(action, frame_builder, ctx, Some(state))
                     {
@@ -4979,6 +5071,13 @@ fn pump_test_control_conn(
                     test_control::Response::Answer(action) => action.clone(),
                     _ => serde_json::Value::Null,
                 };
+                let deferred_snapshot = ctx.deferred_snapshot_reply.take();
+                if let Some(outcome) = deferred_snapshot
+                    && failed.is_none()
+                {
+                    conn.pending_snapshot = Some((outcome, resp));
+                    return injected_input;
+                }
                 if let Some(ticket) = pending
                     && failed.is_none()
                 {
@@ -7517,6 +7616,11 @@ pub fn run() {
             .is_some_and(|value| value == "1");
     let identity_missing =
         crate::shell::identity_provisioning::needs_first_run_flow(&identity_store);
+    // The device admin's control socket is the real seat's: a nested or
+    // headless compositor is a development session with its own sockets.
+    let mut admin_control_due = (backend_kind == BackendKind::Drm)
+        .then(|| identity_store.path().parent().map(Path::to_path_buf))
+        .flatten();
     let onboarding_identity_dir = if should_activate_first_use(
         identity_missing,
         progress_pending,
@@ -7939,6 +8043,12 @@ pub fn run() {
             Some((l, g)) => (Some(l), Some(g)),
             None => (None, None),
         };
+    // Bound by the loop once first login is complete; see `admin_control`.
+    let mut admin_control: Option<(
+        UnixListener,
+        UnlinkOnDrop,
+        Option<calloop::RegistrationToken>,
+    )> = None;
     let mut test_control_conns: Vec<TestControlConn> = Vec::new();
     // A control client is itself an event source. Each accepted stream gets
     // its own wake (see `TestControlConn::watch`), because a connection is
@@ -10615,6 +10725,19 @@ pub fn run() {
         if take_deferred_peer_sync_activation(&mut deferred_local_broker, onboarding_active) {
             local_broker_due = true;
         }
+        // First login has to finish before the device has an owner to serve.
+        if !onboarding_active && let Some(identity_dir) = admin_control_due.take() {
+            match crate::compositor::admin_control::bind(&identity_dir) {
+                Ok((listener, path)) => {
+                    tracing::info!(path = %path.display(), "admin control: listening");
+                    let wake = control_listener_wake(&listener, &event_loop.handle());
+                    admin_control = Some((listener, UnlinkOnDrop(path), wake));
+                }
+                Err(reason) => {
+                    tracing::info!(%reason, "admin control: not served in this session");
+                }
+            }
+        }
         let started = if std::mem::take(&mut local_broker_due) {
             Some(None)
         } else {
@@ -11519,6 +11642,31 @@ pub fn run() {
                 }
             }
         }
+        if let Some((listener, _, _)) = admin_control.as_ref() {
+            loop {
+                match listener.accept() {
+                    Ok((stream, _addr)) => {
+                        match crate::compositor::admin_control::authorize(&stream) {
+                            Ok(()) => {
+                                if let Some(mut conn) = TestControlConn::admin(stream) {
+                                    conn.watch(&event_loop.handle());
+                                    test_control_conns.push(conn);
+                                }
+                            }
+                            Err(refusal) => {
+                                tracing::warn!(?refusal, "admin control: connection refused");
+                                crate::compositor::admin_control::refuse(stream, &refusal);
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(e) => {
+                        eprintln!("tilo compositor: admin control accept: {e}");
+                        break;
+                    }
+                }
+            }
+        }
         for conn in &mut test_control_conns {
             let injected = pump_test_control_conn(
                 conn,
@@ -11610,6 +11758,13 @@ pub fn run() {
         // the input; their answers were just dispatched, and the pings it
         // sends go out with this flush.
         publish_settled_snapshot(&mut test_control_ctx, &mut frame_builder, &mut state);
+        // Answer the request whose screenshot just went out, without
+        // waiting for an unrelated wake.
+        for conn in &mut test_control_conns {
+            if conn.pending_snapshot.is_some() {
+                let _ = pump_pending_test_control_conn(conn);
+            }
+        }
         client_steps.mark("snapshot");
         if let Err(err) = display.flush_clients() {
             eprintln!("tilo compositor: flush_clients error: {err}");
@@ -13948,6 +14103,145 @@ mod tests {
                 "backpressure must not truncate or duplicate JSON bytes"
             );
         }
+    }
+
+    /// The device admin's socket answers the action model and read-only
+    /// state, and refuses synthetic input, fixtures and agent seats with an
+    /// error that names the route that serves them.
+    #[test]
+    fn the_admin_socket_serves_the_action_model_and_refuses_the_rest() {
+        use std::io::Write as _;
+
+        let mut frame_builder = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
+        let mut ctx = TestControlCtx::new();
+        let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+        let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, client) = UnixStream::pair().expect("socket pair");
+        let mut writer = client.try_clone().expect("client writer");
+        let mut reader = BufReader::new(client);
+        let mut conn = TestControlConn::admin(server).expect("admin connection");
+        let mut ask = |line: &str| {
+            writer
+                .write_all(format!("{line}\n").as_bytes())
+                .expect("write request");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            socket_response(&mut reader)
+        };
+
+        let listed = ask(r#"{"op":"actions_enumerate","query":"settings"}"#);
+        let test_control::Response::Answer(rows) = listed else {
+            panic!("enumeration is served: {listed:?}");
+        };
+        assert!(
+            rows["count"].as_u64().is_some_and(|count| count > 0),
+            "{rows}"
+        );
+        assert!(matches!(
+            ask(r#"{"op":"state_dump"}"#),
+            test_control::Response::State { .. }
+        ));
+        for refused in [
+            r#"{"op":"click_at","x":10,"y":10}"#,
+            r#"{"op":"type","text":"hello"}"#,
+            r#"{"op":"snapshot","path":"admin.png"}"#,
+            r#"{"op":"grant","subject":"agent:x","scope":"workspace","verb":"admin"}"#,
+            r#"{"op":"provision_test_identity"}"#,
+            r#"{"op":"actions_enumerate","query":"","agent":"bot"}"#,
+            r#"{"op":"state_dump","window":"so.tilo.notes"}"#,
+        ] {
+            let test_control::Response::Err { code, message } = ask(refused) else {
+                panic!("{refused} must be refused on the admin socket");
+            };
+            assert_eq!(code, "not_permitted", "{refused}");
+            assert!(message.contains("TILO_TEST_CONTROL"), "{message}");
+        }
+    }
+
+    /// A full-size high-density screenshot lands whole, and the staging file
+    /// that made it atomic is gone.
+    #[test]
+    fn a_written_screenshot_is_complete_and_leaves_no_staging_file() {
+        let dir = tempfile::tempdir().expect("scratch directory");
+        let path = dir.path().join("shot.png");
+        std::fs::write(&path, b"stale").expect("an older file to replace");
+        let (width, height) = (2944_u32, 1840_u32);
+        let rgba = vec![0x7f; usize::try_from(width * height * 4).expect("fits")];
+        let png = ui::png::encode_rgba8(width, height, &rgba).expect("encode");
+        write_whole(&path, &png).expect("write");
+        let decoded =
+            ui::png::decode_rgba8(&std::fs::read(&path).expect("read back")).expect("complete PNG");
+        assert_eq!((decoded.width, decoded.height), (width, height));
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("list")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("shot.png")]);
+    }
+
+    /// A request that could not do what it asked says so: a screenshot that
+    /// was not written, and an action or screenshot while the session is
+    /// locked, answer an error instead of `ok`.
+    #[test]
+    fn unwritten_snapshots_and_locked_actions_answer_errors() {
+        use std::io::Write as _;
+
+        let mut frame_builder = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
+        let mut ctx = TestControlCtx::new();
+        let mut session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+        let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, client) = UnixStream::pair().expect("socket pair");
+        let mut writer = client.try_clone().expect("client writer");
+        let mut reader = BufReader::new(client);
+        let mut conn = TestControlConn::new(server, false).expect("connection");
+        let missing = tempfile::tempdir()
+            .expect("scratch")
+            .path()
+            .join("gone")
+            .join("shot.png");
+        let snapshot = serde_json::json!({"op": "snapshot", "path": missing}).to_string();
+        let invoke = r#"{"op":"actions_invoke","provider":"session","id":"lock"}"#;
+
+        for (line, locked, code) in [
+            (snapshot.as_str(), false, "snapshot_failed"),
+            (snapshot.as_str(), true, "session_locked"),
+            (invoke, true, "session_locked"),
+        ] {
+            if locked && !session.is_locked() {
+                let _ = session.request_lock(Instant::now());
+                assert!(session.is_locked(), "the fixture session locks");
+            }
+            writer
+                .write_all(format!("{line}\n").as_bytes())
+                .expect("write request");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let test_control::Response::Err { code: answered, .. } = socket_response(&mut reader)
+            else {
+                panic!("{line} (locked: {locked}) must answer an error");
+            };
+            assert_eq!(answered, code, "{line} (locked: {locked})");
+        }
+        assert!(!missing.exists());
     }
 
     /// A driver's request often lands after its connection was accepted and

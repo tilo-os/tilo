@@ -91,7 +91,8 @@ containerfile="$repo/os/Containerfile"
 # The release gate's greetd session-context check ships beside the other
 # booted-guest checks in /usr/libexec/tilo.
 # The image ships one login session and no peer-sync marker unit.
-# The release gate's input hotplug check ships beside them.
+# The release gate's input hotplug check and the device admin's action-model
+# check ship beside them.
 # The boot units gate ships with the rollback units whose confirmation it gates.
 # The ush supervisor ships with what it runs: the two relay helpers for
 # Terminal, and the legacy VM service behind app shims. The WPE engine overlay
@@ -99,7 +100,7 @@ containerfile="$repo/os/Containerfile"
 # app store and its Chromium engine a signed runtime bundle under
 # /usr/lib/tilo-runtime, both already copied.
 # NetworkManager's Wake-on-LAN default ships as a conf.d drop-in.
-expected_contract=04f66dbee7ef23f2100a3eed9fa16b9738b2f8e52729967d0b6d23a84ab05014
+expected_contract=fb77b1b34324b5c154bcb7f5be72bb7554061fd133bf685c39140e74f457fd08
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
