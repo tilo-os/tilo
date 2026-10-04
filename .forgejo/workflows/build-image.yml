@@ -984,13 +984,23 @@ jobs:
           DEV_BUILD: ${{ github.event_name == 'workflow_call' }}
         run: |
           set -euo pipefail
-          if [[ $DEV_BUILD == true ]]; then
+          free_kib() {
+            docker exec "buildx_buildkit_${BUILDER_NAME}0" \
+              sh -c 'df -Pk /var/lib/buildkit | awk "NR == 2 { print \$4 }"'
+          }
+          if [[ $DEV_BUILD == true ]] && (( $(free_kib) < 46875000 )); then
             # Only this job's builder cache: Docker's images and the runner
             # configuration are outside this cleanup. Reserve enough space
             # before compiles start, rather than racing the background GC.
-            timeout --kill-after=30s 180s docker buildx prune \
-              --builder "$BUILDER_NAME" --force --all \
-              --min-free-space 48GB --reserved-space 2GB
+            # Only when short of it: BuildKit's prune removes one record even
+            # when the space is there, and its pick was the Rust target cache
+            # every build would otherwise reuse. Layers go first.
+            for filter in type!=exec.cachemount type!=internal; do
+              timeout --kill-after=30s 180s docker buildx prune \
+                --builder "$BUILDER_NAME" --force --all --filter "$filter" \
+                --min-free-space 48GB --reserved-space 2GB
+              (( $(free_kib) < 46875000 )) || break
+            done
           fi
           docker exec "buildx_buildkit_${BUILDER_NAME}0" df -h /var/lib/buildkit
           docker exec "buildx_buildkit_${BUILDER_NAME}0" df -i /var/lib/buildkit
@@ -2725,14 +2735,14 @@ jobs:
           # through QEMU's keyboard as key presses, never an app API. The
           # document must read back exactly what was typed, in order.
           typed_sentence='The quick brown fox jumps over the lazy dog, twice!'
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-typing'
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/notes-typing'
           ./os/dev/vm.sh type "$typed_sentence"
           # The note is durable, and Notes says so: "Saved", never "Not saved".
           ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$typed_sentence' --state /tmp/notes-typing --status Saved"
 
           # Tab in a note nests the line under the one above instead of
           # moving focus away; the second block must read as nested.
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-nesting'
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/notes-nesting'
           ./os/dev/vm.sh type one
           ./os/dev/vm.sh keys ret
           ./os/dev/vm.sh type two
@@ -2741,7 +2751,7 @@ jobs:
 
           # A screenshot copied elsewhere pastes into a note as an image with
           # Ctrl+V, kept by the document media service the launcher must reach.
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-image'
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/notes-image'
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh copy-image
           # The copy reaches Notes as a selection event; give it a moment to
           # read the image before pasting.
