@@ -79,6 +79,13 @@
 //!   dispatcher; plain text is [`PlainText`](tilo_resource::PlainText),
 //!   whose [`TextControl`] binds a `TextInput` or `CodeEditor` so every
 //!   keystroke is a splice action.
+//! * **Handing a result to another app** — a picture to place, a file to
+//!   attach — is an effect declared `content`: it answers
+//!   [`Effected::content`] with the hash of bytes in the device's content
+//!   store, its declaration's result is a `tilo.content` resource, and an
+//!   operation that takes content (`ActionSpec::prompted_content`) receives
+//!   it as its input. The caller chains the two by those types and never
+//!   reads the producing app's document.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
 //!   A surface whose window should reopen as it was left (the open note,

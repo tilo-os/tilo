@@ -100,6 +100,7 @@ struct VariantOptions {
     job: bool,
     cancellable: bool,
     returns: bool,
+    content: bool,
     destructive: bool,
     privileged: bool,
     sensitive: bool,
@@ -129,6 +130,8 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.cancellable = true;
             } else if meta.path.is_ident("returns") {
                 options.returns = true;
+            } else if meta.path.is_ident("content") {
+                options.content = true;
             } else if meta.path.is_ident("destructive") {
                 options.destructive = true;
             } else if meta.path.is_ident("privileged") {
@@ -143,7 +146,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.programmatic = true;
             } else {
                 return Err(meta.error(
-                    "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, \
+                    "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
                      `risk`, `programmatic` or `permission`",
                 ));
@@ -291,6 +294,8 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         let answers = if options.job || options.cancellable {
             let cancellable = options.cancellable;
             quote!(#krate::effect::Answers::Later { cancellable: #cancellable })
+        } else if options.content {
+            quote!(#krate::effect::Answers::Content)
         } else if options.returns {
             quote!(#krate::effect::Answers::Value)
         } else {

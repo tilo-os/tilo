@@ -95,6 +95,21 @@ impl Effected {
             resources: Vec::new(),
         })
     }
+
+    /// Finished, answering with the content of `hash` in this device's
+    /// content store (an effect declared `content`), which another app's
+    /// content-collecting operation takes.
+    ///
+    /// # Errors
+    /// Returns why `hash` names no content.
+    pub fn content(hash: &str) -> Result<Self, String> {
+        let resource = tilo_actions::content_resource(hash)
+            .ok_or_else(|| format!("{hash:?} is not a content hash"))?;
+        Ok(Self::Done(ActionOutput {
+            value: None,
+            resources: vec![resource],
+        }))
+    }
 }
 
 /// What a handler or a job's completion returns: the answer, or why the

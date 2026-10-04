@@ -55,7 +55,11 @@
 //! only what is shown; answers at once), `row` (offered only bound to the
 //! items it acts on), `job` (runs in the background and reports progress,
 //! then its result), `cancellable` (a job the caller may cancel), `returns`
-//! (answers with a JSON value), `destructive` (asks for confirmation),
+//! (answers with a JSON value), `content` (answers with content another
+//! app's operation takes: bytes in this device's content store, named by
+//! their hash as a `tilo.content` resource; an operation that takes content
+//! collects it with `ActionSpec::prompted_content`, so a caller chains the
+//! two by type), `destructive` (asks for confirmation),
 //! `risk = "path"` (a `fn(&Self) -> RiskLevel` classifying one invocation:
 //! one it finds destructive asks for confirmation, so formatting the system
 //! disk can, and another disk need not), `privileged` (hands out or shows a
@@ -240,6 +244,9 @@ pub enum Answers {
     Nothing,
     /// At once, with a JSON value.
     Value,
+    /// At once, with content: one `tilo.content` resource another app's
+    /// content-collecting operation takes.
+    Content,
     /// Later: a job that reports progress, then its result.
     Later { cancellable: bool },
 }
@@ -306,12 +313,15 @@ impl EffectDecl {
             },
             execution: match self.answers {
                 Answers::Later { cancellable } => ExecutionMode::Background { cancellable },
-                Answers::Nothing | Answers::Value => ExecutionMode::Immediate,
+                Answers::Nothing | Answers::Value | Answers::Content => ExecutionMode::Immediate,
             },
             result: match self.answers {
                 Answers::Later { .. } => ResultSpec::Job,
                 Answers::Value => ResultSpec::Json {
                     schema: serde_json::json!({}),
+                },
+                Answers::Content => ResultSpec::Resource {
+                    resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_owned(),
                 },
                 Answers::Nothing => ResultSpec::None,
             },
