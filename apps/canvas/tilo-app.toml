@@ -12,12 +12,13 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 # Pictures an agent looks at or exports are kept in the app's content store;
-# an SVG or reference picture may be named by a path the sandbox lets it read.
-# Marks are copied and pasted through the clipboard. Artworks are opened
-# and saved, and pictures exported, where the person chooses in Files; the
-# artworks worked on lately are remembered in the app's own state.
+# an SVG or picture may be named by a path the sandbox lets it read, or
+# chosen in the file chooser. Artworks are opened and saved, and pictures
+# exported, where the person chooses in Files; the artworks worked on
+# lately are remembered in the app's own state.
+# Marks are copied and pasted through the clipboard.
 [capabilities]
-optional = ["clipboard", "app-files", "files.paths", "files.open", "files.save"]
+optional = ["clipboard", "app-files", "files.open", "files.paths", "files.save"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

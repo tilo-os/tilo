@@ -64,6 +64,8 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                             .push(notice(cx, tools)),
                     )),
             ))
+            .push(add_picture(tools))
+            .push(Box::new(Spacer::fixed(6.0)))
             .push(Box::new(icon_button(
                 cx,
                 Icon::Undo2,
@@ -91,6 +93,36 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                 Sheet::Export,
             )))
             .push(menu(cx, tools)),
+    )
+}
+
+/// Choose a picture to add: on an empty sheet it becomes the artwork, the
+/// sheet taking its size; otherwise it is placed on the artwork. The
+/// canvas takes the answer when the chooser gives it.
+fn add_picture(tools: &Tools) -> Element {
+    let picking = tools.picking.clone();
+    let name = ui::i18n::I18nManager::lookup_plain("canvas-add-picture");
+    let title = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-title");
+    let confirm = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-confirm");
+    let kinds = ui::i18n::I18nManager::lookup_plain("canvas-pictures");
+    Box::new(
+        Button::new("canvas-add-picture", "", None)
+            .with_icon(Icon::Image)
+            .ghost()
+            .with_accessible_name(&name)
+            .tooltip(name.clone())
+            .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+            .on_view(move || {
+                let request = ui::portal::PickRequest::open(&title, &confirm)
+                    .filter(
+                        ui::portal::FileFilter::new(&kinds)
+                            .mimetype("image/png")
+                            .mimetype("image/jpeg")
+                            .mimetype("image/webp"),
+                    )
+                    .send_contents();
+                *picking.borrow_mut() = Some(request);
+            }),
     )
 }
 

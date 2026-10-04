@@ -14,6 +14,7 @@ pub const APP_ID: &str = "so.tilo.canvas";
 pub const APP_TITLE: &str = "Canvas";
 
 pub mod actions;
+pub mod adjust;
 pub mod author;
 pub mod brushes;
 pub mod doc;
@@ -24,6 +25,7 @@ pub mod locales;
 pub mod media;
 pub mod model;
 pub mod panels;
+pub mod picture;
 pub mod preview;
 pub mod region;
 pub mod render;
@@ -221,7 +223,7 @@ fn sheets(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools) -> Vec<Element> {
             body(panels::export::body(cx, &tools)),
         )
         .with_test_id("canvas-export-dialog")
-        .primary_action(lookup("canvas-export"), move || {
+        .primary_action(lookup("canvas-export-save"), move || {
             tools.sheet.set(None);
             tools
                 .files

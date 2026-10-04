@@ -152,6 +152,7 @@ fn local_record_restart_keeps_exact_records_and_drops_mismatches() {
                         app_id: APP.into(),
                         label: "Remote fixture".into(),
                         note: String::new(),
+                        missing: None,
                     })
                     .unwrap();
             }
@@ -231,6 +232,7 @@ fn local_record_restart_removes_closed_and_revalidates_live_tabs() {
                         app_id: APP.into(),
                         label: "Remote".into(),
                         note: String::new(),
+                        missing: None,
                     };
                     global_registry().lock().unwrap().store_remote_record(
                         room,
