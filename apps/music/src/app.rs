@@ -592,6 +592,8 @@ pub struct MusicApp {
         std::collections::BTreeSet<String>,
     )>,
     offline_results: Vec<tilo_actions::InvocationUpdate>,
+    /// Callers waiting for an effect's stream, download or picker to settle.
+    effect_replies: Vec<(tilo_actions::InvocationId, ui::framework::EffectReply)>,
     offline_errors: HashMap<String, String>,
 
     /// Where library edits go: the framework's dispatcher, which applies
@@ -844,6 +846,7 @@ impl MusicApp {
             offline_resolves: HashMap::new(),
             offline_invocation: None,
             offline_results: Vec::new(),
+            effect_replies: Vec::new(),
             offline_errors: HashMap::new(),
             // A test drives the surface on a document it builds; its edits
             // land there.
@@ -1192,35 +1195,54 @@ impl MusicApp {
         }
     }
 
-    fn membership_resource(
-        &self,
-        playlist_id: &str,
-        track_id: &str,
-    ) -> Option<crate::actions::PlaylistMembershipResource> {
-        let playlist = self.lib.playlist(playlist_id)?;
-        let index = playlist.track_ids.iter().position(|id| id == track_id)?;
-        let track = self.lib.track(track_id)?;
-        Some(crate::actions::PlaylistMembershipResource {
-            playlist: playlist.id.clone(),
-            track: crate::actions::TrackRef {
-                id: track.id.clone(),
-                label: self.track_label(&track.id),
-                liked: self.lib.is_liked(&track.id),
-                rank: playlist
-                    .track_ranks
-                    .get(&track.id)
-                    .copied()
-                    .unwrap_or_default(),
-            },
-            index,
-            total: playlist.track_ids.len(),
-            up_rank: playlist
-                .rank_for_move(&track.id, index.saturating_sub(1))
-                .unwrap_or_default(),
-            down_rank: playlist
-                .rank_for_move(&track.id, index.saturating_add(1))
-                .unwrap_or_default(),
-        })
+    /// The rows this device shows beside the library: its player, queue and
+    /// open file, and the tracks it keeps offline, which offer their removal.
+    pub(crate) fn device_rows(&self) -> Vec<ui::framework::LiveRow> {
+        let mut rows: Vec<_> = crate::actions::live_device_resources(&self.music_resource_ctx())
+            .into_iter()
+            .map(live_row)
+            .collect();
+        rows.extend(
+            self.device_cache
+                .iter()
+                .filter(|(_, state)| matches!(state, CacheState::Cached))
+                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
+                .filter_map(|(id, _)| self.offline_row(id)),
+        );
+        rows
+    }
+
+    /// The row `id` this device shows, beyond the published page: a queue
+    /// entry, the player, the open file, a track it keeps offline.
+    pub(crate) fn device_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        if let Some(track) = id.strip_prefix("music.track:") {
+            return matches!(self.cache_state(track), CacheState::Cached)
+                .then(|| self.offline_row(track))
+                .flatten();
+        }
+        let device = id == "music.player:player"
+            || id == crate::actions::QUEUE_RESOURCE_ID
+            || id == crate::actions::LOCAL_FILE_RESOURCE_ID
+            || crate::actions::parse_queue_item_resource_id(id).is_some();
+        if !device {
+            return None;
+        }
+        self.publish_resource(id).map(live_row)
+    }
+
+    /// A track this device keeps offline, offering to remove its copy.
+    fn offline_row(&self, track: &str) -> Option<ui::framework::LiveRow> {
+        self.lib.track(track)?;
+        Some(
+            ui::framework::LiveRow::new(
+                crate::actions::track_resource_id(track),
+                "music.track",
+                self.track_label(track),
+            )
+            .effect(&crate::actions::MusicEffect::RemoveOffline {
+                tracks: vec![track.to_owned()],
+            }),
+        )
     }
 
     /// Build only the data needed to resolve one resource at the authority
@@ -1245,11 +1267,7 @@ impl MusicApp {
             playback: self.pb.clone(),
             ..Default::default()
         };
-        if id == crate::actions::LOCAL_FILE_RESOURCE_ID {
-            return Some(ctx);
-        }
-        if id == "music.player:player" {
-            ctx.tracks = self.catalog_track_resources();
+        if id == crate::actions::LOCAL_FILE_RESOURCE_ID || id == "music.player:player" {
             return Some(ctx);
         }
         if id == crate::actions::QUEUE_RESOURCE_ID {
@@ -1282,70 +1300,11 @@ impl MusicApp {
             });
             return Some(ctx);
         }
-        if let Some(track_id) = id.strip_prefix("music.track:").filter(|id| !id.is_empty()) {
-            let track = self.lib.track(track_id)?;
-            ctx.tracks.push(crate::actions::CatalogTrackResource {
-                id: track.id.clone(),
-                label: self.track_label(&track.id),
-                album_id: track.album_id.clone(),
-                artist_id: track.artist_id.clone(),
-                offline: matches!(self.cache_state(&track.id), CacheState::Cached),
-                liked: self.lib.is_liked(&track.id),
-            });
-            return Some(ctx);
+        let mut ctx = crate::actions::MusicResourceCtx::for_document_id(&self.lib, id)?;
+        for track in &mut ctx.tracks {
+            track.offline = matches!(self.cache_state(&track.id), CacheState::Cached);
         }
-        if let Some(album_id) = id.strip_prefix("music.album:").filter(|id| !id.is_empty()) {
-            let album = self.lib.album(album_id)?;
-            ctx.albums.push(crate::actions::CatalogAlbumResource {
-                id: album.id.clone(),
-                label: album.title.clone(),
-                saved: self.lib.is_album_saved(&album.id),
-            });
-            return Some(ctx);
-        }
-        if let Some(artist_id) = id.strip_prefix("music.artist:").filter(|id| !id.is_empty()) {
-            let artist = self.lib.artist(artist_id)?;
-            ctx.artists.push(crate::actions::CatalogArtistResource {
-                id: artist.id.clone(),
-                label: artist.name.clone(),
-                followed: self.lib.is_artist_followed(&artist.id),
-            });
-            return Some(ctx);
-        }
-        if let Some((playlist_id, track_id)) = crate::actions::parse_playlist_track_resource_id(id)
-        {
-            ctx.membership = Some(self.membership_resource(&playlist_id, &track_id)?);
-            return Some(ctx);
-        }
-        let playlist_id = id
-            .strip_prefix("music.playlist:")
-            .filter(|id| !id.is_empty())?;
-        let playlist = self.lib.playlist(playlist_id)?;
-        // `add-track` needs a current target set to refuse stale resource
-        // arguments; retain only ids/labels once this playlist is directly
-        // requested, never while the palette merely opens.
-        ctx.tracks = self.catalog_track_resources();
-        ctx.playlists.push(crate::actions::PlaylistResource {
-            id: playlist.id.clone(),
-            name: playlist.name.clone(),
-            tracks: Vec::new(),
-        });
         Some(ctx)
-    }
-
-    fn catalog_track_resources(&self) -> Vec<crate::actions::CatalogTrackResource> {
-        self.lib
-            .tracks
-            .values()
-            .map(|track| crate::actions::CatalogTrackResource {
-                id: track.id.clone(),
-                label: self.track_label(&track.id),
-                album_id: track.album_id.clone(),
-                artist_id: track.artist_id.clone(),
-                offline: matches!(self.cache_state(&track.id), CacheState::Cached),
-                liked: self.lib.is_liked(&track.id),
-            })
-            .collect()
     }
 
     /// A one-line "Title — Artist" label for a track id, for the palette.
@@ -2947,7 +2906,11 @@ impl MusicApp {
         if changed_track && !self.pb.playing {
             self.retire_replaced_playback();
         }
-        let needs_source = (changed_track || !self.audio.has_stream()) && self.pb.playing;
+        // A source already resolving for this track is not started again: a
+        // queue or volume change while it resolves keeps the start it awaits.
+        let source_pending = !changed_track && self.active_resolve_request.is_some();
+        let needs_source =
+            (changed_track || (!self.audio.has_stream() && !source_pending)) && self.pb.playing;
         let request = if needs_source {
             self.pb
                 .current
@@ -2961,7 +2924,7 @@ impl MusicApp {
             }
             None
         };
-        if requested_playing && request.is_none() && !self.audio.has_stream() {
+        if requested_playing && request.is_none() && !self.audio.has_stream() && !source_pending {
             return Err(self
                 .playback_error
                 .clone()
@@ -4449,21 +4412,7 @@ impl MusicApp {
                 }) else {
                     return;
                 };
-                let operation =
-                    crate::actions::MusicOperation::OpenPlaylistMembership { playlist, track };
-                let Ok(payload) = serde_json::to_vec(&operation) else {
-                    return;
-                };
-                // This takes the identical operation-decoding/validation path
-                // a Ctrl+K result takes after its canonical resource action
-                // resolves at the authority door.
-                let _ = self.answer_resource_operation(
-                    tilo_actions::OperationKind::View,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload,
-                    &AutoCommit::new(),
-                    &automerge::ROOT,
-                );
+                let _ = self.show(crate::actions::Place::Membership { playlist, track });
             }
         }
     }
@@ -5089,3 +5038,15 @@ mod render;
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests;
+
+/// `resource`, one of the rows this device shows, as the surface publishes it.
+fn live_row(resource: tilo_actions::Resource) -> ui::framework::LiveRow {
+    let mut row = ui::framework::LiveRow::new(resource.id.as_str(), resource.kind, resource.label);
+    for action in resource.actions {
+        row = row.operation(action);
+    }
+    for child in resource.children {
+        row = row.row(live_row(child));
+    }
+    row
+}

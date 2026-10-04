@@ -15,7 +15,6 @@ pub const COMMANDS: &[Command] = &[
         option: "--probe",
         run: probe,
     },
-    #[cfg(not(target_arch = "wasm32"))]
     Command {
         option: "--bench",
         run: bench,
@@ -32,10 +31,8 @@ fn probe(query: &str) -> Result<(), String> {
 }
 
 /// Render `[SCENARIO:]FRAMES` frames of a capture and report their cost.
-#[cfg(not(target_arch = "wasm32"))]
 fn bench(value: &str) -> Result<(), String> {
     use ui::framework::ResourceApp as _;
-    use ui::framework::testing::HeadlessApp;
 
     let (scenario, frames) = match value.rsplit_once(':') {
         Some((scenario, frames)) => (Some(scenario), frames),
@@ -47,17 +44,10 @@ fn bench(value: &str) -> Result<(), String> {
     if frames == 0 {
         return Err("benchmark at least one frame".into());
     }
-    let mut app =
-        HeadlessApp::<crate::MusicShell>::capture(scenario).map_err(|error| error.to_string())?;
-    let harness = app.harness();
-    // Warm up: the first frame builds text-shape caches.
-    harness.relayout();
-    let mut samples = Vec::with_capacity(frames);
-    for _ in 0..frames {
-        let start = ui::time::now();
-        harness.relayout();
-        samples.push(start.elapsed().as_secs_f64() * 1000.0);
-    }
+    let mut samples: Vec<f64> = ui::framework::time_frames::<crate::MusicShell>(scenario, frames)?
+        .into_iter()
+        .map(|frame| frame.as_secs_f64() * 1000.0)
+        .collect();
     samples.sort_by(f64::total_cmp);
     let average = samples.iter().sum::<f64>() / frames as f64;
     let at = |fraction: f64| {
