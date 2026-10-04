@@ -1048,14 +1048,13 @@ impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> 
         let mut shown = Vec::new();
         self.surfaces(&mut |surface| shown.extend(surface.search_entries()));
         let indexed = self.current_search_index(revision, shown);
-        let mut providers: Vec<Box<dyn SearchProvider>> = vec![Box::new(ResourceSearch {
+        // The app's one search source: what its content widgets show beside
+        // the resource reaches it as their surfaces' entries, never as a
+        // provider of their own.
+        vec![Box::new(ResourceSearch {
             name: R::LABEL,
             indexed,
-        })];
-        providers.extend(ui_core::search::capability::search_providers(
-            self.content.as_ref(),
-        ));
-        providers
+        })]
     }
 }
 
