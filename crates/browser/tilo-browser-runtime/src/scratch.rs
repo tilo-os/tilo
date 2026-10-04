@@ -9,7 +9,6 @@ use ui::theme::Theme;
 use ui::ui_graph::{
     UiButtonRole, UiDocument, UiDocumentExt as _, UiNode, UiTextRole, UiTextSource,
 };
-use ui::widget::ButtonRole;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
 static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
