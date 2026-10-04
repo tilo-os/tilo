@@ -160,11 +160,13 @@ impl ResourceApp for App {
             return Vec::new();
         }
         let open = if file.media_type() == document::MEDIA_TYPE {
-            let Ok(text) = std::str::from_utf8(file.bytes()) else {
+            let Ok(artwork) =
+                document::unpack(file.bytes(), &tilo_content::ContentStore::for_app())
+            else {
                 return Vec::new();
             };
             CanvasAction::OpenArtwork(actions::OpenArtwork {
-                file: text.to_owned(),
+                file: String::from_utf8_lossy(&artwork.to_json()).into_owned(),
             })
         } else {
             match resource::open_picture(file.name(), file.bytes()) {
