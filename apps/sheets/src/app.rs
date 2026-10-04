@@ -1990,13 +1990,20 @@ impl SheetsApp {
                             MAX_IMPORT_FILE_BYTES / (1024 * 1024)
                         ));
                     }
+                    // The same file chosen again is shown, not imported twice.
+                    let source = file.identity.as_ref().map(ToString::to_string);
+                    if let Some(source) = &source
+                        && app.show_imported(source, &file.name, cx)
+                    {
+                        return Ok(ui::framework::Effected::done());
+                    }
                     app.status = format!("Importing .{}…", format.ext());
                     let name = file.name;
                     let sheet = sheet_name_from_path(std::path::Path::new(&name));
                     Ok(cx.thread(
                         move |_| Self::read_tables(format, &file.bytes, &sheet),
                         move |app: &mut Self, tables, cx| {
-                            app.finish_import(tables, &name, None, cx)
+                            app.finish_import(tables, &name, source, cx)
                         },
                     ))
                 },
@@ -2004,20 +2011,7 @@ impl SheetsApp {
         };
         let path = PathBuf::from(path);
         let source = import_source(&path);
-        let open = cx.live().with(|state| {
-            state
-                .sheets
-                .iter()
-                .find(|sheet| sheet.source.as_deref() == Some(source.as_str()))
-                .map(|sheet| (sheet.id.clone(), sheet.name.clone()))
-        });
-        if let Some((sheet_id, name)) = open {
-            self.pending_reveal = Some(PendingReveal {
-                sheet_id,
-                addr: (0, 0),
-                status: Some(format!("{} is already open as {name}", file_label(&path))),
-                arriving: false,
-            });
+        if self.show_imported(&source, &file_label(&path), cx) {
             return ui::framework::Effected::done();
         }
         self.status = format!("Importing .{}…", format.ext());
@@ -2030,6 +2024,33 @@ impl SheetsApp {
                 Err(error) => app.failed(error),
             },
         )
+    }
+
+    /// Show the sheet the file `source` was already imported as, if any:
+    /// whether there was one.
+    fn show_imported(
+        &mut self,
+        source: &str,
+        label: &str,
+        cx: &ui::framework::EffectCx<crate::resource::SheetsWorkbook, Self>,
+    ) -> bool {
+        let open = cx.live().with(|state| {
+            state
+                .sheets
+                .iter()
+                .find(|sheet| sheet.source.as_deref() == Some(source))
+                .map(|sheet| (sheet.id.clone(), sheet.name.clone()))
+        });
+        let Some((sheet_id, name)) = open else {
+            return false;
+        };
+        self.pending_reveal = Some(PendingReveal {
+            sheet_id,
+            addr: (0, 0),
+            status: Some(format!("{label} is already open as {name}")),
+            arriving: false,
+        });
+        true
     }
 
     /// Add the sheets a file was read into as one action, and show the last
@@ -4512,11 +4533,10 @@ fn sheet_name_from_path(path: &std::path::Path) -> String {
 
 /// How an imported sheet remembers its file: the resolved path, so every
 /// spelling of one file finds the sheets it already became.
+/// The durable identity of the file at `path`: the same file however it
+/// is reached, by path or through the chooser.
 fn import_source(path: &std::path::Path) -> String {
-    tilo_files::canonicalize(path)
-        .unwrap_or_else(|_| path.to_path_buf())
-        .to_string_lossy()
-        .into_owned()
+    ui::record::RecordId::identify_file(path).to_string()
 }
 
 /// Cumulative x positions (layout space) of every character boundary in
@@ -7056,7 +7076,7 @@ pub(crate) mod tests {
             "a cancelled import adds nothing"
         );
 
-        recorder.respond_to_pick(PortalOutcome::Opened(path));
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
         app.effect(&SheetsEffect::ImportCsv { path: None }).unwrap();
         app.settle();
         let state = app.state();
@@ -7064,6 +7084,23 @@ pub(crate) mod tests {
         assert_eq!(state.sheets[before].name, "Exported");
         assert_eq!(raw_at(&app, before, (0, 0)), "Category");
         assert_eq!(recorder.pick_requests().len(), 3);
+
+        // The same file chosen again, or opened by its path, is shown
+        // rather than imported a second time.
+        app.with_surface::<SheetsApp, _>(|sheets| sheets.active_sheet = 0);
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        app.effect(&SheetsEffect::ImportCsv { path: None }).unwrap();
+        app.settle();
+        assert_eq!(app.state().sheets.len(), before + 1, "no second copy");
+        let (active, status) = shown(&mut app);
+        assert_eq!(active, before, "the imported sheet is shown");
+        assert!(status.contains("already open"), "{status}");
+        app.effect(&SheetsEffect::ImportCsv {
+            path: Some(path.display().to_string()),
+        })
+        .unwrap();
+        app.settle();
+        assert_eq!(app.state().sheets.len(), before + 1, "by path either");
     }
 
     /// A file too large, or not a spreadsheet, fails its import with why,

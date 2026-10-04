@@ -4,8 +4,8 @@
 use std::rc::Rc;
 
 use ui::framework::{
-    Command, EffectAnswer, EffectCx, Fixture, LiveRow, ResourceApp, ResourceSurface, RunMode,
-    SurfaceCx, ViewCx,
+    Command, EffectAnswer, EffectCx, LiveRow, ResourceApp, ResourceSurface, RunMode, SurfaceCx,
+    ViewCx,
 };
 use ui::tilo_actions::{ActionParam, ParamType};
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
@@ -89,8 +89,8 @@ impl Resource for Music {
 }
 
 /// The screenshot scenarios: the sample library (`empty` has none) with the
-/// view state each stages. The `live-*` scenarios show the real catalogue,
-/// fetched into the capture's fixture before it is built.
+/// view state each stages. A capture never reaches the catalogue, so every
+/// scenario comes out the same on every machine.
 const SCENARIOS: &[&str] = &[
     "sidebar",
     "collapsed",
@@ -112,10 +112,6 @@ const SCENARIOS: &[&str] = &[
     "album-page",
     "error",
     "membership-open",
-    #[cfg(feature = "live")]
-    crate::capture::LIVE_HOME,
-    #[cfg(feature = "live")]
-    crate::capture::LIVE_LYRICS,
 ];
 
 /// Framework app: the music widget is the surface over [`Music`].
@@ -141,17 +137,9 @@ impl ResourceApp for MusicShell {
         crate::commands::COMMANDS
     }
 
-    /// The `live-*` scenarios fetch the real catalogue they show now, before
-    /// the capture is built; every other scenario shows the sample library.
-    fn fixture(fixture: &mut Fixture<Music>) {
-        if let Some(live) = crate::capture::LiveCapture::fetch(fixture.scenario()) {
-            fixture.provide(live);
-        }
-    }
-
-    /// Every scenario but `empty` and the live ones shows the sample library.
+    /// Every scenario but `empty` shows the sample library.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Music>> {
-        if matches!(name, Some("empty")) || name.is_some_and(crate::capture::is_live) {
+        if matches!(name, Some("empty")) {
             return Vec::new();
         }
         crate::seed::sample_actions()
@@ -162,16 +150,15 @@ impl ResourceApp for MusicShell {
 
     fn view(cx: &mut ViewCx<Music>) -> Element {
         // Only a window someone uses plays audio, reads this device's
-        // playback profile and reaches the network; a capture shows its
-        // fixture and a past version shows the library alone.
+        // playback profile and reaches the network; a capture and a past
+        // version show the library alone.
         let app = match cx.mode() {
             RunMode::Live => {
                 let mut app = MusicApp::new();
                 app.enable_mpris();
                 app
             }
-            RunMode::Capture => MusicApp::for_capture(cx.fixture::<crate::capture::LiveCapture>()),
-            RunMode::Past => MusicApp::offline(),
+            RunMode::Capture | RunMode::Past => MusicApp::offline(),
         };
         cx.surface(app)
     }
@@ -343,9 +330,6 @@ mod tests {
     #[test]
     fn every_scenario_captures() {
         for scenario in MusicShell::scenarios() {
-            if crate::capture::is_live(scenario) {
-                continue;
-            }
             TestApp::<MusicShell>::capture(Some(scenario))
                 .unwrap_or_else(|error| panic!("{scenario}: {error}"));
         }
