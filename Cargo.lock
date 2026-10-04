@@ -3649,6 +3649,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "workspace-hack",
+ "xattr",
 ]
 
 [[package]]
