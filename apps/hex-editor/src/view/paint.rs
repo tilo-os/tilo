@@ -475,6 +475,13 @@ impl HexView {
         let mut left = vec![StatusReadout::action(&offset)];
         left.extend(selected.as_deref().map(StatusReadout::text));
         left.extend(edited.as_deref().map(StatusReadout::text));
+        // A change worth noticing once ("Saved") reads in the status bar
+        // while it lingers, so it never covers the grid.
+        let notice = self
+            .status_bubble
+            .is_visible(ui::time::now())
+            .then(|| self.status_bubble.text().to_owned());
+        left.extend(notice.as_deref().map(StatusReadout::text));
         let hovered = self.offset_readout.contains(self.last_mouse).then_some(0);
         let rects = draw_readouts(
             scene,
@@ -602,8 +609,8 @@ impl HexView {
         Widget::draw(&mut self.empty, scene, transform, tr, theme, presence);
     }
 
-    /// Transient notices over the content: "Saved" in the bubble, a failed
-    /// open or save as a toast.
+    /// Transient notices over the content: a failed open or save as a
+    /// toast ("Saved" reads in the status bar).
     fn paint_notices(
         &self,
         scene: &mut Scene,
@@ -611,14 +618,11 @@ impl HexView {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = ui::time::now();
         let area = if self.has_file {
             self.geo.bubble_area
         } else {
             self.rect
         };
-        self.status_bubble
-            .paint(scene, transform, tr, theme, area, now);
         if let Some((title, detail, _)) = &self.problem {
             ui::widget::toast::paint_transient(
                 scene,
