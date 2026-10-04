@@ -46,6 +46,10 @@ impl BuildInfo {
 pub struct Panic<'a> {
     /// Local time of the panic, already formatted.
     pub timestamp: &'a str,
+    /// Name of the panicking thread.
+    pub thread: &'a str,
+    /// Whether a panic boundary contains the panic, and what follows from it.
+    pub contained: &'a str,
     /// `file:line:column` of the panic site.
     pub location: &'a str,
     /// The panic payload, as text.
@@ -73,10 +77,18 @@ pub fn render(title: &str, build: &BuildInfo, panic: &Panic<'_>) -> String {
          version:   {}\n\
          binary:    {executable}\n\
          build-id:  {build_id}\n\
+         thread:    {}\n\
+         contained: {}\n\
          location:  {}\n\
          message:   {}\n\n\
          backtrace:\n{}\n",
-        panic.timestamp, build.version, panic.location, panic.message, panic.backtrace
+        panic.timestamp,
+        build.version,
+        panic.thread,
+        panic.contained,
+        panic.location,
+        panic.message,
+        panic.backtrace
     );
     body
 }
@@ -104,6 +116,13 @@ pub fn install(title: &'static str) {
             .map(|s| (*s).to_owned())
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "<unknown payload>".to_owned());
+        let thread = std::thread::current();
+        let thread = thread.name().unwrap_or("<unnamed>");
+        let contained = if tilo_rt::panic_boundary::is_isolated() {
+            "yes: the failing helper restarts and the session continues"
+        } else {
+            "no: the session ends"
+        };
         let location = info.location().map_or_else(
             || "<unknown location>".to_owned(),
             |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
@@ -113,6 +132,8 @@ pub fn install(title: &'static str) {
             &build,
             &Panic {
                 timestamp: &timestamp,
+                thread,
+                contained,
                 location: &location,
                 message: &message,
                 backtrace: &backtrace,
@@ -283,6 +304,8 @@ mod tests {
             &build,
             &Panic {
                 timestamp: "2026-10-03-120000",
+                thread: "main",
+                contained: "no: the session ends",
                 location: "crates/session/shell/src/x.rs:1:2",
                 message: "boom",
                 backtrace: "   0: shell::x::f\n             at ./crates/session/shell/src/x.rs:1:2",
@@ -296,6 +319,8 @@ mod tests {
              version:   0.1.0\n\
              binary:    /usr/bin/tilo-shell\n\
              build-id:  abc123\n\
+             thread:    main\n\
+             contained: no: the session ends\n\
              location:  crates/session/shell/src/x.rs:1:2\n\
              message:   boom\n\n\
              backtrace:\n   0: shell::x::f\n             at ./crates/session/shell/src/x.rs:1:2\n"
@@ -314,6 +339,8 @@ mod tests {
             &build,
             &Panic {
                 timestamp: "",
+                thread: "",
+                contained: "",
                 location: "",
                 message: "",
                 backtrace: "",

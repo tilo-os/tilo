@@ -84,13 +84,18 @@ fn default_user_managed() -> bool {
 }
 
 impl InstalledState {
-    /// True if the source's newest version differs from what's installed.
+    /// True if the source offers a newer version than what's installed. A
+    /// source that only has an older one (an app the system image ships in
+    /// a newer build than the catalogue) offers no update.
     pub fn update_available(&self) -> bool {
         match self {
             InstalledState::Not => false,
             InstalledState::Installed {
                 version, available, ..
-            } => version != available,
+            } => {
+                !available.is_empty()
+                    && registry_types::version::compare(available, version).is_gt()
+            }
         }
     }
 
@@ -396,6 +401,9 @@ pub enum SourceFilter {
     /// Items already present on this device: cached Tilo apps or installed
     /// Flatpaks. The variant name remains serialized for compatibility.
     Installed,
+    /// Installed apps a source offers a newer version of, the system
+    /// image's own apps included.
+    Updates,
 }
 
 impl SourceFilter {
@@ -404,6 +412,7 @@ impl SourceFilter {
         SourceFilter::Tilo,
         SourceFilter::Flatpak,
         SourceFilter::Installed,
+        SourceFilter::Updates,
     ];
 
     pub fn label(self) -> &'static str {
@@ -412,6 +421,7 @@ impl SourceFilter {
             SourceFilter::Tilo => "Tilo",
             SourceFilter::Flatpak => "Flatpak",
             SourceFilter::Installed => "On device",
+            SourceFilter::Updates => "Updates",
         }
     }
 
@@ -422,6 +432,7 @@ impl SourceFilter {
             SourceFilter::Tilo => matches!(item.source, StoreSource::Tilo { .. }),
             SourceFilter::Flatpak => matches!(item.source, StoreSource::Flathub),
             SourceFilter::Installed => !matches!(item.installed, InstalledState::Not),
+            SourceFilter::Updates => item.installed.update_available(),
         }
     }
 }
@@ -591,13 +602,24 @@ mod tests {
             assert!(!cached.allows_action(ActionKind::Update, true));
         }
 
-        // Case `update_available_only_true_on_version_mismatch`.
+        // Case `update_available_only_for_a_newer_version`.
         {
-            let same = qinstalled("1", "1", false);
+            let same = qinstalled("1.0.0", "1.0.0", false);
             assert!(!same.update_available());
-            let diff = qinstalled("1", "2", false);
-            assert!(diff.update_available());
+            let newer = qinstalled("0.1.0", "0.1.62530+gabc", false);
+            assert!(newer.update_available());
+            let older = qinstalled("0.1.62530+gabc", "0.1.0", false);
+            assert!(
+                !older.update_available(),
+                "a catalogue behind the system image offers no downgrade"
+            );
+            assert!(!qinstalled("1.0.0", "", false).update_available());
             assert!(!InstalledState::Not.update_available());
+            let stale = tilo_item("Notes", qinstalled("0.1.0", "0.2.0", false), "0.2.0");
+            let current = tilo_item("Clocks", qinstalled("0.2.0", "0.2.0", false), "0.2.0");
+            assert!(SourceFilter::Updates.accepts(&stale));
+            assert!(!SourceFilter::Updates.accepts(&current));
+            assert_eq!(SourceFilter::Updates.label(), "Updates");
         }
     }
 

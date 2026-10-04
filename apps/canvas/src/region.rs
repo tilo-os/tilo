@@ -174,6 +174,11 @@ impl Region {
             .abs()
     }
 
+    /// How many separate shapes it is made of.
+    pub fn parts(&self) -> usize {
+        self.shapes.len()
+    }
+
     /// How many corners its polygons have.
     pub fn corners(&self) -> usize {
         self.shapes.iter().flatten().map(Vec::len).sum()

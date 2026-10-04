@@ -429,6 +429,140 @@ impl<S: RichTextSource> RichTextSurface<S> {
         true
     }
 
+    fn is_composing(&self) -> bool {
+        self.editor.is_composing()
+    }
+
+    fn move_selected_blocks(&mut self, doc: &mut AutoCommit, up: bool) -> bool {
+        if self.source.read_only() || self.is_composing() {
+            return false;
+        }
+        self.commit(doc);
+        self.source.sync(doc);
+        if self.source.revision() != self.revision {
+            self.present_state(None);
+        }
+        let Some((range, boundary)) = self.editor.selected_block_move(up) else {
+            return false;
+        };
+        let blocks = self.editor.blocks();
+        let Some(selected) = blocks.get(range) else {
+            return false;
+        };
+        let ids: Vec<String> = selected.iter().map(|block| block.id.clone()).collect();
+        let selection = self.editor.document_selection();
+        let reverse = selection.is_some_and(|selection| selection.anchor > selection.cursor);
+        let after = boundary
+            .checked_sub(1)
+            .and_then(|index| blocks.get(index))
+            .map(|block| block.id.clone());
+        let action = RichTextAction::MoveBlocks {
+            blocks: ids.clone(),
+            after,
+        };
+        if let Err(error) = self.source.apply(doc, &action) {
+            tracing::debug!(%error, "block movement refused");
+            return false;
+        }
+        self.source.sync(doc);
+        self.present_state(None);
+        if selection.is_some() {
+            self.editor.retain_block_selection(ids, reverse);
+        }
+        true
+    }
+
+    fn move_key(
+        &self,
+        event: &WindowEvent,
+        modifiers: ui::winit::event::Modifiers,
+    ) -> Option<bool> {
+        use ui::winit::{
+            event::ElementState,
+            keyboard::{Key, NamedKey},
+        };
+        let held = modifiers.state();
+        if !self.editor.is_focused()
+            || self.editor.has_open_popup()
+            || self.is_composing()
+            || !held.alt_key()
+            || held.control_key()
+            || held.super_key()
+        {
+            return None;
+        }
+        match event {
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                match event.logical_key {
+                    Key::Named(NamedKey::ArrowUp) => Some(true),
+                    Key::Named(NamedKey::ArrowDown) => Some(false),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn duplicate_blocks(&mut self, doc: &mut AutoCommit, target: Option<&str>) -> bool {
+        if self.source.read_only() || self.is_composing() {
+            return false;
+        }
+        self.commit(doc);
+        self.source.sync(doc);
+        if self.source.revision() != self.revision {
+            self.present_state(None);
+        }
+        let range = match target {
+            Some(id) => self
+                .editor
+                .blocks()
+                .iter()
+                .position(|block| block.id == id)
+                .and_then(|index| self.editor.block_group_range(index)),
+            None => self.editor.selected_block_range(),
+        };
+        let Some(range) = range else {
+            return false;
+        };
+        let focus = target
+            .and_then(|id| self.editor.blocks().iter().position(|block| block.id == id))
+            .or_else(|| self.editor.focused_index())
+            .filter(|index| range.contains(index))
+            .unwrap_or(range.start);
+        let copied_focus = range.end.saturating_add(focus.saturating_sub(range.start));
+        let Some(action) = crate::block_commands::duplicate(&self.sources, range) else {
+            return false;
+        };
+        if let Err(error) = self.source.apply(doc, &action) {
+            tracing::debug!(%error, "block duplication refused");
+            return false;
+        }
+        self.source.sync(doc);
+        self.editor.clear_document_selection();
+        self.present_state(None);
+        self.editor
+            .focus_block(copied_focus, ui::widget::CursorPlacement::End);
+        true
+    }
+
+    fn is_duplicate_key(
+        &self,
+        event: &WindowEvent,
+        modifiers: ui::winit::event::Modifiers,
+    ) -> bool {
+        use ui::winit::{event::ElementState, keyboard::Key};
+        let held = modifiers.state();
+        self.editor.is_focused()
+            && !self.editor.has_open_popup()
+            && !self.is_composing()
+            && (held.control_key() || held.super_key())
+            && !held.alt_key()
+            && !held.shift_key()
+            && matches!(event, WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                && matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("d")))
+    }
+
     /// Replace the text with `text`, a paragraph per line, as an edit: the
     /// editor's paragraphs keep their ids where there are as many, so the
     /// document sees text replaced rather than paragraphs recreated.
@@ -607,6 +741,18 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         &mut self.editor
     }
 
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        theme: &ui::theme::Theme,
+        nodes: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
+    ) -> ui::taffy::NodeId {
+        let node = self.editor.build_layout(taffy, theme, nodes);
+        // Synthetic block actions belong to this canonical document surface.
+        ui::widget::decorator::register_node(nodes, node, self);
+        node
+    }
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
         self.source.sync(state);
@@ -624,8 +770,100 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             *ctx.handled = true;
             return;
         }
+        if self.is_duplicate_key(event, *ctx.modifiers) {
+            self.duplicate_blocks(ctx.state, None);
+            *ctx.handled = true;
+            return;
+        }
+        if let Some(up) = self.move_key(event, *ctx.modifiers) {
+            self.move_selected_blocks(ctx.state, up);
+            *ctx.handled = true;
+            return;
+        }
         self.editor.handle_event(event, ctx);
         self.commit(ctx.state);
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut tree = self.editor.accessibility()?;
+        let disabled = self.source.read_only() || self.is_composing();
+        for row in &mut tree.children {
+            let Some(id) = row
+                .semantic_key
+                .as_deref()
+                .and_then(|key| key.strip_prefix("notes.block:"))
+            else {
+                continue;
+            };
+            let mut duplicate = AccessNode::new(Role::Button)
+                .with_name(ui::i18n!("widget-block-duplicate"))
+                .with_action_target(format!("notes.block-duplicate:{id}"))
+                .with_state(AccessState::new().focusable(!disabled).disabled(disabled));
+            duplicate.bounds = row.bounds;
+            row.children.push(duplicate);
+        }
+        let selection_disabled = disabled || self.editor.selected_block_range().is_none();
+        let mut duplicate = AccessNode::new(Role::Button)
+            .with_name(ui::i18n!("widget-block-duplicate-selection"))
+            .with_action_target("notes.editor:duplicate")
+            .with_state(
+                AccessState::new()
+                    .focusable(!selection_disabled)
+                    .disabled(selection_disabled),
+            );
+        duplicate.bounds = tree.bounds;
+        tree.children.push(duplicate);
+        for up in [true, false] {
+            let disabled = disabled || self.editor.selected_block_move(up).is_none();
+            let mut movement = AccessNode::new(Role::Button)
+                .with_name(if up {
+                    ui::i18n!("widget-block-move-selection-up")
+                } else {
+                    ui::i18n!("widget-block-move-selection-down")
+                })
+                .with_action_target(if up {
+                    "notes.editor:move-up"
+                } else {
+                    "notes.editor:move-down"
+                })
+                .with_state(AccessState::new().focusable(!disabled).disabled(disabled));
+            movement.bounds = tree.bounds;
+            tree.children.push(movement);
+        }
+        Some(tree)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AppModel,
+        path: &ModelPath,
+    ) -> bool {
+        if matches!(target, "notes.editor:move-up" | "notes.editor:move-down") {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.move_selected_blocks(state, target.ends_with(":move-up"));
+        }
+        if target == "notes.editor:duplicate" {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.duplicate_blocks(state, None);
+        }
+        if let Some(id) = target.strip_prefix("notes.block-duplicate:") {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.duplicate_blocks(state, Some(id));
+        }
+        self.editor
+            .perform_semantic_action(target, action, state, path)
     }
 
     // Every edit is an action bounded into undo steps by its source or the

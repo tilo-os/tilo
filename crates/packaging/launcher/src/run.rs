@@ -651,7 +651,8 @@ fn resolve_app_dir(manifest: &MinimalManifest, opts: &RunOptions) -> Result<Path
     })
 }
 
-/// The identity store records are migrated in, if any: the named store, or
+/// The identity store whose records a launch requires in provisioned form,
+/// if any: the named store, or
 /// the user's store for [`IdentitySource::UserStore`] and
 /// [`IdentitySource::Record`].
 fn identity_store(source: &IdentitySource) -> Option<PathBuf> {
@@ -681,20 +682,16 @@ fn start_identity_broker(
     path: &Path,
     store: Option<&Path>,
 ) -> Result<(UnixStream, UnixStream, std::thread::JoinHandle<()>), RunError> {
-    // Standard store records are migrated before loading. Explicit debug
-    // paths outside the store still stay host-side, but are not rewritten in
-    // an unexpected directory.
-    if let Some(store) = store
-        && path.parent() == Some(store)
-        && let Some(id) = path.file_stem().and_then(|value| value.to_str())
-        && path.extension().and_then(|value| value.to_str()) == Some("json")
-        && path == store.join(format!("{id}.json"))
-    {
-        runtime_identity::secure_identity(store, id)
-            .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
+    // A launch only reads the identity store. A store record must already be
+    // in the form provisioning leaves it; one that is not fails the launch
+    // and names the step that secures it. An explicit debug record outside
+    // the store loads as written.
+    let identity = if store.is_some_and(|store| path.parent() == Some(store)) {
+        runtime_identity::load_for_launch(path)
+    } else {
+        runtime_identity::load_from_path(path.to_path_buf())
     }
-    let identity = runtime_identity::load_from_path(path.to_path_buf())
-        .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
+    .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
     let (host, app) =
         UnixStream::pair().map_err(|error| RunError::IdentityBroker(error.to_string()))?;
     let control = host
@@ -727,7 +724,12 @@ pub fn resolve_gpu_selection(
     opts: &RunOptions,
 ) -> Option<crate::gpu::GpuSelection> {
     let node = opts.render_node.as_ref()?;
-    let selection = crate::gpu::select_for_node(node, &crate::gpu::IcdSearch::default());
+    // The compositor resolved its node's drivers once and pinned its own
+    // loaders to them; a launch it started inherits that pin. Asking every
+    // installed ICD again here would load each driver on every app launch.
+    let mut selection = crate::gpu::inherited_selection(node)
+        .unwrap_or_else(|| crate::gpu::select_for_node(node, &crate::gpu::IcdSearch::default()));
+    selection.pipeline_seed = crate::gpu::host_pipeline_seed();
     for note in &selection.notes {
         tracing::warn!(target: "tilo_launcher::gpu", package = %manifest.package_id, "{note}");
     }
@@ -1474,6 +1476,29 @@ fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(
     Ok(())
 }
 
+/// The image-owned system authority grant ([`crate::system_authority`]):
+/// bind the control panel's host binaries, configuration and authority
+/// sockets. A no-op for every other package. The returned guard keeps the
+/// system-bus proxy alive and must outlive the child.
+fn splice_system_authority(
+    argv: &mut Vec<String>,
+    package_id: &str,
+) -> Result<
+    (
+        Option<crate::system_authority::SystemAuthorityPlan>,
+        Option<DBusProxyGuard>,
+    ),
+    RunError,
+> {
+    let Some((plan, guard)) = crate::system_authority::resolve(package_id, current_uid()) else {
+        return Ok((None, None));
+    };
+    let entry = pop_entry(argv)?;
+    crate::system_authority::push_binds(argv, &plan);
+    argv.push(entry);
+    Ok((Some(plan), guard))
+}
+
 /// Mount Files' live room-governance identity directory read-only. The
 /// projection is package-scoped and must remain visible across atomic host
 /// replacement, so the containing directory—not one inode—is bound.
@@ -1557,6 +1582,7 @@ struct ShimSpliceCtx<'a> {
     egress: &'a crate::netgate::EgressDecision,
     capabilities: &'a CapabilityPlan,
     dbus_plan: &'a Option<DBusBindPlan>,
+    system_authority: &'a Option<crate::system_authority::SystemAuthorityPlan>,
     wayland_bind: &'a Option<crate::sandbox::WaylandBind>,
     gpu: &'a Option<crate::gpu::GpuSelection>,
     keep_fds: &'a [RawFd],
@@ -1610,20 +1636,7 @@ fn splice_sandbox_shim(
     let payload_mount = crate::sandbox::payload_mount_for(&ctx.manifest.package_id);
     argv.push("--ro".to_string());
     argv.push(payload_mount.display().to_string());
-    if let Some((rt_root, ver)) = ctx.runtime_arg {
-        let rt = crate::sandbox::runtime_mount_for(ver);
-        argv.push("--ro".to_string());
-        argv.push(rt.display().to_string());
-        // Also allow the canonical loader paths re-bound out of the bundle —
-        // otherwise the entry ELF's INTERP is blocked by Landlock despite the bind.
-        for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {
-            let no_slash = canonical.trim_start_matches('/');
-            if rt_root.join("lib").join(no_slash).exists() {
-                argv.push("--ro".to_string());
-                argv.push((*canonical).to_string());
-            }
-        }
-    }
+    push_runtime_landlock_rules(argv, ctx.runtime_arg);
     for p in ctx.extra_ro_paths {
         argv.push("--ro".to_string());
         argv.push(p.clone());
@@ -1651,22 +1664,19 @@ fn splice_sandbox_shim(
         argv.push("--ro".to_string());
         argv.push(plan.sandbox_path.display().to_string());
     }
+    // The control panel's host binaries, configuration and authority
+    // sockets, from the same plan its binds came from.
+    if let Some(plan) = ctx.system_authority {
+        crate::system_authority::push_landlock_rules(argv, plan);
+    }
     // Wayland needs read+write in Landlock: connect(2) on a unix socket is
     // write-flavoured, so read-only surfaces as EACCES at `wl_display_connect`.
     if let Some(bind) = ctx.wayland_bind {
         argv.push("--rw".to_string());
         argv.push(bind.sandbox_socket.display().to_string());
     }
-    // GPU selection is only real if Landlock agrees: loader manifests need
-    // read, the render node needs read+write (opened O_RDWR) — read-only
-    // looks like no GPU present.
     if let Some(sel) = ctx.gpu {
-        for file in sel.manifest_files() {
-            argv.push("--ro".to_string());
-            argv.push(file.display().to_string());
-        }
-        argv.push("--rw".to_string());
-        argv.push(sel.node.display().to_string());
+        crate::sandbox::push_gpu_landlock_rules(argv, sel);
     }
     // The app's own directory, named by its in-sandbox path — the host path
     // isn't reachable from inside, so a rule on it would match nothing.
@@ -1697,6 +1707,23 @@ fn splice_sandbox_shim(
     argv.push("--".to_string());
     argv.push(entry);
     Ok(())
+}
+
+fn push_runtime_landlock_rules(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
+    if let Some((rt_root, ver)) = runtime {
+        let rt = crate::sandbox::runtime_mount_for(ver);
+        argv.push("--ro".to_string());
+        argv.push(rt.display().to_string());
+        // Also allow the canonical loader paths re-bound out of the bundle —
+        // otherwise the entry ELF's INTERP is blocked by Landlock despite the bind.
+        for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {
+            let no_slash = canonical.trim_start_matches('/');
+            if rt_root.join("lib").join(no_slash).exists() {
+                argv.push("--ro".to_string());
+                argv.push((*canonical).to_string());
+            }
+        }
+    }
 }
 
 fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &MinimalManifest) {
@@ -2236,6 +2263,8 @@ fn run_with_context(
     }
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
     splice_session_settings(&mut argv, &manifest.package_id)?;
+    let (system_authority, _system_bus_guard) =
+        splice_system_authority(&mut argv, &manifest.package_id)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
@@ -2251,6 +2280,7 @@ fn run_with_context(
             egress: &egress,
             capabilities: &capabilities,
             dbus_plan: &dbus_plan,
+            system_authority: &system_authority,
             wayland_bind: &wayland_bind,
             gpu: &gpu,
             keep_fds: &keep_fds,
@@ -2724,6 +2754,10 @@ pub fn run_with_captured_bounded(
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the captured launch mirrors `run_with_context`'s ordered pipeline step for step"
+)]
 fn run_with_capture_spawn<T>(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -2821,6 +2855,8 @@ fn run_with_capture_spawn<T>(
     let app_dir = resolve_app_dir(manifest, opts)?;
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
     splice_session_settings(&mut argv, &manifest.package_id)?;
+    let (system_authority, _system_bus_guard) =
+        splice_system_authority(&mut argv, &manifest.package_id)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
@@ -2835,6 +2871,7 @@ fn run_with_capture_spawn<T>(
             egress: &egress,
             capabilities: &capabilities,
             dbus_plan: &dbus_plan,
+            system_authority: &system_authority,
             wayland_bind: &wayland_bind,
             gpu: &gpu,
             keep_fds: &keep_fds,
@@ -3259,6 +3296,194 @@ mod identity_resolution_tests {
             assert!(!dir.path().join("secrets").exists());
             assert!(!dir.path().join(".identity.lock").exists());
             assert!(!store.path().join("secrets").exists());
+        }
+    }
+
+    /// What any write under `dir` would change: every entry's path, mode,
+    /// inode, size, change and modification times, and bytes.
+    fn store_snapshot(dir: &Path) -> Vec<(PathBuf, [i64; 8], Vec<u8>)> {
+        use std::os::unix::fs::MetadataExt;
+
+        fn walk(path: &Path, out: &mut Vec<(PathBuf, [i64; 8], Vec<u8>)>) {
+            let meta = std::fs::symlink_metadata(path).unwrap();
+            let stamp = [
+                i64::from(meta.mode()),
+                meta.ino().cast_signed(),
+                meta.size().cast_signed(),
+                meta.ctime(),
+                meta.ctime_nsec(),
+                meta.mtime(),
+                meta.mtime_nsec(),
+                i64::from(meta.uid()),
+            ];
+            let bytes = if meta.is_file() {
+                std::fs::read(path).unwrap()
+            } else {
+                Vec::new()
+            };
+            out.push((path.to_path_buf(), stamp, bytes));
+            if meta.is_dir() {
+                let mut entries: Vec<_> = std::fs::read_dir(path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .collect();
+                entries.sort();
+                for entry in entries {
+                    walk(&entry, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, &mut out);
+        out
+    }
+
+    /// Make the store read-only: directories 0500 and files 0400, which the
+    /// identity loaders accept as private.
+    fn make_read_only(dir: &Path, read_only: bool) {
+        use std::os::unix::fs::PermissionsExt;
+
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                make_read_only(&path, read_only);
+            } else {
+                let mode = if read_only { 0o400 } else { 0o600 };
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            }
+        }
+        let mode = if read_only { 0o500 } else { 0o700 };
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    fn local_record() -> Vec<u8> {
+        let secret = [41u8; 32];
+        let key = ed25519_dalek::SigningKey::from_bytes(&secret);
+        serde_json::to_vec(&serde_json::json!({
+            "display_name": "Local",
+            "avatar_color": [1, 2, 3],
+            "threshold_identity": {
+                "single_device": true,
+                "group_public_key": key.verifying_key().to_bytes(),
+                "threshold": 1,
+                "total_shares": 1,
+                "share_index": 1,
+                "secret_bytes": secret,
+            },
+            "created_at": "2026-10-03T00:00:00Z",
+            "schema_version": 1,
+        }))
+        .unwrap()
+    }
+
+    /// One share of a 2-of-2 identity, as this device holds it.
+    fn threshold_record() -> Vec<u8> {
+        use getrandom::{SysRng, rand_core::UnwrapErr};
+        use threshold_identity::ThresholdIdentity;
+
+        let mut rng = UnwrapErr(SysRng);
+        let mut a = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+        let mut b = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+        let (mut session_a, round1_a) = a.begin_enrolment(1, 2, 2, &mut rng).unwrap();
+        let (mut session_b, round1_b) = b.begin_enrolment(2, 2, 2, &mut rng).unwrap();
+        let out_a = session_a.receive_round1(&[round1_b]).unwrap();
+        let out_b = session_b.receive_round1(&[round1_a]).unwrap();
+        session_a.receive_round2(&[out_b[&1].clone()]).unwrap();
+        session_b.receive_round2(&[out_a[&2].clone()]).unwrap();
+        a.adopt_dkg_outcome(session_a).unwrap();
+        b.adopt_dkg_outcome(session_b).unwrap();
+        let secret = a.export_device_secret().unwrap();
+        serde_json::to_vec(&serde_json::json!({
+            "display_name": "Threshold",
+            "avatar_color": [4, 5, 6],
+            "threshold_identity": {
+                "single_device": false,
+                "group_public_key": a.group_public_key().as_bytes(),
+                "threshold": 2,
+                "total_shares": 2,
+                "share_index": 1,
+                "secret_bytes": secret.as_slice(),
+            },
+            "created_at": "2026-10-03T00:00:00Z",
+            "schema_version": 1,
+        }))
+        .unwrap()
+    }
+
+    /// Resolve the active record and start its broker, as every authored
+    /// launch does.
+    fn launch_identity(store: &Path) -> Result<(), RunError> {
+        let opts = RunOptions {
+            identity: IdentitySource::Store(store.to_path_buf()),
+            ..RunOptions::default()
+        };
+        let path = resolve_identity_host_path(&opts).expect("an active record");
+        let (app, control, thread) =
+            start_identity_broker(&path, identity_store(&opts.identity).as_deref())?;
+        drop(app);
+        drop(control);
+        thread.join().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn launching_never_writes_the_identity_store() {
+        // Each record as provisioning leaves it: a local or threshold primary
+        // secured into its broker file, and a joined device's public record.
+        for (name, id, primary) in [
+            ("local", "primary", Some(local_record())),
+            ("threshold", "primary", Some(threshold_record())),
+            ("public member", "identity-joined", None),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let store = root.path().join("identity");
+            if let Some(bytes) = primary {
+                runtime_identity::import_identity_with_provider(
+                    &store,
+                    id,
+                    &bytes,
+                    &runtime_identity::BrokerFileProvider::new(&store),
+                )
+                .unwrap();
+            } else {
+                std::fs::create_dir_all(&store).unwrap();
+                std::fs::write(
+                    store.join(format!("{id}.json")),
+                    runtime_identity::public_member_record("Member", [1, 2, 3], [9; 32]).unwrap(),
+                )
+                .unwrap();
+                make_read_only(&store, false);
+            }
+            runtime_identity::set_active_identity(&store, id).unwrap();
+            make_read_only(&store, true);
+            let before = store_snapshot(&store);
+
+            for _ in 0..2 {
+                launch_identity(&store).unwrap_or_else(|error| panic!("{name}: {error}"));
+            }
+
+            assert_eq!(
+                store_snapshot(&store),
+                before,
+                "launching with a {name} record wrote the identity store"
+            );
+            make_read_only(&store, false);
+        }
+
+        // A record whose key was never secured fails the launch, names where
+        // to secure it, and stays exactly as it was.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let store = root.path().join("identity");
+            std::fs::create_dir_all(&store).unwrap();
+            std::fs::write(store.join("primary.json"), local_record()).unwrap();
+            make_read_only(&store, true);
+            let before = store_snapshot(&store);
+
+            let error = launch_identity(&store).expect_err("an unsecured record must not launch");
+            assert!(error.to_string().contains("Settings > Users"), "{error}");
+            assert_eq!(store_snapshot(&store), before);
+            make_read_only(&store, false);
         }
     }
 

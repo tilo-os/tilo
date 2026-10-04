@@ -174,11 +174,6 @@ pub struct Tools {
     /// Whether the chosen layer's adjustments are shown, with nothing
     /// selected.
     pub layer_adjust: LocalState<bool>,
-    /// The format a person asked to export the artwork in (`png`, `jpeg`,
-    /// `webp`), until the canvas renders it; empty when none was asked.
-    pub export: LocalState<String>,
-    /// An export being saved where the person chooses, until it is.
-    pub saving: Rc<RefCell<Option<ui::portal::SaveChannel>>>,
     /// A picture being chosen to add, until the chooser answers.
     pub picking: Rc<RefCell<Option<ui::portal::ContentsChannel>>>,
     /// The preset the brush lays strokes with on a plain layer.
@@ -193,6 +188,9 @@ pub struct Tools {
     pub taper: LocalState<f64>,
     /// What the eraser takes: whole strokes, or the paint under it.
     pub erasing: LocalState<Erasing>,
+    /// What the magic wand and the bucket find colour in: every layer as
+    /// shown, or the chosen layer alone.
+    pub sampling: LocalState<Sampling>,
     /// How crisp the eraser's edge is, `0..=1`.
     pub eraser_hardness: LocalState<f64>,
     /// How much paint the eraser takes off, `0..=1`.
@@ -200,6 +198,54 @@ pub struct Tools {
     /// Draws the artwork and keeps painted layers' simulations, shared by
     /// the canvas and the layer thumbnails so each layer is simulated once.
     pub renderer: Rc<RefCell<Renderer>>,
+    /// The dialog open over the window, if any.
+    pub sheet: LocalState<Option<Sheet>>,
+    /// What the person asked of Files, carried out by the file desk.
+    pub files: LocalState<Option<FileRequest>>,
+    /// The file this window's artwork was last opened from or saved to.
+    pub file: LocalState<Option<String>>,
+    /// What the last file request came to, said beside the title.
+    pub notice: LocalState<Option<String>>,
+    /// The artworks opened or saved lately, newest first.
+    pub recents: LocalState<Vec<crate::document::Recent>>,
+    /// The welcome over a blank artwork was put away.
+    pub welcomed: LocalState<bool>,
+    /// What was chosen from the artwork's menu, until it is carried out.
+    pub menu: LocalState<String>,
+    /// What the export dialog is set to.
+    pub export: crate::panels::export::Choices,
+    /// What the new-artwork dialog is set to.
+    pub new: crate::panels::start::Choices,
+    /// The part of the artwork the canvas shows, in artwork units.
+    pub visible: LocalState<Option<ui::vello::kurbo::Rect>>,
+}
+
+/// A dialog over the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sheet {
+    /// A size, a ground and a medium to start a new artwork on.
+    NewArtwork,
+    /// Exporting the artwork as a picture.
+    Export,
+    /// The keyboard shortcuts.
+    Shortcuts,
+}
+
+/// Something asked of Files.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FileRequest {
+    /// Choose an artwork or SVG to open in place of this one.
+    Open,
+    /// Open the artwork at this path.
+    OpenRecent(String),
+    /// Save to the file the artwork came from, or choose one.
+    Save,
+    /// Choose a file to save the artwork to, and keep working on it there.
+    SaveAs,
+    /// Save a copy to a file of its own and keep working on this one.
+    Duplicate,
+    /// Export a picture as set in the export dialog.
+    Export(crate::panels::export::Settings),
 }
 
 /// A control whose value the canvas shows while it is dragged.
@@ -207,8 +253,8 @@ pub struct Tools {
 pub struct Live {
     /// The control's value, as it moves.
     pub state: LocalState<f64>,
-    /// Its value when it was built: what the artwork already shows.
-    pub committed: f64,
+    /// The value the artwork has, followed as it changes.
+    pub committed: LocalState<f64>,
     /// The value onto the artwork as shown.
     pub apply: Onto,
 }
@@ -220,7 +266,8 @@ impl Live {
     /// The value while it differs from what the artwork has.
     pub fn moved(&self) -> Option<f64> {
         let value = self.state.with(|value| *value);
-        ((value - self.committed).abs() > 1e-9).then_some(value)
+        let committed = self.committed.with(|value| *value);
+        ((value - committed).abs() > 1e-9).then_some(value)
     }
 }
 
@@ -265,6 +312,16 @@ pub enum ViewRequest {
     Actual,
 }
 
+/// Where the magic wand and the bucket look for colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sampling {
+    /// Every layer, as the artwork shows.
+    #[default]
+    All,
+    /// The chosen layer alone.
+    Layer,
+}
+
 /// What the eraser takes off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Erasing {
@@ -297,8 +354,6 @@ impl Default for Tools {
             crop: LocalState::new(false),
             live: Rc::default(),
             picking: Rc::default(),
-            export: LocalState::new(String::new()),
-            saving: Rc::default(),
             layer_adjust: LocalState::new(false),
             preset: LocalState::new(Preset::Round),
             opacity: LocalState::new(1.0),
@@ -307,9 +362,22 @@ impl Default for Tools {
             smoothing: LocalState::new(round.smoothing),
             taper: LocalState::new(round.taper),
             erasing: LocalState::new(Erasing::Paint),
+            sampling: LocalState::new(Sampling::All),
             eraser_hardness: LocalState::new(1.0),
             eraser_strength: LocalState::new(1.0),
-            renderer: Rc::default(),
+            // The canvas and the thumbnails never wait for a picture to
+            // decode; a look or export asks the renderer to.
+            renderer: Rc::new(RefCell::new(Renderer::impatient())),
+            sheet: LocalState::new(None),
+            files: LocalState::new(None),
+            file: LocalState::new(None),
+            notice: LocalState::new(None),
+            recents: LocalState::new(Vec::new()),
+            welcomed: LocalState::new(false),
+            menu: LocalState::new(String::new()),
+            export: crate::panels::export::Choices::default(),
+            new: crate::panels::start::Choices::default(),
+            visible: LocalState::new(None),
         }
     }
 }

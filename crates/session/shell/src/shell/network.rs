@@ -8,6 +8,8 @@ use crate::shell::state::WorkspaceAuthority as _;
 mod boot_join;
 mod governor_actions;
 mod hosted_topology;
+#[cfg(test)]
+mod live_identity_tests;
 mod native_enrollment;
 mod native_ingress;
 #[cfg(test)]
@@ -794,12 +796,13 @@ fn home_peer_registry_path() -> PathBuf {
     network_env("TILO_HOME_PEERS_PATH").map_or_else(
         || {
             let paths = crate::firstboot::collaboration_identity_paths();
-            paths
-                .user_pubkey
-                .parent()
-                .and_then(std::path::Path::parent)
-                .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from)
-                .join("home-peers.json")
+            tilo_user_identity::home_peer_registry_path(
+                paths
+                    .user_pubkey
+                    .parent()
+                    .and_then(std::path::Path::parent)
+                    .unwrap_or_else(|| std::path::Path::new("/var/lib/tilo")),
+            )
         },
         |(_, path)| PathBuf::from(path),
     )
@@ -8683,6 +8686,7 @@ mod tests {
                 user_public_key: hex::encode(user_public_key),
                 device_cert: None,
                 relay_workspace_ids: vec![personal_continuity_topic_id(&user_public_key)],
+                environments: tilo_relay_protocol::RelayEnvironments::default(),
             };
             std::fs::write(
                 &registry,
@@ -11226,6 +11230,7 @@ mod tests {
                     user_public_key: hex::encode(own_user),
                     device_cert: None,
                     relay_workspace_ids: vec![42],
+                    environments: tilo_relay_protocol::RelayEnvironments::default(),
                 },
                 tilo_relay_protocol::HomePeerRegistration {
                     schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
@@ -11236,6 +11241,7 @@ mod tests {
                     user_public_key: hex::encode(own_user),
                     device_cert: None,
                     relay_workspace_ids: vec![42],
+                    environments: tilo_relay_protocol::RelayEnvironments::default(),
                 },
             ];
             std::fs::write(
@@ -11264,7 +11270,7 @@ mod tests {
             env.remove("TILO_HOME_PEERS_PATH");
             assert_eq!(
                 home_peer_registry_path(),
-                identity_root.join("home-peers.json"),
+                tilo_user_identity::home_peer_registry_path(&identity_root),
                 "the shell must read the approval registry beside its own user key, never a system copy"
             );
         }

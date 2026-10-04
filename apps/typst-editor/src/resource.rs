@@ -212,7 +212,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        let mut app = TypstApp::with_demo_documents();
+        let mut app = TypstApp::with_demo_document();
         let mut state = ui::State::new();
         Widget::sync(&mut app, &mut state.doc, &state.root);
         assert!(
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn a_standalone_source_is_created_through_the_local_host() {
         use automerge::ReadDoc;
-        let mut app = TypstApp::with_demo_documents();
+        let mut app = TypstApp::with_demo_document();
         assert!(!app.is_framework_hosted());
         let mut doc = automerge::AutoCommit::new();
         let id = app.ensure_source_obj(&mut doc);
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn hosted_source_setup_is_submitted_as_an_action() {
         use automerge::ReadDoc;
-        let mut app = TypstApp::with_demo_documents();
+        let mut app = TypstApp::with_demo_document();
         app.set_framework_hosted(true);
         let mut doc = automerge::AutoCommit::new();
         let id = app.ensure_source_obj(&mut doc);

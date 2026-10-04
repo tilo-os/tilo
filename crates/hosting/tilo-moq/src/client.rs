@@ -644,24 +644,60 @@ async fn receive(shared: Arc<Shared>, name: String) {
     }
 }
 
+/// The newest object delivered from one publication.
+#[derive(Clone, Copy)]
+struct Delivered {
+    sequence: u64,
+    timestamp: u64,
+}
+impl Delivered {
+    /// Frames published between this object and `next` that never arrived:
+    /// the publisher, relay or receiver dropped them past a latency budget.
+    /// A publisher that abandons a partial group skips sequence numbers to the
+    /// next group without skipping media time, so only frames missing from
+    /// both count.
+    fn skipped(self, next: &VoiceObject) -> u64 {
+        let sequences = next
+            .sequence
+            .saturating_sub(self.sequence)
+            .saturating_sub(1);
+        let frames = next
+            .timestamp
+            .saturating_sub(self.timestamp)
+            .checked_div(u64::from(voice::FRAME_SAMPLES))
+            .unwrap_or(0)
+            .saturating_sub(1);
+        sequences.min(frames)
+    }
+}
+
 /// Queue one received object. Returns false when the carrier must stop.
 fn deliver(
     shared: &Shared,
     name: &str,
     group: u64,
     object: VoiceObject,
-    last: &Mutex<Option<u64>>,
+    last: &Mutex<Option<Delivered>>,
 ) -> bool {
     let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
     if state.status != Status::Live {
         return false;
     }
     let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
-    if last.is_some_and(|prior| object.sequence <= prior) {
-        state.counters.duplicate_dropped = state.counters.duplicate_dropped.saturating_add(1);
-        return true;
+    if let Some(prior) = *last {
+        if object.sequence <= prior.sequence {
+            state.counters.duplicate_dropped = state.counters.duplicate_dropped.saturating_add(1);
+            return true;
+        }
+        state.counters.late_dropped = state
+            .counters
+            .late_dropped
+            .saturating_add(prior.skipped(&object));
     }
-    *last = Some(object.sequence);
+    *last = Some(Delivered {
+        sequence: object.sequence,
+        timestamp: object.timestamp,
+    });
     drop(last);
     state.expire(Instant::now());
     if state
@@ -699,7 +735,7 @@ async fn receive_datagrams(
     shared: &Shared,
     name: &str,
     mut track: moq_net::track::Subscriber,
-    last: &Mutex<Option<u64>>,
+    last: &Mutex<Option<Delivered>>,
 ) {
     while let Ok(Some(datagram)) = track.recv_datagram().await {
         if shared.check().is_err() {
@@ -726,7 +762,7 @@ async fn receive_groups(
     shared: &Shared,
     name: &str,
     mut track: moq_net::track::Subscriber,
-    last: &Mutex<Option<u64>>,
+    last: &Mutex<Option<Delivered>>,
 ) {
     let mut next = track.recv_group().await;
     while let Ok(Some(mut group)) = next {

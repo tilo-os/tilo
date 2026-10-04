@@ -51,6 +51,15 @@ pub const EMPTY_WORKSPACE_MEET: &str = "shell.empty-workspace.meet";
 pub const EMPTY_WORKSPACE_INVITE: &str = "shell.empty-workspace.invite";
 pub const EMPTY_WORKSPACE_ACTIVITY: &str = "shell.empty-workspace.activity";
 
+/// An action an app publishes, as a launchpad card names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LaunchpadAppAction {
+    pub app_id: &'static str,
+    pub display_name: &'static str,
+    pub resource: &'static str,
+    pub action: &'static str,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LaunchpadAction {
     Chat,
@@ -91,6 +100,22 @@ impl LaunchpadAction {
         }
     }
 
+    /// The typed action a card invokes in its app: the app, the resource it
+    /// publishes the action on, and the action. The host delivers it to the
+    /// app in the workspace, launching the app first when it is closed, so
+    /// the card does what it names in one step.
+    pub const fn app_action(self) -> Option<LaunchpadAppAction> {
+        match self {
+            Self::Meet => Some(LaunchpadAppAction {
+                app_id: "so.tilo.chat",
+                display_name: "Chat",
+                resource: "chat.workspace",
+                action: "start-call",
+            }),
+            Self::Chat | Self::Notes | Self::Tasks | Self::Invite | Self::Activity => None,
+        }
+    }
+
     /// The card the person chose, cleared from `doc` so it fires once.
     pub fn take(doc: &mut AutoCommit, root: &ObjId) -> Option<Self> {
         let action = Self::ALL.into_iter().find(|action| {
@@ -104,7 +129,19 @@ impl LaunchpadAction {
         Some(action)
     }
 
-    fn label(self) -> String {
+    /// A stable, untranslated name for the card.
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Notes => "notes",
+            Self::Tasks => "tasks",
+            Self::Meet => "meet",
+            Self::Invite => "invite",
+            Self::Activity => "activity",
+        }
+    }
+
+    pub fn label(self) -> String {
         match self {
             Self::Chat => t("launchpad-discuss"),
             Self::Notes => t("launchpad-notes"),
@@ -268,6 +305,21 @@ impl CollaborationLaunchpad {
             _ => self.rail_clearance,
         };
         Self::card_geometry(self.presentation_rect(), clearance)
+    }
+
+    /// The cards and the "Open an app" button by stable name
+    /// (`launchpad:notes`, `launchpad:open-app`, ...), as laid out in the
+    /// last frame, so a driver can press them like a person would.
+    pub fn targets(&self) -> Vec<(String, Rect)> {
+        LaunchpadAction::ALL
+            .iter()
+            .zip(self.card_rects)
+            .map(|(action, rect)| (format!("launchpad:{}", action.slug()), rect))
+            .chain(std::iter::once((
+                "launchpad:open-app".to_owned(),
+                self.app_button_rect(),
+            )))
+            .collect()
     }
 
     fn fire(action: LaunchpadAction, state: &mut AutoCommit, path: &ObjId) {
@@ -1039,6 +1091,23 @@ mod tests {
             );
         }
 
+        fn call_card_names_the_action_it_performs() {
+            let call = LaunchpadAction::Meet.app_action().expect("call action");
+            assert_eq!(
+                (call.app_id, call.resource, call.action),
+                ("so.tilo.chat", "chat.workspace", "start-call")
+            );
+            for card in LaunchpadAction::ALL {
+                if let Some(action) = card.app_action() {
+                    assert_eq!(
+                        card.app_target(),
+                        Some((action.app_id, action.display_name)),
+                        "{card:?} acts in the app it opens"
+                    );
+                }
+            }
+        }
+
         fn assistive_activation_publishes_the_same_action_as_a_card_click() {
             let mut launchpad = CollaborationLaunchpad::new(test_rail);
             let mut doc = AutoCommit::new();
@@ -1060,6 +1129,7 @@ mod tests {
         desktop_launchpad_exposes_an_app_opener();
         every_card_has_a_unique_semantic_route();
         collaboration_cards_target_the_apps_that_own_those_features();
+        call_card_names_the_action_it_performs();
         assistive_activation_publishes_the_same_action_as_a_card_click();
     }
 

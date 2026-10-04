@@ -752,6 +752,7 @@ impl Relay {
             full_replica: full_replica.clone(),
             compute_ready: Arc::clone(&compute_ready),
             state_root: cfg.state_root.clone(),
+            workspaces: workspaces.clone(),
         };
         let compute = ComputeProtocol::new(
             workspaces.clone(),
@@ -2057,6 +2058,21 @@ struct DiscoveryProtocol {
     autobind: Option<WorkspaceAutobind>,
 }
 
+/// What this relay's workers run for environments, across its workspaces.
+async fn environment_offer(
+    workspaces: &WorkspaceRegistry,
+) -> tilo_relay_protocol::RelayEnvironments {
+    let bound: Vec<SharedWorkspace> = workspaces.lock().await.values().cloned().collect();
+    let now_ms = tilo_clock::unix_now_ms();
+    let mut offer = tilo_relay_protocol::RelayEnvironments::default();
+    for workspace in bound {
+        let here = workspace.lock().await.compute.environment_offer(now_ms);
+        offer.sessions |= here.sessions;
+        offer.legacy_apps |= here.legacy_apps;
+    }
+    offer
+}
+
 #[derive(Clone)]
 struct ManagementProtocol {
     endpoint: Endpoint,
@@ -2068,6 +2084,7 @@ struct ManagementProtocol {
     full_replica: ReplicaProof,
     compute_ready: Arc<AtomicBool>,
     state_root: PathBuf,
+    workspaces: WorkspaceRegistry,
 }
 
 impl std::fmt::Debug for ManagementProtocol {
@@ -2191,6 +2208,7 @@ impl ProtocolHandler for ManagementProtocol {
             .filter(|label| !label.trim().is_empty())
             .unwrap_or_else(|| self.own_cert.device_label.clone());
         let files_ready = self.full_replica.current().is_some();
+        let environments = environment_offer(&self.workspaces).await;
         write_frame(
             &mut send,
             &postcard::to_allocvec(&HomePeerManagementResponse {
@@ -2199,6 +2217,7 @@ impl ProtocolHandler for ManagementProtocol {
                 label: label.trim().to_string(),
                 files_ready,
                 services,
+                environments,
                 decommissioned,
             })
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,

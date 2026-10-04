@@ -1186,7 +1186,7 @@ impl BrowserWidget {
             }
             WKey::Named(WNamedKey::Backspace) => {
                 self.address.update(|address| {
-                    address.pop();
+                    ui::text_edit::delete_last_grapheme(address);
                 });
                 true
             }
@@ -4142,7 +4142,11 @@ impl BrowserWidget {
                 WebViewEvent::LoadFinishedAt { .. }
                 | WebViewEvent::FaviconChanged { .. }
                 | WebViewEvent::TitleChanged(_)
-                | WebViewEvent::LoadProgress(_) => {}
+                | WebViewEvent::LoadProgress(_)
+                // Answers to the paint stream's own requests; its engine
+                // wrapper consumes them before they reach the browser.
+                | WebViewEvent::PaintSnapshot { .. }
+                | WebViewEvent::PaintResource { .. } => {}
                 WebViewEvent::LoadFinished => {
                     if !self.forced_load_error && !self.address_error_active {
                         self.load_error = None;
@@ -4787,9 +4791,23 @@ impl Default for BrowserWidget {
     }
 }
 
-/// Live browsing always uses a real engine. WPE is an explicit migration
-/// option; deterministic rendering is confined to `new_headless`.
+/// Live browsing always uses a real engine. `TILO_BROWSER_PAINT=1` draws its
+/// pages from the paint stream (the engine's layout as a display list, drawn by
+/// this toolkit) instead of its pixels: what a web client of this host sees.
+/// Either way the session can share the page as that stream.
 fn default_engine(mode: BrowsingMode) -> SharedEngine {
+    let engine = native_engine(mode);
+    if std::env::var("TILO_BROWSER_PAINT").as_deref() == Ok("1") {
+        return ui::webview::paint::PaintEngine::new(engine);
+    }
+    // Drawn from pixels here; captured as a display list only while the
+    // session shares the window with someone watching (a web member).
+    ui::webview::paint::PaintEngine::streaming(engine)
+}
+
+/// WPE is an explicit migration option; deterministic rendering is confined
+/// to `new_headless`.
+fn native_engine(mode: BrowsingMode) -> SharedEngine {
     #[cfg(feature = "wpe")]
     if std::env::var("TILO_BROWSER_ENGINE").as_deref() == Ok("wpe") {
         if mode.is_private() {
@@ -7838,6 +7856,26 @@ mod tests {
         let root = automerge::ROOT;
         widget.sync(&mut state, &root);
         (state, root)
+    }
+
+    /// Keys typed into a new tab's address before its field exists: one
+    /// Backspace removes one character as a person sees it.
+    #[test]
+    fn typed_ahead_address_backspace_removes_a_whole_character() {
+        let mut widget = BrowserWidget::with_engine(TestEngine::new(), true);
+        let typed = |widget: &mut BrowserWidget, key: WKey, replace: bool| {
+            assert!(widget.buffer_tab_address(&key, replace));
+            widget.address.with(Clone::clone)
+        };
+        typed(&mut widget, WKey::Character("a👍🏽".into()), true);
+        assert_eq!(
+            typed(&mut widget, WKey::Character("e\u{301}".into()), false),
+            "a👍🏽e\u{301}"
+        );
+        let backspace = || WKey::Named(WNamedKey::Backspace);
+        assert_eq!(typed(&mut widget, backspace(), false), "a👍🏽");
+        assert_eq!(typed(&mut widget, backspace(), false), "a");
+        assert_eq!(typed(&mut widget, backspace(), false), "");
     }
 
     /// Page actions, as an agent reaches them: published on `browser.page`,

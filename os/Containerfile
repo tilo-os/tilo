@@ -673,7 +673,7 @@ ARG TILO_APP_COLLECTION_PUBLISHER=""
 # rebuilding each other's artifacts. The cargo home and sccache are shared.
 ARG TILO_BUILD_CACHE_KEY=default
 RUN --mount=type=cache,target=/build/.cargo-home \
-    --mount=type=cache,id=tilo-cargo-target-${TILO_BUILD_CACHE_KEY},target=/build/target \
+    --mount=type=cache,id=tilo-cargo-target-${TILO_BUILD_CACHE_KEY},target=/build/target,sharing=locked \
     --mount=type=cache,target=/build/.sccache \
     --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
@@ -725,9 +725,12 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          thin|off) ;; \
          *) printf '%s\n' 'TILO_RUST_LTO must be thin or off' >&2; exit 1 ;; \
        esac \
+    # A content record vouches only for the units its build compiles, so each
+    # set of prebuilt inputs keeps its own.
+    && built_sources="/build/target/.tilo-built-sources-apps${TILO_PREBUILT_APPS}-desktop${TILO_PREBUILT_DESKTOP}-browser${TILO_WITH_BROWSER}" \
     && case "$TILO_CARGO_FRESHNESS" in \
          clean) cargo clean --release && cargo clean --profile thin-app ;; \
-         content) sh os/scripts/cargo-freshness.sh /build /build/target/.tilo-content-hashes \
+         content) sh os/scripts/cargo-freshness.sh /build "$built_sources" \
                     || { cargo clean --release && cargo clean --profile thin-app; } ;; \
          *) printf '%s\n' 'TILO_CARGO_FRESHNESS must be clean or content' >&2; exit 1 ;; \
        esac \
@@ -750,7 +753,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        fi \
     && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service -p account-custody" \
     # Select the shipped executables explicitly: --bins also links shell dev tools.
-    && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-account-credential" \
+    && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-account-credential" \
     # The thin-app profile compiles each crate as one codegen unit, for tapp
     # size. Built in the image without LTO (a dev build) the runtime and its
     # dependencies take 16: one unit made fs alone compile for ten minutes.
@@ -792,7 +795,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
     && build_phase rust-output-validation \
     && missing=0 \
-    && for b in shell tilo-runtime-mcp tilo-projector tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control terminal file-explorer settings tilo-model-manager tilo-model-gateway tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential; do \
+    && for b in shell tilo-runtime-mcp tilo-projector tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-relay-environment tilo-relay-offers terminal file-explorer settings tilo-model-manager tilo-model-gateway tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential; do \
          case "${TILO_PREBUILT_DESKTOP}:$b" in 1:shell|1:tilo-launcher|1:tilo-unlock-helper|1:tilo-runtime-mcp) continue ;; esac; \
          if [ ! -x "target/release/$b" ]; then \
            printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
@@ -828,6 +831,8 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/tilo-relay-admin \
           target/release/tilo-enroll \
           target/release/tilo-home-peer-control \
+          target/release/tilo-relay-environment \
+          target/release/tilo-relay-offers \
           target/release/terminal \
           target/release/file-explorer \
           target/release/settings \
@@ -892,6 +897,11 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
          && [ -n "${LIBSTD}" ] \
          && cp "${LIBSTD}" /out/; \
+       fi \
+    # Only now does the target directory hold this workspace's build in every
+    # profile; a build that stopped earlier left the changed sources marked.
+    && if [ "$TILO_CARGO_FRESHNESS" = content ]; then \
+         sh os/scripts/cargo-freshness.sh --built "$built_sources"; \
        fi \
     && build_phase rust-cleanup \
     # Every build product needed below now lives in /out. A clean build's
@@ -1174,6 +1184,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-rollback-harden.timer \
     /usr/lib/systemd/system/
 COPY os/tests/rollback-boot-check.sh /usr/libexec/tilo-rollback-boot-check
+COPY os/tests/boot_units_gate.sh /usr/libexec/tilo/boot-units-gate.sh
 
 FROM scratch AS recovery-files
 COPY --from=component-files /image/recovery-files/ /
@@ -1438,9 +1449,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # PAM stack unlocks Secret Service at password login, so an existing Tilo
 # identity is available before the compositor probes it.
 #
-# `polkit` is required so the greeter's Reboot / Shut down buttons can drive
-# logind: `systemctl reboot` / `poweroff` issue the
-# `org.freedesktop.login1.{reboot,power-off}` actions, which polkit authorises
+# `polkit` is required so the greeter's power menu can drive
+# logind: `systemctl suspend` / `reboot` / `poweroff` issue the
+# `org.freedesktop.login1.{suspend,reboot,power-off}` actions, which polkit authorises
 # for the `greetd` user via etc/polkit-1/rules.d/49-tilo-greeter-power.rules.
 # It also ships `polkit-agent-helper-1` (and its activation socket), which the
 # compositor's authentication agent drives to run PAM for administrator
@@ -1598,9 +1609,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     power-profiles-daemon \
     && dnf clean all && ${FINALIZE_RPMDB}
 
-# Offline spelling dictionaries used by the shared text toolkit. Hunspell is
-# the affix-aware multilingual baseline; English also has an embedded fallback
-# so recovery/minimal environments retain checking. Keep this explicit rather
+# Offline spelling dictionaries used by the shared text toolkit, which reads
+# /usr/share/hunspell in-process (also inside app sandboxes); English also has
+# an embedded word list so recovery/minimal environments retain checking. The
+# `hunspell` CLI is for people at a terminal. Keep this explicit rather
 # than pulling every Fedora language pack into the immutable image.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     hunspell \
@@ -1948,6 +1960,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     xwayland-satellite \
     waypipe \
     virtiofsd \
+    vhost-device-vsock \
     skopeo \
     virt-viewer \
     xorriso \
@@ -2094,14 +2107,16 @@ COPY \
 COPY os/tests/airplay-encrypted-session.sh /usr/libexec/tilo/airplay-encrypted-session-test.sh
 # The session-context check proves a greetd login runs in the user's SELinux
 # domain and logind session scope, with each launched app in its own scope.
-COPY os/tests/projection-boot-check.sh os/tests/session-context-check.sh /usr/libexec/tilo/
+COPY os/tests/projection-boot-check.sh os/tests/session-context-check.sh \
+     os/tests/input-hotplug-check.sh /usr/libexec/tilo/
 # Optional AirPlay media acceptance runs against the assembled image separately.
 # Its setup/probe timing is not an installation prerequisite. Keep the full
 # protocol/media/teardown test available; omitting it here does not claim success.
 # Native protocol tests and the GStreamer plugin checks above remain required.
 RUN chmod 0755 /usr/libexec/tilo/airplay-encrypted-session-test.sh \
           /usr/libexec/tilo/projection-boot-check.sh \
-          /usr/libexec/tilo/session-context-check.sh
+          /usr/libexec/tilo/session-context-check.sh \
+          /usr/libexec/tilo/input-hotplug-check.sh
 
 # Put both stores' command shims on PATH, so a package that declares CLI
 # commands can be run by name — the only way a CLI package is meant to be run.
@@ -2137,31 +2152,20 @@ COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
 COPY os/usr/share/tilo/git/synced-worktree.gitconfig /usr/share/tilo/git/synced-worktree.gitconfig
 COPY os/etc/gitconfig /etc/gitconfig
 
-# Wayland session desktop entries. Two files land here:
-#   - shell.desktop          — default session (no peer-sync)
-#   - shell-peer-sync.desktop — opt-in session (Iroh enabled)
-# The custom graphical greeter lists both at the login prompt; see
-# docs/peer-sync.md. The separate text-mode tuigreet package is intentionally
+# The one Wayland session. tilo-greeter starts it directly and shows a session
+# picker only when the directory offers a real choice, so nothing else may land
+# in /usr/share/wayland-sessions or /usr/share/xsessions; the image contract
+# below enforces that. The separate text-mode tuigreet package is intentionally
 # absent from this image.
-COPY \
-    os/usr/share/wayland-sessions/shell.desktop \
-    os/usr/share/wayland-sessions/shell-peer-sync.desktop \
-    /usr/share/wayland-sessions/
+COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/
 COPY --chmod=0755 \
     os/usr/libexec/tilo-session \
     os/usr/libexec/tilo-security-audit \
     /usr/libexec/
-# User units: the graphical-session target and the opt-in peer-sync user
-# service. (`systemctl --global enable` further down resolves each unit file at
-# build time, so a unit that was never copied in fails the build outright with
-# "does not exist".) Peer sync is NOT enabled by
-# default — users opt in via `systemctl --user enable shell-peer-sync` or by
-# picking the "Tilo (peer-sync)" session entry at the greetd prompt. See
-# /usr/share/doc/tilo/peer-sync.md for the privacy / discovery trade-off.
-COPY \
-    os/usr/lib/systemd/user/tilo-graphical-session.target \
-    os/usr/lib/systemd/user/shell-peer-sync.service \
-    /usr/lib/systemd/user/
+# The graphical-session user target. (`systemctl --global enable` further down
+# resolves each unit file at build time, so a unit that was never copied in
+# fails the build outright with "does not exist".)
+COPY os/usr/lib/systemd/user/tilo-graphical-session.target /usr/lib/systemd/user/
 
 # The echo-cancelled microphone for calls: a PipeWire client config the
 # desktop session runs (`pipewire -c tilo-echo-cancel.conf`) while Settings →
@@ -2266,8 +2270,7 @@ COPY os/etc/chrony.conf /etc/chrony.conf
 COPY os/usr/share/tilo/installer-locales.txt /usr/share/tilo/installer-locales.txt
 
 # Bundled documentation (the README in the OS submodule, plus the
-# peer-sync trade-off doc users are pointed at from the .desktop
-# Comment field and the systemd unit Documentation= line).
+# peer-sync transport and diagnostics doc).
 # The Secure Boot + disk-encryption procedure. On-image because the enrolment
 # sequence has to be readable from the machine being enrolled, which is the one
 # place a wrong step stops it from booting.
@@ -2399,6 +2402,7 @@ RUN chmod 0755 /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-conf
         /usr/lib/systemd/system-generators/tilo-root-generator \
         /usr/lib/dracut/modules.d/91tilo-rollback/module-setup.sh \
         /usr/libexec/tilo-rollback-harden /usr/libexec/tilo-rollback-boot-check \
+        /usr/libexec/tilo/boot-units-gate.sh \
  && install -d -m 0755 /usr/share/tilo/pcr-predictions
 
 # ---------------------------------------------------------------------------
@@ -2494,9 +2498,6 @@ RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-pr
 # ---------------------------------------------------------------------------
 # The portal backend needs no unit: the compositor serves it in-process,
 # so it starts and stops with the session it answers for.
-# `shell-peer-sync.service` is pointedly **NOT** enabled — that's the
-# user-opt-in part.
-#
 # `tilo-ush.socket` is globally enabled: every app declaring
 # `ush = "required@<v>"` is refused without that endpoint, while socket
 # activation keeps the supervisor itself off the login path until first use.
@@ -3158,6 +3159,19 @@ COPY --from=fluxcast-builder /src/src/ /fluxcast/
 COPY --from=joycond-builder /out/ /joycond/
 COPY --from=bootc-builder /out/ /bootc/
 
+# BuildKit keys a RUN by a content hash of every bind mount, read-only or not,
+# so mounting the whole split rootfs into the uki stage hashed every file of it,
+# about two minutes of every build. With a composefs digest given, uki.sh reads
+# only these files of the rootfs; this stage hands it just those.
+FROM split AS uki-input
+RUN mkdir /uki-input \
+    && cd / \
+    && for path in usr/lib/os-release usr/lib/bootc/kargs.d \
+                   usr/lib/tilo/hardware-profile.json usr/lib/tilo/hardware-profile-definition.json \
+                   usr/lib/modules/*/dtb; do \
+         if [ -e "$path" ] || [ -L "$path" ]; then cp -a --parents "$path" /uki-input/; fi; \
+       done
+
 FROM uki-tools AS uki
 # The first pass uses a deterministic all-zero placeholder. `bootc install`
 # computes the authoritative digest and os/dev/build-image.sh rewrites only the
@@ -3173,14 +3187,14 @@ ENV TILO_SEAL_GENERATION=${TILO_SEAL_GENERATION}
 # /tmp and /run are tmpfs because ukify needs ordinary build scratch but none of
 # it belongs in the image layer. The authoritative composefs digest comes from
 # the install gate, so this stage no longer needs a rootfs-sized /var/tmp cache.
-# The rootfs mounts are writable (writes are discarded): BuildKit keys a
-# read-only mount by a content hash of everything under it, which for the whole
-# rootfs took two minutes of every build before this step could start.
+# /target holds only uki-input's files, so bootc's own digest of it would be
+# wrong: the digest must be given.
 RUN --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/run \
-    --mount=type=bind,from=split,target=/target,rw \
+    --mount=type=bind,from=uki-input,source=/uki-input,target=/target,rw \
     --mount=type=bind,from=split,source=/kernel,target=/kernel,rw \
-    bash /usr/local/bin/uki.sh
+    { [ -n "$CFS_DIGEST" ] || { echo 'TILO_CFS_DIGEST is required (os/dev/build-image.sh passes a placeholder)' >&2; exit 1; }; } \
+    && bash /usr/local/bin/uki.sh
 
 # NOTHING MAY BE LAYERED ON THIS IMAGE. A derived image that adds a single file to
 # the rootfs has a different composefs digest from the one its inherited UKI seals,

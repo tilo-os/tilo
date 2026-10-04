@@ -36,7 +36,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{Metrics, Spacing};
 use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use crate::widget::{TextInput, Widget};
 
 pub const FOOTER_HEIGHT: f64 = 56.0;
 pub const HEADER_HEIGHT: f64 = 64.0;
@@ -231,7 +231,9 @@ pub struct FilePicker {
     filters: Vec<FileFilter>,
     active_filter: usize,
 
-    filename: String,
+    /// The Save-mode filename: the shared text field, so caret, selection,
+    /// clipboard and input methods behave as in every other field.
+    filename: TextInput,
     first_visible: usize,
 
     /// Set on Open / Cancel. `None` until resolved.
@@ -300,7 +302,10 @@ impl FilePicker {
             accessible_roots: roots,
             filters: vec![FileFilter::all()],
             active_filter: 0,
-            filename: String::new(),
+            filename: TextInput::local()
+                .with_plain_chrome()
+                .with_accessible_name("Filename")
+                .with_placeholder("Filename…"),
             first_visible: 0,
             pending_outcome: None,
             open_rect: Rect::ZERO,
@@ -367,7 +372,8 @@ impl FilePicker {
 
     #[must_use]
     pub fn with_filename(mut self, name: impl Into<String>) -> Self {
-        self.filename = name.into();
+        let name = name.into();
+        self.set_filename(&name);
         self
     }
 
@@ -401,8 +407,15 @@ impl FilePicker {
             .map_or("All files", |f| f.label.as_str())
     }
 
+    /// Put `name` in the filename field with the caret after it, so typing
+    /// continues it.
+    fn set_filename(&mut self, name: &str) {
+        self.filename.set_text(name);
+        self.filename.set_cursor_pos(name.len());
+    }
+
     pub fn filename(&self) -> &str {
-        &self.filename
+        self.filename.value()
     }
 
     pub fn confirm_label(&self) -> &str {
@@ -615,6 +628,7 @@ impl FilePicker {
             self.rect.x1 - PADDING,
             filename_top + FILENAME_HEIGHT - m.field_inset_y,
         );
+        self.filename.apply_layout_external(self.filename_rect);
 
         let up_x1 = self.rect.x1 - PADDING;
         let up_x0 = up_x1 - m.up_w;
@@ -718,14 +732,41 @@ impl FilePicker {
             self.focus = Some(focus);
             self.has_keyboard_focus = true;
         }
+        self.sync_filename_focus();
+    }
+
+    /// The filename field holds the caret exactly while it is the focused
+    /// control of a focused picker.
+    fn sync_filename_focus(&mut self) {
+        let focused = self.has_keyboard_focus && self.focus == Some(PickerFocus::Filename);
+        if self.filename.is_focused() != focused {
+            Widget::set_focus(&mut self.filename, focused);
+        }
+    }
+
+    /// Whether `event` is typing for the focused filename field rather than
+    /// the picker's own navigation (Tab, Escape, Enter).
+    fn is_filename_input(&self, event: &WindowEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        if self.mode != FilePickerMode::Save || self.focus != Some(PickerFocus::Filename) {
+            return false;
+        }
+        match event {
+            WindowEvent::Ime(_) => true,
+            WindowEvent::KeyboardInput { event, .. } => !matches!(
+                event.logical_key,
+                Key::Named(NamedKey::Tab | NamedKey::Escape | NamedKey::Enter)
+            ),
+            _ => false,
+        }
     }
 
     fn can_commit_open(&self) -> bool {
         match self.mode {
             FilePickerMode::Open => self.validated_selected_files().is_some(),
             FilePickerMode::Save => {
-                (!self.filename.trim().is_empty()
-                    && self.safe_save_target(self.filename.trim()).is_some())
+                (!self.filename().trim().is_empty()
+                    && self.safe_save_target(self.filename().trim()).is_some())
                     || self.first_selected_file().is_some()
             }
             FilePickerMode::Directory => self.validated_directory_choice().is_some(),
@@ -871,7 +912,7 @@ impl FilePicker {
     fn commit_open(&mut self) {
         match self.mode {
             FilePickerMode::Save => {
-                let name = self.filename.trim();
+                let name = self.filename().trim();
                 if !name.is_empty() {
                     self.pending_outcome = Some(match self.safe_save_target(name) {
                         Some(target) => FilePickerOutcome::Selected(vec![target]),
@@ -1001,7 +1042,8 @@ impl FilePicker {
         }
         // In Save mode, clicking a file copies its name into the field.
         if self.mode == FilePickerMode::Save {
-            entry.name.clone_into(&mut self.filename);
+            let name = entry.name.clone();
+            self.set_filename(&name);
         }
         if is_double && self.mode == FilePickerMode::Directory {
             self.last_click = None;
@@ -1096,7 +1138,7 @@ impl Widget for FilePicker {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         self.adopt_theme(theme);
         self.apply_layout_helper();
@@ -1124,10 +1166,18 @@ impl Widget for FilePicker {
 
         self.draw_header_and_breadcrumbs(scene, transform, text_renderer, theme);
         self.draw_entry_rows(scene, transform, text_renderer, theme);
-        self.draw_footer(scene, transform, text_renderer, theme);
+        self.draw_footer(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.is_filename_input(event) {
+            self.has_keyboard_focus = true;
+            self.sync_filename_focus();
+            self.filename.handle_event(event, ctx);
+            self.ensure_valid_focus();
+            *ctx.handled = true;
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
@@ -1148,6 +1198,24 @@ impl Widget for FilePicker {
             }
             _ => {}
         }
+        self.sync_filename_focus();
+        if self.mode == FilePickerMode::Save
+            && matches!(
+                event,
+                WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+            )
+        {
+            // The field places its caret and drags its selection itself; the
+            // picker still sees the press to move focus onto the field.
+            let mut field_handled = false;
+            self.filename.handle_event(
+                event,
+                &mut crate::widget::EventCtx {
+                    handled: &mut field_handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
+            );
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -1162,6 +1230,13 @@ impl Widget for FilePicker {
     )]
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
+        let filename_cursor = self.filename.cursor_pos();
+        let filename_anchor =
+            self.filename
+                .selection_range_public()
+                .map_or(filename_cursor, |(start, end)| {
+                    if start == filename_cursor { end } else { start }
+                });
         let controls = self
             .a11y_controls()
             .into_iter()
@@ -1230,8 +1305,8 @@ impl Widget for FilePicker {
                     }),
                 PickerFocus::Filename => AccessNode::new(Role::TextInput)
                     .with_name("Filename")
-                    .with_value(self.filename.clone())
-                    .with_text_selection(self.filename.len(), self.filename.len())
+                    .with_value(self.filename().to_owned())
+                    .with_text_selection(filename_anchor, filename_cursor)
                     .with_key(control.id())
                     .with_bounds(self.filename_rect)
                     .with_state(AccessState {
@@ -1290,6 +1365,10 @@ impl Widget for FilePicker {
 
     fn traps_focus(&self) -> bool {
         true
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.filename)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
@@ -1583,16 +1662,17 @@ impl FilePicker {
     /// Save-mode filename field, filter chip and Cancel/Open(Save)
     /// buttons. Split out of `draw` to keep that function readable.
     fn draw_footer(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
         let row_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         if self.mode == FilePickerMode::Save {
-            self.draw_filename_field(scene, transform, text_renderer, theme, row_size);
+            self.draw_filename_field(scene, transform, text_renderer, theme, presence);
         }
         if self.mode != FilePickerMode::Directory && self.filters.len() > 1 {
             self.draw_filter_chip(scene, transform, text_renderer, theme, row_size);
@@ -1618,12 +1698,12 @@ impl FilePicker {
     /// Save-mode filename text field. Split out of `draw_footer` to keep
     /// that under the line cap.
     fn draw_filename_field(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        row_size: f32,
+        presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
         let field = self.filename_rect;
@@ -1657,28 +1737,13 @@ impl FilePicker {
                 &s,
             );
         }
-        let shown = if self.filename.is_empty() {
-            "Filename…"
-        } else {
-            &self.filename
-        };
-        let color = if self.filename.is_empty() {
-            tokens.colors.text_dim
-        } else {
-            tokens.colors.text_primary
-        };
-        // Centre on the measured line, not the font size.
-        let (_, shown_h) = text_renderer.measure(shown, row_size, None);
-        text_renderer.draw_text(
+        Widget::draw(
+            &mut self.filename,
             scene,
-            shown,
-            row_size,
-            color,
-            transform.pre_translate(Vec2::new(
-                field.x0 + self.metrics.inset_x,
-                field.y0 + (field.height() - f64::from(shown_h)) / 2.0,
-            )),
-            None,
+            transform,
+            text_renderer,
+            theme,
+            presence,
         );
     }
 
@@ -1904,27 +1969,12 @@ impl FilePicker {
                     {
                         self.click_open();
                     }
-                    Some(PickerFocus::Filename)
-                        if matches!(ke.logical_key, Key::Named(NamedKey::Space)) =>
-                    {
-                        self.filename.push(' ');
-                    }
                     _ => {}
                 }
                 *handled = true;
             }
-            Key::Named(NamedKey::Backspace) if self.focus == Some(PickerFocus::Filename) => {
-                self.filename.pop();
-                self.ensure_valid_focus();
-                *handled = true;
-            }
             Key::Named(NamedKey::Backspace) if self.focus == Some(PickerFocus::List) => {
                 self.go_up();
-                *handled = true;
-            }
-            Key::Character(s) if self.focus == Some(PickerFocus::Filename) => {
-                self.filename.push_str(s);
-                self.ensure_valid_focus();
                 *handled = true;
             }
             Key::Character(s) if self.focus == Some(PickerFocus::List) => {
@@ -2607,6 +2657,46 @@ mod tests {
                 dispatch(&mut picker, &key_char(ch));
             }
             assert_eq!(picker.filename(), "new.txt");
+            // Backspace takes back one character as a person sees it, and an
+            // input method's commit lands at the caret.
+            dispatch(
+                &mut picker,
+                &key_named(winit::keyboard::NamedKey::Backspace),
+            );
+            dispatch(
+                &mut picker,
+                &key_named(winit::keyboard::NamedKey::Backspace),
+            );
+            dispatch(
+                &mut picker,
+                &key_named(winit::keyboard::NamedKey::Backspace),
+            );
+            dispatch(
+                &mut picker,
+                &key_named(winit::keyboard::NamedKey::Backspace),
+            );
+            dispatch(&mut picker, &key_char("👍🏽"));
+            dispatch(&mut picker, &key_char("e\u{301}"));
+            dispatch(
+                &mut picker,
+                &key_named(winit::keyboard::NamedKey::Backspace),
+            );
+            assert_eq!(picker.filename(), "new👍🏽");
+            dispatch(
+                &mut picker,
+                &key_named(winit::keyboard::NamedKey::Backspace),
+            );
+            assert_eq!(picker.filename(), "new");
+            dispatch(
+                &mut picker,
+                &WindowEvent::Ime(winit::event::Ime::Preedit("tx".into(), Some((2, 2)))),
+            );
+            assert_eq!(picker.filename(), "new", "a composition is not the value");
+            dispatch(
+                &mut picker,
+                &WindowEvent::Ime(winit::event::Ime::Commit(".txt".into())),
+            );
+            assert_eq!(picker.filename(), "new.txt");
             picker.click_open();
             assert_eq!(
                 picker.take_outcome(),
@@ -2714,35 +2804,17 @@ mod tests {
     }
 
     fn key_named(named: winit::keyboard::NamedKey) -> WindowEvent {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = winit::keyboard::Key::Named(named);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::key_event(
+            &winit::keyboard::Key::Named(named),
+            ElementState::Pressed,
+        )
     }
 
     fn key_char(s: &str) -> WindowEvent {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = winit::keyboard::Key::Character(s.into());
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::key_event(
+            &winit::keyboard::Key::Character(s.into()),
+            ElementState::Pressed,
+        )
     }
 
     fn shift() -> winit::event::Modifiers {
