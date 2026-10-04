@@ -53,23 +53,29 @@ impl HistoryHost {
         self.live_node = None;
         self.unavailable_node = None;
         let mut body_children = vec![];
-        if self.show_timeline() && !self.timeline_available() {
-            let message = self.unavailable.build_layout(tree, theme, nodes);
-            self.unavailable_node = Some(message);
-            body_children.push(message);
-        } else if self.show_timeline() {
-            let timeline = self.timeline.build_layout(tree, theme, nodes);
-            if let Ok(style) = tree.style(timeline) {
+        // The timeline's gutter: the whole width when narrow, a column beside
+        // the preview otherwise. Why there is no timeline stands in it too.
+        let gutter = |tree: &mut TaffyTree<()>, node: NodeId, width: f64| {
+            if let Ok(style) = tree.style(node) {
                 let mut style = style.clone();
-                style.size.width = if self.width < 600.0 {
+                style.size.width = if width < 600.0 {
                     Dimension::percent(1.0)
                 } else {
                     Dimension::length(320.0)
                 };
                 style.min_size.width = Dimension::length(0.0);
                 style.flex_shrink = 0.0;
-                let _ = tree.set_style(timeline, style);
+                let _ = tree.set_style(node, style);
             }
+        };
+        if self.show_timeline() && !self.timeline_available() {
+            let message = self.unavailable.build_layout(tree, theme, nodes);
+            gutter(tree, message, self.width);
+            self.unavailable_node = Some(message);
+            body_children.push(message);
+        } else if self.show_timeline() {
+            let timeline = self.timeline.build_layout(tree, theme, nodes);
+            gutter(tree, timeline, self.width);
             self.timeline_node = Some(timeline);
             body_children.push(timeline);
         }

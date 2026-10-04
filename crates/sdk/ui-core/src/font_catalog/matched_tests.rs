@@ -48,7 +48,7 @@ fn plan_text<'t>(
     attrs: Attrs<'static>,
     kind: TextKind,
 ) -> Vec<(&'t str, Attrs<'static>)> {
-    plan(fs.db(), [(text, attrs)], BASE, kind)
+    plan(fs.db(), [(text, attrs)], BASE, kind, false)
 }
 
 fn ui(weight: u16) -> Attrs<'static> {
@@ -215,7 +215,13 @@ fn explicit_features_win_and_stylistic_sets_stay_with_their_face() {
         .with_font_feature(crate::text_render::OpenTypeTag::new(*b"ss03"), 1)
         .with_kerning(false);
     let attrs = style.cosmic_attrs();
-    let spans = plan(fs.db(), [("y Привет", attrs)], BASE, TextKind::Numeric);
+    let spans = plan(
+        fs.db(),
+        [("y Привет", attrs)],
+        BASE,
+        TextKind::Numeric,
+        false,
+    );
     assert_eq!(features(&spans[0].1), [*b"tnum", *b"ss03", *b"kern"]);
     let fallback = features(&spans[1].1);
     assert!(fallback.contains(b"kern") && !fallback.contains(b"ss03"));
@@ -235,6 +241,24 @@ fn a_distinct_il_set_changes_only_i_l_and_their_look_alikes() {
         "a single-storey a set"
     );
     assert!(!only_distinguishes_il(&['1']), "a one alone is not I or l");
+    assert!(
+        only_distinguishes_il(&['I', 'Ɨ', 'І', 'Ї', 'Ι', 'Ί', 'Ἰ']),
+        "the same capital I in Cyrillic and Greek, as a serif I set covers it"
+    );
+}
+
+#[test]
+fn a_catalog_face_with_a_serif_i_variant_is_used_for_it() {
+    // Adwaita Sans' cv08 serifs I and the Cyrillic and Greek capitals that
+    // share its shape.
+    let fs = system();
+    let face = face_caps(&fs, "Adwaita Sans", 400, Style::Normal);
+    assert!(
+        face.features_for(TextKind::Identifier, false)
+            .contains(b"cv08")
+    );
+    assert!(face.features_for(TextKind::Url, false).contains(b"zero"));
+    assert!(face.features_for(TextKind::Prose, false).is_empty());
 }
 
 #[test]
@@ -246,6 +270,7 @@ fn planned_paragraphs_keep_their_final_empty_line() {
         [("Hi Привет\n", attrs.clone())],
         BASE,
         TextKind::Prose,
+        false,
     );
     assert!(spans.len() > 1);
     let mut buffer = Buffer::new(&mut fs, BASE);
@@ -264,8 +289,12 @@ const FEATURES_FIXTURE: &[u8] = include_bytes!(concat!(
 const FEATURES_FIXTURE_FAMILY: &str = "Tilo Sans Features Fixture";
 
 fn glyph_ids(fs: &mut FontSystem, text: &str, kind: TextKind) -> Vec<u16> {
+    glyph_ids_with(fs, text, kind, false)
+}
+
+fn glyph_ids_with(fs: &mut FontSystem, text: &str, kind: TextKind, distinguish: bool) -> Vec<u16> {
     let attrs = Attrs::new().family(Family::Name(FEATURES_FIXTURE_FAMILY));
-    let spans = plan(fs.db(), [(text, attrs.clone())], BASE, kind);
+    let spans = plan(fs.db(), [(text, attrs.clone())], BASE, kind, distinguish);
     let mut buffer = Buffer::new(fs, BASE);
     set_spans(&mut buffer, &spans, &attrs, None);
     buffer.shape_until_scroll(fs, false);
@@ -304,4 +333,163 @@ fn tilo_sans_held_back_forms_apply_to_secrets_and_identifiers_once_present() {
     assert_eq!(identifier[2], prose[2], "identifiers keep the plain zero");
     assert_eq!(secret[..2], identifier[..2]);
     assert_ne!(secret[2], prose[2], "slashed zero");
+}
+
+fn fixture_system() -> FontSystem {
+    let mut db = system().into_locale_and_db().1;
+    db.load_font_data(FEATURES_FIXTURE.to_vec());
+    crate::font_catalog::system_over("en-US".into(), db)
+}
+
+fn fixture() -> Attrs<'static> {
+    Attrs::new().family(Family::Name(FEATURES_FIXTURE_FAMILY))
+}
+
+const IL: [[u8; 4]; 3] = [*b"cv01", *b"cv02", *b"ss13"];
+const ZERO_IL: [[u8; 4]; 4] = [*b"zero", *b"cv01", *b"cv02", *b"ss13"];
+
+#[test]
+fn urls_add_the_zero_and_distinguishing_adds_every_form_to_every_kind() {
+    let fs = fixture_system();
+    let face = face_caps(&fs, FEATURES_FIXTURE_FAMILY, 400, Style::Normal);
+    assert_eq!(face.kind_features(TextKind::Url), ZERO_IL);
+    assert_eq!(face.kind_features(TextKind::Identifier), IL);
+    assert!(face.kind_features(TextKind::Prose).is_empty());
+    for kind in [TextKind::Prose, TextKind::Identifier, TextKind::Url] {
+        assert_eq!(face.features_for(kind, true), ZERO_IL, "{kind:?}");
+    }
+    assert_eq!(
+        face.features_for(TextKind::Numeric, true),
+        [*b"tnum", *b"zero", *b"cv01", *b"cv02", *b"ss13"]
+    );
+    assert_eq!(
+        face.features_for(TextKind::Secret, true),
+        face.kind_features(TextKind::Secret)
+    );
+}
+
+#[test]
+fn hyperlegible_is_distinct_by_design_so_nothing_is_turned_on() {
+    let fs = system();
+    let face = face_caps(&fs, UI_HYPERLEGIBLE_FAMILY, 400, Style::Normal);
+    for kind in [TextKind::Prose, TextKind::Identifier, TextKind::Url] {
+        assert!(face.features_for(kind, true).is_empty(), "{kind:?}");
+    }
+    assert_eq!(face.features_for(TextKind::Secret, true), [*b"tnum"]);
+}
+
+fn planned(spans: &[(&str, Attrs<'_>)]) -> Vec<(String, Vec<[u8; 4]>)> {
+    spans
+        .iter()
+        .map(|(text, attrs)| ((*text).to_owned(), features(attrs)))
+        .collect()
+}
+
+fn expect(spans: &[(&str, &[[u8; 4]])]) -> Vec<(String, Vec<[u8; 4]>)> {
+    spans
+        .iter()
+        .map(|(text, features)| ((*text).to_owned(), features.to_vec()))
+        .collect()
+}
+
+#[test]
+fn identifiers_in_prose_are_spans_of_their_own_kind() {
+    let fs = fixture_system();
+    let text = "Mail Il0@example.org or open https://paypa1.com/I0l, @lena_l1.";
+    let spans = plan(fs.db(), [(text, fixture())], BASE, TextKind::Prose, false);
+    assert_eq!(
+        planned(&spans),
+        expect(&[
+            ("Mail ", &[]),
+            ("Il0@example.org", &IL),
+            (" or open ", &[]),
+            ("https://paypa1.com/I0l", &ZERO_IL),
+            (", ", &[]),
+            ("@lena_l1", &IL),
+            (".", &[]),
+        ])
+    );
+    // Text that already says what it is is not split.
+    let secret = plan(fs.db(), [(text, fixture())], BASE, TextKind::Secret, false);
+    assert_eq!(secret.len(), 1);
+}
+
+#[test]
+fn a_link_across_styled_runs_is_found_in_each() {
+    let fs = fixture_system();
+    let bold = fixture().weight(Weight::BOLD);
+    let spans = plan(
+        fs.db(),
+        [("see https://exa", fixture()), ("mple.org/Il now", bold)],
+        BASE,
+        TextKind::Prose,
+        false,
+    );
+    assert_eq!(
+        planned(&spans),
+        expect(&[
+            ("see ", &[]),
+            ("https://exa", &ZERO_IL),
+            ("mple.org/Il", &ZERO_IL),
+            (" now", &[]),
+        ])
+    );
+}
+
+#[test]
+fn a_run_that_says_its_kind_keeps_it() {
+    let fs = fixture_system();
+    let spans = plan_runs(
+        fs.db(),
+        [
+            ("Thanks ", fixture(), None),
+            ("Ilya Lebedev", fixture(), Some(TextKind::Identifier)),
+        ],
+        BASE,
+        TextKind::Prose,
+        false,
+    );
+    assert_eq!(
+        planned(&spans),
+        expect(&[("Thanks ", &[]), ("Ilya Lebedev", &IL)])
+    );
+}
+
+#[test]
+fn distinguishing_sets_prose_apart_and_leaves_it_alone_when_off() {
+    let mut fs = fixture_system();
+    let plain = glyph_ids_with(&mut fs, "Il0", TextKind::Prose, false);
+    let distinct = glyph_ids_with(&mut fs, "Il0", TextKind::Prose, true);
+    let identifier = glyph_ids(&mut fs, "Il0", TextKind::Identifier);
+    let url = glyph_ids(&mut fs, "Il0", TextKind::Url);
+    // Every one of I, l and 0 changes; prose figures stay proportional,
+    // so the zero is the proportional slashed one a link has.
+    assert!(plain.iter().zip(&distinct).all(|(a, b)| a != b));
+    assert_eq!(distinct, url);
+    assert_eq!(
+        url[..2],
+        identifier[..2],
+        "a link's I and l are an identifier's"
+    );
+    assert_ne!(url[2], identifier[2], "and its zero is slashed");
+}
+
+#[test]
+fn the_setting_and_security_surfaces_are_per_thread_and_nest() {
+    assert!(!distinguish_everywhere());
+    security_surface(true);
+    security_surface(true);
+    security_surface(false);
+    assert!(distinguish_everywhere());
+    security_surface(false);
+    assert!(!distinguish_everywhere());
+    assert!(set_distinguish_everywhere(true));
+    assert!(!set_distinguish_everywhere(true));
+    assert!(
+        std::thread::spawn(distinguish_everywhere)
+            .join()
+            .is_ok_and(|on| !on)
+    );
+    assert!(distinguish_everywhere());
+    assert!(set_distinguish_everywhere(false));
 }

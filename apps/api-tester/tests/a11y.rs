@@ -609,7 +609,7 @@ fn native_app_audit_reports_only_widget_callbacks() {
             assert!(
                 matches!(
                     issue.code.as_str(),
-                    "legacy-callback" | "orphan-action-binding" | "stale-action-binding"
+                    "legacy-callback" | "orphan-action-binding"
                 ),
                 "{issue:?}"
             );

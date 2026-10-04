@@ -1159,13 +1159,15 @@ pub(crate) struct Notice {
     pub(crate) timer: Option<Uuid>,
 }
 
-/// The notice, in the flow above the open screen. Its close control dismisses
+/// The notice, in the flow above the open screen. Its close control ends
 /// it; a finished timer is restarted from its card below.
-fn notice_banner(notice: &Notice) -> Element {
+fn notice_banner(notice: &Notice, state: &ui::LocalState<Option<Notice>>) -> Element {
+    let state = state.clone();
     Box::new(
         Banner::warning(notice.title.clone())
             .with_message(notice.body.clone())
-            .dismissible(),
+            .with_id("clocks.notice")
+            .on_dismiss(move || state.set(None)),
     )
 }
 
@@ -1224,6 +1226,7 @@ fn header_action(
 /// The window: the screens in the sidebar, the open one beside it.
 fn surface(
     selection: &ui::LocalState<Option<String>>,
+    notice_state: &ui::LocalState<Option<Notice>>,
     state: &ui::LocalState<ClockState>,
     validation_error: &ui::LocalState<Option<String>>,
     dialog: &ui::LocalState<Option<Dialog>>,
@@ -1241,6 +1244,7 @@ fn surface(
     .with_accessible_name("Clocks")
     .bind_selection(selection);
     let pages_state = state.clone();
+    let notice_state = notice_state.clone();
     // The banner sits above the open screen while a notice is showing, so the
     // screen is built again when either changes; the scroll area stays.
     let pages = ModelView::from_state(view, move |(selected, notice)| {
@@ -1251,7 +1255,7 @@ fn surface(
             .with_horizontal_padding(Spacing::BASE.s1, Spacing::BASE.s1);
         if let Some(notice) = notice {
             column = column
-                .push(text_edge(notice_banner(notice)))
+                .push(text_edge(notice_banner(notice, &notice_state)))
                 .with_gap(group_gap());
         }
         let screen = screen_of(selected.as_deref());
@@ -1496,6 +1500,7 @@ impl ClocksApp {
         Self {
             inner: surface(
                 &selection,
+                &notice,
                 &state,
                 &validation_error,
                 &dialog,

@@ -899,7 +899,10 @@ pub fn paint_nav_row(
         );
     }
     if let (Some(fraction), Some(track)) = (face.level, layout.level) {
-        crate::widget::progress_bar::paint_level(scene, transform, theme, track, fraction);
+        crate::widget::ProgressBarFace::new(fraction).paint(
+            &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            track,
+        );
     }
 
     if let (Some(expanded), Some(rect)) = (face.disclosure, layout.disclosure) {

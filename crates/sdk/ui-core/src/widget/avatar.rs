@@ -4,8 +4,12 @@
 //! An avatar is a person, so its fallback wears that person's presence
 //! colour: the hue comes from their identity ([`PresenceHue::of_identity`])
 //! or from the presence colour the caller already holds for them, never
-//! from a position in a list. The initials take whichever ink of the theme
-//! reads best on that colour. A picture is cover-fitted into the shape and
+//! from a position in a list. The initials take one ink per palette, derived
+//! from the fill's own hue to at least 4.5:1, so every person's initials
+//! read alike (no black on one hue and white on the next). A person's
+//! presence ([`PresenceStatus`]) shows as a ringed badge on the corner, in
+//! their colour. An app or a thing without a picture is a neutral square
+//! ([`AvatarFace::neutral`]). A picture is cover-fitted into the shape and
 //! may load lazily from an [`ImageStore`]; the initials stay until it lands.
 //!
 //! Two forms with one geometry: the retained [`Avatar`] widget and the
@@ -62,6 +66,34 @@ impl AvatarSize {
 enum Tint<'a> {
     Identity(&'a str),
     Presence(Color),
+    /// No one's: an app, a device, a thing.
+    Neutral,
+}
+
+/// Whether a person is there: the badge on their avatar's corner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PresenceStatus {
+    /// Here now: a filled badge in their colour.
+    Online,
+    /// Signed in but away: a ring in their colour.
+    Away,
+    /// Here, but not to be disturbed: a filled badge with a bar.
+    Busy,
+    /// Not here: no badge.
+    Offline,
+}
+
+impl PresenceStatus {
+    /// What a screen reader says.
+    #[must_use]
+    pub fn spoken(self) -> &'static str {
+        match self {
+            Self::Online => "online",
+            Self::Away => "away",
+            Self::Busy => "busy",
+            Self::Offline => "offline",
+        }
+    }
 }
 
 /// Immediate-mode avatar: the same picture, initials, colour and shape as
@@ -73,6 +105,7 @@ pub struct AvatarFace<'a> {
     image: Option<&'a peniko::ImageData>,
     square: bool,
     ring_on: Option<Color>,
+    status: Option<PresenceStatus>,
 }
 
 impl<'a> AvatarFace<'a> {
@@ -86,7 +119,26 @@ impl<'a> AvatarFace<'a> {
             image: None,
             square: false,
             ring_on: None,
+            status: None,
         }
+    }
+
+    /// A thing rather than a person (an app without an icon, a device): a
+    /// neutral square, primary ink on the raised surface.
+    #[must_use]
+    pub fn neutral(mut self) -> Self {
+        self.tint = Tint::Neutral;
+        self.square = true;
+        self
+    }
+
+    /// The person's presence, as a badge on the avatar's corner in their
+    /// colour, ringed in the ground ([`Self::ringed_on`], else the content
+    /// surface).
+    #[must_use]
+    pub fn status(mut self, status: PresenceStatus) -> Self {
+        self.status = Some(status);
+        self
     }
 
     /// Use a collaborator's own presence colour (their chosen identity
@@ -135,6 +187,88 @@ impl<'a> AvatarFace<'a> {
         match self.tint {
             Tint::Identity(id) => presence.hue(PresenceHue::of_identity(id)),
             Tint::Presence(colour) => presence.of(colour),
+            Tint::Neutral => theme.tokens.colors.surfaces.raised,
+        }
+    }
+
+    /// The person's presence colour (the badge's), whatever the fallback.
+    fn presence_colour(&self, theme: &Theme) -> Color {
+        match self.tint {
+            Tint::Neutral => theme.text_dim,
+            _ => self.colour(theme),
+        }
+    }
+
+    /// Where the presence badge sits for an avatar in `rect`: on the
+    /// bottom-trailing corner, a third of the side.
+    #[must_use]
+    pub fn status_rect(&self, rect: Rect, theme: &Theme) -> Rect {
+        let shape = self.shape(rect, theme).rect();
+        let side = (shape.width() / 3.0).max(f64::from(theme.tokens.spacing.s2));
+        // On a disc the badge sits on the rim at the bottom-trailing 45°; on
+        // a square in its corner. Either way it stays inside the avatar.
+        let reach = if self.square {
+            shape.width() / 2.0
+        } else {
+            shape.width() / 2.0 * std::f64::consts::FRAC_1_SQRT_2
+        };
+        let limit = shape.width() / 2.0 - side / 2.0;
+        let offset = reach.min(limit);
+        let centre = shape.center() + vello::kurbo::Vec2::new(offset, offset);
+        Rect::from_center_size(centre, (side, side))
+    }
+
+    fn paint_status(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
+        let Some(status) = self.status else {
+            return;
+        };
+        if status == PresenceStatus::Offline {
+            return;
+        }
+        let theme = ctx.theme;
+        let badge = self.status_rect(rect, theme);
+        let ring = f64::from(theme.tokens.metrics.chrome_rule_px) * 2.0;
+        let ground = self.ring_on.unwrap_or(theme.tokens.colors.surfaces.content);
+        let colour = self.presence_colour(theme);
+        let outer = badge.inflate(ring, ring);
+        ctx.scene.fill(
+            Fill::NonZero,
+            ctx.transform,
+            ground,
+            None,
+            &RoundedRect::from_rect(outer, outer.width() / 2.0),
+        );
+        let disc = RoundedRect::from_rect(badge, badge.width() / 2.0);
+        match status {
+            PresenceStatus::Online => {
+                ctx.scene
+                    .fill(Fill::NonZero, ctx.transform, colour, None, &disc);
+            }
+            PresenceStatus::Away => {
+                let stroke = (badge.width() / 4.0).max(ring);
+                let inner = badge.inset(-stroke / 2.0);
+                ctx.scene.stroke(
+                    &vello::kurbo::Stroke::new(stroke),
+                    ctx.transform,
+                    colour,
+                    None,
+                    &RoundedRect::from_rect(inner, inner.width() / 2.0),
+                );
+            }
+            PresenceStatus::Busy => {
+                ctx.scene
+                    .fill(Fill::NonZero, ctx.transform, colour, None, &disc);
+                let bar_h = (badge.height() / 5.0).max(ring / 2.0);
+                let bar = Rect::from_center_size(badge.center(), (badge.width() * 0.55, bar_h));
+                ctx.scene.fill(
+                    Fill::NonZero,
+                    ctx.transform,
+                    ground,
+                    None,
+                    &RoundedRect::from_rect(bar, bar_h / 2.0),
+                );
+            }
+            PresenceStatus::Offline => {}
         }
     }
 
@@ -186,29 +320,46 @@ impl<'a> AvatarFace<'a> {
                 image,
                 shape.radii().top_left,
             );
+            self.paint_status(ctx, rect);
             return;
         }
         let fill = self.colour(ctx.theme);
         ctx.scene
             .fill(Fill::NonZero, ctx.transform, fill, None, &shape);
+        if self.tint == Tint::Neutral {
+            ctx.scene.stroke(
+                &vello::kurbo::Stroke::new(f64::from(ctx.theme.tokens.metrics.chrome_rule_px)),
+                ctx.transform,
+                crate::surface::edge_on(fill),
+                None,
+                &shape,
+            );
+        }
         let initials = self.initials();
         if initials.is_empty() {
+            self.paint_status(ctx, rect);
             return;
         }
         let side = shape.rect().width();
         let style = initials_style(ctx.theme, side);
         let (width, height) = ctx.text.measure_style(&initials, None, &style);
         let centre = shape.rect().center();
+        let ink = if self.tint == Tint::Neutral {
+            ctx.theme.text_primary
+        } else {
+            initial_ink(fill, ctx.theme)
+        };
         ctx.text(
             &initials,
             &style,
-            initial_ink(fill, ctx.theme),
+            ink,
             Point::new(
                 centre.x - f64::from(width) / 2.0,
                 centre.y - f64::from(height) / 2.0,
             ),
             None,
         );
+        self.paint_status(ctx, rect);
     }
 
     /// The "+N more people" disc that ends an overlapping cluster: the
@@ -265,12 +416,13 @@ impl<'a> AvatarFace<'a> {
 
 /// The first letters of the first and the last word, upper-cased:
 /// `"Ada Lovelace"` gives `"AL"`, `"Grace Brewster Hopper"` gives `"GH"`,
-/// `"ada"` gives `"A"`.
+/// `"ada"` gives `"A"`. Words without a letter are skipped, so `"Tilo 4"`
+/// gives `"T"`, never `"T4"`.
 #[must_use]
 pub fn initials_for_name(name: &str) -> String {
     let letters: Vec<char> = name
         .split_whitespace()
-        .filter_map(|word| word.chars().find(|c| c.is_alphanumeric()))
+        .filter_map(|word| word.chars().find(|c| c.is_alphabetic()))
         .collect();
     let picked: Vec<char> = match letters.as_slice() {
         [] => Vec::new(),
@@ -280,18 +432,43 @@ pub fn initials_for_name(name: &str) -> String {
     picked.into_iter().flat_map(char::to_uppercase).collect()
 }
 
-/// The initials ink on `fill`: of the theme's own inks (its primary text and
-/// its content ground), whichever contrasts more with the fill.
+/// The initials ink on `fill`.
+///
+/// One direction per presence palette: dark initials or light ones,
+/// whichever reads better on the palette's weakest hue, so initials never
+/// flip between black and white from one person to the next. The ink then
+/// takes the fill's own hue, as deep (or as pale) as it must be to reach
+/// 4.5:1 on that fill.
 #[must_use]
 pub fn initial_ink(fill: Color, theme: &Theme) -> Color {
-    let candidates = [theme.text_primary, theme.tokens.colors.surfaces.content];
-    candidates
-        .into_iter()
-        .max_by(|a, b| {
-            crate::color::contrast_ratio(*a, fill)
-                .total_cmp(&crate::color::contrast_ratio(*b, fill))
-        })
-        .unwrap_or(theme.text_primary)
+    use crate::color::{Oklch, contrast_ratio, oklch};
+    const MIN: f64 = 4.5;
+    let palette = &theme.tokens.colors.presence;
+    let weakest = |ink: Color| {
+        palette
+            .colors
+            .iter()
+            .map(|&c| contrast_ratio(ink, c))
+            .fold(f64::INFINITY, f64::min)
+    };
+    let dark = weakest(oklch(0.0, 0.0, 0.0)) >= weakest(oklch(1.0, 0.0, 0.0));
+    let hue = Oklch::from_color(fill).h;
+    let chroma = 0.04_f32;
+    // Walk from a tinted ink toward black (or white) until it reads.
+    let mut step = 0_u8;
+    loop {
+        let t = f32::from(step) / 20.0;
+        let (l, c) = if dark {
+            (0.34 * (1.0 - t), chroma * (1.0 - t))
+        } else {
+            (0.96 + 0.04 * t, chroma * 0.5 * (1.0 - t))
+        };
+        let ink = oklch(l, c, hue);
+        if contrast_ratio(ink, fill) >= MIN || step >= 20 {
+            return ink;
+        }
+        step += 1;
+    }
 }
 
 /// Initials are sized by the disc they sit in, not by the reader's text
@@ -331,6 +508,8 @@ pub struct Avatar {
     image: Option<peniko::ImageData>,
     size: AvatarSize,
     square: bool,
+    neutral: bool,
+    status: Option<PresenceStatus>,
     side: f64,
     rect: Rect,
     dirty: bool,
@@ -347,6 +526,8 @@ impl Avatar {
             image: None,
             size: AvatarSize::Regular,
             square: false,
+            neutral: false,
+            status: None,
             side: 0.0,
             rect: Rect::ZERO,
             dirty: true,
@@ -392,6 +573,29 @@ impl Avatar {
         self
     }
 
+    /// An app or a thing: see [`AvatarFace::neutral`].
+    #[must_use]
+    pub fn neutral(mut self) -> Self {
+        self.neutral = true;
+        self.square = true;
+        self
+    }
+
+    /// See [`AvatarFace::status`].
+    #[must_use]
+    pub fn status(mut self, status: PresenceStatus) -> Self {
+        self.status = Some(status);
+        self
+    }
+
+    /// Change the presence badge.
+    pub fn set_status(&mut self, status: Option<PresenceStatus>) {
+        if status != self.status {
+            self.status = status;
+            self.dirty = true;
+        }
+    }
+
     /// The initials the fallback shows.
     #[must_use]
     pub fn initials(&self) -> String {
@@ -405,6 +609,12 @@ impl Avatar {
         }
         if self.square {
             face = face.square();
+        }
+        if self.neutral {
+            face = face.neutral();
+        }
+        if let Some(status) = self.status {
+            face = face.status(status);
         }
         face
     }
@@ -499,7 +709,10 @@ impl Widget for Avatar {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        let name = (!self.name.trim().is_empty()).then(|| self.name.clone());
+        let name = (!self.name.trim().is_empty()).then(|| match self.status {
+            Some(status) => format!("{}, {}", self.name, status.spoken()),
+            None => self.name.clone(),
+        });
         Some(AccessNode::new(Role::Image).with_optional_name(name))
     }
 }
@@ -663,5 +876,64 @@ mod tests {
             Some(theme.tokens.colors.surfaces.content),
         );
         assert_eq!(tags(&empty, DrawTag::COLOR), 0);
+    }
+
+    #[test]
+    fn initials_ink_is_one_legible_direction_per_palette() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let palette = theme.tokens.colors.presence;
+            let inks: Vec<Color> = palette
+                .colors
+                .iter()
+                .map(|&fill| initial_ink(fill, &theme))
+                .collect();
+            for (ink, fill) in inks.iter().zip(palette.colors) {
+                let ratio = crate::color::contrast_ratio(*ink, fill);
+                assert!(ratio >= 4.5, "{}: initials at {ratio:.2}:1", theme.name);
+            }
+            let dark = |c: &Color| crate::color::relative_luminance(*c) < 0.18;
+            assert!(
+                inks.iter().all(dark) || !inks.iter().any(dark),
+                "{}: initials flip between dark and light inks",
+                theme.name
+            );
+        }
+    }
+
+    #[test]
+    fn initials_skip_words_without_letters() {
+        assert_eq!(initials_for_name("Tilo 4"), "T");
+        assert_eq!(initials_for_name("Ada 2"), "A");
+        assert_eq!(initials_for_name("Pixel 7 Pro"), "PP");
+        assert_eq!(initials_for_name("2024"), "");
+    }
+
+    #[test]
+    fn a_status_badge_sits_on_the_corner_and_is_spoken() {
+        let theme = Theme::dark();
+        let face = AvatarFace::new("Ada Lovelace", "ada").status(PresenceStatus::Online);
+        let rect = Rect::new(0.0, 0.0, 40.0, 40.0);
+        let badge = face.status_rect(rect, &theme);
+        assert!(badge.center().x > rect.center().x && badge.center().y > rect.center().y);
+        assert!(badge.x1 <= rect.x1 + 0.5 && badge.y1 <= rect.y1 + 0.5);
+        let mut text = TextRenderer::new();
+        let mut with = Scene::new();
+        face.paint(
+            &mut PaintCtx::new(&mut with, Affine::IDENTITY, &mut text, &theme),
+            rect,
+        );
+        let mut without = Scene::new();
+        AvatarFace::new("Ada Lovelace", "ada").paint(
+            &mut PaintCtx::new(&mut without, Affine::IDENTITY, &mut text, &theme),
+            rect,
+        );
+        assert!(with.encoding().draw_tags.len() > without.encoding().draw_tags.len());
+        let avatar = Avatar::person("Ada Lovelace", "ada").status(PresenceStatus::Away);
+        assert_eq!(
+            Widget::accessibility(&avatar).unwrap().name.as_deref(),
+            Some("Ada Lovelace, away")
+        );
+        let neutral = AvatarFace::new("Notes", "notes").neutral();
+        assert_eq!(neutral.colour(&theme), theme.tokens.colors.surfaces.raised);
     }
 }

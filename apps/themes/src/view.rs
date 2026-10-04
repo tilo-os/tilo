@@ -604,7 +604,21 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
                         |theme| f64::from(theme.base_size),
                         Studio::SET_BASE_SIZE,
                     ),
-                )),
+                ))
+                .field(
+                    Field::new(
+                        "themes-distinct-letters",
+                        choice(
+                            cx,
+                            &id,
+                            ["Always", "With the typeface"],
+                            |theme| theme.distinct_letters.0 == Some(true),
+                            Studio::SET_DISTINCT_LETTERS,
+                        ),
+                    )
+                    .with_help("themes-distinct-letters-help")
+                    .with_trailing_control(),
+                ),
         )
         .section(
             FormSection::new("themes-motion-material")

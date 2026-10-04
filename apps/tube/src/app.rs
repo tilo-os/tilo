@@ -144,8 +144,6 @@ pub struct TubeApp {
     toasts: ToastStack,
     /// `model.notice_count` already shown as toasts.
     toasted: u64,
-    /// When the toasts last advanced.
-    toast_clock: Option<ui::time::Instant>,
     /// Live `YouTube` search answers handed to the platform search.
     live_search: crate::search_type::LiveSearch,
     /// A structural change the host took from `take_structure_dirty` that
@@ -267,7 +265,6 @@ impl TubeApp {
             invocations: action::new_invocations(),
             toasts: ToastStack::new(),
             toasted: 0,
-            toast_clock: None,
             live_search: crate::search_type::LiveSearch::default(),
             shell_stale: true,
             shell_key: None,
@@ -1377,11 +1374,7 @@ impl TubeApp {
             self.toasts.push(notice.clone(), ToastKind::Info);
         }
         self.toasted = self.model.notice_count;
-        let now = ui::time::now();
-        if let Some(last) = self.toast_clock {
-            self.toasts.tick(now.saturating_duration_since(last));
-        }
-        self.toast_clock = (!self.toasts.is_empty()).then_some(now);
+        self.toasts.advance(ui::time::now());
     }
 
     /// If the playhead sits inside an enabled `SponsorBlock` segment, jump the

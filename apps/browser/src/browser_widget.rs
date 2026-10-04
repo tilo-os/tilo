@@ -2735,7 +2735,7 @@ impl BrowserWidget {
         let mut notices: Vec<crate::notice::Notice> = Vec::new();
         if self.browsing_mode.is_private() {
             notices.push(
-                crate::notice::Notice::info("Private window")
+                crate::notice::Notice::neutral("Private window")
                     .with_message(
                         "Browsing data is removed when this window closes. Files you download remain.",
                     )
@@ -2755,7 +2755,7 @@ impl BrowserWidget {
         // The history notice would only repeat the Library's own control.
         if self.history_paused() && !self.show_library {
             notices.push(
-                crate::notice::Notice::info("History paused")
+                crate::notice::Notice::neutral("History paused")
                     .with_message("Pages in this window are not saved to browsing history."),
             );
         }
