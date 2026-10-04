@@ -523,15 +523,11 @@ pub struct CalendarApp {
     /// ticking (`needs_animation_frame`) so the worker's result lands promptly
     /// without waiting for the next unrelated input.
     syncing: bool,
-    resource_sync_invocation: Option<tilo_actions::InvocationId>,
-    resource_sync_result: Option<tilo_actions::InvocationUpdate>,
-    /// A resource import is parsed on explicit invocation, then dispatched on
-    /// the next mutable document sync. Resource-operation handlers receive an
-    /// immutable snapshot, so this bridge prevents a false successful import
-    /// against a throwaway clone.
-    pending_resource_import: Option<crate::actions::CalendarAction>,
-    resource_import_invocation: Option<tilo_actions::InvocationId>,
-    resource_import_result: Option<tilo_actions::InvocationUpdate>,
+    /// A sync effect asked for a pull, started on the next sync with the
+    /// document.
+    sync_requested: bool,
+    /// The caller of the sync effect, answered when its pull lands.
+    sync_reply: Option<ui::framework::EffectReply>,
 
     /// Where the calendar's edits go: the framework's dispatcher, attached
     /// before the first frame.
@@ -540,13 +536,6 @@ pub struct CalendarApp {
     /// check a control and its published action build the same edit.
     #[cfg(test)]
     last_dispatched: std::cell::RefCell<Option<tilo_actions::EncodedAction>>,
-
-    /// The exact encoded non-document operation an on-screen Calendar control
-    /// sent through the resource-operation boundary. This is test-only because
-    /// effect/view operation history is owned by the invocation host, rather
-    /// than by Calendar's shared-document [`ActionHost`](ui::ActionHost).
-    #[cfg(test)]
-    last_local_resource_operation: Option<tilo_actions::EncodedAction>,
 
     /// The document heads the in-memory [`Model`] was last derived from. When the
     /// document moves past this out of band — a Ctrl+K palette action, a peer's
@@ -670,16 +659,11 @@ impl CalendarApp {
             agenda: AgendaView::new(),
             sync_rx: None,
             syncing: false,
-            resource_sync_invocation: None,
-            resource_sync_result: None,
-            pending_resource_import: None,
-            resource_import_invocation: None,
-            resource_import_result: None,
+            sync_requested: false,
+            sync_reply: None,
             dispatcher: None,
             #[cfg(test)]
             last_dispatched: std::cell::RefCell::default(),
-            #[cfg(test)]
-            last_local_resource_operation: None,
             model_heads: Vec::new(),
         }
     }
@@ -1038,23 +1022,10 @@ impl CalendarApp {
                     SyncOutcome::Synced { .. } => None,
                 };
                 self.apply_sync_result(result, outcome, doc);
-                if let Some(invocation) = self.resource_sync_invocation.take() {
-                    self.resource_sync_result = Some(if let Some(message) = failure {
-                        tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "calendar.sync_failed".into(),
-                                message,
-                                details: None,
-                                retryable: true,
-                            },
-                        }
-                    } else {
-                        tilo_actions::InvocationUpdate::Succeeded {
-                            invocation,
-                            output: tilo_actions::ActionOutput::default(),
-                        }
-                    });
+                if let Some(reply) = self.sync_reply.take() {
+                    reply.finish(
+                        failure.map_or_else(|| Ok(tilo_actions::ActionOutput::default()), Err),
+                    );
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -1063,17 +1034,10 @@ impl CalendarApp {
                 self.sync_rx = None;
                 self.syncing = false;
                 self.status = Some("Sync failed".into());
-                if let Some(invocation) = self.resource_sync_invocation.take() {
-                    self.resource_sync_result = Some(tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "calendar.sync_worker_lost".into(),
-                            message: "calendar synchronization worker stopped without a result"
-                                .into(),
-                            details: None,
-                            retryable: true,
-                        },
-                    });
+                if let Some(reply) = self.sync_reply.take() {
+                    reply.finish(Err(
+                        "calendar synchronization stopped without a result".into()
+                    ));
                 }
                 self.dirty = true;
             }
@@ -1560,41 +1524,6 @@ impl CalendarApp {
         );
     }
 
-    /// Send a local effect through the same typed resource-operation protocol
-    /// that agents, search, history, and collaboration-aware hosts invoke.
-    ///
-    /// Device-private operations such as collection visibility intentionally
-    /// do not enter the shared event CRDT, but must still have one canonical
-    /// encoded envelope and one handler. Otherwise a pointer retry could drift
-    /// from an agent or screen-reader invocation of the same resource action.
-    fn invoke_local_calendar_effect(
-        &mut self,
-        operation: &crate::actions::CalendarOperation,
-        doc: &AutoCommit,
-    ) -> Result<(), String> {
-        let encoded = tilo_actions::EncodedAction::encode_operation(
-            crate::actions::CALENDAR_OPERATION_TYPE,
-            operation,
-        )
-        .map_err(|error| error.to_string())?;
-        #[cfg(test)]
-        {
-            self.last_local_resource_operation = Some(encoded.clone());
-        }
-        let handled = self.answer_resource_operation(
-            tilo_actions::OperationKind::Effect,
-            &encoded.type_id,
-            &encoded.payload,
-            doc,
-            &automerge::ROOT,
-        )?;
-        if handled {
-            Ok(())
-        } else {
-            Err("Calendar does not handle its advertised visibility operation".into())
-        }
-    }
-
     /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-screen
     /// affordance dispatched, for the button == [`ActionSpec`](tilo_actions::ActionSpec)
     /// covenant test: a control and its Ctrl+K entry must build the identical
@@ -1603,11 +1532,6 @@ impl CalendarApp {
     #[allow(dead_code, reason = "framework migration test helper")]
     fn last_dispatched(&self) -> Option<tilo_actions::EncodedAction> {
         self.last_dispatched.borrow().clone()
-    }
-
-    #[cfg(test)]
-    fn last_local_resource_operation(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.last_local_resource_operation.as_ref()
     }
 
     /// The remote calendar to queue a `CalDAV` delete for when an event is
@@ -2529,11 +2453,13 @@ impl CalendarApp {
         });
     }
 
-    fn export_ics(&mut self) {
+    /// Write every event and task to an iCalendar file in the transfer
+    /// directory.
+    fn export_ics(&mut self) -> Result<(), String> {
+        self.dirty = true;
         if self.model.events.is_empty() && self.model.tasks.is_empty() {
             self.status = Some("Nothing to export yet".into());
-            self.dirty = true;
-            return;
+            return Err("There are no events or tasks to export".into());
         }
         let ics = ics::export(&self.model);
         let dir = crate::store::transfer_dir();
@@ -2549,10 +2475,14 @@ impl CalendarApp {
                     self.model.tasks.len(),
                     path.display()
                 ));
+                Ok(())
             }
-            Err(e) => self.status = Some(format!("Export failed: {e}")),
+            Err(error) => {
+                let message = format!("Export failed: {error}");
+                self.status = Some(message.clone());
+                Err(message)
+            }
         }
-        self.dirty = true;
     }
 
     /// Import the most recent `.ics` file from the transfer directory (the
@@ -3144,18 +3074,18 @@ impl CalendarApp {
                 self.blur_editor();
             }
             Action::SetCalendarVisible { id, visible } => {
-                if let Err(error) = self.invoke_local_calendar_effect(
-                    &crate::actions::CalendarOperation::SetCalendarVisible { id, visible },
-                    doc,
-                ) {
-                    self.status = Some(error);
-                }
+                self.status = Some(match self.set_calendar_visibility(&id, visible) {
+                    Ok(()) => Self::visibility_status(visible).into(),
+                    Err(error) => error,
+                });
             }
             Action::ToggleAccountCollapsed(id) => {
                 self.toggle_account_collapsed(&id);
             }
             Action::Sync => self.start_sync(doc),
-            Action::Export => self.export_ics(),
+            Action::Export => {
+                let _ = self.export_ics();
+            }
             Action::Import => self.import_ics(doc),
             Action::MiniMonth(outcome) => match outcome {
                 MiniMonthOutcome::SelectDate(date) => self.anchor = date,
@@ -5978,40 +5908,6 @@ impl CalendarApp {
         }
         false
     }
-
-    /// Apply a resource-authored import once we have the mutable document that
-    /// the widget operation hook intentionally does not receive. The completion
-    /// update is deferred until this write has crossed `ActionHost`, so callers
-    /// never observe a successful import that only touched an ephemeral clone.
-    fn flush_pending_resource_import(&mut self, state: &mut AutoCommit) {
-        let Some(action) = self.pending_resource_import.take() else {
-            return;
-        };
-        let result = self.try_dispatch_action(state, &action);
-        if result.is_ok() {
-            self.status = Some("Imported calendar items from the latest ICS file".to_string());
-        } else if let Err(error) = &result {
-            self.status = Some(format!("Import failed: {error}"));
-        }
-        self.dirty = true;
-        if let Some(invocation) = self.resource_import_invocation.take() {
-            self.resource_import_result = Some(match result {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(error) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "calendar.import_failed".into(),
-                        message: error.to_string(),
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            });
-        }
-    }
 }
 
 impl Default for CalendarApp {
@@ -6032,53 +5928,18 @@ impl Widget for CalendarApp {
         let Some(request) = op.unscoped() else {
             return ui::widget::start_in_children(self, op, doc, path);
         };
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
+        if request.kind != tilo_actions::OperationKind::View {
+            return Ok(None);
         }
         Ok(self
-            .answer_resource_operation_v2(
-                request.kind,
-                request.type_id,
-                request.payload,
-                doc,
-                path,
-            )?
-            .map(ui::widget::ResourceOperationStart::Completed))
+            .answer_view_operation(request.type_id, request.payload)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+            }))
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CALENDAR_OPERATION_TYPE]
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if self
-            .resource_sync_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            self.resource_sync_result.take()
-        } else if self
-            .resource_import_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            self.resource_import_result.take()
-        } else {
-            None
-        }
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -6094,7 +5955,14 @@ impl Widget for CalendarApp {
             self.model_heads = state.get_heads();
             self.seeded = true;
         }
-        self.flush_pending_resource_import(state);
+        if std::mem::take(&mut self.sync_requested) {
+            self.start_sync(state);
+            if !self.syncing
+                && let Some(reply) = self.sync_reply.take()
+            {
+                reply.finish(Ok(tilo_actions::ActionOutput::default()));
+            }
+        }
         // Drain a finished background CalDAV pull, if one landed since the last
         // frame, before binding the editor so a freshly-synced selection reads
         // back its notes.
@@ -6724,96 +6592,18 @@ impl ui::widget::controls::ActionControls for CalendarApp {
 }
 
 impl CalendarApp {
-    fn answer_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        if kind == tilo_actions::OperationKind::Effect
-            && type_id == crate::actions::CALENDAR_OPERATION_TYPE
-        {
-            let operation: crate::actions::CalendarOperation =
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-            if let crate::actions::CalendarOperation::PrepareInvitationInMail {
-                event_id,
-                attendee_id,
-            } = operation
-            {
-                let event_id = event_id
-                    .parse::<Id>()
-                    .map_err(|_| "invalid event id".to_string())?;
-                let attendee_id = attendee_id
-                    .parse::<Id>()
-                    .map_err(|_| "invalid attendee id".to_string())?;
-                let event = self
-                    .model
-                    .event(event_id)
-                    .ok_or_else(|| "event no longer exists".to_string())?;
-                let attendee = event
-                    .attendees
-                    .iter()
-                    .find(|attendee| attendee.id == attendee_id)
-                    .ok_or_else(|| "attendee no longer exists".to_string())?;
-                let subject = format!("Invitation: {}", event.display_title());
-                let body = format!(
-                    "You’re invited to {} on {} at {} ({}).\n\nReview the attached calendar invitation for details.",
-                    event.display_title(),
-                    event.start.format("%A, %d %B %Y"),
-                    event.start.format("%H:%M"),
-                    event.timezone
-                );
-                let calendar_ics = crate::ics::invitation_request(event);
-                self.status =
-                    Some("Invitation prepared for Mail — review it there before sending".into());
-                self.dirty = true;
-                return Ok(Some(tilo_actions::ActionOutput {
-                    value: Some(serde_json::json!({
-                        "delivery": "not_sent",
-                        "target": {
-                            "resource": "mail.mailbox",
-                            "action": "prepare-calendar-invitation"
-                        },
-                        "arguments": {
-                            "to": attendee.email,
-                            "subject": subject,
-                            "body": body,
-                            "calendar_ics": calendar_ics
-                        },
-                        "next": "Invoke the target through the action broker; Mail may refuse with account_offline or invite permission denied."
-                    })),
-                    resources: Vec::new(),
-                }));
-            }
-        }
-        self.answer_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "the complete operation dispatch keeps every canonical Calendar view/effect route and its truthful state transition in one auditable match"
     )]
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
+    fn answer_view_operation(&mut self, type_id: &str, payload: &[u8]) -> Result<bool, String> {
         if type_id != crate::actions::CALENDAR_OPERATION_TYPE {
             return Ok(false);
         }
         let operation: crate::actions::CalendarOperation =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        match (kind, operation) {
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::CalendarOperation::OpenEvent { id },
-            ) => {
+        match operation {
+            crate::actions::CalendarOperation::OpenEvent { id } => {
                 let id = id
                     .parse::<Id>()
                     .map_err(|_| "invalid event id".to_string())?;
@@ -6824,13 +6614,10 @@ impl CalendarApp {
                 self.anchor = event.start.date();
                 self.select_event(id);
             }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::CalendarOperation::OpenOccurrence {
-                    event_id,
-                    original_date,
-                },
-            ) => {
+            crate::actions::CalendarOperation::OpenOccurrence {
+                event_id,
+                original_date,
+            } => {
                 let id = event_id
                     .parse::<Id>()
                     .map_err(|_| "invalid event id".to_string())?;
@@ -6848,10 +6635,7 @@ impl CalendarApp {
                     .map_or(original_date, |start| start.date());
                 self.select_event(id);
             }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::CalendarOperation::OpenTask { id },
-            ) => {
+            crate::actions::CalendarOperation::OpenTask { id } => {
                 let id = id
                     .parse::<Id>()
                     .map_err(|_| "invalid task id".to_string())?;
@@ -6864,10 +6648,7 @@ impl CalendarApp {
                 }
                 self.select_task(id);
             }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::CalendarOperation::OpenProject { id },
-            ) => {
+            crate::actions::CalendarOperation::OpenProject { id } => {
                 let id = id
                     .parse::<Id>()
                     .map_err(|_| "invalid project id".to_string())?;
@@ -6883,10 +6664,7 @@ impl CalendarApp {
                 self.narrow_screen = NarrowScreen::Calendar;
                 self.blur_editor();
             }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::CalendarOperation::OpenCalendar { id },
-            ) => {
+            crate::actions::CalendarOperation::OpenCalendar { id } => {
                 let calendar = self
                     .calendar_for_resource(Some(&id))
                     .ok_or_else(|| "calendar no longer exists".to_string())?;
@@ -6904,10 +6682,7 @@ impl CalendarApp {
                     )
                 });
             }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::CalendarOperation::ShowAllCalendars,
-            ) => {
+            crate::actions::CalendarOperation::ShowAllCalendars => {
                 self.calendar_filter = None;
                 self.detail_open = false;
                 self.selection = None;
@@ -6915,94 +6690,150 @@ impl CalendarApp {
                 self.blur_editor();
                 self.status = Some("Showing all calendars".into());
             }
-            (tilo_actions::OperationKind::View, crate::actions::CalendarOperation::ShowMonth) => {
+            crate::actions::CalendarOperation::ShowMonth => {
                 self.view = View::Month;
             }
-            (tilo_actions::OperationKind::View, crate::actions::CalendarOperation::ShowWeek) => {
+            crate::actions::CalendarOperation::ShowWeek => {
                 self.view = View::Week;
             }
-            (tilo_actions::OperationKind::View, crate::actions::CalendarOperation::ShowDay) => {
+            crate::actions::CalendarOperation::ShowDay => {
                 self.view = View::Day;
             }
-            (tilo_actions::OperationKind::View, crate::actions::CalendarOperation::ShowAgenda) => {
+            crate::actions::CalendarOperation::ShowAgenda => {
                 self.view = View::Agenda;
             }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CalendarOperation::SetCalendarVisible { id, visible },
-            ) => {
-                self.set_calendar_visibility(&id, visible)?;
-                self.status = Some(if visible {
-                    "Calendar is now visible".into()
-                } else {
-                    "Calendar is now hidden".into()
-                });
-            }
-            (tilo_actions::OperationKind::Effect, crate::actions::CalendarOperation::Sync) => {
-                if self.syncing {
-                    return Err("calendar synchronization is already running".into());
-                }
-                let mut doc = doc.clone();
-                self.start_sync(&mut doc);
-            }
-            (tilo_actions::OperationKind::Effect, crate::actions::CalendarOperation::ExportIcs) => {
-                self.export_ics();
-            }
-            (tilo_actions::OperationKind::Effect, crate::actions::CalendarOperation::ImportIcs) => {
-                return Err("calendar import requires the lifecycle-capable operation host".into());
-            }
-            _ => return Err("operation kind does not match Calendar operation".into()),
         }
         self.dirty = true;
         Ok(true)
     }
 
-    fn admit_resource_operation(
+    /// Answer one of the calendar's effects, invoked by a control, the
+    /// palette, an agent or a script.
+    pub(crate) fn answer_effect(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let operation = (type_id == crate::actions::CALENDAR_OPERATION_TYPE)
-            .then(|| serde_json::from_slice::<crate::actions::CalendarOperation>(payload))
-            .transpose()
-            .map_err(|error| error.to_string())?;
-        if kind != tilo_actions::OperationKind::Effect {
-            return self
-                .answer_resource_operation_v2(kind, type_id, payload, doc, path)
-                .map(|result| result.map(ui::widget::ResourceOperationStart::Completed));
-        }
-        if operation == Some(crate::actions::CalendarOperation::ImportIcs) {
-            if self.resource_import_invocation.is_some() || self.pending_resource_import.is_some() {
-                return Err("calendar import is already waiting to be applied".into());
+        effect: crate::resource::CalendarEffect,
+        cx: &mut ui::framework::EffectCx<crate::resource::Calendar, Self>,
+    ) -> ui::framework::EffectAnswer {
+        use crate::resource::CalendarEffect;
+        use ui::framework::Effected;
+        match effect {
+            CalendarEffect::Sync => {
+                if self.syncing || self.sync_requested {
+                    return Err("calendar synchronization is already running".into());
+                }
+                self.sync_requested = true;
+                self.sync_reply = Some(cx.reply());
+                self.dirty = true;
+                Ok(Effected::Pending)
             }
-            self.pending_resource_import = Some(Self::latest_ics_import_action()?);
-            self.resource_import_invocation = Some(invocation);
-            self.dirty = true;
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            CalendarEffect::ExportIcs => {
+                self.export_ics()?;
+                Ok(Effected::done())
+            }
+            CalendarEffect::ImportLatestIcs => {
+                cx.apply(&Self::latest_ics_import_action()?);
+                self.status = Some("Imported calendar items from the latest ICS file".into());
+                self.dirty = true;
+                Ok(Effected::done())
+            }
+            CalendarEffect::PrepareInMail {
+                event_id,
+                attendee_id,
+            } => self
+                .prepare_in_mail(&event_id, &attendee_id)
+                .map(Effected::value),
+            CalendarEffect::SetVisibility { id, visible } => {
+                self.set_calendar_visibility(&id, visible)?;
+                self.status = Some(Self::visibility_status(visible).into());
+                self.dirty = true;
+                Ok(Effected::done())
+            }
         }
-        if operation != Some(crate::actions::CalendarOperation::Sync) {
-            return self
-                .answer_resource_operation_v2(kind, type_id, payload, doc, path)
-                .map(|result| result.map(ui::widget::ResourceOperationStart::Completed));
+    }
+
+    /// The effects that cannot run right now, and why.
+    pub(crate) fn effect_statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        use crate::resource::CalendarEffect;
+        use ui::framework::EffectStatus;
+        let mut statuses = Vec::new();
+        if self.syncing || self.sync_requested {
+            statuses.push(EffectStatus::unavailable(
+                CalendarEffect::SYNC,
+                "already_running",
+                "Calendar synchronization is already running",
+            ));
+        } else if self.accounts.is_empty() && !self.sample_accounts {
+            statuses.push(EffectStatus::unavailable(
+                CalendarEffect::SYNC,
+                "no_accounts",
+                "Add a calendar account before synchronizing",
+            ));
         }
-        if self.resource_sync_invocation.is_some() || self.syncing {
-            return Err("calendar synchronization is already running".into());
+        if self.model.events.is_empty() && self.model.tasks.is_empty() {
+            statuses.push(EffectStatus::unavailable(
+                CalendarEffect::EXPORT_ICS,
+                "calendar_empty",
+                "There are no events or tasks to export",
+            ));
         }
-        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        if self.syncing {
-            self.resource_sync_invocation = Some(invocation);
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        statuses
+    }
+
+    fn visibility_status(visible: bool) -> &'static str {
+        if visible {
+            "Calendar is now visible"
         } else {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
+            "Calendar is now hidden"
         }
+    }
+
+    /// The arguments of Mail's invitation draft for one attendee of an
+    /// event: a reviewable draft, never a claim that anything was sent.
+    fn prepare_in_mail(
+        &mut self,
+        event_id: &str,
+        attendee_id: &str,
+    ) -> Result<serde_json::Value, String> {
+        let event_id = event_id
+            .parse::<Id>()
+            .map_err(|_| "invalid event id".to_string())?;
+        let attendee_id = attendee_id
+            .parse::<Id>()
+            .map_err(|_| "invalid attendee id".to_string())?;
+        let event = self
+            .model
+            .event(event_id)
+            .ok_or_else(|| "event no longer exists".to_string())?;
+        let attendee = event
+            .attendees
+            .iter()
+            .find(|attendee| attendee.id == attendee_id)
+            .ok_or_else(|| "attendee no longer exists".to_string())?;
+        let subject = format!("Invitation: {}", event.display_title());
+        let body = format!(
+            "You’re invited to {} on {} at {} ({}).\n\nReview the attached calendar invitation for details.",
+            event.display_title(),
+            event.start.format("%A, %d %B %Y"),
+            event.start.format("%H:%M"),
+            event.timezone
+        );
+        let calendar_ics = crate::ics::invitation_request(event);
+        self.status = Some("Invitation prepared for Mail — review it there before sending".into());
+        self.dirty = true;
+        Ok(serde_json::json!({
+            "delivery": "not_sent",
+            "target": {
+                "resource": "mail.mailbox",
+                "action": "prepare-calendar-invitation"
+            },
+            "arguments": {
+                "to": attendee.email,
+                "subject": subject,
+                "body": body,
+                "calendar_ics": calendar_ics
+            },
+            "next": "Invoke the target through the action broker; Mail may refuse with account_offline or invite permission denied."
+        }))
     }
 }
 
