@@ -1,11 +1,10 @@
 //! Logs — a graphical systemd-journal viewer, built on the Tilo `ui`
 //! toolkit (CRDT-native, retained-mode).
 //!
-//! The viewer is a single self-rendering [`app::LogsApp`] widget: a
-//! scrollable, severity-coloured entry list; a detail pane that surfaces
-//! every field of the selected record; and a filter bar (free-text
-//! search, unit, boot, and a syslog-priority threshold) plus a
-//! live-tail toggle. Shared filter and selection preferences sync as document
+//! The viewer is one window shell ([`app::LogsApp`]): the journal table
+//! with its filters (a filter field, unit, boot and a syslog-priority
+//! threshold) as the content, every field of the selected record in the
+//! inspector, and refresh, live tail, export and History in the header. Shared filter and selection preferences sync as document
 //! actions on [`resource::Logs`]. Live tail is a process-local Effect (it
 //! starts this process's journal poller); journal entries themselves are an
 //! external render cache. The resource catalogue also exposes refresh,
@@ -54,8 +53,7 @@ mod framework_history_tests;
 pub mod journal;
 pub mod model;
 pub mod resource;
-pub mod responsive;
-pub mod theme_ext;
+mod view;
 
 pub use app::LogsApp;
 pub use model::{Filter, LogEntry, Priority};
