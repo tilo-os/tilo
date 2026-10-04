@@ -996,6 +996,17 @@ impl CalDoc {
         Self::read_projects_into(doc, &mut model);
         Self::read_events_into(doc, &mut model);
         Self::read_tasks_into(doc, &mut model);
+        let owners = model
+            .events
+            .iter()
+            .map(|event| (true, event.id))
+            .chain(model.tasks.iter().map(|task| (false, task.id)));
+        model.notes = owners
+            .filter_map(|(event, id)| {
+                let text = Self::note_text(doc, event, id);
+                (!text.trim().is_empty()).then_some((id, text))
+            })
+            .collect();
         model
     }
 

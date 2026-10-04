@@ -26,8 +26,6 @@ fn read_text(path: &std::path::Path) -> Result<String, tilo_files::FsError> {
         .map_err(|_| tilo_files::FsError::Io("the file is not UTF-8 text".into()))
 }
 
-#[cfg(test)]
-use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -99,28 +97,6 @@ const TITLE_PLACEHOLDER: &str = "New event";
 /// Placeholder shown in the empty notes editor of an event (dim hint text that
 /// disappears the moment the user types — never seeded as real body text).
 const NOTES_PLACEHOLDER: &str = "Add details…";
-
-/// Compact, derived stable-id positions over Calendar's authoritative model.
-///
-/// This deliberately contains identities and positions only: unlike the old
-/// retained resource context it never duplicates `EventData`/`TaskData` for
-/// the whole document. Exact resource requests validate the position against
-/// the live model before materialising the one addressed record.
-#[derive(Default)]
-struct CalendarResourceIndex {
-    events: HashMap<String, usize>,
-    tasks: HashMap<String, usize>,
-    projects: HashMap<String, usize>,
-    calendars: HashMap<String, usize>,
-    subtasks: HashMap<String, BoundedSubtasks>,
-    projects_in_use: HashSet<String>,
-}
-
-#[derive(Default)]
-struct BoundedSubtasks {
-    ids: Vec<String>,
-    overflow: usize,
-}
 
 /// First-run onboarding shown centered over an empty calendar (no events):
 /// a friendly headline + hint instead of a blank grid.
@@ -425,39 +401,6 @@ type SyncWorkerResult = (
 )]
 pub struct CalendarApp {
     model: Model,
-    /// Plain-text projection of each rich note for global search. The CRDT
-    /// remains canonical; this is a refreshed, local indexing cache only.
-    note_search: HashMap<String, String>,
-    /// Complete durable search namespace retained across palette openings.
-    /// It is reconciled after each observed document revision, rather than
-    /// rebuilding a private corpus while a user is typing.
-    search_provider: crate::search_provider::CalendarSearchProvider,
-    search_catalog_heads: Vec<ChangeHash>,
-    /// Monotonic generation of the non-CRDT calendar collection projection.
-    /// Account configuration belongs to Settings, so collection names,
-    /// identities, colours, and visibility can change without advancing the
-    /// Automerge heads that protect events and notes.
-    calendar_projection_revision: u64,
-    /// Last observed collection projection. Comparing this small configuration
-    /// snapshot on sync catches account-state replacements as well as
-    /// Calendar's own visibility toggles, without walking the event/task note
-    /// corpus.
-    calendar_projection_snapshot: Vec<crate::actions::CalendarCollectionResource>,
-    /// Projection generation included in the retained catalogue currently
-    /// published to Ctrl+K.
-    search_catalog_projection_revision: u64,
-    /// Compact position indices over the authoritative model. Rebuilt when a
-    /// document/account projection changes; this is intentionally not a
-    /// second event/task resource corpus.
-    resource_index: CalendarResourceIndex,
-    #[cfg(test)]
-    note_projection_refreshes: usize,
-    #[cfg(test)]
-    search_catalog_refreshes: usize,
-    #[cfg(test)]
-    pub(crate) resource_snapshot_inspected: Cell<usize>,
-    #[cfg(test)]
-    pub(crate) resource_exact_inspected: Cell<usize>,
     today: NaiveDate,
     anchor: NaiveDate,
     view: View,
@@ -642,8 +585,6 @@ impl CalendarApp {
         app.sample_accounts = true;
         app.open_sample_event();
         app.narrow_screen = NarrowScreen::Detail;
-        app.observe_calendar_projection();
-        app.rebuild_resource_index();
         app
     }
 
@@ -664,27 +605,11 @@ impl CalendarApp {
         // attached to a live window; a capture brings its sample ones.
         let accounts = AccountStore::default();
         let detail_open = false;
-        let search_provider = crate::search_provider::CalendarSearchProvider::new(&model);
 
         let task_project_choice = LocalState::new(String::new());
         let task_priority_choice = LocalState::new(String::new());
-        let mut app = Self {
+        Self {
             model,
-            note_search: HashMap::new(),
-            search_provider,
-            search_catalog_heads: Vec::new(),
-            calendar_projection_revision: 0,
-            calendar_projection_snapshot: Vec::new(),
-            search_catalog_projection_revision: 0,
-            resource_index: CalendarResourceIndex::default(),
-            #[cfg(test)]
-            note_projection_refreshes: 0,
-            #[cfg(test)]
-            search_catalog_refreshes: 0,
-            #[cfg(test)]
-            resource_snapshot_inspected: Cell::new(0),
-            #[cfg(test)]
-            resource_exact_inspected: Cell::new(0),
             today,
             anchor: today,
             view: View::Month,
@@ -762,17 +687,13 @@ impl CalendarApp {
             #[cfg(test)]
             last_local_resource_operation: None,
             model_heads: Vec::new(),
-        };
-        app.observe_calendar_projection();
-        app.rebuild_resource_index();
-        app
+        }
     }
 
     /// Adopt the framework's live model projection.
     pub(crate) fn adopt_resource_state(&mut self, state: &std::rc::Rc<crate::model::Model>) {
         self.model = (**state).clone();
         self.dirty = true;
-        self.rebuild_resource_index();
     }
 
     /// Attach the framework dispatcher, with the accounts the window shows
@@ -788,8 +709,6 @@ impl CalendarApp {
         if let Some(accounts) = accounts {
             self.accounts = accounts;
             self.sample_accounts = sample;
-            self.observe_calendar_projection();
-            self.rebuild_resource_index();
         }
         self.dirty = true;
     }
@@ -1415,21 +1334,6 @@ impl CalendarApp {
 
     // --- CRDT plumbing ---------------------------------------------------
 
-    fn refresh_note_search(&mut self, doc: &AutoCommit) {
-        #[cfg(test)]
-        {
-            self.note_projection_refreshes = self.note_projection_refreshes.saturating_add(1);
-        }
-        let mut notes = HashMap::new();
-        for event in &self.model.events {
-            notes.insert(event.id.to_string(), CalDoc::note_text(doc, true, event.id));
-        }
-        for task in &self.model.tasks {
-            notes.insert(task.id.to_string(), CalDoc::note_text(doc, false, task.id));
-        }
-        self.note_search = notes;
-    }
-
     /// The configuration-only portion of Calendar's resource/search surface.
     /// It deliberately excludes account collapse (pure sidebar presentation)
     /// but includes every property that can alter a collection result or its
@@ -1450,47 +1354,6 @@ impl CalendarApp {
             }
         }));
         calendars
-    }
-
-    /// Advance the calendar-projection generation only when Settings-owned
-    /// collection data actually differs. This catches an in-memory account
-    /// replacement or a direct non-CRDT configuration change while keeping an
-    /// unchanged frame from rebuilding the search catalogue (or reading any
-    /// notes).
-    fn observe_calendar_projection(&mut self) {
-        let collections = self.calendar_collections();
-        if collections != self.calendar_projection_snapshot {
-            self.calendar_projection_snapshot = collections;
-            self.calendar_projection_revision = self.calendar_projection_revision.wrapping_add(1);
-        }
-    }
-
-    /// Rebuild the retained catalogue for a document revision and/or the
-    /// Settings-owned collection projection. Notes are projected only when the
-    /// document changed; a collection rename or visibility toggle reuses the
-    /// already-current note projection.
-    fn refresh_search_catalog(&mut self, heads: &[ChangeHash]) {
-        let calendars = self.calendar_projection_snapshot.clone();
-        match self.search_provider.refresh_with_calendars(
-            &self.model,
-            &self.note_search,
-            &calendars,
-        ) {
-            Ok(()) => {
-                self.search_catalog_heads = heads.to_vec();
-                self.search_catalog_projection_revision = self.calendar_projection_revision;
-            }
-            Err(error) => {
-                // Keep the last complete revision searchable, but make a
-                // failed catalogue rebuild visible rather than silently
-                // advertising a partial/stale corpus as current.
-                self.status = Some(format!("Calendar search update failed: {error}"));
-            }
-        }
-        #[cfg(test)]
-        {
-            self.search_catalog_refreshes = self.search_catalog_refreshes.saturating_add(1);
-        }
     }
 
     fn ensure_bound(&mut self, doc: &AutoCommit) {
@@ -1771,275 +1634,23 @@ impl CalendarApp {
         self.last_local_resource_operation.as_ref()
     }
 
-    /// The source calendar id to queue a `CalDAV` delete for when an event is
-    /// removed: `Some` only for a synced event whose calendar is still
-    /// configured (otherwise there is nothing real to address). Shared by the
-    /// trash-button handler and the Ctrl+K "Delete event" spec so both build the
-    /// identical [`CalendarAction`](crate::actions::CalendarAction).
+    /// The remote calendar to queue a `CalDAV` delete for when an event is
+    /// removed: the one it was synced from, whichever device holds that
+    /// account. Shared by the trash button and the published "Delete event"
+    /// so both build the identical
+    /// [`CalendarAction`](crate::actions::CalendarAction).
     fn resolve_remote_delete(&self, id: Id) -> Option<String> {
-        let cid = self.model.event(id).and_then(|e| e.calendar_id.clone())?;
-        self.accounts
-            .accounts
-            .iter()
-            .any(|a| a.calendars.iter().any(|c| c.id == cid))
-            .then_some(cid)
+        self.model
+            .event(id)
+            .and_then(|event| event.calendar_id.clone())
     }
 
-    /// Build compact stable-id indices over the authoritative model and the
-    /// small Settings-owned calendar projection. No event/task payload is
-    /// copied here; resource requests materialise only a bounded snapshot or
-    /// the one exact record they address.
-    fn rebuild_resource_index(&mut self) {
-        let mut index = CalendarResourceIndex::default();
-        for (position, event) in self.model.events.iter().enumerate() {
-            index.events.insert(event.id.to_string(), position);
-            if let Some(project) = event.project {
-                index.projects_in_use.insert(project.to_string());
-            }
-        }
-        for (position, task) in self.model.tasks.iter().enumerate() {
-            index.tasks.insert(task.id.to_string(), position);
-            if let Some(project) = task.project {
-                index.projects_in_use.insert(project.to_string());
-            }
-            if let Some(parent) = task.parent {
-                let children = index.subtasks.entry(parent.to_string()).or_default();
-                if children.ids.len() < crate::actions::TASK_DELETE_FANOUT_LIMIT {
-                    children.ids.push(task.id.to_string());
-                } else {
-                    children.overflow = children.overflow.saturating_add(1);
-                }
-            }
-        }
-        for (position, project) in self.model.projects.iter().enumerate() {
-            index.projects.insert(project.id.to_string(), position);
-        }
-        for (position, calendar) in self.calendar_projection_snapshot.iter().enumerate() {
-            index.calendars.insert(calendar.id.clone(), position);
-        }
-        self.resource_index = index;
-    }
-
-    fn resource_template(&self) -> crate::actions::EventData {
-        let start = self
-            .anchor
-            .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap_or(NaiveTime::MIN));
-        crate::actions::EventData::from_event(&Event {
-            id: Uuid::nil(),
-            title: String::new(),
-            start,
-            end: start + Duration::hours(1),
-            all_day: false,
-            location: String::new(),
-            color: self.model.next_event_order_color(),
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: Vec::new(),
-            reminder_min: Some(10),
-            calendar_id: None,
-            project: None,
-        })
-    }
-
-    fn resource_ctx_base(&self) -> crate::actions::CalendarResourceCtx {
-        crate::actions::CalendarResourceCtx::new(
-            self.resource_template(),
-            self.sample_accounts || !self.accounts.is_empty(),
-            self.syncing,
-            !self.model.events.is_empty() || !self.model.tasks.is_empty(),
-            self.model
-                .projects
-                .last()
-                .map_or(1, |project| project.order.saturating_add(1)),
-        )
-    }
-
-    /// A bounded contextual snapshot for the root directory. This is the only
-    /// path `Widget::resources` uses, so opening the local resource directory
-    /// never clones or projects an unbounded Calendar corpus.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one bounded projection keeps resource ownership and editor destinations consistent"
-    )]
-    pub(crate) fn calendar_resource_ctx(&self) -> crate::actions::CalendarResourceCtx {
-        #[cfg(test)]
-        self.resource_snapshot_inspected.set(0);
-        let mut ctx = self.resource_ctx_base();
-        let limit = crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT;
-        ctx.calendars = self
-            .calendar_projection_snapshot
+    /// The calendar collections as live rows of the calendar.
+    pub(crate) fn collection_rows(&self) -> Vec<ui::framework::LiveRow> {
+        self.calendar_collections()
             .iter()
-            .take(limit)
-            .cloned()
-            .collect();
-        ctx.projects = self
-            .model
-            .projects
-            .iter()
-            .take(limit)
-            .map(|project| {
-                #[cfg(test)]
-                self.resource_snapshot_inspected
-                    .set(self.resource_snapshot_inspected.get().saturating_add(1));
-                crate::actions::ProjectResource {
-                    data: crate::actions::ProjectData::from_project(project),
-                    in_use: self
-                        .resource_index
-                        .projects_in_use
-                        .contains(&project.id.to_string()),
-                }
-            })
-            .collect();
-        ctx.events = self
-            .model
-            .events
-            .iter()
-            .take(limit)
-            .map(|event| {
-                #[cfg(test)]
-                self.resource_snapshot_inspected
-                    .set(self.resource_snapshot_inspected.get().saturating_add(1));
-                crate::actions::EventResource {
-                    data: crate::actions::EventData::from_event(event),
-                    remote_delete: self.resolve_remote_delete(event.id),
-                }
-            })
-            .collect();
-        ctx.tasks = self
-            .model
-            .tasks
-            .iter()
-            .take(limit)
-            .map(|task| {
-                #[cfg(test)]
-                self.resource_snapshot_inspected
-                    .set(self.resource_snapshot_inspected.get().saturating_add(1));
-                crate::actions::TaskResource {
-                    data: crate::actions::TaskData::from_task(task),
-                    subtasks: self
-                        .resource_index
-                        .subtasks
-                        .get(&task.id.to_string())
-                        .map_or_else(Vec::new, |children| children.ids.clone()),
-                    subtask_overflow: self
-                        .resource_index
-                        .subtasks
-                        .get(&task.id.to_string())
-                        .map_or(0, |children| children.overflow),
-                }
-            })
-            .collect();
-        ctx
-    }
-
-    /// Materialise a one-record context for a canonical exact resource id.
-    /// Each entity position comes from `resource_index`, then is checked
-    /// against the authoritative current model to make stale positions/IDs
-    /// harmless. Descendants share their event's one-record context.
-    pub(crate) fn exact_resource_ctx(
-        &self,
-        id: &str,
-    ) -> Option<crate::actions::CalendarResourceCtx> {
-        #[cfg(test)]
-        self.resource_exact_inspected.set(0);
-        let mut ctx = self.resource_ctx_base();
-        let event_id = id
-            .strip_prefix("calendar.event:")
-            .and_then(|value| value.strip_suffix(":notes").or(Some(value)))
-            .or_else(|| {
-                id.strip_prefix("calendar.attendee:")
-                    .and_then(|value| value.split_once(':').map(|(event, _)| event))
-            })
-            .or_else(|| {
-                id.strip_prefix("calendar.reminder:")
-                    .and_then(|value| value.strip_suffix(":primary"))
-            })
-            .or_else(|| {
-                id.strip_prefix("calendar.occurrence:")
-                    .and_then(|value| value.split_once(':').map(|(event, _)| event))
-            });
-        if let Some(event_id) = event_id {
-            let position = *self.resource_index.events.get(event_id)?;
-            let event = self
-                .model
-                .events
-                .get(position)
-                .filter(|event| event.id.to_string() == event_id)?;
-            #[cfg(test)]
-            self.resource_exact_inspected.set(1);
-            ctx.events.push(crate::actions::EventResource {
-                data: crate::actions::EventData::from_event(event),
-                remote_delete: self.resolve_remote_delete(event.id),
-            });
-            if let Some(calendar) = self.calendar_for_resource(event.calendar_id.as_deref()) {
-                ctx.calendars.push(calendar);
-            }
-            return Some(ctx);
-        }
-        if let Some(raw) = id.strip_prefix("calendar.task:") {
-            let task_id = raw.strip_suffix(":notes").unwrap_or(raw);
-            let position = *self.resource_index.tasks.get(task_id)?;
-            let task = self
-                .model
-                .tasks
-                .get(position)
-                .filter(|task| task.id.to_string() == task_id)?;
-            #[cfg(test)]
-            self.resource_exact_inspected.set(1);
-            ctx.tasks.push(crate::actions::TaskResource {
-                data: crate::actions::TaskData::from_task(task),
-                subtasks: self
-                    .resource_index
-                    .subtasks
-                    .get(task_id)
-                    .map_or_else(Vec::new, |children| children.ids.clone()),
-                subtask_overflow: self
-                    .resource_index
-                    .subtasks
-                    .get(task_id)
-                    .map_or(0, |children| children.overflow),
-            });
-            if let Some(project) = task
-                .project
-                .and_then(|project_id| self.project_resource(project_id))
-            {
-                ctx.projects.push(project);
-            }
-            return Some(ctx);
-        }
-        if let Some(raw) = id.strip_prefix("calendar.project:") {
-            let parsed = raw.parse::<Id>().ok()?;
-            if crate::actions::project_resource_id(parsed) != id {
-                return None;
-            }
-            let project = self.project_resource(parsed)?;
-            #[cfg(test)]
-            self.resource_exact_inspected.set(1);
-            ctx.projects.push(project);
-            return Some(ctx);
-        }
-        if let Some(raw) = id.strip_prefix("calendar.collection:") {
-            if crate::actions::calendar_resource_id(raw) != id {
-                return None;
-            }
-            let position = *self.resource_index.calendars.get(raw)?;
-            let calendar = self
-                .calendar_projection_snapshot
-                .get(position)
-                .filter(|calendar| calendar.id == raw)?
-                .clone();
-            #[cfg(test)]
-            self.resource_exact_inspected.set(1);
-            ctx.calendars.push(calendar);
-            return Some(ctx);
-        }
-        (id == "calendar.calendar").then_some(ctx)
+            .map(crate::actions::calendar_collection_row)
+            .collect()
     }
 
     fn calendar_for_resource(
@@ -2047,25 +1658,9 @@ impl CalendarApp {
         id: Option<&str>,
     ) -> Option<crate::actions::CalendarCollectionResource> {
         let id = id.unwrap_or("local");
-        let position = *self.resource_index.calendars.get(id)?;
-        self.calendar_projection_snapshot
-            .get(position)
-            .filter(|calendar| calendar.id == id)
-            .cloned()
-    }
-
-    fn project_resource(&self, id: Id) -> Option<crate::actions::ProjectResource> {
-        let raw = id.to_string();
-        let position = *self.resource_index.projects.get(&raw)?;
-        let project = self
-            .model
-            .projects
-            .get(position)
-            .filter(|project| project.id == id)?;
-        Some(crate::actions::ProjectResource {
-            data: crate::actions::ProjectData::from_project(project),
-            in_use: self.resource_index.projects_in_use.contains(&raw),
-        })
+        self.calendar_collections()
+            .into_iter()
+            .find(|calendar| calendar.id == id)
     }
 
     /// Read the transfer directory only for an explicitly invoked import.
@@ -2667,9 +2262,6 @@ impl CalendarApp {
         }
 
         self.accounts = updated;
-        // Make the generation visibly stale now; `sync` will rebuild the
-        // catalogue on its next pass without projecting notes again.
-        self.observe_calendar_projection();
         self.dirty = true;
         Ok(())
     }
@@ -6467,9 +6059,7 @@ impl Default for CalendarApp {
 impl Widget for CalendarApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
+        dyn ui::widget::controls::ActionControls
     );
 
     fn start_operation(
@@ -6562,11 +6152,6 @@ impl Widget for CalendarApp {
             self.status = None;
         }
         self.poll_sync(state);
-        // Account/calendar configuration is Settings-owned rather than CRDT
-        // state. Observe it independently so a rename, visibility change, or
-        // collection replacement invalidates Ctrl+K even when document heads
-        // stay put.
-        self.observe_calendar_projection();
         // Reconcile the in-memory model with the document when it moved out of
         // band — a Ctrl+K palette action mutated the CRDT, or a peer's change
         // merged in — so those events/tasks show up in the views just like an
@@ -6591,27 +6176,12 @@ impl Widget for CalendarApp {
         }
         self.notes_editor.sync(state, path);
         // Binding an editor, applying a dropdown selection, or accepting a
-        // note delta can hydrate the document during this same frame. Re-read
-        // heads after those paths before deriving search state, then project
-        // every note only when the revision really advanced. An idle frame is
-        // therefore O(1), not a corpus walk over every event/task note.
+        // note delta can change the document during this same frame.
         let post_hydration_heads = state.get_heads();
         if post_hydration_heads != self.model_heads {
             self.model = CalDoc::read_model(state);
             self.revalidate_selection();
             self.model_heads.clone_from(&post_hydration_heads);
-        }
-        let document_changed = self.search_catalog_heads != post_hydration_heads;
-        let calendar_projection_changed =
-            self.search_catalog_projection_revision != self.calendar_projection_revision;
-        if document_changed || calendar_projection_changed {
-            self.rebuild_resource_index();
-        }
-        if document_changed {
-            self.refresh_note_search(state);
-        }
-        if document_changed || calendar_projection_changed {
-            self.refresh_search_catalog(&post_hydration_heads);
         }
         // Persist after the editor's sync so notes edits land too. Cheap: only
         // writes when the document's heads changed since the last save.
@@ -7183,62 +6753,6 @@ impl Widget for CalendarApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
-    }
-}
-
-impl ui::search::capability::SearchSource for CalendarApp {
-    /// Fold the calendar's events and tasks into the unified Ctrl+K palette.
-    /// Every hit addresses the matching resource's exported `open` view action.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-}
-
-impl ui::resources::PublishesResources for CalendarApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.actions.is_hosted() {
-            return Vec::new();
-        }
-        self.publish_resources(doc)
-    }
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        // The framework root already publishes the calendar, never a second
-        // root.
-        if self.actions.is_hosted() {
-            return Some(ui::widget::ActionDirectoryResourcePage {
-                resources: Vec::new(),
-                next_cursor: Vec::new(),
-                exhausted: true,
-            });
-        }
-        // The pull directory is the published calendar root. Event and task
-        // rows stay on the revisioned search provider; walking them here would
-        // materialise the whole history just to list stable root actions.
-        let mut root = ui::tilo_resource::publish::<crate::resource::Calendar>(
-            "calendar.calendar",
-            "Calendar",
-            &crate::doc::CalDoc::read_model(doc),
-        );
-        root.children.clear();
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources: (cursor.is_empty() && max_results > 0)
-                .then_some(root)
-                .into_iter()
-                .collect(),
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.actions.is_hosted() && id == "calendar.calendar" {
-            return None;
-        }
-        self.publish_resource(doc, id)
     }
 }
 
