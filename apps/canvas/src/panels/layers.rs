@@ -19,7 +19,7 @@ use crate::tools::Tools;
 /// A layer as its row shows it.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "shown, held still, being a mask and clipped are independent facts of a layer"
+    reason = "shown, held still and clipped are independent facts of a layer"
 )]
 #[derive(Clone, Default, PartialEq)]
 struct LayerRow {
@@ -29,11 +29,18 @@ struct LayerRow {
     visible: bool,
     locked: bool,
     opacity: f64,
-    /// Another layer's mask.
-    is_mask: bool,
-    /// The mask's inversion, when the layer has one.
-    mask: Option<bool>,
+    /// Its mask, shown beside it in its row rather than as a row of its own.
+    mask: Option<MaskRow>,
     clip: bool,
+}
+
+/// A layer's mask, as its layer's row shows it.
+#[derive(Clone, Default, PartialEq)]
+struct MaskRow {
+    id: String,
+    invert: bool,
+    /// Switched on: the layer shows through it.
+    visible: bool,
 }
 
 /// The short name of a medium's engine, `plain` for vector art.
@@ -49,27 +56,31 @@ fn engine_label(art: &Artwork, medium: &str) -> String {
     ui::i18n::I18nManager::lookup_plain(id)
 }
 
+/// The layers' rows, top first; a mask rides in its layer's row.
 fn rows(art: &Artwork) -> Vec<LayerRow> {
     art.layers
         .iter()
         .rev()
+        .filter(|layer| !layer.is_mask())
         .map(|layer| LayerRow {
             id: layer.id.clone(),
             name: layer.name.clone(),
-            medium: if layer.is_mask() {
-                ui::i18n::I18nManager::lookup_plain("canvas-medium-mask")
-            } else {
-                engine_label(art, &layer.medium)
-            },
+            medium: engine_label(art, &layer.medium),
             visible: layer.visible,
             locked: layer.locked,
             opacity: layer.opacity,
-            is_mask: layer.is_mask(),
-            mask: art.mask_of(&layer.id).map(|mask| mask.invert),
+            mask: art.mask_of(&layer.id).map(|mask| MaskRow {
+                id: mask.id.clone(),
+                invert: mask.invert,
+                visible: mask.visible,
+            }),
             clip: layer.clip,
         })
         .collect()
 }
+
+/// A layer's picture in its row, the artwork's shape at a glance.
+const THUMB: (f32, f32) = (44.0, 33.0); // a picture's size, not spacing
 
 /// How tall the list of layers grows before it scrolls.
 const LIST: f32 = 232.0; // about four layer rows: a share of the sidebar, not spacing
@@ -125,7 +136,14 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 /// New marks go on the chosen layer; a layer added since (by anyone) is
 /// where the next mark goes, and a removed one's choice falls to the top.
 fn follow_new_layers(known: &RefCell<Vec<String>>, rows: &[LayerRow], target: &LocalState<String>) {
-    let ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
+    // A mask counts too: one just added is where the next mark goes, as a
+    // person adding a mask means to paint it.
+    let ids: Vec<String> = rows
+        .iter()
+        .flat_map(|row| {
+            std::iter::once(row.id.clone()).chain(row.mask.as_ref().map(|mask| mask.id.clone()))
+        })
+        .collect();
     let mut known = known.borrow_mut();
     let added = ids.iter().find(|id| !known.contains(id)).cloned();
     let chosen = target.with(Clone::clone);
@@ -140,13 +158,61 @@ fn follow_new_layers(known: &RefCell<Vec<String>>, rows: &[LayerRow], target: &L
     *known = ids;
 }
 
+/// A layer's picture, and its mask's beside it when it has one: each, with
+/// a mask, choosing what the brush paints.
+fn pictures(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Row {
+    let thumb = |layer: &str, name: &str| -> Element {
+        let mut picture = crate::thumb::Thumb::new(
+            tools.renderer.clone(),
+            Some(layer.to_owned()),
+            THUMB.0,
+            THUMB.1,
+        );
+        if row.mask.is_some() {
+            picture = picture.ringed_while(&tools.layer, layer);
+        }
+        let picture = cx.surface(picture);
+        if row.mask.is_none() {
+            return picture;
+        }
+        // With a mask beside it, each picture chooses what is painted: the
+        // layer's paint or its mask.
+        let chosen = tools.layer.clone();
+        let target = layer.to_owned();
+        let choose = Button::new(&format!("canvas-paint-{layer}"), "", None)
+            .ghost()
+            .with_accessible_name(name)
+            .tooltip(name)
+            .with_size(THUMB.0, THUMB.1)
+            .on_view(move || chosen.set(target.clone()));
+        // The picture over its button: the button takes the press the
+        // picture lets through, and the picture shows what it chooses.
+        Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_size(THUMB.0, THUMB.1)
+                .with_child(Box::new(
+                    ui::widget::Stack::new()
+                        .push(Box::new(choose))
+                        .push(picture),
+                )),
+        )
+    };
+    let named = |id: &str| ui::i18n::I18nManager::format(id, &[("name", row.name.clone().into())]);
+    let mut pictures = Row::new()
+        .with_gap(4.0)
+        .no_wrap()
+        .with_align_items(ui::taffy::AlignItems::Center)
+        .push(thumb(&row.id, &named("canvas-layer-paint-name")));
+    if let Some(mask) = &row.mask {
+        pictures = pictures.push(thumb(&mask.id, &named("canvas-layer-paint-mask-name")));
+    }
+    pictures
+}
+
 fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Element {
-    let thumb = cx.surface(crate::thumb::Thumb::new(
-        tools.renderer.clone(),
-        Some(row.id.clone()),
-        44.0,
-        33.0,
-    ));
+    let pictures = pictures(cx, tools, row);
+    let named = |id: &str| ui::i18n::I18nManager::format(id, &[("name", row.name.clone().into())]);
     let rename = ArtworkResource::RENAME_LAYER.map({
         let id = row.id.clone();
         move |name: String| (id.clone(), name)
@@ -177,7 +243,6 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
         .with_gap(0.0)
         .push(Box::new(name))
         .push(Box::new(summary));
-    let named = |id: &str| ui::i18n::I18nManager::format(id, &[("name", row.name.clone().into())]);
     let (eye, eye_name) = if row.visible {
         (Icon::Eye, named("canvas-layer-hide-name"))
     } else {
@@ -193,7 +258,7 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
         .with_gap(10.0)
         .no_wrap()
         .with_align_items(ui::taffy::AlignItems::Center)
-        .push(thumb)
+        .push(Box::new(pictures))
         .push(Box::new(
             Container::new()
                 .with_no_padding()
@@ -216,16 +281,25 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
     Box::new(
         ListRow::new(content)
             .on_raised()
-            .choosing(&tools.layer, row.id.clone())
+            .choosing_any(
+                &tools.layer,
+                std::iter::once(row.id.clone())
+                    .chain(row.mask.as_ref().map(|mask| mask.id.clone()))
+                    .collect(),
+            )
             .with_accessible_name(row.name.clone()),
     )
 }
 
 /// The chosen layer's opacity, medium and place among the layers.
 fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str) -> Element {
-    let Some(row) =
-        cx.read(|art| art.and_then(|art| rows(art).into_iter().find(|row| row.id == id)))
-    else {
+    let Some(row) = cx.read(|art| {
+        art.and_then(|art| {
+            rows(art)
+                .into_iter()
+                .find(|row| row.id == id || row.mask.as_ref().is_some_and(|mask| mask.id == id))
+        })
+    }) else {
         return Box::new(Spacer::fixed(0.0));
     };
     let opacity = {
@@ -271,62 +345,43 @@ fn chosen_layer(cx: &ViewCx<ArtworkResource>, id: &str) -> Element {
         ),
         ArtworkResource::REMOVE_LAYER.with(row.id.clone()),
     );
-    Box::new(
-        Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .with_gap(0.0)
-            .push(Box::new(
-                Row::new()
-                    .with_gap(2.0)
-                    .no_wrap()
-                    .with_align_items(ui::taffy::AlignItems::Center)
-                    .push(Box::new(label))
-                    .push(Box::new(Spacer::new()))
-                    .push(masking)
-                    .push(Box::new(raise))
-                    .push(Box::new(lower))
-                    .push(Box::new(remove)),
-            ))
-            .push(Box::new(slider)),
-    )
+    let mut column = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_gap(0.0)
+        .push(Box::new(
+            Row::new()
+                .with_gap(2.0)
+                .no_wrap()
+                .with_align_items(ui::taffy::AlignItems::Center)
+                .push(Box::new(label))
+                .push(Box::new(Spacer::new()))
+                .push(masking)
+                .push(Box::new(raise))
+                .push(Box::new(lower))
+                .push(Box::new(remove)),
+        ))
+        .push(Box::new(slider));
+    if let Some(mask) = &row.mask {
+        column = column.push(mask_line(cx, &row, mask));
+    }
+    Box::new(column)
 }
 
-/// The chosen layer's mask (add one, invert it, remove it) and clipping to
-/// the layer below. A mask is chosen in the list like a layer, to paint on.
+/// Giving the chosen layer a mask, and clipping it to the layer below.
 fn mask_buttons(cx: &ViewCx<ArtworkResource>, row: &LayerRow) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let mut buttons = Row::new()
         .with_gap(2.0)
         .no_wrap()
         .with_align_items(ui::taffy::AlignItems::Center);
-    if row.is_mask {
-        return Box::new(buttons);
-    }
-    match row.mask {
-        None => {
-            buttons = buttons.push(Box::new(icon_button(
-                cx,
-                Icon::SquareDashed,
-                &lookup("canvas-layer-mask-add"),
-                ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "reveal".into())),
-            )));
-        }
-        Some(inverted) => {
-            buttons = buttons
-                .push(Box::new(icon_button(
-                    cx,
-                    Icon::ArrowUpDown,
-                    &lookup("canvas-layer-mask-invert"),
-                    ArtworkResource::SET_MASK_INVERT.with((row.id.clone(), !inverted)),
-                )))
-                .push(Box::new(icon_button(
-                    cx,
-                    Icon::X,
-                    &lookup("canvas-layer-mask-remove"),
-                    ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "remove".into())),
-                )));
-        }
+    if row.mask.is_none() {
+        buttons = buttons.push(Box::new(icon_button(
+            cx,
+            Icon::SquareDashed,
+            &lookup("canvas-layer-mask-add"),
+            ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "reveal".into())),
+        )));
     }
     let mut clip = icon_button(
         cx,
@@ -338,6 +393,47 @@ fn mask_buttons(cx: &ViewCx<ArtworkResource>, row: &LayerRow) -> Element {
         clip = clip.primary();
     }
     Box::new(buttons.push(Box::new(clip)))
+}
+
+/// The chosen layer's mask: switch it off, invert it, remove it. It is
+/// painted by choosing its picture in the layer's row.
+fn mask_line(cx: &ViewCx<ArtworkResource>, row: &LayerRow, mask: &MaskRow) -> Element {
+    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let (eye, name) = if mask.visible {
+        (Icon::Eye, "canvas-layer-mask-off")
+    } else {
+        (Icon::EyeOff, "canvas-layer-mask-on")
+    };
+    let mut invert = icon_button(
+        cx,
+        Icon::ArrowUpDown,
+        &lookup("canvas-layer-mask-invert"),
+        ArtworkResource::SET_MASK_INVERT.with((row.id.clone(), !mask.invert)),
+    );
+    if mask.invert {
+        invert = invert.primary();
+    }
+    Box::new(
+        Row::new()
+            .with_gap(2.0)
+            .no_wrap()
+            .with_align_items(ui::taffy::AlignItems::Center)
+            .push(caption(&lookup("canvas-medium-mask")))
+            .push(Box::new(Spacer::new()))
+            .push(Box::new(icon_button(
+                cx,
+                eye,
+                &lookup(name),
+                ArtworkResource::SET_LAYER_VISIBLE.with((mask.id.clone(), !mask.visible)),
+            )))
+            .push(Box::new(invert))
+            .push(Box::new(icon_button(
+                cx,
+                Icon::X,
+                &lookup("canvas-layer-mask-remove"),
+                ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "remove".into())),
+            ))),
+    )
 }
 
 /// Adding a layer: a menu of the media to paint it in, adding the chosen
