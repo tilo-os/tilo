@@ -13927,7 +13927,6 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
- "toml 1.0.6+spec-1.1.0",
  "tracing",
  "workspace-hack",
 ]
@@ -16881,6 +16880,8 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-clock",
  "tilo-files",
+ "tilo-test-env",
+ "tilo-vm",
  "tilo-vm-protocol",
  "uuid",
  "workspace-hack",
