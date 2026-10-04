@@ -24,7 +24,8 @@ from ci.workspace_graph import (
     package_maps, reverse_dependencies,
 )
 
-SDK_PACKAGES = {"tilo-app-cli", "tilo-app-package-cli", "tilo-caps"}
+# The CLI builds compute through a subprocess, absent from Cargo dependency edges.
+SDK_PACKAGES = {"tilo-app-cli", "tilo-app-package-cli", "tilo-caps", "tilo-browser-compute"}
 
 # Paths outside any package that change what the lanes build or how they run.
 GLOBAL_INPUTS = (

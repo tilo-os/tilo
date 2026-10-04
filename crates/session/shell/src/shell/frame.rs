@@ -449,6 +449,8 @@ pub struct FrameBuilder {
     floating_transfer_proxies: Vec<FloatingTransferProxy>,
     osk_anchor_x: Option<f64>,
     osk_active: bool,
+    /// [`crate::compositor::state::State::osk_commits`], for the state dump.
+    osk_commits: u64,
     /// A layout rebuild invalidates every Taffy node id held by the native
     /// input loop. Re-seat its external focus cursor before the next event;
     /// otherwise the first-login wizard starts unfocused and a step change
@@ -672,6 +674,7 @@ impl FrameBuilder {
             floating_transfer_proxies: Vec::new(),
             osk_anchor_x: None,
             osk_active: false,
+            osk_commits: 0,
             focus_tree_changed: true,
             native_focus_ordinal: None,
             last_produced_sections: None,
@@ -2920,6 +2923,22 @@ impl FrameBuilder {
             .then_some((keyboard.surface_id(), rect))
     }
 
+    /// Record how many commits the on-screen keyboard has made.
+    pub fn set_osk_commits(&mut self, commits: u64) {
+        self.osk_commits = commits;
+    }
+
+    /// How many commits the on-screen keyboard has made this session.
+    pub fn osk_commits(&self) -> u64 {
+        self.osk_commits
+    }
+
+    /// Whether the trusted on-screen keyboard service has a surface, shown
+    /// or not.
+    pub fn osk_connected(&self) -> bool {
+        self.osk_overlay.is_some()
+    }
+
     /// The compositor-owned keyboard's painted rectangle, if it is currently
     /// visible. Native output membership uses this rather than the focused
     /// app's rectangle: the keyboard is its own Wayland surface and may move
@@ -2961,6 +2980,13 @@ impl FrameBuilder {
         let mut best: Option<(f64, winit::window::CursorIcon)> = None;
         chrome_cursor_walk(self.host.as_ref(), point, &mut best);
         best.map(|(_, icon)| icon)
+    }
+
+    /// Whether a chrome widget under `point` handles a touch contact that
+    /// starts there itself, rather than through the pointer events a touch
+    /// is otherwise turned into. Mirrors `ui::App` for application windows.
+    pub fn claims_raw_touch_at(&self, point: vello::kurbo::Point) -> bool {
+        claims_raw_touch_walk(self.host.as_ref(), point)
     }
 
     /// Inner node id (host's root child). Required by the input dispatch
@@ -3325,6 +3351,7 @@ impl FrameBuilder {
             }
         };
         put("add_workspace".into(), host.add_workspace_rect_for_tests());
+        launchpad_targets(host.as_ref(), &mut put);
         for (key, tab) in [
             ("general", WsTab::General),
             ("members", WsTab::Members),
@@ -3394,6 +3421,33 @@ impl FrameBuilder {
             put(name.to_string(), rect);
         }
     }
+}
+
+/// The first-use launchpad's cards, which it paints and hit-tests itself.
+fn launchpad_targets(
+    widget: &dyn ui::widget::Widget,
+    put: &mut impl FnMut(String, vello::kurbo::Rect),
+) {
+    if let Some(launchpad) = widget
+        .as_any()
+        .and_then(|any| any.downcast_ref::<tilo_desktop::launchpad::CollaborationLaunchpad>())
+    {
+        for (name, rect) in launchpad.targets() {
+            put(name, rect);
+        }
+        return;
+    }
+    for child in widget.children() {
+        launchpad_targets(child, put);
+    }
+}
+
+fn claims_raw_touch_walk(widget: &dyn ui::widget::Widget, point: vello::kurbo::Point) -> bool {
+    (widget.get_rect().contains(point) && widget.claims_raw_touch(point))
+        || widget
+            .children()
+            .into_iter()
+            .any(|child| claims_raw_touch_walk(child, point))
 }
 
 fn chrome_cursor_walk(
@@ -4238,6 +4292,89 @@ mod tests {
         ));
         fb.relayout();
         (fb, identity_dir)
+    }
+
+    #[test]
+    fn administrator_prompt_raised_during_onboarding_is_drawn_above_it_and_takes_the_keyboard() {
+        use crate::shell::portal_dialog::{
+            AuthenticationDecision, AuthenticationRequest, PortalDialogQueue,
+        };
+
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        fb.reconcile_native_focus(&mut focus);
+        let onboarding_focus = focused_name(&fb, focus);
+        assert!(onboarding_focus.is_some(), "onboarding holds focus");
+
+        // The polkit agent enqueues on the session queue while first-use
+        // setup is still on screen.
+        let queue = PortalDialogQueue::default();
+        let mut receiver = queue
+            .enqueue_authentication(AuthenticationRequest {
+                handle: "polkit:onboarding".into(),
+                message: "Administrator approval is required".into(),
+                action_id: "org.tilo.example".into(),
+                identities: vec!["quinn".into()],
+                identity: 0,
+                prompt: "Password:".into(),
+                echo: false,
+                notice: None,
+            })
+            .expect("queued");
+        fb.host_mut().set_portal_dialog_queue(queue);
+        assert!(fb.host().onboarding_active());
+
+        // The ordinary onboarding tick must bring the sheet up.
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        let state = fb.host().portal_dialog_state_json();
+        assert_eq!(state["kind"], "authentication", "sheet is up: {state}");
+        assert!(
+            fb.widget_registry()
+                .contains_key(crate::shell::trusted_ui::PORTAL_DIALOG_TARGET),
+            "the sheet is on screen above onboarding"
+        );
+        let _ = fb.paint();
+
+        // Typed keys reach the sheet's secret field, not the focused setup
+        // control underneath.
+        for key in ["h", "u", "n", "t"] {
+            let mut typed = key_press(Key::Character(key.into()));
+            if let WindowEvent::KeyboardInput { event, .. } = &mut typed {
+                event.text = Some(key.into());
+            }
+            assert!(fb.dispatch_event(
+                &typed,
+                &Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+        }
+        assert_eq!(fb.host().portal_dialog_state_json()["secret_len"], 4);
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Enter)),
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(
+            receiver.try_recv(),
+            Ok(AuthenticationDecision::Answered {
+                identity: 0,
+                secret: "hunt".into(),
+            })
+        );
+
+        // Answered: the sheet is gone and onboarding keeps its focus.
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        assert!(!fb.host().portal_dialog_open());
+        assert!(fb.host().onboarding_active());
+        fb.reconcile_native_focus(&mut focus);
+        assert_eq!(focused_name(&fb, focus), onboarding_focus);
     }
 
     #[test]

@@ -1,0 +1,12 @@
+# Audited ceilings of apps/imager (tools/policy/check_app_resource_action_contract.py).
+# Each count may only go down; the target is an empty file.
+
+[ratchets.app_action_host]
+"apps/imager/src/resource.rs" = 2
+
+[ratchets.standalone_launch]
+"apps/imager/src/main.rs" = 1
+
+[ratchets.empty_action_vocabulary]
+"apps/imager/src/setup/actions.rs" = 1
+"apps/imager/src/setup/import_actions.rs" = 1

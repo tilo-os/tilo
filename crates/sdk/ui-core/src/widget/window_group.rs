@@ -1065,6 +1065,19 @@ impl WindowGroup {
         !self.tab_rects().iter().any(|r| r.contains(p))
     }
 
+    /// Where a finger can grab the whole group: anywhere on its tab bar,
+    /// tabs included, except the new-tab button and the resize edge.
+    pub fn touch_grab_hit(&self, p: Point) -> bool {
+        if self.external_navigation || !self.bar_rect().contains(p) {
+            return false;
+        }
+        if p.x >= self.rect.x1 - RESIZE_HANDLE_PX {
+            return false;
+        }
+        let plus = self.bar.new_tab_rect();
+        !(plus.area() > 0.0 && plus.contains(p))
+    }
+
     /// True when `p` is in the group's trailing-edge resize target.
     /// `GroupRow` uses this before arming a whole-group drag so the two
     /// gestures cannot race; this matters especially for a one-group strip,
