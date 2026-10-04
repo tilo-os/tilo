@@ -34,10 +34,9 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_clock::unix_now_ms;
 use uuid::Uuid;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{
-    BlendMode, Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage,
-    ImageFormat as ImageFmt,
+    BlendMode, Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as ImageFmt,
 };
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -45,10 +44,13 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use ui::time::{Duration, Instant};
 
 use ui::ColorCompat;
+use ui::TextRole;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::animation::{Animated, Curve};
+use ui::chrome::NavRowFace;
 use ui::chrome::SelectionState;
 use ui::gesture::{DragSelect, Granularity};
+use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
@@ -56,15 +58,21 @@ use ui::portal::{
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::metrics::Metrics;
+use ui::widget::modal_dialog;
+use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind};
 use ui::widget::{
-    Button, ButtonFace, Continuable, EditOutcome, EditableLabel, FlapState, Slider, SliderFace,
-    SplitLayout, Toggle, ToggleFace, Widget,
+    BadgeFace, Button, ButtonFace, ButtonRole, CardFace, ChipFace, ChipLead, ChipStyle,
+    ColorSwatchFace, Continuable, ControlSize, DropZoneFace, EditOutcome, EditableLabel,
+    EmptyState, EmptyStateContent, InputHint, Interaction, ListRowFace, MediaArt, MediaAspect,
+    MediaBadge, MediaCardFace, MediaSize, ModalAction, ModalSpec, ScrollMetrics, Scrollbar,
+    SegmentedFace, SegmentedStyle, SidebarDrawer, Slider, SliderFace, Toggle, ToggleFace,
+    ToggleGroup, Widget, card_column_width, card_columns,
 };
 
-use crate::chrome::{self as chrome, pointer_target, rhythm};
 use crate::comment_overlay::{CommentAction, CommentOverlay};
 use crate::content::{self, is_shared};
 use crate::doc::BooksDoc;
+use crate::hosted_dropdown::HostedDropdown;
 use crate::input_controls::{
     ColorEdit, ColorSheetResponse, InputEventCtx, NoteAction, NoteComposer, NoteSemanticOutcome,
     NumberControls, NumberField, PickTarget, SchemeColorSheet,
@@ -82,12 +90,6 @@ use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
 use crate::reading_settings::{Appearance, ReadingSettings, ReadingSettingsAction};
 use crate::shelf_controls::{ShelfControlAction, ShelfControls};
-
-const TOP_BAR: f64 = 54.0;
-/// Side of the square −/+ buttons in a size stepper.
-const SIZE_STEPPER_BTN: f64 = 28.0;
-/// Width of the quick-settings visibility toggle in a font row.
-const FONT_ROW_TOGGLE_W: f64 = 40.0;
 
 /// Whether a parsed book should replace the reader's current content or only
 /// join a watched shelf. The worker carries this presentation intent but never
@@ -347,60 +349,9 @@ const TURN_STEP_PX: f64 = 40.0;
 /// Accumulated horizontal swipe travel (px) that commits to one page turn;
 /// larger than the vertical wheel step so a swipe reads as a deliberate flick.
 const SWIPE_STEP_PX: f64 = 80.0;
-const TOC_W: f64 = 244.0;
-/// Height of the "+ Note on selection" row at the top of the annotations
-/// rail: a row that is pressed, so it is the pointer-target metric tall.
-const NOTES_ADD_ROW_H: f64 = Metrics::BASE.min_pointer_target as f64;
-/// One keyboard-shortcut row in Settings: its binding pill (a pointer target)
-/// with a sibling step above and below it.
-const SETTINGS_SHORTCUT_ROW_H: f64 =
-    Metrics::BASE.min_pointer_target as f64 + 2.0 * rhythm::SIBLING;
-use crate::chrome::MENU_ROW_H;
-/// Side of the delete control painted on an annotation card: the large icon
-/// box. Its hit rect grows to the pointer metric (`chrome::pointer_target`).
-const NOTE_CARD_CONTROL: f64 = Metrics::BASE.icon_lg as f64;
-/// The annotation card's header band (colour dot, kind, locator, delete):
-/// the control with a tight step above and below it.
-const NOTE_CARD_HEADER_H: f64 = NOTE_CARD_CONTROL + 2.0 * rhythm::TIGHT;
-/// The renderer's nominal single-line box is `size × 1.25`; only the value the
-/// running-header slot starts from before the first frame has measured the
-/// real line box (`BooksApp::running_header_h`).
-const LINE_BOX_FACTOR: f64 = 1.25;
-
-/// Nominal size of the framed page's running header (the renderer scales it);
-/// measured in `draw_reader`, painted in `draw_reader_page_surface`.
-fn running_header_px() -> f32 {
-    11.0
-}
-
-/// Contents rail rows: the pill floor and the gap between pills, from the
-/// panel-row metric — a one-line row keeps the panel row pitch, and a row
-/// grows with its measured (wrapped) title so at 200 % a two-line title gets
-/// a two-line row instead of running into the next chapter.
-fn toc_row_gap(theme: &Theme) -> f64 {
-    f64::from(theme.tokens.spacing.s1)
-}
-fn toc_row_floor(theme: &Theme) -> f64 {
-    f64::from(theme.tokens.metrics.panel_row_height) - toc_row_gap(theme)
-}
-const NOTES_W: f64 = 326.0;
+/// The widest a reading page (and the settings column) grows: a readable
+/// measure for the book's text at its default size.
 const PAGE_MAX_W: f64 = 680.0;
-/// The rails are independent reading lists.  Keep their scroll state separate
-/// from the page so a wheel over a long table of contents never turns the
-/// book underneath it.
-const RAIL_SCROLLBAR_W: f64 = 4.0;
-
-/// At/above this width the reader draws the floating "paper card"; below it
-/// the page goes borderless and fills the reading area.
-const FRAME_MIN_W: f64 = 720.0;
-
-/// Below this width the contents rail switches from docked to an overlay
-/// flap over the page behind a dimming scrim.
-const TOC_BREAKPOINT: f64 = 760.0;
-
-/// Below this (wider) width the annotations rail also goes overlay, so a
-/// medium window keeps contents docked but floats annotations.
-const NOTES_BREAKPOINT: f64 = 1040.0;
 
 /// Which screen is showing. Per-peer, never persisted.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -581,10 +532,11 @@ struct Pane {
 }
 
 impl Pane {
-    /// Whether a line at flow-y `ly` with height `lh` shows in this pane.
+    /// Whether a line at flow-y `ly` with height `lh` shows in this pane. A
+    /// scrolling pane shows whole lines only, so its edges never slice one.
     fn shows(&self, ly: f32, lh: f32) -> bool {
         if self.partial {
-            ly + lh > self.win_start && ly < self.win_end
+            ly >= self.win_start - 0.5 && ly + lh <= self.win_end + 0.5
         } else {
             ly >= self.win_start - 0.5 && ly < self.win_end
         }
@@ -754,9 +706,6 @@ enum Action {
     BeginRenameScheme(String),
 
     // --- settings screen: fonts ------------------------------------------
-    SetDefaultFont(String),
-    /// Open/close the default-font dropdown at the top of the fonts manager.
-    ToggleDefaultFontMenu,
     /// Enable/disable a font (whether it appears in the quick settings picker).
     ToggleFontShown(String),
     RemoveFont(String),
@@ -764,18 +713,8 @@ enum Action {
     CloseFontPicker,
     AddSystemFont(String),
     BeginRenameFont(String),
-    // --- library shelf ---------------------------------------------------
-}
-
-/// Icon glyphs the chrome draws (each maps to a `paint::*` vector helper).
-#[derive(Clone, Copy)]
-enum Ico {
-    Back,
-    Toc,
-    Notes,
-    Bookmark(bool),
-    /// A downward chevron (dropdown affordance).
-    ChevDown,
+    /// Dismiss the last import failure.
+    DismissLoadError,
 }
 
 impl BooksApp {
@@ -957,11 +896,25 @@ pub struct BooksApp {
     book_idx: usize,
     chapter: usize,
     page: usize,
-    /// Contents rail: docked beside the page on a wide window, an overlay
-    /// flap on a narrow one. The shared `FlapState` owns the reveal + scrim.
-    toc_flap: FlapState,
-    /// Annotations rail: a secondary inspector, overlay below [`NOTES_BREAKPOINT`].
-    notes_flap: FlapState,
+    /// Contents: the window's sidebar, docked beside the page on a wide
+    /// window and a floating drawer on a narrow one.
+    toc_drawer: SidebarDrawer,
+    /// Annotations: the inspector at the trailing edge, docked when the page
+    /// beside it keeps its room and a floating drawer otherwise.
+    notes_drawer: SidebarDrawer,
+    /// Height of the window's header row in the current theme, refreshed at
+    /// the top of every frame so the event path hit-tests what was painted.
+    header_h: f64,
+    /// Height of the page bubble in the current theme: the page foot keeps
+    /// a slot this tall above the progress slider, so the bubble never
+    /// covers text. Refreshed with `header_h`.
+    bubble_h: f64,
+    /// The reading-appearance button as last painted: where its popover
+    /// opens from.
+    type_button: Rect,
+    /// Where a transient card may appear this frame: the window, or in the
+    /// reader the reading column above the progress slider.
+    toast_area: Rect,
     /// Independent rail offsets.  A book can have hundreds of chapters and a
     /// reader can have years of annotations, so neither rail may silently
     /// truncate at the bottom of the viewport.
@@ -1086,9 +1039,6 @@ pub struct BooksApp {
     /// Effective host motion policy. Kept on the custom-painted root so its
     /// frame-demand query cannot accidentally bypass the toolkit preference.
     reduce_motion: bool,
-    /// Host accessibility text scale. Responsive breakpoints use effective
-    /// readable width so enlarged type receives uncrowded overlay rails.
-    text_scale: f32,
 
     // --- draggable annotation markers -------------------------------------
     /// Per-frame grab handles for each highlight group's margin marker:
@@ -1134,7 +1084,12 @@ pub struct BooksApp {
     number_controls: NumberControls,
     /// Modal colour editor; owns HSV state, drawing, hit regions and drags.
     color_picker: SchemeColorSheet,
-    default_font_menu: bool,
+    /// The default-font dropdown of the fonts manager.
+    font_dropdown: HostedDropdown,
+    /// The open sheet's action and close controls as last laid out, for
+    /// their hover faces.
+    modal_actions: Vec<Rect>,
+    modal_close: Rect,
     library_prefs: crate::model::LibraryPrefs,
     watched_folders: Vec<PathBuf>,
     /// Local source paths already handed off by a watched-folder scan, keyed
@@ -1196,10 +1151,15 @@ pub struct BooksApp {
     /// annotation decoration, leaving a normal readable page at its target
     /// text scale. This never affects the shared document or live reader.
     shot_clean_reader: bool,
-    /// Last resolved layout mode per rail, so a breakpoint crossing settles
-    /// the flap instantly instead of animating on launch/resize.
-    settled_toc: Option<SplitLayout>,
-    settled_notes: Option<SplitLayout>,
+    /// The contents and annotations drawers a `--shots` scenario wants open,
+    /// applied once the first frame has resolved their layout. Shot-only.
+    shot_drawers: Option<(bool, bool)>,
+    /// Keyboard navigation moved the shelf cursor since the last pointer
+    /// press, so the focused card shows its focus ring.
+    shelf_focus_visible: bool,
+    /// A file is being dragged over the window: the add tile shows it is a
+    /// drop target.
+    file_hover: bool,
 
     // --- layout cache ------------------------------------------------------
     layout: Option<ChapterLayout>,
@@ -1310,13 +1270,19 @@ impl BooksApp {
             book_idx: 0,
             chapter: 0,
             page: 0,
-            toc_flap: FlapState::open_when_docked(),
-            notes_flap: FlapState::open_when_docked(),
+            toc_drawer: SidebarDrawer::new(),
+            notes_drawer: SidebarDrawer::new()
+                .right()
+                .docked_width(f64::from(Metrics::BASE.inspector_width)),
+            header_h: f64::from(Metrics::BASE.header_height),
+            bubble_h: ui::status_bubble::pill_height(&Theme::dark()),
+            type_button: Rect::ZERO,
+            toast_area: Rect::ZERO,
             toc_scroll: 0.0,
             toc_max_scroll: 0.0,
             toc_scroll_to_active: true,
             toc_row_pitch: f64::from(ui::tokens::Metrics::BASE.panel_row_height),
-            running_header_h: f64::from(running_header_px()) * LINE_BOX_FACTOR,
+            running_header_h: f64::from(ui::tokens::Typography::default().size(TextRole::Caption)),
             notes_scroll: 0.0,
             notes_max_scroll: 0.0,
             notes_scroll_to_annotation: None,
@@ -1361,7 +1327,6 @@ impl BooksApp {
             pending_scroll_end: false,
             page_turn: None,
             reduce_motion: false,
-            text_scale: 1.0,
             hi_markers: Vec::new(),
             marker_drag: None,
             marker_group: None,
@@ -1382,7 +1347,9 @@ impl BooksApp {
             renaming: None,
             number_controls: NumberControls::default(),
             color_picker: SchemeColorSheet::default(),
-            default_font_menu: false,
+            font_dropdown: HostedDropdown::new("books.settings.default-font", "Default font"),
+            modal_actions: Vec::new(),
+            modal_close: Rect::ZERO,
             library_prefs: crate::model::LibraryPrefs::default(),
             watched_folders,
             watched_sources: HashMap::new(),
@@ -1415,8 +1382,9 @@ impl BooksApp {
             shot_comments: false,
             shot_long_annotations: false,
             shot_clean_reader: false,
-            settled_toc: None,
-            settled_notes: None,
+            shot_drawers: None,
+            shelf_focus_visible: false,
+            file_hover: false,
             layout: None,
             cover_cache: HashMap::new(),
             hits: Vec::new(),
@@ -1466,69 +1434,29 @@ impl BooksApp {
             .map_or(0, |b| b.chapters.len())
     }
 
-    // --- Responsive layout: the contents/annotations rails collapse to
-    // overlay flaps on a narrow window. The shared `FlapState` kernel owns
-    // the eased reveal + scrim; the app only resolves which mode applies.
-
-    fn toc_layout(&self) -> SplitLayout {
-        SplitLayout::from_width(
-            self.rect.width() / f64::from(self.text_scale.max(1.0)),
-            TOC_BREAKPOINT,
-        )
-    }
-
-    fn notes_layout(&self) -> SplitLayout {
-        SplitLayout::from_width(
-            self.rect.width() / f64::from(self.text_scale.max(1.0)),
-            NOTES_BREAKPOINT,
-        )
-    }
-
-    fn toc_width(&self) -> f64 {
-        (TOC_W * f64::from(self.text_scale.clamp(1.0, 1.6)))
-            .min((self.rect.width() * 0.90).max(TOC_W))
-    }
-
-    fn notes_width(&self) -> f64 {
-        (NOTES_W * f64::from(self.text_scale.clamp(1.0, 1.45)))
-            .min((self.rect.width() * 0.94).max(NOTES_W))
-    }
+    // --- Responsive layout: the contents sidebar and the annotations
+    // inspector are the toolkit's drawers, docked on a wide window and
+    // floating over the page on a narrow one.
 
     fn toc_open(&self) -> bool {
-        self.toc_flap.is_open(self.toc_layout())
+        self.toc_drawer.is_open()
     }
 
     fn notes_open(&self) -> bool {
-        self.notes_flap.is_open(self.notes_layout())
+        self.notes_drawer.is_open()
     }
 
-    /// The visible, interactive portion of a rail in this frame.  Overlay
-    /// rails use their animated position so a wheel during the slide still
-    /// belongs to the rail rather than leaking through to page turns.
+    /// The visible, interactive portion of a rail in this frame. A floating
+    /// drawer reports its animated position so a wheel during the slide
+    /// still belongs to the rail rather than leaking through to page turns.
     fn toc_panel_rect(&self) -> Option<Rect> {
-        if self.toc_flap.reveal() <= 0.001 {
-            return None;
-        }
-        let r = self.rect;
-        let width = self.toc_width();
-        let x0 = match self.toc_layout() {
-            SplitLayout::Docked => r.x0,
-            SplitLayout::Overlay => r.x0 - width * (1.0 - self.toc_flap.slide()),
-        };
-        Some(Rect::new(x0, r.y0 + TOP_BAR, x0 + width, r.y1))
+        let rect = self.toc_drawer.sidebar_rect();
+        (self.toc_drawer.reveal() > 0.001 && rect.width() > 0.0).then_some(rect)
     }
 
     fn notes_panel_rect(&self) -> Option<Rect> {
-        if self.notes_flap.reveal() <= 0.001 {
-            return None;
-        }
-        let r = self.rect;
-        let width = self.notes_width();
-        let x0 = match self.notes_layout() {
-            SplitLayout::Docked => r.x1 - width,
-            SplitLayout::Overlay => r.x1 - width * self.notes_flap.slide(),
-        };
-        Some(Rect::new(x0, r.y0 + TOP_BAR, x0 + width, r.y1))
+        let rect = self.notes_drawer.sidebar_rect();
+        (self.notes_drawer.reveal() > 0.001 && rect.width() > 0.0).then_some(rect)
     }
 
     /// Scroll only the rail under the pointer.  Notes are considered first:
@@ -1544,15 +1472,19 @@ impl BooksApp {
             *value = (*value + dy).clamp(0.0, max);
             *value != before
         };
+        // A rail's list is everything under its header row.
+        let header_h = self.header_h;
+        let over_list =
+            |rect: Rect, cursor: Point| rect.contains(cursor) && cursor.y >= rect.y0 + header_h;
         if self
             .notes_panel_rect()
-            .is_some_and(|rect| rect.contains(self.cursor))
+            .is_some_and(|rect| over_list(rect, self.cursor))
         {
             return Some(scroll(&mut self.notes_scroll, self.notes_max_scroll));
         }
         if self
             .toc_panel_rect()
-            .is_some_and(|rect| rect.contains(self.cursor))
+            .is_some_and(|rect| over_list(rect, self.cursor))
         {
             return Some(scroll(&mut self.toc_scroll, self.toc_max_scroll));
         }
@@ -1598,30 +1530,17 @@ impl BooksApp {
         Some(*scroll != before)
     }
 
-    /// Reconcile both flaps with the current width. On the first real width
-    /// and on every breakpoint crossing the flap is snapped to its mode
-    /// default, so launch/resize never play a gratuitous slide — animation
-    /// is reserved for explicit user toggles within one layout mode.
-    fn reconcile_flaps(&mut self) {
-        let tl = self.toc_layout();
-        if self.settled_toc != Some(tl) {
-            self.toc_flap.reconcile(tl);
-            let open = self.toc_flap.is_open(tl);
-            self.toc_flap.snap(open);
-            self.settled_toc = Some(tl);
-        }
-        let nl = self.notes_layout();
-        if self.settled_notes != Some(nl) {
-            self.notes_flap.reconcile(nl);
-            let open = self.notes_flap.is_open(nl);
-            self.notes_flap.snap(open);
-            self.settled_notes = Some(nl);
-        }
+    /// Resolve both drawers against the window: the contents sidebar
+    /// against the whole window, the annotations inspector against what the
+    /// sidebar leaves. Cheap and clock-free, so the draw and the event paths
+    /// agree.
+    fn resolve_drawers(&mut self) -> Rect {
+        let beside_toc = self.toc_drawer.resolve(self.rect);
+        self.notes_drawer.resolve(beside_toc)
     }
 
     fn flaps_animating(&self) -> bool {
-        self.toc_flap.is_animating(self.toc_layout())
-            || self.notes_flap.is_animating(self.notes_layout())
+        self.toc_drawer.is_animating() || self.notes_drawer.is_animating()
     }
 
     /// Stage a named interaction state for the single-frame `--shots`
@@ -1720,20 +1639,21 @@ impl BooksApp {
                 self.view = View::Reader;
                 // Contents rail open as an overlay flap; annotations closed so
                 // the scrimmed flap reads clearly against the page.
-                self.toc_flap.snap(true);
-                self.notes_flap.snap(false);
+                self.shot_drawers = Some((true, false));
             }
             "import-error" => {
-                self.view = View::Reader;
-                // Exercise the same persistent, visible error surface used by
-                // a real failed picker/import without fabricating a book into
-                // the live library.
+                // Books are opened from the shelf, so a failed open reports
+                // there. The same persistent error surface a real failed
+                // picker or import uses, without fabricating a book into the
+                // live library.
+                self.view = View::Library;
                 self.load_error = Some(
-                    "Couldn’t open damaged.epub: epub text is too large (maximum 64 MiB)".into(),
+                    "Couldn’t open Harbour Charts.epub: The file is damaged or isn’t an EPUB book."
+                        .into(),
                 );
             }
             "import-loading" => {
-                self.view = View::Reader;
+                self.view = View::Library;
                 self.import_loading = Some(LoadingImport {
                     generation: 1,
                     path: PathBuf::from("/home/reader/Books/Illustrated Atlas.epub"),
@@ -1752,8 +1672,7 @@ impl BooksApp {
             }
             "long-toc" => {
                 self.view = View::Reader;
-                self.toc_flap.snap(true);
-                self.notes_flap.snap(false);
+                self.shot_drawers = Some((true, false));
                 let template = self
                     .library
                     .first()
@@ -1762,11 +1681,22 @@ impl BooksApp {
                 if let Some(template) = template
                     && let Some(book) = Arc::make_mut(&mut self.library).first_mut()
                 {
+                    // Each chapter's own heading names it, so the contents,
+                    // the running head and the page agree.
                     Arc::make_mut(book).chapters = (0..32)
-                        .map(|index| crate::model::Chapter {
-                            title: format!("Chapter {} — a longer voyage", index + 1),
-                            href: format!("chapter-{}.xhtml", index + 1),
-                            blocks: template.blocks.clone(),
+                        .map(|index| {
+                            let title = format!("Chapter {}", index + 1);
+                            let mut blocks = template.blocks.clone();
+                            if let Some(crate::model::Block::Heading { spans, .. }) =
+                                blocks.first_mut()
+                            {
+                                *spans = vec![crate::model::Span::plain(title.clone())];
+                            }
+                            crate::model::Chapter {
+                                title,
+                                href: format!("chapter-{}.xhtml", index + 1),
+                                blocks,
+                            }
                         })
                         .collect();
                     self.chapter = 27;
@@ -1838,7 +1768,7 @@ impl BooksApp {
                 self.selected_block = None;
                 self.shot_clean_reader = true;
                 self.shot_settings = Some(Settings {
-                    font_scale: Settings::FONT_MAX,
+                    font_scale: Settings::READING_SCALE_MAX,
                     ..Settings::default()
                 });
             }
@@ -1852,8 +1782,7 @@ impl BooksApp {
                 self.view = View::Reader;
                 self.reduce_motion = true;
                 self.page_turn = None;
-                self.toc_flap.snap(true);
-                self.notes_flap.snap(true);
+                self.shot_drawers = Some((true, true));
             }
             _ => return false,
         }
@@ -1914,7 +1843,7 @@ impl BooksApp {
                 ));
                 self.shot_fonts = Some(f);
                 let mut field = EditableLabel::new("DejaVu Serif")
-                    .with_font_size(16.0)
+                    .with_text_role(TextRole::Body)
                     .with_font_family(FontChoice::Named("DejaVu Serif".into()));
                 field.begin_edit();
                 self.renaming = Some(Rename {
@@ -2110,7 +2039,7 @@ impl BooksApp {
                 id,
                 &Progress {
                     chapter: 0,
-                    page: (f * 6.0) as usize,
+                    page: 0,
                     fraction: f,
                     opened: unix_now_ms() - (i as u64) * 3_600_000,
                 },
@@ -2282,6 +2211,28 @@ impl BooksApp {
         } else {
             (self.page as f32 + self.settings.mode.page_stride() as f32)
                 / self.cur_page_count.max(1) as f32
+        };
+        ((self.chapter as f32 + within.clamp(0.0, 1.0)) / chapters).clamp(0.0, 1.0)
+    }
+
+    /// Where the reader is in the book for the progress slider: the start
+    /// of the page on screen (or the scroll offset), so the knob and a seek
+    /// to its value agree.
+    fn slider_position(&self, chapters: usize) -> f32 {
+        let chapters = chapters.max(1) as f32;
+        if let Some(within) = self.pending_seek_fraction {
+            return ((self.chapter as f32 + within) / chapters).clamp(0.0, 1.0);
+        }
+        let within = if self.settings.mode.is_continuous() {
+            let (total, viewport) = self.flow_extent;
+            let max = total - viewport;
+            if max > 0.0 {
+                (self.scroll_y / max).clamp(0.0, 1.0) as f32
+            } else {
+                0.0
+            }
+        } else {
+            self.page as f32 / self.cur_page_count.max(1) as f32
         };
         ((self.chapter as f32 + within.clamp(0.0, 1.0)) / chapters).clamp(0.0, 1.0)
     }
@@ -2847,13 +2798,16 @@ impl BooksApp {
             Action::ToggleNotes => self.on_toggle_notes(),
             Action::ToggleTypePopover => self.reading_settings.toggle(),
             Action::DismissOverlay => self.on_dismiss_overlay(),
+            Action::DismissLoadError => self.load_error = None,
             Action::Swallow => {}
             Action::ToggleBookmark => self.toggle_bookmark(doc),
             Action::FontInc => self.bump_setting(doc, |s| {
-                s.font_scale = (s.font_scale + 0.1).clamp(Settings::FONT_MIN, Settings::FONT_MAX);
+                s.font_scale = (s.font_scale + 0.1)
+                    .clamp(Settings::READING_SCALE_MIN, Settings::READING_SCALE_MAX);
             }),
             Action::FontDec => self.bump_setting(doc, |s| {
-                s.font_scale = (s.font_scale - 0.1).clamp(Settings::FONT_MIN, Settings::FONT_MAX);
+                s.font_scale = (s.font_scale - 0.1)
+                    .clamp(Settings::READING_SCALE_MIN, Settings::READING_SCALE_MAX);
             }),
             Action::SpacingInc => self.bump_setting(doc, |s| {
                 s.line_spacing =
@@ -2911,8 +2865,6 @@ impl BooksApp {
             Action::BeginRenameScheme(id) => self.on_begin_rename_scheme(id, doc),
 
             // --- settings screen: fonts ----------------------------------
-            Action::SetDefaultFont(id) => self.on_set_default_font(&id, doc),
-            Action::ToggleDefaultFontMenu => self.default_font_menu = !self.default_font_menu,
             Action::ToggleFontShown(id) => self.on_toggle_font_shown(&id, doc),
             Action::RemoveFont(id) => self.on_remove_font(&id, doc),
             Action::OpenFontPicker => self.on_open_font_picker(),
@@ -3029,25 +2981,23 @@ impl BooksApp {
     }
 
     fn on_toggle_toc(&mut self) {
-        let layout = self.toc_layout();
-        self.toc_flap.toggle(layout);
-        if self.toc_flap.is_open(layout) {
+        self.toc_drawer.toggle();
+        if self.toc_drawer.is_open() {
             self.toc_scroll_to_active = true;
         }
     }
 
     fn on_toggle_notes(&mut self) {
-        let layout = self.notes_layout();
-        self.notes_flap.toggle(layout);
+        self.notes_drawer.toggle();
     }
 
     fn on_dismiss_overlay(&mut self) {
         self.reading_settings.close();
-        if self.toc_layout() == SplitLayout::Overlay && self.toc_open() {
-            self.toc_flap.close();
+        if self.toc_drawer.is_overlay() && self.toc_open() {
+            self.toc_drawer.close();
         }
-        if self.notes_layout() == SplitLayout::Overlay && self.notes_open() {
-            self.notes_flap.close();
+        if self.notes_drawer.is_overlay() && self.notes_open() {
+            self.notes_drawer.close();
         }
     }
 
@@ -3103,7 +3053,7 @@ impl BooksApp {
         {
             self.composing = Some(id);
             self.note_composer.open(id);
-            self.notes_flap.open();
+            self.notes_drawer.open();
             self.notes_scroll_to_annotation = Some(id);
         }
     }
@@ -3336,7 +3286,7 @@ impl BooksApp {
         // Numeric controls retain their own edit state and commit on blur.
         self.font_picker = false;
         self.color_picker.cancel();
-        self.default_font_menu = false;
+        self.font_dropdown.close();
         self.editing_scheme = None;
         self.renaming = None;
         self.shortcut_capture = None;
@@ -3348,7 +3298,7 @@ impl BooksApp {
         self.commit_rename(doc);
         self.font_picker = false;
         self.color_picker.cancel();
-        self.default_font_menu = false;
+        self.font_dropdown.close();
         self.editing_scheme = None;
         self.shortcut_capture = None;
         self.shortcut_capture_error = None;
@@ -3361,7 +3311,7 @@ impl BooksApp {
 
     fn on_set_settings_tab(&mut self, tab: SettingsTab, doc: &mut AutoCommit) {
         self.commit_rename(doc);
-        self.default_font_menu = false;
+        self.font_dropdown.close();
         self.color_picker.cancel();
         self.shortcut_capture = None;
         self.shortcut_capture_error = None;
@@ -3457,14 +3407,7 @@ impl BooksApp {
             .find(|s| s.id == id)
             .map(|s| s.name.clone())
             .unwrap_or_default();
-        // The name in the open scheme editor reads larger than the row
-        // in the list; size the field to match wherever it's drawn.
-        let size = if self.editing_scheme.is_some() {
-            20.0
-        } else {
-            15.0
-        };
-        let mut field = EditableLabel::new(&name).with_font_size(size);
+        let mut field = EditableLabel::new(&name).with_text_role(TextRole::Body);
         field.begin_edit();
         self.renaming = Some(Rename {
             target: RenameTarget::Scheme(id),
@@ -3474,7 +3417,7 @@ impl BooksApp {
 
     fn on_set_default_font(&mut self, id: &str, doc: &mut AutoCommit) {
         self.perform_action(doc, &crate::actions::set_default_font_action(id));
-        self.default_font_menu = false;
+        self.font_dropdown.close();
     }
 
     fn on_toggle_font_shown(&mut self, id: &str, doc: &mut AutoCommit) {
@@ -3521,7 +3464,7 @@ impl BooksApp {
         // is typeset in the typeface it selects while you edit it.
         let fam = entry.map_or(FontChoice::SansSerif, |e| font_choice(&e.kind));
         let mut field = EditableLabel::new(&name)
-            .with_font_size(16.0)
+            .with_text_role(TextRole::Body)
             .with_font_family(fam);
         field.begin_edit();
         self.renaming = Some(Rename {
@@ -3555,10 +3498,7 @@ impl BooksApp {
 
     fn dispatch_shelf_control(&mut self, action: ShelfControlAction, doc: &mut AutoCommit) {
         match action {
-            ShelfControlAction::ToggleSortMenu => self.shelf_controls.toggle_sort_menu(),
-            ShelfControlAction::SetSort(sort) => self.on_set_sort(sort, doc),
             ShelfControlAction::ToggleHideRead => self.on_toggle_hide_read(doc),
-            ShelfControlAction::Swallow => {}
         }
     }
 
@@ -4546,6 +4486,7 @@ impl BooksApp {
             Action::EditComment(id) => format!("highlight.comment.edit:{id}"),
             Action::DeleteComment(id) => format!("highlight.comment.delete:{id}"),
             Action::OpenViaPortal => "library.open".into(),
+            Action::DismissLoadError => "library.dismiss-error".into(),
             Action::ToggleWatchFolder(path) => {
                 format!("library.watch:{}", ui::a11y::hash_key(path))
             }
@@ -4564,8 +4505,6 @@ impl BooksApp {
             Action::NewSchemeViaPicker => "settings.scheme.new".into(),
             Action::PickSchemeColor(id, slot) => format!("settings.scheme.color:{id}:{slot}"),
             Action::BeginRenameScheme(id) => format!("settings.scheme.rename:{id}"),
-            Action::SetDefaultFont(id) => format!("settings.default-font:{id}"),
-            Action::ToggleDefaultFontMenu => "settings.default-font.menu".into(),
             Action::ToggleFontShown(id) => format!("settings.font.shown:{id}"),
             Action::RemoveFont(id) => format!("settings.font.remove:{id}"),
             Action::OpenFontPicker => "settings.font.add".into(),
@@ -4624,14 +4563,14 @@ impl BooksApp {
             Action::SpacingInc => "Increase line spacing".into(),
             Action::SpacingDec => "Decrease line spacing".into(),
             Action::CycleFont => "Use next typeface".into(),
-            Action::SetFont(id) | Action::SetDefaultFont(id) => self
+            Action::SetFont(id) => self
                 .fonts
                 .iter()
                 .find(|font| font.id == *id)
                 .map_or_else(|| id.clone(), |font| font.name.clone()),
             Action::SetReadTheme(theme) => format!("{} reading theme", theme.label()),
-            Action::SetMode(mode) => format!("{} reading mode", mode.label()),
-            Action::SetComposition(style) => format!("{} text composition", style.label()),
+            Action::SetMode(mode) => format!("{} layout", mode.label()),
+            Action::SetComposition(style) => format!("{} text", style.label()),
             Action::SetColor(color) => format!("Highlight {color:?}").to_lowercase(),
             Action::AddNote => "Add note".into(),
             Action::CopySelection => "Copy selected text".into(),
@@ -4645,6 +4584,7 @@ impl BooksApp {
             Action::EditComment(id) => self.annotation_label(*id, "Edit comment"),
             Action::DeleteComment(id) => self.annotation_label(*id, "Delete comment"),
             Action::OpenViaPortal => "Open book".into(),
+            Action::DismissLoadError => "Dismiss".into(),
             Action::ToggleWatchFolder(path) => format!("Watch {}", path.display()),
             Action::OpenSettings => "Book settings".into(),
             Action::SetSettingsTab(SettingsTab::Fonts) => "Fonts".into(),
@@ -4682,7 +4622,6 @@ impl BooksApp {
                     .unwrap_or("custom")
             ),
             Action::BeginRenameScheme(id) => format!("Rename {}", self.scheme_name(id)),
-            Action::ToggleDefaultFontMenu => "Default font".into(),
             Action::ToggleFontShown(id) => format!("Show {} in reader", self.font_name(id)),
             Action::RemoveFont(id) => format!("Remove {}", self.font_name(id)),
             Action::OpenFontPicker => "Add font".into(),
@@ -4749,14 +4688,8 @@ impl BooksApp {
         let base = AccessState::new().focusable(true).focused(focused);
         match action {
             Action::SeekProgress => (Role::Slider, base),
-            Action::ToggleToc => (
-                Role::ToggleButton,
-                base.checked(self.toc_flap.is_open(self.toc_layout())),
-            ),
-            Action::ToggleNotes => (
-                Role::ToggleButton,
-                base.checked(self.notes_flap.is_open(self.notes_layout())),
-            ),
+            Action::ToggleToc => (Role::ToggleButton, base.checked(self.toc_open())),
+            Action::ToggleNotes => (Role::ToggleButton, base.checked(self.notes_open())),
             Action::ToggleTypePopover => (
                 Role::ToggleButton,
                 base.checked(self.reading_settings.is_open()),
@@ -4778,9 +4711,6 @@ impl BooksApp {
                 Role::RadioButton,
                 base.checked(self.settings.font_id == *id),
             ),
-            Action::SetDefaultFont(id) => {
-                (Role::RadioButton, base.checked(self.default_font_id == *id))
-            }
             Action::SetScheme(id) => (
                 Role::RadioButton,
                 base.checked(self.settings.scheme_id == *id),
@@ -4886,49 +4816,43 @@ impl BooksApp {
             .reduce(|bounds, run| bounds.union(run))
     }
 
-    fn draw_load_toast(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        message: &str,
-        border: Color,
-    ) {
-        let r = self.rect;
-        // Keep the surface wholly on-screen at phone widths.  The previous
-        // `clamp(220, 460)` could choose the full viewport width, putting its
-        // left edge beyond the window and clipping a two-line failure.
-        let width = (r.width() - 36.0).clamp(160.0, 460.0);
-        let x1 = r.x1 - 18.0;
-        let text: String = message.chars().take(180).collect();
-        let (_, text_h) = tr.measure(&text, 12.5, Some((width - 28.0) as f32));
-        let height = (f64::from(text_h) + 24.0).clamp(48.0, 92.0);
-        let toast = Rect::new(
-            x1 - width,
-            r.y0 + TOP_BAR + 14.0,
-            x1,
-            r.y0 + TOP_BAR + 14.0 + height,
+    /// An import in flight or the last import's failure, as a transient
+    /// card at the bottom of the window. The failure stays until it is
+    /// dismissed.
+    fn draw_load_toast(&mut self, ctx: &mut PaintCtx<'_>) {
+        let opening;
+        let (title, body, kind) = if let Some(loading) = &self.import_loading {
+            let name = loading
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("book");
+            opening = format!("Opening {name}");
+            (opening.as_str(), "", ToastKind::Info)
+        } else if let Some(error) = self.load_error.as_deref() {
+            // "Couldn't open x.epub: the reason" reads as a title and a body.
+            match error.split_once(": ") {
+                Some((title, body)) => (title, body, ToastKind::Error),
+                None => (error, "", ToastKind::Error),
+            }
+        } else {
+            return;
+        };
+        let closable = self.import_loading.is_none();
+        let card = ToastCard::new(title, kind).body(body).closable(closable);
+        let hit = ui::widget::toast::paint_transient(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            self.toast_area,
+            ToastAnchor::BottomCenter,
+            &card,
         );
-        // A transient Panel with a severity stripe on its leading edge: the
-        // stripe carries the info/danger tone (HIG §7 "state reads at a
-        // glance"), so the panel's own edge can stay the derived one.
-        chrome::panel(scene, t, theme, toast);
-        let stripe = Rect::new(
-            toast.x0 + rhythm::RELATED,
-            toast.y0 + rhythm::SIBLING,
-            toast.x0 + rhythm::RELATED + 3.0,
-            toast.y1 - rhythm::SIBLING,
-        );
-        paint::fill_round(scene, t, stripe, 1.5, border);
-        tr.draw_text(
-            scene,
-            &text,
-            12.5,
-            theme.tokens.colors.text_primary,
-            t * Affine::translate((toast.x0 + 14.0 + rhythm::RELATED, toast.y0 + 16.0)),
-            Some((toast.width() - 28.0 - rhythm::RELATED) as f32),
-        );
+        if closable && hit.close_rect.width() > 0.0 {
+            self.push_hit(hit.card_rect, Action::Swallow);
+            self.push_hit(hit.close_rect, Action::DismissLoadError);
+        }
     }
 }
 
@@ -5158,25 +5082,43 @@ impl Widget for BooksApp {
         }
         if self.shot_long_annotations {
             self.shot_long_annotations = false;
+            // A reader's notes on the book's own paragraphs, one per
+            // paragraph through the whole book; the rail opens scrolled to
+            // one deep in the list, as a jump from search lands it.
             let book_id = self.book_id();
-            for index in 0..30 {
+            let passages: Vec<(usize, usize, String)> = self
+                .library
+                .get(self.book_idx)
+                .map(|book| {
+                    book.chapters
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(ci, chapter)| {
+                            (0..chapter.blocks.len()).filter_map(move |bi| {
+                                let text = chapter.block_text(bi);
+                                (text.split_whitespace().count() > 8).then_some((ci, bi, text))
+                            })
+                        })
+                        .take(30)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let target = passages.len().saturating_sub(5);
+            for (index, (chapter, block, text)) in passages.into_iter().enumerate() {
                 let color = HiColor::ALL
                     .get(index % HiColor::ALL.len())
                     .copied()
                     .unwrap_or(HiColor::Yellow);
-                let mut annotation = Annotation::new(&book_id, AnnoKind::Note, 0, index)
+                let mut annotation = Annotation::new(&book_id, AnnoKind::Note, chapter, block)
                     .with_color(color)
-                    .with_excerpt(format!(
-                        "Saved passage {} from the lantern keeper's journal",
-                        index + 1
-                    ));
-                annotation.note = if index == 25 {
-                    "Targeted annotation — revealed here after a jump from search.".into()
-                } else {
-                    format!("Reading note {} — a durable, shared thought.", index + 1)
-                };
+                    .with_excerpt(text);
+                annotation.note = SHOT_NOTES
+                    .get(index % SHOT_NOTES.len())
+                    .copied()
+                    .unwrap_or_default()
+                    .to_string();
                 annotation.created = unix_now_ms().saturating_add(index as u64);
-                if index == 25 {
+                if index == target {
                     self.notes_scroll_to_annotation = Some(annotation.id);
                 }
                 BooksDoc::upsert_annotation(doc, &annotation);
@@ -5393,62 +5335,43 @@ impl Widget for BooksApp {
         self.comment_overlay.begin_frame();
         self.number_controls.begin_frame();
         self.reading_settings.begin_frame();
-        // Advance the rail flap transitions (reconcile first so a resize this
-        // frame uses the right mode default) before laying anything out.
-        self.reconcile_flaps();
-        let dt = 1.0 / 60.0;
-        if theme.reduce_motion {
-            let toc = self.toc_layout();
-            let notes = self.notes_layout();
-            self.toc_flap.snap(self.toc_flap.is_open(toc));
-            self.notes_flap.snap(self.notes_flap.is_open(notes));
-            self.page_turn = None;
-        } else {
-            self.toc_flap.tick(self.toc_layout(), dt);
-            self.notes_flap.tick(self.notes_layout(), dt);
+        self.shelf_controls.begin_frame();
+        self.font_dropdown.begin_frame();
+        self.header_h = f64::from(theme.tokens.metrics.header_height);
+        self.bubble_h = ui::status_bubble::pill_height(theme);
+        self.toast_area = self.rect;
+        // Resolve the drawers against this frame's width (a breakpoint
+        // crossing settles them without a slide), then advance any toggle.
+        self.toc_drawer.scale_for(theme);
+        self.notes_drawer.scale_for(theme);
+        self.resolve_drawers();
+        if let Some((toc, notes)) = self.shot_drawers.take() {
+            self.toc_drawer.snap(toc);
+            self.notes_drawer.snap(notes);
         }
-        // App-base fill so nothing shows through.
-        paint::fill_rect(
-            scene,
-            transform,
-            self.rect,
-            theme.tokens.colors.surfaces.base,
-        );
+        if theme.reduce_motion || self.reduce_motion {
+            self.page_turn = None;
+        }
+        self.toc_drawer.tick(theme);
+        self.notes_drawer.tick(theme);
+        self.resolve_drawers();
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         match self.view {
             View::Library => self.draw_library(&mut ctx),
             View::Reader => self.draw_reader(&mut ctx),
             View::Settings => self.draw_settings(&mut ctx),
         }
-        // The empty shelf has a dedicated error position beneath its primary
-        // action. Every other view needs an honest loading/result surface:
-        // parsing happens off-thread, so the previous book stays interactive.
+        // The empty shelf says what failed in its own empty state. Every
+        // other view needs an honest loading/result surface: parsing happens
+        // off-thread, so the previous book stays interactive.
         if self.view != View::Library || !self.library.is_empty() {
-            if let Some(loading) = &self.import_loading {
-                let name = loading
-                    .path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("book");
-                self.draw_load_toast(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    &format!("Opening {name}…"),
-                    theme.tokens.colors.semantic.info,
-                );
-            } else if let Some(error) = self.load_error.as_deref() {
-                self.draw_load_toast(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    error,
-                    theme.tokens.colors.semantic.danger,
-                );
-            }
+            self.draw_load_toast(&mut ctx);
         }
+        // The open list of a dropdown lies over everything.
+        let window = self.rect;
+        self.shelf_controls.draw_overlay(&mut ctx, window);
+        self.font_dropdown
+            .draw_overlay(ctx.scene, ctx.transform, ctx.text, ctx.theme, window);
         self.refresh_hover_tooltip();
         if let Some(focused) = self.semantic_focus.as_deref()
             && let Some(hit) = self
@@ -5457,13 +5380,12 @@ impl Widget for BooksApp {
                 .rev()
                 .find(|hit| self.semantic_target(&hit.action).as_deref() == Some(focused))
         {
-            paint::stroke_round(
+            ui::widget::paint_focus_ring(
                 scene,
                 transform,
-                hit.rect.inset(-2.0),
-                f64::from(theme.tokens.radii.md),
-                theme.tokens.colors.border_focus,
-                2.0,
+                hit.rect,
+                f64::from(theme.tokens.radii.control),
+                theme,
             );
         }
     }
@@ -5491,6 +5413,9 @@ impl Widget for BooksApp {
         if self.forward_rename_event(&mut input_ctx) {
             return;
         }
+        if self.forward_dropdown_event(&mut input_ctx) {
+            return;
+        }
         if self.forward_shared_input_event(&mut input_ctx) {
             return;
         }
@@ -5500,6 +5425,36 @@ impl Widget for BooksApp {
             // in a watched folder while the reader was elsewhere — no manual
             // "reload". A no-op when nothing is watched or nothing is new.
             WindowEvent::Focused(true) => self.rescan_watched(ctx.state),
+            // A file dragged over the window lights the shelf's add tile; an
+            // EPUB dropped anywhere opens like one chosen in the picker.
+            WindowEvent::HoveredFile(_) => {
+                self.file_hover = true;
+                self.dirty = true;
+            }
+            WindowEvent::HoveredFileCancelled => {
+                self.file_hover = false;
+                self.dirty = true;
+            }
+            WindowEvent::DroppedFile(path) => {
+                self.file_hover = false;
+                self.dirty = true;
+                let epub = path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("epub"));
+                if !epub {
+                    self.load_error = Some(format!(
+                        "Couldn't open {}: only EPUB books can be added",
+                        path.file_name().map_or_else(
+                            || path.display().to_string(),
+                            |name| name.to_string_lossy().into_owned()
+                        )
+                    ));
+                } else if let Err(error) = self.begin_import(path.clone(), ImportKind::Open) {
+                    self.settle_import_failure(error, "ebook.importer_unavailable");
+                }
+                *ctx.handled = true;
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.handle_cursor_moved(p, ctx.state, ctx.handled);
@@ -5613,6 +5568,11 @@ impl Widget for BooksApp {
                         .accessibility_nodes(self.library_prefs, self.semantic_focus.as_deref()),
                 );
             }
+            if self.view == View::Settings
+                && let Some(node) = self.font_dropdown.accessibility()
+            {
+                controls.push(node);
+            }
             controls.extend(self.number_controls.accessibility_nodes());
             if let Some(rename) = &self.renaming
                 && let Some(node) = rename.field.accessibility()
@@ -5703,6 +5663,26 @@ impl Widget for BooksApp {
             self.on_seek_progress(value);
             self.refresh_from_doc(doc);
             self.persist_progress(doc);
+            self.dirty = true;
+            return true;
+        }
+        if let (true, picked) = self
+            .shelf_controls
+            .perform_dropdown_action(target, action, doc, path)
+        {
+            if let Some(sort) = picked {
+                self.on_set_sort(sort, doc);
+            }
+            self.semantic_focus = Some(target.to_string());
+            self.dirty = true;
+            return true;
+        }
+        if self.font_dropdown.perform_action(target, action, doc, path) {
+            if let Some(id) = self.font_dropdown.take_change() {
+                self.on_set_default_font(&id, doc);
+                self.refresh_from_doc(doc);
+            }
+            self.semantic_focus = Some(target.to_string());
             self.dirty = true;
             return true;
         }
@@ -5811,7 +5791,7 @@ impl Widget for BooksApp {
                     NumberField::FontMult(id) => {
                         let mut fonts = self.fonts.clone();
                         if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
-                            font.size_mult = value as f32;
+                            font.size_mult = (value / 100.0) as f32;
                             let font = font.clone();
                             self.perform_action(doc, &crate::actions::upsert_font_action(font));
                         }
@@ -5912,10 +5892,9 @@ impl Widget for BooksApp {
         self.reduce_motion = reduced;
         if reduced {
             self.page_turn = None;
-            let toc = self.toc_layout();
-            let notes = self.notes_layout();
-            self.toc_flap.snap(self.toc_flap.is_open(toc));
-            self.notes_flap.snap(self.notes_flap.is_open(notes));
+            let (toc, notes) = (self.toc_open(), self.notes_open());
+            self.toc_drawer.snap(toc);
+            self.notes_drawer.snap(notes);
             self.dirty = true;
         }
     }
@@ -6269,7 +6248,7 @@ impl BooksApp {
                 NumberField::FontMult(id) => {
                     let mut fonts = self.fonts.clone();
                     if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
-                        font.size_mult = value as f32;
+                        font.size_mult = (value / 100.0) as f32;
                         let font = font.clone();
                         self.perform_action(ctx.state, &crate::actions::upsert_font_action(font));
                     }
@@ -6282,6 +6261,35 @@ impl BooksApp {
             *ctx.handled = true;
         }
         input_handled
+    }
+
+    /// The dropdowns on screen take their events first while open or
+    /// focused, and report the value the person picked. Returns whether one
+    /// took the event.
+    fn forward_dropdown_event(&mut self, ctx: &mut InputEventCtx<'_>) -> bool {
+        let mut consumed = false;
+        match self.view {
+            View::Library => {
+                let (taken, picked) = self.shelf_controls.handle_event(ctx);
+                consumed = taken;
+                if let Some(sort) = picked {
+                    self.on_set_sort(sort, ctx.state);
+                }
+            }
+            View::Settings => {
+                consumed = self.font_dropdown.handle_event(ctx);
+                if let Some(id) = self.font_dropdown.take_change() {
+                    self.on_set_default_font(&id, ctx.state);
+                    self.refresh_from_doc(ctx.state);
+                }
+            }
+            View::Reader => {}
+        }
+        if consumed {
+            self.dirty = true;
+            *ctx.handled = true;
+        }
+        consumed
     }
 
     /// An in-progress inline rename owns input first: forward the raw event to
@@ -6457,6 +6465,7 @@ impl BooksApp {
         self.mouse_down = true;
         self.dragging_sel = false;
         self.press_pos = self.cursor;
+        self.shelf_focus_visible = false;
 
         if matches!(
             top.as_ref().map(|hit| &hit.action),
@@ -6693,6 +6702,9 @@ impl BooksApp {
         let last = n - 1;
         let cols = self.shelf_cols.max(1);
         let cursor = self.shelf_cursor.min(last);
+        if !matches!(key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
+            self.shelf_focus_visible = true;
+        }
         match key {
             Key::Named(NamedKey::ArrowRight) => {
                 self.shelf_cursor = (cursor + 1).min(last);
@@ -6762,7 +6774,7 @@ impl BooksApp {
                 } else if crate::local_library::reserved_reader_key(character.as_str()) {
                     self.shortcut_capture_error = Some(format!(
                         "{} is reserved for a built-in reader command. Choose another key.",
-                        character.to_uppercase()
+                        key_legend(character.as_str())
                     ));
                 } else {
                     self.shortcut_capture_error =
@@ -6860,8 +6872,8 @@ impl BooksApp {
                 self.color_picker.cancel();
             } else if self.font_picker {
                 self.font_picker = false;
-            } else if self.default_font_menu {
-                self.default_font_menu = false;
+            } else if self.font_dropdown.is_open() {
+                self.font_dropdown.close();
             } else if self.editing_scheme.is_some() {
                 self.editing_scheme = None;
             } else {
@@ -6947,9 +6959,8 @@ impl BooksApp {
                 // Esc peels back one layer at a time: the reading-settings
                 // popover, then an open overlay flap (narrow window), and only
                 // when nothing is floating does it leave the book.
-                let toc_overlay = self.toc_layout() == SplitLayout::Overlay && self.toc_open();
-                let notes_overlay =
-                    self.notes_layout() == SplitLayout::Overlay && self.notes_open();
+                let toc_overlay = self.toc_drawer.is_overlay() && self.toc_open();
+                let notes_overlay = self.notes_drawer.is_overlay() && self.notes_open();
                 if self.comment_overlay.is_open() {
                     self.dispatch(Action::CloseComments, doc);
                 } else if self.reading_settings.is_open() {
@@ -7133,466 +7144,285 @@ impl BooksApp {
     }
 }
 
-// --- Small chrome-drawing primitives -----------------------------------
+// --- Painted controls ---------------------------------------------------
+
+/// The hit rect for a small painted control: the control's own rect grown
+/// symmetrically to at least `metrics.min_pointer_target` on each side, so a
+/// switch track is still a real pointer target without painting bigger.
+pub(crate) fn pointer_target(rect: Rect, theme: &Theme) -> Rect {
+    let min = f64::from(theme.tokens.metrics.min_pointer_target);
+    let dx = ((min - rect.width()) / 2.0).max(0.0);
+    let dy = ((min - rect.height()) / 2.0).max(0.0);
+    rect.inflate(dx, dy)
+}
+
+/// The track of a painted switch: the retained `Toggle`'s proportions in
+/// the theme's spacing steps.
+pub(crate) fn switch_size(theme: &Theme) -> (f64, f64) {
+    let spacing = &theme.tokens.spacing;
+    (f64::from(spacing.s8 + spacing.s3), f64::from(spacing.s6))
+}
+
+/// The quiet scroll thumb along the trailing edge of a painted scroll area.
+fn paint_scroll_thumb(ctx: &mut PaintCtx<'_>, area: Rect, metrics: ScrollMetrics) {
+    if !metrics.overflows() {
+        return;
+    }
+    let spacing = &ctx.theme.tokens.spacing;
+    let (margin, thickness) = (f64::from(spacing.s1) / 2.0, f64::from(spacing.s2));
+    let track = Rect::new(
+        area.x1 - margin - thickness,
+        area.y0 + margin,
+        area.x1 - margin,
+        area.y1 - margin,
+    );
+    Scrollbar::vertical().draw(ctx.scene, ctx.transform, track, metrics, ctx.theme, false);
+}
+
+/// The width of a button face of `size` showing `label` (and `icon`).
+fn button_width(ctx: &mut PaintCtx<'_>, label: &str, icon: Option<Icon>, size: ControlSize) -> f64 {
+    let mut face = ButtonFace::new(Rect::ZERO, label).control_size(size);
+    if let Some(icon) = icon {
+        face = face.icon(icon);
+    }
+    face.intrinsic_width(ctx.text, ctx.theme)
+}
 
 impl BooksApp {
-    /// An icon button filling `rect` (square in practice).
+    /// Paint a button face and register its pointer target for `action`.
+    fn button(&mut self, ctx: &mut PaintCtx<'_>, face: ButtonFace<'_>, action: Action) {
+        let theme = ctx.theme;
+        let hit = face.hit_rect(theme);
+        let face = face.hovered(hit.contains(self.cursor));
+        Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
+        self.push_hit(hit, action);
+    }
+
+    /// An icon-only button of `size` centred on `center`; `active` shows a
+    /// toggle that is on. Returns its rect.
     fn icon_button(
         &mut self,
         ctx: &mut PaintCtx<'_>,
-        rect: Rect,
-        ico: Ico,
+        center: Point,
+        size: ControlSize,
+        (icon, name): (Icon, &str),
         active: bool,
         action: Action,
-    ) {
-        let theme = ctx.theme;
-        let hover = self.is_hover(rect);
-        let c = &theme.tokens.colors;
-        // A toggled icon button is "chosen", so it is a lift with the derived
-        // hairline and glow (HIG §9.3) — never an accent wash, which would
-        // read as live state on this bar.
-        chrome::row(
-            ctx.scene,
-            ctx.transform,
-            theme,
-            rect,
-            f64::from(theme.tokens.radii.md),
-            SelectionState::new(active, hover, false),
-            false,
+    ) -> Rect {
+        let extent = size.height(ctx.theme);
+        let rect = Rect::from_center_size(center, (extent, extent));
+        self.button(
+            ctx,
+            ButtonFace::icon_only(rect, icon, name)
+                .control_size(size)
+                .pressed(active),
+            action,
         );
-        let icon_col = if active || hover {
-            c.text_primary
-        } else {
-            c.text_dim
-        };
-        let w = 1.9;
-        let inner = rect;
-        match ico {
-            Ico::Back => paint::chevron_left(ctx.scene, ctx.transform, inner, icon_col, w),
-            Ico::Toc => paint::list(ctx.scene, ctx.transform, inner, icon_col, w),
-            Ico::Notes => paint::note(ctx.scene, ctx.transform, inner, icon_col, w),
-            Ico::Bookmark(filled) => {
-                paint::bookmark(ctx.scene, ctx.transform, inner, icon_col, w, filled);
-            }
-            Ico::ChevDown => paint::chevron_down(ctx.scene, ctx.transform, inner, icon_col, w),
-        }
-        self.push_hit(rect, action);
+        rect
     }
 
-    /// A filled accent button with a centred label (and an optional leading `+`),
-    /// the single primary action on a screen. Pushes a hit for `action`.
-    fn accent_button(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        rect: Rect,
-        label: &str,
-        with_plus: bool,
-        action: Action,
-    ) {
-        let theme = ctx.theme;
-        // The shared primary face (HIG §8): hover, ink contrast and the
-        // icon ↔ label gap all come from the toolkit instead of a white veil.
-        let radius = (rect.height() / 2.0).min(f64::from(theme.tokens.radii.lg) + 4.0);
-        let mut face = ButtonFace::new(rect, label)
-            .primary()
-            .radius(radius)
-            .weight(TextWeight::Semibold)
-            .text_size(14.0)
-            .hovered(self.is_hover(rect));
-        if with_plus {
-            face = face.icon(ui::icons::Icon::Plus);
-        }
-        Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
-        self.push_hit(rect, action);
-    }
-
-    /// Draw a shared toggle face and retain the app-specific action routing.
+    /// Draw a shared switch face and retain the app-specific action routing.
     fn switch(&mut self, ctx: &mut PaintCtx<'_>, track: Rect, on: bool, action: Action) {
         let theme = ctx.theme;
+        let hit = pointer_target(track, theme);
         Toggle::paint(
             ctx.scene,
             ctx.transform,
             theme,
-            &ToggleFace::new(track, on).hovered(self.is_hover(track)),
+            &ToggleFace::new(track, on).hovered(hit.contains(self.cursor)),
         );
-        self.push_hit(pointer_target(track, theme), action);
+        self.push_hit(hit, action);
     }
 
-    /// A compact shared numeric control, laid out right-to-left from
-    /// `right_mid` (its right edge, at its vertical centre); returns the left
-    /// edge it consumed so every font row stays aligned.
-    fn size_stepper(
+    /// A switch whose trailing edge is `x1`, centred on `cy`. Returns its
+    /// track.
+    fn switch_at(
         &mut self,
         ctx: &mut PaintCtx<'_>,
-        right_mid: Point,
-        value: f64,
-        field: &NumberField,
-    ) -> f64 {
-        let theme = ctx.theme;
-        let (right_x, cy) = (right_mid.x, right_mid.y);
-        let btn = SIZE_STEPPER_BTN;
-        let by = cy - btn / 2.0;
-        let width = Self::size_stepper_width(ctx.text, theme, field);
-        let minus_x = right_x - width;
-        self.number_controls.draw(
-            field,
-            value,
-            Rect::new(minus_x, by, right_x, by + btn),
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-        );
-        minus_x
-    }
-
-    /// Width of the stepper's value slot. The shared `NumberInput` paints its
-    /// value at the toolkit field size (the theme's `lg` step at 1×, scaled
-    /// once by the text scale) with `padding_standard` on either side, so the
-    /// slot is measured from the widest value the field can show. The theme
-    /// token is a resolved size, so it goes through `renderer_input_style`
-    /// before the renderer applies its own text scale (HIG §7a). A fixed 52px
-    /// slot clipped "0.96 ×" to "0.96 ›" whenever the digits ran wide.
-    fn size_stepper_slot_w(tr: &mut TextRenderer, theme: &Theme, field: &NumberField) -> f64 {
-        let style = tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.lg));
-        let widest = field
-            .widest_displays()
-            .iter()
-            .map(|sample| f64::from(tr.measure_style(sample, None, &style).0))
-            .fold(0.0, f64::max);
-        widest + 2.0 * f64::from(theme.padding_standard)
-    }
-
-    /// Total width of a size stepper: two square buttons, the measured value
-    /// slot and the gaps between them. `size_stepper` lays out with this and
-    /// `font_row_controls_x0` reserves space from it, so the two agree.
-    fn size_stepper_width(tr: &mut TextRenderer, theme: &Theme, field: &NumberField) -> f64 {
-        SIZE_STEPPER_BTN * 2.0 + Self::size_stepper_slot_w(tr, theme, field) + 8.0
-    }
-
-    /// A quiet text pill `h` tall with its top-left at `origin`, invoking
-    /// `action`. Returns its width.
-    fn pill(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        origin: Point,
-        h: f64,
-        label: &str,
-        size: f32,
+        x1: f64,
+        cy: f64,
+        on: bool,
         action: Action,
-    ) -> f64 {
-        let theme = ctx.theme;
-        let (x, y) = (origin.x, origin.y);
-        let (tw, th) = ctx
-            .text
-            .measure_weighted(label, size, None, TextWeight::Medium);
-        let pad = f64::from(theme.padding_standard);
-        let w = f64::from(tw) + pad * 2.0;
-        let rect = Rect::new(x, y, x + w, y + h);
-        let hover = self.is_hover(rect);
-        let c = &theme.tokens.colors;
-        // Chip quiet (HIG §9.5): a raised face with its derived edge at rest.
-        chrome::quiet_pill(
-            ctx.scene,
-            ctx.transform,
-            theme,
-            rect,
-            h / 2.0,
-            c.surfaces.raised,
-            hover,
-        );
-        // Centre the measured line box (which carries the text scale), not the
-        // nominal size — the latter sat the label low and clipped it at 2×.
-        let ty = y + (h - f64::from(th)) / 2.0;
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            label,
-            size,
-            c.text_primary,
-            ctx.transform * Affine::translate((x + pad, ty)),
-            None,
-            TextWeight::Medium,
-        );
-        self.push_hit(rect, action);
-        w
+    ) -> Rect {
+        let (w, h) = switch_size(ctx.theme);
+        let track = Rect::new(x1 - w, cy - h / 2.0, x1, cy + h / 2.0);
+        self.switch(ctx, track, on, action);
+        track
     }
 }
 
 // --- Library (shelf) view ---------------------------------------------------
 
-/// Column count, cell pitch, and scroll extent/offset for the book grid,
-/// computed once per [`BooksApp::draw_library_grid`] call.
+/// The shelf grid as laid out this frame: columns of portrait media cards
+/// under the page title, scrolled by the shelf offset.
 struct ShelfGrid {
     cols: usize,
     card_w: f64,
-    cover_h: f64,
-    card_h: f64,
-    gap: f64,
+    /// Column gap and row gap (the media grid's rhythm).
+    column_gap: f64,
+    row_gap: f64,
     start_x: f64,
+    /// Top of the first row, already scrolled.
     start_y: f64,
-    row_pitch: f64,
-    content_h: f64,
-    visible_h: f64,
-    scroll: f64,
+    /// Each row's text-block height (the tallest card of the row), so every
+    /// title in a row starts on the same line.
+    row_text: Vec<f64>,
 }
 
 impl ShelfGrid {
-    /// Where grid slot `i` (in display order) sits this frame.
-    fn cell(&self, i: usize) -> CardCell {
+    fn cover_h(&self) -> f64 {
+        self.card_w / MediaAspect::Portrait.ratio()
+    }
+
+    fn row_top(&self, row: usize) -> f64 {
+        let cover = self.cover_h();
+        self.start_y
+            + self
+                .row_text
+                .iter()
+                .take(row)
+                .map(|text| cover + text + self.row_gap)
+                .sum::<f64>()
+    }
+
+    /// The card rect of grid slot `i` (in display order).
+    fn cell(&self, i: usize) -> Rect {
         let col = i % self.cols;
         let row = i / self.cols;
-        CardCell {
-            x: self.start_x + col as f64 * (self.card_w + self.gap),
-            y: self.start_y + row as f64 * self.row_pitch - self.scroll,
-            w: self.card_w,
-            cover_h: self.cover_h,
+        let x = self.start_x + col as f64 * (self.card_w + self.column_gap);
+        let y = self.row_top(row);
+        let text = self.row_text.get(row).copied().unwrap_or(0.0);
+        Rect::new(x, y, x + self.card_w, y + self.cover_h() + text)
+    }
+
+    /// Height of every row, gaps between them included.
+    fn height(&self) -> f64 {
+        let rows = self.row_text.len();
+        if rows == 0 {
+            return 0.0;
         }
+        self.row_top(rows) - self.start_y - self.row_gap
     }
 }
 
-/// One shelf card's slot: its top-left corner (scrolled), the grid's card
-/// width and the cover height. Every card painter lays out from it.
-#[derive(Clone, Copy)]
-struct CardCell {
-    x: f64,
-    y: f64,
-    w: f64,
-    cover_h: f64,
-}
-
-impl CardCell {
-    fn cover(self) -> Rect {
-        Rect::new(self.x, self.y, self.x + self.w, self.y + self.cover_h)
-    }
+/// The book-specific facts painted over and under a shelf cover.
+struct ShelfCard<'a> {
+    book: &'a Book,
+    /// Index into the library (not the display order).
+    index: usize,
+    shared: bool,
+    progress: f32,
+    notes: Option<String>,
+    focused: bool,
 }
 
 impl BooksApp {
-    fn draw_library(&mut self, ctx: &mut PaintCtx<'_>) {
-        self.shelf_controls.begin_frame();
-        let lib = std::mem::take(&mut self.library);
+    /// The header row of a full-width page (library, settings): no fill,
+    /// one hairline under it. Returns the band.
+    fn draw_page_header(&self, ctx: &mut PaintCtx<'_>) -> Rect {
         let r = self.rect;
+        let band = Rect::new(r.x0, r.y0, r.x1, r.y0 + self.header_h);
+        ui::widget::toolbar::paint_band(ctx.scene, ctx.transform, ctx.theme, band);
+        band
+    }
 
-        let open_x = self.draw_library_header(ctx, r, lib.len());
+    /// A page's title block at the content gutter: the page name in
+    /// `LargeTitle` and, when there is one, a count in `Caption` under it.
+    /// Returns the y just below the block.
+    fn draw_page_title(
+        ctx: &mut PaintCtx<'_>,
+        origin: Point,
+        title: &str,
+        count: Option<&str>,
+    ) -> f64 {
+        let theme = ctx.theme;
+        let mut y = origin.y;
+        ctx.text_role(
+            title,
+            TextRole::LargeTitle,
+            theme.text_primary,
+            origin,
+            None,
+        );
+        y += ctx.line_box(TextRole::LargeTitle);
+        if let Some(count) = count {
+            y += f64::from(theme.tokens.spacing.rhythm.tight);
+            let style = theme.text(TextRole::Caption).numeric();
+            ctx.text(count, &style, theme.text_dim, Point::new(origin.x, y), None);
+            y += ctx.line_box(TextRole::Caption);
+        }
+        y
+    }
 
-        // --- empty shelf: a composed, inviting onboarding -----------------
+    fn draw_library(&mut self, ctx: &mut PaintCtx<'_>) {
+        let lib = Arc::clone(&self.library);
+        let r = self.rect;
+        let band = self.draw_page_header(ctx);
+        // An empty shelf offers "Open a book" as its one action, so the
+        // header does not repeat it.
+        self.draw_library_actions(ctx, band, !lib.is_empty());
+        if !lib.is_empty() {
+            let inset = f64::from(ctx.theme.tokens.spacing.s3);
+            let cursor = self.cursor;
+            let prefs = self.library_prefs;
+            self.shelf_controls
+                .draw_bar(ctx, band, band.x0 + inset, cursor, prefs);
+        }
+
+        let body = Rect::new(r.x0, band.y1, r.x1, r.y1);
         if lib.is_empty() {
-            self.draw_empty_library(ctx);
-            self.library = lib;
+            self.draw_empty_library(ctx, body);
             return;
         }
 
-        let sort_btn =
-            self.shelf_controls
-                .draw_bar(ctx, r, open_x, self.cursor, self.library_prefs);
-
-        // --- filter + sort the display order ------------------------------
         let order = self.shelf_display_order(&lib);
         self.shelf_order.clone_from(&order);
-
-        // Everything hidden by the "hide read" filter.
-        if order.is_empty() {
-            Self::draw_all_read_empty_state(ctx, r);
-            self.shelf_controls
-                .draw_menu(ctx, r, sort_btn, self.cursor, self.library_prefs.sort);
-            self.library = lib;
-            return;
-        }
-
-        self.draw_library_grid(ctx, &lib, &order, r);
-        self.shelf_controls
-            .draw_menu(ctx, r, sort_btn, self.cursor, self.library_prefs.sort);
-        self.library = lib;
+        self.draw_library_body(ctx, &lib, &order, body);
     }
 
-    /// Top bar: title + book count, and the primary "Open book" action
-    /// (always present — a way in that doesn't depend on any folder).
-    /// Returns the button's left edge, so shelf controls can lay out from it.
-    fn draw_library_header(&mut self, ctx: &mut PaintCtx<'_>, r: Rect, book_count: usize) -> f64 {
+    /// The trailing actions of the library header: Settings, and (with
+    /// `open`) the one primary action of the screen, "Open book", a way in
+    /// that does not depend on any folder.
+    fn draw_library_actions(&mut self, ctx: &mut PaintCtx<'_>, band: Rect, open: bool) {
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOP_BAR);
-        ctx.fill_rect(bar, c.surfaces.raised);
-        chrome::bar_edge(
-            ctx.scene,
-            ctx.transform,
-            c.surfaces.raised,
-            r.x0,
-            r.x1,
-            r.y0 + TOP_BAR,
-        );
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "Library",
-            20.0,
-            c.text_primary,
-            ctx.transform * Affine::translate((r.x0 + 28.0, r.y0 + 9.0)),
-            None,
-            TextWeight::Bold,
-        );
-        // The count reads under the title only once there's something to count —
-        // on the empty state the onboarding speaks for itself.
-        if book_count > 0 {
-            let sub = match book_count {
-                1 => "1 book".to_string(),
-                n => format!("{n} books"),
-            };
-            ctx.text.draw_text(
-                ctx.scene,
-                &sub,
-                12.0,
-                c.text_dim,
-                ctx.transform * Affine::translate((r.x0 + 29.0, r.y0 + 32.0)),
-                None,
+        let height = ButtonFace::height(ControlSize::Regular, theme);
+        let y = band.center().y - height / 2.0;
+        let mut x1 = band.x1 - f64::from(theme.tokens.spacing.s3);
+        if open {
+            let label = "Open book";
+            let width = ButtonFace::new(Rect::ZERO, label)
+                .icon(Icon::Plus)
+                .intrinsic_width(ctx.text, theme);
+            let rect = Rect::new(x1 - width, y, x1, y + height);
+            self.button(
+                ctx,
+                ButtonFace::new(rect, label)
+                    .icon(Icon::Plus)
+                    .role(ButtonRole::Primary),
+                Action::OpenViaPortal,
             );
+            x1 = rect.x0 - f64::from(theme.tokens.spacing.rhythm.related);
         }
-
-        // The primary "Open book" action is always present, so there is always a
-        // way in that doesn't depend on any folder — right-aligned, accent-filled.
-        let compact = r.width() < 560.0;
-        let btn_cy = r.y0 + (TOP_BAR - 34.0) / 2.0;
-        let open_label = if compact { "Open" } else { "Open book" };
-        let (olw, _) = ctx
-            .text
-            .measure_weighted(open_label, 14.0, None, TextWeight::Semibold);
-        let open_w = f64::from(olw) + 25.0 + 32.0;
-        // The bar's trailing gutter is one section step on every width.
-        let open_x = r.x1 - rhythm::SECTION - open_w;
-        self.accent_button(
+        let settings = Rect::new(x1 - height, y, x1, y + height);
+        self.button(
             ctx,
-            Rect::new(open_x, btn_cy, open_x + open_w, btn_cy + 34.0),
-            open_label,
-            true,
-            Action::OpenViaPortal,
-        );
-        open_x
-    }
-
-    /// Everything hidden by the "hide read" filter: an empty-shelf message
-    /// with a hint to turn the filter back off.
-    fn draw_all_read_empty_state(ctx: &mut PaintCtx<'_>, r: Rect) {
-        let c = &ctx.theme.tokens.colors;
-        let cx = f64::midpoint(r.x0, r.x1);
-        let cy = (r.y0 + TOP_BAR + r.y1) / 2.0;
-        let head = "All books are finished";
-        let (hw, _) = ctx
-            .text
-            .measure_weighted(head, 18.0, None, TextWeight::Semibold);
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            head,
-            18.0,
-            c.text_primary,
-            ctx.transform * Affine::translate((cx - f64::from(hw) / 2.0, cy - 20.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let hint = "Turn off \u{201C}Hide read\u{201D} to see them again.";
-        let (tw2, _) = ctx.text.measure(hint, 13.0, None);
-        ctx.text.draw_text(
-            ctx.scene,
-            hint,
-            13.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((cx - f64::from(tw2) / 2.0, cy + 8.0)),
-            None,
+            ButtonFace::icon_only(settings, Icon::Settings, "Settings"),
+            Action::OpenSettings,
         );
     }
 
-    /// Column count, cell pitch, and vertical scroll extent/offset for the
-    /// book grid. Also reveals the keyboard-focused card if a step just
-    /// moved the cursor, and clamps the persisted scroll to the new extent.
-    fn shelf_grid_geometry(&mut self, r: Rect, book_count: usize) -> ShelfGrid {
-        // Cards are siblings before the next group: one `s6` between them,
-        // and the shelf keeps a page gutter plus a section step on each side.
-        let margin = rhythm::GROUP + rhythm::SECTION;
-        let gap = rhythm::GROUP;
-        // Keep a short shelf intentional on a wide display: a centred,
-        // bounded reading-library row is easier to scan than a tiny cluster
-        // marooned in the upper-left of a 1440px canvas. Cards gain only a
-        // modest desktop size bump rather than stretching to fill columns.
-        let desktop = r.width() >= 960.0;
-        let card_w = if desktop { 212.0 } else { 196.0 };
-        let cover_h = if desktop { 248.0 } else { 232.0 };
-        let card_h = cover_h + 78.0;
-        let max_grid_w = (r.width() - 2.0 * margin).min(1200.0).max(card_w);
-        let max_cols = ((max_grid_w + gap) / (card_w + gap)).floor().max(1.0) as usize;
-        // Reserve the trailing add tile while choosing columns, then centre
-        // the actual used row. Large libraries still grow into the bounded
-        // grid; a small shelf reads as a deliberate collection.
-        let cols = max_cols.min(book_count.saturating_add(1)).max(1);
-        // Publish the column count so keyboard up/down can step a whole row.
-        self.shelf_cols = cols;
-        self.shelf_cursor = self.shelf_cursor.min(book_count.saturating_sub(1));
-        let grid_w = cols as f64 * card_w + (cols as f64 - 1.0) * gap;
-        let start_x = r.x0 + (r.width() - grid_w) / 2.0;
-        let start_y = r.y0 + TOP_BAR + 36.0;
-
-        // The shelf can hold more books than fit, so it scrolls. Work out the
-        // total content height and clamp the offset to what's reachable.
-        // One extra grid cell trails the last book: the persistent "Add books"
-        // tile (a standing import affordance + drop-target hint), so the scroll
-        // extent is sized to include it.
-        let rows = (book_count + 1).div_ceil(cols);
-        let row_pitch = card_h + gap;
-        let content_h = if rows == 0 {
-            0.0
-        } else {
-            (rows as f64 - 1.0) * row_pitch + card_h + 40.0
-        };
-        let visible_h = (r.y1 - start_y).max(0.0);
-        self.shelf_max_scroll = (content_h - visible_h).max(0.0);
-        // Keyboard navigation asked to reveal the focused card: nudge the scroll
-        // so the focused row sits fully inside the viewport, then clear the flag.
-        if self.scroll_to_cursor {
-            let cur_row = self.shelf_cursor / cols;
-            let rel = cur_row as f64 * row_pitch;
-            let full = card_h + 84.0;
-            let top_screen = start_y + rel - self.shelf_scroll;
-            if top_screen < start_y {
-                self.shelf_scroll = rel;
-            } else if top_screen + full > r.y1 {
-                self.shelf_scroll = start_y + rel + full - r.y1;
-            }
-            self.scroll_to_cursor = false;
-        }
-        self.shelf_scroll = self.shelf_scroll.clamp(0.0, self.shelf_max_scroll);
-
-        ShelfGrid {
-            cols,
-            card_w,
-            cover_h,
-            card_h,
-            gap,
-            start_x,
-            start_y,
-            row_pitch,
-            content_h,
-            visible_h,
-            scroll: self.shelf_scroll,
-        }
-    }
-
-    /// The scrolling book grid + trailing "Add books" tile, scroll
-    /// indicator, and (if open) the sort dropdown menu.
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t/c/r are the standard transform/colours/rect draw-context names, and i/x/y \
-                  are the grid loop's index and card position"
-    )]
-    fn draw_library_grid(
+    /// The scrolling body of a populated shelf: the page title, then the
+    /// grid of covers and the trailing add tile, or the finished-books empty
+    /// state when the filter hides everything.
+    fn draw_library_body(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         lib: &[Arc<Book>],
         order: &[usize],
-        r: Rect,
+        body: Rect,
     ) {
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let grid = self.shelf_grid_geometry(r, order.len());
-
-        // Clip the scrolling body to below the top bar so cards slide under it
-        // rather than over it, then offset every card by the scroll.
-        let body = Rect::new(r.x0, r.y0 + TOP_BAR + 1.0, r.x1, r.y1);
+        let gutter = f64::from(theme.tokens.spacing.rhythm.group);
         ctx.scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -7600,154 +7430,322 @@ impl BooksApp {
             ctx.transform,
             &body,
         );
-        for (i, &orig) in order.iter().enumerate() {
-            let Some(book) = lib.get(orig) else { continue };
-            let cell = grid.cell(i);
-            // Cull rows fully outside the viewport (keeps a huge shelf cheap).
-            if cell.y > r.y1 || cell.y + grid.card_h + 84.0 < r.y0 + TOP_BAR {
+        let count = match lib.len() {
+            1 => "1 book".to_string(),
+            n => format!("{n} books"),
+        };
+        let title_y = body.y0 + gutter - self.shelf_scroll;
+        let title_bottom = Self::draw_page_title(
+            ctx,
+            Point::new(body.x0 + gutter, title_y),
+            "Library",
+            Some(&count),
+        );
+        let grid_top = title_bottom + gutter;
+
+        if order.is_empty() {
+            ctx.scene.pop_layer();
+            self.shelf_max_scroll = 0.0;
+            self.shelf_scroll = 0.0;
+            let area = Rect::new(body.x0, grid_top, body.x1, body.y1);
+            EmptyState::paint(
+                ctx,
+                area,
+                &EmptyStateContent {
+                    message: Some("Turn off Hide finished to see them again."),
+                    ..EmptyStateContent::new("Every book here is finished")
+                },
+                self.cursor,
+            );
+            return;
+        }
+
+        let cards: Vec<ShelfCard<'_>> = order
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, &index)| {
+                let book = lib.get(index)?;
+                let notes = self.shelf_annos.get(&book.id).copied().unwrap_or(0);
+                Some(ShelfCard {
+                    book,
+                    index,
+                    shared: self
+                        .library_paths
+                        .get(&book.id)
+                        .is_some_and(|path| is_shared(path)),
+                    progress: self.shelf_fraction.get(&book.id).copied().unwrap_or(0.0),
+                    notes: match notes {
+                        0 => None,
+                        1 => Some("1 note".to_string()),
+                        n => Some(format!("{n} notes")),
+                    },
+                    focused: self.shelf_focus_visible && slot == self.shelf_cursor,
+                })
+            })
+            .collect();
+        let grid = self.shelf_grid(ctx, &cards, body, grid_top);
+        let content_h = (grid_top + self.shelf_scroll - body.y0) + grid.height() + gutter;
+        self.shelf_max_scroll = (content_h - body.height()).max(0.0);
+        if self.scroll_to_cursor {
+            let cell = grid.cell(self.shelf_cursor);
+            if cell.y0 < body.y0 {
+                self.shelf_scroll -= body.y0 - cell.y0;
+            } else if cell.y1 > body.y1 {
+                self.shelf_scroll += cell.y1 - body.y1;
+            }
+            self.scroll_to_cursor = false;
+        }
+        self.shelf_scroll = self.shelf_scroll.clamp(0.0, self.shelf_max_scroll);
+
+        for (slot, card) in cards.iter().enumerate() {
+            let cell = grid.cell(slot);
+            if cell.y0 > body.y1 || cell.y1 < body.y0 {
                 continue;
             }
-            let focused = i == self.shelf_cursor;
-            self.draw_book_card(ctx, book, orig, cell, focused);
+            self.draw_book_card(ctx, card, cell, body);
         }
-        // Trailing "Add books" tile in the next free grid cell.
-        {
-            let cell = grid.cell(order.len());
-            if !(cell.y > r.y1 || cell.y + grid.card_h + 84.0 < r.y0 + TOP_BAR) {
-                self.draw_add_book_card(ctx, cell);
-            }
+        let add = grid.cell(cards.len());
+        if add.y0 <= body.y1 && add.y1 >= body.y0 {
+            let tile = Rect::new(add.x0, add.y0, add.x1, add.y0 + grid.cover_h());
+            self.draw_add_book_tile(ctx, tile, body);
         }
         ctx.scene.pop_layer();
+        paint_scroll_thumb(
+            ctx,
+            body,
+            ScrollMetrics::new(content_h, body.height(), self.shelf_scroll),
+        );
+    }
 
-        // Scroll indicator, only when there's something to scroll to.
-        if self.shelf_max_scroll > 1.0 {
-            let track_x = r.x1 - 9.0;
-            let track_y0 = r.y0 + TOP_BAR + 10.0;
-            let track_y1 = r.y1 - 10.0;
-            let track_h = (track_y1 - track_y0).max(1.0);
-            let thumb_h = (track_h * grid.visible_h / grid.content_h).clamp(28.0, track_h);
-            let frac = grid.scroll / self.shelf_max_scroll;
-            let thumb_y = track_y0 + frac * (track_h - thumb_h);
-            let thumb = Rect::new(track_x, thumb_y, track_x + 4.0, thumb_y + thumb_h);
-            ctx.fill_round(thumb, 2.0, c.text_dim.with_alpha_factor(0.5));
+    /// Columns of portrait cards across the content width (one more slot
+    /// for the add tile), with every row's text block as tall as its
+    /// tallest card. Publishes the column count for keyboard row steps.
+    fn shelf_grid(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        cards: &[ShelfCard<'_>],
+        body: Rect,
+        top: f64,
+    ) -> ShelfGrid {
+        let theme = ctx.theme;
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let gutter = f64::from(rhythm.group);
+        let (column_gap, row_gap) = (f64::from(rhythm.section), f64::from(rhythm.group));
+        let avail = (body.width() - 2.0 * gutter).max(1.0);
+        let cols = card_columns(avail, MediaSize::Small.extent(theme), column_gap);
+        let card_w = card_column_width(avail, cols, column_gap);
+        self.shelf_cols = cols;
+        self.shelf_cursor = self.shelf_cursor.min(cards.len().saturating_sub(1));
+        let mut row_text = cards
+            .chunks(cols)
+            .map(|row| {
+                row.iter()
+                    .map(|card| {
+                        Self::book_face(card, MediaArt::Placeholder, &[])
+                            .text_height(ctx.text, theme, card_w)
+                    })
+                    .fold(0.0, f64::max)
+            })
+            .collect::<Vec<_>>();
+        if cards.len().is_multiple_of(cols) {
+            // The add tile starts a row of its own: art only.
+            row_text.push(0.0);
+        }
+        ShelfGrid {
+            cols,
+            card_w,
+            column_gap,
+            row_gap,
+            start_x: body.x0 + gutter,
+            start_y: top,
+            row_text,
         }
     }
 
-    /// The onboarding shown when the library is empty: an emblem, a warm
-    /// headline, a plain-language explanation, and one primary action — open a
-    /// book from anywhere. No magic folder, no "reload"; the shelf fills itself
-    /// the moment the reader opens their first book.
-    fn draw_empty_library(&mut self, ctx: &mut PaintCtx<'_>) {
+    /// One book's media card: its cover (or generated art), title, author
+    /// and note count, with its reading progress along the cover's foot.
+    fn book_face<'a>(
+        card: &'a ShelfCard<'a>,
+        art: MediaArt<'a>,
+        badges: &'a [MediaBadge<'a>],
+    ) -> MediaCardFace<'a> {
+        let mut face = MediaCardFace::new(art)
+            .aspect(MediaAspect::Portrait)
+            .title(&card.book.title)
+            .badges(badges);
+        if !card.book.author.is_empty() {
+            face = face.meta(&card.book.author);
+        }
+        if let Some(notes) = &card.notes {
+            face = face.meta(notes);
+        }
+        face
+    }
+
+    fn draw_book_card(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        card: &ShelfCard<'_>,
+        cell: Rect,
+        body: Rect,
+    ) {
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let r = self.rect;
-        let cx = f64::midpoint(r.x0, r.x1);
-        // Compose the block around a comfortable optical centre (a touch above
-        // true centre reads better for a stacked call-to-action).
-        let cy = r.y0 + TOP_BAR + (r.y1 - r.y0 - TOP_BAR) * 0.42;
+        let hovered = self.is_hover(cell) && body.contains(self.cursor);
+        let image = self.cover_image(card.book);
+        let art = image
+            .as_ref()
+            .map_or(MediaArt::Placeholder, MediaArt::Image);
+        let progress = [MediaBadge::Progress(f64::from(card.progress))];
+        let badges: &[MediaBadge<'_>] = if card.progress > 0.0 { &progress } else { &[] };
+        let face = Self::book_face(card, art, badges).interaction(Interaction {
+            hovered,
+            focused: card.focused,
+            ..Interaction::default()
+        });
+        face.paint(ctx, cell);
+        let cover = face.art_rect(cell);
 
-        // Emblem: a soft accent disc with an open-book mark and a small plus.
-        let disc_r = 40.0;
-        let disc_cy = cy - 96.0;
-        paint::circle(
-            ctx.scene,
-            ctx.transform,
-            Point::new(cx, disc_cy),
-            disc_r,
-            theme.accent_primary.with_alpha_factor(0.14),
-        );
-        paint::book(
-            ctx.scene,
-            ctx.transform,
-            Rect::new(cx - 20.0, disc_cy - 15.0, cx + 20.0, disc_cy + 15.0),
-            theme.accent_primary,
-            2.0,
-        );
-        paint::circle(
-            ctx.scene,
-            ctx.transform,
-            Point::new(cx + 26.0, disc_cy + 24.0),
-            11.0,
-            theme.accent_primary,
-        );
-        paint::plus(
-            ctx.scene,
-            ctx.transform,
-            Rect::new(cx + 18.0, disc_cy + 16.0, cx + 34.0, disc_cy + 32.0),
-            theme.on_surface(theme.accent_primary).ink,
-            1.9,
-        );
-
-        let head = "Your library is empty";
-        let (hw, _) = ctx
-            .text
-            .measure_weighted(head, 24.0, None, TextWeight::Bold);
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            head,
-            24.0,
-            c.text_primary,
-            ctx.transform * Affine::translate((cx - f64::from(hw) / 2.0, cy - 34.0)),
-            None,
-            TextWeight::Bold,
-        );
-
-        let body = "Open a book from anywhere — your device or a shared workspace. It's added to your library, so it's waiting here next time.";
-        let body_w = (r.width() * 0.6).clamp(280.0, 460.0);
-        let (_bw, _) = ctx.text.measure(body, 14.0, Some(body_w as f32));
-        ctx.text.draw_text(
-            ctx.scene,
-            body,
-            14.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((cx - body_w / 2.0, cy + 2.0)),
-            Some(body_w as f32),
-        );
-
-        // Primary call to action.
-        let cta_label = "Open a book…";
-        let (clw, _) = ctx
-            .text
-            .measure_weighted(cta_label, 14.0, None, TextWeight::Semibold);
-        let cta_w = f64::from(clw) + 25.0 + 44.0;
-        let cta_h = 44.0;
-        let cta_y = cy + 62.0;
-        self.accent_button(
-            ctx,
-            Rect::new(cx - cta_w / 2.0, cta_y, cx + cta_w / 2.0, cta_y + cta_h),
-            cta_label,
-            true,
-            Action::OpenViaPortal,
-        );
-
-        // A quiet pointer to where watched folders are managed (secondary, never
-        // the only way in).
-        let hint = "Tip: add folders to watch in Settings › Library.";
-        let (thw, _) = ctx.text.measure(hint, 12.5, None);
-        ctx.text.draw_text(
-            ctx.scene,
-            hint,
-            12.5,
-            c.text_dim.with_alpha_factor(0.75),
-            ctx.transform * Affine::translate((cx - f64::from(thw) / 2.0, cta_y + cta_h + 20.0)),
-            None,
-        );
-
-        // Surface a picker failure (dismissed/unavailable) right under the CTA.
-        if let Some(err) = &self.load_error {
-            let (ew, _) = ctx.text.measure(err, 12.5, Some((body_w) as f32));
-            ctx.text.draw_text(
-                ctx.scene,
-                err,
-                12.5,
-                c.semantic.danger,
-                ctx.transform
-                    * Affine::translate((
-                        cx - f64::from(ew.min(body_w as f32)) / 2.0,
-                        cta_y + cta_h + 44.0,
-                    )),
-                Some(body_w as f32),
+        // Over the cover: the book's subject as a chip at the leading top
+        // and, for a book on the shared workspace, a "Shared" badge at the
+        // trailing top. Both are centred on one row; when the subject leaves
+        // no room beside it, the badge takes the row below.
+        let inset = f64::from(theme.tokens.spacing.s2);
+        let gap = f64::from(theme.tokens.spacing.rhythm.related);
+        let room = (cover.width() - 2.0 * inset).max(0.0);
+        let chip_h = ChipFace::height(theme);
+        let badge_h = BadgeFace::height(theme);
+        let row_h = chip_h.max(badge_h);
+        let chip_w = (!card.book.subject.is_empty())
+            .then(|| {
+                ChipFace::intrinsic_width(
+                    &card.book.subject,
+                    ChipLead::None,
+                    false,
+                    ctx.text,
+                    theme,
+                )
+                .min(room)
+            })
+            .filter(|width| *width > chip_h);
+        if let Some(chip_w) = chip_w {
+            let top = cover.y0 + inset + (row_h - chip_h) / 2.0;
+            let chip = Rect::new(
+                cover.x0 + inset,
+                top,
+                cover.x0 + inset + chip_w,
+                top + chip_h,
             );
+            ChipFace::new(chip, &card.book.subject).paint(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                theme,
+            );
+        }
+        if card.shared {
+            let label = "Shared";
+            let badge_w = BadgeFace::intrinsic_width(label, ctx.text, theme);
+            let beside = chip_w.is_none_or(|width| width + gap + badge_w <= room);
+            let row_y = if beside {
+                cover.y0 + inset
+            } else {
+                cover.y0 + inset + row_h + gap
+            };
+            let top = row_y + (row_h - badge_h) / 2.0;
+            let badge = Rect::new(
+                cover.x1 - inset - badge_w,
+                top,
+                cover.x1 - inset,
+                top + badge_h,
+            );
+            BadgeFace::new(badge, label)
+                .style(ChipStyle::Neutral)
+                .paint(ctx.scene, ctx.transform, ctx.text, theme);
+        }
+
+        // The whole card opens the book; clamp it to the scrolling body so a
+        // card sliding under the header never takes its clicks.
+        let hit = cell.intersect(body);
+        if hit.height() > 0.0 {
+            self.push_hit(hit, Action::OpenBook(card.index));
+        }
+        // Share and Remove over the cover's foot while the card is hovered;
+        // pushed after the card so they win where they overlap it.
+        let actions_h = ButtonFace::height(ControlSize::Small, theme) + inset;
+        if hovered && cover.y1 <= body.y1 && cover.y1 - actions_h >= body.y0 {
+            self.draw_book_card_hover_actions(ctx, cover, &card.book.id, card.shared);
+        }
+    }
+
+    /// Share (local books only) and Remove, at the cover's trailing foot.
+    fn draw_book_card_hover_actions(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        cover: Rect,
+        book_id: &str,
+        shared: bool,
+    ) {
+        let theme = ctx.theme;
+        let inset = f64::from(theme.tokens.spacing.s2);
+        let height = ButtonFace::height(ControlSize::Small, theme);
+        let y = cover.y1 - inset - height;
+        let mut x1 = cover.x1 - inset;
+        let remove = Rect::new(x1 - height, y, x1, y + height);
+        self.button(
+            ctx,
+            ButtonFace::icon_only(remove, Icon::Trash2, "Remove from library")
+                .role(ButtonRole::Secondary)
+                .control_size(ControlSize::Small),
+            Action::RemoveFromLibrary(book_id.to_string()),
+        );
+        x1 = remove.x0 - f64::from(theme.tokens.spacing.rhythm.related);
+        if !shared {
+            let width = ButtonFace::new(Rect::ZERO, "Share")
+                .icon(Icon::Users)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(ctx.text, theme);
+            let share = Rect::new(x1 - width, y, x1, y + height);
+            self.button(
+                ctx,
+                ButtonFace::new(share, "Share")
+                    .icon(Icon::Users)
+                    .control_size(ControlSize::Small),
+                Action::ShareToWorkspace(book_id.to_string()),
+            );
+        }
+    }
+
+    /// The trailing add tile: a drop target for EPUB files that also opens
+    /// the host file picker.
+    fn draw_add_book_tile(&mut self, ctx: &mut PaintCtx<'_>, tile: Rect, body: Rect) {
+        DropZoneFace::new("Add a book")
+            .icon(Icon::Plus)
+            .message("Drop an EPUB here or choose one")
+            .drag_over(self.file_hover)
+            .paint(ctx, tile, 0.0);
+        let hit = tile.intersect(body);
+        if hit.height() > 0.0 {
+            self.push_hit(hit, Action::OpenViaPortal);
+        }
+    }
+
+    /// The empty shelf: one sentence and the one way in, opening a book from
+    /// anywhere (no magic folder; the shelf fills itself from what is
+    /// opened).
+    fn draw_empty_library(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) {
+        let message = self
+            .load_error
+            .as_deref()
+            .unwrap_or("Books you open are kept here.");
+        let content = EmptyStateContent {
+            icon: Some(Icon::FileText),
+            message: Some(message),
+            action_label: Some("Open a book"),
+            error: self.load_error.is_some(),
+            ..EmptyStateContent::new("Your library is empty")
+        };
+        if let Some(action) = EmptyState::paint(ctx, body, &content, self.cursor) {
+            self.push_hit(action, Action::OpenViaPortal);
         }
     }
 
@@ -7820,458 +7818,6 @@ impl BooksApp {
         self.cover_cache.insert(book.id.clone(), img.clone());
         Some(img)
     }
-
-    fn draw_book_card(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        book: &Book,
-        idx: usize,
-        cell: CardCell,
-        focused: bool,
-    ) {
-        let theme = ctx.theme;
-        let CardCell { x, y, w, cover_h } = cell;
-        let cover = cell.cover();
-        // `self.library` is taken for the duration of the draw, so resolve
-        // shared-vs-local from the book's id + the path cache directly.
-        let shared = self
-            .library_paths
-            .get(&book.id)
-            .is_some_and(|p| is_shared(p));
-        let hover = self.is_hover(Rect::new(x, y, x + w, y + cover_h + 78.0));
-
-        // Elevation from the token ramp: the shadow is the shape of the cover
-        // (HIG §9.3), not a nudged black rectangle.
-        ui::surface::shadow(
-            ctx.scene,
-            ctx.transform,
-            cover,
-            12.0,
-            &theme.tokens.elevation.e2,
-        );
-
-        let title_on_cover = self.draw_book_cover_art(ctx, book, cell);
-
-        // Shared-vs-local badge, overlaid at the cover's top-right. A book on the
-        // workspace is available to everyone there; a local one lives only on
-        // this device. Both are labelled so the state reads at a glance.
-        Self::draw_shared_badge(ctx, cell, shared);
-
-        // Keyboard focus draws the focus ring even without a pointer over the
-        // card, so arrow-key navigation is visible; hover strengthens the
-        // card's own derived edge to the Panel border rather than borrowing
-        // the focus colour.
-        if focused {
-            ctx.stroke_round(cover, 12.0, theme.border_focus, 2.0);
-        } else if hover {
-            ctx.stroke_round(cover, 12.0, ui::chrome::panel_border(theme), 1.5);
-        }
-
-        // --- under-cover meta: progress + counts -------------------------
-        let meta_y = self.draw_book_card_meta(ctx, book, cell, title_on_cover);
-
-        // Clamp the click target to the scrolling body so a card sliding under
-        // the top bar can't capture clicks up in the header.
-        let hit_top = y.max(self.rect.y0 + TOP_BAR);
-        let hit_bot = (meta_y + 70.0).min(self.rect.y1);
-        if hit_bot > hit_top {
-            self.push_hit(Rect::new(x, hit_top, x + w, hit_bot), Action::OpenBook(idx));
-        }
-
-        // Share/Remove cluster over the cover foot on hover. Pushed after the
-        // whole-card hit so they win the click where they overlap.
-        if hover && y >= self.rect.y0 + TOP_BAR {
-            self.draw_book_card_hover_actions(ctx, cell, &book.id, shared);
-        }
-    }
-
-    /// The cover art: real embedded artwork when the EPUB carries one,
-    /// otherwise a generated spine (tinted board, sheen + foot for depth,
-    /// title in serif display, author along the base). Returns whether the
-    /// title is already shown on the cover (a real cover isn't relabelled
-    /// below it).
-    fn draw_book_cover_art(&mut self, ctx: &mut PaintCtx<'_>, book: &Book, cell: CardCell) -> bool {
-        let theme = ctx.theme;
-        let CardCell { x, y, w, cover_h } = cell;
-        let cover = cell.cover();
-        let real_cover = self.cover_image(book);
-        let title_on_cover = real_cover.is_none();
-        if let Some(img) = real_cover {
-            blit_cover(ctx.scene, ctx.transform, img, cover, 12.0);
-            // Seat the art against the shelf: the edge is derived from the
-            // shelf ground and stroked just outside the art, on that ground,
-            // so a dark cover on a light shelf still gets a frame.
-            chrome::seat(
-                ctx.scene,
-                ctx.transform,
-                theme.tokens.colors.surfaces.base,
-                cover,
-                12.0,
-            );
-        } else {
-            // A designed cover: tinted board, top sheen + darker foot for
-            // depth, title in serif display, author along the base.
-            let (spine, ink) = cover_colors(theme, book.cover_tint);
-            ctx.fill_round(cover, 12.0, spine);
-            // The board's own rest edge, derived from the board colour.
-            chrome::edge(ctx.scene, ctx.transform, spine, cover, 12.0);
-            // Top sheen (a faint light band) + darker foot, layered for depth.
-            let sheen = Rect::new(x, y, x + w, y + cover_h * 0.34);
-            ctx.fill_round(sheen, 12.0, Color::from_rgba8(255, 255, 255, 16));
-            let foot = Rect::new(x, y + cover_h * 0.70, x + w, y + cover_h);
-            ctx.fill_round(foot, 12.0, Color::from_rgba8(0, 0, 0, 46));
-
-            // subject pill + spark.
-            if !book.subject.is_empty() {
-                let psize = 11.0;
-                let (pw, _) = ctx.text.measure(&book.subject, psize, None);
-                let pill = Rect::new(
-                    x + 16.0,
-                    y + 16.0,
-                    x + 16.0 + f64::from(pw) + 18.0,
-                    y + 16.0 + 20.0,
-                );
-                ctx.fill_round(pill, 10.0, ink.with_alpha_factor(0.18));
-                ctx.text.draw_text(
-                    ctx.scene,
-                    &book.subject,
-                    psize,
-                    ink,
-                    ctx.transform * Affine::translate((x + 25.0, y + 20.0)),
-                    None,
-                );
-            }
-
-            // Title in a serif display face (a book-cover convention), wrapped.
-            let title_w = w - 32.0;
-            ctx.text.draw_style(
-                ctx.scene,
-                &book.title,
-                ink,
-                ctx.transform * Affine::translate((x + 18.0, y + cover_h * 0.38)),
-                Some(title_w as f32),
-                &TextStyle::new(20.0)
-                    .with_weight(TextWeight::Bold)
-                    .with_family(FontChoice::Serif),
-            );
-            // Hairline rule above the author.
-            paint::line(
-                ctx.scene,
-                ctx.transform,
-                Point::new(x + 18.0, y + cover_h - 42.0),
-                Point::new(x + 18.0 + 34.0, y + cover_h - 42.0),
-                ink.with_alpha_factor(0.7),
-                1.4,
-            );
-            ctx.text.draw_text(
-                ctx.scene,
-                &book.author,
-                13.0,
-                ink.with_alpha_factor(0.86),
-                ctx.transform * Affine::translate((x + 18.0, y + cover_h - 30.0)),
-                Some(title_w as f32),
-            );
-        }
-        title_on_cover
-    }
-
-    /// The "Shared"/"Local" badge overlaid at the cover's top-right.
-    fn draw_shared_badge(ctx: &mut PaintCtx<'_>, cell: CardCell, shared: bool) {
-        let theme = ctx.theme;
-        let CardCell { x, y, w, .. } = cell;
-        // "Shared" is live collaborative state, so it wears the accent (HIG
-        // §9.4); "Local" is a quiet overlay chip with its derived edge, and
-        // both take their ink from the surface they sit on.
-        let c = &theme.tokens.colors;
-        let (label, bg, glyph) = if shared {
-            ("Shared", theme.accent_primary, true)
-        } else {
-            ("Local", c.surfaces.overlay, false)
-        };
-        let ink = theme.on_surface(bg).ink;
-        let (lw, _) = ctx
-            .text
-            .measure_weighted(label, 11.0, None, TextWeight::Semibold);
-        let gly = if glyph { 16.0 } else { 0.0 };
-        let pw = 16.0 + gly + f64::from(lw);
-        let py = y + 14.0;
-        let pill = Rect::new(x + w - 14.0 - pw, py, x + w - 14.0, py + 20.0);
-        if shared {
-            ctx.fill_round(pill, 10.0, bg);
-        } else {
-            ui::surface::card(ctx.scene, ctx.transform, pill, 10.0, bg);
-        }
-        let mut tx = pill.x0 + 8.0;
-        if glyph {
-            paint::people(
-                ctx.scene,
-                ctx.transform,
-                Rect::new(tx, py + 4.0, tx + 13.0, py + 16.0),
-                ink,
-                1.4,
-            );
-            tx += 16.0;
-        }
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            label,
-            11.0,
-            ink,
-            ctx.transform * Affine::translate((tx, py + 4.0)),
-            None,
-            TextWeight::Semibold,
-        );
-    }
-
-    /// Under-cover meta: title (when not already on the cover), progress
-    /// bar + percent, and an annotation-count badge. Returns the meta
-    /// block's top y, so the caller can size the card's click target.
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t/x/y/w/c are the standard transform/geometry/colours names shared by \
-                  every draw helper in this section"
-    )]
-    fn draw_book_card_meta(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        book: &Book,
-        cell: CardCell,
-        title_on_cover: bool,
-    ) -> f64 {
-        let theme = ctx.theme;
-        let CardCell { x, y, w, cover_h } = cell;
-        let c = &theme.tokens.colors;
-        let frac = self.shelf_fraction.get(&book.id).copied().unwrap_or(0.0);
-        let anno = self.shelf_annos.get(&book.id).copied().unwrap_or(0);
-        let meta_y = y + cover_h + 14.0;
-        // The generated cover already carries the title in display type; drawing
-        // it again here would show the same title twice on one card. Only label
-        // real cover art (whose embedded title may not be legible on the shelf).
-        if !title_on_cover {
-            ctx.text.draw_text_weighted(
-                ctx.scene,
-                &book.title,
-                14.0,
-                c.text_primary,
-                ctx.transform * Affine::translate((x + 2.0, meta_y)),
-                Some((w - 4.0) as f32),
-                TextWeight::Semibold,
-            );
-        }
-        // progress bar: the track is a lift off the shelf with its derived
-        // edge (HIG §9.5), not a ramp slot that vanishes on one preset.
-        let bar = Rect::new(x + 2.0, meta_y + 34.0, x + w - 56.0, meta_y + 40.0);
-        let track = c.lift(1.0);
-        paint::progress(
-            ctx.scene,
-            ctx.transform,
-            bar,
-            frac,
-            track,
-            theme.accent_primary,
-        );
-        chrome::edge(ctx.scene, ctx.transform, track, bar, bar.height() / 2.0);
-        let pct = format!("{}%", (frac * 100.0).round() as i32);
-        ctx.text.draw_text(
-            ctx.scene,
-            &pct,
-            12.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((x + w - 48.0, meta_y + 31.0)),
-            None,
-        );
-        if anno > 0 {
-            let label = format!("{anno} notes");
-            let (lw, _) = ctx.text.measure(&label, 11.0, None);
-            let badge = Rect::new(
-                x + 2.0,
-                meta_y + 50.0,
-                x + 2.0 + f64::from(lw) + 16.0,
-                meta_y + 50.0 + 18.0,
-            );
-            chrome::quiet_pill(
-                ctx.scene,
-                ctx.transform,
-                theme,
-                badge,
-                9.0,
-                c.surfaces.raised,
-                false,
-            );
-            ctx.text.draw_text(
-                ctx.scene,
-                &label,
-                11.0,
-                c.text_dim,
-                ctx.transform * Affine::translate((x + 10.0, meta_y + 53.0)),
-                None,
-            );
-        }
-        meta_y
-    }
-
-    /// The Share/Remove affordance cluster over the cover foot, shown on
-    /// hover only (pushed after the whole-card hit, so they win the click
-    /// where they overlap it).
-    fn draw_book_card_hover_actions(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        cell: CardCell,
-        book_id: &str,
-        shared: bool,
-    ) {
-        let theme = ctx.theme;
-        let CardCell { x, y, w, cover_h } = cell;
-        let sh = 26.0;
-        let by = y + cover_h - sh - 8.0;
-        let mut right = x + w - 10.0;
-        if !shared {
-            let sl = "Share";
-            let (slw, _) = ctx
-                .text
-                .measure_weighted(sl, 12.0, None, TextWeight::Semibold);
-            let sw = f64::from(slw) + 16.0 + 22.0;
-            let sx = right - sw;
-            let sr = Rect::new(sx, by, sx + sw, by + sh);
-            ctx.fill_round(sr, sh / 2.0, theme.accent_primary);
-            let share_ink = theme.on_surface(theme.accent_primary).ink;
-            paint::people(
-                ctx.scene,
-                ctx.transform,
-                Rect::new(sx + 8.0, by + 6.0, sx + 22.0, by + 20.0),
-                share_ink,
-                1.4,
-            );
-            ctx.text.draw_text_weighted(
-                ctx.scene,
-                sl,
-                12.0,
-                share_ink,
-                ctx.transform * Affine::translate((sx + 26.0, by + 6.0)),
-                None,
-                TextWeight::Semibold,
-            );
-            self.push_hit(sr, Action::ShareToWorkspace(book_id.to_string()));
-            right = sx - rhythm::RELATED;
-        }
-        // Remove — a quiet overlay disc with its derived edge and a trash glyph.
-        let rr = sh / 2.0;
-        let rc = Point::new(right - rr, by + rr);
-        let disc = Rect::new(rc.x - rr, rc.y - rr, rc.x + rr, rc.y + rr);
-        ui::surface::card(
-            ctx.scene,
-            ctx.transform,
-            disc,
-            rr,
-            theme.tokens.colors.surfaces.overlay,
-        );
-        paint::trash(
-            ctx.scene,
-            ctx.transform,
-            Rect::new(rc.x - 8.0, rc.y - 8.0, rc.x + 8.0, rc.y + 8.0),
-            theme.tokens.colors.text_primary,
-            1.5,
-        );
-        self.push_hit(
-            Rect::new(rc.x - rr, rc.y - rr, rc.x + rr, rc.y + rr),
-            Action::RemoveFromLibrary(book_id.to_string()),
-        );
-    }
-
-    /// The trailing "Add books" tile: opens the host file picker.
-    fn draw_add_book_card(&mut self, ctx: &mut PaintCtx<'_>, cell: CardCell) {
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let CardCell { x, y, w, cover_h } = cell;
-        let tile = cell.cover();
-        let hover = self.is_hover(tile);
-
-        // A quiet, inviting drop surface: a raised tile under a dashed edge
-        // derived from the tile itself; the accent only arrives on hover,
-        // when the tile is genuinely live as a drop target (HIG §9.4).
-        let fill = if hover {
-            theme.bg_hover
-        } else {
-            c.surfaces.raised
-        };
-        ctx.fill_round(tile, 12.0, fill);
-        let border = if hover {
-            theme.accent_primary
-        } else {
-            ui::surface::edge_on_with(fill, ui::chrome::PANEL_BORDER_ALPHA)
-        };
-        dashed_round_border(
-            ctx.scene,
-            ctx.transform,
-            tile,
-            12.0,
-            border,
-            &DashStyle {
-                width: 1.6,
-                dash: 7.0,
-                gap: 5.0,
-            },
-        );
-
-        // Plus mark inside a soft accent disc.
-        let disc_centre_x = x + w / 2.0;
-        let disc_centre_y = y + cover_h * 0.40;
-        let disc_radius = 24.0;
-        paint::circle(
-            ctx.scene,
-            ctx.transform,
-            Point::new(disc_centre_x, disc_centre_y),
-            disc_radius,
-            theme.accent_primary.with_alpha_factor(0.16),
-        );
-        paint::plus(
-            ctx.scene,
-            ctx.transform,
-            Rect::new(
-                disc_centre_x - 11.0,
-                disc_centre_y - 11.0,
-                disc_centre_x + 11.0,
-                disc_centre_y + 11.0,
-            ),
-            theme.accent_primary,
-            2.2,
-        );
-
-        // Title + hint, centred under the mark.
-        let label = "Add a book";
-        let (label_w, _) = ctx
-            .text
-            .measure_weighted(label, 15.0, None, TextWeight::Semibold);
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            label,
-            15.0,
-            c.text_primary,
-            ctx.transform
-                * Affine::translate((
-                    disc_centre_x - f64::from(label_w) / 2.0,
-                    disc_centre_y + disc_radius + 16.0,
-                )),
-            None,
-            TextWeight::Semibold,
-        );
-        let hint = "Open from anywhere";
-        let (hint_w, _) = ctx.text.measure(hint, 12.0, None);
-        ctx.text.draw_text(
-            ctx.scene,
-            hint,
-            12.0,
-            c.text_dim,
-            ctx.transform
-                * Affine::translate((
-                    disc_centre_x - f64::from(hint_w) / 2.0,
-                    disc_centre_y + disc_radius + 38.0,
-                )),
-            None,
-        );
-
-        self.push_hit(tile, Action::OpenViaPortal);
-    }
 }
 
 // --- Reader view -----------------------------------------------------------
@@ -8306,20 +7852,9 @@ struct ReaderPageGeometry {
     /// rule, so header, rule and first line never meet at any text scale.
     header_y: f64,
     rule_y: f64,
-}
-
-/// The reader top bar's cluster sizes, measured once per frame so the
-/// centre title and the right cluster lay out from the same numbers.
-#[derive(Clone, Copy)]
-struct ReaderTopBar {
-    /// The window rect; the bar is its top `TOP_BAR`.
-    r: Rect,
-    /// Side of an ordinary icon button, and of the larger bookmark toggle.
-    icon: f64,
-    bookmark: f64,
-    /// The measured "Aa" label, and the settings pill's width from it.
-    aa_label: (f32, f32),
-    aa_w: f64,
+    /// The band at the page's foot the progress slider is centred in. The
+    /// page bubble's slot lies between it and the content box.
+    slider_band: f64,
 }
 
 impl BooksApp {
@@ -8335,11 +7870,7 @@ impl BooksApp {
         let mode = self.settings.mode;
         // Measure the running header's line box at this frame's chrome scale
         // before the geometry reserves its slot (see `running_header_h`).
-        self.running_header_h = f64::from(
-            ctx.text
-                .measure_weighted("Ag", running_header_px(), None, TextWeight::Semibold)
-                .1,
-        );
+        self.running_header_h = ctx.line_box(TextRole::Caption);
         let geom = self.reader_page_geometry(r, mode);
         let palette = self.resolve_palette(theme);
 
@@ -8474,27 +8005,50 @@ impl BooksApp {
         let theme = ctx.theme;
         let nchap = lib.get(self.book_idx).map_or(0, |b| b.chapters.len());
         // ---- page footer -------------------------------------------------
-        let frac = self.current_progress_fraction();
+        // The slider sits where the reader is: the start of the page on
+        // screen, the same position a seek to its value lands on.
+        let frac = self.slider_position(nchap);
         self.reading_progress = frac;
-        let slider_rect = Rect::new(
+        let paper_y1 = geom.paper_y + geom.paper_h;
+        let slider_h = ControlSize::Small.height(theme);
+        let slider_cy = paper_y1 - geom.slider_band / 2.0;
+        let text = Rect::new(
             geom.full_content_x,
-            geom.paper_y + geom.paper_h - 30.0,
+            slider_cy - slider_h / 2.0,
             geom.full_content_x + f64::from(geom.full_content_w),
-            geom.paper_y + geom.paper_h - 6.0,
+            slider_cy + slider_h / 2.0,
         );
+        // The track, not the control's knob room, runs from margin to margin
+        // like the text above it.
+        let knob_room = SliderFace::new(text, 0.0).track_rect().x0 - text.x0;
+        let slider_rect = text.inflate(knob_room.max(0.0), 0.0);
         let face = SliderFace::new(slider_rect, f64::from(frac))
             .hovered(slider_rect.contains(self.cursor))
             .dragging(self.progress_dragging)
             .focused(self.semantic_focus.as_deref() == Some("books.reader.progress"));
         self.progress_slider_track = face.track_rect();
-        Slider::paint(ctx.scene, ctx.transform, theme, &face);
+        // The slider stands on the page, so it takes the page's polarity.
+        let page_dark = self.resolve_palette(theme).dark;
+        let page_theme = if page_dark == theme.tokens.colors.palette.dark {
+            theme.clone()
+        } else if page_dark {
+            Theme::dark()
+        } else {
+            Theme::light()
+        };
+        Slider::paint(ctx.scene, ctx.transform, &page_theme, &face);
         self.push_hit(slider_rect, Action::SeekProgress);
+        // The bubble's slot: between the content box and the slider band.
+        let bubble_y1 = paper_y1 - geom.slider_band;
+        self.toast_area = Rect::new(geom.center_x0, geom.body_y0, geom.center_x1, bubble_y1);
 
-        // ---- chrome: top bar, floating page bubble, selection HUD, drawers -
-        self.draw_reader_topbar(ctx, &lib);
+        // ---- chrome: header row, floating page bubble, selection HUD, drawers
+        self.draw_reader_header(ctx, &lib);
+        // The bubble stands in its slot in the page's foot, above the
+        // progress slider.
         self.reader_bubble.draw(
             ctx,
-            Rect::new(geom.center_x0, geom.body_y0, geom.center_x1, geom.body_y1),
+            self.toast_area,
             self.cursor,
             ReaderPosition {
                 chapter: self.chapter,
@@ -8505,7 +8059,7 @@ impl BooksApp {
         );
         // Floating selection toolbar over the page (under any overlay rail).
         self.draw_selection_hud(ctx, geom, sel_anchor);
-        self.draw_rails(ctx, &lib, geom.body_y0, geom.body_y1);
+        self.draw_rails(ctx, &lib);
         // The on-page note composer (anchored near the passage) floats over the
         // page instead of shunting note-writing off to a separate screen.
         self.draw_note_composer(ctx, sel_anchor.map(|(_, y)| y));
@@ -8514,17 +8068,17 @@ impl BooksApp {
         self.comment_overlay.draw(
             ctx,
             self.rect,
+            Rect::new(geom.center_x0, geom.body_y0, geom.center_x1, geom.body_y1),
             self.cursor,
             &self.annotations,
             self.hi_color,
         );
-        // Reading-settings floats above everything and owns its own modal hit
-        // stack; only the available reader span is supplied by the host.
+        // Reading-settings floats above everything, anchored under its
+        // button, and owns its own modal hit stack.
         self.reading_settings.draw(
             ctx,
             self.rect,
-            geom.center_x0 + 12.0,
-            geom.center_x1 - 18.0,
+            self.type_button,
             &Appearance {
                 settings: &self.settings,
                 fonts: &self.fonts,
@@ -8540,64 +8094,73 @@ impl BooksApp {
     /// Computed once per [`Self::draw_reader`] call from the current rect and
     /// the docked-rail reveal.
     fn reader_page_geometry(&self, r: Rect, mode: ReadMode) -> ReaderPageGeometry {
-        // ---- geometry of the three columns ------------------------------
-        // Each rail insets the page only while it is *docked* — an overlay rail
-        // floats over a full-width page behind a scrim, so it contributes no
-        // inset. The eased reveal makes the inset grow/shrink smoothly as a
-        // docked rail is summoned or dismissed.
-        let toc_w = match self.toc_layout() {
-            SplitLayout::Docked => self.toc_width() * self.toc_flap.reveal(),
-            SplitLayout::Overlay => 0.0,
-        };
-        let notes_w = match self.notes_layout() {
-            SplitLayout::Docked => self.notes_width() * self.notes_flap.reveal(),
-            SplitLayout::Overlay => 0.0,
-        };
-        let center_x0 = r.x0 + toc_w;
-        let center_x1 = r.x1 - notes_w;
-        let body_y0 = r.y0 + TOP_BAR;
-        // The page renders to the window bottom now that the always-on bottom
-        // strip is gone — the page indicator floats as a transient bubble
-        // (the `ReaderBubble` component) instead of costing a permanent strip of chrome.
+        // ---- the content column ------------------------------------------
+        // A docked drawer insets the page (by its eased reveal); a floating
+        // one lies over a full-width page behind its scrim.
+        let column = self.notes_drawer.content_rect();
+        let center_x0 = column.x0;
+        let center_x1 = column.x1;
+        let body_y0 = r.y0 + self.header_h;
+        // The page renders to the window bottom: the page indicator floats as
+        // a transient bubble (`ReaderBubble`) instead of a permanent strip.
         let body_y1 = r.y1;
 
         // ---- paper rect + content box -----------------------------------
-        // On a small screen the page fills the reading area edge-to-edge, no
-        // framed card or margin; a wide screen keeps the floating paper card.
-        let framed = self.rect.width() >= FRAME_MIN_W;
+        // In a compact window the page fills the reading area edge-to-edge,
+        // no framed page or margin; a wide window keeps the framed page.
+        let framed = self.rect.width() >= f64::from(Metrics::BASE.compact_breakpoint);
         let center_w = (center_x1 - center_x0).max(120.0);
         let sp = ui::tokens::spacing::Spacing::BASE;
-        let (paper_x, paper_y, paper_w, paper_h, pad_x, pad_top, pad_bot, header_y, rule_y) =
-            if framed {
-                let paper_w = (center_w - 56.0).clamp(120.0, PAGE_MAX_W);
-                let paper_x = center_x0 + (center_w - paper_w) / 2.0;
-                let paper_y = body_y0 + 18.0;
-                let paper_h = (body_y1 - body_y0 - 36.0).max(120.0);
-                // Running header, then the rule an `s1` under its measured
-                // line box, then the content an `s2` under the rule. The slot
-                // follows the header's real height, so at 200 % the header
-                // grows away from the rule instead of into it (rounded so 1×
-                // keeps its pixel grid).
-                let header_y = paper_y + f64::from(sp.s6);
-                let rule_y = (header_y + self.running_header_h + f64::from(sp.s1)).round();
-                let pad_top = rule_y - paper_y + f64::from(sp.s2);
-                (
-                    paper_x, paper_y, paper_w, paper_h, 46.0, pad_top, 46.0, header_y, rule_y,
-                )
+        // The foot holds the progress slider in its own band and, above it,
+        // the page bubble's slot, so neither ever lies over the text.
+        let slider_band = if framed {
+            f64::from(sp.s12)
+        } else {
+            f64::from(sp.s8)
+        };
+        let pad_bot = slider_band + self.bubble_h + f64::from(sp.s2);
+        let (paper_x, paper_y, paper_w, paper_h, pad_x, pad_top, header_y, rule_y) = if framed {
+            let margin = f64::from(sp.s6);
+            let paper_w = (center_w - 2.0 * margin).clamp(120.0, PAGE_MAX_W);
+            let paper_x = center_x0 + (center_w - paper_w) / 2.0;
+            let paper_y = body_y0 + margin;
+            let paper_h = (body_y1 - body_y0 - 2.0 * margin).max(120.0);
+            // Running header, then the rule an `s1` under its measured
+            // line box, then the content an `s2` under the rule. The slot
+            // follows the header's real height, so at 200 % the header
+            // grows away from the rule instead of into it (rounded so 1×
+            // keeps its pixel grid).
+            let header_y = paper_y + f64::from(sp.s6);
+            let rule_y = (header_y + self.running_header_h + f64::from(sp.s1)).round();
+            let pad_top = rule_y - paper_y + f64::from(sp.s2);
+            let pad = f64::from(sp.s12);
+            (
+                paper_x, paper_y, paper_w, paper_h, pad, pad_top, header_y, rule_y,
+            )
+        } else {
+            let paper_x = center_x0;
+            let paper_y = body_y0;
+            let paper_w = center_w;
+            let paper_h = (body_y1 - body_y0).max(120.0);
+            // Accessibility text needs a little extra horizontal breathing
+            // room on an edge-to-edge page. The layout width follows this
+            // inset, so words reflow before reaching the viewport edge.
+            let pad_x = if self.settings.font_scale > 1.0 {
+                f64::from(sp.s8)
             } else {
-                let paper_x = center_x0;
-                let paper_y = body_y0;
-                let paper_w = center_w;
-                let paper_h = (body_y1 - body_y0).max(120.0);
-                // Accessibility text needs a little extra horizontal breathing
-                // room on an edge-to-edge phone page. The layout width follows
-                // this inset, so words reflow before reaching the viewport edge.
-                let pad_x = (22.0 + f64::from((self.settings.font_scale - 1.0).max(0.0)) * 11.0)
-                    .clamp(22.0, 36.0);
-                (
-                    paper_x, paper_y, paper_w, paper_h, pad_x, 24.0, 30.0, 0.0, 0.0,
-                )
+                f64::from(sp.s6)
             };
+            (
+                paper_x,
+                paper_y,
+                paper_w,
+                paper_h,
+                pad_x,
+                f64::from(sp.s6),
+                0.0,
+                0.0,
+            )
+        };
         let full_content_x = paper_x + pad_x;
         let full_content_w = (paper_w - 2.0 * pad_x).max(60.0) as f32;
         let content_y = paper_y + pad_top;
@@ -8605,7 +8168,11 @@ impl BooksApp {
         // A spread lays each page out in half the width (minus a centre gutter);
         // paged/continuous use the full column. The pagination width must match
         // the column the pages are shown in, so the layout key carries it.
-        let gutter: f64 = if framed { 48.0 } else { 30.0 };
+        let gutter = if framed {
+            f64::from(sp.s12)
+        } else {
+            f64::from(sp.s8)
+        };
         let column_w = if mode == ReadMode::TwoUp {
             (((f64::from(full_content_w) - gutter) / 2.0).max(80.0)) as f32
         } else {
@@ -8635,6 +8202,7 @@ impl BooksApp {
             gutter,
             header_y,
             rule_y,
+            slider_band,
         }
     }
 
@@ -8658,10 +8226,22 @@ impl BooksApp {
             font_sig,
             tr.text_scale(),
         );
-        if self.layout.as_ref().map(|l| l.key) != Some(key)
+        let previous = self.layout.as_ref().map(|l| l.key);
+        if previous != Some(key)
             && let Some(book) = lib.get(self.book_idx)
             && let Some(ch) = book.chapters.get(self.chapter)
         {
+            // The same chapter laid out again (a resize, a new text size or
+            // font): keep the paragraph the reader was at on screen, rather
+            // than a page number that now holds other text.
+            if previous.is_some_and(|old| old.chapter == self.chapter)
+                && self.pending_jump_block.is_none()
+                && self.pending_seek_fraction.is_none()
+                && !self.pending_last_page
+                && !self.settings.mode.is_continuous()
+            {
+                self.pending_jump_block = Some(self.page_top_block);
+            }
             self.layout = Some(layout_chapter(
                 tr,
                 &ChapterLayoutRequest {
@@ -8789,19 +8369,13 @@ impl BooksApp {
             geom.paper_y + geom.paper_h,
         );
         if geom.framed {
-            // The page's elevation comes from the token ramp and follows the
-            // page's own rounded outline (HIG §9.3), not a nudged dark slab.
-            ui::surface::shadow(
-                ctx.scene,
-                ctx.transform,
-                paper,
-                8.0,
-                &theme.tokens.elevation.e2,
-            );
-            ctx.fill_round(paper, 8.0, palette.page);
-            ctx.stroke_round(paper, 8.0, palette.page_edge, 1.0);
+            // The page is content on the window ground: no shadow, its own
+            // edge measured from the page colour.
+            let radius = f64::from(theme.tokens.radii.control);
+            ctx.fill_round(paper, radius, palette.page);
+            ctx.stroke_round(paper, radius, palette.page_edge, 1.0);
         } else {
-            // Borderless: the page fills the reading area, no card or shadow.
+            // Borderless: the page fills the reading area, no edge.
             ctx.fill_rect(paper, palette.page);
         }
 
@@ -8809,23 +8383,18 @@ impl BooksApp {
             if let Some(book) = lib.get(self.book_idx)
                 && let Some(ch) = book.chapters.get(self.chapter)
             {
-                // One line, ellipsized to the column: the slot above the
-                // rule is a single line box, so a long title must not wrap
-                // into the rule.
-                let head = ctx.text.elide_to_width_weighted(
-                    &ch.title.to_uppercase(),
-                    running_header_px(),
-                    geom.content_w,
-                    TextWeight::Semibold,
-                );
-                ctx.text.draw_text_weighted(
-                    ctx.scene,
+                // One line, elided to the column: the slot above the rule is
+                // a single line box, so a long title must not wrap into it.
+                let style = theme.text(TextRole::Caption);
+                let head = ctx
+                    .text
+                    .elide_to_width_style(&ch.title, geom.content_w, &style);
+                ctx.text(
                     &head,
-                    running_header_px(),
+                    &style,
                     palette.ink_dim,
-                    ctx.transform * Affine::translate((geom.content_x, geom.header_y)),
+                    Point::new(geom.content_x, geom.header_y),
                     None,
-                    TextWeight::Semibold,
                 );
             }
             paint::line(
@@ -8834,7 +8403,7 @@ impl BooksApp {
                 Point::new(geom.content_x, geom.rule_y),
                 Point::new(geom.content_x + f64::from(geom.content_w), geom.rule_y),
                 palette.rule,
-                1.0,
+                f64::from(theme.tokens.metrics.chrome_rule_px),
             );
         }
     }
@@ -8904,7 +8473,7 @@ impl BooksApp {
                 BlendMode::default(),
                 turn_alpha,
                 ctx.transform,
-                &RoundedRect::from_rect(clip, 6.0),
+                &clip,
             );
         }
         for pane in panes {
@@ -8917,13 +8486,8 @@ impl BooksApp {
                     pane.x + f64::from(pane.w) + 8.0,
                     geom.content_y + f64::from(geom.content_h) + 2.0,
                 );
-                ctx.scene.push_layer(
-                    Fill::NonZero,
-                    BlendMode::default(),
-                    1.0,
-                    content_t,
-                    &RoundedRect::from_rect(clip, 2.0),
-                );
+                ctx.scene
+                    .push_layer(Fill::NonZero, BlendMode::default(), 1.0, content_t, &clip);
             }
             let (a, cb) = self.draw_pane(&mut ctx.with_transform(content_t), frame, pane);
             if pane.partial {
@@ -8968,14 +8532,14 @@ impl BooksApp {
         self.draw_pane_highlight_markers(ctx, frame.palette, pane.x, &bands.group_top);
 
         // ---- glyphs + decorations (on top of bands) ---------------------
-        Self::draw_pane_glyphs(ctx, frame, pane, self.rect.width() < FRAME_MIN_W);
+        let compact = self.rect.width() < f64::from(Metrics::BASE.compact_breakpoint);
+        Self::draw_pane_glyphs(ctx, frame, pane, compact);
 
         (bands.sel_anchor, bands.comment_box)
     }
 
     /// Note-comment bands and bookmark glyphs, drawn behind the text.
     fn draw_pane_note_bands(ctx: &mut PaintCtx<'_>, frame: &ReaderFrame<'_>, pane: &Pane) {
-        let theme = ctx.theme;
         let palette = frame.palette;
         let (content_x, content_w) = (pane.x, pane.w);
         for b in &frame.layout.blocks {
@@ -9031,7 +8595,7 @@ impl BooksApp {
                             ctx.scene,
                             ctx.transform,
                             Rect::new(gx, by0 - 2.0, gx + 20.0, by0 + 22.0),
-                            theme.accent_primary,
+                            palette.accent,
                             1.6,
                             true,
                         );
@@ -9233,7 +8797,8 @@ impl BooksApp {
         }
         if let Some((mnx, mxx)) = spans.sel {
             let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
-            ctx.fill_round(band, 3.0, palette.accent.with_alpha_factor(0.30));
+            let radius = f64::from(ctx.theme.tokens.radii.detail);
+            ctx.fill_round(band, radius, ctx.theme.tokens.colors.intent.selection_tint);
             if bands.sel_anchor.is_none() {
                 bands.sel_anchor = Some((f64::midpoint(mnx, mxx), ly));
             }
@@ -9274,13 +8839,15 @@ impl BooksApp {
         let (content_x, content_w) = (pane.x, pane.w);
         // The layout engine guarantees line bounds, while this paint clip is
         // the final containment guard for font backends with generous glyph
-        // overhang. Leave a small left allowance for list bullets/quote
-        // ornament, but never let body glyphs escape the page on the right.
+        // overhang. Leave an allowance for list bullets and quote ornament on
+        // the left and for hanging punctuation and overhang on the right, both
+        // inside the page's own margin, so no glyph escapes the page.
         if clip_to_narrow_page {
+            let margin = f64::from(ui::tokens::spacing::Spacing::BASE.s3);
             let paint_bounds = Rect::new(
-                content_x - 24.0,
+                content_x - 2.0 * margin,
                 pane.y,
-                content_x + f64::from(content_w),
+                content_x + f64::from(content_w) + margin,
                 pane.y + f64::from(pane.win_end - pane.win_start),
             );
             ctx.scene.push_layer(
@@ -9312,12 +8879,11 @@ impl BooksApp {
                 && let Some(first) = b.lines.iter().find(|l| pane.shows(l.y, b.line_height))
             {
                 let ly = pane.screen_y(first.y);
-                ctx.text.draw_text(
-                    ctx.scene,
+                ctx.text(
                     bullet,
-                    b.size,
+                    &TextStyle::new(b.size),
                     palette.ink_dim,
-                    ctx.transform * Affine::translate((content_x + f64::from(b.indent) - 20.0, ly)),
+                    Point::new(content_x + f64::from(b.indent) - 20.0, ly),
                     None,
                 );
             }
@@ -9396,13 +8962,13 @@ impl BooksApp {
                     frame.base_family.clone()
                 };
                 if run.mono && !base_mono && run.math.is_none() {
-                    let (cw, _) = ctx.text.measure_styled(
+                    let (cw, _) = ctx.text.measure_font(
                         &run.display_text,
                         b.size,
                         None,
                         weight,
                         run.italic,
-                        true,
+                        &FontChoice::Monospace,
                     );
                     let cw = cw * l.glyph_scale;
                     let chip = Rect::new(
@@ -9467,14 +9033,15 @@ impl BooksApp {
         // The HUD is app chrome, so it follows the OS theme end to end: the
         // Panel material and border (HIG §9.5), and the OS accent for the
         // chosen swatch ring — the reading palette stays on the page.
+        let ground = ui::chrome::panel_ground(theme);
         let style = ui::ReaderHudStyle {
-            surface: ui::chrome::panel_ground(theme),
+            surface: ground,
             border: ui::chrome::panel_border(theme),
-            elevation: theme.tokens.elevation.e2,
+            elevation: theme.tokens.elevation.floating,
             text: c.text_primary,
-            hover: theme.bg_hover,
+            hover: c.lift_on(ground, 0.5),
             pill: c.surfaces.raised,
-            ring: theme.accent_primary,
+            ring: c.intent.you,
             danger: c.semantic.danger,
         };
         let swatches: Vec<ui::HudSwatch> = HiColor::ALL
@@ -9491,7 +9058,8 @@ impl BooksApp {
             || Point::new(paper_x + paper_w / 2.0, body_y0 + 54.0),
             |(x, y)| Point::new(x, y),
         );
-        let bounds = Rect::new(self.rect.x0, body_y0, self.rect.x1, body_y1);
+        // The toolbar stays inside the reading column, clear of the rails.
+        let bounds = Rect::new(geom.center_x0, body_y0, geom.center_x1, body_y1);
         let hud = ui::SelectionHud::draw(
             ctx.scene,
             ctx.transform,
@@ -9559,550 +9127,371 @@ impl BooksApp {
         );
     }
 
-    /// Paint the contents + annotations rails: either docked (flush, page
-    /// already inset) or an overlay flap over the page behind a dimming
-    /// scrim. The shared [`FlapState`] kernel supplies `reveal`/`slide`.
-    fn draw_rails(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        lib: &[Arc<Book>],
-        body_y0: f64,
-        body_y1: f64,
-    ) {
+    /// The contents sidebar and the annotations inspector: docked regions
+    /// beside the page, or floating drawers over it behind a scrim that
+    /// dismisses them.
+    fn draw_rails(&mut self, ctx: &mut PaintCtx<'_>, lib: &[Arc<Book>]) {
         let theme = ctx.theme;
-        let r = self.rect;
-        let toc_layout = self.toc_layout();
-        let notes_layout = self.notes_layout();
-        let toc_reveal = self.toc_flap.reveal();
-        let notes_reveal = self.notes_flap.reveal();
-
-        // A single scrim dims the page whenever either rail is floating open in
-        // overlay mode. Its alpha follows the stronger of the two reveals, and
-        // a tap anywhere on it dismisses the open flap(s).
-        let toc_overlay_open = toc_layout == SplitLayout::Overlay && toc_reveal > 0.001;
-        let notes_overlay_open = notes_layout == SplitLayout::Overlay && notes_reveal > 0.001;
-        if toc_overlay_open || notes_overlay_open {
-            // The shared scrim, at a strength that follows the reveal, so it
-            // is derived per theme rather than a literal black wash.
-            let a = toc_reveal.max(notes_reveal) * 0.5;
-            ui::chrome::fill_scrim(ctx.scene, ctx.transform, r, a as f32, theme);
-            // The scrim is a dismiss target behind the rails (recorded first so
-            // the rail bodies, pushed later, win the topmost hit-test).
-            self.push_hit(r, Action::DismissOverlay);
-        }
-
-        // Contents rail: docked rails sit flush at the left edge; an overlay
-        // rail slides in from off-screen by its eased `slide`.
-        if toc_layout == SplitLayout::Docked {
-            if toc_reveal > 0.001 {
-                self.draw_toc(ctx, lib, Rect::new(r.x0, body_y0, r.x0 + TOC_W, body_y1));
+        if let Some(panel) = self.toc_panel_rect() {
+            if self.toc_drawer.is_overlay() {
+                self.toc_drawer.draw_scrim(ctx.scene, ctx.transform, theme);
+                self.push_hit(self.toc_drawer.scrim_rect(), Action::DismissOverlay);
+                self.push_hit(panel, Action::Swallow);
             }
-        } else if toc_reveal > 0.001 {
-            let x0 = r.x0 - TOC_W * (1.0 - self.toc_flap.slide());
-            // Swallow taps on the rail body so they don't reach the scrim;
-            // pushed first so the chapter-row hits land on top of it.
-            let panel = Rect::new(x0, body_y0, x0 + TOC_W, body_y1);
-            self.push_hit(panel, Action::Swallow);
-            self.draw_toc(ctx, lib, panel);
+            let local = self.toc_drawer.paint_panel(ctx.scene, ctx.transform, theme);
+            let mut local_ctx = PaintCtx::new(ctx.scene, ctx.transform, ctx.text, &local);
+            self.draw_toc(&mut local_ctx, lib, panel);
         }
-
-        // Annotations rail: docked at the right edge, or an overlay flap that
-        // slides in from the right.
-        if notes_layout == SplitLayout::Docked {
-            if notes_reveal > 0.001 {
-                let x0 = r.x1 - NOTES_W;
-                self.draw_notes(ctx, Rect::new(x0, body_y0, x0 + NOTES_W, body_y1));
+        if let Some(panel) = self.notes_panel_rect() {
+            if self.notes_drawer.is_overlay() {
+                self.notes_drawer
+                    .draw_scrim(ctx.scene, ctx.transform, theme);
+                self.push_hit(self.notes_drawer.scrim_rect(), Action::DismissOverlay);
+                self.push_hit(panel, Action::Swallow);
             }
-        } else if notes_reveal > 0.001 {
-            let x0 = r.x1 - NOTES_W * self.notes_flap.slide();
-            let panel = Rect::new(x0, body_y0, x0 + NOTES_W, body_y1);
-            self.push_hit(panel, Action::Swallow);
-            self.draw_notes(ctx, panel);
+            let local = self
+                .notes_drawer
+                .paint_panel(ctx.scene, ctx.transform, theme);
+            let mut local_ctx = PaintCtx::new(ctx.scene, ctx.transform, ctx.text, &local);
+            self.draw_notes(&mut local_ctx, panel);
         }
     }
 
-    fn draw_reader_topbar(&mut self, ctx: &mut PaintCtx<'_>, lib: &[Arc<Book>]) {
+    /// Whether the contents sidebar shows its own header (and with it the
+    /// sidebar toggle): docked and open.
+    fn toc_docked_open(&self) -> bool {
+        self.toc_drawer.is_docked() && self.toc_drawer.reveal() > 0.5
+    }
+
+    /// The content column's header row: the sidebar toggle (when the
+    /// sidebar is hidden), Back, the book's title and author on one
+    /// baseline, and the reading controls at the trailing edge. No fill; one
+    /// hairline under it.
+    fn draw_reader_header(&mut self, ctx: &mut PaintCtx<'_>, lib: &[Arc<Book>]) {
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let r = self.rect;
-        let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOP_BAR);
-        ctx.fill_rect(bar, c.surfaces.raised);
-        chrome::bar_edge(
+        let content = self.notes_drawer.content_rect();
+        let band = Rect::new(
+            content.x0,
+            self.rect.y0,
+            content.x1,
+            self.rect.y0 + self.header_h,
+        );
+        ui::surface::separator(
             ctx.scene,
             ctx.transform,
-            c.surfaces.raised,
-            r.x0,
-            r.x1,
-            r.y0 + TOP_BAR,
+            band.x0,
+            band.x1,
+            band.y1,
+            0.0,
+            theme.tokens.colors.surfaces.content,
         );
-        let s = 34.0;
-        // The bookmark reads as the primary "save my place" affordance, so it's
-        // drawn a touch larger than the other chrome icons.
-        let s_bm = 40.0;
-        let cy = r.y0 + (TOP_BAR - s) / 2.0;
-        // The reading-settings ("Aa") pill lives in the right cluster; its
-        // label is measured up front (the height already carries the
-        // accessibility text scale) so the centre title reserves room for it
-        // and the pill itself is sized from the same measurement.
-        let (aa_label_w, aa_label_h) =
-            ctx.text
-                .measure_weighted("Aa", 15.0, None, TextWeight::Semibold);
-        let aa_w = f64::from(aa_label_w) + 2.0 * f64::from(theme.tokens.spacing.s3);
-        // One rhythm across the bar: a section step in from either edge, and
-        // every control a sibling step from its neighbour.
-        let mut x = r.x0 + rhythm::SECTION;
-        self.icon_button(
+        let spacing = &theme.tokens.spacing;
+        let (inset, gap) = (f64::from(spacing.s3), f64::from(spacing.rhythm.related));
+        let side = ControlSize::Regular.height(theme);
+        let cy = band.center().y;
+
+        let mut x = band.x0 + inset;
+        if !self.toc_docked_open() {
+            let toggle = Rect::new(x, cy - side / 2.0, x + side, cy + side / 2.0);
+            self.toc_drawer.draw_toggle(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                theme,
+                toggle,
+                toggle.contains(self.cursor),
+            );
+            self.push_hit(pointer_target(toggle, theme), Action::ToggleToc);
+            x = toggle.x1 + gap;
+        }
+        let back = self.icon_button(
             ctx,
-            Rect::from_origin_size((x, cy), (s, s)),
-            Ico::Back,
+            Point::new(x + side / 2.0, cy),
+            ControlSize::Regular,
+            (Icon::ChevronLeft, "Back to library"),
             false,
             Action::Back,
         );
-        x += s + rhythm::SIBLING;
-        let toc_active = self.toc_open();
-        self.icon_button(
-            ctx,
-            Rect::from_origin_size((x, cy), (s, s)),
-            Ico::Toc,
-            toc_active,
-            Action::ToggleToc,
+        let title_x0 = back.x1 + gap;
+
+        // Trailing, walking in from the edge: annotations, bookmark, type.
+        let mut x1 = band.x1 - inset;
+        let notes = Rect::new(x1 - side, cy - side / 2.0, x1, cy + side / 2.0);
+        self.notes_drawer.draw_toggle(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            notes,
+            notes.contains(self.cursor),
         );
+        self.push_hit(pointer_target(notes, theme), Action::ToggleNotes);
+        x1 = notes.x0 - gap;
+        let bookmark = Rect::new(x1 - side, cy - side / 2.0, x1, cy + side / 2.0);
+        self.draw_bookmark_button(ctx, bookmark);
+        x1 = bookmark.x0 - gap;
+        let type_w = button_width(ctx, "Aa", None, ControlSize::Regular);
+        let type_rect = Rect::new(x1 - type_w, cy - side / 2.0, x1, cy + side / 2.0);
+        self.button(
+            ctx,
+            ButtonFace::new(type_rect, "Aa")
+                .accessible_name("Reading appearance")
+                .role(ButtonRole::Plain)
+                .pressed(self.reading_settings.is_open()),
+            Action::ToggleTypePopover,
+        );
+        self.type_button = type_rect;
+        let title_x1 = type_rect.x0 - inset;
 
-        let bar = ReaderTopBar {
-            r,
-            icon: s,
-            bookmark: s_bm,
-            aa_label: (aa_label_w, aa_label_h),
-            aa_w,
-        };
-        // centre: title (+ author, when it fits). The title is clamped to the
-        // gap between the left controls and the right controls and ellipsised
-        // rather than allowed to collide with either cluster on a narrow window.
-        self.draw_reader_topbar_title(ctx, lib, &bar, x);
-
-        // right: reading-settings ("Aa") pill + bookmark toggle + notes toggle
-        self.draw_reader_topbar_right(ctx, &bar);
+        if let Some(book) = lib.get(self.book_idx) {
+            Self::draw_title_and_detail(ctx, band, (title_x0, title_x1), &book.title, &book.author);
+        }
     }
 
-    /// The centre title (+ author, when it fits), clamped between the left
-    /// controls and the right cluster and ellipsised rather than colliding
-    /// with either on a narrow window.
-    fn draw_reader_topbar_title(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        lib: &[Arc<Book>],
-        bar: &ReaderTopBar,
-        x: f64,
-    ) {
-        let c = &ctx.theme.tokens.colors;
-        let ReaderTopBar {
-            r,
-            icon: s,
-            bookmark: s_bm,
-            aa_w,
-            ..
-        } = *bar;
-        let Some(book) = lib.get(self.book_idx) else {
-            return;
-        };
-        let left_bound = x + s + rhythm::SIBLING;
-        // Right cluster, walking in from the edge: notes icon, bookmark,
-        // then the "Aa" pill — the title clears the left edge of that pill.
-        // The same steps `draw_reader_topbar_right` lays the cluster out with.
-        let right_bound = r.x1
-            - rhythm::SECTION
-            - s
-            - rhythm::SIBLING
-            - s_bm
-            - rhythm::SIBLING
-            - aa_w
-            - rhythm::SIBLING;
-        let avail = (right_bound - left_bound).max(40.0);
-
-        let auth = format!("   {}", book.author);
-        let (aw, _) = ctx.text.measure(&auth, 13.0, None);
-        let full_title = ctx.text.elide_to_width_weighted(
-            &book.title,
-            16.0,
-            ui::num::f32_of_f64(avail),
-            TextWeight::Semibold,
+    /// The page bookmark toggle: a plain button with the bookmark glyph,
+    /// filled while the page is bookmarked.
+    fn draw_bookmark_button(&mut self, ctx: &mut PaintCtx<'_>, rect: Rect) {
+        let theme = ctx.theme;
+        let bookmarked = self.page_bookmarked();
+        self.button(
+            ctx,
+            ButtonFace::new(rect, "")
+                .accessible_name("Bookmark this page")
+                .role(ButtonRole::Plain)
+                .pressed(bookmarked),
+            Action::ToggleBookmark,
         );
-        let (tw, _) = ctx
-            .text
-            .measure_weighted(&full_title, 16.0, None, TextWeight::Semibold);
-        // Only show the author if title + author both fit comfortably.
-        let show_author = f64::from(tw) + f64::from(aw) <= avail && book.title == full_title;
-        let total = if show_author {
-            f64::from(tw) + f64::from(aw)
+        let glyph = f64::from(theme.tokens.metrics.icon_md);
+        let ink = if bookmarked || rect.contains(self.cursor) {
+            theme.text_primary
         } else {
-            f64::from(tw)
+            theme.text_dim
         };
-        let cx = (f64::midpoint(left_bound, right_bound) - total / 2.0).max(left_bound);
-        ctx.text.draw_text_weighted(
+        paint::bookmark(
             ctx.scene,
-            &full_title,
-            16.0,
-            c.text_primary,
-            ctx.transform * Affine::translate((cx, r.y0 + 17.0)),
-            None,
-            TextWeight::Semibold,
+            ctx.transform,
+            Rect::from_center_size(rect.center(), (glyph, glyph)),
+            ink,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            bookmarked,
         );
-        if show_author {
-            ctx.text.draw_text(
-                ctx.scene,
-                &auth,
-                13.0,
-                c.text_dim,
-                ctx.transform * Affine::translate((cx + f64::from(tw), r.y0 + 18.5)),
+    }
+
+    /// A header's title in `Heading` with a secondary detail (an author, a
+    /// count) after it in `Body`, both on one baseline and centred as a line
+    /// in `band`, elided to `x0..x1`. The detail is dropped before the title
+    /// is shortened.
+    fn draw_title_and_detail(
+        ctx: &mut PaintCtx<'_>,
+        band: Rect,
+        (x0, x1): (f64, f64),
+        title: &str,
+        detail: &str,
+    ) {
+        let theme = ctx.theme;
+        let room = x1 - x0;
+        if room <= 0.0 {
+            return;
+        }
+        let title_style = theme.text(TextRole::Heading);
+        let detail_style = theme.text(TextRole::Body);
+        let gap = f64::from(theme.tokens.spacing.rhythm.related);
+        let shown = ctx
+            .text
+            .elide_to_width_style(title, ui::num::f32_of_f64(room), &title_style);
+        let (title_w, title_h) = ctx.text.measure_style(&shown, None, &title_style);
+        let (detail_w, _) = ctx.text.measure_style(detail, None, &detail_style);
+        let with_detail = !detail.is_empty()
+            && shown == title
+            && f64::from(title_w) + gap + f64::from(detail_w) <= room;
+        let top = ui::text_metrics::centered_text_top(band.y0, band.height(), f64::from(title_h));
+        ctx.text(
+            &shown,
+            &title_style,
+            theme.text_primary,
+            Point::new(x0, top),
+            None,
+        );
+        if with_detail {
+            let baseline =
+                top + f64::from(ctx.text.first_baseline_style(&shown, None, &title_style));
+            let detail_top =
+                baseline - f64::from(ctx.text.first_baseline_style(detail, None, &detail_style));
+            ctx.text(
+                detail,
+                &detail_style,
+                theme.text_dim,
+                Point::new(x0 + f64::from(title_w) + gap, detail_top),
                 None,
             );
         }
     }
 
-    /// Right cluster: notes toggle, bookmark toggle, and the reading-settings
-    /// ("Aa") pill — relocated off the removed bottom strip so typography
-    /// stays one tap away. Opens the same type/spacing/theme popover, with
-    /// the same active state + hit target.
-    fn draw_reader_topbar_right(&mut self, ctx: &mut PaintCtx<'_>, bar: &ReaderTopBar) {
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let ReaderTopBar {
-            r,
-            icon: s,
-            bookmark: s_bm,
-            aa_label: (aa_label_w, aa_label_h),
-            aa_w,
-        } = *bar;
-        let cy = r.y0 + (TOP_BAR - s) / 2.0;
-        let bookmarked = self.annotations.iter().any(|a| {
-            a.kind == AnnoKind::Bookmark
-                && a.chapter == self.chapter
-                && a.block == self.page_top_block
-        });
-        let mut rx = r.x1 - rhythm::SECTION - s;
-        let notes_active = self.notes_open();
-        self.icon_button(
-            ctx,
-            Rect::from_origin_size((rx, cy), (s, s)),
-            Ico::Notes,
-            notes_active,
-            Action::ToggleNotes,
-        );
-        rx -= s_bm + rhythm::SIBLING;
-        let cy_bm = r.y0 + (TOP_BAR - s_bm) / 2.0;
-        self.icon_button(
-            ctx,
-            Rect::from_origin_size((rx, cy_bm), (s_bm, s_bm)),
-            Ico::Bookmark(bookmarked),
-            bookmarked,
-            Action::ToggleBookmark,
-        );
-
-        rx -= rhythm::SIBLING + aa_w;
-        // The pill is sized from its measured label: `s8` tall at 1× (level
-        // with the icon buttons) and growing with the label at larger text,
-        // capped to keep an `s2` margin inside the bar. A fixed 32 clipped the
-        // 2× label against the bar's bottom edge. The cap is applied last:
-        // under a large UI scale the tokens outgrow the fixed bar, and the
-        // bar must win (a `clamp` with inverted bounds would panic).
-        let sp = &theme.tokens.spacing;
-        let aa_h = (f64::from(aa_label_h) + f64::from(sp.s3))
-            .max(f64::from(sp.s8))
-            .min(TOP_BAR - f64::from(sp.s2));
-        let aa_y = r.y0 + (TOP_BAR - aa_h) / 2.0;
-        let aa_rect = Rect::new(rx, aa_y, rx + aa_w, aa_y + aa_h);
-        let aa_active = self.reading_settings.is_open();
-        let aa_hover = self.is_hover(aa_rect);
-        // A quiet chip at rest (raised face, derived edge); while its popover
-        // is open it is "chosen" and takes the lift tier, not an accent wash.
-        if aa_active || aa_hover {
-            chrome::row(
-                ctx.scene,
-                ctx.transform,
-                theme,
-                aa_rect,
-                aa_h / 2.0,
-                SelectionState::new(aa_active, aa_hover, false),
-                false,
-            );
-        } else {
-            chrome::quiet_pill(
-                ctx.scene,
-                ctx.transform,
-                theme,
-                aa_rect,
-                aa_h / 2.0,
-                c.surfaces.raised,
-                false,
-            );
-        }
-        let aa_ink = c.text_primary;
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "Aa",
-            15.0,
-            aa_ink,
-            ctx.transform
-                * Affine::translate((
-                    rx + (aa_w - f64::from(aa_label_w)) / 2.0,
-                    aa_y + (aa_h - f64::from(aa_label_h)) / 2.0,
-                )),
-            None,
-            TextWeight::Semibold,
-        );
-        self.push_hit(aa_rect, Action::ToggleTypePopover);
-    }
-
-    /// `panel` is the rail, `TOC_W` wide: flush with `r.x0` when docked, or
-    /// slid when it floats as an overlay flap.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "contents combines its fixed header, clipped virtual rows, and position indicator so their hit ordering stays explicit"
-    )]
+    /// The contents sidebar inside `panel`: its header (the sidebar toggle
+    /// and "Contents"), then one navigation row per chapter, scrolling, the
+    /// current chapter lifted.
     fn draw_toc(&mut self, ctx: &mut PaintCtx<'_>, lib: &[Arc<Book>], panel: Rect) {
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let (panel_x0, y0, y1) = (panel.x0, panel.y0, panel.y1);
-        // The rail is a quiet lift with a derived hairline on its page side,
-        // so it reads as a surface beside the page rather than as base on base.
-        chrome::rail(ctx.scene, ctx.transform, theme, panel, panel_x0 + TOC_W);
-        // Rows are inset a sibling step into the rail and paint their chapter
-        // number a section step further in; the caption shares that number
-        // column's left edge so "CONTENTS" and "01" line up.
-        let row_inset = rhythm::SIBLING;
-        let number_inset = rhythm::SECTION;
-        let sp = &theme.tokens.spacing;
-        // The caption sits an `s4` down and the list starts an `s3` under its
-        // measured line box (same rule as the annotations rail), so a 200 %
-        // caption pushes the rows down instead of overlapping the first one.
-        let caption_y = y0 + f64::from(sp.s4);
-        let (_, cap_h) = ctx
-            .text
-            .measure_weighted("CONTENTS", 11.0, None, TextWeight::Semibold);
-        ctx.text.draw_text_weighted(
+        let spacing = &theme.tokens.spacing;
+        let header = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + self.header_h);
+        let side = ControlSize::Regular.height(theme);
+        let inset = f64::from(spacing.s3);
+        let toggle = Rect::new(
+            header.x0 + inset,
+            header.center().y - side / 2.0,
+            header.x0 + inset + side,
+            header.center().y + side / 2.0,
+        );
+        self.toc_drawer.draw_toggle(
             ctx.scene,
-            "CONTENTS",
-            11.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((panel_x0 + row_inset + number_inset, caption_y)),
-            None,
-            TextWeight::Semibold,
+            ctx.transform,
+            ctx.text,
+            theme,
+            toggle,
+            toggle.contains(self.cursor),
+        );
+        self.push_hit(pointer_target(toggle, theme), Action::ToggleToc);
+        let title_x = toggle.x1 + f64::from(spacing.rhythm.related);
+        ctx.text_role_in_band(
+            "Contents",
+            TextRole::Heading,
+            theme.text_primary,
+            title_x,
+            header,
+            Some(ui::num::f32_of_f64((header.x1 - inset - title_x).max(1.0))),
         );
 
         let Some(book) = lib.get(self.book_idx) else {
             return;
         };
-        let list_y0 = caption_y + f64::from(cap_h) + f64::from(sp.s3);
-        let list_y1 = y1 - 8.0;
-        // Number column from the widest two-digit number; the title starts an
-        // `s3` after it and wraps inside the pill. Every row is as tall as
-        // its wrapped title needs (measured at the heavier active weight so
-        // the height does not jump when the active chapter changes), floored
-        // at the one-line pill; the pitch adds the inter-row gap.
-        let (number_px, title_px) = (12.0, 13.0);
-        let row_gap = toc_row_gap(theme);
-        let row_floor = toc_row_floor(theme);
-        let (num_w, num_h) = ctx
-            .text
-            .measure_weighted("00", number_px, None, TextWeight::Bold);
-        let title_offset = number_inset + f64::from(num_w) + f64::from(sp.s3);
-        let title_w = (TOC_W - 2.0 * row_inset - title_offset - f64::from(sp.s2)).max(40.0) as f32;
-        let pill_heights: Vec<f64> = book
-            .chapters
-            .iter()
-            .map(|ch| {
-                let (_, th) = ctx.text.measure_weighted(
-                    &ch.title,
-                    title_px,
-                    Some(title_w),
-                    TextWeight::Semibold,
-                );
-                (f64::from(th) + 2.0 * f64::from(sp.s2)).max(row_floor)
-            })
-            .collect();
-        let mut row_offsets = Vec::with_capacity(pill_heights.len());
-        let mut content_h = 0.0;
-        for h in &pill_heights {
-            row_offsets.push(content_h);
-            content_h += h + row_gap;
-        }
-        self.toc_row_pitch = pill_heights
-            .first()
-            .map_or(row_floor + row_gap, |h| h + row_gap);
-        let visible_h = (list_y1 - list_y0).max(0.0);
+        let list = Rect::new(
+            panel.x0,
+            header.y1,
+            panel.x1,
+            panel.y1 - f64::from(spacing.s2),
+        );
+        let row_h = ui::chrome::nav_row_height(theme);
+        self.toc_row_pitch = row_h;
+        let content_h = book.chapters.len() as f64 * row_h;
+        let visible_h = list.height().max(0.0);
         self.toc_max_scroll = (content_h - visible_h).max(0.0);
         if self.toc_scroll_to_active {
-            let active_y = row_offsets.get(self.chapter).copied().unwrap_or(0.0);
-            let active_h = pill_heights
-                .get(self.chapter)
-                .map_or(row_floor, |h| h + row_gap);
+            let active_y = self.chapter as f64 * row_h;
             if active_y < self.toc_scroll {
                 self.toc_scroll = active_y;
-            } else if active_y + active_h > self.toc_scroll + visible_h {
-                self.toc_scroll = active_y + active_h - visible_h;
+            } else if active_y + row_h > self.toc_scroll + visible_h {
+                self.toc_scroll = active_y + row_h - visible_h;
             }
             self.toc_scroll_to_active = false;
         }
         self.toc_scroll = self.toc_scroll.clamp(0.0, self.toc_max_scroll);
 
-        let clip = Rect::new(panel_x0, list_y0, panel_x0 + TOC_W, list_y1);
         ctx.scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
             1.0,
             ctx.transform,
-            &clip,
+            &list,
         );
-        for (i, ch) in book.chapters.iter().enumerate() {
-            let pill_h = pill_heights.get(i).copied().unwrap_or(row_floor);
-            let y = list_y0 + row_offsets.get(i).copied().unwrap_or(0.0) - self.toc_scroll;
-            if y + pill_h + row_gap < list_y0 || y > list_y1 {
+        for (i, chapter) in book.chapters.iter().enumerate() {
+            let y = list.y0 + i as f64 * row_h - self.toc_scroll;
+            if y + row_h < list.y0 || y > list.y1 {
                 continue;
             }
-            let row = Rect::new(
-                panel_x0 + row_inset,
-                y,
-                panel_x0 + TOC_W - row_inset,
-                y + pill_h,
-            );
-            let active = i == self.chapter;
-            let hover = self.is_hover(row);
-            // The current chapter is a lift (HIG §9.3), not an accent wash
-            // with a bar: the accent stays free to mean live state.
-            chrome::row(
-                ctx.scene,
-                ctx.transform,
-                theme,
-                row,
-                f64::from(theme.tokens.radii.md),
-                SelectionState::new(active, hover, false),
-                false,
-            );
-            // Number and title each centre their measured box on the pill,
-            // so the two share one centre line whatever the row's height.
-            let num = format!("{:02}", i + 1);
-            ctx.text.draw_text_weighted(
-                ctx.scene,
-                &num,
-                number_px,
-                if active { c.text_primary } else { c.text_dim },
-                ctx.transform
-                    * Affine::translate((
-                        row.x0 + number_inset,
-                        row.y0 + (pill_h - f64::from(num_h)) / 2.0,
-                    )),
-                None,
-                TextWeight::Bold,
-            );
-            let title_weight = if active {
-                TextWeight::Semibold
-            } else {
-                TextWeight::Regular
-            };
-            let (_, th) =
-                ctx.text
-                    .measure_weighted(&ch.title, title_px, Some(title_w), title_weight);
-            ctx.text.draw_text_weighted(
-                ctx.scene,
-                &ch.title,
-                title_px,
-                if active { c.text_primary } else { c.text_dim },
-                ctx.transform
-                    * Affine::translate((
-                        row.x0 + title_offset,
-                        row.y0 + (pill_h - f64::from(th)) / 2.0,
-                    )),
-                Some(title_w),
-                title_weight,
-            );
-            self.push_hit(row, Action::GotoChapter(i));
+            let row = Rect::new(list.x0, y, list.x1, y + row_h);
+            let hovered = row.contains(self.cursor) && list.contains(self.cursor);
+            let focused = self.semantic_focus.as_deref()
+                == Some(format!("books.reader.chapter:{i}").as_str());
+            let face = NavRowFace::new(row, &chapter.title)
+                .state(SelectionState::new(i == self.chapter, hovered, false))
+                .focused(focused);
+            ui::chrome::paint_nav_row(ctx.scene, ctx.transform, ctx.text, theme, &face);
+            self.push_hit(row.intersect(list), Action::GotoChapter(i));
         }
         ctx.scene.pop_layer();
-        Self::draw_rail_scrollbar(
+        paint_scroll_thumb(
             ctx,
-            Point::new(panel_x0 + TOC_W - 9.0, list_y0),
-            list_y1,
-            RailScroll {
-                offset: self.toc_scroll,
-                max: self.toc_max_scroll,
-                visible_h,
-                content_h,
-            },
+            list,
+            ScrollMetrics::new(content_h, visible_h, self.toc_scroll),
         );
     }
 
-    /// A deliberately quiet position indicator for a long rail.  It is not a
-    /// draggable pseudo-scrollbar: wheel, touchpad and screen-reader focus
-    /// remain the consistent interaction model, while the thumb preserves
-    /// orientation in a large table of contents or annotation history.
-    /// The track's top-left is `top` and it runs down to `y1`.
-    fn draw_rail_scrollbar(ctx: &mut PaintCtx<'_>, top: Point, y1: f64, scroll: RailScroll) {
-        let c = &ctx.theme.tokens.colors;
-        let (x, y0) = (top.x, top.y);
-        let RailScroll {
-            offset: scroll,
-            max: max_scroll,
-            visible_h,
-            content_h,
-        } = scroll;
-        if max_scroll <= 1.0 || content_h <= 0.0 {
-            return;
-        }
-        let track_h = (y1 - y0).max(1.0);
-        // A track shorter than the minimum thumb (a short window) is all thumb.
-        let thumb_h = (track_h * visible_h / content_h).clamp(28.0_f64.min(track_h), track_h);
-        let progress = (scroll / max_scroll).clamp(0.0, 1.0);
-        let thumb_y = y0 + progress * (track_h - thumb_h);
-        ctx.fill_round(
-            Rect::new(x, thumb_y, x + RAIL_SCROLLBAR_W, thumb_y + thumb_h),
-            RAIL_SCROLLBAR_W / 2.0,
-            c.text_dim.with_alpha_factor(0.5),
-        );
-    }
-
-    /// `panel` is the rail, `NOTES_W` wide: flush with `r.x1` when docked, or
-    /// slid when it floats as an overlay flap from the right.
+    /// The annotations inspector inside `panel`: its header ("Annotations"
+    /// and how many), how to add one, and one card per annotation, scrolling.
     fn draw_notes(&mut self, ctx: &mut PaintCtx<'_>, panel: Rect) {
         let theme = ctx.theme;
+        let spacing = &theme.tokens.spacing;
         let annos = self.annotations.clone();
-        let (x0, y0, panel_x1, y1) = (panel.x0, panel.y0, panel.x1, panel.y1);
-        chrome::rail(ctx.scene, ctx.transform, theme, panel, x0);
+        let inset = f64::from(spacing.s3);
+        let header = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + self.header_h);
+        let count = annos.len().to_string();
+        Self::draw_title_and_detail(
+            ctx,
+            header,
+            (header.x0 + inset, header.x1 - inset),
+            "Annotations",
+            &count,
+        );
+        if self.notes_drawer.is_docked() {
+            ui::surface::separator(
+                ctx.scene,
+                ctx.transform,
+                header.x0,
+                header.x1,
+                header.y1,
+                0.0,
+                theme.tokens.colors.surfaces.content,
+            );
+        }
 
-        Self::draw_notes_header(ctx, x0, y0, annos.len());
-        let add_y = self.draw_notes_add_row(ctx, x0, panel_x1, y0);
+        let (x0, x1) = (panel.x0 + inset, panel.x1 - inset);
+        let mut y = header.y1 + inset;
+        let has_sel = self.sel.is_some_and(|s| !s.is_empty());
+        if has_sel {
+            let height = ControlSize::Small.height(theme);
+            let width = button_width(ctx, "Add note", Some(Icon::Plus), ControlSize::Small);
+            let rect = Rect::new(x0, y, x0 + width, y + height);
+            self.button(
+                ctx,
+                ButtonFace::new(rect, "Add note")
+                    .icon(Icon::Plus)
+                    .control_size(ControlSize::Small),
+                Action::AddNote,
+            );
+            y = rect.y1;
+        } else {
+            let hint = "Select text in the book to highlight it or add a note.";
+            let wrap = Some(ui::num::f32_of_f64((x1 - x0).max(1.0)));
+            ctx.text_role(
+                hint,
+                TextRole::Caption,
+                theme.text_dim,
+                Point::new(x0, y),
+                wrap,
+            );
+            y += ctx.measure_role(hint, TextRole::Caption, wrap).height;
+        }
 
-        // The annotation history is a genuine scroll surface, not a clipped
-        // preview.  Measure rows once to establish a stable list coordinate
-        // system, then paint only rows intersecting the viewport. Cards are
-        // siblings: one `s3` between them, a section step in from the rail.
-        let list_y0 = add_y + NOTES_ADD_ROW_H + rhythm::SECTION;
-        let list_y1 = y1 - rhythm::SIBLING;
-        let card_x0 = x0 + rhythm::SECTION;
-        let card_x1 = panel_x1 - rhythm::SECTION;
-        let row_heights: Vec<f64> = annos
+        let gap = f64::from(spacing.rhythm.sibling);
+        let list = Rect::new(
+            panel.x0,
+            y + gap,
+            panel.x1,
+            panel.y1 - f64::from(spacing.s2),
+        );
+        let card_w = x1 - x0;
+        let heights: Vec<f64> = annos
             .iter()
-            .map(|annotation| {
-                NoteCardText::measure(
-                    ctx.text,
-                    card_x1 - card_x0,
-                    annotation,
-                    self.composing == Some(annotation.id),
-                )
-                .card_height()
-            })
+            .map(|annotation| NoteCard::new(annotation, self.composing).height(ctx, card_w))
             .collect();
-        let content_h = row_heights.iter().sum::<f64>()
-            + rhythm::SIBLING * annos.len().saturating_sub(1) as f64;
-        let visible_h = (list_y1 - list_y0).max(0.0);
+        let content_h = heights.iter().sum::<f64>() + gap * annos.len().saturating_sub(1) as f64;
+        let visible_h = list.height().max(0.0);
         self.notes_max_scroll = (content_h - visible_h).max(0.0);
-
-        // An action that opens/edits an annotation should reveal that row,
-        // without scanning or repainting more than this already-measured list.
         if let Some(target) = self.notes_scroll_to_annotation.take()
             && let Some(index) = annos.iter().position(|annotation| annotation.id == target)
         {
-            let top = row_heights.iter().take(index).sum::<f64>() + rhythm::SIBLING * index as f64;
-            let bottom = top + row_heights.get(index).copied().unwrap_or(0.0);
+            let top = heights.iter().take(index).sum::<f64>() + gap * index as f64;
+            let bottom = top + heights.get(index).copied().unwrap_or(0.0);
             if top < self.notes_scroll {
                 self.notes_scroll = top;
             } else if bottom > self.notes_scroll + visible_h {
@@ -10111,388 +9500,300 @@ impl BooksApp {
         }
         self.notes_scroll = self.notes_scroll.clamp(0.0, self.notes_max_scroll);
 
-        let clip = Rect::new(x0, list_y0, panel_x1, list_y1);
         ctx.scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
             1.0,
             ctx.transform,
-            &clip,
+            &list,
         );
-        let mut y = list_y0 - self.notes_scroll;
-        for (a, height) in annos.iter().zip(&row_heights) {
-            if y + *height >= list_y0 && y <= list_y1 {
-                self.draw_note_card(ctx, card_x0, card_x1, y, a);
+        let mut card_y = list.y0 - self.notes_scroll;
+        for (annotation, height) in annos.iter().zip(&heights) {
+            if card_y + height >= list.y0 && card_y <= list.y1 {
+                let card = Rect::new(x0, card_y, x1, card_y + height);
+                self.draw_note_card(ctx, card, annotation, list);
             }
-            y += *height + rhythm::SIBLING;
+            card_y += height + gap;
         }
         ctx.scene.pop_layer();
-        Self::draw_rail_scrollbar(
+        paint_scroll_thumb(
             ctx,
-            Point::new(panel_x1 - 9.0, list_y0),
-            list_y1,
-            RailScroll {
-                offset: self.notes_scroll,
-                max: self.notes_max_scroll,
-                visible_h,
-                content_h,
-            },
+            list,
+            ScrollMetrics::new(content_h, visible_h, self.notes_scroll),
         );
     }
 
-    /// "ANNOTATIONS" title + the count badge.
-    fn draw_notes_header(ctx: &mut PaintCtx<'_>, x0: f64, y0: f64, count: usize) {
+    /// One annotation as a card: what it is and where (a chip and the
+    /// chapter and paragraph), its delete control, the passage, and the
+    /// note. The card reveals the passage; a note's text opens it for
+    /// editing.
+    fn draw_note_card(&mut self, ctx: &mut PaintCtx<'_>, card: Rect, a: &Annotation, list: Rect) {
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let sp = &theme.tokens.spacing;
-        // The caption shares the cards' left edge (`s4` in from the rail)
-        // instead of its own 22px inset, and the count badge follows the
-        // measured caption rather than a fixed x that "ANNOTATIONS" overran
-        // at larger text.
-        let caption_x = x0 + f64::from(sp.s4);
-        // Same `s4` drop as the contents rail's caption, so the two rail
-        // captions sit level across the page.
-        let caption_y = y0 + f64::from(sp.s4);
-        let (cap_w, cap_h) =
-            ctx.text
-                .measure_weighted("ANNOTATIONS", 11.0, None, TextWeight::Semibold);
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "ANNOTATIONS",
-            11.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((caption_x, caption_y)),
-            None,
-            TextWeight::Semibold,
-        );
-        let count = format!("{count}");
-        let (cw, ch) = ctx.text.measure(&count, 11.0, None);
-        let badge_h = f64::from(ch) + f64::from(sp.s1);
-        let badge_x = caption_x + f64::from(cap_w) + f64::from(sp.s2);
-        let caption_mid_y = caption_y + f64::from(cap_h) / 2.0;
-        let badge = Rect::new(
-            badge_x,
-            caption_mid_y - badge_h / 2.0,
-            badge_x + f64::from(cw) + 2.0 * f64::from(sp.s2),
-            caption_mid_y + badge_h / 2.0,
-        );
-        chrome::quiet_pill(
+        let note = NoteCard::new(a, self.composing);
+        let hovered = card.contains(self.cursor) && list.contains(self.cursor);
+        let face = CardFace::new().pressable().interaction(Interaction {
+            hovered,
+            focused: note.composing,
+            ..Interaction::default()
+        });
+        face.paint(ctx, card);
+        let body = face.body_rect(ctx.text, theme, card);
+        let layout = note.layout(ctx, body);
+
+        let lead = match a.kind {
+            AnnoKind::Bookmark => ChipLead::None,
+            _ => ChipLead::Dot(ReaderPalette::highlight_swatch(a.color)),
+        };
+        ChipFace::new(layout.chip, a.kind.label()).lead(lead).paint(
             ctx.scene,
             ctx.transform,
+            ctx.text,
             theme,
-            badge,
-            badge_h / 2.0,
-            c.surfaces.raised,
-            false,
         );
-        ctx.text.draw_text(
-            ctx.scene,
-            &count,
-            11.0,
-            c.text_dim,
-            ctx.transform
-                * Affine::translate((
-                    badge.x0 + f64::from(sp.s2),
-                    badge.y0 + (badge.height() - f64::from(ch)) / 2.0,
-                )),
+        let caption = theme.text(TextRole::Caption);
+        let locator = ctx.text.elide_to_width_style(
+            &note.locator,
+            ui::num::f32_of_f64(body.width().max(1.0)),
+            &caption,
+        );
+        ctx.text_role(
+            &locator,
+            TextRole::Caption,
+            theme.text_dim,
+            Point::new(body.x0, layout.locator_y),
             None,
         );
-    }
-
-    /// "+ Note on selection" action row. Returns its y (the list starts
-    /// below it).
-    fn draw_notes_add_row(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        x0: f64,
-        panel_x1: f64,
-        y0: f64,
-    ) -> f64 {
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let add_y = y0 + 42.0;
-        let has_sel = self.sel.is_some_and(|s| !s.is_empty());
-        let add_label = if has_sel {
-            "+ Note on selection"
-        } else {
-            "Select text to annotate"
-        };
-        let add_rect = Rect::new(
-            x0 + rhythm::SECTION,
-            add_y,
-            panel_x1 - rhythm::SECTION,
-            add_y + NOTES_ADD_ROW_H,
+        let wrap = Some(ui::num::f32_of_f64(body.width().max(1.0)));
+        ctx.text(
+            &note.excerpt,
+            &NoteCard::excerpt_style(theme),
+            theme.text_dim,
+            Point::new(body.x0, layout.excerpt_y),
+            wrap,
         );
-        let hover = has_sel && self.is_hover(add_rect);
-        chrome::quiet_pill(
-            ctx.scene,
-            ctx.transform,
-            theme,
-            add_rect,
-            f64::from(theme.tokens.radii.md),
-            c.surfaces.raised,
-            hover,
-        );
-        let (_, label_h) = ctx
-            .text
-            .measure_weighted(add_label, 12.0, None, TextWeight::Medium);
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            add_label,
-            12.0,
-            if has_sel { c.text_primary } else { c.text_dim },
-            ctx.transform
-                * Affine::translate((
-                    add_rect.x0 + rhythm::SIBLING,
-                    add_rect.y0 + (add_rect.height() - f64::from(label_h)) / 2.0,
-                )),
-            None,
-            TextWeight::Medium,
-        );
-        if has_sel {
-            self.push_hit(add_rect, Action::AddNote);
-        }
-        add_y
-    }
-
-    /// Paint one measured annotation card in the virtual notes list.
-    fn draw_note_card(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        card_x0: f64,
-        card_x1: f64,
-        y: f64,
-        a: &Annotation,
-    ) -> f64 {
-        let composing = self.composing == Some(a.id);
-        let text = NoteCardText::measure(ctx.text, card_x1 - card_x0, a, composing);
-        let card_h = text.card_height();
-        let card = Rect::new(card_x0, y, card_x1, y + card_h);
-
-        self.draw_note_card_frame(ctx, card, composing);
-        self.draw_note_card_header(ctx, card, a);
-        Self::draw_note_card_body(ctx, card.origin(), &text);
-        self.push_note_card_hits(card, a);
-
-        y + card_h + 12.0
-    }
-
-    fn draw_note_card_frame(&self, ctx: &mut PaintCtx<'_>, card: Rect, composing: bool) {
-        let theme = ctx.theme;
-        let hover = self.is_hover(card);
-        let radius = f64::from(theme.tokens.radii.md);
-        // A raised card with its derived rest edge; hover strengthens that
-        // edge to the Panel border, composing wears the focus ring.
-        chrome::card(ctx.scene, ctx.transform, theme, card, radius);
-        if composing {
-            ctx.stroke_round(card, radius, theme.border_focus, 1.6);
-        } else if hover {
-            ctx.stroke_round(card, radius, ui::chrome::panel_border(theme), 1.0);
-        }
-    }
-
-    /// Colour dot / bookmark glyph + kind label + chapter/paragraph locator,
-    /// and the always-visible delete button.
-    fn draw_note_card_header(&mut self, ctx: &mut PaintCtx<'_>, card: Rect, a: &Annotation) {
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let (card_x0, card_x1, y) = (card.x0, card.x1, card.y0);
-        // header: colour dot + kind + location, every piece centred on the
-        // header band's centre line (HIG §7: measured line boxes, not offsets).
-        let cy = y + NOTE_CARD_HEADER_H / 2.0;
-        let dot = Point::new(card_x0 + rhythm::SECTION, cy);
-        match a.kind {
-            AnnoKind::Bookmark => paint::bookmark(
-                ctx.scene,
-                ctx.transform,
-                Rect::new(dot.x - 7.0, cy - 8.0, dot.x + 7.0, cy + 8.0),
-                theme.accent_primary,
-                1.5,
-                true,
-            ),
-            _ => paint::circle(
-                ctx.scene,
-                ctx.transform,
-                dot,
-                6.0,
-                ReaderPalette::highlight_swatch(a.color),
-            ),
-        }
-        let (_, kind_h) =
-            ctx.text
-                .measure_weighted(a.kind.label(), 12.0, None, TextWeight::Semibold);
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            a.kind.label(),
-            12.0,
-            c.text_primary,
-            ctx.transform
-                * Affine::translate((dot.x + 6.0 + rhythm::RELATED, cy - f64::from(kind_h) / 2.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let loc = format!("Ch {} · ¶{}", a.chapter + 1, a.block + 1);
-        let (lw, loc_h) = ctx.text.measure(&loc, 11.0, None);
-        // Delete is always drawn and hit-registered, not gated on hover —
-        // the only way to remove an annotation, so it must reach touch/keyboard.
-        // A full pointer target, a section step in from the card's edge; the
-        // locator ends a related step before it.
-        let del = Self::note_card_delete_rect(card_x1, y);
-        ctx.text.draw_text(
-            ctx.scene,
-            &loc,
-            11.0,
-            c.text_dim,
-            ctx.transform
-                * Affine::translate((
-                    del.x0 - rhythm::RELATED - f64::from(lw),
-                    cy - f64::from(loc_h) / 2.0,
-                )),
-            None,
-        );
-        let del_hover = self.is_hover(del);
-        let del_col = if del_hover {
-            c.text_primary
-        } else {
-            c.text_dim.with_alpha_factor(0.55)
-        };
-        paint::close(ctx.scene, ctx.transform, del, del_col, 1.4);
-        self.push_hit(pointer_target(del, theme), Action::Delete(a.id));
-    }
-
-    /// The excerpt and note text of a card whose top-left is `origin`.
-    fn draw_note_card_body(ctx: &mut PaintCtx<'_>, origin: Point, text: &NoteCardText) {
-        let c = &ctx.theme.tokens.colors;
-        let (card_x0, y) = (origin.x, origin.y);
-        // excerpt
-        ctx.text.draw_text(
-            ctx.scene,
-            &text.excerpt,
-            12.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((card_x0 + 14.0, y + NOTE_CARD_HEADER_H)),
-            Some(text.inner_w),
-        );
-        // note body
-        if !text.note.is_empty() {
-            ctx.text.draw_text(
-                ctx.scene,
-                &text.note,
-                12.5,
-                c.text_primary,
-                ctx.transform
-                    * Affine::translate((
-                        card_x0 + 14.0,
-                        y + NOTE_CARD_HEADER_H + f64::from(text.excerpt_h) + rhythm::RELATED,
-                    )),
-                Some(text.inner_w),
+        if !note.text.is_empty() {
+            ctx.text_role(
+                &note.text,
+                TextRole::Body,
+                theme.text_primary,
+                Point::new(body.x0, layout.note_y),
+                wrap,
             );
         }
-    }
 
-    /// click card → jump; click again on a note → edit.
-    /// The delete control's rect on an annotation card whose top is `y`: a
-    /// full `NOTE_CARD_CONTROL` pointer target, a section step in from the
-    /// card's right edge, level with the header's centre line.
-    fn note_card_delete_rect(card_x1: f64, y: f64) -> Rect {
-        let x1 = card_x1 - rhythm::SECTION;
-        let y0 = y + NOTE_CARD_HEADER_H / 2.0 - NOTE_CARD_CONTROL / 2.0;
-        Rect::new(x1 - NOTE_CARD_CONTROL, y0, x1, y0 + NOTE_CARD_CONTROL)
-    }
-
-    fn push_note_card_hits(&mut self, card: Rect, a: &Annotation) {
-        let (card_x0, card_x1, y) = (card.x0, card.x1, card.y0);
-        // The card's actionable area stops a related step short of the
-        // delete control, so the two targets never share an edge.
-        let right = Self::note_card_delete_rect(card_x1, y).x0 - rhythm::RELATED;
+        // The card reveals the passage; a note's own text edits it. Delete
+        // is pushed last so it wins inside the card.
+        self.push_hit(card.intersect(list), Action::JumpTo(a.id));
         if a.kind == AnnoKind::Note {
-            // Header band jumps to the passage; the body below it (excerpt +
-            // note text) begins editing. The two bands are disjoint, an `s1`
-            // apart, so neither the pointer nor the accessibility tree sees
-            // one target under another.
-            let split = y + NOTE_CARD_HEADER_H;
-            self.push_hit(
-                Rect::new(card_x0, y, right, split - rhythm::TIGHT / 2.0),
-                Action::JumpTo(a.id),
+            let text = Rect::new(body.x0, layout.excerpt_y, body.x1, body.y1);
+            self.push_hit(text.intersect(list), Action::EditNote(a.id));
+        }
+        if layout.delete.intersect(list).height() > 0.0 {
+            self.button(
+                ctx,
+                ButtonFace::icon_only(layout.delete, Icon::Trash2, "Delete annotation")
+                    .control_size(ControlSize::Small),
+                Action::Delete(a.id),
             );
-            self.push_hit(
-                Rect::new(card_x0, split + rhythm::TIGHT / 2.0, right, card.y1),
-                Action::EditNote(a.id),
-            );
-        } else {
-            // jump is the primary intent for the whole card area minus delete
-            self.push_hit(Rect::new(card_x0, y, right, card.y1), Action::JumpTo(a.id));
         }
     }
 }
 
-/// An annotation card's text, measured at the card's inner width: the quoted
-/// excerpt and the note (with a caret while it is being composed). The
-/// virtual notes list sizes its rows from the same measurement it paints.
-struct NoteCardText {
-    inner_w: f32,
+/// An annotation's card text: the passage it marks, the note (with a caret
+/// while it is being written), and where it is. The list sizes each card
+/// from the same measurement it paints.
+struct NoteCard {
+    kind: &'static str,
+    /// The kind chip leads with the highlight's colour (not for bookmarks).
+    dot: bool,
     excerpt: String,
-    excerpt_h: f32,
-    note: String,
-    note_h: f32,
+    text: String,
+    locator: String,
+    composing: bool,
 }
 
-impl NoteCardText {
-    fn measure(tr: &mut TextRenderer, card_w: f64, a: &Annotation, composing: bool) -> Self {
-        let inner_w = (card_w - 28.0) as f32;
+/// Where a card's parts land inside its body.
+struct NoteCardLayout {
+    chip: Rect,
+    delete: Rect,
+    /// Where it is, on the line under the chip.
+    locator_y: f64,
+    excerpt_y: f64,
+    note_y: f64,
+}
+
+impl NoteCard {
+    fn new(a: &Annotation, composing: Option<Uuid>) -> Self {
+        let composing = composing == Some(a.id);
         let excerpt = if a.excerpt.is_empty() {
-            "(no excerpt)".to_string()
+            "No passage".to_string()
         } else {
-            format!("“{}”", a.excerpt)
+            format!("\u{201C}{}\u{201D}", a.excerpt)
         };
-        let (_, excerpt_h) = tr.measure(&excerpt, 12.0, Some(inner_w));
-        let note = if composing {
+        let text = if composing {
             format!("{}\u{2502}", a.note)
         } else {
             a.note.clone()
         };
-        let (_, note_h) = if note.is_empty() {
-            (0.0, 0.0)
-        } else {
-            tr.measure(&note, 12.5, Some(inner_w))
-        };
         Self {
-            inner_w,
+            kind: a.kind.label(),
+            dot: a.kind != AnnoKind::Bookmark,
             excerpt,
-            excerpt_h,
-            note,
-            note_h,
+            text,
+            locator: format!("Chapter {}, paragraph {}", a.chapter + 1, a.block + 1),
+            composing,
         }
     }
 
-    fn card_height(&self) -> f64 {
-        NOTE_CARD_HEADER_H
-            + f64::from(self.excerpt_h)
-            + if self.note.is_empty() {
-                0.0
-            } else {
-                f64::from(self.note_h) + 12.0
-            }
-            + rhythm::SECTION
+    fn excerpt_style(theme: &Theme) -> TextStyle {
+        theme.text(TextRole::Body).with_italic(true)
+    }
+
+    /// The header line (chip and delete control) and the y of each text
+    /// block inside `body`.
+    fn layout(&self, ctx: &mut PaintCtx<'_>, body: Rect) -> NoteCardLayout {
+        let theme = ctx.theme;
+        let line = ChipFace::height(theme).max(ControlSize::Small.height(theme));
+        let lead = if self.dot {
+            ChipLead::Dot(theme.text_dim)
+        } else {
+            ChipLead::None
+        };
+        let chip_w = ChipFace::intrinsic_width(self.kind, lead, false, ctx.text, theme);
+        let chip_h = ChipFace::height(theme);
+        let chip = Rect::new(
+            body.x0,
+            body.y0 + (line - chip_h) / 2.0,
+            body.x0 + chip_w,
+            body.y0 + f64::midpoint(line, chip_h),
+        );
+        let side = ControlSize::Small.height(theme);
+        let delete = Rect::new(
+            body.x1 - side,
+            body.y0 + (line - side) / 2.0,
+            body.x1,
+            body.y0 + f64::midpoint(line, side),
+        );
+        let gap = f64::from(theme.tokens.spacing.rhythm.related);
+        let wrap = Some(ui::num::f32_of_f64(body.width().max(1.0)));
+        let locator_y = body.y0 + line + f64::from(theme.tokens.spacing.rhythm.tight);
+        let excerpt_y = locator_y + ctx.line_box(TextRole::Caption) + gap;
+        let excerpt_h = f64::from(
+            ctx.text
+                .measure_style(&self.excerpt, wrap, &Self::excerpt_style(theme))
+                .1,
+        );
+        NoteCardLayout {
+            chip,
+            delete,
+            locator_y,
+            excerpt_y,
+            note_y: excerpt_y + excerpt_h + gap,
+        }
+    }
+
+    /// The card's full height at `width`.
+    fn height(&self, ctx: &mut PaintCtx<'_>, width: f64) -> f64 {
+        let theme = ctx.theme;
+        let face = CardFace::new();
+        let probe = Rect::new(0.0, 0.0, width, 1.0e6);
+        let body = face.body_rect(ctx.text, theme, probe);
+        let layout = self.layout(ctx, body);
+        let mut bottom = layout.note_y - f64::from(theme.tokens.spacing.rhythm.related);
+        if !self.text.is_empty() {
+            let wrap = Some(ui::num::f32_of_f64(body.width().max(1.0)));
+            bottom = layout.note_y + ctx.measure_role(&self.text, TextRole::Body, wrap).height;
+        }
+        face.height_for_body(ctx.text, theme, width, bottom - body.y0)
     }
 }
 
-/// The settings screen's centred content column: its left edge and width.
+/// The settings page's content column: its leading edge and width, bounded
+/// to a readable measure.
 #[derive(Clone, Copy)]
 struct SettingsColumn {
     x: f64,
     w: f64,
 }
 
-/// A rail list's scroll state: the offset, the furthest reachable offset,
-/// and the visible and total content heights.
-#[derive(Clone, Copy)]
-struct RailScroll {
-    offset: f64,
-    max: f64,
-    visible_h: f64,
-    content_h: f64,
+impl SettingsColumn {
+    fn x1(self) -> f64 {
+        self.x + self.w
+    }
+
+    /// The span of a row whose text, separators and controls line up with
+    /// the column: the row's own inset hangs outside it, where only a
+    /// row's lift reaches.
+    fn row_span(self, theme: &Theme) -> (f64, f64) {
+        let inset = f64::from(theme.tokens.spacing.s3);
+        (self.x - inset, self.x1() + inset)
+    }
 }
+
+/// The sizes a scheme row's actions take, measured once per row.
+struct SchemeControls {
+    duplicate_w: f64,
+    edit_w: f64,
+    switch_w: f64,
+    small_h: f64,
+    gap: f64,
+}
+
+impl SchemeControls {
+    fn measure(ctx: &mut PaintCtx<'_>) -> Self {
+        let small = ControlSize::Small;
+        Self {
+            duplicate_w: button_width(ctx, "Duplicate", None, small),
+            edit_w: button_width(ctx, "Edit", None, small),
+            switch_w: switch_size(ctx.theme).0,
+            small_h: small.height(ctx.theme),
+            gap: f64::from(ctx.theme.tokens.spacing.rhythm.related),
+        }
+    }
+
+    /// The whole cluster's width, with a custom scheme's Edit and delete:
+    /// every row reserves it, so every row's name has the same room.
+    fn width(&self) -> f64 {
+        self.edit_w
+            + self.gap
+            + self.small_h
+            + self.gap
+            + self.duplicate_w
+            + self.gap
+            + self.switch_w
+    }
+}
+
+/// The scheme editor's measured rows.
+#[derive(Clone, Copy)]
+struct SchemeEditorMetrics {
+    sub: f64,
+    caption: f64,
+    field_h: f64,
+    swatch_h: f64,
+    preview_h: f64,
+}
+
+/// One settings row: what it says and how it stands.
+struct SettingsRow<'a> {
+    title: &'a str,
+    secondary: Option<&'a str>,
+    /// Room the row's controls take at its trailing end.
+    trailing: f64,
+    /// Another row follows: a separator under this one.
+    separator: bool,
+    selected: bool,
+    /// The rename field takes the row's text: paint none.
+    renaming: bool,
+}
+
+/// The settings tabs, in order.
+const SETTINGS_TABS: [(SettingsTab, &str); 4] = [
+    (SettingsTab::Library, "Library"),
+    (SettingsTab::Fonts, "Fonts"),
+    (SettingsTab::Colours, "Colour schemes"),
+    (SettingsTab::Shortcuts, "Shortcuts"),
+];
 
 // --- Settings screen: the font + colour-scheme managers ---------------------
 
@@ -10500,14 +9801,33 @@ impl BooksApp {
     fn draw_settings(&mut self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;
         let r = self.rect;
+        let band = self.draw_page_header(ctx);
+        let size = ControlSize::Regular;
+        let height = size.height(theme);
+        let width = button_width(ctx, "Library", Some(Icon::ChevronLeft), size);
+        let x0 = band.x0 + f64::from(theme.tokens.spacing.s3);
+        let back = Rect::new(
+            x0,
+            band.center().y - height / 2.0,
+            x0 + width,
+            band.center().y + height / 2.0,
+        );
+        self.button(
+            ctx,
+            ButtonFace::new(back, "Library")
+                .icon(Icon::ChevronLeft)
+                .accessible_name("Back to library")
+                .role(ButtonRole::Plain),
+            Action::CloseSettings,
+        );
 
-        self.draw_settings_topbar(ctx, r);
-        let tabs_y = r.y0 + TOP_BAR + 10.0;
-        let tab_h = self.draw_settings_tabs(ctx, r, tabs_y);
-
-        // Scrollable body.
-        let content_top = tabs_y + tab_h + 18.0;
-        let body = Rect::new(r.x0, content_top, r.x1, r.y1);
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let gutter = f64::from(rhythm.group);
+        let body = Rect::new(r.x0, band.y1, r.x1, r.y1);
+        let col = SettingsColumn {
+            x: body.x0 + gutter,
+            w: (body.width() - 2.0 * gutter).clamp(1.0, PAGE_MAX_W),
+        };
         ctx.scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -10515,283 +9835,319 @@ impl BooksApp {
             ctx.transform,
             &body,
         );
-        let col_w = (r.width() - 96.0).clamp(280.0, 760.0);
-        let col = SettingsColumn {
-            x: r.x0 + (r.width() - col_w) / 2.0,
-            w: col_w,
-        };
-        let start_y = content_top - self.settings_scroll;
+        let top = body.y0 + gutter - self.settings_scroll;
+        let mut y = Self::draw_page_title(ctx, Point::new(col.x, top), "Settings", None);
+        y += f64::from(rhythm.section);
+        y = self.draw_settings_tabs(ctx, col, y);
+        y += f64::from(rhythm.group);
         let end_y = match self.settings_tab {
-            SettingsTab::Library => self.draw_library_settings(ctx, col, start_y),
-            SettingsTab::Fonts => self.draw_fonts_manager(ctx, col, start_y),
-            SettingsTab::Colours => self.draw_schemes_manager(ctx, col, start_y),
-            SettingsTab::Shortcuts => self.draw_shortcuts_settings(ctx, col, start_y),
+            SettingsTab::Library => self.draw_library_settings(ctx, col, y),
+            SettingsTab::Fonts => self.draw_fonts_manager(ctx, col, y),
+            SettingsTab::Colours => self.draw_schemes_manager(ctx, col, y),
+            SettingsTab::Shortcuts => self.draw_shortcuts_settings(ctx, col, y),
         };
         ctx.scene.pop_layer();
-        let content_h = end_y - start_y;
-        let visible = (r.y1 - content_top).max(0.0);
-        self.settings_max_scroll = (content_h - visible + 24.0).max(0.0);
+        let content_h = end_y - top + 2.0 * gutter;
+        self.settings_max_scroll = (content_h - body.height()).max(0.0);
         self.settings_scroll = self.settings_scroll.clamp(0.0, self.settings_max_scroll);
+        paint_scroll_thumb(
+            ctx,
+            body,
+            ScrollMetrics::new(content_h, body.height(), self.settings_scroll),
+        );
 
-        // Modal overlays.
+        // The sheets float over the page.
         if self.editing_scheme.is_some() {
             self.draw_scheme_editor(ctx);
         }
         if self.font_picker {
             self.draw_font_picker(ctx);
         }
-        // The colour picker floats above everything when open.
         if self.color_picker.is_open() {
             self.color_picker
                 .draw(ctx.scene, ctx.transform, ctx.text, theme, self.rect);
         }
     }
 
-    fn draw_settings_topbar(&mut self, ctx: &mut PaintCtx<'_>, r: Rect) {
+    /// The tab strip under the page title, aligned with the content column.
+    /// When the tabs do not fit on one line they wrap into further strips,
+    /// so every tab stays whole and reachable.
+    fn draw_settings_tabs(&mut self, ctx: &mut PaintCtx<'_>, col: SettingsColumn, y: f64) -> f64 {
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOP_BAR);
-        ctx.fill_rect(bar, c.surfaces.raised);
-        chrome::bar_edge(
-            ctx.scene,
-            ctx.transform,
-            c.surfaces.raised,
-            r.x0,
-            r.x1,
-            r.y0 + TOP_BAR,
-        );
-        let s = 34.0;
-        let cy = r.y0 + (TOP_BAR - s) / 2.0;
-        self.icon_button(
-            ctx,
-            Rect::from_origin_size((r.x0 + rhythm::SECTION, cy), (s, s)),
-            Ico::Back,
-            false,
-            Action::CloseSettings,
-        );
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "Settings",
-            21.0,
-            c.text_primary,
-            ctx.transform * Affine::translate((r.x0 + 60.0, r.y0 + 15.0)),
-            None,
-            TextWeight::Bold,
-        );
-    }
-
-    /// The underline-indicator tab bar. Wide layouts stay on one line; narrow
-    /// or large-text layouts use a bounded two-by-two grid so every tab remains
-    /// fully visible and touchable instead of clipping at the viewport edge.
-    fn draw_settings_tabs(&mut self, ctx: &mut PaintCtx<'_>, r: Rect, tabs_y: f64) -> f64 {
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let tab_h = 38.0;
-        let left = r.x0 + 26.0;
-        let right = r.x1 - 26.0;
-        let mut tx = left;
-        let mut ty = tabs_y;
-        for (tab, label) in [
-            (SettingsTab::Library, "Library"),
-            (SettingsTab::Fonts, "Fonts"),
-            (SettingsTab::Colours, "Colour schemes"),
-            (SettingsTab::Shortcuts, "Shortcuts"),
-        ] {
-            let active = self.settings_tab == tab;
-            let (lw, lh) = ctx
-                .text
-                .measure_weighted(label, 14.0, None, TextWeight::Semibold);
-            let tab_w = f64::from(lw) + 24.0;
-            if tx > left && tx + tab_w > right {
-                tx = left;
-                ty += tab_h;
+        let size = ControlSize::Regular;
+        let height = SegmentedFace::height(size, theme);
+        let widths: Vec<f64> = SETTINGS_TABS
+            .iter()
+            .map(|(_, label)| SegmentedFace::intrinsic_width(&[label], size, ctx.text, theme))
+            .collect();
+        // Greedy rows of whole tabs.
+        let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
+        let mut x = 0.0;
+        for (i, width) in widths.iter().enumerate() {
+            if x > 0.0 && x + width > col.w {
+                rows.push(Vec::new());
+                x = 0.0;
             }
-            let tab_rect = Rect::new(tx, ty, tx + tab_w, ty + tab_h);
-            let hover = self.is_hover(tab_rect);
-            let col = if active || hover {
-                c.text_primary
-            } else {
-                c.text_dim
-            };
-            ctx.text.draw_text_weighted(
-                ctx.scene,
-                label,
-                14.0,
-                col,
-                ctx.transform * Affine::translate((tx + 12.0, ty + (tab_h - f64::from(lh)) / 2.0)),
-                None,
-                if active {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Medium
-                },
-            );
-            if active {
-                let ind = Rect::new(
-                    tx + 8.0,
-                    ty + tab_h - 3.0,
-                    tx + f64::from(lw) + 16.0,
-                    ty + tab_h,
-                );
-                ctx.fill_round(ind, 1.5, theme.accent_primary);
+            if let Some(row) = rows.last_mut() {
+                row.push(i);
             }
-            // The selected tab remains a member of the discoverable radio
-            // group. Re-selecting it is an idempotent action.
-            self.push_hit(tab_rect, Action::SetSettingsTab(tab));
-            tx += tab_w + 6.0;
+            x += width;
         }
-        // Divider under the whole tab bar, derived against the base it sits on.
-        let total_h = ty - tabs_y + tab_h;
-        chrome::bar_edge(
-            ctx.scene,
-            ctx.transform,
-            c.surfaces.base,
-            r.x0,
-            r.x1,
-            tabs_y + total_h,
-        );
-        total_h
+        // A tab's label sits centred in its segment; the strip starts that
+        // inset before the column so the first label lines up with the
+        // title and the rows below it.
+        let label_w = |label: &str, text: &mut TextRenderer| {
+            f64::from(
+                text.measure_style(label, None, &size.label_style(theme).strong())
+                    .0,
+            )
+        };
+        let mut row_y = y;
+        for row in rows {
+            let lead = row
+                .first()
+                .and_then(|&i| Some((widths.get(i)?, SETTINGS_TABS.get(i)?.1)))
+                .map_or(0.0, |(width, label)| {
+                    (width - label_w(label, ctx.text)) / 2.0
+                });
+            let mut x = col.x - lead.max(0.0);
+            let segments: Vec<Rect> = row
+                .iter()
+                .map(|&i| {
+                    let w = widths.get(i).copied().unwrap_or(0.0);
+                    let rect = Rect::new(x, row_y, x + w, row_y + height);
+                    x += w;
+                    rect
+                })
+                .collect();
+            let labels: Vec<&str> = row
+                .iter()
+                .filter_map(|&i| SETTINGS_TABS.get(i).map(|(_, label)| *label))
+                .collect();
+            let selected = row
+                .iter()
+                .position(|&i| {
+                    SETTINGS_TABS
+                        .get(i)
+                        .is_some_and(|(tab, _)| *tab == self.settings_tab)
+                })
+                .unwrap_or(labels.len());
+            let hovered = segments.iter().position(|rect| rect.contains(self.cursor));
+            ToggleGroup::paint(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                theme,
+                &SegmentedFace::new(&segments, &labels, selected)
+                    .style(SegmentedStyle::Tabs)
+                    .control_size(size)
+                    .hovered(hovered),
+            );
+            for (&i, rect) in row.iter().zip(&segments) {
+                if let Some((tab, _)) = SETTINGS_TABS.get(i) {
+                    self.push_hit(*rect, Action::SetSettingsTab(*tab));
+                }
+            }
+            row_y += height;
+        }
+        row_y
     }
 
-    /// Device-local keyboard binding editor. Each row records one printable
-    /// key directly; bindings are deliberately not part of the Automerge
-    /// document because another reader's keyboard layout is not shared book
-    /// state. Arrow/Page navigation remains available as a reliable fallback.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the compact shortcut settings row keeps its visual, hit-target, and accessible capture state together"
-    )]
+    /// A section of the settings page: its title in `Subheading` and, when
+    /// the person needs it to act, one sentence about it. Aligned with the
+    /// row titles below. Returns the y where the rows start.
+    fn draw_settings_section(
+        ctx: &mut PaintCtx<'_>,
+        col: SettingsColumn,
+        mut y: f64,
+        title: &str,
+        description: Option<&str>,
+    ) -> f64 {
+        let theme = ctx.theme;
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let x = col.x;
+        let wrap = Some(ui::num::f32_of_f64((col.x1() - x).max(1.0)));
+        ctx.text_role(
+            title,
+            TextRole::Subheading,
+            theme.text_primary,
+            Point::new(x, y),
+            wrap,
+        );
+        y += ctx.measure_role(title, TextRole::Subheading, wrap).height;
+        if let Some(description) = description {
+            y += f64::from(rhythm.tight);
+            ctx.text_role(
+                description,
+                TextRole::Body,
+                theme.text_dim,
+                Point::new(x, y),
+                wrap,
+            );
+            y += ctx.measure_role(description, TextRole::Body, wrap).height;
+        }
+        y + f64::from(rhythm.related)
+    }
+
+    /// One settings row from `x0` to `x1`: its title and secondary line as a
+    /// list row, leaving its trailing room for the row's controls, and the
+    /// separator under it when another row follows. Returns the row rect.
+    fn draw_settings_row(
+        ctx: &mut PaintCtx<'_>,
+        (x0, x1): (f64, f64),
+        y: f64,
+        row: &SettingsRow<'_>,
+    ) -> Rect {
+        let &SettingsRow {
+            title,
+            secondary,
+            trailing,
+            separator,
+            selected,
+            renaming,
+        } = row;
+        let theme = ctx.theme;
+        let mut face = ListRowFace::new(title).selected(selected);
+        if let Some(secondary) = secondary {
+            face = face.secondary(secondary);
+        }
+        let h = face.height(ctx.text, theme);
+        let row = Rect::new(x0, y, x1, y + h);
+        if selected {
+            ui::chrome::paint_row_selection(
+                ctx.scene,
+                ctx.transform,
+                row,
+                SelectionState::active(true),
+                theme.tokens.colors.surfaces.content,
+                theme,
+            );
+        }
+        if !renaming {
+            face.selected(false)
+                .paint(ctx, Rect::new(x0, y, (x1 - trailing).max(x0), y + h));
+        }
+        if separator {
+            // Inset like a list row's own separator: from the text to the
+            // trailing edge of the controls.
+            let inset = f64::from(theme.tokens.spacing.s3);
+            ui::surface::separator(
+                ctx.scene,
+                ctx.transform,
+                x0 + inset,
+                x1 - inset,
+                row.y1,
+                0.0,
+                theme.tokens.colors.surfaces.content,
+            );
+        }
+        row
+    }
+
+    /// Device-local keyboard bindings. Each row records one printable key;
+    /// bindings are not part of the shared document because another reader's
+    /// keyboard layout is not shared book state. Arrow and Page keys always
+    /// navigate.
     fn draw_shortcuts_settings(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         col: SettingsColumn,
-        mut y: f64,
+        y: f64,
     ) -> f64 {
-        let SettingsColumn { x, w } = col;
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "KEYBOARD SHORTCUTS",
-            11.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((x, y)),
-            None,
-            TextWeight::Semibold,
+        let mut y = Self::draw_settings_section(
+            ctx,
+            col,
+            y,
+            "Keyboard shortcuts",
+            Some("Choose a shortcut, then press a key. Arrow and Page keys always turn pages."),
         );
-        y += 20.0;
-        ctx.text.draw_text(
-            ctx.scene,
-            "Choose a row, then press one printable key. These bindings stay on this device; Arrow and Page keys always navigate.",
-            12.5,
-            c.text_dim,
-            ctx.transform * Affine::translate((x, y)),
-            Some(w as f32),
-        );
-        y += 54.0;
-
-        if let Some(error) = &self.shortcut_capture_error {
-            ctx.text.draw_text_weighted(
-                ctx.scene,
-                error,
-                12.0,
-                c.semantic.danger,
-                ctx.transform * Affine::translate((x, y - 24.0)),
-                Some(w as f32),
-                TextWeight::Medium,
+        if let Some(error) = self.shortcut_capture_error.clone() {
+            let x = col.x;
+            let wrap = Some(ui::num::f32_of_f64((col.x1() - x).max(1.0)));
+            ctx.text_role(
+                &error,
+                TextRole::Body,
+                theme.tokens.colors.semantic.danger,
+                Point::new(x, y),
+                wrap,
             );
+            y += ctx.measure_role(&error, TextRole::Body, wrap).height
+                + f64::from(theme.tokens.spacing.rhythm.related);
         }
-
-        for shortcut in ReaderShortcut::ALL {
-            let row = Rect::new(x, y, x + w, y + SETTINGS_SHORTCUT_ROW_H);
+        let keycap_h = InputHint::keycap_height(theme);
+        for (i, shortcut) in ReaderShortcut::ALL.into_iter().enumerate() {
             let capturing = self.shortcut_capture == Some(shortcut);
-            let hovered = self.is_hover(row);
-            let radius = f64::from(theme.tokens.radii.md);
-            // A raised card with its derived edge; hover lifts the fill, and a
-            // capture in progress is live state, so it alone wears the accent.
-            let fill = if hovered {
-                theme.bg_hover
-            } else {
-                c.surfaces.raised
-            };
-            ui::surface::card(ctx.scene, ctx.transform, row, radius, fill);
-            if capturing {
-                ctx.stroke_round(row, radius, theme.accent_primary, 2.0);
-            }
-            // Label and binding pill share the row's vertical centre; both
-            // centre their measured line boxes so they stay level with each
-            // other (and inside the row) at any text scale.
-            let (_, label_h) =
-                ctx.text
-                    .measure_weighted(shortcut.label(), 14.0, None, TextWeight::Semibold);
-            ctx.text.draw_text_weighted(
-                ctx.scene,
-                shortcut.label(),
-                14.0,
-                c.text_primary,
-                ctx.transform
-                    * Affine::translate((x + 16.0, y + (row.height() - f64::from(label_h)) / 2.0)),
-                None,
-                TextWeight::Semibold,
+            let key = key_legend(
+                &self
+                    .local_library
+                    .shortcut(shortcut.id(), shortcut.default_key()),
             );
-            let binding = if capturing {
-                "Press a key…".to_string()
+            let labels = [key];
+            let trailing = if capturing {
+                ctx.measure_role("Press a key", TextRole::Body, None).width
             } else {
-                self.local_library
-                    .shortcut(shortcut.id(), shortcut.default_key())
-                    .to_uppercase()
-            };
-            let (binding_w, binding_h) =
-                ctx.text
-                    .measure_weighted(&binding, 13.0, None, TextWeight::Semibold);
-            let pill_w = (f64::from(binding_w) + 24.0).max(42.0);
-            let pill_h = 32.0;
-            let pill = Rect::new(
-                x + w - pill_w - rhythm::SECTION,
-                y + (row.height() - pill_h) / 2.0,
-                x + w - rhythm::SECTION,
-                y + f64::midpoint(row.height(), pill_h),
-            );
-            if capturing {
-                ctx.fill_round(pill, 7.0, theme.accent_primary);
-            } else {
-                chrome::card_on_raised(ctx.scene, ctx.transform, theme, pill, 7.0);
-            }
-            ctx.text.draw_text_weighted(
-                ctx.scene,
-                &binding,
-                13.0,
-                if capturing {
-                    theme.on_surface(theme.accent_primary).ink
-                } else {
-                    c.text_primary
+                InputHint::measure_keycap_labels(&labels, ctx.text, theme)
+            } + 2.0 * f64::from(theme.tokens.spacing.s3);
+            let row = Self::draw_settings_row(
+                ctx,
+                col.row_span(theme),
+                y,
+                &SettingsRow {
+                    title: shortcut.label(),
+                    secondary: None,
+                    trailing,
+                    separator: i + 1 < ReaderShortcut::ALL.len(),
+                    selected: capturing,
+                    renaming: false,
                 },
-                ctx.transform
-                    * Affine::translate((
-                        pill.x0 + (pill.width() - f64::from(binding_w)) / 2.0,
-                        pill.y0 + (pill.height() - f64::from(binding_h)) / 2.0,
-                    )),
-                None,
-                TextWeight::Semibold,
             );
+            let x1 = col.x1();
+            if capturing {
+                let w = ctx.measure_role("Press a key", TextRole::Body, None).width;
+                ctx.text_role_in_band(
+                    "Press a key",
+                    TextRole::Body,
+                    theme.text_dim,
+                    x1 - w,
+                    row,
+                    None,
+                );
+            } else {
+                let w = InputHint::measure_keycap_labels(&labels, ctx.text, theme);
+                InputHint::paint_keycap_labels_at(
+                    ctx.scene,
+                    ctx.transform,
+                    Point::new(x1 - w, row.center().y - keycap_h / 2.0),
+                    &labels,
+                    ctx.text,
+                    theme,
+                );
+            }
             self.push_hit(row, Action::BeginShortcutCapture(shortcut));
-            y += SETTINGS_SHORTCUT_ROW_H + rhythm::SIBLING;
+            y = row.y1;
         }
         y
     }
 
-    /// The Library settings pane: manage the folders watched for new books,
-    /// the secondary way in ("Open a book" stays primary).
+    /// The Library pane: the folders watched for new books, the secondary
+    /// way in ("Open book" stays primary).
     fn draw_library_settings(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         col: SettingsColumn,
-        mut y: f64,
+        y: f64,
     ) -> f64 {
-        y = Self::draw_library_settings_header(ctx, col, y);
+        let y = Self::draw_settings_section(
+            ctx,
+            col,
+            y,
+            "Watched folders",
+            Some("Turn a folder on to add its books to your library, now and as new ones arrive."),
+        );
 
         // Candidate folders: watched ones, plus folders books were opened
-        // from — always something concrete to toggle, no folder picker needed.
+        // from, so there is always something concrete to turn on.
         let mut folders: Vec<PathBuf> = self.watched_folders.clone();
         for p in self.library_paths.values() {
             if let Some(parent) = p.parent() {
@@ -10807,87 +10163,37 @@ impl BooksApp {
         if folders.is_empty() {
             return self.draw_library_settings_empty(ctx, col, y);
         }
-
         self.draw_watched_folder_rows(ctx, col, y, &folders)
     }
 
-    /// "WATCHED FOLDERS" title + the explanatory blurb. Returns the y just
-    /// below it.
-    fn draw_library_settings_header(
-        ctx: &mut PaintCtx<'_>,
-        col: SettingsColumn,
-        mut y: f64,
-    ) -> f64 {
-        let SettingsColumn { x, w } = col;
-        let c = &ctx.theme.tokens.colors;
-        // A short read on where books come from — no leaked internal paths, no
-        // "magic folder": the primary way in is opening a book.
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "WATCHED FOLDERS",
-            11.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((x, y)),
-            None,
-            TextWeight::Semibold,
-        );
-        y += 20.0;
-        ctx.text.draw_text(
-            ctx.scene,
-            "Turn a folder on to add its books to your library automatically, and to keep noticing new ones. Everything you open is added to your library either way.",
-            12.5,
-            c.text_dim,
-            ctx.transform * Affine::translate((x, y)),
-            Some(w as f32),
-        );
-        y + 40.0
-    }
-
-    /// The empty state: an explanation card + the primary "Open a book"
-    /// action (no folder picker — the watch list grows from books you open).
+    /// No folder to offer yet: say how one appears, and offer the way in.
     fn draw_library_settings_empty(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         col: SettingsColumn,
-        mut y: f64,
+        y: f64,
     ) -> f64 {
-        let SettingsColumn { x, w } = col;
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let radii_md = f64::from(theme.tokens.radii.md);
-        let card = Rect::new(x, y, x + w, y + 84.0);
-        chrome::card(ctx.scene, ctx.transform, theme, card, radii_md);
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "No folders yet",
-            14.0,
-            c.text_primary,
-            ctx.transform * Affine::translate((x + 18.0, y + 18.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        ctx.text.draw_text(
-            ctx.scene,
-            "Open a book from a folder and it will appear here, ready to watch.",
-            12.5,
-            c.text_dim,
-            ctx.transform * Affine::translate((x + 18.0, y + 42.0)),
-            Some((w - 36.0) as f32),
-        );
-        y += 84.0 + rhythm::SECTION;
-        let bw = 150.0;
-        self.accent_button(
-            ctx,
-            Rect::new(x, y, x + bw, y + 40.0),
-            "Open a book…",
-            true,
-            Action::OpenViaPortal,
-        );
-        y + 40.0
+        let title = "No folders yet";
+        let action = "Open a book";
+        let area_h =
+            EmptyState::minimum_essential_height(ctx.text, theme, col.w, title, Some(action))
+                + 2.0 * self.header_h;
+        let area = Rect::new(col.x, y, col.x1(), y + area_h);
+        let content = EmptyStateContent {
+            icon: Some(Icon::Folder),
+            message: Some("Open a book from a folder and the folder appears here."),
+            action_label: Some(action),
+            ..EmptyStateContent::new(title)
+        };
+        if let Some(rect) = EmptyState::paint(ctx, area, &content, self.cursor) {
+            self.push_hit(rect, Action::OpenViaPortal);
+        }
+        area.y1
     }
 
-    /// One row per candidate folder: name, resolved path, and its watch
-    /// toggle. Returns the y just below the last row.
+    /// One row per candidate folder: its name, where it is, and whether it
+    /// is watched.
     fn draw_watched_folder_rows(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -10895,21 +10201,18 @@ impl BooksApp {
         mut y: f64,
         folders: &[PathBuf],
     ) -> f64 {
-        let SettingsColumn { x, w } = col;
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let radii_md = f64::from(theme.tokens.radii.md);
         let home = tilo_paths::home().map(|home| home.to_string_lossy().into_owned());
         let ws = content::workspace_root();
-        // Present folders in human terms — never a raw internal mount (HIG §4):
-        // the workspace reads as "Workspace", the reader's home as "~".
+        // Present folders in human terms, never a raw internal mount (HIG
+        // §4): the workspace reads as "Workspace", the reader's home as "~".
         let pretty = |p: &std::path::Path| -> String {
             if let Ok(rest) = p.strip_prefix(&ws) {
                 let rest = rest.to_string_lossy();
                 return if rest.is_empty() {
                     "Workspace".to_string()
                 } else {
-                    format!("Workspace / {rest}")
+                    format!("Workspace/{rest}")
                 };
             }
             let s = p.to_string_lossy().to_string();
@@ -10921,56 +10224,42 @@ impl BooksApp {
                 _ => s,
             }
         };
-
-        for folder in folders {
-            let row_h = 60.0;
-            let card = Rect::new(x, y, x + w, y + row_h);
-            chrome::card(ctx.scene, ctx.transform, theme, card, radii_md);
-
+        let (switch_w, _) = switch_size(theme);
+        let trailing = switch_w + 2.0 * f64::from(theme.tokens.spacing.s3);
+        for (i, folder) in folders.iter().enumerate() {
             let watched = self.watched_folders.iter().any(|f| f == folder);
+            let path = pretty(folder);
             let name = folder
                 .file_name()
-                .map_or_else(|| pretty(folder), |n| n.to_string_lossy().to_string());
-            ctx.text.draw_text_weighted(
-                ctx.scene,
-                &name,
-                15.0,
-                c.text_primary,
-                ctx.transform * Affine::translate((x + 18.0, y + 12.0)),
-                Some((w - 100.0) as f32),
-                TextWeight::Semibold,
-            );
-            ctx.text.draw_text(
-                ctx.scene,
-                &pretty(folder),
-                12.0,
-                c.text_dim,
-                ctx.transform * Affine::translate((x + 18.0, y + 34.0)),
-                Some((w - 100.0) as f32),
-            );
-
-            // Watch toggle at the row's right edge.
-            let tog_w = 44.0;
-            let tog_h = 24.0;
-            self.switch(
+                .map_or_else(|| path.clone(), |n| n.to_string_lossy().to_string());
+            let row = Self::draw_settings_row(
                 ctx,
-                Rect::new(
-                    x + w - 18.0 - tog_w,
-                    y + (row_h - tog_h) / 2.0,
-                    x + w - 18.0,
-                    y + f64::midpoint(row_h, tog_h),
-                ),
+                col.row_span(theme),
+                y,
+                &SettingsRow {
+                    title: &name,
+                    secondary: Some(&path),
+                    trailing,
+                    separator: i + 1 < folders.len(),
+                    selected: false,
+                    renaming: false,
+                },
+            );
+            let x1 = col.x1();
+            self.switch_at(
+                ctx,
+                x1,
+                row.center().y,
                 watched,
                 Action::ToggleWatchFolder(folder.clone()),
             );
-            y += row_h + rhythm::SIBLING;
+            y = row.y1;
         }
-
         y
     }
 
     fn draw_fonts_manager(&mut self, ctx: &mut PaintCtx<'_>, col: SettingsColumn, y: f64) -> f64 {
-        let x = col.x;
+        let theme = ctx.theme;
         let fonts = self.fonts.clone();
         let default_id = if self.default_font_id.is_empty() {
             fonts.first().map(|f| f.id.clone()).unwrap_or_default()
@@ -10978,174 +10267,173 @@ impl BooksApp {
             self.default_font_id.clone()
         };
 
-        let current = fonts.iter().find(|f| f.id == default_id);
-        let (mut y, dropdown) = self.draw_default_font_dropdown(ctx, col, y, current);
-
-        y = Self::draw_font_rows_header(ctx, col, y);
-        for f in &fonts {
-            y = self.draw_font_row(ctx, col, y, f);
-        }
-        y = self.draw_add_font_button(ctx, x, y);
-
-        // The default-font dropdown menu (drawn last so it floats over the rows).
-        if self.default_font_menu {
-            self.draw_default_font_menu(ctx, dropdown, &fonts, &default_id);
-        }
-        y
-    }
-
-    /// The default-font dropdown control: label + box showing the current
-    /// default's name in its own face. Returns `(y_below, dropdown)` — the
-    /// dropdown's rect anchors the flyout menu.
-    fn draw_default_font_dropdown(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        col: SettingsColumn,
-        mut y: f64,
-        current: Option<&FontEntry>,
-    ) -> (f64, Rect) {
-        let SettingsColumn { x, w } = col;
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let radii_md = f64::from(theme.tokens.radii.md);
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "DEFAULT FONT",
-            11.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((x, y)),
-            None,
-            TextWeight::Semibold,
-        );
-        y += 20.0;
-        let dd_h = 46.0;
-        let dd = Rect::new(x, y, x + w, y + dd_h);
-        // A dropdown field rests like a Neutral button (raised, derived edge)
-        // and wears the focus ring while its list is open (HIG §9.5).
-        chrome::card(ctx.scene, ctx.transform, theme, dd, radii_md);
-        if self.default_font_menu {
-            ctx.stroke_round(dd, radii_md, theme.border_focus, 2.0);
-        }
-        if let Some(f) = current {
-            // Draw the current default's name in its own face.
-            ctx.text.draw_style(
-                ctx.scene,
-                &f.name,
-                c.text_primary,
-                ctx.transform * Affine::translate((x + 16.0, y + dd_h / 2.0 - 10.0)),
-                None,
-                &TextStyle::new(16.0)
-                    .with_weight(TextWeight::Semibold)
-                    .with_family(font_choice(&f.kind)),
-            );
-        }
-        self.icon_button(
+        // The default font: a row whose trailing control is the list of
+        // fonts.
+        let mut y = Self::draw_settings_section(ctx, col, y, "Default font", None);
+        let size = ControlSize::Regular;
+        let control_w =
+            HostedDropdown::width(fonts.iter().map(|f| f.name.as_str()), size, ctx.text, theme);
+        let row = Self::draw_settings_row(
             ctx,
-            Rect::from_origin_size((x + w - 34.0, y + dd_h / 2.0 - 14.0), (28.0, 28.0)),
-            Ico::ChevDown,
-            false,
-            Action::ToggleDefaultFontMenu,
+            col.row_span(theme),
+            y,
+            &SettingsRow {
+                title: "Font for new books",
+                secondary: None,
+                trailing: control_w + 2.0 * f64::from(theme.tokens.spacing.s3),
+                separator: false,
+                selected: false,
+                renaming: false,
+            },
         );
-        self.push_hit(dd, Action::ToggleDefaultFontMenu);
-        // Before the next group: one `s6`, the same step every section on
-        // this screen uses.
-        y += dd_h + rhythm::GROUP;
-        (y, dd)
-    }
-
-    /// "READING FONTS" section title + description. Returns the y just
-    /// below it, where the row list starts.
-    fn draw_font_rows_header(ctx: &mut PaintCtx<'_>, col: SettingsColumn, mut y: f64) -> f64 {
-        let SettingsColumn { x, w } = col;
-        let c = &ctx.theme.tokens.colors;
-        ctx.text.draw_text_weighted(
+        let x1 = col.x1();
+        let height = size.height(theme);
+        self.font_dropdown.set(
+            fonts
+                .iter()
+                .map(|f| (f.id.clone(), f.name.clone()))
+                .collect(),
+            &default_id,
+        );
+        self.font_dropdown.draw(
             ctx.scene,
-            "READING FONTS",
-            11.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((x, y)),
-            None,
-            TextWeight::Semibold,
+            ctx.transform,
+            ctx.text,
+            theme,
+            Rect::new(
+                x1 - control_w,
+                row.center().y - height / 2.0,
+                x1,
+                row.center().y + height / 2.0,
+            ),
         );
-        y += 18.0;
-        ctx.text.draw_text(ctx.scene, "Each row previews its own face — tap a name to rename, toggle whether it appears in the quick settings, and tune its size.", 12.5, c.text_dim, ctx.transform * Affine::translate((x, y)), Some(w as f32));
-        y + 34.0
+        y = row.y1 + f64::from(theme.tokens.spacing.rhythm.group);
+
+        y = Self::draw_settings_section(
+            ctx,
+            col,
+            y,
+            "Reading fonts",
+            Some(
+                "Turn a font off to leave it out of the reading settings. Select a name to rename it.",
+            ),
+        );
+        for (i, f) in fonts.iter().enumerate() {
+            y = self.draw_font_row(ctx, col, y, f, i + 1 < fonts.len());
+        }
+        y += f64::from(theme.tokens.spacing.rhythm.section);
+        self.draw_add_font_button(ctx, col, y)
     }
 
-    /// One font row: name (or its rename editor), kind label, and the right
-    /// control cluster. Returns the y just below it.
+    /// One font row: its name (or the rename field), what kind of face it
+    /// is, and its controls: size adjustment, shown in the reading settings,
+    /// and remove (fonts the reader added). Returns the y below it.
     fn draw_font_row(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         col: SettingsColumn,
         y: f64,
         f: &FontEntry,
+        separator: bool,
     ) -> f64 {
-        let SettingsColumn { x, w } = col;
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let radii_md = f64::from(theme.tokens.radii.md);
-        let row_h = 64.0;
-        let cy = y + row_h / 2.0;
-        let card = Rect::new(x, y, x + w, y + row_h);
-        chrome::card(ctx.scene, ctx.transform, theme, card, radii_md);
-
-        self.draw_font_row_name(ctx, col, y, f);
-
+        let spacing = &theme.tokens.spacing;
         let kind = match &f.kind {
             FontKind::Default => "Default face".to_string(),
             FontKind::Serif => "Serif book face".to_string(),
             FontKind::Mono => "Monospace".to_string(),
-            FontKind::Named(n) => format!("System · {n}"),
+            FontKind::Named(_) => "System font".to_string(),
         };
-        ctx.text.draw_text(
-            ctx.scene,
-            &kind,
-            12.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((x + 20.0, y + 38.0)),
-            None,
+        let field = NumberField::FontMult(f.id.clone());
+        let stepper_w = self.number_controls.preferred_width(
+            &field,
+            f64::from(f.size_mult) * 100.0,
+            ctx.text,
+            theme,
         );
-
-        self.draw_font_row_controls(ctx, col, cy, f);
-
-        y + row_h + rhythm::SIBLING
-    }
-
-    /// Name rendered in its own face. When renaming, the real inline editor
-    /// (a `ui::EditableLabel` over a `TextInput`) takes over the slot;
-    /// otherwise a pencil affordance invites a tap to rename.
-    fn draw_font_row_name(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        col: SettingsColumn,
-        y: f64,
-        f: &FontEntry,
-    ) {
-        let x = col.x;
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let name_x = x + 20.0;
+        let (switch_w, _) = switch_size(theme);
+        let small = ControlSize::Small.height(theme);
+        let gap = f64::from(spacing.rhythm.sibling);
+        let controls_w = small + gap + stepper_w + gap + switch_w;
         let renaming_this =
             matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Font(f.id.clone()));
-        let fam = font_choice(&f.kind);
-        if renaming_this {
-            // Editor spans from the name to an `s3` gap before the right
-            // control cluster — the same cluster edge `draw_font_row_controls`
-            // lays out from, so the field can never run under the toggle the
-            // way a fixed 210px reservation did. Its left edge backs off by
-            // the shared field's own text inset so the edited name starts
-            // exactly where the static name was painted.
-            let controls_x0 = Self::font_row_controls_x0(ctx.text, theme, col, f);
-            let field_x1 = (controls_x0 - f64::from(theme.tokens.spacing.s3)).max(name_x + 140.0);
-            let field_rect = Rect::new(
-                name_x - f64::from(theme.padding_standard),
-                y + 8.0,
-                field_x1,
-                y + 8.0 + 30.0,
+        let row = Self::draw_settings_row(
+            ctx,
+            col.row_span(theme),
+            y,
+            &SettingsRow {
+                title: &f.name,
+                secondary: Some(&kind),
+                trailing: controls_w + 2.0 * f64::from(spacing.s3),
+                separator,
+                selected: false,
+                renaming: renaming_this,
+            },
+        );
+        let controls_x0 = col.x1() - controls_w;
+        self.draw_row_name_slot(
+            ctx,
+            Rect::new(row.x0, row.y0, controls_x0 - gap, row.y1),
+            renaming_this,
+            &f.name,
+            Action::BeginRenameFont(f.id.clone()),
+        );
+
+        // Trailing, left to right: remove (fonts the reader added), size,
+        // shown; the switch keeps the trailing edge of every row.
+        let cy = row.center().y;
+        let mut x = controls_x0;
+        if matches!(f.kind, FontKind::Named(_)) {
+            self.icon_button(
+                ctx,
+                Point::new(x + small / 2.0, cy),
+                ControlSize::Small,
+                (Icon::Trash2, "Remove font"),
+                false,
+                Action::RemoveFont(f.id.clone()),
             );
+        }
+        x += small + gap;
+        self.number_controls.draw(
+            &field,
+            f64::from(f.size_mult) * 100.0,
+            Rect::new(x, cy - small / 2.0, x + stepper_w, cy + small / 2.0),
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+        );
+        x += stepper_w + gap;
+        self.switch_at(
+            ctx,
+            x + switch_w,
+            cy,
+            f.shown,
+            Action::ToggleFontShown(f.id.clone()),
+        );
+        row.y1
+    }
+
+    /// The title line of a settings row that renames in place: the inline
+    /// rename field while renaming, otherwise the target that begins it.
+    fn draw_row_name_slot(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        slot: Rect,
+        renaming: bool,
+        name: &str,
+        begin: Action,
+    ) {
+        let theme = ctx.theme;
+        let pad = f64::from(theme.tokens.spacing.s3);
+        if renaming {
+            // The field's edge stands on the row text's edge, in line with
+            // the separators and the column above it.
+            let height = ControlSize::Small.height(theme);
+            let cy = slot.center().y;
+            let field = Rect::new(slot.x0 + pad, cy - height / 2.0, slot.x1, cy + height / 2.0);
             if let Some(rn) = self.renaming.as_mut() {
-                rn.field.apply_layout_external(field_rect);
+                rn.field.apply_layout_external(field);
                 rn.field.draw(
                     ctx.scene,
                     ctx.transform,
@@ -11155,301 +10443,196 @@ impl BooksApp {
                 );
             }
         } else {
-            ctx.text.draw_style(
-                ctx.scene,
-                &f.name,
-                c.text_primary,
-                ctx.transform * Affine::translate((name_x, y + 12.0)),
-                None,
-                &TextStyle::new(16.0)
-                    .with_weight(TextWeight::Semibold)
-                    .with_family(fam.clone()),
+            let width = ctx.measure_role(name, TextRole::Body, None).width;
+            let hit = Rect::new(
+                slot.x0 + pad,
+                slot.y0,
+                (slot.x0 + pad + width).min(slot.x1),
+                slot.center().y,
             );
-            let (nw, _) =
-                ctx.text
-                    .measure_font(&f.name, 16.0, None, TextWeight::Semibold, false, &fam);
-            let pencil = Rect::new(
-                name_x + f64::from(nw) + 6.0,
-                y + 12.0,
-                name_x + f64::from(nw) + 26.0,
-                y + 32.0,
-            );
-            paint::pencil(
-                ctx.scene,
-                ctx.transform,
-                pencil,
-                c.text_dim.with_alpha_factor(0.5),
-                1.3,
-            );
-            self.push_hit(
-                Rect::new(name_x, y + 8.0, name_x + f64::from(nw) + 30.0, y + 34.0),
-                Action::BeginRenameFont(f.id.clone()),
-            );
+            self.push_hit(hit, begin);
         }
     }
 
-    /// Right cluster of a font row, laid out right-to-left with a fixed
-    /// delete column so every row's size control lines up (built-ins
-    /// reserve the column but draw nothing in it): delete (custom fonts
-    /// only), size stepper, and the quick-settings visibility toggle.
-    fn draw_font_row_controls(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        col: SettingsColumn,
-        cy: f64,
-        f: &FontEntry,
-    ) {
+    /// "Add a system font". Returns the y just below it.
+    fn draw_add_font_button(&mut self, ctx: &mut PaintCtx<'_>, col: SettingsColumn, y: f64) -> f64 {
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let del_col = Self::font_row_del_col(col);
-        if matches!(f.kind, FontKind::Named(_)) {
-            let del = Rect::new(del_col, cy - 12.0, del_col + 24.0, cy + 12.0);
-            let col = if self.is_hover(del) {
-                c.semantic.danger
-            } else {
-                c.text_dim.with_alpha_factor(0.6)
-            };
-            paint::close(ctx.scene, ctx.transform, del, col, 1.4);
-            self.push_hit(del, Action::RemoveFont(f.id.clone()));
-        }
-        let field = NumberField::FontMult(f.id.clone());
-        let size_right = Self::font_row_size_right(col);
-        self.size_stepper(
+        let label = "Add a system font";
+        let size = ControlSize::Regular;
+        let width = button_width(ctx, label, Some(Icon::Plus), size);
+        let x = col.x;
+        let rect = Rect::new(x, y, x + width, y + size.height(theme));
+        self.button(
             ctx,
-            Point::new(size_right, cy),
-            f64::from(f.size_mult),
-            &field,
+            ButtonFace::new(rect, label).icon(Icon::Plus),
+            Action::OpenFontPicker,
         );
-        // Enable/disable toggle (= whether it appears in quick settings). Its
-        // left edge is the one cluster edge the rename editor also stops
-        // before, derived once for both.
-        let tog_h = 22.0;
-        let tog_x = Self::font_row_controls_x0(ctx.text, theme, col, f);
-        self.switch(
-            ctx,
-            Rect::new(
-                tog_x,
-                cy - tog_h / 2.0,
-                tog_x + FONT_ROW_TOGGLE_W,
-                cy + tog_h / 2.0,
-            ),
-            f.shown,
-            Action::ToggleFontShown(f.id.clone()),
-        );
-    }
-
-    /// x of a font row's delete column (custom fonts only; built-ins reserve
-    /// the column so every row's stepper lines up).
-    fn font_row_del_col(col: SettingsColumn) -> f64 {
-        col.x + col.w - 16.0 - 24.0
-    }
-
-    /// Right edge of a font row's size stepper.
-    fn font_row_size_right(col: SettingsColumn) -> f64 {
-        Self::font_row_del_col(col) - 12.0
-    }
-
-    /// Left edge of a font row's whole right-hand control cluster (the
-    /// visibility toggle), derived from the same constants and the same
-    /// measured stepper width `draw_font_row_controls` lays out with. The
-    /// rename editor ends before this edge.
-    fn font_row_controls_x0(
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        col: SettingsColumn,
-        f: &FontEntry,
-    ) -> f64 {
-        let stepper_w = Self::size_stepper_width(tr, theme, &NumberField::FontMult(f.id.clone()));
-        Self::font_row_size_right(col) - stepper_w - 16.0 - FONT_ROW_TOGGLE_W
-    }
-
-    /// "+ Add a system font" pill. Returns the y just below it.
-    fn draw_add_font_button(&mut self, ctx: &mut PaintCtx<'_>, x: f64, mut y: f64) -> f64 {
-        let theme = ctx.theme;
-        let add = "Add a system font";
-        let aw = f64::from(
-            ctx.text
-                .measure_weighted(add, 13.0, None, TextWeight::Medium)
-                .0,
-        ) + 32.0
-            + f64::from(theme.tokens.metrics.icon_sm)
-            + f64::from(theme.tokens.metrics.icon_label_gap);
-        let arect = Rect::new(x, y, x + aw, y + 36.0);
-        // The shared Neutral face: raised, derived edge, hover from the theme.
-        Button::paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            &ButtonFace::new(arect, add)
-                .icon(ui::icons::Icon::Plus)
-                .radius(18.0)
-                .text_size(13.0)
-                .hovered(self.is_hover(arect)),
-        );
-        self.push_hit(arect, Action::OpenFontPicker);
-        y += 36.0 + rhythm::RELATED;
-        y
-    }
-
-    /// The default-font dropdown list, floating under the `anchor` control.
-    fn draw_default_font_menu(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        anchor: Rect,
-        fonts: &[FontEntry],
-        default_id: &str,
-    ) {
-        let (x, top) = (anchor.x0, anchor.y1 + 4.0);
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        // Menu rows are `MENU_ROW_H` pitches with a related step between
-        // their faces and a related step of panel padding around them.
-        let row_h = MENU_ROW_H + rhythm::RELATED;
-        let menu_h = fonts.len() as f64 * row_h + rhythm::RELATED;
-        let menu = Rect::new(x, top, anchor.x1, top + menu_h);
-        chrome::panel(ctx.scene, ctx.transform, theme, menu);
-        self.push_hit(menu, Action::Swallow);
-        let mut my = top + rhythm::RELATED;
-        for f in fonts {
-            let row = Rect::new(
-                x + rhythm::RELATED,
-                my,
-                anchor.x1 - rhythm::RELATED,
-                my + MENU_ROW_H,
-            );
-            let sel = f.id == default_id;
-            // The current default is a lift (HIG §9.3), never an accent wash.
-            chrome::row(
-                ctx.scene,
-                ctx.transform,
-                theme,
-                row,
-                f64::from(theme.tokens.radii.md),
-                SelectionState::new(sel, self.is_hover(row), false),
-                false,
-            );
-            ctx.text.draw_style(
-                ctx.scene,
-                &f.name,
-                c.text_primary,
-                ctx.transform * Affine::translate((x + 18.0, my + 9.0)),
-                None,
-                &TextStyle::new(15.0)
-                    .with_weight(TextWeight::Medium)
-                    .with_family(font_choice(&f.kind)),
-            );
-            self.push_hit(row, Action::SetDefaultFont(f.id.clone()));
-            my += row_h;
-        }
+        rect.y1
     }
 
     fn draw_schemes_manager(&mut self, ctx: &mut PaintCtx<'_>, col: SettingsColumn, y: f64) -> f64 {
-        let x = col.x;
-        let mut y = Self::draw_schemes_header(ctx, col, y);
-        y = self.draw_new_scheme_button(ctx, x, y);
-
-        let schemes = self.schemes.clone();
-        for s in &schemes {
-            y = self.draw_scheme_row(ctx, col, y, s);
-        }
-        y + 8.0
-    }
-
-    /// "COLOUR SCHEMES" section title + description. Returns the y just
-    /// below it.
-    fn draw_schemes_header(ctx: &mut PaintCtx<'_>, col: SettingsColumn, mut y: f64) -> f64 {
-        let SettingsColumn { x, w } = col;
-        let c = &ctx.theme.tokens.colors;
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "COLOUR SCHEMES",
-            11.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((x, y)),
-            None,
-            TextWeight::Semibold,
-        );
-        y += 20.0;
-        ctx.text.draw_text(ctx.scene, "A scheme's colours are all edited through the colour picker. Toggle a scheme off to hide it from the quick settings.", 12.5, c.text_dim, ctx.transform * Affine::translate((x, y)), Some(w as f32));
-        y + 40.0
-    }
-
-    /// A single button opens the colour picker to choose a background; the
-    /// scheme is then derived from it. Returns the y just below it.
-    fn draw_new_scheme_button(&mut self, ctx: &mut PaintCtx<'_>, x: f64, y: f64) -> f64 {
         let theme = ctx.theme;
-        let new_label = "＋  New scheme from a colour…";
-        let nw = f64::from(
-            ctx.text
-                .measure_weighted(new_label, 13.0, None, TextWeight::Semibold)
-                .0,
-        ) + 34.0;
-        let nrect = Rect::new(x, y, x + nw, y + 40.0);
-        // The pane's one primary action wears the shared Primary face.
-        Button::paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            &ButtonFace::new(nrect, new_label)
-                .primary()
-                .radius(20.0)
-                .text_size(13.0)
-                .weight(TextWeight::Semibold)
-                .hovered(self.is_hover(nrect)),
+        let mut y = Self::draw_settings_section(
+            ctx,
+            col,
+            y,
+            "Colour schemes",
+            Some("Turn a scheme off to leave it out of the reading settings."),
         );
-        self.push_hit(nrect, Action::NewSchemeViaPicker);
-        y + 40.0 + rhythm::GROUP
+        let schemes = self.schemes.clone();
+        for (i, s) in schemes.iter().enumerate() {
+            y = self.draw_scheme_row(ctx, col, y, s, i + 1 < schemes.len());
+        }
+        y += f64::from(theme.tokens.spacing.rhythm.section);
+        let label = "New scheme";
+        let size = ControlSize::Regular;
+        let width = button_width(ctx, label, Some(Icon::Plus), size);
+        let x = col.x;
+        let rect = Rect::new(x, y, x + width, y + size.height(theme));
+        self.button(
+            ctx,
+            ButtonFace::new(rect, label).icon(Icon::Plus),
+            Action::NewSchemeViaPicker,
+        );
+        rect.y1
     }
 
-    /// One colour-scheme row: swatches, name/status, and the right action
-    /// cluster. Returns the y just below it.
+    /// One colour-scheme row: its page, text and accent colours, its name
+    /// and whether it is in use (its secondary line says so; a setting is
+    /// not a selection), and its actions. Returns the y below it.
     fn draw_scheme_row(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         col: SettingsColumn,
         y: f64,
         s: &ColorScheme,
+        separator: bool,
     ) -> f64 {
-        let SettingsColumn { x, w } = col;
         let theme = ctx.theme;
-        let radii_md = f64::from(theme.tokens.radii.md);
-        let row_h = 68.0;
-        let cy = y + row_h / 2.0;
-        let card = Rect::new(x, y, x + w, y + row_h);
-        let selected = if s.builtin {
+        let spacing = &theme.tokens.spacing;
+        let in_use = if s.builtin {
             self.settings.scheme_id.is_empty() && self.settings.theme == ReadTheme::from_str(&s.id)
         } else {
             self.settings.scheme_id == s.id
         };
-        // The scheme in use is "chosen", so it is the lifted tier over quiet
-        // floored siblings (HIG §9.3): the accent stays free for live state.
-        chrome::row(
-            ctx.scene,
-            ctx.transform,
-            theme,
-            card,
-            radii_md,
-            SelectionState::active(selected),
-            true,
-        );
-
-        // For a custom scheme each swatch opens the colour picker on that
-        // slot; a built-in's swatches just apply the scheme.
-        let swx = self.draw_scheme_swatches(ctx, x, cy, s);
-
-        // Name + status. When renaming, the inline editor fills the name
-        // slot (drawn below, once its right bound is known).
-        let name_x = swx + 16.0;
+        let status = if in_use {
+            "In use"
+        } else if s.builtin {
+            "Built-in"
+        } else {
+            "Custom"
+        };
+        let gap = f64::from(spacing.rhythm.related);
+        let controls = SchemeControls::measure(ctx);
+        let controls_w = controls.width();
+        let swatch = f64::from(theme.tokens.metrics.icon_lg);
+        let swatches_w = 3.0 * swatch + 2.0 * gap;
         let renaming_this = self.renaming_scheme(&s.id);
-        Self::draw_scheme_name_and_status(ctx, Point::new(name_x, y), selected, renaming_this, s);
+        // The row's text follows the swatches; its own inset is the gap.
+        let (span_x0, span_x1) = col.row_span(theme);
+        let x0 = col.x + swatches_w;
+        let title = s.name.as_str();
+        let row = Self::draw_settings_row(
+            ctx,
+            (x0, span_x1),
+            y,
+            &SettingsRow {
+                title,
+                secondary: Some(status),
+                trailing: controls_w + 2.0 * f64::from(spacing.s3),
+                separator: false,
+                selected: false,
+                renaming: renaming_this,
+            },
+        );
+        if separator {
+            ui::surface::separator(
+                ctx.scene,
+                ctx.transform,
+                col.x,
+                col.x1(),
+                row.y1,
+                0.0,
+                theme.tokens.colors.surfaces.content,
+            );
+        }
+        self.draw_scheme_swatches(ctx, Point::new(col.x, row.center().y), s);
 
-        let rx = self.draw_scheme_actions(ctx, Point::new(x + w, cy), s);
+        let controls_x0 = col.x1() - controls_w;
+        let name_slot = Rect::new(row.x0, row.y0, controls_x0 - gap, row.y1);
+        if s.builtin {
+            self.push_hit(
+                Rect::new(span_x0, row.y0, controls_x0 - gap, row.y1),
+                Self::scheme_use_action(s),
+            );
+        } else {
+            self.draw_row_name_slot(
+                ctx,
+                name_slot,
+                renaming_this,
+                &s.name,
+                Action::BeginRenameScheme(s.id.clone()),
+            );
+            self.push_hit(
+                Rect::new(row.x0, row.center().y, controls_x0 - gap, row.y1),
+                Self::scheme_use_action(s),
+            );
+        }
 
-        self.draw_scheme_name_interaction(ctx, Rect::new(name_x, y, rx, y + row_h), s);
+        self.draw_scheme_controls(ctx, Point::new(col.x1(), row.center().y), s, &controls);
+        row.y1
+    }
 
-        y + row_h + rhythm::SIBLING
+    /// A scheme row's actions back from `end` (trailing edge, vertical
+    /// centre): whether it is shown, Duplicate, then delete and Edit for a
+    /// custom scheme. The shared controls stand in the same columns on every
+    /// row.
+    fn draw_scheme_controls(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        end: Point,
+        s: &ColorScheme,
+        m: &SchemeControls,
+    ) {
+        let small = ControlSize::Small;
+        let cy = end.y;
+        let mut x1 = end.x;
+        let face_rect =
+            |x1: f64, w: f64| Rect::new(x1 - w, cy - m.small_h / 2.0, x1, cy + m.small_h / 2.0);
+        self.switch_at(
+            ctx,
+            x1,
+            cy,
+            s.enabled,
+            Action::ToggleSchemeEnabled(s.id.clone()),
+        );
+        x1 -= m.switch_w + m.gap;
+        self.button(
+            ctx,
+            ButtonFace::new(face_rect(x1, m.duplicate_w), "Duplicate")
+                .role(ButtonRole::Plain)
+                .control_size(small),
+            Action::DuplicateScheme(s.id.clone()),
+        );
+        x1 -= m.duplicate_w + m.gap;
+        if !s.builtin {
+            self.icon_button(
+                ctx,
+                Point::new(x1 - m.small_h / 2.0, cy),
+                small,
+                (Icon::Trash2, "Delete scheme"),
+                false,
+                Action::DeleteScheme(s.id.clone()),
+            );
+            x1 -= m.small_h + m.gap;
+            self.button(
+                ctx,
+                ButtonFace::new(face_rect(x1, m.edit_w), "Edit")
+                    .role(ButtonRole::Plain)
+                    .control_size(small),
+                Action::EditScheme(s.id.clone()),
+            );
+        }
     }
 
     /// Whether the inline rename editor is open on scheme `id`.
@@ -11467,207 +10650,28 @@ impl BooksApp {
         }
     }
 
-    /// Colour swatches (page / ink / accent). Returns the x just past
-    /// them, where the name column starts.
-    fn draw_scheme_swatches(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        x: f64,
-        cy: f64,
-        s: &ColorScheme,
-    ) -> f64 {
+    /// A scheme's page, text and accent colours from `start` (leading
+    /// edge, vertical centre). On a custom scheme each opens the colour
+    /// picker on its slot.
+    fn draw_scheme_swatches(&mut self, ctx: &mut PaintCtx<'_>, start: Point, s: &ColorScheme) {
         let theme = ctx.theme;
-        let mut swx = x + rhythm::SECTION;
-        for (slot, col) in [s.page, s.ink, s.accent].into_iter().enumerate() {
-            let srr = Rect::new(swx, cy - 12.0, swx + 24.0, cy + 12.0);
-            let fill = Color::from_rgb8(col[0], col[1], col[2]);
-            ctx.fill_round(srr, 6.0, fill);
-            // Each swatch edge derives from the swatch itself, so a page-white
-            // or ink-black chip keeps a visible outline on every preset.
-            let edith = !s.builtin && self.is_hover(srr);
-            if edith {
-                ctx.stroke_round(srr, 6.0, theme.border_focus, 2.0);
-            } else {
-                chrome::edge(ctx.scene, ctx.transform, fill, srr, 6.0);
-            }
+        let side = f64::from(theme.tokens.metrics.icon_lg);
+        let gap = f64::from(theme.tokens.spacing.rhythm.related);
+        let mut x = start.x;
+        for (slot, (name, rgb)) in s.slots().into_iter().enumerate() {
+            let rect = Rect::new(x, start.y - side / 2.0, x + side, start.y + side / 2.0);
+            let face = ColorSwatchFace::new(rect, Color::from_rgb8(rgb[0], rgb[1], rgb[2]), name)
+                .hovered(!s.builtin && rect.contains(self.cursor));
+            face.paint(ctx.scene, ctx.transform, ctx.text, theme);
             if !s.builtin {
-                self.push_hit(srr, Action::PickSchemeColor(s.id.clone(), slot));
+                self.push_hit(rect, Action::PickSchemeColor(s.id.clone(), slot));
             }
-            swx += 24.0 + rhythm::RELATED;
-        }
-        swx
-    }
-
-    /// Scheme name (skipped while its inline rename editor is active) and
-    /// the Built-in/In use/Custom status label.
-    fn draw_scheme_name_and_status(
-        ctx: &mut PaintCtx<'_>,
-        origin: Point,
-        selected: bool,
-        renaming_this: bool,
-        s: &ColorScheme,
-    ) {
-        let (name_x, y) = (origin.x, origin.y);
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        if !renaming_this {
-            ctx.text.draw_text_weighted(
-                ctx.scene,
-                &s.name,
-                15.0,
-                c.text_primary,
-                ctx.transform * Affine::translate((name_x, y + 14.0)),
-                None,
-                TextWeight::Semibold,
-            );
-        }
-        let sub = if s.builtin {
-            "Built-in"
-        } else if selected {
-            "In use"
-        } else {
-            "Custom"
-        };
-        ctx.text.draw_text(
-            ctx.scene,
-            sub,
-            12.0,
-            if selected {
-                theme.accent_primary
-            } else {
-                c.text_dim
-            },
-            ctx.transform * Affine::translate((name_x, y + 38.0)),
-            None,
-        );
-    }
-
-    /// Right cluster, laid out right-to-left: enable switch, then the
-    /// actions (Duplicate / Edit / delete — Edit and delete only for
-    /// custom schemes), ending at the card's `right_mid`. Returns the x
-    /// just left of the cluster.
-    fn draw_scheme_actions(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        right_mid: Point,
-        s: &ColorScheme,
-    ) -> f64 {
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let cy = right_mid.y;
-        // The cluster is one row of siblings: a section step in from the
-        // card's edge, then a sibling step between every neighbour.
-        let mut rx = right_mid.x - rhythm::SECTION;
-        let tog_w = 40.0;
-        let tog_h = 22.0;
-        rx -= tog_w;
-        self.switch(
-            ctx,
-            Rect::new(rx, cy - tog_h / 2.0, rx + tog_w, cy + tog_h / 2.0),
-            s.enabled,
-            Action::ToggleSchemeEnabled(s.id.clone()),
-        );
-        rx -= rhythm::SIBLING;
-        if !s.builtin {
-            rx -= 24.0;
-            let del = Rect::new(rx, cy - 12.0, rx + 24.0, cy + 12.0);
-            let dcolh = if self.is_hover(del) {
-                c.semantic.danger
-            } else {
-                c.text_dim.with_alpha_factor(0.6)
-            };
-            paint::close(ctx.scene, ctx.transform, del, dcolh, 1.4);
-            self.push_hit(del, Action::DeleteScheme(s.id.clone()));
-            rx -= rhythm::SIBLING;
-            let ew = f64::from(
-                ctx.text
-                    .measure_weighted("Edit", 12.0, None, TextWeight::Medium)
-                    .0,
-            ) + 24.0;
-            rx -= ew;
-            self.pill(
-                ctx,
-                Point::new(rx, cy - 13.0),
-                26.0,
-                "Edit",
-                12.0,
-                Action::EditScheme(s.id.clone()),
-            );
-            rx -= rhythm::SIBLING;
-        }
-        let dw = f64::from(
-            ctx.text
-                .measure_weighted("Duplicate", 12.0, None, TextWeight::Medium)
-                .0,
-        ) + 24.0;
-        rx -= dw;
-        self.pill(
-            ctx,
-            Point::new(rx, cy - 13.0),
-            26.0,
-            "Duplicate",
-            12.0,
-            Action::DuplicateScheme(s.id.clone()),
-        );
-        rx
-    }
-
-    /// Name click: rename (custom) / apply (built-in), bounded before the
-    /// right cluster. `slot` spans the row from the name's left edge to the
-    /// cluster. When renaming, the inline editor fills the slot.
-    fn draw_scheme_name_interaction(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        slot: Rect,
-        s: &ColorScheme,
-    ) {
-        let theme = ctx.theme;
-        let (name_x, y) = (slot.x0, slot.y0);
-        let name_end = slot.x1 - rhythm::SIBLING;
-        let use_action = Self::scheme_use_action(s);
-        if self.renaming_scheme(&s.id) {
-            let field_x1 = name_end.max(name_x + 120.0);
-            // Back off by the shared field's text inset so the edited name
-            // starts exactly where the static name is painted.
-            let field_rect = Rect::new(
-                name_x - f64::from(theme.padding_standard),
-                y + 8.0,
-                field_x1,
-                y + 8.0 + 28.0,
-            );
-            if let Some(rn) = self.renaming.as_mut() {
-                rn.field.apply_layout_external(field_rect);
-                rn.field.draw(
-                    ctx.scene,
-                    ctx.transform,
-                    ctx.text,
-                    theme,
-                    &ui::presence::PresenceCtx::empty(),
-                );
-            }
-        } else if name_end > name_x {
-            if s.builtin {
-                self.push_hit(
-                    Rect::new(name_x, y + 8.0, name_end, slot.y1 - 8.0),
-                    use_action,
-                );
-            } else {
-                // The name line renames; the status line under it applies the
-                // scheme. The two targets sit an `s1` apart so neither the
-                // pointer nor the accessibility tree sees them share an edge.
-                let split = y + 34.0;
-                self.push_hit(
-                    Rect::new(name_x, y + 8.0, name_end, split - rhythm::TIGHT / 2.0),
-                    Action::BeginRenameScheme(s.id.clone()),
-                );
-                self.push_hit(
-                    Rect::new(name_x, split + rhythm::TIGHT / 2.0, name_end, slot.y1 - 8.0),
-                    use_action,
-                );
-            }
+            x += side + gap;
         }
     }
 
+    /// The scheme editor sheet: the scheme's name (rename in place), its
+    /// three colours (each opens the colour picker), and a preview page.
     fn draw_scheme_editor(&mut self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;
         let Some(id) = self.editing_scheme.clone() else {
@@ -11676,246 +10680,207 @@ impl BooksApp {
         let Some(scheme) = self.schemes.iter().find(|s| s.id == id).cloned() else {
             return;
         };
-        let r = self.rect;
-        chrome::sheet_scrim(ctx.scene, ctx.transform, theme, r);
-        self.push_hit(r, Action::CloseSchemeEditor);
+        let spacing = &theme.tokens.spacing;
+        let rhythm = &spacing.rhythm;
+        let swatch_h = f64::from(spacing.s12);
+        let preview_h = f64::from(spacing.s16) + f64::from(spacing.s4);
+        let field_h = ControlSize::Regular.height(theme);
+        let sub = ctx.line_box(TextRole::Subheading);
+        let caption = ctx.line_box(TextRole::Caption);
+        let body_h = sub
+            + f64::from(rhythm.related)
+            + field_h
+            + f64::from(rhythm.group)
+            + sub
+            + f64::from(rhythm.related)
+            + swatch_h
+            + f64::from(rhythm.tight)
+            + caption
+            + f64::from(rhythm.group)
+            + sub
+            + f64::from(rhythm.related)
+            + preview_h;
+        let mut done = ModalAction::primary("Done");
+        done.hovered = self
+            .modal_actions
+            .first()
+            .is_some_and(|rect| rect.contains(self.cursor));
+        let actions = [done];
+        let spec = ModalSpec::new("Edit scheme")
+            .actions(&actions)
+            .body_height(body_h)
+            .max_width(f64::from(theme.tokens.metrics.panel_width_list) + f64::from(spacing.s16));
+        let layout = modal_dialog::layout(self.rect, &spec, ctx.text, theme);
+        modal_dialog::paint_backdrop(ctx.scene, ctx.transform, ctx.text, theme, &layout, &spec);
+        modal_dialog::paint_actions(ctx.scene, ctx.transform, ctx.text, theme, &layout, &spec);
+        self.push_hit(layout.scrim, Action::CloseSchemeEditor);
+        self.push_hit(layout.card, Action::Swallow);
+        if let Some(close) = layout.close {
+            self.push_hit(close, Action::CloseSchemeEditor);
+        }
+        self.modal_actions.clone_from(&layout.actions);
+        if let Some(done) = layout.actions.first() {
+            self.push_hit(*done, Action::CloseSchemeEditor);
+        }
 
-        let pw = 440.0_f64.min(r.width() - 40.0);
-        let ph = 372.0_f64.min(r.height() - 40.0);
-        let px0 = r.x0 + (r.width() - pw) / 2.0;
-        let py0 = r.y0 + (r.height() - ph) / 2.0;
-        let panel = Rect::new(px0, py0, px0 + pw, py0 + ph);
-        chrome::panel(ctx.scene, ctx.transform, theme, panel);
-        self.push_hit(panel, Action::Swallow);
-
-        let ix0 = px0 + rhythm::GROUP;
-        let ix1 = px0 + pw - rhythm::GROUP;
-        let y = py0 + rhythm::GROUP;
-
-        let y = self.draw_scheme_editor_title(ctx, ix0, ix1, y, &scheme);
-        let y = self.draw_scheme_editor_swatches(ctx, ix0, ix1, y, &scheme);
-        let y = Self::draw_scheme_editor_preview(ctx, ix0, ix1, y, &scheme);
-        self.draw_scheme_editor_done_button(ctx, ix1, y);
+        let panel_theme = theme.on_ground(ui::chrome::panel_ground(theme));
+        let mut panel = PaintCtx::new(ctx.scene, ctx.transform, ctx.text, &panel_theme);
+        self.draw_scheme_editor_body(
+            &mut panel,
+            layout.body,
+            &scheme,
+            SchemeEditorMetrics {
+                sub,
+                caption,
+                field_h,
+                swatch_h,
+                preview_h,
+            },
+        );
     }
 
-    /// "EDIT SCHEME" title + the scheme name (or its inline rename editor).
-    /// Returns the y just below it.
-    fn draw_scheme_editor_title(
+    /// The scheme editor's body: the name, the three colours and the
+    /// preview page, in `body`.
+    fn draw_scheme_editor_body(
         &mut self,
-        ctx: &mut PaintCtx<'_>,
-        ix0: f64,
-        ix1: f64,
-        mut y: f64,
+        panel: &mut PaintCtx<'_>,
+        body: Rect,
         scheme: &ColorScheme,
-    ) -> f64 {
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "EDIT SCHEME",
-            11.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((ix0, y)),
+        m: SchemeEditorMetrics,
+    ) {
+        let panel_theme = panel.theme;
+        let spacing = &panel_theme.tokens.spacing;
+        let rhythm = &spacing.rhythm;
+        let SchemeEditorMetrics {
+            sub,
+            caption,
+            field_h,
+            swatch_h,
+            preview_h,
+        } = m;
+        let mut y = body.y0;
+        panel.text_role(
+            "Name",
+            TextRole::Subheading,
+            panel_theme.text_primary,
+            Point::new(body.x0, y),
             None,
-            TextWeight::Semibold,
         );
-        y += 18.0;
+        y += sub + f64::from(rhythm.related);
+        let field = Rect::new(body.x0, y, body.x1, y + field_h);
         if self.renaming_scheme(&scheme.id) {
-            let field_rect = Rect::new(ix0 - 6.0, y - 4.0, ix1 - 60.0, y + 30.0);
             if let Some(rn) = self.renaming.as_mut() {
-                rn.field.apply_layout_external(field_rect);
+                rn.field.apply_layout_external(field);
                 rn.field.draw(
-                    ctx.scene,
-                    ctx.transform,
-                    ctx.text,
-                    theme,
+                    panel.scene,
+                    panel.transform,
+                    panel.text,
+                    panel_theme,
                     &ui::presence::PresenceCtx::empty(),
                 );
             }
         } else {
-            ctx.text.draw_text_weighted(
-                ctx.scene,
+            let width = button_width(
+                panel,
                 &scheme.name,
-                20.0,
-                c.text_primary,
-                ctx.transform * Affine::translate((ix0, y)),
-                None,
-                TextWeight::Bold,
+                Some(Icon::Pencil),
+                ControlSize::Regular,
             );
-            self.push_hit(
-                Rect::new(ix0, y - 2.0, ix1 - 60.0, y + 26.0),
+            let rect = Rect::new(field.x0, field.y0, field.x0 + width, field.y1);
+            self.button(
+                panel,
+                ButtonFace::new(rect, &scheme.name)
+                    .icon(Icon::Pencil)
+                    .accessible_name("Rename scheme")
+                    .role(ButtonRole::Plain),
                 Action::BeginRenameScheme(scheme.id.clone()),
             );
         }
-        y + 40.0
-    }
+        y = field.y1 + f64::from(rhythm.group);
 
-    /// "COLOURS" section: one swatch per scheme slot, each opening the
-    /// colour picker. Returns the y just below it.
-    fn draw_scheme_editor_swatches(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        ix0: f64,
-        ix1: f64,
-        mut y: f64,
-        scheme: &ColorScheme,
-    ) -> f64 {
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "COLOURS · tap a swatch to open the picker",
-            10.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((ix0, y)),
+        panel.text_role(
+            "Colours",
+            TextRole::Subheading,
+            panel_theme.text_primary,
+            Point::new(body.x0, y),
             None,
-            TextWeight::Semibold,
         );
-        y += 18.0;
-        let slots = scheme.slots();
-        let slot_w = (ix1 - ix0 - 2.0 * rhythm::SECTION) / 3.0;
-        let mut sxx = ix0;
-        for (i, (label, col)) in slots.iter().enumerate() {
-            let sr = Rect::new(sxx, y, sxx + slot_w, y + 60.0);
-            let fill = Color::from_rgb8(col[0], col[1], col[2]);
-            ctx.fill_round(sr, 10.0, fill);
-            // The swatch edge derives from the swatch, so the page-white
-            // tile keeps its outline on a light panel.
-            if self.is_hover(sr) {
-                ctx.stroke_round(sr, 10.0, theme.border_focus, 2.0);
-            } else {
-                chrome::edge(ctx.scene, ctx.transform, fill, sr, 10.0);
-            }
-            self.push_hit(sr, Action::PickSchemeColor(scheme.id.clone(), i));
-            let (lw, _) = ctx.text.measure(label, 12.0, None);
-            ctx.text.draw_text(
-                ctx.scene,
+        y += sub + f64::from(rhythm.related);
+        let gap = f64::from(rhythm.section);
+        let slot_w = (body.width() - 2.0 * gap) / 3.0;
+        let mut x = body.x0;
+        for (i, (label, rgb)) in scheme.slots().into_iter().enumerate() {
+            let rect = Rect::new(x, y, x + slot_w, y + swatch_h);
+            ColorSwatchFace::new(rect, Color::from_rgb8(rgb[0], rgb[1], rgb[2]), label)
+                .hovered(rect.contains(self.cursor))
+                .paint(panel.scene, panel.transform, panel.text, panel_theme);
+            self.push_hit(rect, Action::PickSchemeColor(scheme.id.clone(), i));
+            let w = panel.measure_role(label, TextRole::Caption, None).width;
+            panel.text_role(
                 label,
-                12.0,
-                c.text_dim,
-                ctx.transform
-                    * Affine::translate((
-                        sxx + (slot_w - f64::from(lw)) / 2.0,
-                        y + 60.0 + rhythm::RELATED,
-                    )),
+                TextRole::Caption,
+                panel_theme.text_dim,
+                Point::new(x + (slot_w - w) / 2.0, rect.y1 + f64::from(rhythm.tight)),
                 None,
             );
-            sxx += slot_w + rhythm::SECTION;
+            x += slot_w + gap;
         }
-        y + 60.0 + 32.0
-    }
+        y += swatch_h + f64::from(rhythm.tight) + caption + f64::from(rhythm.group);
 
-    /// "PREVIEW" section: a mock reading card rendered in the scheme's own
-    /// palette. Returns the y just below it.
-    fn draw_scheme_editor_preview(
-        ctx: &mut PaintCtx<'_>,
-        ix0: f64,
-        ix1: f64,
-        mut y: f64,
-        scheme: &ColorScheme,
-    ) -> f64 {
-        let c = &ctx.theme.tokens.colors;
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "PREVIEW",
-            10.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((ix0, y)),
+        panel.text_role(
+            "Preview",
+            TextRole::Subheading,
+            panel_theme.text_primary,
+            Point::new(body.x0, y),
             None,
-            TextWeight::Semibold,
         );
-        y += 16.0;
+        y += sub + f64::from(rhythm.related);
         let pal = ReaderPalette::from_scheme(scheme);
-        let prev = Rect::new(ix0, y, ix1, y + 72.0);
-        // The preview is a page in the scheme's own palette, seated on the
-        // panel by an edge derived from that page colour.
-        ctx.fill_round(prev, 8.0, pal.page);
-        chrome::edge(ctx.scene, ctx.transform, pal.page, prev, 8.0);
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "The quick brown fox",
-            15.0,
+        let page = Rect::new(body.x0, y, body.x1, y + preview_h);
+        let radius = f64::from(panel_theme.tokens.radii.control);
+        panel.fill_round(page, radius, pal.page);
+        panel.stroke_round(page, radius, pal.page_edge, 1.0);
+        let inset = f64::from(spacing.s4);
+        let sample = "The quick brown fox jumps over the lazy dog.";
+        let wrap = Some(ui::num::f32_of_f64((page.width() - 2.0 * inset).max(1.0)));
+        panel.text_role(
+            sample,
+            TextRole::Reading,
             pal.ink,
-            ctx.transform * Affine::translate((ix0 + 14.0, y + 12.0)),
-            None,
-            TextWeight::Semibold,
+            Point::new(page.x0 + inset, page.y0 + inset),
+            wrap,
         );
-        ctx.text.draw_text(
-            ctx.scene,
-            "jumps over the lazy dog.",
-            13.0,
-            pal.ink_dim,
-            ctx.transform * Affine::translate((ix0 + 14.0, y + 38.0)),
-            None,
-        );
-        let chip = Rect::new(ix1 - 64.0, y + 46.0, ix1 - 14.0, y + 54.0);
-        ctx.fill_round(chip, 4.0, pal.accent);
-        y + 72.0 + 22.0
     }
 
-    /// The "Done" button that closes the editor.
-    fn draw_scheme_editor_done_button(&mut self, ctx: &mut PaintCtx<'_>, ix1: f64, y: f64) {
-        let theme = ctx.theme;
-        let done_w = f64::from(
-            ctx.text
-                .measure_weighted("Done", 13.0, None, TextWeight::Semibold)
-                .0,
-        ) + 40.0;
-        let drect = Rect::new(ix1 - done_w, y, ix1, y + 34.0);
-        Button::paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            &ButtonFace::new(drect, "Done")
-                .primary()
-                .radius(17.0)
-                .text_size(13.0)
-                .weight(TextWeight::Semibold)
-                .hovered(self.is_hover(drect)),
-        );
-        self.push_hit(drect, Action::CloseSchemeEditor);
-    }
-
+    /// The "Add a system font" sheet: every installed family, each previewed
+    /// in its own face; choosing one adds it.
     fn draw_font_picker(&mut self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let r = self.rect;
-        chrome::sheet_scrim(ctx.scene, ctx.transform, theme, r);
-        self.push_hit(r, Action::CloseFontPicker);
+        // A colour-emoji face cannot set a book's text (nor preview its own
+        // name), so it is not offered.
+        let fams: Vec<String> = ctx
+            .text
+            .system_families()
+            .into_iter()
+            .filter(|family| !family.to_lowercase().contains("emoji"))
+            .collect();
+        let row_h = ui::chrome::nav_row_height(theme);
+        let wanted = fams.len() as f64 * row_h;
+        let spec = ModalSpec::new("Add a system font")
+            .body_height(wanted)
+            .max_width(f64::from(theme.tokens.metrics.panel_width_list))
+            .close_hovered(self.modal_close.contains(self.cursor));
+        let layout = modal_dialog::layout(self.rect, &spec, ctx.text, theme);
+        modal_dialog::paint_backdrop(ctx.scene, ctx.transform, ctx.text, theme, &layout, &spec);
+        self.push_hit(layout.scrim, Action::CloseFontPicker);
+        self.push_hit(layout.card, Action::Swallow);
+        self.modal_close = layout.close.unwrap_or(Rect::ZERO);
+        if let Some(close) = layout.close {
+            self.push_hit(close, Action::CloseFontPicker);
+        }
 
-        let pw = 380.0_f64.min(r.width() - 40.0);
-        let ph = (r.height() - 120.0).clamp(200.0, 520.0);
-        let px0 = r.x0 + (r.width() - pw) / 2.0;
-        let py0 = r.y0 + (r.height() - ph) / 2.0;
-        let panel = Rect::new(px0, py0, px0 + pw, py0 + ph);
-        chrome::panel(ctx.scene, ctx.transform, theme, panel);
-        self.push_hit(panel, Action::Swallow);
-        ctx.text.draw_text_weighted(
-            ctx.scene,
-            "Add a system font",
-            16.0,
-            c.text_primary,
-            ctx.transform * Affine::translate((px0 + 20.0, py0 + 16.0)),
-            None,
-            TextWeight::Bold,
-        );
-        let close = Rect::new(px0 + pw - 40.0, py0 + 14.0, px0 + pw - 16.0, py0 + 38.0);
-        paint::close(
-            ctx.scene,
-            ctx.transform,
-            close,
-            if self.is_hover(close) {
-                c.text_primary
-            } else {
-                c.text_dim
-            },
-            1.5,
-        );
-        self.push_hit(close, Action::CloseFontPicker);
-
-        let list_top = py0 + 52.0;
-        let list = Rect::new(px0, list_top, px0 + pw, py0 + ph - 14.0);
+        let panel_theme = theme.on_ground(ui::chrome::panel_ground(theme));
+        let list = layout.body;
         ctx.scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -11923,47 +10888,68 @@ impl BooksApp {
             ctx.transform,
             &list,
         );
-        let fams = ctx.text.system_families();
-        let row_h = 40.0;
-        let mut fy = list_top - self.picker_scroll;
+        let style = panel_theme.text(TextRole::Body);
+        let pad = f64::from(theme.tokens.spacing.s3);
+        let mut fy = list.y0 - self.picker_scroll;
         for fam in &fams {
             if fy > list.y1 || fy + row_h < list.y0 {
                 fy += row_h;
                 continue;
             }
-            let rr = Rect::new(
-                px0 + rhythm::SIBLING,
-                fy,
-                px0 + pw - rhythm::SIBLING,
-                fy + row_h - rhythm::TIGHT,
-            );
-            chrome::row(
+            let row = Rect::new(list.x0, fy, list.x1, fy + row_h);
+            let hovered = row.contains(self.cursor) && list.contains(self.cursor);
+            ui::chrome::paint_row_selection(
                 ctx.scene,
                 ctx.transform,
-                theme,
-                rr,
-                f64::from(theme.tokens.radii.md),
-                SelectionState::new(false, self.is_hover(rr), false),
-                false,
+                row,
+                SelectionState::new(false, hovered, false),
+                panel_theme.tokens.colors.surfaces.content,
+                &panel_theme,
             );
-            // Preview each family by rendering its own name in it.
-            ctx.text.draw_style(
-                ctx.scene,
+            // Each family previews itself: its name set in its own face.
+            let face = style.clone().with_family(FontChoice::Named(fam.clone()));
+            let (_, h) = ctx.text.measure_style(fam, None, &face);
+            ctx.text(
                 fam,
-                c.text_primary,
-                ctx.transform * Affine::translate((px0 + 22.0, fy + 10.0)),
+                &face,
+                panel_theme.text_primary,
+                Point::new(
+                    row.x0 + pad,
+                    ui::text_metrics::centered_text_top(row.y0, row_h, f64::from(h)),
+                ),
                 None,
-                &TextStyle::new(15.0).with_family(FontChoice::Named(fam.clone())),
             );
-            self.push_hit(rr, Action::AddSystemFont(fam.clone()));
+            self.push_hit(row.intersect(list), Action::AddSystemFont(fam.clone()));
             fy += row_h;
         }
         ctx.scene.pop_layer();
-        let content = fams.len() as f64 * row_h;
-        let visible = (list.y1 - list.y0).max(0.0);
-        self.picker_max_scroll = (content - visible + 8.0).max(0.0);
+        self.picker_max_scroll = (wanted - list.height()).max(0.0);
         self.picker_scroll = self.picker_scroll.clamp(0.0, self.picker_max_scroll);
+        paint_scroll_thumb(
+            ctx,
+            list,
+            ScrollMetrics::new(wanted, list.height(), self.picker_scroll),
+        );
     }
+}
+
+/// A reader's notes for the long-annotations capture, cycled over the
+/// book's paragraphs.
+const SHOT_NOTES: [&str; 8] = [
+    "Compare with the keeper's log in the third chapter.",
+    "The light as a promise rather than a warning.",
+    "Read this aloud at the reading group.",
+    "Isolde never says why she stays. Ask about this on Thursday.",
+    "Lovely rhythm in this sentence.",
+    "Seven hands in the almanac: who wrote the last entry?",
+    "The same image as the opening, turned around.",
+    "Look up what a tide-house actually was.",
+];
+
+/// The legend printed on `key`'s cap in the active keyboard layout, as a
+/// shortcut row and its messages name it.
+fn key_legend(key: &str) -> String {
+    ui::KeyLegend::from_name(key).label(ui::PlatformConventions::default())
 }
 
 /// Sub-pixel x-span `[x_lo, x_hi]` of chars `[lo, hi)` within a run laid out at
@@ -12016,116 +11002,6 @@ fn page_for_block(layout: &ChapterLayout, block: usize) -> usize {
         }
     }
     page
-}
-
-/// Blit a decoded cover into `rect` with cover-fit cropping and a rounded
-/// clip, so real artwork of any aspect fills the shelf slot cleanly.
-fn blit_cover(scene: &mut Scene, t: Affine, img: PenikoImage, rect: Rect, radius: f64) {
-    let iw = f64::from(img.width.max(1));
-    let ih = f64::from(img.height.max(1));
-    let (rw, rh) = (rect.width(), rect.height());
-    if rw <= 0.0 || rh <= 0.0 {
-        return;
-    }
-    let scale = (rw / iw).max(rh / ih);
-    let dw = iw * scale;
-    let dh = ih * scale;
-    let dx = rect.x0 + (rw - dw) * 0.5;
-    let dy = rect.y0 + (rh - dh) * 0.5;
-    let brush_transform = Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
-
-    let clip = RoundedRect::from_rect(rect, radius);
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
-    let brush = ImageBrush::new(img);
-    scene.fill(Fill::NonZero, t, &brush, Some(brush_transform), &rect);
-    scene.pop_layer();
-}
-
-/// Stroke a dashed border along the straight edges of a rounded rectangle (the
-/// rounded corners are left as small gaps). Reads as a drop-zone outline.
-/// Stroke parameters for [`dashed_round_border`], grouped so the border
-/// drawer stays under clippy's argument-count lint.
-struct DashStyle {
-    width: f64,
-    dash: f64,
-    gap: f64,
-}
-
-#[allow(
-    clippy::while_float,
-    reason = "each iteration advances by a fixed positive step (dash + gap), so both loops \
-              are bounded regardless of float imprecision"
-)]
-fn dashed_round_border(
-    scene: &mut Scene,
-    t: Affine,
-    rect: Rect,
-    radius: f64,
-    color: Color,
-    style: &DashStyle,
-) {
-    let step = style.dash + style.gap;
-    // Top + bottom edges, between the corner radii.
-    let (hx0, hx1) = (rect.x0 + radius, rect.x1 - radius);
-    let mut x = hx0;
-    while x < hx1 {
-        let xe = (x + style.dash).min(hx1);
-        paint::line(
-            scene,
-            t,
-            Point::new(x, rect.y0),
-            Point::new(xe, rect.y0),
-            color,
-            style.width,
-        );
-        paint::line(
-            scene,
-            t,
-            Point::new(x, rect.y1),
-            Point::new(xe, rect.y1),
-            color,
-            style.width,
-        );
-        x += step;
-    }
-    // Left + right edges.
-    let (vy0, vy1) = (rect.y0 + radius, rect.y1 - radius);
-    let mut y = vy0;
-    while y < vy1 {
-        let ye = (y + style.dash).min(vy1);
-        paint::line(
-            scene,
-            t,
-            Point::new(rect.x0, y),
-            Point::new(rect.x0, ye),
-            color,
-            style.width,
-        );
-        paint::line(
-            scene,
-            t,
-            Point::new(rect.x1, y),
-            Point::new(rect.x1, ye),
-            color,
-            style.width,
-        );
-        y += step;
-    }
-}
-
-/// Pick a cover spine + readable ink for a book, sourced entirely from theme
-/// tokens (semantic hues + accent) so covers stay on-brand across OS themes.
-fn cover_colors(theme: &Theme, tint: usize) -> (Color, Color) {
-    let c = &theme.tokens.colors;
-    let base = match tint % 5 {
-        0 => c.semantic.info,
-        1 => c.accent[5],
-        2 => c.semantic.success,
-        3 => c.semantic.warning,
-        _ => c.semantic.danger,
-    };
-    let ink = theme.on_surface(base).ink;
-    (base, ink)
 }
 
 #[cfg(test)]
