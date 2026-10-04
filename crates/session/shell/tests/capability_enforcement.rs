@@ -538,6 +538,7 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
         )
         .expect("grant membership");
 
+        persist::wait_for_saves();
         let raw = std::fs::read_to_string(&acl_path).expect("the export must exist after a grant");
         let exported: Vec<CapOverride> =
             serde_json::from_str(&raw).expect("the export must be the array the filesystem parses");
@@ -556,6 +557,7 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
         );
 
         assert!(tree.revoke_in_workspace(id, &ALICE.to_string(), "bob-design"));
+        persist::wait_for_saves();
         let raw = std::fs::read_to_string(&acl_path).expect("export still present");
         let exported: Vec<CapOverride> = serde_json::from_str(&raw).expect("parse");
         assert!(
