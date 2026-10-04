@@ -366,6 +366,20 @@ impl<R: Resource> ResourceRoot<R> {
             }
             resource = resource.with_action(spec.clone());
         }
+        // The app's own effects come before the framework's history and
+        // render operations: an app answering `diff` its own way is asked.
+        for spec in self.effects.specs() {
+            let shadowed = resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id);
+            debug_assert!(!shadowed, "effect `{}` shadows an action", spec.id);
+            if shadowed {
+                tracing::warn!(effect = spec.id, "effect shadows an action; not published");
+                continue;
+            }
+            resource = resource.with_action(spec);
+        }
         if cfg!(not(target_family = "wasm"))
             && !resource
                 .actions
@@ -384,18 +398,6 @@ impl<R: Resource> ResourceRoot<R> {
             }
         }
         resource.children.extend(self.storage.person_resources());
-        for spec in self.effects.specs() {
-            let shadowed = resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == spec.id);
-            debug_assert!(!shadowed, "effect `{}` shadows an action", spec.id);
-            if shadowed {
-                tracing::warn!(effect = spec.id, "effect shadows an action; not published");
-                continue;
-            }
-            resource = resource.with_action(spec);
-        }
         resource
     }
 
