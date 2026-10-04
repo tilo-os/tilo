@@ -63,7 +63,7 @@ use crate::doc::CalDoc;
 use crate::event_popovers::{EventPopovers, PopoverEdit, PopoverKind as FormPopover};
 use crate::ics;
 use crate::input_context::InputContext;
-use crate::model::{Event, Id, ListSel, Model, Priority, Recurrence, View, seed_demo};
+use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
 use crate::sidebar::{Mode as SidebarMode, Sidebar};
 use crate::timeline_interaction::{
     TIMELINE_SNAP_MIN, TimelineEffect, TimelineInteraction, TimelineRenderEvent,
@@ -142,6 +142,8 @@ enum Action {
     OpenEvent(Id),
     ToggleTask(Id),
     List(ListSel),
+    /// Put the sidebar's task list away, back to the month navigator.
+    CloseList,
     CloseDetail,
     Export,
     Import,
@@ -185,6 +187,10 @@ enum Action {
     /// Delete an event from the model + CRDT (and queue a `CalDAV` delete for a
     /// synced event). Fired by the editor's trash button and the Delete key.
     DeleteEvent(Id),
+    /// Give the edited event one of the calendar colours.
+    SetEventColor(Palette),
+    /// Throw away the new event the sheet was opened for, unsaved.
+    DiscardDraft(Id),
     /// Delete a task (and its subtasks) from the model + CRDT.
     DeleteTask(Id),
     /// Close the status toast.
@@ -277,7 +283,9 @@ pub struct CalendarApp {
     /// `None` shows every visible collection; a stable local/remote calendar
     /// id is set only by the collection resource's canonical `open` action.
     calendar_filter: Option<String>,
-    list_sel: ListSel,
+    /// The task list the sidebar shows in place of the month navigator,
+    /// when one is chosen.
+    list_sel: Option<ListSel>,
     selection: Option<Sel>,
     detail_open: bool,
 
@@ -594,7 +602,7 @@ impl CalendarApp {
             anchor: today,
             view: View::Month,
             calendar_filter: None,
-            list_sel: ListSel::Today,
+            list_sel: None,
             selection,
             detail_open,
             accounts,
@@ -732,6 +740,12 @@ impl CalendarApp {
                 self.task_due_picker.set_selected(self.task_due_seed());
             }
         }
+        self.dirty = true;
+    }
+
+    /// Show the Today task list in the sidebar for a screenshot.
+    pub fn shots_show_task_list(&mut self) {
+        self.list_sel = Some(ListSel::Today);
         self.dirty = true;
     }
 
@@ -1443,20 +1457,17 @@ impl CalendarApp {
             (
                 "Design review",
                 &[
-                    "# Agenda",
-                    "Walk through the latest mockups.",
-                    "Open questions:",
-                    "Sign-off on the final layout?",
-                    "Confirm the launch timeline.",
+                    "Walk through the latest mockups, then settle:",
+                    "- Sign-off on the final layout",
+                    "- The launch timeline",
                 ],
             ),
             (
                 "Team standup",
                 &[
-                    "# Standup",
                     "Wrapped up last week's report.",
                     "Following up with the vendor today.",
-                    "Blockers: none.",
+                    "No blockers.",
                 ],
             ),
         ];
@@ -2133,6 +2144,14 @@ impl CalendarApp {
             self.sidebar.set_open(false);
         }
         self.dirty = true;
+    }
+
+    /// Where the sidebar's overflow menu may open: the window, up to the
+    /// trailing edge of the button that opens it, so the menu hangs under
+    /// the button and stays over the sidebar.
+    fn sidebar_menu_viewport(&self) -> Rect {
+        let button = self.sidebar.menu_rect(&self.layout_theme);
+        Rect::new(self.rect.x0, self.rect.y0, button.x1, self.rect.y1)
     }
 
     /// Delete an event: drop it from the model + CRDT, clear any pending upload,
@@ -2997,6 +3016,7 @@ impl CalendarApp {
         self.layout_sheet();
         if std::mem::take(&mut self.shots_pending_sidebar_menu) && self.sidebar.visible() {
             let anchor = self.sidebar.menu_rect(&theme);
+            self.sidebar_menu.set_viewport(self.sidebar_menu_viewport());
             self.sidebar_menu.open_at(anchor, None);
         }
     }
@@ -3139,13 +3159,12 @@ impl CalendarApp {
             Action::OpenTask(id) => self.select_task(id),
             Action::ToggleTask(id) => self.toggle_task(id, doc),
             Action::List(s) => {
-                self.list_sel = s;
-                // Picking a smart list/project on the narrow flap returns to
-                // the calendar screen and dismisses the flap.
-                if matches!(self.sidebar.mode(), SidebarMode::Overlay) {
-                    self.sidebar.set_open(false);
-                }
+                // The list's tasks show in the sidebar, under the lists, so
+                // the drawer stays open; choosing the shown list again puts
+                // it away.
+                self.list_sel = (self.list_sel != Some(s)).then_some(s);
             }
+            Action::CloseList => self.list_sel = None,
             Action::CloseDetail => {
                 self.discard_pristine_draft(doc);
                 self.detail_open = false;
@@ -3159,6 +3178,7 @@ impl CalendarApp {
                 .open(ui::search::SearchRequest::this_app()),
             Action::OpenSidebarMenu => {
                 let anchor = self.sidebar.menu_rect(&self.layout_theme);
+                self.sidebar_menu.set_viewport(self.sidebar_menu_viewport());
                 self.sidebar_menu.open_at(anchor, None);
             }
             Action::SetCalendarVisible { id, visible } => {
@@ -3207,6 +3227,12 @@ impl CalendarApp {
             Action::OpenPopover(which) => self.open_popover(which),
             Action::FocusField(field) => self.focus_field(field),
             Action::DeleteEvent(id) => self.delete_event(id, doc),
+            Action::SetEventColor(palette) => self.cycle_event(doc, |e| e.color = palette),
+            Action::DiscardDraft(id) => {
+                self.fresh_draft = None;
+                self.delete_event(id, doc);
+                self.status = None;
+            }
             Action::DeleteTask(id) => self.delete_task(id, doc),
             Action::DismissStatus => self.status = None,
             Action::Noop => {}
@@ -3316,9 +3342,15 @@ impl CalendarApp {
                     Role::RadioButton,
                     AccessState::new()
                         .focusable(true)
-                        .checked(self.list_sel == *selection),
+                        .checked(self.list_sel == Some(*selection)),
                 )
             }
+            Action::CloseList => (
+                "calendar.list:close".into(),
+                "Close task list".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
             Action::SetCalendarVisible { id, visible: _ } => {
                 let calendar = self
                     .accounts
@@ -3457,6 +3489,21 @@ impl CalendarApp {
             Action::DeleteEvent(id) => (
                 format!("{}:delete", crate::actions::event_resource_id(*id)),
                 "Delete event".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::SetEventColor(palette) => (
+                format!("calendar.event:colour:{}", palette.index()),
+                palette.name().to_string(),
+                Role::RadioButton,
+                AccessState::new().focusable(true).checked(matches!(
+                    self.selection,
+                    Some(Sel::Event(id)) if self.model.event(id).is_some_and(|event| event.color == *palette)
+                )),
+            ),
+            Action::DiscardDraft(id) => (
+                format!("{}:discard", crate::actions::event_resource_id(*id)),
+                "Discard new event".into(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -4545,7 +4592,6 @@ impl Widget for CalendarApp {
                                     AgendaAction::OpenEvent(id) => Action::OpenEvent(id),
                                     AgendaAction::OpenTask(id) => Action::OpenTask(id),
                                     AgendaAction::ToggleTask(id) => Action::ToggleTask(id),
-                                    AgendaAction::NewEvent => Action::NewEvent,
                                 };
                                 (rect, action)
                             }),
@@ -4571,7 +4617,7 @@ impl Widget for CalendarApp {
     ) {
         self.draw_sheet(scene, transform, text_renderer, theme, presence);
         if self.sidebar_menu.is_open() {
-            self.sidebar_menu.set_viewport(self.rect);
+            self.sidebar_menu.set_viewport(self.sidebar_menu_viewport());
             Widget::draw_overlay(
                 &mut self.sidebar_menu,
                 scene,
@@ -5187,7 +5233,7 @@ impl CalendarApp {
                 if self.model.project(id).is_none() {
                     return Err("project no longer exists".to_string());
                 }
-                self.list_sel = ListSel::Project(id);
+                self.list_sel = Some(ListSel::Project(id));
                 // Opening a project is presentation-only. It must not route
                 // through Back/Close because those deliberately discard a
                 // pristine new-event draft via a durable delete action.

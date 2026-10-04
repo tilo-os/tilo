@@ -218,9 +218,9 @@ impl CalendarApp {
             .collect()
     }
 
-    /// The event chips inside one day cell, clipped to it. An all-day chip
-    /// is filled with its calendar colour and inked for that fill; a timed
-    /// chip is a wash of the colour over the cell's ground with a dot.
+    /// The event chips inside one day cell, clipped to it. Both kinds are a
+    /// wash of the calendar colour over the cell's ground: an all-day chip a
+    /// deeper one spanning the day, a timed chip a light one with a dot.
     fn draw_month_cell_chips(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -276,13 +276,18 @@ impl CalendarApp {
             }
             let color = event.color.color(theme);
             if event.all_day {
-                card(ctx.scene, ctx.transform, chip, radius, color);
-                let ink = c.on_surface_at(color, SMALL_TEXT_MIN_CONTRAST).ink;
+                let tinted = c.tinted_chip_on(
+                    cell_ground,
+                    color,
+                    crate::draw_util::ALL_DAY_WASH,
+                    SMALL_TEXT_MIN_CONTRAST,
+                );
+                card(ctx.scene, ctx.transform, chip, radius, tinted.fill);
                 crate::draw_util::text_in_band(
                     ctx,
                     &event.title,
                     &m.chip,
-                    ink,
+                    tinted.ink,
                     chip.x0 + pad,
                     chip,
                     chip.width() - 2.0 * pad,

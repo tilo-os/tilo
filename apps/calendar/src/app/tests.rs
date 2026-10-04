@@ -25,10 +25,9 @@ fn task_completion_toggles_by_checkbox_and_label() {
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         app.sync(&mut state, &automerge::ROOT);
-        // With no synced accounts the sidebar has room for the task rail
-        // (a machine full of remote calendars still lists tasks in the
-        // agenda/day views — the rail is the space-permitting extra).
+        // A chosen list shows its tasks at the foot of the sidebar.
         app.accounts = AccountStore::default();
+        app.list_sel = Some(ListSel::Today);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
         app.relayout();
         // Draw to populate the hit-map.
@@ -1361,9 +1360,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         app.apply_action(Action::NewEvent, &mut state);
         let id = app.selected_event().expect("new event selected");
         let other = Palette::from_index(app.model.event(id).unwrap().color.index() + 1);
-        app.seed_choices();
-        app.choices.colour.state.set(other.index().to_string());
-        app.commit_choices(&mut state, &automerge::ROOT);
+        app.apply_action(Action::SetEventColor(other), &mut state);
 
         app.apply_action(Action::CloseDetail, &mut state);
 
@@ -1395,6 +1392,35 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         assert!(
             matches!(h.app.selection, Some(Sel::Event(_))),
             "new event is selected"
+        );
+    }
+    // Case `a_new_event_is_discarded_not_deleted`.
+    {
+        // The sheet of an event that was never saved offers to discard it;
+        // discarding removes the draft without an "Event deleted" toast.
+        let mut h = Harness::new(1280, 800);
+        h.app.shots_show_calendar();
+        h.relayout();
+        let p = h
+            .hit_center(|a| matches!(a, Action::NewEvent))
+            .expect("New button");
+        h.click(p);
+        h.relayout();
+        let id = selected_event_id(&h.app);
+        assert!(
+            h.hit_center(|a| matches!(a, Action::DeleteEvent(_)))
+                .is_none(),
+            "an unsaved event has nothing to delete"
+        );
+        let p = h
+            .hit_center(|a| matches!(a, Action::DiscardDraft(_)))
+            .expect("the sheet offers to discard the new event");
+        h.click(p);
+        assert!(h.app.model.event(id).is_none(), "the draft is gone");
+        assert!(h.app.fresh_draft.is_none());
+        assert!(
+            h.app.status.is_none(),
+            "discarding is not reported as a deletion"
         );
     }
     // Case `new_event_is_untitled_with_a_placeholder_and_empty_notes`.
@@ -2252,7 +2278,15 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
             .find(|node| node.action_target.as_deref() == Some("calendar.list:today"))
             .expect("Today smart list is reachable to assistive technology");
         assert_eq!(today.role, Role::RadioButton);
-        assert_eq!(today.state.checked, Some(true));
+        assert_eq!(
+            today.state.checked,
+            Some(false),
+            "no task list is chosen until the person picks one"
+        );
+        app.apply_action(Action::List(ListSel::Today), &mut state);
+        assert_eq!(app.list_sel, Some(ListSel::Today));
+        app.apply_action(Action::List(ListSel::Today), &mut state);
+        assert_eq!(app.list_sel, None, "choosing the shown list puts it away");
 
         let (calendar_id, before) = app
             .accounts
@@ -3445,16 +3479,16 @@ fn detail_dropdowns_write_into_the_crdt_and_the_exported_ics_file() {
         };
         let before = app.model.event(id).unwrap().color;
         let other = Palette::from_index(before.index() + 1);
-        pick(
-            &mut app,
-            &mut state,
-            |c| &mut c.colour,
-            &other.index().to_string(),
-        );
+        app.apply_action(Action::SetEventColor(other), &mut state);
         assert_eq!(
             app.model.event(id).unwrap().color,
             other,
             "the pick sets the colour"
+        );
+        assert_eq!(
+            CalDoc::read_model(&state).event(id).unwrap().color,
+            other,
+            "and mirrors it into the document"
         );
     }
     // Case `picking_an_alert_reaches_the_exported_ics`.

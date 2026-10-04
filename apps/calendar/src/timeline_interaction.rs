@@ -15,7 +15,9 @@ use ui::dnd::DRAG_START_THRESHOLD_PX;
 use ui::paint::PaintCtx;
 
 use crate::date;
-use crate::draw_util::{disc, hairline, line_height, stroke_line, text_centered, text_in_band};
+use crate::draw_util::{
+    disc, hairline, line_height, stroke_line, text_centered, text_in_band, wrap_lines,
+};
 use crate::model::{Id, Palette};
 use crate::timeline_viewport::{TimelineGeom, TimelineType, TimelineViewport};
 use ui::surface::card;
@@ -500,20 +502,24 @@ impl TimelineInteraction {
                 .iter()
                 .find(|event| event.day == *day && event.all_day)
             {
-                let fill = event.color.color(theme);
+                let tinted = colors.tinted_chip_on(
+                    colors.surfaces.content,
+                    event.color.color(theme),
+                    crate::draw_util::ALL_DAY_WASH,
+                    SMALL_TEXT_MIN_CONTRAST,
+                );
                 card(
                     ctx.scene,
                     ctx.transform,
                     strip,
                     f64::from(theme.tokens.radii.detail),
-                    fill,
+                    tinted.fill,
                 );
-                let ink = colors.on_surface_at(fill, SMALL_TEXT_MIN_CONTRAST).ink;
                 text_in_band(
                     ctx,
                     event.title,
                     &ty.strip,
-                    ink,
+                    tinted.ink,
                     strip.x0 + s1 + s1 / 2.0,
                     strip,
                     strip.width() - 3.0 * s1,
@@ -641,46 +647,36 @@ impl TimelineInteraction {
                     color,
                 );
                 let text_x = block.x0 + 2.0 * s1;
-                let text_w = block.x1 - s1 - text_x;
-                let title = ctx.text.elide_to_width_style(
-                    event.title,
-                    ui::num::f32_of_f64(text_w.max(0.0)),
-                    &ty.title,
-                );
-                // The time line only appears when both lines fit inside the
-                // block's padding.
+                let text_w = (block.x1 - s1 - text_x).max(0.0);
+                // The title comes first and wraps over every line the block
+                // has room for; the time and then the location follow on
+                // lines of their own while room is left. The block's place
+                // in the grid already tells the time.
                 let title_h = line_height(ctx, &ty.title);
                 let subtitle_h = line_height(ctx, &ty.subtitle);
-                ctx.text(
-                    &title,
-                    &ty.title,
-                    tinted.ink,
-                    Point::new(text_x, block.y0 + s1),
-                    None,
+                let room = block.height() - 2.0 * s1;
+                let max_lines = ((room / title_h).floor() as usize).max(1);
+                let mut y = block.y0 + s1;
+                for line in wrap_lines(ctx, event.title, &ty.title, text_w, max_lines) {
+                    ctx.text(&line, &ty.title, tinted.ink, Point::new(text_x, y), None);
+                    y += title_h;
+                }
+                let time = format!(
+                    "{}–{}",
+                    fmt_event_min(event.start_min),
+                    fmt_event_min(event.end_min)
                 );
-                if block.height() > 2.0 * s1 + title_h + subtitle_h {
-                    let time = format!(
-                        "{}–{}",
-                        fmt_event_min(event.start_min),
-                        fmt_event_min(event.end_min)
-                    );
-                    let subtitle = if event.location.is_empty() {
-                        time
-                    } else {
-                        format!("{time}, {}", event.location)
-                    };
-                    let subtitle = ctx.text.elide_to_width_style(
-                        &subtitle,
-                        ui::num::f32_of_f64(text_w.max(0.0)),
+                for line in [time.as_str(), event.location] {
+                    if line.is_empty() || y + subtitle_h > block.y1 - s1 + 0.5 {
+                        break;
+                    }
+                    let line = ctx.text.elide_to_width_style(
+                        line,
+                        ui::num::f32_of_f64(text_w),
                         &ty.subtitle,
                     );
-                    ctx.text(
-                        &subtitle,
-                        &ty.subtitle,
-                        tinted.ink,
-                        Point::new(text_x, block.y0 + s1 + title_h),
-                        None,
-                    );
+                    ctx.text(&line, &ty.subtitle, tinted.ink, Point::new(text_x, y), None);
+                    y += subtitle_h;
                 }
                 ctx.scene.pop_layer();
                 let visible = block.intersect(body);

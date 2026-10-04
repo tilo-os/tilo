@@ -86,8 +86,12 @@ impl CalendarApp {
         let picker = self.mini_month_rect(&chrome.theme);
         self.draw_sidebar_lists(&mut ctx, &mut column);
         self.draw_sidebar_calendars(&mut ctx, &mut column);
-        self.draw_sidebar_tasks(&mut ctx, &mut column, picker.y0);
-        if column.y <= picker.y0 {
+        // A chosen task list takes the bottom of the sidebar; with none
+        // chosen, the month navigator does.
+        if let Some(list) = self.list_sel {
+            let bottom = rect.y1 - f64::from(chrome.theme.tokens.spacing.s3);
+            self.draw_sidebar_tasks(&mut ctx, &mut column, list, bottom);
+        } else if column.y <= picker.y0 {
             self.draw_sidebar_month(&mut ctx, &mut column, picker);
         }
         ctx.scene.pop_layer();
@@ -125,7 +129,7 @@ impl CalendarApp {
             let mut face = NavRowFace::new(rect, label)
                 .icon(icon)
                 .state(SelectionState::new(
-                    self.list_sel == sel,
+                    self.list_sel == Some(sel),
                     rect.contains(column.pointer),
                     false,
                 ));
@@ -161,7 +165,7 @@ impl CalendarApp {
                 })
                 .count();
             let mut face = NavRowFace::new(rect, &project.name).state(SelectionState::new(
-                self.list_sel == sel,
+                self.list_sel == Some(sel),
                 rect.contains(column.pointer),
                 false,
             ));
@@ -228,18 +232,24 @@ impl CalendarApp {
         }
     }
 
-    /// The selected list's open tasks, when there is room above the month
-    /// navigator. The checkbox and the label complete a task; the rest of
-    /// the row opens it.
-    fn draw_sidebar_tasks(&self, ctx: &mut PaintCtx<'_>, column: &mut Column<'_>, limit: f64) {
+    /// The chosen list's tasks under its name, down to `limit`. The
+    /// heading's trailing action puts the list away; a task's checkbox and
+    /// label complete it; the rest of the row opens it.
+    fn draw_sidebar_tasks(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        column: &mut Column<'_>,
+        list: ListSel,
+        limit: f64,
+    ) {
         let theme = column.theme;
         let row_h = nav_row_height(theme);
-        let tasks = self.model.tasks_for(&self.list_sel, self.today);
+        let tasks = self.model.tasks_for(&list, self.today);
         let section_h = nav_section_height(theme, false);
-        if tasks.is_empty() || column.y + section_h + row_h > limit {
+        if column.y + section_h > limit {
             return;
         }
-        let title = match &self.list_sel {
+        let title = match &list {
             ListSel::Inbox => "Inbox",
             ListSel::Today => "Today",
             ListSel::Upcoming => "Upcoming",
@@ -250,14 +260,32 @@ impl CalendarApp {
                 .map_or("Tasks", |project| project.name.as_str()),
         };
         let band = column.row(section_h);
-        chrome::paint_nav_section(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            &NavSectionFace::new(band, title),
-        );
+        let face = NavSectionFace::new(band, title).action(Icon::X);
+        let layout = nav_section_layout(theme, &face);
+        let face = NavSectionFace {
+            action_hover: layout.action.is_some_and(|a| a.contains(column.pointer)),
+            ..face
+        };
+        chrome::paint_nav_section(ctx.scene, ctx.transform, ctx.text, theme, &face);
+        if let Some(action) = layout.action {
+            column.hits.push((action, Action::CloseList));
+        }
         column.y = band.y1;
+        if tasks.is_empty() {
+            let line = column.row(row_h);
+            let x = line.x0 + f64::from(theme.tokens.spacing.s4);
+            text_in_band(
+                ctx,
+                "No tasks",
+                &theme.text(TextRole::Body),
+                theme.text_dim,
+                x,
+                line,
+                line.x1 - x,
+            );
+            column.y = line.y1;
+            return;
+        }
         for task in tasks {
             let rect = column.row(row_h);
             if rect.y1 > limit {
