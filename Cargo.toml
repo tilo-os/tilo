@@ -41,6 +41,7 @@ members = [
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
     "crates/browser/tilo-browser-peer",
+    "crates/browser/paint-stream",
     "crates/hosting/tilo-room-service",
     "crates/hosting/tilo-moq",
     "apps/hot-reload-demo",

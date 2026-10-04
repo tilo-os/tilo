@@ -33,6 +33,9 @@ struct Inner {
     page_replies: std::collections::VecDeque<Result<PageReply, PageFailure>>,
     next_download: u64,
     downloads: std::collections::HashMap<String, String>,
+    /// What a paint capture answers with; `None` until a test sets one.
+    paint_snapshot: Option<String>,
+    paint_resources: std::collections::HashMap<String, Vec<u8>>,
 }
 
 pub struct TestEngine {
@@ -66,6 +69,17 @@ impl TestEngine {
     /// Configure the deterministic response to a media-element probe.
     pub fn set_media_element(&self, media: Option<MediaElementInfo>) {
         self.lock_inner().media_element = media;
+    }
+
+    /// Answer every later paint capture with this layout snapshot (raw
+    /// `DOMSnapshot` JSON), as a real engine would for its current page.
+    pub fn set_paint_snapshot(&self, snapshot: impl Into<String>) {
+        self.lock_inner().paint_snapshot = Some(snapshot.into());
+    }
+
+    /// Serve `bytes` for a paint resource request for `url`.
+    pub fn set_paint_resource(&self, url: impl Into<String>, bytes: Vec<u8>) {
+        self.lock_inner().paint_resources.insert(url.into(), bytes);
     }
 
     /// Queue the answer to the next page request. Without one, an outline
@@ -330,6 +344,19 @@ impl WebViewEngine for TestEngine {
                 inner
                     .events
                     .push(WebViewEvent::PageResult { request_id, result });
+            }
+            WebViewCommand::PaintCapture { request_id } => {
+                let snapshot = inner.paint_snapshot.clone();
+                inner.events.push(WebViewEvent::PaintSnapshot {
+                    request_id,
+                    snapshot,
+                });
+            }
+            WebViewCommand::PaintResource { request_id, url } => {
+                let bytes = inner.paint_resources.get(&url).cloned();
+                inner
+                    .events
+                    .push(WebViewEvent::PaintResource { request_id, bytes });
             }
             WebViewCommand::StartDownload { uri } => {
                 if !(uri.starts_with("http://") || uri.starts_with("https://")) {
