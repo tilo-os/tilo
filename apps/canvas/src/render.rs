@@ -1301,33 +1301,17 @@ pub fn silhouette(mark: &Mark) -> BezPath {
     }
 }
 
-fn wet_points(points: &[Vec<f64>]) -> Vec<WetPoint> {
-    points
-        .iter()
-        .map(|point| {
-            WetPoint::new(
-                narrow(point.first().copied().unwrap_or(0.0)),
-                narrow(point.get(1).copied().unwrap_or(0.0)),
-                narrow(point.get(2).copied().unwrap_or(1.0)),
-            )
-        })
-        .collect()
-}
-
 /// A stroke drawn by the round ink brush: its own line, or every twig or
 /// dab it grows into, each after the stroke's smoothing.
 fn ink_strokes(mark: &Mark) -> BezPath {
     let smoothing = crate::brushes::Dynamics::of_mark(mark).smoothing;
     let mut path = BezPath::new();
     for (points, size) in crate::brushes::pieces(mark) {
+        // Laid as every brush lays its path, so its corners stay sharp.
         let points = crate::brushes::steady_ends(&points, size);
-        let points = if smoothing > 0.0 {
-            crate::brushes::smoothed(&points, smoothing)
-        } else {
-            points
-        };
+        let samples = crate::brushes::samples(&points, 0.75, smoothing, size);
         path.extend(
-            ink_outline(&wet_points(&points), narrow(size))
+            ink_outline(&samples, narrow(size))
                 .elements()
                 .iter()
                 .copied(),
@@ -1336,9 +1320,8 @@ fn ink_strokes(mark: &Mark) -> BezPath {
     path
 }
 
-fn ink_outline(points: &[WetPoint], size: f32) -> BezPath {
-    let samples = tilo_wet_media::brush::smooth(points, 0.75);
-    let outline = tilo_wet_media::brush::ink_outline(&samples, size);
+fn ink_outline(samples: &[tilo_wet_media::brush::Sample], size: f32) -> BezPath {
+    let outline = tilo_wet_media::brush::ink_outline(samples, size);
     let mut path = BezPath::new();
     for (index, (x, y)) in outline.iter().enumerate() {
         let point = Point::new(f64::from(*x), f64::from(*y));
