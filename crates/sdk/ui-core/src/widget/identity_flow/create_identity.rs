@@ -591,57 +591,61 @@ impl Widget for CreateIdentityScreen {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let resolved = self.resolve(theme, text_renderer);
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: TITLE,
-            max_width: FORM_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let sheet = &resolved.sheet;
-        let plan = &resolved.plan;
+        // Identity ceremonies, invites and joins are security surfaces:
+        // every look-alike letter is set apart.
+        text_renderer.security_surface(|text_renderer| {
+            let resolved = self.resolve(theme, text_renderer);
+            let actions = self.actions();
+            let spec = SheetSpec {
+                title: TITLE,
+                max_width: FORM_SHEET_WIDTH,
+                actions: &actions,
+            };
+            let sheet = &resolved.sheet;
+            let plan = &resolved.plan;
 
-        sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-        sheet.clip_body(scene, transform);
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.explanation,
-            EXPLANATION,
-            Role::Body,
-            Align::Start,
-            true,
-        );
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.name_label,
-            NAME_LABEL,
-            Role::Label,
-            Align::Start,
-            false,
-        );
-        self.name
-            .draw(scene, transform, text_renderer, theme, presence);
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.accent_label,
-            ACCENT_LABEL,
-            Role::Label,
-            Align::Start,
-            false,
-        );
-        self.draw_accent_tiles(scene, transform, theme, plan);
-        if let (Some(rect), Some(err)) = (plan.error, self.submit_error.as_deref()) {
+            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+            sheet.clip_body(scene, transform);
             paint_text(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                err,
-                Role::Error,
+                plan.explanation,
+                EXPLANATION,
+                Role::Body,
                 Align::Start,
                 true,
             );
-        }
-        scene.pop_layer();
-        sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+            paint_text(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                plan.name_label,
+                NAME_LABEL,
+                Role::Label,
+                Align::Start,
+                false,
+            );
+            self.name
+                .draw(scene, transform, text_renderer, theme, presence);
+            paint_text(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                plan.accent_label,
+                ACCENT_LABEL,
+                Role::Label,
+                Align::Start,
+                false,
+            );
+            self.draw_accent_tiles(scene, transform, theme, plan);
+            if let (Some(rect), Some(err)) = (plan.error, self.submit_error.as_deref()) {
+                paint_text(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    rect,
+                    err,
+                    Role::Error,
+                    Align::Start,
+                    true,
+                );
+            }
+            scene.pop_layer();
+            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+        });
     }
 
     fn name(&self) -> &'static str {

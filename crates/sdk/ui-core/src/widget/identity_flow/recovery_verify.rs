@@ -709,48 +709,52 @@ impl Widget for RecoveryVerifyScreen {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let resolved = self.resolve(theme, text_renderer);
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: TITLE,
-            max_width: GRID_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let sheet = &resolved.sheet;
-        let plan = &resolved.plan;
-        let control_h = sheet.control_height(theme);
+        // Identity ceremonies, invites and joins are security surfaces:
+        // every look-alike letter is set apart.
+        text_renderer.security_surface(|text_renderer| {
+            let resolved = self.resolve(theme, text_renderer);
+            let actions = self.actions();
+            let spec = SheetSpec {
+                title: TITLE,
+                max_width: GRID_SHEET_WIDTH,
+                actions: &actions,
+            };
+            let sheet = &resolved.sheet;
+            let plan = &resolved.plan;
+            let control_h = sheet.control_height(theme);
 
-        sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-        sheet.clip_body(scene, transform);
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.explanation,
-            EXPLANATION,
-            Role::Body,
-            Align::Start,
-            true,
-        );
-        self.draw_word_grid(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            plan,
-            control_h,
-        );
-        if let Some(rect) = plan.error {
+            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+            sheet.clip_body(scene, transform);
             paint_text(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                MISMATCH,
-                Role::Error,
+                plan.explanation,
+                EXPLANATION,
+                Role::Body,
                 Align::Start,
                 true,
             );
-        }
-        scene.pop_layer();
-        sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+            self.draw_word_grid(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                plan,
+                control_h,
+            );
+            if let Some(rect) = plan.error {
+                paint_text(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    rect,
+                    MISMATCH,
+                    Role::Error,
+                    Align::Start,
+                    true,
+                );
+            }
+            scene.pop_layer();
+            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+        });
     }
 
     fn name(&self) -> &'static str {
