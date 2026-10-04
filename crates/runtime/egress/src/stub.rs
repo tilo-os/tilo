@@ -366,21 +366,7 @@ fn forward_tcp(server: SocketAddr, query: &[u8], question: &dns::Question) -> Op
     dns::answers(&reply, question).then_some(reply)
 }
 
-/// The resolvers named in a `resolv.conf`, on port 53.
-pub fn nameservers(resolv_conf: &str) -> Vec<SocketAddr> {
-    resolv_conf
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("nameserver"))
-        .filter_map(|rest| {
-            let addr = rest.trim();
-            // A scoped link-local resolver (`fe80::1%eth0`) can't be named
-            // by a SocketAddr; it is skipped.
-            addr.parse::<IpAddr>()
-                .ok()
-                .map(|ip| SocketAddr::new(ip, 53))
-        })
-        .collect()
-}
+pub use crate::config::nameservers;
 
 #[cfg(test)]
 mod tests {
@@ -476,17 +462,5 @@ mod tests {
             Some(5)
         );
         assert!(answer(&s, &[1, 2], Transport::Udp).is_none());
-    }
-
-    #[test]
-    fn nameservers_come_from_resolv_conf() {
-        let conf = "# generated\nnameserver 10.0.0.1\nnameserver  2001:db8::53\nnameserver fe80::1%eth0\nsearch lan\n";
-        assert_eq!(
-            nameservers(conf),
-            vec![
-                "10.0.0.1:53".parse::<SocketAddr>().unwrap(),
-                "[2001:db8::53]:53".parse().unwrap()
-            ]
-        );
     }
 }

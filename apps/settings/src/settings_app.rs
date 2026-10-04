@@ -1841,6 +1841,7 @@ impl Widget for SettingsApp {
             crate::actions::USER_OPERATION_TYPE,
             crate::actions::AGENT_MODEL_OPERATION_TYPE,
             crate::actions::DEVICE_MESH_OPERATION_TYPE,
+            crate::actions::SPEAKER_OPERATION_TYPE,
             crate::actions::AGENT_PROVIDER_OPERATION_TYPE,
         ]
     }
