@@ -13,18 +13,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::framework::{
-    Effected, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface, RunMode, SurfaceCx,
-    ViewCx,
+    EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LaunchInput, LiveRow, ResourceApp,
+    ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{
-    ActionParam, ActionRegistry, ActionSpec, OperationKind, ParamType,
-    Resource as PublishedResource,
-};
+use ui::tilo_actions::{ActionParam, ActionRegistry, ParamType, Resource as PublishedResource};
 use ui::tilo_resource::{ActionDecl, ActionRef, Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
-    self, WINDOWS_ACTION_TYPE, WindowsAction, manager_effect_specs, override_app_resource, register,
+    self, WINDOWS_ACTION_TYPE, WindowsAction, WindowsEffect, override_app_resource, register,
 };
 use crate::app::{SharedProvider, WindowsApp};
 use crate::model::{Catalogue, Route};
@@ -128,13 +125,6 @@ impl Resource for Windows {
             .routes
             .iter()
             .map(|(app_id, route)| override_app_resource(app_id, *route))
-            .collect()
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        manager_effect_specs()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
             .collect()
     }
 
@@ -290,7 +280,7 @@ impl ResourceApp for WindowsShell {
     }
 }
 
-impl ResourceSurface<Windows> for WindowsApp {
+impl ResourceSurface<Windows, WindowsEffect> for WindowsApp {
     /// The routes the window shows are the ones the service reports; the
     /// stored overrides reach the service through the route projection.
     fn present(&mut self, _state: &Rc<WindowsState>) {}
@@ -324,6 +314,23 @@ impl ResourceSurface<Windows> for WindowsApp {
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario.unwrap_or("wide"));
+    }
+
+    fn effect(&mut self, effect: WindowsEffect, cx: &mut EffectCx<Windows, Self>) -> EffectAnswer {
+        self.answer_effect(&effect, cx)
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        const CODE: &str = "windows.busy";
+        const REASON: &str = "Another Windows operation is still running";
+        if !self.is_busy() {
+            return Vec::new();
+        }
+        vec![
+            EffectStatus::unavailable(WindowsEffect::INSTALL, CODE, REASON),
+            EffectStatus::unavailable(WindowsEffect::IMPORT_ISO, CODE, REASON),
+            EffectStatus::unavailable(WindowsEffect::OPEN_FILE, CODE, REASON),
+        ]
     }
 
     /// Route edits for the application the window shows, beside the
@@ -471,7 +478,7 @@ mod tests {
         assert_eq!(state.routes, vec![("adobe-reader".into(), Route::Proton)]);
         let published =
             ui::tilo_resource::publish::<Windows>("windows.manager", "Windows manager", &state);
-        for id in ["set-route", "reset-route", "install"] {
+        for id in ["set-route", "reset-route"] {
             assert!(
                 published.actions.iter().any(|action| action.id == id),
                 "{id} must be on the framework resource"
@@ -494,6 +501,23 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "reset-route")
         );
+    }
+
+    /// The window's effects join the manager: installing, importing an ISO.
+    #[test]
+    fn a_live_window_publishes_its_effects_on_the_manager() {
+        let mut app = TestApp::<WindowsShell>::new().unwrap();
+        let resources = app.harness().resources();
+        let manager = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "windows.manager")
+            .expect("the manager");
+        for id in ["install", "import-iso"] {
+            assert!(
+                manager.actions.iter().any(|action| action.id == id),
+                "{id} is on the manager"
+            );
+        }
     }
 
     /// Opening an installer with the app installs it through the install

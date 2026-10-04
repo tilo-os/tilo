@@ -29,7 +29,7 @@ def launch_commands(fixture):
     return [
         ("word-processor", ["cargo", "run", "-p", "word-processor"]),
         ("file-explorer", ["cargo", "run", "-p", "file-explorer"]),
-        ("photos", ["cargo", "run", "-p", "photos", "--", "--open", str(fixture)]),
+        ("photos", ["cargo", "run", "-p", "photos", "--", str(fixture)]),
         ("calculator", ["cargo", "run", "-p", "calculator"]),
     ]
 

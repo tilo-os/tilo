@@ -5,6 +5,17 @@ use crate::shots_pattern;
 use automerge::ROOT;
 use tilo_actions::Action;
 
+/// Stage the screenshot scenario `name` as a capture does: its photographs
+/// in the app's content store, its actions applied, its view state posed on
+/// the next sync.
+fn stage(app: &mut PhotosApp, doc: &mut AutoCommit, name: &str) {
+    crate::sample::put_content(&app.content);
+    for action in crate::sample::scenario(Some(name)) {
+        action.apply(doc).expect("the scenario's actions apply");
+    }
+    app.stage_scenario(name);
+}
+
 fn has_resource_id(resource: &tilo_actions::Resource, id: &str) -> bool {
     resource.id.0 == id
         || resource
@@ -1772,8 +1783,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
             let mut app = PhotosApp::new();
             let mut doc = AutoCommit::new();
             app.show_library();
-            let staging = tempfile::tempdir().expect("staging dir");
-            crate::seed_scenario(&mut app, &mut doc, "metadata-edit", staging.path());
+            stage(&mut app, &mut doc, "metadata-edit");
             let theme = Theme::dark().with_text_scale(scale);
             let mut tr = TextRenderer::new();
             tr.set_text_scale(theme.text_scale);
@@ -2169,8 +2179,7 @@ fn controls_contain_their_text_share_insets_and_keep_44px_targets() {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
         app.show_library();
-        let staging = tempfile::tempdir().expect("staging dir");
-        crate::seed_scenario(&mut app, &mut doc, "library", staging.path());
+        stage(&mut app, &mut doc, "library");
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         // Two frames: the first lays out roomy, the second refits the toolbar

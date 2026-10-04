@@ -1479,6 +1479,12 @@ pub struct PhotosApp {
     library_cards: Vec<(String, Rect, bool)>,
     pointer: Point,
     library_mode: bool,
+    /// What the window was launched on, opened once the document is at hand:
+    /// a photograph is imported into the library and opened, a folder is
+    /// imported.
+    launched: Option<std::path::PathBuf>,
+    /// The screenshot scenario whose view state the next sync stages.
+    staged: Option<String>,
 }
 
 struct DirectoryImport {
@@ -2254,6 +2260,75 @@ impl PhotosApp {
             library_cards: Vec::new(),
             pointer: Point::ZERO,
             library_mode: false,
+            launched: None,
+            staged: None,
+        }
+    }
+
+    /// This app, launched naming `path`: a photograph to open or a folder to
+    /// import into the library the window shows.
+    #[must_use]
+    pub fn launched_on(mut self, path: Option<std::path::PathBuf>) -> Self {
+        self.launched = path;
+        self
+    }
+
+    /// Stage the view state of a screenshot scenario on the next sync, once
+    /// its photographs are in the library.
+    pub(crate) fn stage_scenario(&mut self, scenario: &str) {
+        self.staged = Some(scenario.to_owned());
+    }
+
+    /// Open what the launch named.
+    fn open_launched(&mut self, doc: &mut AutoCommit) {
+        let Some(path) = self.launched.take() else {
+            return;
+        };
+        if path.is_dir() {
+            self.show_library();
+            self.begin_directory_import(path, None, DirectoryImportMode::Import, true);
+        } else {
+            self.open_path(doc, &path.to_string_lossy());
+        }
+    }
+
+    /// Pose the view for `scenario`, whose photographs the scenario's
+    /// actions put in the library.
+    fn apply_staged(&mut self, doc: &AutoCommit) {
+        let Some(scenario) = self.staged.take() else {
+            return;
+        };
+        match scenario.as_str() {
+            "albums" => self.show_albums(),
+            "selection" => self.show_selection_for_shot(doc),
+            "selection-many-albums" => {
+                self.show_selection_for_shot(doc);
+                self.show_selection_destination_chooser_for_shot(doc);
+            }
+            "album-manage" => self.show_album_editor_for_shot(doc),
+            "metadata-edit" => self.show_metadata_editor_for_shot(doc),
+            "metadata-batch" => self.show_batch_metadata_editor_for_shot(doc),
+            "people" | "people-detail" => {
+                // A manual, explicitly labelled suggestion exercises the
+                // review layout without pretending that a face model
+                // recognized anyone. Live windows never stage People data.
+                let _ = self.people_controller.add_cluster(
+                    "shots-imported-suggestion",
+                    crate::sample::people_suggestion(),
+                    crate::people::ProposalOrigin::ImportedOrManual,
+                );
+                if scenario == "people-detail" {
+                    self.show_people_suggestion_for_shot("shots-imported-suggestion");
+                } else {
+                    self.show_people();
+                }
+            }
+            "places" => self.show_places_for_shot(),
+            "analysis" => self.show_library_analysis(),
+            "import-progress" => self.show_directory_import_progress_for_shot(),
+            "import-errors" => self.show_directory_import_errors_for_shot(),
+            scenario if crate::sample::shows_library(scenario) => self.show_library(),
+            _ => {}
         }
     }
 
@@ -3112,11 +3187,6 @@ impl PhotosApp {
         self.show_library();
         self.people_mode = false;
         self.library_destination = LibraryDestination::Albums;
-    }
-
-    /// Pose the album overview for deterministic offscreen visual coverage.
-    pub fn show_albums_for_shot(&mut self) {
-        self.show_albums();
     }
 
     /// Pose one real local suggestion for the deterministic visual gallery.
@@ -14389,7 +14459,6 @@ impl PhotosApp {
 impl Widget for PhotosApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource
@@ -14402,6 +14471,16 @@ impl Widget for PhotosApp {
             // marker fully present; only the decorative settle cue disappears.
             self.places_camera_feedback = None;
         }
+    }
+
+    /// A preview of a photograph on screen is still being decoded: a capture
+    /// waits for it rather than showing a placeholder.
+    fn has_pending_visual_work(&self) -> bool {
+        self.thumbnail_generation.is_some()
+            && self.thumbnail_visible_ids.iter().any(|id| {
+                !self.library_thumbnails.contains_key(id)
+                    && !self.thumbnail_unavailable.contains(id)
+            })
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -14529,7 +14608,9 @@ impl Widget for PhotosApp {
     )]
     fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         let (doc, path) = ui::doc::document(doc, path);
+        self.open_launched(doc);
         self.reconcile_content(doc);
+        self.apply_staged(doc);
         self.drain_action_control_pending(doc);
         self.drain_analysis_results(doc);
         if let Some((invocation, path)) = self.pending_resource_open.take() {
@@ -16217,12 +16298,6 @@ impl ui::widget::controls::ActionControls for PhotosApp {
     }
 }
 
-impl ui::history_mode::capability::DocumentHistory for PhotosApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-}
-
 impl ui::undo::CommittedActions for PhotosApp {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
@@ -16793,17 +16868,8 @@ mod tests;
 mod history_reconcile_tests {
     use super::*;
     use automerge::ROOT;
-    use tilo_automerge::ApplyIncoming;
     fn restore(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
-        let heads = doc.get_heads();
-        let plan = ui::history_mode::restore::prepare_content_restore(
-            doc,
-            &crate::framework_history::SCHEMA,
-            &heads,
-            selected,
-        )
-        .unwrap();
-        ui::history_mode::restore::apply_prepared_content_restore(doc, &plan).unwrap();
+        ui::history_source::steps::restore(doc, selected, &[]).unwrap();
     }
     fn setup() -> (PhotosApp, AutoCommit, String) {
         let mut doc = AutoCommit::new();
@@ -16814,119 +16880,6 @@ mod history_reconcile_tests {
         app.sync(&mut doc, &ROOT);
         (app, doc, id)
     }
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-    #[test]
-    fn history_accepts_label_and_album_formats_and_rejects_malformed_conflicts() {
-        eprintln!(
-            "phase history_accepts_membership_map_labels_and_rejects_all_malformed_conflicts"
-        );
-        {
-            use automerge::{ObjType, ReadDoc, transaction::Transactable};
-            let (_, mut doc, id) = setup();
-            let mut library = PhotosDoc::library(&doc);
-            library.photos[0].people = vec!["Alice".into()];
-            library.photos[0].tags = vec!["Portrait".into()];
-            PhotosDoc::set_library(&mut doc, &library);
-            crate::framework_history::validate(&doc).unwrap();
-            let root = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
-            for key in ["photo_people", "photo_tags"] {
-                let column = doc.get(&root, key).unwrap().unwrap().1;
-                let row = doc.get(&column, id.as_str()).unwrap().unwrap().1;
-                doc.put(&row, "Removed", false).unwrap();
-                crate::framework_history::validate(&doc).unwrap();
-                let mut array = doc.clone();
-                array
-                    .put(&column, id.as_str(), "[\"Array label\"]")
-                    .unwrap();
-                assert!(crate::framework_history::validate(&array).is_err());
-
-                // Two replicas can create different membership maps for one photo.
-                let mut left = doc.fork();
-                let mut right = doc.fork();
-                let left_row = left.put_object(&column, id.as_str(), ObjType::Map).unwrap();
-                let right_row = right
-                    .put_object(&column, id.as_str(), ObjType::Map)
-                    .unwrap();
-                left.put(&left_row, "Valid", true).unwrap();
-                right.put(&right_row, "Invalid", "not a boolean").unwrap();
-                left.merge_incoming(&mut right).unwrap();
-                assert_eq!(left.get_all(&column, id.as_str()).unwrap().len(), 2);
-                assert!(crate::framework_history::validate(&left).is_err());
-
-                // A valid winning/losing membership does not excuse an invalid sibling value.
-                let mut left = doc.fork();
-                let mut right = doc.fork();
-                left.put(&row, "Conflict", true).unwrap();
-                right.put(&row, "Conflict", "not a boolean").unwrap();
-                left.merge_incoming(&mut right).unwrap();
-                assert_eq!(left.get_all(&row, "Conflict").unwrap().len(), 2);
-                assert!(crate::framework_history::validate(&left).is_err());
-
-                for invalid_label in [String::new(), "x".repeat(65_537)] {
-                    let mut invalid = doc.clone();
-                    invalid.put(&row, invalid_label.as_str(), true).unwrap();
-                    assert!(crate::framework_history::validate(&invalid).is_err());
-                }
-            }
-        }
-
-        eprintln!("phase history_accepts_album_membership_formats_and_rejects_malformed_conflicts");
-        {
-            use automerge::{ObjType, ReadDoc, transaction::Transactable};
-            let (_, mut doc, ids) = album_membership_fixture();
-            seed_membership_album(&mut doc, &ids);
-            // The production writer emits the current absolute JSON membership.
-            crate::framework_history::validate(&doc).unwrap();
-            let root = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
-            let albums = doc.get(&root, "albums").unwrap().unwrap().1;
-            let row = doc
-                .get(&albums, "photos.album:membership")
-                .unwrap()
-                .unwrap()
-                .1;
-            let mut list = doc.clone();
-            let members = list.put_object(&row, "photo_ids", ObjType::List).unwrap();
-            list.insert(&members, 0, ids[0].as_str()).unwrap();
-            assert!(crate::framework_history::validate(&list).is_err());
-
-            // Concurrent replacements retain both values; a malformed one may
-            // not hide behind a valid sibling.
-            for invalid_json in [false, true] {
-                let mut left = doc.fork();
-                let mut right = doc.fork();
-                left.set_actor(automerge::ActorId::from([2; 16].as_slice()));
-                right.set_actor(automerge::ActorId::from([3; 16].as_slice()));
-                left.put(&row, "photo_ids", if invalid_json { "[7]" } else { "[]" })
-                    .unwrap();
-                right
-                    .put(
-                        &row,
-                        "photo_ids",
-                        serde_json::to_string(&[ids[0].as_str()]).unwrap(),
-                    )
-                    .unwrap();
-                left.merge_incoming(&mut right).unwrap();
-                assert_eq!(left.get_all(&row, "photo_ids").unwrap().len(), 2);
-                assert_eq!(
-                    crate::framework_history::validate(&left).is_err(),
-                    invalid_json
-                );
-            }
-
-            for invalid_members in [vec!["x".repeat(65_537)], vec![ids[0].clone(); 10_001]] {
-                let mut invalid = doc.clone();
-                invalid
-                    .put(
-                        &row,
-                        "photo_ids",
-                        serde_json::to_string(&invalid_members).unwrap(),
-                    )
-                    .unwrap();
-                assert!(crate::framework_history::validate(&invalid).is_err());
-            }
-        }
-    }
-
     #[test]
     fn thumbnails_follow_photo_identity_and_visibility() {
         eprintln!(

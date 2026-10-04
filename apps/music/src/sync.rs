@@ -74,7 +74,7 @@ mod tests {
     fn seeded() -> AutoCommit {
         let mut doc = AutoCommit::new();
         let library = seed::sample_library();
-        doc::seed(&mut doc, &library, &seed::sample_playback(&library));
+        doc::seed(&mut doc, &library);
         doc
     }
 
