@@ -18,10 +18,12 @@
 //!   the focused field declares a password, a PIN or hidden text, marked per
 //!   surface by the compositor from the field's content type;
 //! - the shell's own secret prompts — administrator authentication, network
-//!   secrets, the Wi-Fi passphrase, an `AirPlay` PIN or password, a Bluetooth
-//!   pairing dialog, and the setup steps that restore or back up the identity
-//!   (passphrases and a nearby device's pairing code) — regardless of any
-//!   request;
+//!   secrets, a shortcut step's secret answer, the Wi-Fi passphrase, an
+//!   `AirPlay` PIN or password, a Bluetooth pairing dialog, and the setup
+//!   steps that restore or back up the identity (passphrases and a nearby
+//!   device's pairing code) — regardless of any request;
+//! - every window of a Tilo app while it shows a password field holding a
+//!   value, masked or shown, which the app requests on its own;
 //! - the whole desktop while the session is locked.
 //!
 //! The placeholder carries no text: a themed surface with the shield mark the
