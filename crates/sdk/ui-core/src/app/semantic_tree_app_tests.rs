@@ -166,6 +166,10 @@ struct CounterCard {
     scoped_jobs: Vec<crate::invocation_scope::ResourceInvocationScope>,
     scoped_results: Vec<tilo_actions::InvocationUpdate>,
     resource_result: Option<tilo_actions::InvocationUpdate>,
+    /// Bump the counter as part of every `ping`, as an effect's handler
+    /// submits an edit.
+    bump_after_ping: bool,
+    follow_ups: Vec<crate::widget::controls::AttributedControlInvocation>,
 }
 
 fn counter_resource(destructive: bool) -> Resource {
@@ -257,6 +261,8 @@ impl CounterCard {
             scoped_jobs: vec![],
             scoped_results: vec![],
             resource_result: None,
+            bump_after_ping: false,
+            follow_ups: vec![],
         }
     }
 
@@ -285,6 +291,8 @@ impl CounterCard {
             scoped_jobs: vec![],
             scoped_results: vec![],
             resource_result: None,
+            bump_after_ping: false,
+            follow_ups: vec![],
         }
     }
 
@@ -326,7 +334,8 @@ impl CounterCard {
 impl Widget for CounterCard {
     crate::provides!(
         dyn crate::resources::PublishesResources,
-        dyn crate::search::capability::SearchSource
+        dyn crate::search::capability::SearchSource,
+        dyn crate::widget::controls::ActionControls
     );
 
     fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
@@ -420,6 +429,15 @@ impl Widget for CounterCard {
             }
             return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
         }
+        if self.bump_after_ping && request.kind == tilo_actions::OperationKind::Effect {
+            self.follow_ups.push((
+                tilo_actions::ControlInvocation {
+                    address: tilo_actions::ActionAddress::new("test.counter", "bump"),
+                    arguments: serde_json::Map::new(),
+                },
+                Some(request.invocation),
+            ));
+        }
         Ok(
             (request.kind == tilo_actions::OperationKind::Effect
                 && request.type_id == COUNTER_TYPE)
@@ -452,6 +470,19 @@ impl Widget for CounterCard {
             self.resource_result.take()
         } else {
             None
+        }
+    }
+}
+
+impl crate::widget::controls::ActionControls for CounterCard {
+    fn take_attributed_control_invocation(
+        &mut self,
+    ) -> Option<crate::widget::controls::AttributedControlInvocation> {
+        if self.follow_ups.is_empty() {
+            self.take_control_invocation()
+                .map(|invocation| (invocation, None))
+        } else {
+            Some(self.follow_ups.remove(0))
         }
     }
 }
@@ -1705,6 +1736,53 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
         }));
         assert_eq!(presses.get(), 0);
     }
+}
+
+#[test]
+fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
+    let mut card = CounterCard::new();
+    card.bump_after_ping = true;
+    let mut app = App::new(State::new(), Box::new(card));
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    app.init_layout();
+    let invocation = tilo_actions::InvocationId::new();
+    app.invoke_published_action(
+        7,
+        invocation,
+        "test.counter".into(),
+        "ping".into(),
+        None,
+        "agent:Scribe",
+        None,
+    );
+    assert_eq!(counter(&app), 1, "the effect's edit was applied");
+    assert_eq!(
+        app.state
+            .peek_last_undo()
+            .and_then(|entry| entry.author.as_ref()),
+        Some(&crate::permissions::UserId("agent:Scribe".into())),
+        "by the effect's invoker, not the person at the device"
+    );
+    assert!(
+        app.actions.acting_for.is_empty(),
+        "the answered invocation runs for nobody"
+    );
+
+    // An edit the app submits on its own is the local person's.
+    let local = app.collaboration.local_author.0.clone();
+    app.invoke_resource_action(ResourceInvocation::new(
+        &tilo_actions::ActionAddress::new("test.counter", "bump"),
+        &local,
+    ))
+    .expect("the local person bumps");
+    assert_eq!(counter(&app), 2);
+    assert_eq!(
+        app.state
+            .peek_last_undo()
+            .and_then(|entry| entry.author.as_ref()),
+        Some(&crate::permissions::UserId(local))
+    );
 }
 
 #[test]
