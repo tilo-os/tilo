@@ -59,6 +59,9 @@ pub enum MailEffect {
     /// Note what was read, as an edit.
     #[effect(permission = "read")]
     Note { text: String },
+    /// Show the sent folder.
+    #[effect(view)]
+    ShowSent,
 }
 
 thread_local! {
@@ -76,6 +79,8 @@ impl ResourceApp for MailApp {
     fn view(cx: &mut ViewCx<Mailbox>) -> Element {
         let online = cx.local(false);
         let reached = online.clone();
+        let shown = cx.local(false);
+        let shown_text = shown.clone();
         cx.effects(move |effect: MailEffect, cx| match effect {
             MailEffect::Count => Ok(Effected::value(cx.live().with(|mail| mail.sent.len()))),
             MailEffect::Fetch { from } => {
@@ -96,6 +101,10 @@ impl ResourceApp for MailApp {
             MailEffect::Stall => Ok(Effected::Pending),
             MailEffect::Note { text } => {
                 cx.invoke(Mailbox::FETCHED.with(text));
+                Ok(Effected::done())
+            }
+            MailEffect::ShowSent => {
+                shown.set(true);
                 Ok(Effected::done())
             }
         })
@@ -133,6 +142,14 @@ impl ResourceApp for MailApp {
                 .push(Box::new(
                     cx.text(|mail| format!("Fetched: {}", mail.fetched)),
                 ))
+                .push(Box::new(Text::from_state(&shown_text, |shown| {
+                    if *shown {
+                        "Showing sent"
+                    } else {
+                        "Showing inbox"
+                    }
+                    .to_owned()
+                })))
                 .push(Box::new(Text::from_state(
                     &cx.dispatcher().refused(),
                     |refused| {
@@ -177,6 +194,17 @@ fn effects_are_published_and_answer_every_caller_through_the_door() {
     // phase: an immediate effect answers at once
     let count = app.effect(&MailEffect::Count).unwrap();
     assert_eq!(count.value, Some(serde_json::json!(0)));
+
+    // phase: a view is published as one and reaches its handler the same way
+    assert_eq!(effect(&surface, "show-sent").unwrap()["operation"], "View");
+    app.effect(&MailEffect::ShowSent).unwrap();
+    assert!(
+        app.harness()
+            .inspection_json()
+            .unwrap()
+            .contains("Showing sent"),
+        "the view's handler ran"
+    );
 
     // phase: a job reports progress, then finishes on the UI thread with an
     // action and its result
