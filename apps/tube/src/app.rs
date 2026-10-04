@@ -124,6 +124,8 @@ pub struct TubeApp {
     history_actions: ui::ActionHost,
     history_store: OwnerHistoryStore,
     bus: ActionBus,
+    /// Whether browsing can go back, read by the shell's Back chip.
+    can_go_back: Rc<std::cell::Cell<bool>>,
     worker: Option<Worker>,
     #[cfg(feature = "grayjay-sync")]
     device_sync: crate::sync::DeviceSync,
@@ -251,18 +253,22 @@ impl TubeApp {
                 "Watch history couldn't be opened. The existing local file was preserved; new history will not save. Restore or replace it in Tube's local data folder, then restart.".into(),
             );
         }
+        let bus = action::new_bus();
+        let can_go_back = Rc::new(std::cell::Cell::new(false));
+        let shell = Self::new_shell(&bus, &can_go_back);
         Self {
             model,
             actions: crate::resource::ActionSink::default(),
             history_actions: ui::ActionHost::new(),
             history_store,
-            bus: action::new_bus(),
+            bus,
             worker: None,
             #[cfg(feature = "grayjay-sync")]
             device_sync: crate::sync::DeviceSync::default(),
             #[cfg(feature = "grayjay-sync")]
             device_sync_seeded: false,
-            shell: Self::new_shell(),
+            shell,
+            can_go_back,
             shell_built: false,
             invocations: action::new_invocations(),
             toasts: ToastStack::new(),
@@ -296,10 +302,81 @@ impl TubeApp {
         }
     }
 
+    /// Apply the actions the controls queued: from the event that queued
+    /// them, and from the frame's sync for those the window's shell runs
+    /// (its Back chip). Returns whether the view changed.
+    fn apply_queued(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        let actions = action::drain(&self.bus);
+        let mut changed = false;
+        for a in actions {
+            let document_action = match &a {
+                Action::ToggleLike(id) => Some(crate::actions::TubeAction::SetVideoLiked {
+                    video_id: id.clone(),
+                    liked: !self.model.is_liked(id),
+                }),
+                Action::ToggleSubscribe(id) => {
+                    let subscription_id = self.model.subscription_key(id).unwrap_or(id).to_string();
+                    Some(crate::actions::TubeAction::SetSubscription {
+                        channel_id: subscription_id,
+                        subscribed: !self.model.is_subscribed(id),
+                    })
+                }
+                Action::ToggleSetting(setting) => {
+                    let enabled = match setting {
+                        SettingFlag::SponsorBlock => !self.model.settings.sponsorblock_enabled,
+                        SettingFlag::DeArrow => !self.model.settings.dearrow_enabled,
+                        SettingFlag::DeArrowTitles => !self.model.settings.dearrow_titles,
+                        SettingFlag::DeArrowThumbnails => !self.model.settings.dearrow_thumbnails,
+                        SettingFlag::ReturnDislike => !self.model.settings.return_dislike_enabled,
+                        SettingFlag::Autoplay => !self.model.settings.autoplay,
+                        SettingFlag::ShowComments => !self.model.settings.show_comments,
+                    };
+                    Some(crate::actions::TubeAction::SetSetting {
+                        setting: *setting,
+                        enabled,
+                    })
+                }
+                Action::SetQuality(quality) if QUALITIES.contains(&quality.as_str()) => {
+                    Some(crate::actions::TubeAction::SetPreferredQuality {
+                        quality: quality.clone(),
+                    })
+                }
+                Action::SetCategory(category, mode) => {
+                    Some(crate::actions::TubeAction::SetSponsorCategory {
+                        category: *category,
+                        mode: *mode,
+                    })
+                }
+                _ => None,
+            };
+            if let Some(operation) = document_action {
+                // Visible collaborative mutations cross the exact ActionHost
+                // boundary used by search, agents and replay. Owner history
+                // is intentionally absent from this public dispatcher.
+                self.actions.dispatch_with_context(
+                    state,
+                    crate::actions::TUBE_ACTION_TYPE,
+                    &operation,
+                    tilo_actions::ActionContext::for_action("so.tilo.tube", "Tube", &operation),
+                );
+            }
+            changed |= self.apply(a, state, path);
+        }
+        changed
+    }
+
     /// The window shell: a docked icon rail of destinations beside the
-    /// screen, with the screen's title and actions in the header row.
-    fn new_shell() -> NavShell {
-        NavShell::new().with_id("tube_shell").mode(NavMode::Docked)
+    /// screen, with the screen's title and actions in the header row, and
+    /// the shell's Back for the pages reached by browsing (a video, its
+    /// creator, a playlist). Escape, Alt+Left, the mouse back button and an
+    /// edge swipe do the same.
+    fn new_shell(bus: &ActionBus, can_go_back: &Rc<std::cell::Cell<bool>>) -> NavShell {
+        let can = Rc::clone(can_go_back);
+        let bus = Rc::clone(bus);
+        NavShell::new()
+            .with_id("tube_shell")
+            .mode(NavMode::Docked)
+            .on_back(move || can.get(), move || action::push(&bus, Action::Back))
     }
 
     #[allow(
@@ -990,7 +1067,6 @@ impl TubeApp {
             imgs: crate::images::Imgs(self.images.as_ref()),
             invocations: &self.invocations,
             content_width: self.content_width(theme),
-            can_go_back: self.nav.can_go_back(),
         }
     }
 
@@ -1077,10 +1153,11 @@ impl TubeApp {
         let rail = self.build_rail();
         let title = screens::title(&self.model.route);
         let actions = screens::header_actions(self.ui(theme));
-        let mut shell = std::mem::take(&mut self.shell).content_header(title, actions);
-        shell.set_sidebar(Some(Box::new(rail)));
-        shell.set_content(screen);
-        self.shell = shell;
+        self.shell.set_content_header(title, actions);
+        self.can_go_back.set(self.nav.can_go_back());
+        self.shell.set_can_go_back(self.nav.can_go_back());
+        self.shell.set_sidebar(Some(Box::new(rail)));
+        self.shell.set_content(screen);
         self.shell_built = true;
     }
 
@@ -2328,6 +2405,10 @@ impl Widget for TubeApp {
         }
         self.show_new_notices();
         self.shell.sync(state, path);
+        // The shell's Back chip queues on the bus; go back this frame.
+        if self.apply_queued(state, path) {
+            self.structure_dirty = true;
+        }
         // External media-control commands (media keys / the system media widget)
         // → the shared player, so hardware keys drive playback.
         self.player.borrow_mut().pump_media_controls();
@@ -2530,62 +2611,7 @@ impl Widget for TubeApp {
         }
 
         // Drain & apply queued actions.
-        let actions = action::drain(&self.bus);
-        let mut changed = false;
-        for a in actions {
-            let document_action = match &a {
-                Action::ToggleLike(id) => Some(crate::actions::TubeAction::SetVideoLiked {
-                    video_id: id.clone(),
-                    liked: !self.model.is_liked(id),
-                }),
-                Action::ToggleSubscribe(id) => {
-                    let subscription_id = self.model.subscription_key(id).unwrap_or(id).to_string();
-                    Some(crate::actions::TubeAction::SetSubscription {
-                        channel_id: subscription_id,
-                        subscribed: !self.model.is_subscribed(id),
-                    })
-                }
-                Action::ToggleSetting(setting) => {
-                    let enabled = match setting {
-                        SettingFlag::SponsorBlock => !self.model.settings.sponsorblock_enabled,
-                        SettingFlag::DeArrow => !self.model.settings.dearrow_enabled,
-                        SettingFlag::DeArrowTitles => !self.model.settings.dearrow_titles,
-                        SettingFlag::DeArrowThumbnails => !self.model.settings.dearrow_thumbnails,
-                        SettingFlag::ReturnDislike => !self.model.settings.return_dislike_enabled,
-                        SettingFlag::Autoplay => !self.model.settings.autoplay,
-                        SettingFlag::ShowComments => !self.model.settings.show_comments,
-                    };
-                    Some(crate::actions::TubeAction::SetSetting {
-                        setting: *setting,
-                        enabled,
-                    })
-                }
-                Action::SetQuality(quality) if QUALITIES.contains(&quality.as_str()) => {
-                    Some(crate::actions::TubeAction::SetPreferredQuality {
-                        quality: quality.clone(),
-                    })
-                }
-                Action::SetCategory(category, mode) => {
-                    Some(crate::actions::TubeAction::SetSponsorCategory {
-                        category: *category,
-                        mode: *mode,
-                    })
-                }
-                _ => None,
-            };
-            if let Some(operation) = document_action {
-                // Visible collaborative mutations cross the exact ActionHost
-                // boundary used by search, agents and replay. Owner history
-                // is intentionally absent from this public dispatcher.
-                self.actions.dispatch_with_context(
-                    ctx.state,
-                    crate::actions::TUBE_ACTION_TYPE,
-                    &operation,
-                    tilo_actions::ActionContext::for_action("so.tilo.tube", "Tube", &operation),
-                );
-            }
-            changed |= self.apply(a, ctx.state, ctx.path);
-        }
+        let mut changed = self.apply_queued(ctx.state, ctx.path);
         // If a just-applied action opened a watch page, kick off real playback
         // (resolve + decode) for it — once. No-op off the watch route / offline.
         self.ensure_playback();
