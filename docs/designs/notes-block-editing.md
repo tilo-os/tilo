@@ -415,3 +415,40 @@ and canonical caller remain on the History-held rich-paste branch. The current
 browser host also rejects HTML-only offers before dispatch; changing that host
 preflight requires its owner's scoped follow-up. Real Notes rich-paste
 undo/redo and full-browser caller qualification remain release gates.
+
+### Wayland paired clipboard transport (held for protocol qualification)
+
+The existing publication worker now requests HTML and its optional plain
+fallback from one focus-authorized `wl_data_offer`. Both formats have the shared
+1 MiB cap; nonblocking reads do at most eight 8 KiB syscalls per callback, validate
+UTF-8 at EOF, and expire after 40 ms. Replacement, keyboard Leave, seat removal,
+worker exit and backend teardown invalidate the cached offer and pending reads.
+An epoch prevents late publication after invalidation. Native backend forwarding
+uses the attached Wayland connection and does not acquire additional privileges.
+Existing image transfer limits and publication behavior are unchanged.
+
+Linux all-target compilation and strict Clippy pass with the installed target
+and Zig toolchain, offline and locked. Four production cache/reader tests compile;
+four new isolated compositor tests cover paired Unicode, completed-cache focus
+loss, plain replacement, NULL selection and deadline pipe closure/late-write
+refusal. Linux execution of these tests is still required before release.
+A separate private-socket protocol fixture now supplies four deterministic tests
+for selection-before-Enter, same-client surface switches, both-pipe cancellation
+on Leave/NULL, multi-seat authority, and the public 40 ms deadline. It waits for
+both seats to bind and uses a worker-queue protocol sync as its event barrier.
+Cancellation tests have one absolute failure deadline earlier than the private
+read budget, so timer expiry cannot make them pass. Both public constructors
+retain 40 ms. The fixture uses the already-locked Wayland server crate as a
+Linux-only dev-dependency; no dependency versions changed or downloads were
+required. Linux execution is still pending; these client-worker tests complement
+the real-compositor authorization tests. The local Linux shell cross-check stops
+in glib-sys because no Linux pkg-config sysroot is configured on this Mac.
+This transport does not release the History-held Notes rich-paste consumer.
+
+The first deterministic Linux run (`dd629311eb`, focused run 67474) executed all
+eight requested worker/cache cases: seven passed and pending NULL cancellation
+failed. SCTK 0.20 clears a NULL selection without invoking its selection callback.
+The adapter now forwards raw data-device events through SCTK and additionally
+processes NULL for rich text, preserving SCTK child initialization and the
+existing image handler. The both-pipe closure and late-write assertions remain
+unchanged; fixed-source execution is required before lifting the hold.

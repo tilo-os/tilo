@@ -141,7 +141,7 @@ def verify_image(path, identity):
     run(['/usr/bin/hdiutil', 'verify', path])
     command = ['/usr/bin/codesign', '--verify', '--strict']
     if identity['sha1'] != '-':
-        command += ['-R', f'anchor apple generic and certificate leaf = H"{identity["sha1"]}"']
+        command += ['-R', f'=anchor apple generic and certificate leaf = H"{identity["sha1"]}"']
     run(command + [path])
 
 

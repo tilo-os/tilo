@@ -2,8 +2,9 @@
 
 Manages the publisher key that signs your Tilo apps and applies to the
 registry for the namespaces your app ids live in. It is the graphical side of
-`tilo-app keys` and `tilo-app apply`, and reads and writes the same key file,
-`$XDG_CONFIG_HOME/tilo/publisher-key.json` (private to this app on Tilo OS).
+`tilo-app keys` and `tilo-app apply`, and reads and creates the same key: one
+secret in this app's secret store (the system keychain), which `tilo-app`
+addresses under this app's id.
 
 The key never enters the app's resource, which is synced to collaborators and
 kept in history; only the namespaces, contact and registry do. Creating the

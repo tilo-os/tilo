@@ -98,7 +98,8 @@ containerfile="$repo/os/Containerfile"
 # and /usr/bin/browser are deliberate removals: the Browser is a tapp in the
 # app store and its Chromium engine a signed runtime bundle under
 # /usr/lib/tilo-runtime, both already copied.
-expected_contract=dd2a152fd96cf852784056224d43bce11955737e176310c7f6ec450bf0530adc
+# NetworkManager's Wake-on-LAN default ships as a conf.d drop-in.
+expected_contract=04f66dbee7ef23f2100a3eed9fa16b9738b2f8e52729967d0b6d23a84ab05014
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -142,8 +143,9 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # kernel image identity into that layer's cache key adds one ARG (153).
 # Redeclaring RPMS_REF before the first snapshot install, for the same reason,
 # adds one more (154).
-[ "$instructions" -le 154 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 154)" >&2
+# NetworkManager's Wake-on-LAN drop-in adds one COPY (155).
+[ "$instructions" -le 155 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 155)" >&2
   exit 1
 }
 

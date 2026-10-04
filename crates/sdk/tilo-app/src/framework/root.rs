@@ -1060,6 +1060,11 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
+        // What surfaces bind to where someone is, they bind to this
+        // participant's view.
+        let _viewer = participant
+            .cloned()
+            .map(ui_core::invocation_scope::ViewerScope::enter);
         let mut resource = self.current_publication(doc);
         // The content may add live external entities beside the resource,
         // never a document action: those are the resource's own. A hosted
@@ -1093,10 +1098,13 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
     /// child the resource resolves by id, or a live row a surface resolves.
     fn resource_for(
         &self,
-        _participant: Option<&tilo_actions::ParticipantId>,
+        participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::Resource> {
+        let _viewer = participant
+            .cloned()
+            .map(ui_core::invocation_scope::ViewerScope::enter);
         // A change from another window or participant may not have reached
         // this view yet: an item it removed is gone, one it made is there.
         if let Some(published) = find(&[self.current_publication(doc)], id) {

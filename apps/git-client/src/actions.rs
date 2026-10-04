@@ -27,24 +27,23 @@
 //!
 //! Two things live in the CRDT:
 //!
-//! - **Durable view preferences** under `root["settings"]` (see
-//!   [`crate::settings`]) — diff layout, whitespace, syntax highlight, wrap.
-//!   Each toggle is an absolute [`Action`] so replay is deterministic.
+//! - **The repository the record opens** under `root["repository"]`.
 //! - **Shared repository projection** under `root["shared_repo"]` (see
 //!   [`crate::doc`]) — branches, commits, remotes, tags, stashes and identity.
 //!   Working-tree status is *not* projected; it stays a live hosted extra.
 //!
 //! Git work against the on-disk repository is the [`GitClientEffect`]
 //! vocabulary, answered by the surface. The resource tree is owned by
-//! [`tilo_resource::publish`]: preferences are bound actions, shared children
-//! ride the resource's children with their item effects bound, and
-//! working-tree status is the surface's live rows.
+//! [`tilo_resource::publish`]: shared children ride the resource's children
+//! with their item effects bound, and working-tree status is the surface's
+//! live rows. The diff preferences are the person's settings
+//! ([`crate::settings`]), switched by the surface's effects.
 
 use automerge::transaction::Transactable;
 use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus, Resource,
 };
 
 use ui::framework::LiveRow;
@@ -52,7 +51,6 @@ use ui::tilo_resource::{self, Effect};
 
 use crate::doc::SharedRepo;
 use crate::model::{ChangeArea, FileChange, RepoModel};
-use crate::settings::{self, DiffLayout, Settings};
 
 /// Registry `type_id` for every git-client action.
 pub const GIT_CLIENT_ACTION_TYPE: &str = "git_client.action";
@@ -164,27 +162,38 @@ pub enum GitClientEffect {
         #[param("Remote name")]
         remote: String,
     },
+    /// Switch the diff layout
+    ///
+    /// Between unified and side-by-side: a preference of this person, which
+    /// follows them to their other devices.
+    #[effect(permission = "read")]
+    DiffLayout,
+    /// Turn syntax highlighting on or off
+    ///
+    /// A preference of this person, which follows them to their other
+    /// devices.
+    #[effect(permission = "read")]
+    SyntaxHighlight,
+    /// Show or hide whitespace
+    ///
+    /// A preference of this person, which follows them to their other
+    /// devices.
+    #[effect(permission = "read")]
+    ShowWhitespace,
+    /// Wrap long lines or stop wrapping them
+    ///
+    /// A preference of this person, which follows them to their other
+    /// devices.
+    #[effect(permission = "read")]
+    WrapLines,
 }
 
 /// Every collaborative operation the git client exports on the shared document.
 ///
-/// Preference setters are absolute *sets* in `root["settings"]` — never
-/// toggles — so the payload fully determines the resulting state. The prior
-/// value is read (once, presentation-side) at *authoring* time to pick the
-/// opposite value; the action itself carries only the target.
 /// [`WriteSharedRepo`] replaces the machine-derived branch/commit/remote
 /// projection wholesale (same grain as Disks' topology write).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GitClientAction {
-    /// Set the diff pane layout. `layout` is the document's string form
-    /// (`"unified"` | `"split"`); any other value normalises to `"unified"`.
-    SetDiffLayout { layout: String },
-    /// Set whether the diff renders whitespace.
-    SetShowWhitespace { on: bool },
-    /// Set whether the diff is syntax-highlighted.
-    SetSyntaxHighlight { on: bool },
-    /// Set whether the diff soft-wraps long lines.
-    SetWrapLines { on: bool },
     /// Replace the shared repository projection (no working-tree lists).
     WriteSharedRepo { json: String },
     /// Open the repository at `path` in this record.
@@ -194,28 +203,6 @@ pub enum GitClientAction {
 impl Action for GitClientAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
-            GitClientAction::SetDiffLayout { layout } => {
-                let obj = settings::settings_obj(doc);
-                // Normalise through the enum so an unknown payload lands on a
-                // valid setting instead of wedging.
-                let norm = layout
-                    .parse::<DiffLayout>()
-                    .unwrap_or(DiffLayout::Unified)
-                    .as_str();
-                doc.put(&obj, settings::keys::DIFF_LAYOUT, norm)?;
-            }
-            GitClientAction::SetShowWhitespace { on } => {
-                let obj = settings::settings_obj(doc);
-                doc.put(&obj, settings::keys::SHOW_WHITESPACE, *on)?;
-            }
-            GitClientAction::SetSyntaxHighlight { on } => {
-                let obj = settings::settings_obj(doc);
-                doc.put(&obj, settings::keys::SYNTAX_HIGHLIGHT, *on)?;
-            }
-            GitClientAction::SetWrapLines { on } => {
-                let obj = settings::settings_obj(doc);
-                doc.put(&obj, settings::keys::WRAP_LINES, *on)?;
-            }
             GitClientAction::WriteSharedRepo { json } => {
                 SharedRepo::write_json(doc, json);
             }
@@ -231,7 +218,7 @@ impl Action for GitClientAction {
     }
 
     fn locus(&self) -> ExecutionLocus {
-        // Preferences and the shared projection: this client applies +
+        // The repository and its shared projection: this client applies +
         // replicates, peers replay.
         ExecutionLocus::ClientLocal
     }
@@ -241,7 +228,7 @@ impl Action for GitClientAction {
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         match self {
             GitClientAction::WriteSharedRepo { .. } => tilo_actions::ChangeKind::External,
-            _ => tilo_actions::ChangeKind::Content,
+            GitClientAction::OpenRepository { .. } => tilo_actions::ChangeKind::Content,
         }
     }
 }
@@ -261,15 +248,6 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Returns an error if `action` fails to serialize into the wire envelope.
 pub fn encode(action: &GitClientAction) -> Result<EncodedAction, ActionError> {
     EncodedAction::encode(GIT_CLIENT_ACTION_TYPE, action)
-}
-
-/// Build the "set the diff layout to `layout`" action — the single source of
-/// truth shared by the app-bar segmented control (see [`crate::app`]) and the
-/// Ctrl+K resource tree below.
-pub fn set_diff_layout_action(layout: DiffLayout) -> GitClientAction {
-    GitClientAction::SetDiffLayout {
-        layout: layout.as_str().to_string(),
-    }
 }
 
 // ===========================================================================
@@ -400,70 +378,6 @@ fn remote_resource(remote: &crate::model::Remote) -> Resource {
     .with_action(GitClientEffect::Fetch { remote: name() }.bound())
     .with_action(GitClientEffect::Pull { remote: name() }.bound())
     .with_action(GitClientEffect::Push { remote: name() }.bound())
-}
-
-/// Preference flips bound from live settings for [`tilo_resource::publish`].
-pub(crate) fn document_bound_actions(settings: Settings) -> Vec<ActionSpec> {
-    let mut actions = Vec::new();
-    let next_layout = match settings.diff_layout {
-        DiffLayout::Unified => DiffLayout::SideBySide,
-        DiffLayout::SideBySide => DiffLayout::Unified,
-    };
-    let layout_label = match next_layout {
-        DiffLayout::SideBySide => "Diff layout: side-by-side",
-        DiffLayout::Unified => "Diff layout: unified",
-    };
-    if let Ok(spec) = ActionSpec::immediate(
-        "diff-layout",
-        layout_label,
-        GIT_CLIENT_ACTION_TYPE,
-        &set_diff_layout_action(next_layout),
-    ) {
-        actions.push(spec);
-    }
-    if let Ok(spec) = ActionSpec::immediate(
-        "syntax-highlight",
-        if settings.syntax_highlight {
-            "Turn off syntax highlighting"
-        } else {
-            "Turn on syntax highlighting"
-        },
-        GIT_CLIENT_ACTION_TYPE,
-        &GitClientAction::SetSyntaxHighlight {
-            on: !settings.syntax_highlight,
-        },
-    ) {
-        actions.push(spec);
-    }
-    if let Ok(spec) = ActionSpec::immediate(
-        "show-whitespace",
-        if settings.show_whitespace {
-            "Hide whitespace"
-        } else {
-            "Show whitespace"
-        },
-        GIT_CLIENT_ACTION_TYPE,
-        &GitClientAction::SetShowWhitespace {
-            on: !settings.show_whitespace,
-        },
-    ) {
-        actions.push(spec);
-    }
-    if let Ok(spec) = ActionSpec::immediate(
-        "wrap-lines",
-        if settings.wrap_lines {
-            "Stop wrapping long lines"
-        } else {
-            "Wrap long lines"
-        },
-        GIT_CLIENT_ACTION_TYPE,
-        &GitClientAction::SetWrapLines {
-            on: !settings.wrap_lines,
-        },
-    ) {
-        actions.push(spec);
-    }
-    actions
 }
 
 /// The working tree's changed files as live rows: the bounded page beneath
@@ -624,7 +538,6 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
     use tilo_actions::LocalTransport;
-    use ui::testing::action_contract::assert_spec_encodes_as;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -642,11 +555,15 @@ mod tests {
         tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
-    /// A base document with the default settings seeded, as the app's first
-    /// `sync` leaves it — so toggling a preference is a genuine change.
+    /// A base document with a repository opened in it.
     fn seeded() -> AutoCommit {
         let mut doc = AutoCommit::new();
-        Settings::default().write(&mut doc);
+        dispatch(
+            &mut doc,
+            &GitClientAction::OpenRepository {
+                path: "/srv/repos/tilo".into(),
+            },
+        );
         doc.commit();
         doc
     }
@@ -671,64 +588,18 @@ mod tests {
         }
     }
 
-    /// Preference actions: each writes its absolute value into `root["settings"]`, a
-    /// malformed diff layout normalises, and palette toggles target the opposite of
-    /// the live value. Each phase is a former test with its own fresh fixture.
-    #[test]
-    fn preference_actions_write_normalised_values_that_track_live_state() {
-        preference_actions_write_the_settings();
-        malformed_diff_layout_normalises_instead_of_wedging();
-        palette_actions_target_the_opposite_of_current_state();
-    }
-
-    /// Each preference action writes its absolute value into `root["settings"]`.
-    fn preference_actions_write_the_settings() {
-        let mut doc = seeded();
-        assert_eq!(Settings::read(&doc).diff_layout, DiffLayout::Unified);
-        assert!(Settings::read(&doc).syntax_highlight);
-
-        dispatch(&mut doc, &set_diff_layout_action(DiffLayout::SideBySide));
-        dispatch(&mut doc, &GitClientAction::SetSyntaxHighlight { on: false });
-        dispatch(&mut doc, &GitClientAction::SetShowWhitespace { on: true });
-        dispatch(&mut doc, &GitClientAction::SetWrapLines { on: true });
-
-        let s = Settings::read(&doc);
-        assert_eq!(s.diff_layout, DiffLayout::SideBySide);
-        assert!(!s.syntax_highlight);
-        assert!(s.show_whitespace);
-        assert!(s.wrap_lines);
-    }
-
-    /// A malformed diff-layout payload normalises to the canonical form rather
-    /// than erroring, so an out-of-range replay lands on a valid setting.
-    fn malformed_diff_layout_normalises_instead_of_wedging() {
-        let mut doc = seeded();
-        dispatch(
-            &mut doc,
-            &GitClientAction::SetDiffLayout {
-                layout: "nonsense".into(),
-            },
-        );
-        assert_eq!(
-            Settings::read(&doc).diff_layout,
-            DiffLayout::Unified,
-            "an unknown layout falls back to the canonical default"
-        );
-    }
-
-    /// The repository resource tree: Ctrl+K publishes repo, preference and view
-    /// actions in order; git objects carry confirmation contracts; contextual
+    /// The repository resource tree: Ctrl+K publishes the repo; git objects carry confirmation contracts; contextual
     /// resources are bounded while omitted items still resolve. Each phase is a former test with its own fresh fixture.
     #[test]
     fn repository_resource_tree_exports_bounded_git_objects_and_contracts() {
-        ctrl_k_publishes_the_repo_and_preference_actions();
+        ctrl_k_publishes_the_repo();
         repository_resources_cover_git_objects_and_confirmation_contracts();
         contextual_resources_are_bounded_but_omitted_items_resolve();
     }
 
-    /// Ctrl+K on an open repository publishes the repo resource exporting the
-    /// preference actions. Drives the real resource builder.
-    fn ctrl_k_publishes_the_repo_and_preference_actions() {
+    /// Ctrl+K on an open repository publishes the repo resource. Drives the
+    /// real resource builder.
+    fn ctrl_k_publishes_the_repo() {
         let doc = seeded();
         let resources = published(&repo_model(), &doc);
         assert_eq!(resources.len(), 1, "one repository root");
@@ -736,74 +607,22 @@ mod tests {
         assert_eq!(repo.kind, "git_client.repo");
         assert_eq!(repo.label, "tilo");
         assert_eq!(repo.id.as_str(), "git_client.repo");
-
-        let ids: Vec<&str> = repo.actions.iter().map(|a| a.id.as_str()).collect();
-        for expected in [
-            "diff-layout",
-            "syntax-highlight",
-            "show-whitespace",
-            "wrap-lines",
-        ] {
-            assert!(ids.contains(&expected), "missing {expected} in {ids:?}");
-        }
-    }
-
-    /// The palette's exported actions track the live document: with a non-default
-    /// state seeded, each toggle targets the opposite of the current value.
-    fn palette_actions_target_the_opposite_of_current_state() {
-        let mut doc = AutoCommit::new();
-        let s = Settings {
-            diff_layout: DiffLayout::SideBySide,
-            syntax_highlight: false,
-            ..Settings::default()
-        };
-        s.write(&mut doc);
-        doc.commit();
-
-        let resources = published(&repo_model(), &doc);
-        let spec = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "diff-layout")
-            .unwrap();
-        // Currently side-by-side, so the exported action flips back to unified.
-        assert_spec_encodes_as(
-            spec,
-            None,
-            &encode(&set_diff_layout_action(DiffLayout::Unified)).unwrap(),
-        );
-        let syn = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "syntax-highlight")
-            .unwrap();
-        assert_spec_encodes_as(
-            syn,
-            None,
-            &encode(&GitClientAction::SetSyntaxHighlight { on: true }).unwrap(),
-        );
     }
 
     ui::action_contract_tests! {
         seed: seeded(),
         registry: registry(),
         resources: |doc| published(&crate::sample::model().0, doc),
-        palette: ["side-by-side", "syntax highlighting"],
+        palette: ["Fetch remote", "Open commit"],
         replay: [
-            diff_layout => |_| encode(&set_diff_layout_action(DiffLayout::SideBySide)).unwrap(),
-            syntax_highlight => |_| encode(&GitClientAction::SetSyntaxHighlight { on: false }).unwrap(),
+            open_repository => |_| encode(&GitClientAction::OpenRepository {
+                path: "/srv/repos/other".into(),
+            }).unwrap(),
         ],
         undo: [
-            diff_layout => |_| encode(&set_diff_layout_action(DiffLayout::SideBySide)).unwrap(),
-            wrap_lines => |_| encode(&GitClientAction::SetWrapLines { on: true }).unwrap(),
-        ],
-        encodes: [
-            diff_layout => ("git_client.repo", "diff-layout", |_, _| {
-                encode(&set_diff_layout_action(DiffLayout::SideBySide)).unwrap()
-            }),
-            syntax_highlight => ("git_client.repo", "syntax-highlight", |_, _| {
-                encode(&GitClientAction::SetSyntaxHighlight { on: false }).unwrap()
-            }),
+            open_repository => |_| encode(&GitClientAction::OpenRepository {
+                path: "/srv/repos/other".into(),
+            }).unwrap(),
         ],
     }
 

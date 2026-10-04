@@ -43,7 +43,7 @@ use tilo_actions::{
 use ui::tilo_resource::Effect as _;
 
 use crate::doc::FeedsDoc;
-use crate::model::{Article, Feed, FeedKind, Folder, Id, ReadSettings};
+use crate::model::{Article, Feed, FeedKind, Folder, Id};
 
 /// Registry `type_id` for every Feeds action.
 pub const FEEDS_ACTION_TYPE: &str = "feeds.action";
@@ -105,9 +105,6 @@ pub fn guess_kind(url: &str) -> FeedKind {
 /// carrying enough payload to replay deterministically from a shared base state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FeedsAction {
-    /// Persist the reader's shared typography and paper preference. The panel
-    /// itself remains a local view, but this value is durable and replayable.
-    SetReadSettings { settings: ReadSettings },
     /// Create a subscription *record*: a feed row with a pre-minted id, the
     /// typed url, a derived site-url and placeholder title, in `folder` at
     /// `order`. Fetching its real title + articles is external and follows.
@@ -169,9 +166,6 @@ pub enum FeedsAction {
 impl Action for FeedsAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
-            FeedsAction::SetReadSettings { settings } => {
-                FeedsDoc::write_settings(doc, &settings.clamped());
-            }
             FeedsAction::AddSubscription {
                 id,
                 url,
@@ -393,12 +387,6 @@ pub fn set_folder_collapsed_action(id: Id, collapsed: bool) -> FeedsAction {
     }
 }
 
-pub fn set_read_settings_action(settings: ReadSettings) -> FeedsAction {
-    FeedsAction::SetReadSettings {
-        settings: settings.clamped(),
-    }
-}
-
 pub fn mark_read_action(id: Id, read: bool) -> FeedsAction {
     FeedsAction::MarkRead {
         id: id.to_string(),
@@ -491,7 +479,6 @@ pub struct FeedsResourceCtx {
     /// Unread articles across the whole reader, resolved before the global
     /// action is authored so replay never depends on a peer's local filter.
     pub unread: Vec<Id>,
-    pub settings: ReadSettings,
 }
 
 fn immediate_spec(id: &str, label: &str, action: &FeedsAction) -> ActionSpec {
@@ -527,55 +514,6 @@ pub(crate) fn mark_all_read_spec(unread: &[Id]) -> ActionSpec {
         "Mark all articles as read",
         &mark_all_read_action(unread),
     )
-}
-
-fn settings_resource(settings: ReadSettings) -> Resource {
-    let mut settings_resource = Resource::new(
-        "feeds.reader-settings",
-        "feeds.reader-settings",
-        "Reading settings",
-    );
-    for (id, label, next) in [
-        (
-            "font-decrease",
-            "Decrease reader text size",
-            ReadSettings {
-                font_scale: settings.font_scale - 0.1,
-                ..settings
-            }
-            .clamped(),
-        ),
-        (
-            "font-increase",
-            "Increase reader text size",
-            ReadSettings {
-                font_scale: settings.font_scale + 0.1,
-                ..settings
-            }
-            .clamped(),
-        ),
-    ] {
-        settings_resource = settings_resource.with_action(immediate_spec(
-            id,
-            label,
-            &set_read_settings_action(next),
-        ));
-    }
-    for font in crate::model::ReadFont::ALL {
-        settings_resource = settings_resource.with_action(immediate_spec(
-            font.as_str(),
-            &format!("Use {} reader font", font.label()),
-            &set_read_settings_action(ReadSettings { font, ..settings }),
-        ));
-    }
-    for theme in crate::model::ReadTheme::ALL {
-        settings_resource = settings_resource.with_action(immediate_spec(
-            theme.as_str(),
-            &format!("Use {} reader paper", theme.label()),
-            &set_read_settings_action(ReadSettings { theme, ..settings }),
-        ));
-    }
-    settings_resource
 }
 
 fn folder_resource(folder: &FolderRef) -> Resource {
@@ -711,14 +649,14 @@ fn feed_resource(
     child
 }
 
-/// Document-derived children for [`tilo_resource::publish`]: settings, tags,
-/// folders, subscriptions and articles.
+/// Document-derived children for [`tilo_resource::publish`]: tags, folders,
+/// subscriptions and articles.
 #[allow(
     clippy::too_many_lines,
     reason = "the complete folder/feed/article hierarchy stays together so its bounded inventory is auditable"
 )]
 pub(crate) fn publish_children(ctx: &FeedsResourceCtx) -> Vec<Resource> {
-    let mut children = vec![settings_resource(ctx.settings)];
+    let mut children = Vec::new();
 
     for tag in ctx.tags.iter().take(MAX_CONTEXT_TAG_RESOURCES) {
         children.push(tag_resource(tag));
@@ -747,13 +685,9 @@ pub(crate) fn publish_children(ctx: &FeedsResourceCtx) -> Vec<Resource> {
 }
 
 /// Build a publish context from the shared library projection.
-pub(crate) fn resource_ctx_from_library(
-    store: &crate::model::Store,
-    settings: ReadSettings,
-) -> FeedsResourceCtx {
+pub(crate) fn resource_ctx_from_library(store: &crate::model::Store) -> FeedsResourceCtx {
     resource_ctx_from_library_with_limits(
         store,
-        settings,
         MAX_CONTEXT_FOLDER_RESOURCES,
         MAX_CONTEXT_FEED_RESOURCES,
         MAX_CONTEXT_ARTICLE_RESOURCES,
@@ -763,7 +697,6 @@ pub(crate) fn resource_ctx_from_library(
 
 pub(crate) fn resource_ctx_from_library_with_limits(
     store: &crate::model::Store,
-    settings: ReadSettings,
     folder_limit: usize,
     feed_limit: usize,
     article_limit: usize,
@@ -820,24 +753,16 @@ pub(crate) fn resource_ctx_from_library_with_limits(
             .map(|name| TagRef { name })
             .collect(),
         unread: store.unread_ids_for(Filter::All),
-        settings,
     }
 }
 
 /// The context that publishes exactly the library item `id` (a folder, a
 /// subscription, a tag or an article) and nothing else, so an item outside
 /// the published page still resolves without building the whole tree.
-pub(crate) fn resource_ctx_for(
-    store: &crate::model::Store,
-    settings: ReadSettings,
-    id: &str,
-) -> Option<FeedsResourceCtx> {
+pub(crate) fn resource_ctx_for(store: &crate::model::Store, id: &str) -> Option<FeedsResourceCtx> {
     use crate::model::Filter;
 
-    let mut ctx = FeedsResourceCtx {
-        settings,
-        ..FeedsResourceCtx::default()
-    };
+    let mut ctx = FeedsResourceCtx::default();
     if let Some(raw) = id.strip_prefix("feeds.folder:") {
         let folder = store.folder(raw.parse::<Id>().ok()?)?;
         ctx.folders.push(FolderRef {
@@ -890,11 +815,7 @@ pub(crate) fn resource_ctx_for(
 /// The library item `id`, resolved by id rather than from the published page.
 /// A stale id resolves to `None`, so a cached search row cannot resurrect a
 /// removed subscription or article.
-pub(crate) fn resolve_child(
-    store: &crate::model::Store,
-    settings: ReadSettings,
-    id: &str,
-) -> Option<Resource> {
+pub(crate) fn resolve_child(store: &crate::model::Store, id: &str) -> Option<Resource> {
     fn find(resources: Vec<Resource>, id: &str) -> Option<Resource> {
         resources.into_iter().find_map(|resource| {
             if resource.id.as_str() == id {
@@ -904,10 +825,7 @@ pub(crate) fn resolve_child(
             }
         })
     }
-    find(
-        publish_children(&resource_ctx_for(store, settings, id)?),
-        id,
-    )
+    find(publish_children(&resource_ctx_for(store, id)?), id)
 }
 
 #[cfg(test)]
@@ -991,10 +909,7 @@ mod tests {
                 });
             }
         }
-        FeedsState {
-            store,
-            settings: ReadSettings::default(),
-        }
+        FeedsState { store }
     }
 
     /// The published library is bounded, every item outside the page still
@@ -1071,10 +986,8 @@ mod tests {
             store.feeds.push(feed);
             store.articles.push(article);
         }
-        let settings = ReadSettings::default();
-
-        let article_ctx = resource_ctx_for(&store, settings, &article_resource_id(target))
-            .expect("late article resolves");
+        let article_ctx =
+            resource_ctx_for(&store, &article_resource_id(target)).expect("late article resolves");
         assert_eq!(article_ctx.feeds.len(), 1);
         assert_eq!(article_ctx.feeds[0].articles.len(), 1);
         assert_eq!(article_ctx.feeds[0].articles[0].id, target);
@@ -1082,14 +995,13 @@ mod tests {
         assert!(article_ctx.tags.is_empty());
         assert!(article_ctx.unread.is_empty());
 
-        let tag_ctx = resource_ctx_for(&store, settings, &tag_resource_id("archive-199"))
-            .expect("late tag resolves");
+        let tag_ctx =
+            resource_ctx_for(&store, &tag_resource_id("archive-199")).expect("late tag resolves");
         assert_eq!(tag_ctx.tags.len(), 1);
         assert!(tag_ctx.feeds.is_empty());
         assert!(tag_ctx.folders.is_empty());
         assert!(
-            resource_ctx_for(&store, settings, &format!("feeds.tag:{}", "aa".repeat(193)))
-                .is_none(),
+            resource_ctx_for(&store, &format!("feeds.tag:{}", "aa".repeat(193))).is_none(),
             "oversized hostile ids are rejected before materialization"
         );
     }
@@ -1233,11 +1145,6 @@ mod tests {
                 library(doc).articles[0].id,
                 &["design".to_string(), "later".to_string()],
             )),
-            read_settings => |_| encode(&set_read_settings_action(ReadSettings {
-                font_scale: 1.35,
-                font: crate::model::ReadFont::Serif,
-                theme: crate::model::ReadTheme::Sepia,
-            })),
             collapse_folder => |doc| encode(&set_folder_collapsed_action(
                 library(doc).folders[0].id,
                 true,

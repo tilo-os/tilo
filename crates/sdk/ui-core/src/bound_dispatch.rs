@@ -2022,6 +2022,9 @@ pub(crate) fn invoke_resource_action(
                             reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
                         }.into());
                     }
+                    if let Some(scope) = scope {
+                        scope.capture_locus_basis(target, invocation, actor, doc);
+                    }
                     let encoded = encode_resource_action(
                         &resources,
                         &target.address.address,

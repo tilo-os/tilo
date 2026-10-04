@@ -107,39 +107,33 @@ fn unknown_participant_resolves_at_the_document_end() {
         Some(caret(&ids[1], 3))
     );
     assert!(
-        !wp.participant_resources(Some(&stranger), &state.doc)
-            .is_empty()
+        wp.participant_resources(Some(&stranger), &state.doc)
+            .is_empty(),
+        "a stranger has found nothing"
     );
 }
 
 #[test]
-fn participant_tree_matches_the_pure_projection_of_its_view() {
+fn participant_edits_match_the_pure_projection_of_its_view() {
     let (mut wp, state, ids) = widget_with(&["alpha beta", "gamma"]);
     let agent = pid("agent");
     let view = selecting(&ids[1], 1, 4);
     wp.set_participant_view(&agent, &view, &state.doc);
-    let expected = crate::actions::bound::view_only(crate::actions::live_presentation_resources(
-        &view.ctx(&state.doc).unwrap(),
-        &state.doc,
-        None,
-    ));
-    let actual = wp.participant_resources(Some(&agent), &state.doc);
-    let ids_of = |resources: &[Resource]| -> Vec<String> {
-        fn walk(resource: &Resource, out: &mut Vec<String>) {
-            for spec in &resource.actions {
-                out.push(format!("{}#{}", resource.id.as_str(), spec.id));
-            }
-            for child in &resource.children {
-                walk(child, out);
-            }
-        }
-        let mut out = Vec::new();
-        for resource in resources {
-            walk(resource, &mut out);
-        }
-        out
+    let expected: Vec<&str> =
+        crate::actions::bound::declarations(&crate::actions::live_presentation_resources(
+            &view.ctx(&state.doc).unwrap(),
+            &state.doc,
+            None,
+        ))
+        .iter()
+        .map(|decl| decl.id)
+        .collect();
+    let actual: Vec<&str> = {
+        let _viewer = ui::invocation_scope::ViewerScope::enter(agent.clone());
+        wp.bound_edits().iter().map(|decl| decl.id).collect()
     };
-    assert_eq!(ids_of(&actual), ids_of(&expected));
+    assert_eq!(actual, expected);
+    assert!(actual.contains(&"replace-selection"));
 }
 
 #[test]
@@ -597,22 +591,21 @@ fn typing_over_a_selection_keeps_typed_order() {
 #[test]
 fn view_operations_move_only_the_invokers_view() {
     use crate::actions::editing::CaretTarget;
-    use crate::actions::view_ops::{ViewOperation, WORD_PROCESSOR_VIEW_OPERATION_TYPE};
-    let (mut wp, mut state, ids) = widget_with(&["find the needle", "and more"]);
+    use crate::actions::view_ops::ViewOperation;
+    use crate::effects::ViewMove;
+    let (mut wp, state, ids) = widget_with(&["find the needle", "and more"]);
     let doc_before = state.doc.clone().save();
     let local_before = wp.local_participant_view();
     let agent = pid("agent");
-    let invoker = ActionInvoker::actor("agent-actor").with_participant(agent.clone());
-    let encode = |op: &ViewOperation| {
-        tilo_actions::EncodedAction::encode_operation(WORD_PROCESSOR_VIEW_OPERATION_TYPE, op)
-            .unwrap()
-    };
 
-    let select = encode(&ViewOperation::SelectBlock {
-        block: ids[1].clone(),
-    });
-    wp.invoke_participant_view_operation(&invoker, &select.type_id, &select.payload, &state.doc)
-        .unwrap();
+    wp.move_participant_view(
+        &agent,
+        &ViewMove::Operation(ViewOperation::SelectBlock {
+            block: ids[1].clone(),
+        }),
+        &state.doc,
+    )
+    .unwrap();
     assert_eq!(
         wp.participant_view(&agent, &state.doc)
             .unwrap()
@@ -621,11 +614,14 @@ fn view_operations_move_only_the_invokers_view() {
         Some((ids[1].clone(), 0, ids[1].clone(), 8))
     );
 
-    let find = encode(&ViewOperation::FindText {
-        query: "needle".into(),
-    });
-    wp.invoke_participant_view_operation(&invoker, &find.type_id, &find.payload, &state.doc)
-        .unwrap();
+    wp.move_participant_view(
+        &agent,
+        &ViewMove::Operation(ViewOperation::FindText {
+            query: "needle".into(),
+        }),
+        &state.doc,
+    )
+    .unwrap();
     let found = wp.participant_view(&agent, &state.doc).unwrap();
     assert_eq!(found.find.query, "needle");
     assert_eq!(found.find.hits.len(), 1);
@@ -636,29 +632,27 @@ fn view_operations_move_only_the_invokers_view() {
         "word-processor.search-hit:"
     ));
 
-    // search-hit#go-to for the agent selects the hit in the agent's view.
+    // go-to on the agent's search hit selects it in the agent's view.
     let hit = &found.find.hits[0];
-    let go = tilo_actions::EncodedAction::encode_operation(
-        crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
-        &crate::actions::WordProcessorOperation::NavigateTo {
+    wp.move_participant_view(
+        &agent,
+        &ViewMove::NavigateTo {
             block: hit.block.clone(),
             start: hit.start,
             end: hit.end,
         },
+        &state.doc,
     )
     .unwrap();
-    wp.invoke_participant_view_operation(&invoker, &go.type_id, &go.payload, &state.doc)
-        .unwrap();
     assert_eq!(
         wp.participant_view(&agent, &state.doc).unwrap().caret,
         ViewPoint::new(&ids[0], 15)
     );
 
-    let end = encode(&ViewOperation::MoveCaret {
+    let end = ViewMove::Operation(ViewOperation::MoveCaret {
         to: CaretTarget::DocumentEnd,
     });
-    wp.invoke_participant_view_operation(&invoker, &end.type_id, &end.payload, &state.doc)
-        .unwrap();
+    wp.move_participant_view(&agent, &end, &state.doc).unwrap();
     assert_eq!(
         wp.participant_view(&agent, &state.doc).unwrap().caret,
         ViewPoint::new(&ids[1], 8)
@@ -667,174 +661,17 @@ fn view_operations_move_only_the_invokers_view() {
     // None of this touched the window's view or the document.
     assert_eq!(wp.local_participant_view(), local_before);
     assert_eq!(state.doc.clone().save(), doc_before);
-    assert!(
-        wp.invoke_participant_view_operation(
-            &ActionInvoker::actor("agent-actor"),
-            &end.type_id,
-            &end.payload,
-            &state.doc
-        )
-        .is_err()
-    );
 
-    // Without an invoker the same operation moves the window's own caret.
-    let start = encode(&ViewOperation::MoveCaret {
-        to: CaretTarget::DocumentStart,
-    });
-    assert!(
-        wp.start_operation(
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                &start.type_id,
-                &start.payload
-            ),
-            &mut state.doc,
-            &state.root
-        )
-        .map(|started| started.is_some())
-        .unwrap()
-    );
+    // The window's own view moves the same way.
+    wp.apply_local_view_operation(
+        &state.doc,
+        &ViewMove::Operation(ViewOperation::MoveCaret {
+            to: CaretTarget::DocumentStart,
+        }),
+    )
+    .unwrap();
     assert_eq!(wp.model().caret().offset, 0);
     assert_eq!(wp.model().caret().block, ids[0]);
-    let _ = &mut state;
-}
-
-#[test]
-fn joined_participants_start_at_the_document_end_and_leave_cleanly() {
-    let (mut wp, mut state, ids) = widget_with(&["one", "two"]);
-    let agent = pid("agent-task:7");
-    assert!(ui::collaboration::participants::join_participant(
-        &mut wp, &agent
-    ));
-    assert!(
-        !ui::collaboration::participants::join_participant(&mut wp, &agent),
-        "idempotent"
-    );
-    // No document at join time: placed on the next sync.
-    wp.sync(&mut state.doc, &state.root);
-    assert_eq!(
-        wp.participant_view(&agent, &state.doc),
-        Some(caret(&ids[1], 3))
-    );
-    assert_eq!(wp.participant_presence(&state.doc).len(), 1);
-    // Per-participant resolution through the Widget hooks.
-    assert!(
-        ui::resources::resource_for(&wp, Some(&agent), &state.doc, "word-processor.caret")
-            .is_some()
-    );
-    ui::collaboration::participants::leave_participant(&mut wp, &agent);
-    assert_eq!(wp.participant_view(&agent, &state.doc), None);
-    assert!(wp.participant_presence(&state.doc).is_empty());
-}
-
-#[test]
-fn a_noted_outcome_is_adopted_only_after_its_edit_applied() {
-    let (mut wp, mut state, ids) = widget_with(&["split here", "tail"]);
-    let agent = pid("agent-task:9");
-    wp.set_participant_view(&agent, &caret(&ids[0], 5), &state.doc);
-    let view = wp.participant_view(&agent, &state.doc).unwrap();
-    let invoker = ActionInvoker::actor("agent-actor").with_participant(agent.clone());
-
-    // Refused (never dispatched): the noted view is dropped.
-    {
-        let _scope = ui::invocation_scope::InvokerScope::enter(invoker.clone());
-        let _ = wp.participant_resources(Some(&agent), &state.doc);
-        let (_, next) = crate::actions::editing::new_paragraph(&view, &state.doc).unwrap();
-        note_participant_outcome(&next);
-    }
-    wp.sync(&mut state.doc, &state.root);
-    assert_eq!(
-        wp.participant_view(&agent, &state.doc),
-        Some(caret(&ids[0], 5))
-    );
-
-    // Applied: the caret lands in the block the split created.
-    {
-        let _scope = ui::invocation_scope::InvokerScope::enter(invoker);
-        let _ = wp.participant_resources(Some(&agent), &state.doc);
-        let (envelopes, next) = crate::actions::editing::new_paragraph(&view, &state.doc).unwrap();
-        note_participant_outcome(&next);
-        let dispatch =
-            ui::framework::testing::detached_dispatcher::<crate::framework::Document>("agent");
-        for action in &envelopes {
-            dispatch.apply_now(&mut state.doc, action).unwrap();
-        }
-    }
-    wp.sync(&mut state.doc, &state.root);
-    let order = body_ids(&state.doc);
-    assert_eq!(order.len(), 3);
-    assert_eq!(
-        wp.participant_view(&agent, &state.doc),
-        Some(caret(&order[1], 0))
-    );
-}
-
-#[test]
-fn plain_paste_matches_the_paste_primitive() {
-    use crate::actions::editing::{PasteContent, paste};
-    let (mut wp, mut state, ids) = widget_with(&["start end"]);
-    wp.model_mut().set_caret(Caret {
-        block: ids[0].clone(),
-        offset: 6,
-    });
-    let view = wp.local_participant_view();
-    let content = PasteContent::Text("one\ntwo ".into());
-    let (envelopes, _) = paste(&view, &state.doc, &content).unwrap();
-    wp.paste_plain_text_via_action(&mut state.doc, "one\ntwo ");
-    let expected = tilo_actions::EncodedAction::encode(
-        crate::actions::WORD_PROCESSOR_ACTION_TYPE,
-        envelopes.last().unwrap(),
-    )
-    .unwrap();
-    assert_eq!(wp.last_dispatched_for_test(), Some(&expected));
-    assert_eq!(
-        wp.model().block_texts(&state.doc),
-        vec!["start one".to_string(), "two end".to_string()]
-    );
-    let order = body_ids(&state.doc);
-    assert_eq!(wp.model().caret().block, order[1]);
-    assert_eq!(wp.model().caret().offset, 4);
-}
-
-#[test]
-fn a_delivered_view_operation_moves_only_its_participants_view() {
-    use crate::actions::editing::CaretTarget;
-    use crate::actions::view_ops::{ViewOperation, WORD_PROCESSOR_VIEW_OPERATION_TYPE};
-    let (mut wp, mut state, ids) = widget_with(&["one", "two"]);
-    let local_before = wp.local_participant_view();
-    let agent = pid("agent-task:3");
-    let op = tilo_actions::EncodedAction::encode_operation(
-        WORD_PROCESSOR_VIEW_OPERATION_TYPE,
-        &ViewOperation::MoveCaret {
-            to: CaretTarget::DocumentStart,
-        },
-    )
-    .unwrap();
-    {
-        let _scope = ui::invocation_scope::InvokerScope::enter(
-            ActionInvoker::actor("agent-actor").with_participant(agent.clone()),
-        );
-        assert!(
-            wp.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    &op.type_id,
-                    &op.payload
-                ),
-                &mut state.doc,
-                &state.root
-            )
-            .map(|started| started.is_some())
-            .unwrap()
-        );
-    }
-    assert_eq!(
-        wp.participant_view(&agent, &state.doc),
-        Some(caret(&ids[0], 0))
-    );
-    assert_eq!(wp.local_participant_view(), local_before);
 }
 
 /// A delivered invocation by a participant builds its edit at that
