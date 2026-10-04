@@ -22,6 +22,7 @@ struct Seen {
     wake: Rc<RefCell<Option<crate::WakeHandle>>>,
     late: Rc<RefCell<Option<crate::WakeHandle>>>,
     panic: Rc<Cell<bool>>,
+    on_sync: Rc<RefCell<Option<Box<dyn FnOnce()>>>>,
     order: Rc<RefCell<Vec<u64>>>,
 }
 struct OwnerProbe {
@@ -62,6 +63,9 @@ impl Widget for OwnerProbe {
             .as_str()
             .unwrap()
             .into();
+        if let Some(callback) = self.seen.on_sync.borrow_mut().take() {
+            callback();
+        }
         if let Some(wake) = self.seen.late.borrow_mut().take() {
             wake.wake();
         }
@@ -150,6 +154,7 @@ fn prepared(
 // All owners are genuinely retained and closed. This host deliberately does
 // not present or synchronize them in its ordinary visible sync/layout pass.
 struct HiddenOwners {
+    before_visit: Rc<RefCell<Option<Box<dyn FnOnce()>>>>,
     owners: Vec<BoundAppWidget>,
     visits: Rc<Cell<usize>>,
     refuse: Rc<Cell<bool>>,
@@ -178,6 +183,9 @@ impl Widget for HiddenOwners {
         request: &mut ComponentRequest<'_>,
     ) -> Result<(), BoundDispatchError> {
         self.visits.set(self.visits.get() + 1);
+        if let Some(callback) = self.before_visit.borrow_mut().take() {
+            callback();
+        }
         if self.refuse.get() {
             return Err(BoundDispatchError::CrossRecordReentry);
         }
@@ -200,6 +208,7 @@ fn frame(
     let mut frame = FrameHarness::new_with_controlled_inputs(
         State::new(),
         Box::new(HiddenOwners {
+            before_visit: Rc::default(),
             owners,
             visits: visits.clone(),
             refuse: refuse.clone(),
@@ -999,3 +1008,6 @@ fn background_exact_offer_never_settles_unrelated_same_store_typing() {
         durable_store::StorageKey::record(probe::APP, probe::ROOM, aid.storage_key())
     );
 }
+
+#[path = "owner_turn_tests.rs"]
+mod owner_turn_tests;

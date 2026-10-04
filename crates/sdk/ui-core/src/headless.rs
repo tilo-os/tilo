@@ -929,7 +929,7 @@ impl FrameHarness {
         let Some(queue) = self.owner_wake_queue.clone() else {
             return Ok(());
         };
-        let mut batch = queue.take_batch();
+        let mut batch = queue.take_batch(usize::MAX);
         if batch.front().is_some() {
             // An unknown visitor can replace descendants before it locates the
             // target. Retire physical maps BEFORE the first arbitrary callback.
@@ -939,6 +939,7 @@ impl FrameHarness {
             self.owner_service_layout_retired = true;
         }
         while let Some(work) = batch.front() {
+            work.check_registration()?;
             crate::bound_dispatch::service_retained_owner_model(
                 self.root.as_mut(),
                 &mut self.state.doc,
@@ -13292,3 +13293,6 @@ mod owner_mount_service_custody;
 #[cfg(test)]
 #[path = "headless/activation_scene_consistency_tests.rs"]
 mod activation_scene_consistency_tests;
+
+#[path = "headless/owner_service.rs"]
+mod owner_service;

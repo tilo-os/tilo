@@ -2093,6 +2093,12 @@ pub(crate) fn service_retained_owner_model(
                      owner: &mut dyn crate::widget::AppWidget,
                      _: &tilo_actions::ActionRegistry| {
         if current.same_component(captured) {
+            // Arbitrary retained traversal may retire/replace the queue token
+            // while the original callback binding remains live.
+            if let Err(error) = work.check_registration() {
+                result = Some(Err(error));
+                return None;
+            }
             let updated = current
                 .with_document(outer, |document, record_root| {
                     owner.update(document, record_root);

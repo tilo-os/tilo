@@ -655,3 +655,54 @@ fn demand_only_truthful_apply_replacement_error_retires_before_original_input() 
     assert!(seen.drops.get() > drops);
     assert!(pending && refused.is_err() && resumed.is_ok() && admitted);
 }
+
+#[test]
+fn bounded_owner_turn_retires_replaced_control_and_refuses_failed_input_readmission() {
+    let host = ProbeHost::new();
+    let queue = OwnerWakeQueue::default();
+    let (owner, seen, record) = prepared(&host, &queue, 9160);
+    let mut frame = frame(&queue, vec![owner]);
+    frame
+        .perform_named("owned-editor", &crate::a11y::Action::Focus)
+        .unwrap();
+    let drops = seen.drops.get();
+    let passes = frame.relayout_frames;
+    seen.replace.set(true);
+    seen.wake.borrow().as_ref().unwrap().wake();
+    let report = frame.service_owner_turn(crate::owner_wake::OwnerTurnBudget {
+        max_steps: 1,
+        deadline: None,
+    });
+    assert_eq!(
+        (report.attempted, report.completed, report.remaining),
+        (1, 1, 0)
+    );
+    assert_eq!(seen.drops.get(), drops + 1);
+    assert!(frame.node_map.is_empty() && !frame.layout_built);
+    assert_eq!(frame.relayout_frames, passes);
+    assert!(frame.ime_window().is_none());
+    seen.fail_composition.set(true);
+    let before = host.records.with(&record, |doc| doc.base_heads()).unwrap();
+    let events = seen.events.get();
+    assert!(
+        frame
+            .perform_named(
+                "owned-editor",
+                &crate::a11y::Action::SetValue("refused".into())
+            )
+            .is_err()
+    );
+    let _ = frame.dispatch_to_root(&WindowEvent::Ime(winit::event::Ime::Commit(
+        "refused".into(),
+    )));
+    assert_eq!(seen.events.get(), events);
+    assert_eq!(
+        host.records.with(&record, |doc| doc.base_heads()).unwrap(),
+        before
+    );
+    assert!(frame.node_map.is_empty() && frame.owner_service_layout_retired);
+    seen.fail_composition.set(false);
+    frame.try_relayout().unwrap();
+    assert!(!frame.owner_service_layout_retired);
+    close(&mut frame, 1);
+}
