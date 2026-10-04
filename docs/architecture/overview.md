@@ -62,7 +62,7 @@ Tilo (codename **tilo**) is a collaborative Linux OS built on Fedora Bootc. See 
 
 ### 3. Collaboration + Sandbox Layer
 - **Collaboration:** Iroh gossip carries direct workspace traffic; the authenticated Iroh workspace host persists and store-and-forwards durable changes. CRDT changes ride on top via `automerge`'s incremental change protocol.
-- **Surface streaming:** owners encode foreign-client surfaces through the media stack's real-time encoder (AV1/VP9 when every viewer decodes it in hardware, else H.264; hardware first) and publish them on the workspace topic. Peers decode in a `peer_view` widget; their input events are serialised and replayed into the owner's smithay seat.
+- **Surface streaming:** owners encode foreign-client surfaces through the media stack's real-time encoder (AV1/VP9 when every viewer decodes it in hardware, else H.264; hardware first) and publish them on the topic of the room the window's tab is in. Peers decode in a `peer_view` widget mounted in that exact tab; their input events are serialised and replayed into the owner's smithay seat. Between a person's own devices only legacy app windows are streamed, each to the devices currently showing its tab (see `docs/device-mesh.md`); no device streams its desktop.
 - **Sandbox:** the compositor execs `tilo-launcher`, which builds each app's `bwrap` argv from its manifest and the workspace's grants, with a seccomp-bpf blocklist, Landlock, a private DBus session bus, and a per-workspace Wayland bridge socket. The portal D-Bus backend (`org.freedesktop.impl.portal.*`) gates capability requests through the compositor's prompt UI.
 - See `docs/architecture/collaboration.md`, `docs/architecture/security.md`.
 
@@ -95,9 +95,11 @@ Local mutation → WorkspaceTree write (cache + automerge AutoCommit)
 
 ### Foreign-surface streaming
 ```
-Owner: surface commit → damage hint → media real-time encode (30 fps cap)
-  → NeighbourMsg::SurfaceFrame published on workspace topic
-  → peer: H264Decoder → peer_view widget draws decoded frames into tab content rect
+Viewer (own device): a HostedWindow tab is laid out → PersonalFabricAction::WindowViews { tab, size } to its host
+Owner: surface commit → damage hint → media real-time encode (cap; a held frame
+  is flushed when due) → NeighbourMsg::SurfaceStreamStart { tab } / SurfaceFrame
+  on the tab's room topic → direct per-window fanout
+  → peer: decoder → peer_view widget draws decoded frames into that tab
 ```
 
 ### Remote input replay

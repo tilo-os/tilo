@@ -371,6 +371,10 @@ pub enum ResourceSelection {
         start: usize,
         end: usize,
     },
+    /// A pointer over an item, at a point of the shared window (logical
+    /// pixels): where a collaborator is aiming in a surface that draws
+    /// their cursor itself.
+    Pointer { item: String, x: f32, y: f32 },
 }
 
 impl ResourceSelection {
@@ -392,6 +396,7 @@ impl ResourceSelection {
                     end: *end,
                 },
             ),
+            Self::Pointer { item, x, y } => (key(item), PresencePayload::Pointer { x: *x, y: *y }),
         }
     }
 }

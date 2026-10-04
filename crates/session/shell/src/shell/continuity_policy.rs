@@ -185,6 +185,9 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::GamepadForwardEvent { .. }
             | PersonalFabricAction::GamepadForwardStop { .. } => ContinuityCapability::TypedGamepad,
             PersonalFabricAction::Tethering { .. } => ContinuityCapability::WifiSettings,
+            // A legacy app keeps running on the device that hosts it; the
+            // person's other devices show it through a stream of its window.
+            PersonalFabricAction::WindowViews { .. } => ContinuityCapability::AppContinuations,
         }
     }
 

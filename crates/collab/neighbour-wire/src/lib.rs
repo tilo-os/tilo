@@ -171,6 +171,12 @@ pub enum NeighbourMsg {
         /// serde default accepts pre-field postcard payloads.
         #[serde(default)]
         app_id: String,
+        /// The workspace tab holding the window, the same id on every device
+        /// of the room, so a viewer shows the stream in exactly that tab
+        /// even when several windows of one app are open. `0` when the
+        /// sender does not name one.
+        #[serde(default)]
+        tab: u64,
     },
     /// Explicit end-of-stream (owner tore down the share, or the surface
     /// unmapped). Receivers drop their `PeerView` + decoder on receipt, instead of
@@ -374,6 +380,17 @@ pub enum NeighbourMsg {
         /// ignore it.
         delivery: u64,
     },
+    /// The person's workspace directory as one of their devices holds it:
+    /// a device-signed Automerge snapshot of which workspaces the person
+    /// has and which room carries each. Travels only on the person's own
+    /// topic; the receiver merges it only when the authenticated transport
+    /// certificate and the update's author are devices of
+    /// `user_public_key`. Appended to preserve every existing Postcard
+    /// discriminant.
+    PersonalWorkspaces {
+        user_public_key: [u8; 32],
+        update: Box<tilo_user_identity::DirectoryUpdate>,
+    },
 }
 
 #[cfg(test)]
@@ -557,6 +574,7 @@ mod tests {
                     colorimetry: None,
                     hdr_static_metadata: None,
                     bit_depth: 0,
+                    tab: 0,
                 },
             ),
             (
@@ -573,6 +591,7 @@ mod tests {
                     colorimetry: Some(Colorimetry::hdr10()),
                     hdr_static_metadata: Some(Hdr10Metadata::reference_bt2020()),
                     bit_depth: 10,
+                    tab: 0,
                 },
             ),
             (
@@ -652,6 +671,18 @@ mod tests {
                     user_public_key: [7; 32],
                     publisher: 0x00AB_CDEF,
                     snapshot: vec![1, 2, 3],
+                },
+            ),
+            (
+                "personal workspaces",
+                NeighbourMsg::PersonalWorkspaces {
+                    user_public_key: [7; 32],
+                    update: Box::new(tilo_user_identity::DirectoryUpdate {
+                        author_device_public_key: [2; 32],
+                        authored_at_ns: 10,
+                        delta: vec![1, 2, 3],
+                        signature: [3; 64],
+                    }),
                 },
             ),
             (
@@ -767,10 +798,11 @@ mod tests {
             NeighbourMsg::MlsGovernance { .. } => "MlsGovernance",
             NeighbourMsg::MlsAccessRequest { .. } => "MlsAccessRequest",
             NeighbourMsg::MlsGovernanceAck { .. } => "MlsGovernanceAck",
+            NeighbourMsg::PersonalWorkspaces { .. } => "PersonalWorkspaces",
         }
     }
 
-    const VARIANT_COUNT: usize = 25;
+    const VARIANT_COUNT: usize = 26;
 
     fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write;
@@ -811,7 +843,7 @@ mod tests {
             "SDR stream start",
             concat!(
                 "0507cdd702800ad005046832363482e2cfaa0682e2cfaa06000000126f72672e",
-                "6578616d706c652e456469746f72",
+                "6578616d706c652e456469746f7200",
             ),
         ),
         (
@@ -819,7 +851,7 @@ mod tests {
             concat!(
                 "0508cdd702800fb8080b686576632d6d61696e313083e2cfaa0683e2cfaa0601",
                 "0101010001c894028872b442aab7029633fc11937ac2800180ade204f4030000",
-                "0a156f72672e6578616d706c652e486472456469746f72",
+                "0a156f72672e6578616d706c652e486472456469746f7200",
             ),
         ),
         ("stream end", "0607cdd70284e2cfaa06"),
@@ -871,6 +903,16 @@ mod tests {
             concat!(
                 "1307070707070707070707070707070707070707070707070707070707070707",
                 "07ef9baf0503010203",
+            ),
+        ),
+        (
+            "personal workspaces",
+            concat!(
+                "1907070707070707070707070707070707070707070707070707070707070707",
+                "0702020202020202020202020202020202020202020202020202020202020202",
+                "020a030102034003030303030303030303030303030303030303030303030303",
+                "0303030303030303030303030303030303030303030303030303030303030303",
+                "03030303030303",
             ),
         ),
         ("remote action", "14027b7d"),
