@@ -1533,7 +1533,11 @@ impl WorkspaceTree {
             },
             _ => None,
         };
-        if current_name.as_deref() != Some(name.as_str()) {
+        // The name is governed like the owner: only the governing machine
+        // writes it. A member's local name (a device's "From another
+        // device" placeholder before its first sync) would otherwise race
+        // the real name in the shared document and could win.
+        if governs && current_name.as_deref() != Some(name.as_str()) {
             let _ = doc.put(&ROOT, "name", name);
         }
 
