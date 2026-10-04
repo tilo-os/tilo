@@ -49,6 +49,7 @@ mod input_context;
 mod metrics;
 mod mini_month;
 pub mod model;
+mod outbox;
 pub mod resource;
 mod sidebar;
 pub mod store;

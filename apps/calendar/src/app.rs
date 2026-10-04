@@ -384,14 +384,7 @@ impl FormRects {
 /// The notes of the selected event or task, edited as calendar actions.
 type NotesEditor = RichTextSurface<RichTextField>;
 
-type SyncWorkerResult = (
-    caldav::SyncResult,
-    SyncOutcome,
-    Vec<Id>,
-    Vec<Id>,
-    Vec<String>,
-    Vec<caldav::RemoteRevision>,
-);
+type SyncWorkerResult = (caldav::SyncResult, SyncOutcome);
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -415,6 +408,9 @@ pub struct CalendarApp {
     accounts: AccountStore,
     /// The accounts as Settings configured them on this device.
     configured: AccountStore,
+    /// The same accounts, as the drains of the upload and delete queues
+    /// read them.
+    device_accounts: crate::outbox::DeviceAccounts,
     /// The person's display choices for their calendars.
     display: crate::display::CalendarDisplay,
     /// Where those choices are kept, following the person across devices.
@@ -611,6 +607,7 @@ impl CalendarApp {
             selection,
             detail_open,
             accounts: accounts.clone(),
+            device_accounts: std::rc::Rc::new(std::cell::RefCell::new(accounts.clone())),
             configured: accounts,
             display: crate::display::CalendarDisplay::default(),
             display_setting: None,
@@ -842,10 +839,10 @@ impl CalendarApp {
             return;
         }
 
-        // Live delete + push + pull as a task on the app runtime; the result
-        // lands via `poll_sync`. Remote deletions go out first (so a re-pull can't
-        // resurrect a just-deleted event), then queued uploads, then the
-        // collections are pulled.
+        // A live pull as a task on the app runtime; the result lands via
+        // `poll_sync`. Uploads and deletes are drained as they are queued
+        // (`crate::outbox`); an item still waiting for its upload is never
+        // overwritten or removed by what the server sends meanwhile.
         let runtime = match ui::rt::try_app() {
             Ok(runtime) => runtime,
             Err(error) => {
@@ -854,8 +851,11 @@ impl CalendarApp {
                 return;
             }
         };
-        let delete_jobs = self.gather_delete_jobs(doc);
-        let push_jobs = self.gather_push_jobs(doc);
+        let protected_hrefs: Vec<(String, String)> = CalDoc::outbox(doc)
+            .into_iter()
+            .filter_map(|id| CalDoc::remote_binding(doc, id))
+            .map(|(calendar_id, href, _)| (calendar_id, href))
+            .collect();
         let sync_tokens = CalDoc::sync_tokens(doc);
         let (tx, rx) = std::sync::mpsc::channel();
         let today = self.today;
@@ -865,22 +865,6 @@ impl CalendarApp {
             }
         }
         drop(runtime.spawn(async move {
-            let delete_result = caldav::remove_jobs(&delete_jobs).await;
-            let push_result = caldav::push_jobs(&push_jobs).await;
-            let deleted = delete_result.confirmed;
-            let pushed = push_result.confirmed;
-            let revisions = push_result.revisions;
-            let protected_hrefs: Vec<(String, String)> = push_jobs
-                .iter()
-                .filter(|job| !pushed.contains(&job.event.id))
-                .filter_map(|job| job.href.clone().map(|href| (job.calendar.id.clone(), href)))
-                .collect();
-            let conflicts: Vec<String> = delete_result
-                .conflicts
-                .into_iter()
-                .chain(push_result.conflicts)
-                .map(|(_, href)| href)
-                .collect();
             let mut result = caldav::SyncResult::default();
             let mut synced_calendars = 0;
             let mut first_failure = None;
@@ -892,28 +876,15 @@ impl CalendarApp {
                 )
                 .await;
                 let reporter = accounts::AccountSyncReporter::new(id.clone());
-                let upload_failed = push_jobs
-                    .iter()
-                    .any(|job| job.config == input.0 && !pushed.contains(&job.event.id));
-                let delete_failed = delete_jobs
-                    .iter()
-                    .any(|job| job.config == input.0 && !deleted.contains(&job.id));
-                let persisted = if matches!(&account_outcome, caldav::SyncOutcome::Synced { .. })
-                    && (upload_failed || delete_failed)
-                {
-                    first_failure.get_or_insert_with(|| "Some changes remain queued".to_string());
-                    reporter.failed()
-                } else {
-                    match &account_outcome {
-                        caldav::SyncOutcome::Synced { .. } => reporter.succeeded(),
-                        caldav::SyncOutcome::Offline => reporter.offline(),
-                        caldav::SyncOutcome::Failed(reason)
-                            if reason.contains("401") || reason.contains("403") =>
-                        {
-                            reporter.needs_authentication()
-                        }
-                        caldav::SyncOutcome::Failed(_) => reporter.failed(),
+                let persisted = match &account_outcome {
+                    caldav::SyncOutcome::Synced { .. } => reporter.succeeded(),
+                    caldav::SyncOutcome::Offline => reporter.offline(),
+                    caldav::SyncOutcome::Failed(reason)
+                        if reason.contains("401") || reason.contains("403") =>
+                    {
+                        reporter.needs_authentication()
                     }
+                    caldav::SyncOutcome::Failed(_) => reporter.failed(),
                 };
                 if let Err(error) = persisted {
                     tracing::warn!(%error, account = id, "calendar: could not persist sync result");
@@ -943,17 +914,15 @@ impl CalendarApp {
             } else {
                 caldav::SyncOutcome::Offline
             };
-            // Do not overwrite a locally edited object after its conditional
-            // upload conflicted. It stays queued; the next retry can be
-            // resolved without destroying either copy.
+            // Do not overwrite a locally edited object still waiting for its
+            // upload (or whose conditional upload conflicted). It stays
+            // queued; the next upload can be resolved without destroying
+            // either copy.
             result.resources.retain(|resource| {
-                !conflicts
-                    .iter()
-                    .any(|href| caldav::hrefs_equal(href, &resource.href))
-                    && !protected_hrefs.iter().any(|(calendar_id, href)| {
-                        calendar_id == &resource.calendar_id
-                            && caldav::hrefs_equal(href, &resource.href)
-                    })
+                !protected_hrefs.iter().any(|(calendar_id, href)| {
+                    calendar_id == &resource.calendar_id
+                        && caldav::hrefs_equal(href, &resource.href)
+                })
             });
             // A failed/conflicted local edit wins neither side automatically.
             // Suppress an incremental tombstone for it and treat it as seen in
@@ -975,7 +944,7 @@ impl CalendarApp {
                     );
                 }
             }
-            let _ = tx.send((result, outcome, pushed, deleted, conflicts, revisions));
+            let _ = tx.send((result, outcome));
         }));
         self.sync_rx = Some(rx);
         self.syncing = true;
@@ -991,43 +960,9 @@ impl CalendarApp {
             return;
         };
         match rx.try_recv() {
-            Ok((result, mut outcome, pushed, deleted, conflicts, revisions)) => {
+            Ok((result, outcome)) => {
                 self.sync_rx = None;
                 self.syncing = false;
-                // Clear successfully-uploaded events from the push outbox and
-                // server-confirmed removals from the delete outbox.
-                for revision in revisions {
-                    self.record_remote_binding(
-                        doc,
-                        revision.id,
-                        &revision.calendar_id,
-                        &revision.href,
-                        revision.etag.as_deref(),
-                    );
-                }
-                for id in pushed {
-                    self.dispatch_action(
-                        doc,
-                        &crate::actions::CalendarAction::AcknowledgeRemotePush {
-                            id: id.to_string(),
-                        },
-                    );
-                }
-                for id in deleted {
-                    self.dispatch_action(
-                        doc,
-                        &crate::actions::CalendarAction::AcknowledgeRemoteDelete {
-                            id: id.to_string(),
-                        },
-                    );
-                }
-                if !conflicts.is_empty() {
-                    outcome = SyncOutcome::Failed(format!(
-                        "{} change{} also changed on the server; your version is safe and still queued",
-                        conflicts.len(),
-                        if conflicts.len() == 1 { "" } else { "s" }
-                    ));
-                }
                 let failure = match &outcome {
                     SyncOutcome::Failed(reason) => Some(reason.clone()),
                     SyncOutcome::Offline => Some("calendar service is offline".to_string()),
@@ -1240,36 +1175,6 @@ impl CalendarApp {
             SyncOutcome::Failed(reason) => format!("Sync failed: {reason}"),
         });
         self.dirty = true;
-    }
-
-    /// Resolve the outbox into concrete upload jobs: each queued event paired
-    /// with the account config and remote calendar it targets. Events whose
-    /// calendar is no longer configured (or that became local) are skipped and
-    /// left in the queue for a later attempt — never fabricated.
-    fn gather_push_jobs(&self, doc: &AutoCommit) -> Vec<caldav::UploadJob> {
-        let mut jobs = Vec::new();
-        for id in CalDoc::outbox(doc) {
-            let Some(event) = self.model.event(id) else {
-                continue;
-            };
-            let Some(cal_id) = &event.calendar_id else {
-                continue;
-            };
-            for acc in &self.accounts.accounts {
-                if let Some(cal) = acc.calendars.iter().find(|c| &c.id == cal_id) {
-                    let binding = CalDoc::remote_binding(doc, event.id);
-                    jobs.push(caldav::UploadJob {
-                        config: acc.config.clone(),
-                        calendar: cal.clone(),
-                        event: event.clone(),
-                        href: binding.as_ref().map(|(_, href, _)| href.clone()),
-                        etag: binding.and_then(|(_, _, etag)| etag),
-                    });
-                    break;
-                }
-            }
-        }
-        jobs
     }
 
     /// The notes editor, bound to `owner`'s notes: every edit is the
@@ -1708,30 +1613,6 @@ impl CalendarApp {
         self.blur_editor();
     }
 
-    /// Resolve the delete outbox into concrete `CalDAV` delete jobs: each queued
-    /// `(calendar_id, uid)` paired with the account config + remote calendar it
-    /// targets. Entries whose calendar is no longer configured are skipped and
-    /// left queued for a later attempt.
-    fn gather_delete_jobs(&self, doc: &AutoCommit) -> Vec<caldav::RemoveJob> {
-        let mut jobs = Vec::new();
-        for (cal_id, uid) in CalDoc::delete_outbox(doc) {
-            for acc in &self.accounts.accounts {
-                if let Some(cal) = acc.calendars.iter().find(|c| c.id == cal_id) {
-                    let binding = CalDoc::remote_binding(doc, uid);
-                    jobs.push(caldav::RemoveJob {
-                        config: acc.config.clone(),
-                        calendar: cal.clone(),
-                        id: uid,
-                        href: binding.as_ref().map(|(_, href, _)| href.clone()),
-                        etag: binding.and_then(|(_, _, etag)| etag),
-                    });
-                    break;
-                }
-            }
-        }
-        jobs
-    }
-
     fn toggle_task(&mut self, id: Id, doc: &mut AutoCommit) {
         let done = if let Some(t) = self.model.task_mut(id) {
             t.done = !t.done;
@@ -2144,6 +2025,11 @@ impl CalendarApp {
 
     // --- event form model edits -----------------------------------------
 
+    /// The accounts the upload and delete drains reach.
+    pub(crate) fn device_accounts(&self) -> &crate::outbox::DeviceAccounts {
+        &self.device_accounts
+    }
+
     /// Attach where the person's display choices are kept, and show the
     /// accounts as they choose.
     pub(crate) fn follow_display(
@@ -2157,6 +2043,7 @@ impl CalendarApp {
 
     /// The configured accounts with the person's display choices applied.
     fn show_accounts(&mut self) {
+        self.device_accounts.replace(self.configured.clone());
         self.accounts = self.display.applied_to(&self.configured);
         self.dirty = true;
     }
