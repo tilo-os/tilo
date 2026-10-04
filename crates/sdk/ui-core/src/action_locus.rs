@@ -140,3 +140,31 @@ pub(crate) fn interaction_bounds(
     let only = candidates.next()?;
     candidates.next().is_none().then_some(only)
 }
+
+/// Exact resource geometry after the host has translated a checked publication.
+pub(crate) fn resource_bounds(
+    tree: &crate::a11y_tree::SemanticTree,
+    bindings: &[crate::widget::ControlBindingMetadata],
+    address: &tilo_actions::ActionAddress,
+) -> Option<(vello::kurbo::Rect, u64)> {
+    let resource = tree.node(&crate::a11y_tree::SemanticId(format!(
+        "r:{}",
+        address.resource
+    )))?;
+    if !resource.durable_identity || resource.action(&address.action).is_none() {
+        return None;
+    }
+    let routes = action_ui_routes(tree, bindings, address);
+    if routes.len() != 1 {
+        return None;
+    }
+    let route = routes.first()?;
+    let bounds = route.bounds?;
+    let widget = tree.node(route.path.last()?)?.widget_taffy_id?;
+    ([bounds.x0, bounds.y0, bounds.x1, bounds.y1]
+        .into_iter()
+        .all(f64::is_finite)
+        && bounds.width() > 0.0
+        && bounds.height() > 0.0)
+        .then_some((bounds, widget))
+}
