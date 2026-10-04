@@ -1300,38 +1300,17 @@ impl VpnApp {
     }
 }
 
-/// Build a device-local activity view. It is not persisted, shared or indexed.
-fn synth_logs(
-    c: &Connection,
-    details: Option<&LocalProfileDetails>,
-    activity: &[String],
-    xfer: Option<Transfer>,
-) -> Vec<String> {
-    let mut out = Vec::new();
-    if c.is_connected() {
-        out.push(format!(
-            "{} tunnel is up on this device",
-            c.kind.long_name()
-        ));
-        if let Some(details) = details {
-            out.push(format!("Connected through {}", details.endpoint));
-        }
-        if let Some(x) = xfer {
-            out.push(format!(
-                "Received {}, sent {}",
-                ui::format::bytes(x.rx),
-                ui::format::bytes(x.tx)
-            ));
-        }
-        if c.tor {
-            out.push("Traffic is routed over Tor".into());
-        }
-    } else {
-        out.push("The tunnel is down on this device".into());
-    }
-    // append global activity newest-last
-    for a in activity.iter().rev().take(8) {
-        out.push(a.clone());
+/// Build a device-local activity view: what happened, oldest first. Until
+/// something has, one line says where the tunnel stands. It is not
+/// persisted, shared or indexed.
+fn synth_logs(c: &Connection, activity: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = activity.iter().rev().take(8).cloned().collect();
+    if out.is_empty() {
+        out.push(if c.is_connected() {
+            format!("{} tunnel is up on this device", c.kind.long_name())
+        } else {
+            "The tunnel is down on this device".into()
+        });
     }
     out
 }
@@ -1424,7 +1403,7 @@ impl VpnApp {
         let details = self.local_details.get(&connection.id);
         let provisioned = self.provisioned(connection.id);
         let rates = self.rates_for(connection);
-        let activity = synth_logs(connection, details, &self.activity, rates.latest);
+        let activity = synth_logs(connection, &self.activity);
         let tor_global = self.vault.tor_global;
         let key = format!(
             "{connection:?}{details:?}{provisioned}{:?}{rates:?}{activity:?}{notice_state:?}{tor_global}{}",
