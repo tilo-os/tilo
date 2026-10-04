@@ -17,7 +17,7 @@ use crate::schedule::OnThisDevice;
 /// What changes only this device: which clocks float above other windows
 /// on its screen.
 #[derive(Clone, Debug, Effect)]
-#[effect(operation = "clocks.effects")]
+#[effect(operation = "clocks.effects", device_only)]
 pub enum ClocksEffect {
     /// Float a timer above other windows.
     FloatTimer {
