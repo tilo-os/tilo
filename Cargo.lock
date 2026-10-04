@@ -16127,6 +16127,9 @@ dependencies = [
 name = "tilo-process"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "tempfile",
+ "tilo-advisory-lock",
  "workspace-hack",
 ]
 
@@ -16706,6 +16709,7 @@ dependencies = [
  "tilo-image-codec",
  "tilo-media",
  "tilo-paths",
+ "tilo-process",
  "tilo-resource",
  "tilo-rt",
  "tilo-seal",
