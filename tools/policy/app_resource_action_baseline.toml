@@ -43,7 +43,6 @@
 "apps/settings/src/resource.rs" = 2
 "apps/sheets/src/resource.rs" = 1
 "apps/slides/src/app.rs" = 1
-"apps/speed-test/src/resource.rs" = 1
 "apps/terminal/src/main_body.rs" = 2
 "apps/themes/src/resource.rs" = 2
 "apps/tube/src/app.rs" = 2
@@ -82,8 +81,6 @@
 "apps/settings/src/main.rs" = 1
 "apps/slides/src/lib.rs" = 2
 "apps/slides/src/main.rs" = 1
-"apps/speed-test/src/lib.rs" = 2
-"apps/speed-test/src/main.rs" = 2
 "apps/themes/src/lib.rs" = 2
 "apps/themes/src/main.rs" = 2
 "apps/tube/src/lib.rs" = 2
@@ -102,7 +99,6 @@
 "apps/clocks/src/resource.rs" = 1
 "apps/imager/src/setup/actions.rs" = 1
 "apps/imager/src/setup/import_actions.rs" = 1
-"apps/speed-test/src/resource.rs" = 1
 
 [ratchets.widget_owned_document]
 "apps/agent/src/apply.rs" = 2
