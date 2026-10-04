@@ -25,6 +25,9 @@
 #                  SOURCE_DATE_EPOCH for independently reproduced OS images
 #   IDENTITY_JSON  signing key; generated if absent    [default: $STAGE/id.json]
 #   PUBKEY_OUT     write the signing pubkey here (optional)
+#   RUNTIME_ID     the runtime build the apps in BIN_DIR were linked against,
+#                  `tilo-runtime/<release>+native.<digest>`; stamped over each
+#                  manifest's authored release (required unless TAPP_DIR)
 #   PKG_BIN / INSTALL_BIN / BUNDLE_BIN / SHIM_BIN
 #                  tool paths                        [default: $BIN_DIR/<name>]
 #   REQUIRE_MIN    fail unless at least this many packages install [default: 1]
@@ -75,6 +78,7 @@ INSTALL_BIN="${INSTALL_BIN:-$BIN_DIR/tilo-install}"
 BUNDLE_BIN="${BUNDLE_BIN:-$BIN_DIR/tilo-runtime-bundle}"
 SHIM_BIN="${SHIM_BIN:-$BIN_DIR/tilo-cli-shim}"
 TAPP_DIR="${TAPP_DIR:-}"
+RUNTIME_ID="${RUNTIME_ID:-}"
 EXPECTED_PUBKEY="${EXPECTED_PUBKEY:-}"
 REQUIRE_MIN="${REQUIRE_MIN:-1}"
 msg() { printf '[pack-apps] %s\n' "$*" >&2; }
@@ -174,6 +178,9 @@ if [ "$prebuilt" = 1 ]; then
     fi
 else
 
+[[ "$RUNTIME_ID" == */*+native.* ]] \
+    || die "RUNTIME_ID must name the runtime build the apps link (tilo-runtime/<release>+native.<digest>)"
+
 for manifest in "$REPO"/apps/*/tilo-app.toml; do
     [ -e "$manifest" ] || continue
     app="$(basename "$(dirname "$manifest")")"
@@ -205,6 +212,10 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
         "$manifest" > "$staged_manifest"
     grep -q "ed25519:$PUBKEY" "$staged_manifest" \
         || { failed+=("$app ($id): could not stamp publisher identity"); continue; }
+    # The binary links this exact runtime build, so the package names it,
+    # not just the release the manifest was written for.
+    "$(dirname "${BASH_SOURCE[0]}")/stamp-runtime.sh" "$staged_manifest" "$RUNTIME_ID" \
+        || { failed+=("$app ($id): could not stamp runtime $RUNTIME_ID"); continue; }
 
     tapp="$STAGE/$id.tapp"
     if ! "$PKG_BIN" pack \
