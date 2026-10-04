@@ -66,7 +66,7 @@ use winit::keyboard::Key;
 
 use crate::actions;
 use crate::bottom_panel::{BottomPanel, HitRow, PanelTab, SearchState};
-use crate::command_palette::{Command, CommandPalette, Entry, PaletteKind};
+use crate::commands::Command;
 use crate::disk;
 use crate::doc::EditorDoc;
 use crate::editor_view::{EditorView, LspAsk};
@@ -472,7 +472,6 @@ pub struct CodeApp {
     shots_status: bool,
     panel: BottomPanel,
     panel_toggle: BottomPanelToggle,
-    palette: CommandPalette,
 
     /// What a test runs with the document at the start of the next sync.
     #[cfg(test)]
@@ -898,7 +897,6 @@ impl CodeApp {
             shots_status: false,
             panel: BottomPanel::new(),
             panel_toggle,
-            palette: CommandPalette::new(),
             #[cfg(test)]
             test_hook: None,
             dispatch: None,
@@ -1650,81 +1648,6 @@ impl CodeApp {
         scene.pop_layer();
     }
 
-    /// Refresh the command palette's entry set (files + commands). Every row
-    /// invokes one of the effects published on the project, through the same
-    /// door as Ctrl+K and an agent.
-    fn refresh_palette_entries(&mut self) {
-        use crate::effects::CodeEditorEffect;
-        let mut entries: Vec<Entry> = Vec::new();
-        for (id, node) in &self.session.project.nodes {
-            if let NodeKind::File { .. } = node.kind {
-                let detail = self
-                    .session
-                    .project
-                    .path_of(*id)
-                    .rsplit_once('/')
-                    .map_or("", |x| x.0)
-                    .to_string();
-                let resource = tilo_actions::Resource::new(
-                    actions::file_resource_id(&node.resource_id),
-                    "code_editor.file",
-                    node.name.clone(),
-                )
-                .with_action(
-                    CodeEditorEffect::Open {
-                        file: node.resource_id.clone(),
-                    }
-                    .bound(),
-                );
-                if let Some(flat) = tilo_actions::flatten(std::slice::from_ref(&resource)).first() {
-                    entries.push(Entry {
-                        detail,
-                        kind: PaletteKind::File(*id),
-                        action: ui::CommandEntry::from_flat_action(flat),
-                    });
-                }
-            }
-        }
-        let project = tilo_actions::Resource::new(
-            crate::resource::PROJECT_KIND,
-            crate::resource::PROJECT_KIND,
-            self.session.project.name.clone(),
-        );
-        for (cmd, label) in Command::all() {
-            let effect = cmd.effect();
-            // Go to Line asks for its line in the palette; the effect takes it
-            // as its prompted value.
-            let bound = effect.bound();
-            let mut spec = if cmd == Command::GoToLine {
-                tilo_actions::ActionSpec::prompted_operation(
-                    effect.id(),
-                    label,
-                    "Line number",
-                    "e.g. 42",
-                    bound.kind,
-                    <CodeEditorEffect as ui::tilo_resource::Effect>::OPERATION,
-                    |_| tilo_actions::EncodedAction {
-                        type_id: <CodeEditorEffect as ui::tilo_resource::Effect>::OPERATION
-                            .to_owned(),
-                        payload: Vec::new(),
-                    },
-                )
-            } else {
-                bound
-            };
-            spec.label = label.to_string();
-            let resource = project.clone().with_action(spec);
-            if let Some(flat) = tilo_actions::flatten(std::slice::from_ref(&resource)).first() {
-                entries.push(Entry {
-                    detail: String::new(),
-                    kind: PaletteKind::Command(cmd),
-                    action: ui::CommandEntry::from_flat_action(flat),
-                });
-            }
-        }
-        self.palette.set_entries(entries);
-    }
-
     fn search_file_entries(&self) -> Vec<crate::search_entries::FileEntry> {
         self.session
             .project
@@ -1926,7 +1849,6 @@ impl CodeApp {
                 self.session.project.set_folder_expanded(id, open);
                 self.invalidate_search_projection();
                 explorer::refresh(&mut self.sidebar, &self.session.project);
-                self.refresh_palette_entries();
             }
         }
     }
@@ -2146,7 +2068,7 @@ impl CodeApp {
                 self.panel_visible = true;
                 self.panel.set_tab(PanelTab::Search);
             }
-            Command::GoToLine => self.palette.open_goto(),
+            Command::GoToLine => Self::ask_for_line(),
             Command::DuplicateLine => self.editor.duplicate_lines(doc, true),
             Command::MoveLineUp => self.editor.move_lines(doc, true),
             Command::MoveLineDown => self.editor.move_lines(doc, false),
@@ -2634,10 +2556,15 @@ impl CodeApp {
         }
     }
 
-    /// Stage the go-to-line palette with a query, for a screenshot.
-    pub fn shots_open_goto(&mut self, query: &str) {
-        self.palette.open_goto();
-        self.palette.seed_query(query);
+    /// Ask for a line to go to in the host palette, on the project's
+    /// go-to-line effect.
+    pub(crate) fn ask_for_line() {
+        ui::host_palette::action(tilo_actions::ActionAddress::new(
+            crate::resource::PROJECT_KIND,
+            ui::tilo_resource::Effect::id(&crate::effects::CodeEditorEffect::GoToLine {
+                value: None,
+            }),
+        ));
     }
 
     /// Stage the "save changes before closing?" prompt for the active buffer.
@@ -2933,26 +2860,15 @@ impl CodeApp {
     // ---- handle_event helpers (split out of `Widget::handle_event`, which
     // dispatches to them in the same order they used to run inline) ----
 
-    /// The palette, when open, owns all keyboard input. Otherwise, while the
-    /// unsaved-close prompt is up, cursor motion still needs tracking so its
-    /// button hit-tests have a position to work with. Returns `true` when the
-    /// event was consumed here.
-    fn handle_palette_and_prompt_cursor(
+    /// While the unsaved-close prompt is up, cursor motion still needs
+    /// tracking so its button hit-tests have a position to work with.
+    /// Returns `true` when the event was consumed here.
+    fn track_prompt_cursor(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
-        if self.palette.is_visible()
-            && let WindowEvent::KeyboardInput { .. } = event
-            && self.palette.handle_key(event, modifiers, state)
-        {
-            *handled = true;
-            self.drain_child_events();
-            return true;
-        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
             if self.close_prompt.is_some() {
@@ -3099,13 +3015,11 @@ impl CodeApp {
         let shift = mods.shift_key();
         let alt = mods.alt_key();
         let command = match c.to_lowercase().as_str() {
+            // Quick open and the command list are the host palette: the
+            // project's files are its search entries, its commands its
+            // published effects.
             "p" => {
-                self.refresh_palette_entries();
-                if shift {
-                    self.palette.open_commands();
-                } else {
-                    self.palette.open_files();
-                }
+                ui::host_palette::search("");
                 *handled = true;
                 return true;
             }
@@ -3392,7 +3306,6 @@ impl Widget for CodeApp {
         }
         if !self.seeded {
             self.seed_terminal();
-            self.refresh_palette_entries();
         }
         // A file picker in flight is drained here, once a frame, off a channel
         // the worker thread fills — the UI never waits on D-Bus.
@@ -3607,7 +3520,6 @@ impl Widget for CodeApp {
                 }
             }
         }
-        self.palette.set_viewport(self.rect);
     }
 
     fn draw(
@@ -3727,10 +3639,7 @@ impl Widget for CodeApp {
         // Transient floating status bubble (bottom-right), in place of the old
         // permanent bottom status strip.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
-        // Palette floats on top.
-        self.palette
-            .draw_overlay(scene, transform, text_renderer, theme);
-        // …and a conflict prompt above even that: it is a question that must be
+        // A conflict prompt floats on top: it is a question that must be
         // answered before anything else can be done to the file.
         self.draw_conflict(scene, transform, text_renderer, theme);
         // The unsaved-close prompt sits at the same top layer.
@@ -3751,13 +3660,7 @@ impl Widget for CodeApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.handle_palette_and_prompt_cursor(
-            event,
-            ctx.scale_factor,
-            *ctx.modifiers,
-            ctx.state,
-            ctx.handled,
-        ) {
+        if self.track_prompt_cursor(event, ctx.scale_factor, ctx.handled) {
             return;
         }
 
@@ -3970,7 +3873,6 @@ impl Widget for CodeApp {
             || self.editor.needs_redraw()
             || self.panel.needs_redraw()
             || self.find.needs_redraw()
-            || self.palette.is_visible()
             || self.conflict.is_some()
             || self.close_prompt.is_some()
             || self.flap.is_animating(self.sidebar_layout())
@@ -4027,22 +3929,15 @@ impl Widget for CodeApp {
 
 impl ui::widget::controls::ActionControls for CodeApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.palette.take_control_invocation().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(ui::widget::controls::take_control_invocation)
-        })
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = self
-            .children()
+        self.children()
             .into_iter()
             .flat_map(ui::widget::controls::control_action_bindings)
-            .collect::<Vec<_>>();
-        if self.palette.is_visible() {
-            bindings.extend(self.palette.control_action_bindings());
-        }
-        bindings
+            .collect()
     }
 }
 
