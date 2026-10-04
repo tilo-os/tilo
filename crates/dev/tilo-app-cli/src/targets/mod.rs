@@ -477,7 +477,7 @@ fn assemble_macos_project(
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
+        .unwrap_or_else(|| Path::new("."));
     let work = tempfile::Builder::new()
         .prefix(".macos-assemble-")
         .tempdir_in(parent)?;

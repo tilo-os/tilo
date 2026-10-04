@@ -1077,7 +1077,7 @@ fn main() -> ExitCode {
         Command::Certify(args) => run_certify(args),
         Command::Run(args) => run_run(args),
         Command::Build(args) => run_build(args),
-        Command::BundleMacos(args) => run_bundle_macos(args),
+        Command::BundleMacos(args) => run_bundle_macos(&args),
         Command::Test(args) => run_app_task(args, tilo_app_cli::AppTask::Test),
         Command::Dev(args) => run_dev(args),
         Command::Shot(args) => run_shot(args),
@@ -1779,7 +1779,7 @@ fn run_run(args: RunArgs) -> Result<Value> {
     Ok(json!({"app_dir": path}))
 }
 
-fn run_bundle_macos(args: BundleMacosArgs) -> Result<Value> {
+fn run_bundle_macos(args: &BundleMacosArgs) -> Result<Value> {
     let artifact = tilo_app_cli::targets::assemble_macos(
         &args.path,
         &args.binary,
