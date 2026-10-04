@@ -536,13 +536,15 @@ fn validated_extension_paths(extensions: &[PathBuf]) -> Result<Vec<String>, Stri
 }
 
 /// The engine host process. It is not one of the toolkit's thin binaries: it
-/// loads CEF from beside itself and the rest from the system. The library path
-/// the launcher points at the app's own runtime bundle would otherwise put that
-/// bundle's copies of glib, libdrm and friends ahead of the system's under
-/// libcef.so, and the mixed versions corrupt the host's heap at start.
+/// loads CEF from beside itself and the rest from the system, so the library
+/// path the launcher points at the app's own runtime bundle does not apply to
+/// it. Nor does the hardened allocator the launcher preloads into the app:
+/// Chromium brings its own (PartitionAlloc) and frees through glibc's
+/// internals, so a preloaded allocator aborts the host at start.
 fn host_command(host: &Path) -> Command {
     let mut command = Command::new(host);
     command.env_remove("LD_LIBRARY_PATH");
+    command.env_remove("LD_PRELOAD");
     command
 }
 
