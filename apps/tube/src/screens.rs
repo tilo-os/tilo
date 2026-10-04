@@ -1051,7 +1051,7 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
                             bus,
                             "Clear history",
                             Some(Icon::Trash),
-                            Action::Confirm(TubeEffect::ClearHistory),
+                            Action::Effect(TubeEffect::ClearHistory),
                             false,
                         ),
                     ),
@@ -2046,7 +2046,7 @@ fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         })
         .on_click(
             bus,
-            Action::Edit(TubeAction::SetPreferredQuality {
+            Action::Effect(TubeEffect::SetPreferredQuality {
                 quality: next.to_string(),
             }),
         )
@@ -2254,9 +2254,9 @@ fn mode_pill(theme: &Theme, bus: &ActionBus, cat: Category, mode: SkipMode) -> F
         })
         .on_click(
             bus,
-            Action::Edit(TubeAction::SetSponsorCategory {
-                category: cat,
-                mode: mode.next(),
+            Action::Effect(TubeEffect::SetSegmentHandling {
+                category: cat.api_key().to_owned(),
+                mode: mode.next().key().to_owned(),
             }),
         )
         .accessible_name(format!("{}: {}", cat.label(), mode.label()))
@@ -2699,7 +2699,7 @@ fn pending_device_row(theme: &Theme, bus: &ActionBus, peer: &crate::sync::PeerRe
             bus,
             &format!("grayjay_approve_{}", peer.short_id()),
             "Approve",
-            Action::Confirm(TubeEffect::ApproveDevice {
+            Action::Effect(TubeEffect::ApproveDevice {
                 device: peer.id.clone(),
             }),
             false,
@@ -2741,7 +2741,7 @@ fn add_active_devices(
                     bus,
                     "grayjay_sync_now",
                     "Sync now",
-                    Action::Confirm(TubeEffect::SyncDevices),
+                    Action::Effect(TubeEffect::SyncDevices),
                     false,
                 )),
         );
@@ -2778,7 +2778,7 @@ fn active_device_row(theme: &Theme, bus: &ActionBus, peer: &crate::sync::PeerRec
             bus,
             &format!("grayjay_revoke_{}", peer.short_id()),
             "Revoke",
-            Action::Confirm(TubeEffect::RevokeDevice {
+            Action::Effect(TubeEffect::RevokeDevice {
                 device: peer.id.clone(),
             }),
             true,
@@ -2801,21 +2801,11 @@ fn subscribe_edit(model: &TubeModel, id: &str) -> Action {
     })
 }
 
-/// Flip the boolean setting `setting`.
+/// Flip the boolean preference `setting`.
 fn toggle_setting(model: &TubeModel, setting: SettingFlag) -> Action {
-    let settings = &model.settings;
-    let enabled = match setting {
-        SettingFlag::SponsorBlock => settings.sponsorblock_enabled,
-        SettingFlag::DeArrow => settings.dearrow_enabled,
-        SettingFlag::DeArrowTitles => settings.dearrow_titles,
-        SettingFlag::DeArrowThumbnails => settings.dearrow_thumbnails,
-        SettingFlag::ReturnDislike => settings.return_dislike_enabled,
-        SettingFlag::Autoplay => settings.autoplay,
-        SettingFlag::ShowComments => settings.show_comments,
-    };
-    Action::Edit(TubeAction::SetSetting {
-        setting,
-        enabled: !enabled,
+    Action::Effect(TubeEffect::SetPreference {
+        preference: setting.id().to_owned(),
+        enabled: !setting.get(&model.settings),
     })
 }
 

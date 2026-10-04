@@ -1,9 +1,10 @@
 //! `TubeApp` — the root widget.
 //!
 //! Tube renders a single in-memory [`TubeModel`]. The shared library in it
-//! (likes, queue, subscriptions, comment likes, settings) is what the
-//! resource was last presented; the catalogue, navigation, playback and
-//! notices are this window's own, and the watch history the person's.
+//! (likes, queue, subscriptions, comment likes) is what the resource was
+//! last presented; the catalogue, navigation, playback and notices are this
+//! window's own, and the watch history and playback preferences the
+//! person's.
 //! Navigation rebuilds the whole widget tree from the model in
 //! `build_layout` (the `RebuildHarness` pattern), so the screen functions in
 //! `screens.rs` can stay pure.
@@ -92,6 +93,9 @@ pub struct TubeApp {
     /// The person's watch history, a record in their own room, in a live
     /// window.
     history: Option<PersonRecord<WatchHistory>>,
+    /// The person's playback preferences, a personal setting, once the
+    /// framework attaches the surface; a bare widget keeps them in its model.
+    preferences: Option<ui::framework::Setting<crate::model::Settings>>,
     /// The history a window without the person's record edits instead: a
     /// capture's sample, or a bare widget's. Kept in memory only.
     local_history: Option<ui::tilo_resource::Replica<WatchHistory>>,
@@ -239,6 +243,7 @@ impl TubeApp {
             model: crate::sample::model(),
             dispatcher: None,
             history: None,
+            preferences: None,
             local_history: None,
             bus: action::new_bus(),
             worker: None,
@@ -286,8 +291,20 @@ impl TubeApp {
     ///
     /// Returns why the effect cannot run: a screen that does not exist, or
     /// device sync that refused the request.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one short arm per effect Tube answers; splitting them would only scatter the \
+                  vocabulary"
+    )]
     pub(crate) fn perform(&mut self, effect: TubeEffect) -> Result<(), String> {
         self.structure_dirty = true;
+        if let Some(settings) = effect.preferences(&self.model.settings) {
+            let settings = settings?;
+            if !self.change_preferences(|current| *current = settings) {
+                return Err("Your playback preferences could not be saved".into());
+            }
+            return Ok(());
+        }
         match effect {
             TubeEffect::ShowScreen { screen } => {
                 let route = TubeEffect::screen(&screen)
@@ -383,6 +400,10 @@ impl TubeApp {
                 #[cfg(not(feature = "grayjay-sync"))]
                 let _ = device;
             }
+            // Answered above, as preferences.
+            TubeEffect::SetPreference { .. }
+            | TubeEffect::SetPreferredQuality { .. }
+            | TubeEffect::SetSegmentHandling { .. } => {}
         }
         Ok(())
     }
@@ -468,9 +489,10 @@ impl TubeApp {
         true
     }
 
-    /// Bring in what an approved Grayjay device sent: its subscriptions and
-    /// settings as library edits through the same door as the visible
-    /// controls, its watch history into the person's own.
+    /// Bring in what an approved Grayjay device sent: its subscriptions as
+    /// library edits through the same door as the visible controls, its
+    /// watch history into the person's own, its settings into the person's
+    /// preferences.
     ///
     /// The transport carries a compact, bounded metadata package; every
     /// imported identifier is validated here first.
@@ -511,64 +533,24 @@ impl TubeApp {
             }
         }
 
-        if let Some(settings) = remote.settings {
-            use crate::action::SettingFlag;
-            let current = &self.model.settings;
-            for (setting, enabled, now) in [
-                (
-                    SettingFlag::SponsorBlock,
-                    settings.sponsorblock_enabled,
-                    current.sponsorblock_enabled,
-                ),
-                (
-                    SettingFlag::DeArrow,
-                    settings.dearrow_enabled,
-                    current.dearrow_enabled,
-                ),
-                (
-                    SettingFlag::DeArrowTitles,
-                    settings.dearrow_titles,
-                    current.dearrow_titles,
-                ),
-                (
-                    SettingFlag::DeArrowThumbnails,
-                    settings.dearrow_thumbnails,
-                    current.dearrow_thumbnails,
-                ),
-                (
-                    SettingFlag::ReturnDislike,
-                    settings.return_dislike_enabled,
-                    current.return_dislike_enabled,
-                ),
-                (SettingFlag::Autoplay, settings.autoplay, current.autoplay),
-                (
-                    SettingFlag::ShowComments,
-                    settings.show_comments,
-                    current.show_comments,
-                ),
-            ] {
-                if enabled != now {
-                    edits.push(TubeAction::SetSetting { setting, enabled });
-                }
+        let preferences_changed = remote.settings.is_some_and(|remote| {
+            let mut settings = self.model.settings.clone();
+            for flag in crate::action::SettingFlag::ALL {
+                flag.set(&mut settings, flag.get(&remote));
             }
-            if QUALITIES.contains(&settings.preferred_quality.as_str())
-                && current.preferred_quality != settings.preferred_quality
-            {
-                edits.push(TubeAction::SetPreferredQuality {
-                    quality: settings.preferred_quality,
-                });
+            if QUALITIES.contains(&remote.preferred_quality.as_str()) {
+                settings.preferred_quality = remote.preferred_quality;
             }
             for category in crate::model::Category::ALL {
-                if let Some(mode) = settings.categories.get(category.api_key())
-                    && current.categories.get(category.api_key()) != Some(mode)
-                {
-                    edits.push(TubeAction::SetSponsorCategory {
-                        category,
-                        mode: *mode,
-                    });
+                if let Some(mode) = remote.categories.get(category.api_key()) {
+                    settings
+                        .categories
+                        .insert(category.api_key().to_owned(), *mode);
                 }
             }
-        }
+            settings != self.model.settings
+                && self.change_preferences(|current| *current = settings)
+        });
 
         let watched_at_ms = history_now_ms();
         let pulled: Vec<(String, u64)> = remote
@@ -599,7 +581,7 @@ impl TubeApp {
                 }
             });
         }
-        library_changed || history_changed
+        library_changed || history_changed || preferences_changed
     }
 
     /// Edits bound to the open watch page: like it, queue it, subscribe to
@@ -719,7 +701,7 @@ impl TubeApp {
     }
 
     /// Show the shared library the resource holds: likes, the queue,
-    /// subscriptions, comment likes and settings. Every presentation is the
+    /// subscriptions and comment likes. Every presentation is the
     /// whole library, so an emptied one (everything unliked, the queue
     /// cleared) shows empty.
     pub(crate) fn present_library(&mut self, state: &TubeShared) {
@@ -727,7 +709,6 @@ impl TubeApp {
         self.model.queue = TubeShared::on(&state.queue);
         self.model.subscriptions = TubeShared::on(&state.subscriptions);
         self.model.comment_likes.clone_from(&state.comment_likes);
-        self.model.settings.clone_from(&state.settings);
         self.structure_dirty = true;
     }
 
@@ -740,6 +721,48 @@ impl TubeApp {
         paired: ui::storage::Settings<crate::sync::PairedDevices>,
     ) {
         self.device_sync = crate::sync::DeviceSync::production("Tilo Tube", secrets, paired);
+    }
+
+    /// Follow the person's playback preferences: show them, keep what this
+    /// window changes, and take what another window or device changed.
+    pub(crate) fn follow_preferences(
+        &mut self,
+        setting: ui::framework::Setting<crate::model::Settings>,
+    ) {
+        self.model.settings = setting.get();
+        self.preferences = Some(setting);
+        self.structure_dirty = true;
+    }
+
+    /// Show preferences another window or device stored.
+    fn refresh_preferences(&mut self) -> bool {
+        let Some(setting) = &self.preferences else {
+            return false;
+        };
+        let stored = setting.get();
+        if stored == self.model.settings {
+            return false;
+        }
+        self.model.settings = stored;
+        true
+    }
+
+    /// Change the person's preferences and keep them; false (and says so)
+    /// when they cannot be stored.
+    fn change_preferences(&mut self, change: impl FnOnce(&mut crate::model::Settings)) -> bool {
+        let mut settings = self.model.settings.clone();
+        change(&mut settings);
+        if let Some(setting) = &self.preferences
+            && let Err(error) = setting.set(settings.clone())
+        {
+            tracing::warn!(%error, "could not keep the Tube preferences");
+            self.model
+                .push_notice("Your playback preferences could not be saved.");
+            return false;
+        }
+        self.model.settings = settings;
+        self.structure_dirty = true;
+        true
     }
 
     /// Attach the framework's door for the resource and, in a live window,
@@ -1386,16 +1409,14 @@ impl TubeApp {
     /// resolution choice round-trips into the model's preferred quality; other
     /// settings are ignored for now. This is the production drain path (called
     /// from `sync`), factored out so it is directly testable.
-    fn apply_player_setting_event(&self, ev: ui::widget::video_player::PlayerSettingEvent) {
+    fn apply_player_setting_event(&mut self, ev: ui::widget::video_player::PlayerSettingEvent) {
         use ui::widget::video_player::PlayerSettingEvent as E;
         if let E::Chose { id, index } = ev
             && id == "resolution"
             && let Some(q) = QUALITIES.get(index)
             && self.model.settings.preferred_quality != *q
         {
-            self.edit(&TubeAction::SetPreferredQuality {
-                quality: (*q).to_owned(),
-            });
+            self.change_preferences(|settings| (*q).clone_into(&mut settings.preferred_quality));
         }
     }
 
@@ -1694,7 +1715,7 @@ impl TubeApp {
                 self.edit(&edit);
                 return false;
             }
-            Action::Confirm(effect) => {
+            Action::Effect(effect) => {
                 self.invoke(&effect);
                 return false;
             }
@@ -2082,7 +2103,7 @@ impl Widget for TubeApp {
     ui::provides!(dyn ui::widget::FullscreenProvider);
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        if self.follow_history() {
+        if self.follow_history() | self.refresh_preferences() {
             self.structure_dirty = true;
         }
         #[cfg(feature = "grayjay-sync")]
@@ -2945,23 +2966,23 @@ mod tests {
     }
 
     #[test]
-    fn settings_and_queries_keep_shared_and_local_state_apart() {
-        // Case `collaborative_settings_reconcile_without_serializing_device_ui_state`.
+    fn library_and_queries_keep_shared_and_local_state_apart() {
+        // Case `library_edits_reconcile_without_serializing_device_ui_state`.
         {
             let (mut app, mut doc) = fresh();
             app.model.route = Route::Watch("vid_donut".into());
             app.model.playhead = 42.0;
             tilo_actions::Action::apply(
-                &crate::actions::TubeAction::SetSetting {
-                    setting: crate::action::SettingFlag::DeArrow,
-                    enabled: false,
+                &crate::actions::TubeAction::SetVideoLiked {
+                    video_id: "vid_donut".into(),
+                    liked: true,
                 },
                 &mut doc,
             )
-            .expect("structured setting action applies");
+            .expect("structured library action applies");
             app.present_library(&crate::resource::Tube::read(&doc).unwrap());
             Widget::sync(&mut app, &mut doc, &automerge::ROOT);
-            assert!(!app.model.settings.dearrow_enabled);
+            assert!(app.model.liked.iter().any(|id| id == "vid_donut"));
             assert!(
                 doc.get(&automerge::ROOT, "tube_state")
                     .expect("document read")

@@ -4,11 +4,11 @@
 //! public Invidious instances; `SponsorBlock` marks and auto-skips sponsor /
 //! intro / outro segments; `DeArrow` swaps clickbait titles and thumbnails
 //! for community-sourced factual ones. Everything is built on the CRDT-
-//! native `ui` toolkit. Likes, the watch queue, subscriptions, comment likes
-//! and replies, and playback settings are the shared library, changed by
-//! actions; fetched catalogues, navigation and playback stay with the window,
-//! and the watch history follows the person to their own devices without
-//! reaching collaborators.
+//! native `ui` toolkit. Likes, the watch queue, subscriptions, and comment
+//! likes and replies are the shared library, changed by actions; fetched
+//! catalogues, navigation and playback stay with the window, and the watch
+//! history and playback preferences follow the person to their own devices
+//! without reaching collaborators.
 //!
 //! The live (online) app starts with an EMPTY catalogue and populates only
 //! from live results (yt-dlp / rustypipe / trending). The bundled [`sample`]
