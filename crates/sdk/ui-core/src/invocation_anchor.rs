@@ -33,6 +33,7 @@ impl RegisteredInvocationAnchor {
     }
     /// Optional post-operation decoder. The SDK invokes it only against the
     /// actual AppliedLocal envelope and its committed record loan.
+    #[must_use]
     pub const fn with_applied(mut self, project: AnchorProjection) -> Self {
         self.applied = Some(project);
         self
