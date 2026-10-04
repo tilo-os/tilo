@@ -87,17 +87,29 @@ impl ResourceApp for BackupsShell {
         cx.surface(BackupsApp::new())
     }
 
+    /// Every capture but `setup` and `unavailable` stages the sample catalog
+    /// ([`BackupsApp::stage_scenario`]); a plain `--shots` shows it on the
+    /// overview.
     fn scenarios() -> &'static [&'static str] {
         &[
+            "setup",
+            "unavailable",
             "status",
             "progress",
             "failure",
             "restore",
             "sources",
             "destinations",
+            "drive",
+            "offsite",
             "schedules",
-            "unavailable",
+            "drawer",
         ]
+    }
+
+    /// The sidebar becomes a drawer only where the content would be squeezed.
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        (name == "drawer").then_some((640, 800))
     }
 }
 
@@ -109,6 +121,10 @@ impl ResourceSurface<Backups> for BackupsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Backups>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 }
 
