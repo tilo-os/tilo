@@ -18,7 +18,7 @@ pub const IMPORT_ROW_ID: &str = "imager.import";
 /// ([`ImportProjection`]) as it stands afterwards; a job answers when its
 /// work settled.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "imager.import")]
+#[effect(operation = "imager.import", device_only)]
 pub enum ImportEffect {
     /// Read current import status.
     ///

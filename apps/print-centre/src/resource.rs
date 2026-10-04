@@ -149,7 +149,7 @@ impl PrintDefaults {
 /// What Print Centre does on this machine: the pages it shows, and the work
 /// it asks of CUPS and SANE.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "print-centre.effects")]
+#[effect(operation = "print-centre.effects", device_only)]
 pub enum PrintCentreEffect {
     /// Refresh printers and documents.
     #[effect(permission = "read")]

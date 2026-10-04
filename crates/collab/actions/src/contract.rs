@@ -206,6 +206,11 @@ impl ResultSpec {
     }
 }
 
+/// The contract tag of an action that reaches files, hardware or services
+/// of the device it runs on: the door runs it only for the person at that
+/// device, never for a collaborator or a remote participant.
+pub const LOCAL_DEVICE_ONLY: &str = "tilo.local-device-only";
+
 /// Complete operational contract copied into every inert descriptor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionContract {

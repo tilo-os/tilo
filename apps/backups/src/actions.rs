@@ -44,7 +44,7 @@ pub const BACKUPS_OPERATION_TYPE: &str = "backups.operation";
 /// window shows; their ids are stable catalog identities, never paths or
 /// display labels, so search and agents can target a concrete item.
 #[derive(Clone, Debug, PartialEq, Eq, ui::framework::Effect)]
-#[effect(operation = "backups.operation")]
+#[effect(operation = "backups.operation", device_only)]
 pub enum BackupsEffect {
     /// Create one new checksummed local snapshot, then keep only what the
     /// retention policy keeps.
