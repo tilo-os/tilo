@@ -62,7 +62,9 @@
 //! `permission = "read"` (any participant may invoke
 //! it; an effect needs write access by default, a view read access). Field
 //! `#[param("…")]` describes a parameter; `#[param(secret, "…")]` makes it a
-//! secret the host keeps out of logs, history and confirmations.
+//! secret the host keeps out of logs, history and confirmations, and
+//! `#[param("…", choices = EXPR)]` names the values it takes when they are a
+//! fixed list (`EXPR` yields strings: a constant table, an array of names).
 
 use tilo_actions::{
     ActionContract, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, ExecutionMode,
@@ -366,13 +368,22 @@ mod tests {
         /// Copy a thing's key.
         #[effect(privileged, permission = "read")]
         CopyKey { thing: String },
+        /// Paint a thing.
+        Paint {
+            #[param("The colour", choices = ["red", "green"])]
+            colour: String,
+            #[param(choices = SHADES)]
+            shade: Option<String>,
+        },
     }
+
+    const SHADES: [&str; 2] = ["light", "dark"];
 
     #[test]
     fn a_derived_vocabulary_publishes_each_variant_and_round_trips_through_its_spec() {
         let specs = Sample::specs();
         let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(ids, ["reload", "rename-thing", "wipe", "copy-key"]);
+        assert_eq!(ids, ["reload", "rename-thing", "wipe", "copy-key", "paint"]);
 
         let rename = &specs[1];
         assert_eq!(rename.label, "Rename a thing");
@@ -384,6 +395,19 @@ mod tests {
         assert_eq!(rename.contract.permission, PermissionRequirement::Read);
         assert!(matches!(rename.contract.result, ResultSpec::Json { .. }));
         assert_eq!(rename.contract.execution, ExecutionMode::Immediate);
+
+        let paint = &specs[4];
+        assert_eq!(paint.params[0].description, "The colour");
+        let choices = |index: usize| -> Vec<&str> {
+            paint.params[index]
+                .choices
+                .iter()
+                .map(|choice| choice.as_ref())
+                .collect()
+        };
+        assert_eq!(choices(0), ["red", "green"]);
+        assert_eq!(choices(1), ["light", "dark"]);
+        assert!(!paint.params[1].required);
 
         let wipe = &specs[2];
         assert_eq!(wipe.label, "Wipe");
