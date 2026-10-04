@@ -598,6 +598,12 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         node
     }
 
+    fn record_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
+        let mut owners = self.storage.person_owners();
+        owners.extend(self.content.record_owners());
+        owners
+    }
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui_core::doc::document(state, path);
         self.refresh_access();

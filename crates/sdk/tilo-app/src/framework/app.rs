@@ -290,6 +290,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     reader: Reader<A::Resource>,
     editing: Editing,
     storage: AppStorage,
+    person: Option<ui_core::record::person::PersonRecords>,
 ) -> ResourceRoot<A::Resource> {
     let scope = write_scope::<A>();
     let (permissions, read_only, me, run) = match editing {
@@ -309,7 +310,8 @@ pub(crate) fn build_root<A: ResourceApp>(
     let live = Live::new(reader);
     let alive = Rc::new(());
     let dispatch = Dispatcher::new(A::ID, resource_id, read_only, me.as_deref());
-    let storage = super::settings::ViewStorage::new(storage);
+    let person = person.map(|records| super::person::PersonState::new(records, A::ID, A::TITLE));
+    let storage = super::settings::ViewStorage::new(storage, person);
     // Effects and projection drains run in a window someone uses only:
     // History shows a past version, and a capture reaches nothing outside.
     let effects = (permissions.is_some() && run.mode.is_live())
@@ -428,6 +430,7 @@ fn create<A: ResourceApp>(
             run,
         },
         context.storage(),
+        context.person_records().cloned(),
     );
     for invoke in A::launch(&root.launch(), created) {
         root.dispatcher().invoke(invoke);
