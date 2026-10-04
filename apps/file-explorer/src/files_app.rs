@@ -80,6 +80,9 @@ enum OpFollowUp {
     Move { destination: String },
     /// Say what came back from Trash.
     RestoreTrash,
+    /// Say how many of `count` were pasted; after Cut, take the moved ones
+    /// off the clipboard (the ones that failed stay, to retry).
+    Paste { count: usize, cut: bool },
 }
 
 /// The paths of the `wanted` entries in `listing` (row id, name, path),
@@ -810,7 +813,13 @@ impl FileExplorerWidget {
     /// in history and undoable, for this device to carry out; `follow` is
     /// what the window shows when it settles. A window no framework hosts
     /// carries it out at once.
-    fn queue(&mut self, op: crate::file_ops::FileOp, follow: OpFollowUp) {
+    ///
+    /// What it came to when carried out at once; `None` when queued.
+    fn queue(
+        &mut self,
+        op: crate::file_ops::FileOp,
+        follow: OpFollowUp,
+    ) -> Option<crate::file_ops::Outcome> {
         let id = uuid::Uuid::new_v4().to_string();
         if let (Some(dispatcher), Some(device)) = (&self.dispatcher, &self.device) {
             dispatcher.apply(&crate::resource::FilesDocAction::QueueFileOp {
@@ -819,7 +828,7 @@ impl FileExplorerWidget {
                 op,
             });
             self.awaiting_ops.insert(id, follow);
-            return;
+            return None;
         }
         let reverting = match &op {
             crate::file_ops::FileOp::Revert { op } => self.local_outcomes.get(op),
@@ -828,6 +837,7 @@ impl FileExplorerWidget {
         let outcome = crate::file_ops::execute(&op, reverting);
         self.local_outcomes.insert(id.clone(), outcome.clone());
         self.settle_op(&id, follow, &outcome);
+        Some(outcome)
     }
 
     /// Show what the operations carried out since the last presentation
@@ -855,6 +865,10 @@ impl FileExplorerWidget {
     }
 
     /// Show what the operation `id` came to.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match over what each kind of operation shows when it settles"
+    )]
     fn settle_op(&mut self, id: &str, follow: OpFollowUp, outcome: &crate::file_ops::Outcome) {
         use crate::file_ops::Change;
         self.refresh();
@@ -936,6 +950,33 @@ impl FileExplorerWidget {
                     ),
                 });
             }
+            OpFollowUp::Paste { count, cut } => {
+                let done: Vec<&str> = outcome
+                    .changes()
+                    .iter()
+                    .filter_map(|change| match change {
+                        Change::Moved { from, .. } | Change::Copied { from, .. } => {
+                            Some(from.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if cut {
+                    self.clipboard
+                        .retain(|path| !done.iter().any(|from| path.as_path() == Path::new(from)));
+                }
+                self.status = Some(if error.is_none() {
+                    t_args("files-pasted", &[arg("count", fluent_count(count))])
+                } else {
+                    t_args(
+                        "files-pasted-with-failures",
+                        &[
+                            arg("count", fluent_count(done.len())),
+                            arg("failed", fluent_count(count - done.len())),
+                        ],
+                    )
+                });
+            }
             OpFollowUp::RestoreTrash => {
                 self.status = Some(match error {
                     None => t_args(
@@ -951,6 +992,103 @@ impl FileExplorerWidget {
     /// Filesystem changes an agent or a script asks for, bound to the folder
     /// shown: document actions, queued for this device and undoable like a
     /// change made in the window.
+    /// Filesystem changes bound to the entry row `row`: rename, move to a
+    /// folder, move to Trash — the same queued, undoable operations as the
+    /// folder's declarations, for an agent acting on the row.
+    pub(crate) fn entry_declarations(
+        &self,
+        row: &str,
+    ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::FileExplorer>> {
+        use crate::file_ops::FileOp;
+        use crate::resource::FilesDocAction;
+        use ui::tilo_actions::{ActionParam, ParamType};
+        use ui::tilo_resource::ActionDecl;
+        let Some(device) = self.device.clone() else {
+            return Vec::new();
+        };
+        if self.is_trash_view() {
+            return Vec::new();
+        }
+        let Some(entry) = self
+            .entries
+            .iter()
+            .find(|entry| Self::entry_resource_id(entry) == row)
+        else {
+            return Vec::new();
+        };
+        let path = entry.path.display().to_string();
+        let queue = move |op: FileOp| FilesDocAction::QueueFileOp {
+            id: uuid::Uuid::new_v4().to_string(),
+            device: device.clone(),
+            op,
+        };
+        let rename = {
+            let queue = queue.clone();
+            let path = path.clone();
+            ActionDecl::new(
+                "rename",
+                t("files-menu-rename"),
+                vec![ActionParam::required(
+                    "name",
+                    ParamType::Text,
+                    "The new name",
+                )],
+                move |args, _| {
+                    let name = args.text("name").filter(|name| !name.trim().is_empty());
+                    Ok(queue(FileOp::Rename {
+                        path: path.clone(),
+                        name: name
+                            .ok_or_else(|| "missing new name".to_owned())?
+                            .to_owned(),
+                    }))
+                },
+            )
+        };
+        let move_to = {
+            let queue = queue.clone();
+            let path = path.clone();
+            ActionDecl::new(
+                "move-to",
+                "Move to folder…",
+                vec![
+                    ActionParam::required(
+                        "folder",
+                        ParamType::Text,
+                        "Absolute path of the folder; the name is kept",
+                    ),
+                    ActionParam::optional(
+                        "create",
+                        ParamType::Boolean,
+                        "Create the folder when it does not exist",
+                    ),
+                ],
+                move |args, _| {
+                    let folder = args.text("folder").unwrap_or_default();
+                    if !Path::new(folder).is_absolute() {
+                        return Err(format!("{folder} is not an absolute path"));
+                    }
+                    Ok(queue(FileOp::Move {
+                        paths: vec![path.clone()],
+                        folder: folder.to_owned(),
+                        create: args.boolean("create").unwrap_or(false),
+                    }))
+                },
+            )
+        };
+        let trash = ActionDecl::new(
+            "trash",
+            t("files-menu-move-trash"),
+            Vec::new(),
+            move |_, _| {
+                Ok(queue(FileOp::Trash {
+                    paths: vec![path.clone()],
+                }))
+            },
+        )
+        .destructive();
+        vec![rename, move_to, trash]
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the four filesystem declarations share one captured listing and device"
@@ -2005,7 +2143,8 @@ impl FileExplorerWidget {
             .ok_or_else(|| "remote account is no longer available".to_string())
     }
 
-    /// Copy the entry `entry` names into `folder`, keeping its name.
+    /// Copy the entry `entry` names into `folder`, keeping its name: a
+    /// queued, undoable operation.
     fn copy_into_folder(&mut self, entry: &str, folder: &str) -> Result<(), String> {
         let source = self
             .visible_entry_path(entry)
@@ -2014,8 +2153,16 @@ impl FileExplorerWidget {
         if !folder.is_absolute() || !folder.is_dir() {
             return Err(format!("{} is not an existing folder.", folder.display()));
         }
-        fileops::copy_into(&source, &folder)?;
-        self.refresh();
+        self.queue(
+            crate::file_ops::FileOp::Copy {
+                paths: vec![source.display().to_string()],
+                folder: folder.display().to_string(),
+            },
+            OpFollowUp::Paste {
+                count: 1,
+                cut: false,
+            },
+        );
         Ok(())
     }
 
@@ -5090,48 +5237,28 @@ impl FileExplorerWidget {
         if self.clipboard.is_empty() {
             return Err("The clipboard is empty".into());
         }
-        let dest = self.current_path.clone();
+        let paths: Vec<String> = self
+            .clipboard
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        let folder = self.current_path.display().to_string();
         let cut = self.clipboard_cut;
-        let items = self.clipboard.clone();
-        let mut failures = Vec::new();
-        // A cut paste is allowed to complete only part of a multi-selection:
-        // one source may have been removed or become unavailable between Cut
-        // and Paste. Keep precisely those failed sources on the clipboard so
-        // retrying neither repeats successful moves nor loses the unfinished
-        // work. (Copies intentionally remain on the clipboard.)
-        let mut remaining_cut_sources = Vec::new();
-        for src in &items {
-            let res = if cut {
-                fileops::move_into(src, &dest)
-            } else {
-                fileops::copy_into(src, &dest)
-            };
-            if let Err(error) = res {
-                failures.push(format!("{}: {error}", src.display()));
-                if cut {
-                    remaining_cut_sources.push(src.clone());
-                }
+        let count = paths.len();
+        let op = if cut {
+            crate::file_ops::FileOp::Move {
+                paths,
+                folder,
+                create: false,
             }
-        }
-        if cut {
-            self.clipboard = remaining_cut_sources;
-        }
-        self.refresh();
-        self.status = Some(if failures.is_empty() {
-            t_args("files-pasted", &[arg("count", fluent_count(items.len()))])
         } else {
-            t_args(
-                "files-pasted-with-failures",
-                &[
-                    arg("count", fluent_count(items.len() - failures.len())),
-                    arg("failed", fluent_count(failures.len())),
-                ],
-            )
-        });
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(format!("paste failed: {}", failures.join("; ")))
+            crate::file_ops::FileOp::Copy { paths, folder }
+        };
+        match self.queue(op, OpFollowUp::Paste { count, cut }) {
+            Some(outcome) => outcome
+                .error()
+                .map_or(Ok(()), |error| Err(format!("paste failed: {error}"))),
+            None => Ok(()),
         }
     }
 
@@ -8292,8 +8419,7 @@ impl Widget for FileExplorerWidget {
     ui::provides!(
         dyn ui::widget::Collaborative,
         dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::widget::controls::ActionControls
     );
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
@@ -8980,37 +9106,24 @@ impl FileExplorerWidget {
     }
 }
 
-impl ui::resources::PublishesResources for FileExplorerWidget {
-    #[allow(
-        clippy::expect_used,
-        reason = "JSON serialization of owned strings and static command payloads is infallible"
-    )]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the resource catalogue mirrors the folder/entry protocol in one auditable tree; splitting it would separate action contracts from their resources"
-    )]
-    // The folder, its places and templates and its folder-wide work are the
-    // resource's publication; the window adds the live rows it shows:
-    // listing entries, remote accounts, nearby transfers and the retry of a
-    // failed listing.
-    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
+impl FileExplorerWidget {
+    /// The live rows the window shows beneath the resource: listing entries,
+    /// remote accounts, nearby transfers and the retry of a failed listing.
+    /// The folder, its places and templates and its folder-wide work are the
+    /// resource's publication.
+    pub(crate) fn published_rows(&self) -> Vec<Resource> {
         self.live_filesystem_extras()
     }
-    /// Materialise an exact search-addressed row only when the action host is
-    /// about to resolve it. This keeps the open resource tree bounded to the
-    /// actual folder while preserving canonical action equivalence for Places,
-    /// remote accounts, and late collaborative records.
-    fn resource(&self, _doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
+
+    /// The row `id`, when [`Self::published_rows`] leaves it out: an entry
+    /// past the eager page, a place, a late collaborative record, a remote
+    /// account, found by a search and resolved only when acted on.
+    pub(crate) fn published_row(&self, id: &str) -> Option<Resource> {
         fn find(resource: &Resource, id: &str) -> Option<Resource> {
             if resource.id.as_str() == id {
                 return Some(resource.clone());
             }
-            for child in &resource.children {
-                if let Some(found) = find(child, id) {
-                    return Some(found);
-                }
-            }
-            None
+            resource.children.iter().find_map(|child| find(child, id))
         }
         if let Some(found) = self
             .live_filesystem_extras()
@@ -9125,7 +9238,8 @@ pub(crate) mod published {
         // The places as a device whose home is the window's resolves them.
         root.children
             .extend(super::published_place_resources(&files.favorites()));
-        root.children.extend(ui::resources::resources(files, doc));
+        let _ = doc;
+        root.children.extend(files.published_rows());
         vec![root]
     }
 

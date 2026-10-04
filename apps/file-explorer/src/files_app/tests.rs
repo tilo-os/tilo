@@ -1605,7 +1605,8 @@ mod command_path_tests {
 
         let last = w.entries.last().expect("fixture has a final entry");
         let id = FileExplorerWidget::entry_resource_id(last);
-        let resolved = ui::resources::resource(&w, &doc, &id)
+        let resolved = w
+            .published_row(&id)
             .expect("an exact current-folder entry resolves on demand");
         assert_eq!(resolved.id.as_str(), id);
         assert!(resolved.actions.iter().any(|action| action.id == "open"));
@@ -3360,7 +3361,8 @@ mod command_path_tests {
         let address = hit.action_address().expect("canonical reveal action");
         let mut resources = crate::files_app::published::tree(&widget, &doc);
         resources.push(
-            ui::resources::resource(&widget, &doc, &address.resource)
+            widget
+                .published_row(&address.resource)
                 .expect("late record materializes exactly for this address"),
         );
         let spec = ui::tilo_actions::door::resolve(&resources, &address)

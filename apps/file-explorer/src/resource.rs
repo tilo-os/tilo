@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Effected, FileHistory, Fixture, ResourceApp,
+    EffectAnswer, EffectCx, EffectStatus, Effected, FileHistory, Fixture, LiveRow, ResourceApp,
     ResourceSurface, SurfaceCx, ViewCx,
 };
 use ui::storage::{Scope, SettingsSchema};
@@ -268,6 +268,21 @@ fn bookmark_declarations() -> Vec<ActionDecl<FileExplorer>> {
     ]
 }
 
+/// A row the window publishes, as the framework carries it.
+fn live_row(resource: tilo_actions::Resource) -> LiveRow {
+    let mut row = LiveRow::new(resource.id.as_str(), resource.kind.as_str(), resource.label);
+    if let Some(presentation) = resource.presentation {
+        row = row.presentation(presentation);
+    }
+    for action in resource.actions {
+        row = row.operation(action);
+    }
+    for child in resource.children {
+        row = row.row(live_row(child));
+    }
+    row
+}
+
 /// Framework app: the files widget is the surface over [`FileExplorer`].
 pub struct FileExplorerShell;
 
@@ -307,7 +322,7 @@ impl ResourceApp for FileExplorerShell {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        crate::scenarios::SCENARIOS
+        crate::scenarios::scenarios()
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
@@ -416,6 +431,21 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         })];
         declarations.extend(self.file_op_declarations());
         declarations
+    }
+
+    /// The listing's entries, remote accounts, nearby transfers and a
+    /// failed listing's retry.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.published_rows().into_iter().map(live_row).collect()
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.published_row(id).map(live_row)
+    }
+
+    /// Rename, move and trash the entry a row shows, through the queue.
+    fn row_declarations(&self, row: &str) -> Vec<ActionDecl<FileExplorer>> {
+        self.entry_declarations(row)
     }
 
     /// The places, the mount's collaborative records and the remote file
@@ -615,6 +645,120 @@ mod tests {
             TestApp::<FileExplorerShell>::launched(&[directory.path().to_str().unwrap()]).unwrap();
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains("launched.txt"), "{frame}");
+    }
+
+    /// Invoke the action `id` of the published resource `on` with `args`
+    /// through the door, as an agent does, and let the device carry out
+    /// what it queued.
+    fn act_on(app: &mut TestApp<FileExplorerShell>, on: &str, id: &str, args: &serde_json::Value) {
+        let instance = app.harness().component_instance_id().unwrap();
+        app.harness()
+            .invoke_bound_action_confirmed(
+                &ui::bound_dispatch::BoundActionAddress {
+                    instance_id: instance,
+                    address: ui::tilo_actions::ActionAddress::new(on, id),
+                },
+                args.as_object().unwrap(),
+            )
+            .unwrap();
+        app.settle();
+    }
+
+    /// Copying and pasting are queued and undoable like every filesystem
+    /// change: undo moves a copy to Trash and a cut-and-paste back. A row
+    /// offers rename, move and trash on its entry; undoing the trash puts
+    /// the file back.
+    #[test]
+    fn copies_and_row_edits_are_undoable() {
+        // Inside the home, so Trash is the home's and its entries are known.
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap();
+        let folder = tempfile::tempdir_in(&home).unwrap();
+        std::fs::create_dir(folder.path().join("Projects")).unwrap();
+        std::fs::write(folder.path().join("notes.txt"), b"n").unwrap();
+        std::fs::write(folder.path().join("plan.txt"), b"p").unwrap();
+        let mut app =
+            TestApp::<FileExplorerShell>::launched(&[folder.path().to_str().unwrap()]).unwrap();
+        let row = |name: &str| crate::search_provider::entry_resource_id(&folder.path().join(name));
+        let projects = folder.path().join("Projects").display().to_string();
+
+        app.effect_on(
+            &row("notes.txt"),
+            &FilesEffect::Copy {
+                entry: row("notes.txt"),
+            },
+        )
+        .unwrap();
+        app.effect(&FilesEffect::GoTo {
+            path: projects.clone(),
+        })
+        .unwrap();
+        app.effect(&FilesEffect::Paste).unwrap();
+        app.settle();
+        assert!(folder.path().join("Projects/notes.txt").exists());
+        assert!(app.undo());
+        app.settle();
+        assert!(
+            !folder.path().join("Projects/notes.txt").exists(),
+            "the copy goes"
+        );
+        assert!(
+            folder.path().join("notes.txt").exists(),
+            "the original stays"
+        );
+
+        app.effect(&FilesEffect::GoTo {
+            path: folder.path().display().to_string(),
+        })
+        .unwrap();
+        app.effect_on(
+            &row("plan.txt"),
+            &FilesEffect::Cut {
+                entry: row("plan.txt"),
+            },
+        )
+        .unwrap();
+        app.effect(&FilesEffect::GoTo {
+            path: projects.clone(),
+        })
+        .unwrap();
+        app.effect(&FilesEffect::Paste).unwrap();
+        app.settle();
+        assert!(folder.path().join("Projects/plan.txt").exists());
+        assert!(app.undo());
+        app.settle();
+        assert!(
+            folder.path().join("plan.txt").exists(),
+            "cut and paste moves back"
+        );
+
+        app.effect(&FilesEffect::GoTo {
+            path: folder.path().display().to_string(),
+        })
+        .unwrap();
+        act_on(
+            &mut app,
+            &row("plan.txt"),
+            "rename",
+            &serde_json::json!({"name": "agenda.txt"}),
+        );
+        assert!(folder.path().join("agenda.txt").exists());
+        act_on(
+            &mut app,
+            &row("agenda.txt"),
+            "move-to",
+            &serde_json::json!({"folder": projects}),
+        );
+        assert!(folder.path().join("Projects/agenda.txt").exists());
+        act_on(&mut app, &row("notes.txt"), "trash", &serde_json::json!({}));
+        assert!(!folder.path().join("notes.txt").exists(), "trashed");
+        assert!(app.undo());
+        app.settle();
+        assert!(
+            folder.path().join("notes.txt").exists(),
+            "undo restores it from Trash"
+        );
     }
 
     /// Invoke the resource's action `id` with `args` through the door, as
