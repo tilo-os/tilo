@@ -12,9 +12,9 @@ headroom = 0.01
 # (`build.sh --profile release` optimizes less and comes out about 2 MB
 # larger.)
 [bundles.desktop]
-bytes = 83558400
+bytes = 84738048
 
 [bundles.desktop.rebaseline]
-run = 61466
-measured = 82667631
-reason = "feature growth: Speed Test's measurements resource and effect jobs, Publisher's effects (#2414)"
+run = 63010
+measured = 83881907
+reason = "feature growth: the canvas's new-artwork, export and shortcut dialogs, file desk and artwork files (#2389)"

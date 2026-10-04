@@ -45,7 +45,8 @@ enum Source {
 
 /// How a scripted source answers an open.
 #[cfg(test)]
-type ScriptedOpen = dyn FnMut(&SessionTarget, Requester) -> Result<TerminalBackend, OpenError>;
+type ScriptedOpen =
+    dyn FnMut(&SessionTarget, Requester, Option<&str>) -> Result<TerminalBackend, OpenError>;
 
 impl std::fmt::Debug for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -68,6 +69,8 @@ pub struct Sessions {
     recent: RecentTarget,
     /// Environments the picker offers, as last listed.
     pub environments: Vec<EnvironmentSummary>,
+    /// The person's relays an environment can run on, as last listed.
+    pub relays: Vec<crate::target::RelaySummary>,
     /// Legacy VMs the legacy VM service reports. Empty until that service
     /// exists, which keeps them out of the picker.
     pub legacy_vms: Vec<String>,
@@ -100,6 +103,7 @@ impl Sessions {
             recent,
             environments: Vec::new(),
             legacy_vms: Vec::new(),
+            relays: Vec::new(),
             allow: None,
             intent: None,
         }
@@ -132,7 +136,8 @@ impl Sessions {
     #[cfg(test)]
     pub fn scripted(
         recent: RecentTarget,
-        open: impl FnMut(&SessionTarget, Requester) -> Result<TerminalBackend, OpenError> + 'static,
+        open: impl FnMut(&SessionTarget, Requester, Option<&str>) -> Result<TerminalBackend, OpenError>
+        + 'static,
     ) -> Self {
         Self::with(
             Source::Scripted(Box::new(open)),
@@ -175,6 +180,7 @@ impl Sessions {
         &mut self,
         target: &SessionTarget,
         requested_by: Requester,
+        relay_session: Option<&str>,
     ) -> Result<TerminalBackend, OpenError> {
         if requested_by == Requester::Agent && target.is_host() {
             return Err(OpenError::Refused(
@@ -185,12 +191,15 @@ impl Sessions {
             Source::None => Err(OpenError::Unavailable(
                 "this terminal has no process service".into(),
             )),
-            Source::Standalone => TerminalBackend::open(target, requested_by),
-            Source::Hosted { first } => {
-                crate::HostedProcessServices::open_session(first.take(), target, requested_by)
-            }
+            Source::Standalone => TerminalBackend::open(target, requested_by, relay_session),
+            Source::Hosted { first } => crate::HostedProcessServices::open_session(
+                first.take(),
+                target,
+                requested_by,
+                relay_session,
+            ),
             #[cfg(test)]
-            Source::Scripted(open) => open(target, requested_by),
+            Source::Scripted(open) => open(target, requested_by, relay_session),
         }
     }
 
@@ -241,6 +250,12 @@ impl Sessions {
         }
         if let Ok(list) = self.directory_request(&serde_json::json!({"op": "list-environments"})) {
             self.environments = list;
+        }
+        if matches!(self.source, Source::Hosted { .. })
+            && let Ok(reply) =
+                crate::HostedProcessServices::ask(&serde_json::json!({"op": "list-relays"}))
+        {
+            self.relays = parse_relays_reply(&reply);
         }
     }
 
@@ -362,4 +377,35 @@ pub(crate) fn legacy_vms_under(data_home: &std::path::Path) -> Vec<String> {
         })
         .map(str::to_owned)
         .collect()
+}
+
+/// Decode the supervisor's list of the person's relays; anything else is none.
+pub(crate) fn parse_relays_reply(reply: &str) -> Vec<crate::target::RelaySummary> {
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        relay: String,
+        #[serde(default)]
+        label: String,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "result", rename_all = "kebab-case")]
+    enum Reply {
+        Relays { relays: Vec<Entry> },
+    }
+    match serde_json::from_str::<Reply>(reply.trim()) {
+        Ok(Reply::Relays { relays }) => relays
+            .into_iter()
+            .filter(|entry| {
+                crate::target::Location::Relay {
+                    relay: entry.relay.clone(),
+                }
+                .is_valid()
+            })
+            .map(|entry| crate::target::RelaySummary {
+                relay: entry.relay,
+                label: entry.label,
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
 }

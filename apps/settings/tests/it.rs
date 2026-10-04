@@ -56,3 +56,6 @@ mod composition_balance;
 
 #[path = "alignment_review.rs"]
 mod alignment_review;
+
+#[path = "published_surface.rs"]
+mod published_surface;

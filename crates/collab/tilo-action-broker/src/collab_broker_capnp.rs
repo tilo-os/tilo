@@ -1076,7 +1076,7 @@ pub struct InvocationEnvelope {
     id: u64,
     invocation: tilo_actions::InvocationId,
     pub resource: String,
-    action: String,
+    pub action: String,
     argument: Option<String>,
     pub actor: String,
     context: Option<tilo_actions::ActionContext>,
