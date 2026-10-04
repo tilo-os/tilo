@@ -22,8 +22,10 @@ pub struct ProcessInfo {
     pub ppid: Option<u32>,
     pub name: String,
     pub user: String,
-    /// CPU usage as a percentage of a single core (so > 100 on a busy
-    /// multi-threaded process — matches `top`/`htop` semantics).
+    /// CPU usage as a share of the whole machine, in percent: a process
+    /// keeping one of eight cores busy reads 12.5. The processes' shares add
+    /// up to the machine's total load, so a summed subtree never reads more
+    /// than the whole machine.
     pub cpu: f32,
     /// Resident memory (RSS) in bytes — physical pages the process holds.
     pub mem_bytes: u64,
@@ -140,8 +142,7 @@ impl MonitorModel {
     )]
     pub fn sample() -> Self {
         // ---- per-core history: a few cores hot, most idle-ish -------
-        let core_base = [62.0, 18.0, 47.0, 9.0, 88.0, 33.0, 14.0, 71.0];
-        let cores: Vec<f32> = core_base.to_vec();
+        let cores: Vec<f32> = SAMPLE_CORE_LOAD.to_vec();
 
         // Synthesise wavy histories so the charts read as "alive".
         let cpu_hist = RollingSeries::from_samples(
@@ -263,8 +264,11 @@ impl MonitorModel {
     }
 }
 
+/// The sample machine's per-core load, in percent.
+const SAMPLE_CORE_LOAD: [f32; 8] = [62.0, 18.0, 47.0, 9.0, 88.0, 33.0, 14.0, 71.0];
+
 /// One sample-data process row, as `(name, parent, user, cpu, mem_MiB,
-/// threads, status, kernel)`. `parent` is `""` for a forest root.
+/// threads, status, kernel)`; `cpu` is per core, as `top` reads it. `parent` is `""` for a forest root.
 type SampleRow = (
     &'static str,
     &'static str,
@@ -382,12 +386,12 @@ const SAMPLE_ROWS: &[SampleRow] = &[
         false,
     ),
     (
-        "systemd-resolved",
+        "rtkit-daemon",
         "systemd",
-        "systemd+",
-        0.3,
-        22,
-        2,
+        "rtkit",
+        0.1,
+        4,
+        3,
         "Sleeping",
         false,
     ),
@@ -539,7 +543,7 @@ fn build_sample_process(rows: &[SampleRow], pids: &[u32], i: usize, row: SampleR
         ppid,
         name: name.to_string(),
         user: user.to_string(),
-        cpu,
+        cpu: cpu / SAMPLE_CORE_LOAD.len() as f32,
         mem_bytes,
         virt_bytes,
         threads,

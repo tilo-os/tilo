@@ -157,7 +157,7 @@ fn managed_history_round_trip_preserves_view_and_signals_once() {
         // The window's header presents History itself, so the framework
         // draws no History bar of its own; looking at the window leaves the
         // document and the published resources as they were.
-        assert!(driver.targets().contains_key("history-button"));
+        assert!(driver.targets().contains_key("nav-shell-history"));
         assert!(!driver.targets().contains_key("history-open"));
         driver.relayout();
         assert_eq!(resource_snapshot(&driver), resources);

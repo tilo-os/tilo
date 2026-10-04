@@ -21,7 +21,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::TextRole;
-use ui::charts::{BarGauge, Chart, Series};
+use ui::charts::{BarGauge, Chart, ChartStyle, Series, nice_step};
 use ui::format::bytes as format_bytes;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
@@ -159,6 +159,8 @@ pub(crate) enum Request {
     ContextMenu {
         pid: u32,
         at: Point,
+        /// The row the menu acts on, marked while the menu is open.
+        row: Rect,
     },
     Retry,
 }
@@ -247,10 +249,9 @@ fn percent_label(value: f32) -> String {
     format!("{value:.0}%")
 }
 
-/// The four whole-system tiles over the process table. Pressing one opens
-/// its section of the dashboard. A narrow window leaves the history to the
-/// dashboard and keeps the numbers.
-fn summary_tiles(metrics: &Metrics, shared: &Shared, histories: bool) -> StatGroup {
+/// The four whole-system tiles over the process table, each with its recent
+/// history. Pressing one opens its section of the dashboard.
+fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
     let tiles = Stat::ALL
         .iter()
         .map(|&stat| {
@@ -289,15 +290,11 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared, histories: bool) -> StatGro
                 }
             };
             let requests = Rc::clone(shared);
-            let mut tile = StatTile::new(stat.label(), value).on_activate(
-                format!("monitor.summary.{}", stat.id()),
-                move || {
+            let mut tile = StatTile::new(stat.label(), value)
+                .sparkline(samples)
+                .on_activate(format!("monitor.summary.{}", stat.id()), move || {
                     requests.borrow_mut().push(Request::ShowStat(stat));
-                },
-            );
-            if histories {
-                tile = tile.sparkline(samples);
-            }
+                });
             if !unit.is_empty() {
                 tile = tile.unit(unit);
             }
@@ -488,7 +485,7 @@ fn view_toolbar(options: ListOptions, shared: &Shared) -> Toolbar {
     let kernel = Rc::clone(shared);
     let mut toolbar =
         Toolbar::new(Orientation::Horizontal).push_toggle("Tree view", options.tree, move || {
-            tree.borrow_mut().push(Request::TreeMode(!options.tree))
+            tree.borrow_mut().push(Request::TreeMode(!options.tree));
         });
     if options.tree {
         let summing = options.sum == SumMode::SumSubtree;
@@ -581,8 +578,8 @@ pub(crate) struct ProcessesPane {
     seen_rows: Option<u64>,
     seen_metrics: Option<u64>,
     summary: Option<StatGroup>,
-    /// Whether `summary` was built for a narrow pane.
-    summary_compact: Option<bool>,
+    /// The metrics changed since `summary` was built.
+    summary_stale: bool,
     field: SearchField,
     toolbar: Toolbar,
     options: Option<ListOptions>,
@@ -603,6 +600,9 @@ pub(crate) struct ProcessesPane {
     rect: Rect,
     /// Below this width the pane is compact (from the last layout's theme).
     compact_below: f64,
+    /// How far the table insets a row's selection lift (from the last
+    /// layout's theme).
+    lift_inset: f64,
     nodes: Nodes,
     layout_dirty: bool,
     structure_dirty: bool,
@@ -621,7 +621,7 @@ impl ProcessesPane {
             seen_rows: None,
             seen_metrics: None,
             summary: None,
-            summary_compact: None,
+            summary_stale: true,
             field: SearchField::filter()
                 .with_id("monitor.filter")
                 .with_placeholder("Filter processes"),
@@ -641,6 +641,7 @@ impl ProcessesPane {
             cursor: Point::ZERO,
             rect: Rect::ZERO,
             compact_below: 0.0,
+            lift_inset: 0.0,
             nodes: Nodes::default(),
             layout_dirty: true,
             structure_dirty: true,
@@ -659,7 +660,7 @@ impl ProcessesPane {
 
         if self.seen_metrics != Some(bridge.metrics_revision) {
             self.seen_metrics = Some(bridge.metrics_revision);
-            self.summary_compact = None;
+            self.summary_stale = true;
             self.structure_dirty = true;
         }
 
@@ -776,8 +777,9 @@ impl ProcessesPane {
         }
     }
 
-    /// Where a pointer over `pid`'s row would be, once the rows are laid out.
-    fn row_point(&self, pid: u32) -> Option<Point> {
+    /// `pid`'s row as its selection lift covers it, once the rows are laid
+    /// out.
+    fn row_rect(&self, pid: u32) -> Option<Rect> {
         let table = self.table.get_rect();
         if table.width() <= 0.0 || self.viewport <= 0.0 {
             return None;
@@ -788,9 +790,25 @@ impl ProcessesPane {
             .iter()
             .position(|row| row.pid == pid)?;
         let header = (table.height() - self.viewport).max(0.0);
-        let y = table.y0 + header + (index as f64 + 0.5) * self.row_height
-            - f64::from(self.table.scroll_y());
-        Some(Point::new(table.x0 + table.width() / 3.0, y))
+        let y0 =
+            table.y0 + header + index as f64 * self.row_height - f64::from(self.table.scroll_y());
+        Some(Rect::new(
+            table.x0 + self.lift_inset,
+            y0,
+            table.x1 - self.lift_inset,
+            y0 + self.row_height,
+        ))
+    }
+
+    /// Where a person right-clicks `pid`'s row: in its name cell, past the
+    /// name, so the menu leaves the name readable.
+    fn row_point(&self, pid: u32) -> Option<(Point, Rect)> {
+        let row = self.row_rect(pid)?;
+        let name = self
+            .table
+            .column_width_px("name")
+            .map_or_else(|| row.width() / 3.0, f64::from);
+        Some((Point::new(row.x0 + name * 0.6, row.center().y), row))
     }
 
     /// The process whose row is under `point`, read from the rows the table
@@ -815,12 +833,12 @@ impl ProcessesPane {
         let Some(pid) = self.shared.borrow().menu_seed else {
             return;
         };
-        let Some(at) = self.row_point(pid) else {
+        let Some((at, row)) = self.row_point(pid) else {
             return;
         };
         let mut bridge = self.shared.borrow_mut();
         bridge.menu_seed = None;
-        bridge.push(Request::ContextMenu { pid, at });
+        bridge.push(Request::ContextMenu { pid, at, row });
     }
 
     fn selected_row(&self) -> Option<ProcessRow> {
@@ -926,9 +944,13 @@ impl ProcessesPane {
                 {
                     self.table.selection_mut().select_only(index);
                     self.queue_selection();
+                    let row = self.row_rect(pid).unwrap_or_else(|| {
+                        Rect::from_center_size(self.cursor, (0.0, self.row_height))
+                    });
                     self.shared.borrow_mut().push(Request::ContextMenu {
                         pid,
                         at: self.cursor,
+                        row,
                     });
                 }
                 *ctx.handled = true;
@@ -982,19 +1004,20 @@ impl Widget for ProcessesPane {
         let tokens = &theme.tokens;
         let metrics = tokens.metrics;
         self.compact_below = f64::from(metrics.content_min_width + metrics.detail_min_width);
+        self.lift_inset = f64::from(tokens.spacing.s2);
         let compact = self.is_compact(self.rect.width());
         if compact != self.shape.compact {
             self.shape.compact = compact;
             self.rebuild_table();
         }
-        if self.summary_compact != Some(compact) {
-            self.summary_compact = Some(compact);
+        if self.summary_stale {
+            self.summary_stale = false;
             self.summary = self
                 .shared
                 .borrow()
                 .metrics
                 .as_ref()
-                .map(|metrics| summary_tiles(metrics, &self.shared, !compact));
+                .map(|metrics| summary_tiles(metrics, &self.shared));
         }
         self.row_height = f64::from(metrics.min_pointer_target);
         self.layout_dirty = false;
@@ -1302,12 +1325,35 @@ impl Widget for ProcessesPane {
     }
 }
 
+/// Horizontal grid divisions of a history chart.
+const GRID_DIVISIONS: usize = 4;
+
 /// A chart of `series`, scaled to `max`, with its high and low axis labels.
 fn history_chart(series: Vec<Series>, max: f32, high: &str) -> Chart {
     Chart::new(series)
         .with_area(true)
+        .with_style(ChartStyle::default().with_grid(GRID_DIVISIONS, None))
         .with_max(max)
         .with_axis_labels(high, "0")
+}
+
+/// The top of a throughput chart's scale for a `peak` rate: a round number,
+/// one grid step at a round size above the highest grid line the peak
+/// reaches, so the series stays out of the top band that holds the scale's
+/// label.
+fn axis_top(peak: f32) -> f32 {
+    let below_top = (GRID_DIVISIONS - 1) as f64;
+    let peak = f64::from(peak.max(1.0));
+    let mut step = nice_step(peak / below_top);
+    // A 1-2-5 step one size up more than covers a shortfall, so this ends
+    // after one round.
+    for _ in 0..2 {
+        if step * below_top >= peak {
+            break;
+        }
+        step = nice_step(step * 1.6);
+    }
+    (step * GRID_DIVISIONS as f64) as f32
 }
 
 /// A level gauge: `label` over a bar filled to `frac`, with its reading.
@@ -1406,10 +1452,11 @@ fn throughput_section(
     first_series: usize,
     theme: &Theme,
 ) -> Section {
-    let max = flows
+    let peak = flows
         .iter()
         .flat_map(|flow| flow.history.iter().copied())
         .fold(1.0_f32, f32::max);
+    let max = axis_top(peak);
     let series = flows
         .iter()
         .enumerate()
@@ -1760,9 +1807,27 @@ pub(crate) struct ProcessDetail<'a> {
     pub process: &'a ProcessInfo,
     pub parent: Option<String>,
     pub cpu_history: Vec<f32>,
+    /// The CPU share and memory of the process with its descendants, when
+    /// the table shows summed subtrees and the process has children: the
+    /// numbers its row shows.
+    pub with_children: Option<(f32, u64)>,
+    /// The inset of the property list's rows, so the tiles and buttons above
+    /// and below it start where its labels do.
+    pub inset: f32,
     /// The process's published resource; its Stop and Kill actions are what
     /// the buttons invoke.
     pub resource: Resource,
+}
+
+/// `child` inset by `inset` on both sides.
+fn inset_by(child: Element, inset: f32) -> Element {
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_horizontal_padding(inset, inset)
+            .push(child),
+    )
 }
 
 /// The inspector: the selected process's load, its facts and the actions
@@ -1783,13 +1848,21 @@ pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
         Box::new(StatTile::new("Memory", memory).unit(unit)),
     ]);
 
-    let mut properties = vec![
+    let mut properties = Vec::new();
+    if let Some((cpu, memory)) = detail.with_children {
+        properties.extend([
+            Property::new("CPU with children", format!("{cpu:.1}%")).with_kind(TextKind::Numeric),
+            Property::new("Memory with children", format_bytes(memory))
+                .with_kind(TextKind::Numeric),
+        ]);
+    }
+    properties.extend([
         Property::new("PID", process.pid.to_string())
             .with_kind(TextKind::Numeric)
             .copyable(),
         Property::new("User", process.user.clone()).with_kind(TextKind::Identifier),
         Property::new("Status", process.status.clone()),
-    ];
+    ]);
     if let Some(parent) = &detail.parent {
         properties.push(Property::new("Parent", parent.clone()));
     }
@@ -1831,9 +1904,9 @@ pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
 
     let body = Column::new()
         .with_intrinsic_height()
-        .push(Box::new(tiles))
+        .push(inset_by(Box::new(tiles), detail.inset))
         .push(Box::new(PropertyList::new(properties)))
-        .push(Box::new(actions));
+        .push(inset_by(Box::new(actions), detail.inset));
     Box::new(
         Scrollable::new_vertical()
             .with_semantic_key("monitor.process-detail")
@@ -1861,6 +1934,15 @@ mod tests {
             ("Every 1.5 seconds".to_owned(), "Every 1.5 s".to_owned())
         );
         assert_eq!(labels[5], ("Paused".to_owned(), "Paused".to_owned()));
+    }
+
+    #[test]
+    fn throughput_scales_end_on_a_round_number_above_the_peak() {
+        for (peak, top) in [(5.1e6, 8e6), (3.4e6, 8e6), (2.9e6, 4e6), (0.0, 2.0)] {
+            assert!((axis_top(peak) - top).abs() < 1.0, "{peak} → {top}");
+            let below_top = top * (GRID_DIVISIONS - 1) as f32 / GRID_DIVISIONS as f32;
+            assert!(peak <= below_top, "the peak stays under the label band");
+        }
     }
 
     #[test]
