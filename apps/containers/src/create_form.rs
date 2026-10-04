@@ -8,7 +8,7 @@
 //! survives undo, History and a second person editing the same form.
 
 use ui::widget::{
-    AppModel, Column, Field, FormControl, LabelPlacement, ModelPath, TextInput, Widget,
+    AppModel, Column, Density, Field, Form, FormControl, FormSection, ModelPath, TextInput, Widget,
 };
 
 use crate::doc::{CreateField, StoredCreateField, ViewDoc};
@@ -184,19 +184,27 @@ pub(crate) const ORDER: [CreateField; 6] = [
     CreateField::Command,
 ];
 
-/// The form, with a fresh input per field from `make_input`.
+/// The form, with a fresh input per field from `make_input`. It is a
+/// compact form: the labels stand beside their fields where the sheet has
+/// the room, so the whole draft fits a small window.
 pub(crate) fn form(make_input: fn() -> TextInput, intents: &Intents) -> Column {
-    let mut column = Column::new().with_intrinsic_height().with_no_padding();
+    let mut section = FormSection::new("");
     for field in ORDER {
         let (label, help) = copy(field);
-        let mut row = Field::new(label, DraftInput::new(field, make_input(), intents))
-            .with_label_placement(Some(LabelPlacement::Above));
+        let mut row = Field::new(label, DraftInput::new(field, make_input(), intents));
         if let Some(help) = help {
             row = row.with_help(help);
         }
-        column = column.push(Box::new(row));
+        section = section.field(row);
     }
-    column
+    Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .push(Box::new(
+            Form::new()
+                .with_density(Some(Density::Compact))
+                .section(section),
+        ))
 }
 
 /// Visit every draft field under `widget`.

@@ -70,7 +70,7 @@ pub(crate) fn container_resource(
             if !engine_live {
                 spec = spec.unavailable(
                     "engine_offline",
-                    "Container engine actions are unavailable in demo mode",
+                    "Podman isn't available. Start its user service to manage containers.",
                 );
             }
             resource.actions.push(spec);
@@ -156,7 +156,7 @@ fn image_resource(image: &crate::model::Image, engine_live: bool) -> Resource {
         if !engine_live {
             spec = spec.unavailable(
                 "engine_offline",
-                "Container engine actions are unavailable in demo mode",
+                "Podman isn't available. Start its user service to manage containers.",
             );
         }
         resource.actions.push(spec);
@@ -193,7 +193,7 @@ fn volume_resource(volume: &crate::model::Volume, engine_live: bool) -> Resource
         if !engine_live {
             spec = spec.unavailable(
                 "engine_offline",
-                "Container engine actions are unavailable in demo mode",
+                "Podman isn't available. Start its user service to manage containers.",
             );
         }
         resource.actions.push(spec);
@@ -227,7 +227,7 @@ fn distrobox_resource(distrobox: &crate::model::DistroBox, engine_live: bool) ->
         if !engine_live {
             spec = spec.unavailable(
                 "engine_offline",
-                "Distrobox actions are unavailable in demo mode",
+                "Podman isn't available. Start its user service to enter boxes.",
             );
         }
         resource.actions.push(spec);
@@ -251,7 +251,7 @@ impl ContainersApp {
         {
             *create = create.clone().unavailable(
                 "engine_offline",
-                "Creating containers requires a connected Podman engine",
+                "Podman isn't available. Start its user service to create containers.",
             );
         }
         root.children = self.engine_child_resources();
@@ -346,7 +346,7 @@ impl ContainersApp {
             return Ok(false);
         }
         if !self.engine.live {
-            return Err("container engine actions are unavailable while Podman is offline".into());
+            return Err("Podman isn't available. Start its user service and try again.".into());
         }
         #[cfg(test)]
         if let Some(result) = self.controlled_immediate(
