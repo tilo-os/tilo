@@ -563,8 +563,8 @@ pub struct TubeModel {
     /// silently reordering another client's queue.
     #[serde(default)]
     pub queue: Vec<VideoId>,
-    /// The person's watch history, newest first, as their settings hold it
-    /// ([`crate::history::WatchHistory`]); never part of the shared library.
+    /// The person's watch history, newest first, as their own record holds
+    /// it ([`crate::history::WatchHistory`]); never part of the shared library.
     /// Ids without loaded metadata stay, so a refresh cannot drop history.
     pub history: Vec<VideoId>,
     /// Shown when the watch history could not be stored.

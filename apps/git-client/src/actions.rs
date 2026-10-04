@@ -34,20 +34,21 @@
 //!   [`crate::doc`]) — branches, commits, remotes, tags, stashes and identity.
 //!   Working-tree status is *not* projected; it stays a live hosted extra.
 //!
-//! Git mutations against the on-disk repository remain Effects. The resource
-//! tree is owned by [`tilo_resource::publish`]: preferences are bound
-//! actions, Effects/Views are local operations, and shared children ride the
-//! resource's children. Working-tree status is the surface's live rows.
+//! Git work against the on-disk repository is the [`GitClientEffect`]
+//! vocabulary, answered by the surface. The resource tree is owned by
+//! [`tilo_resource::publish`]: preferences are bound actions, shared children
+//! ride the resource's children with their item effects bound, and
+//! working-tree status is the surface's live rows.
 
 use automerge::transaction::Transactable;
 use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, Resource, RetryPolicy,
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
 };
 
 use ui::framework::LiveRow;
+use ui::tilo_resource::{self, Effect};
 
 use crate::doc::SharedRepo;
 use crate::model::{ChangeArea, FileChange, RepoModel};
@@ -55,63 +56,114 @@ use crate::settings::{self, DiffLayout, Settings};
 
 /// Registry `type_id` for every git-client action.
 pub const GIT_CLIENT_ACTION_TYPE: &str = "git_client.action";
-pub const GIT_CLIENT_OPERATION_TYPE: &str = "git_client.operation";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum GitClientOperation {
+/// The git client's work on the repository on disk and what it shows of one,
+/// which change no document. Navigation and whole-tree work are offered on
+/// the repository; everything else rides the changed file, commit, branch,
+/// stash or remote it acts on, named by path, id or name and resolved again
+/// when invoked.
+#[derive(Debug, Clone, PartialEq, Eq, Effect)]
+#[effect(operation = "git_client.effect")]
+pub enum GitClientEffect {
+    /// Show changes
+    #[effect(view)]
     ShowChanges,
+    /// Show history
+    #[effect(view)]
     ShowHistory,
+    /// Show branches and remotes
+    #[effect(view)]
     ShowBranches,
-    OpenChange { area: String, path: String },
-    OpenCommit { id: String },
+    /// Open diff
+    #[effect(view, row)]
+    OpenChange {
+        #[param("Where the change is: staged, unstaged or untracked")]
+        area: String,
+        #[param("Path of the file in the repository")]
+        path: String,
+    },
+    /// Open commit
+    #[effect(view, row)]
+    OpenCommit {
+        #[param("The commit's id")]
+        id: String,
+    },
+    /// Stage all changes
+    #[effect(idempotent)]
     StageAll,
+    /// Unstage all changes
+    #[effect(idempotent)]
     UnstageAll,
-    StageFile { path: String },
-    UnstageFile { path: String },
-    DiscardFile { path: String },
-    Commit { message: String },
-    CreateBranch { name: String },
-    CheckoutBranch { name: String },
-    DeleteBranch { name: String },
-    SaveStash { message: String },
-    ApplyStash { index: usize },
-    Fetch { remote: String },
-    Pull { remote: String },
-    Push { remote: String },
-}
-
-fn operation(
-    id: &str,
-    label: &str,
-    kind: OperationKind,
-    value: &GitClientOperation,
-) -> Option<ActionSpec> {
-    let spec = ActionSpec::operation(id, label, kind, GIT_CLIENT_OPERATION_TYPE, value).ok()?;
-    match value {
-        GitClientOperation::ShowChanges
-        | GitClientOperation::ShowHistory
-        | GitClientOperation::ShowBranches
-        | GitClientOperation::OpenChange { .. }
-        | GitClientOperation::OpenCommit { .. } => Some(spec.retry_policy(RetryPolicy::Idempotent)),
-        GitClientOperation::StageAll
-        | GitClientOperation::UnstageAll
-        | GitClientOperation::StageFile { .. }
-        | GitClientOperation::UnstageFile { .. } => {
-            Some(spec.reversible().retry_policy(RetryPolicy::Idempotent))
-        }
-        GitClientOperation::CheckoutBranch { .. } | GitClientOperation::Fetch { .. } => {
-            Some(spec.retry_policy(RetryPolicy::Idempotent))
-        }
-        GitClientOperation::DiscardFile { .. } | GitClientOperation::DeleteBranch { .. } => {
-            Some(spec.destructive())
-        }
-        GitClientOperation::Commit { .. }
-        | GitClientOperation::CreateBranch { .. }
-        | GitClientOperation::SaveStash { .. }
-        | GitClientOperation::ApplyStash { .. }
-        | GitClientOperation::Pull { .. }
-        | GitClientOperation::Push { .. } => Some(spec),
-    }
+    /// Stage file
+    #[effect(row, idempotent)]
+    StageFile {
+        #[param("Path of the file in the repository")]
+        path: String,
+    },
+    /// Unstage file
+    #[effect(row, idempotent)]
+    UnstageFile {
+        #[param("Path of the file in the repository")]
+        path: String,
+    },
+    /// Discard file changes
+    #[effect(row, destructive)]
+    DiscardFile {
+        #[param("Path of the file in the repository")]
+        path: String,
+    },
+    /// Commit staged changes
+    ///
+    /// Create a commit from the currently staged changes.
+    Commit {
+        #[param("Commit message")]
+        message: String,
+    },
+    /// Create branch
+    CreateBranch {
+        #[param("Branch name")]
+        name: String,
+    },
+    /// Check out branch
+    #[effect(row, idempotent)]
+    CheckoutBranch {
+        #[param("Branch name")]
+        name: String,
+    },
+    /// Delete branch
+    #[effect(row, destructive)]
+    DeleteBranch {
+        #[param("Branch name")]
+        name: String,
+    },
+    /// Stash working changes
+    SaveStash {
+        #[param("Stash message")]
+        message: String,
+    },
+    /// Apply stash
+    #[effect(row)]
+    ApplyStash {
+        #[param("The stash's index")]
+        index: usize,
+    },
+    /// Fetch remote
+    #[effect(row, job, idempotent)]
+    Fetch {
+        #[param("Remote name")]
+        remote: String,
+    },
+    /// Pull from remote
+    #[effect(row, job)]
+    Pull {
+        #[param("Remote name")]
+        remote: String,
+    },
+    /// Push to remote
+    #[effect(row, job)]
+    Push {
+        #[param("Remote name")]
+        remote: String,
+    },
 }
 
 /// Every collaborative operation the git client exports on the shared document.
@@ -244,7 +296,7 @@ fn change_area_name(area: ChangeArea) -> &'static str {
     }
 }
 
-fn change_resource_id(area: ChangeArea, path: &str) -> String {
+pub(crate) fn change_resource_id(area: ChangeArea, path: &str) -> String {
     format!(
         "git_client.diff:{}:{}",
         change_area_name(area),
@@ -256,7 +308,7 @@ fn commit_resource_id(id: &str) -> String {
     format!("git_client.commit:{id}")
 }
 
-fn branch_resource_id(name: &str) -> String {
+pub(crate) fn branch_resource_id(name: &str) -> String {
     format!("git_client.branch:{}", stable_component(name))
 }
 
@@ -270,69 +322,37 @@ fn remote_resource_id(name: &str) -> String {
 
 fn change_row(change: &FileChange) -> LiveRow {
     let area = change_area_name(change.area);
-    let open = GitClientOperation::OpenChange {
-        area: area.into(),
-        path: change.path.clone(),
-    };
-    let mut row = LiveRow::new(
+    let path = change.path.clone();
+    let row = LiveRow::new(
         change_resource_id(change.area, &change.path),
         "git_client.diff",
         format!("{} — {area}", change.path),
-    );
-    if let Some(spec) = operation("open", "Open diff", OperationKind::View, &open) {
-        row = row.operation(spec);
+    )
+    .effect(&GitClientEffect::OpenChange {
+        area: area.into(),
+        path: path.clone(),
+    });
+    match change.area {
+        ChangeArea::Staged => row.effect(&GitClientEffect::UnstageFile { path }),
+        ChangeArea::Unstaged | ChangeArea::Untracked => row
+            .effect(&GitClientEffect::StageFile { path: path.clone() })
+            .effect(&GitClientEffect::DiscardFile { path }),
     }
-    let (id, label, value) = match change.area {
-        ChangeArea::Staged => (
-            "unstage",
-            "Unstage file",
-            GitClientOperation::UnstageFile {
-                path: change.path.clone(),
-            },
-        ),
-        ChangeArea::Unstaged | ChangeArea::Untracked => (
-            "stage",
-            "Stage file",
-            GitClientOperation::StageFile {
-                path: change.path.clone(),
-            },
-        ),
-    };
-    if let Some(spec) = operation(id, label, OperationKind::Effect, &value) {
-        row = row.operation(spec);
-    }
-    if change.area != ChangeArea::Staged
-        && let Some(spec) = operation(
-            "discard",
-            "Discard file changes",
-            OperationKind::Effect,
-            &GitClientOperation::DiscardFile {
-                path: change.path.clone(),
-            },
-        )
-    {
-        row = row.operation(spec);
-    }
-    row
 }
 
 fn commit_resource(commit: &crate::model::Commit) -> Resource {
-    let mut resource = Resource::new(
+    Resource::new(
         commit_resource_id(&commit.id),
         "git_client.commit",
         commit.summary.clone(),
-    );
-    if let Some(spec) = operation(
-        "open",
-        "Open commit",
-        OperationKind::View,
-        &GitClientOperation::OpenCommit {
+    )
+    .with_action(
+        GitClientEffect::OpenCommit {
             id: commit.id.clone(),
-        },
-    ) {
-        resource = resource.with_action(spec);
-    }
-    resource.with_children(commit.files.iter().take(16).map(|file| {
+        }
+        .bound(),
+    )
+    .with_children(commit.files.iter().take(16).map(|file| {
         Resource::new(
             format!(
                 "git_client.commit-file:{}:{}",
@@ -351,68 +371,35 @@ fn branch_resource(branch: &crate::model::Branch) -> Resource {
         "git_client.branch",
         branch.name.clone(),
     );
-    if !branch.is_head
-        && let Some(spec) = operation(
-            "checkout",
-            "Check out branch",
-            OperationKind::Effect,
-            &GitClientOperation::CheckoutBranch {
+    if !branch.is_head {
+        resource = resource.with_action(
+            GitClientEffect::CheckoutBranch {
                 name: branch.name.clone(),
-            },
-        )
-    {
-        resource = resource.with_action(spec);
+            }
+            .bound(),
+        );
     }
-    if !branch.is_head
-        && !branch.is_remote
-        && let Some(spec) = operation(
-            "delete",
-            "Delete branch",
-            OperationKind::Effect,
-            &GitClientOperation::DeleteBranch {
+    if !branch.is_head && !branch.is_remote {
+        resource = resource.with_action(
+            GitClientEffect::DeleteBranch {
                 name: branch.name.clone(),
-            },
-        )
-    {
-        resource = resource.with_action(spec);
+            }
+            .bound(),
+        );
     }
     resource
 }
 
 fn remote_resource(remote: &crate::model::Remote) -> Resource {
-    let mut resource = Resource::new(
+    let name = || remote.name.clone();
+    Resource::new(
         remote_resource_id(&remote.name),
         "git_client.remote",
         remote.name.clone(),
-    );
-    for (id, label, value) in [
-        (
-            "fetch",
-            "Fetch remote",
-            GitClientOperation::Fetch {
-                remote: remote.name.clone(),
-            },
-        ),
-        (
-            "pull",
-            "Pull from remote",
-            GitClientOperation::Pull {
-                remote: remote.name.clone(),
-            },
-        ),
-        (
-            "push",
-            "Push to remote",
-            GitClientOperation::Push {
-                remote: remote.name.clone(),
-            },
-        ),
-    ] {
-        if let Some(spec) = operation(id, label, OperationKind::Effect, &value) {
-            resource = resource.with_action(spec);
-        }
-    }
-    resource
+    )
+    .with_action(GitClientEffect::Fetch { remote: name() }.bound())
+    .with_action(GitClientEffect::Pull { remote: name() }.bound())
+    .with_action(GitClientEffect::Push { remote: name() }.bound())
 }
 
 /// Preference flips bound from live settings for [`tilo_resource::publish`].
@@ -476,119 +463,6 @@ pub(crate) fn document_bound_actions(settings: Settings) -> Vec<ActionSpec> {
     ) {
         actions.push(spec);
     }
-    actions
-}
-
-/// View / Effect catalogue on the repository door (no document delta).
-#[allow(
-    clippy::too_many_lines,
-    reason = "one catalogue lists every repository View and Effect"
-)]
-pub(crate) fn root_local_operations() -> Vec<ActionSpec> {
-    let mut actions = Vec::new();
-    for (id, label, value) in [
-        (
-            "show-changes",
-            "Show changes",
-            GitClientOperation::ShowChanges,
-        ),
-        (
-            "show-history",
-            "Show history",
-            GitClientOperation::ShowHistory,
-        ),
-        (
-            "show-branches",
-            "Show branches and remotes",
-            GitClientOperation::ShowBranches,
-        ),
-    ] {
-        if let Some(spec) = operation(id, label, OperationKind::View, &value) {
-            actions.push(spec);
-        }
-    }
-    for (id, label, value) in [
-        (
-            "stage-all",
-            "Stage all changes",
-            GitClientOperation::StageAll,
-        ),
-        (
-            "unstage-all",
-            "Unstage all changes",
-            GitClientOperation::UnstageAll,
-        ),
-    ] {
-        if let Some(spec) = operation(id, label, OperationKind::Effect, &value) {
-            actions.push(spec);
-        }
-    }
-    actions.push(
-        ActionSpec::prompted_operation(
-            "commit",
-            "Commit staged changes",
-            "Commit message",
-            "summary",
-            OperationKind::Effect,
-            GIT_CLIENT_OPERATION_TYPE,
-            |message| {
-                EncodedAction::encode_operation(
-                    GIT_CLIENT_OPERATION_TYPE,
-                    &GitClientOperation::Commit {
-                        message: message.to_string(),
-                    },
-                )
-                .unwrap_or_else(|error| EncodedAction {
-                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                    payload: format!("git commit operation could not be serialized: {error}")
-                        .into_bytes(),
-                })
-            },
-        )
-        .with_description("Create a commit from the currently staged changes"),
-    );
-    actions.push(ActionSpec::prompted_operation(
-        "create-branch",
-        "Create branch",
-        "Branch name",
-        "feature/name",
-        OperationKind::Effect,
-        GIT_CLIENT_OPERATION_TYPE,
-        |name| {
-            EncodedAction::encode_operation(
-                GIT_CLIENT_OPERATION_TYPE,
-                &GitClientOperation::CreateBranch {
-                    name: name.to_string(),
-                },
-            )
-            .unwrap_or_else(|error| EncodedAction {
-                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                payload: format!("git branch operation could not be serialized: {error}")
-                    .into_bytes(),
-            })
-        },
-    ));
-    actions.push(ActionSpec::prompted_operation(
-        "save-stash",
-        "Stash working changes",
-        "Stash message",
-        "work in progress",
-        OperationKind::Effect,
-        GIT_CLIENT_OPERATION_TYPE,
-        |message| {
-            EncodedAction::encode_operation(
-                GIT_CLIENT_OPERATION_TYPE,
-                &GitClientOperation::SaveStash {
-                    message: message.to_string(),
-                },
-            )
-            .unwrap_or_else(|error| EncodedAction {
-                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                payload: format!("git stash operation could not be serialized: {error}")
-                    .into_bytes(),
-            })
-        },
-    ));
     actions
 }
 
@@ -683,20 +557,12 @@ pub(crate) fn repo_label(model: &RepoModel) -> String {
 }
 
 fn stash_resource(stash: &crate::model::Stash) -> Resource {
-    let mut resource = Resource::new(
+    Resource::new(
         format!("git_client.stash:{}", stash.index),
         "git_client.stash",
         stash.message.clone(),
-    );
-    if let Some(spec) = operation(
-        "apply",
-        "Apply stash",
-        OperationKind::Effect,
-        &GitClientOperation::ApplyStash { index: stash.index },
-    ) {
-        resource = resource.with_action(spec);
-    }
-    resource
+    )
+    .with_action(GitClientEffect::ApplyStash { index: stash.index }.bound())
 }
 
 /// Resolve one current repository item by id without building the whole
@@ -861,8 +727,7 @@ mod tests {
     }
 
     /// Ctrl+K on an open repository publishes the repo resource exporting the
-    /// preference, view and repository actions in order. Drives the real
-    /// resource builder.
+    /// preference actions. Drives the real resource builder.
     fn ctrl_k_publishes_the_repo_and_preference_actions() {
         let doc = seeded();
         let resources = published(&repo_model(), &doc);
@@ -878,14 +743,6 @@ mod tests {
             "syntax-highlight",
             "show-whitespace",
             "wrap-lines",
-            "show-changes",
-            "show-history",
-            "show-branches",
-            "stage-all",
-            "unstage-all",
-            "commit",
-            "create-branch",
-            "save-stash",
         ] {
             assert!(ids.contains(&expected), "missing {expected} in {ids:?}");
         }
@@ -974,7 +831,7 @@ mod tests {
             changes.children.iter().all(|row| row
                 .actions
                 .iter()
-                .all(|action| action.kind != OperationKind::Document)),
+                .all(|action| action.kind != tilo_actions::OperationKind::Document)),
             "working-tree rows only view and run Effects"
         );
         let discard = changes
@@ -982,13 +839,16 @@ mod tests {
             .iter()
             .find(|resource| {
                 resource.kind == "git_client.diff"
-                    && resource.actions.iter().any(|action| action.id == "discard")
+                    && resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "discard-file")
             })
             .and_then(|resource| {
                 resource
                     .actions
                     .iter()
-                    .find(|action| action.id == "discard")
+                    .find(|action| action.id == "discard-file")
             });
         assert!(discard.is_some(), "a worktree change offers discard");
         if let Some(discard) = discard {

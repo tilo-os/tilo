@@ -2722,9 +2722,13 @@ mod layout_benchmark {
         writer
             .store
             .with(&writer.checkout.id, |doc| {
-                let mut editor = word_processor::WordProcessor::new();
-                editor.bind(doc, &automerge::ROOT);
-                editor.insert_str(doc, &body);
+                tilo_actions::Action::apply(
+                    &word_processor::actions::RichTextAction::AppendParagraph {
+                        text: body.clone(),
+                    },
+                    doc,
+                )
+                .unwrap();
             })
             .unwrap();
         frame.relayout();

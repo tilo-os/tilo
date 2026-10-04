@@ -3,9 +3,8 @@
 
 use std::rc::Rc;
 
-use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind};
+use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::tilo_actions::{ActionSpec, OperationKind};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
 use ui::widget::Element;
 
@@ -17,10 +16,15 @@ use crate::app::ImagerApp;
 use crate::doc::ImagerDoc;
 use crate::model::{InstallProfile, Source};
 
-/// Shared image-selection and install-profile projection.
+/// The reviewed image, the images reviewed before it and the install
+/// profile: everything the imager keeps in its document.
 #[derive(Clone, Debug, Default)]
 pub struct ImagerState {
     pub source: Option<Source>,
+    /// Previously reviewed images, most recent first.
+    pub recent: Vec<Source>,
+    /// The rank a newly remembered image takes: before every recent one.
+    pub next_recent_rank: i64,
     pub profile: InstallProfile,
 }
 
@@ -42,8 +46,21 @@ impl Resource for Imager {
     fn read(doc: &Doc) -> Result<ImagerState, ModelError> {
         Ok(ImagerState {
             source: ImagerDoc::source(doc),
+            recent: ImagerDoc::recent(doc),
+            next_recent_rank: ImagerDoc::next_recent_rank(doc),
             profile: ImagerDoc::profile(doc),
         })
+    }
+
+    /// An empty reviewed source, recent list and install profile.
+    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
+        ImagerDoc::seed(doc);
+        Ok(())
+    }
+
+    /// Typing into one profile field is one step until the field changes.
+    fn coalesces(previous: &ImagerAction, next: &ImagerAction) -> bool {
+        previous.same_text_field(next)
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
@@ -127,7 +144,7 @@ impl ResourceApp for ImagerShell {
 
 impl ResourceSurface<Imager> for ImagerApp {
     fn present(&mut self, state: &Rc<ImagerState>) {
-        self.adopt_resource_state(state);
+        self.present_state(state);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Imager>) {
@@ -135,84 +152,14 @@ impl ResourceSurface<Imager> for ImagerApp {
     }
 }
 
-/// Framework dispatcher for the selected image and install profile.
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Imager>>,
-    hosted: bool,
-    last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Imager>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    /// Test-only: mark hosted without a real framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
-
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &ImagerAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = EncodedAction::encode(IMAGER_ACTION_TYPE, action).ok();
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => {
-                self.local
-                    .dispatch_with_context(doc, type_id, action, context);
-            }
-        }
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
-    }
-
-    /// Hosted commits are recorded by the dispatcher. Standalone tests still
-    /// read the local host's rising edge.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::widget::Widget;
+    use ui::tilo_actions::Action as _;
 
     #[test]
     fn resource_publish_owns_profile_door_and_hosted_keeps_no_duplicate_root() {
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         ImagerDoc::seed_demo(&mut doc);
         let state = Imager::read(&doc).expect("seeded imager state");
         let published =
@@ -256,42 +203,156 @@ mod tests {
                 .any(|action| action.id == "hostname"),
             "hostname must be on the customization child"
         );
+    }
 
-        let mut app = ImagerApp::new();
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &ui::automerge::ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        assert_eq!(standalone[0].kind, "imager.sources");
-        assert!(
-            standalone[0]
-                .children
-                .iter()
-                .any(|child| child.kind == "imager.customization"),
-            "standalone publishes the profile tree"
-        );
+    /// The wizard over the sample drives and releases, hosted as the live
+    /// app hosts it.
+    struct SampleImager;
 
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        assert!(ui::resources::resource(&app, &seeded, "imager.sources").is_none());
-        let source_id = standalone[0]
-            .children
-            .iter()
-            .find(|child| child.kind == "imager.source")
-            .map(|child| child.id.as_str().to_owned())
-            .expect("reviewed source");
-        assert!(
-            ui::resources::resource(&app, &seeded, &source_id).is_some_and(|source| source
-                .actions
-                .iter()
-                .any(|action| action.id == "clear-source")),
-            "a hosted image source stays the published row"
+    impl ResourceApp for SampleImager {
+        type Resource = Imager;
+        const ID: &'static str = "so.tilo.imager";
+        const TITLE: &'static str = "Disk Imager";
+
+        // In a column, so a harness lookup by type meets the hosted
+        // surface among the column's children.
+        fn view(cx: &mut ViewCx<Imager>) -> Element {
+            Box::new(
+                ui::widget::Column::new()
+                    .with_no_padding()
+                    .push(cx.surface(ImagerApp::sample())),
+            )
+        }
+    }
+
+    /// A hosted wizard on the Customize step of the sample Tilo image.
+    fn customizing() -> ui::framework::testing::TestApp<SampleImager> {
+        let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&ImagerAction::SelectSource {
+                source: Box::new(crate::model::sample_source()),
+                previous: None,
+                recent_rank: 0,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        app.harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| wizard.show_customize_for_test())
+            .expect("the hosted wizard");
+        app
+    }
+
+    #[test]
+    fn assistive_profile_edits_reach_the_document() {
+        use ui::a11y::Action as AccessAction;
+        use ui::widget::Widget as _;
+
+        let mut app = customizing();
+        let perform =
+            |app: &mut ui::framework::testing::TestApp<SampleImager>, target: &str, value: &str| {
+                app.harness()
+                    .with_widget_mut(|wizard: &mut ImagerApp| {
+                        wizard.perform_semantic_action(
+                            target,
+                            &AccessAction::SetValue(value.into()),
+                            &mut automerge::AutoCommit::new(),
+                            &automerge::ROOT,
+                        )
+                    })
+                    .expect("the hosted wizard")
+            };
+        assert!(perform(
+            &mut app,
+            "imager:profile:hostname",
+            "accessible-host"
+        ));
+        assert_eq!(app.state().profile.hostname, "accessible-host");
+        for (target, chosen, expected) in [
+            ("imager:profile:locale", "de_DE.UTF-8", "de_DE.UTF-8"),
+            ("imager:profile:timezone", "Europe/Berlin", "Europe/Berlin"),
+            ("imager:profile:keyboard", "German (QWERTZ)", "de"),
+        ] {
+            assert!(perform(&mut app, target, chosen));
+            let profile = app.state().profile;
+            let actual = match target {
+                "imager:profile:locale" => profile.locale,
+                "imager:profile:timezone" => profile.timezone,
+                _ => profile.keyboard,
+            };
+            assert_eq!(actual, expected);
+        }
+        assert!(perform(
+            &mut app,
+            "imager:profile:timezone",
+            "Europe/Not_A_Real_Zone"
+        ));
+        assert_eq!(app.state().profile.timezone, "Europe/Berlin");
+    }
+
+    #[test]
+    fn typing_a_hostname_is_one_undo_step_through_the_panel() {
+        let mut app = customizing();
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&ImagerAction::SetHostname {
+                value: String::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        app.harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| {
+                wizard.focus_profile_field_for_test(crate::customize::CzField::Hostname);
+            })
+            .expect("the hosted wizard");
+        app.harness().type_text("lab01");
+        assert_eq!(app.state().profile.hostname, "lab01");
+        assert!(app.undo());
+        assert_eq!(
+            app.state().profile.hostname,
+            "",
+            "the keystrokes of one field are one step"
         );
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert!(
-            extras.is_empty(),
-            "hosted must not republish imager.sources beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
+    }
+
+    #[test]
+    fn the_keyboard_chooser_commits_through_the_real_event_path() {
+        let mut app = customizing();
+        app.harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| {
+                wizard.focus_profile_field_for_test(crate::customize::CzField::Keyboard);
+            })
+            .expect("the hosted wizard");
+        app.harness().key("Enter");
+        app.harness().type_text("german");
+        app.harness().key("Enter");
+        assert_eq!(app.state().profile.keyboard, "de");
+    }
+
+    #[test]
+    fn a_collaborator_clearing_the_source_or_editing_any_field_is_shown() {
+        let mut app = customizing();
+        app.merge_peer_edit(|doc| {
+            ImagerAction::ClearSource.apply(doc).unwrap();
+            ImagerAction::SetWifiSsid {
+                value: "lab".into(),
+            }
+            .apply(doc)
+            .unwrap();
+            ImagerAction::SetEnrollLocalIdentity { on: true }
+                .apply(doc)
+                .unwrap();
+        });
+        let shown = app
+            .harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| {
+                (
+                    wizard.resource_source().cloned(),
+                    wizard.profile_for_test().wifi_ssid.clone(),
+                    wizard.profile_for_test().enroll_local_identity,
+                )
+            })
+            .expect("the hosted wizard");
+        assert_eq!(shown, (None, "lab".to_owned(), true));
     }
 }

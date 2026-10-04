@@ -308,7 +308,7 @@ fn select_source(doc: &mut automerge::AutoCommit, source: crate::model::Source) 
 }
 
 fn ensure_empty_records(doc: &mut automerge::AutoCommit) {
-    let _ = ui::tilo_actions::Action::apply(&crate::actions::ImagerAction::EnsureRecords, doc);
+    let _ = <crate::resource::Imager as ui::tilo_resource::Resource>::initialize(doc);
 }
 
 fn seed_scenario_drive_empty(doc: &mut automerge::AutoCommit) {
@@ -344,7 +344,7 @@ mod tests {
         super::seed_scenario(&mut doc, "drive-empty");
         assert!(
             !crate::doc::ImagerDoc::is_empty(&doc),
-            "the scenario record is created by EnsureRecords"
+            "the scenario record is initialized"
         );
         let source = crate::doc::ImagerDoc::source(&doc).expect("iso selected");
         assert!(source.name.contains("Fedora"));

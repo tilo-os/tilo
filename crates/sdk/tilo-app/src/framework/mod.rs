@@ -100,7 +100,10 @@
 //!   which the actions name by hash, so the record never carries the file.
 //!   A command the binary runs instead of a window (`--emit-photos DIR`) is a
 //!   [`Command`] in [`ResourceApp::commands`], and the app's messages are
-//!   its [`ResourceApp::catalog`], loaded in every host that mounts it.
+//!   its [`ResourceApp::catalog`], loaded in every host that mounts it. A
+//!   launch that continues playback another device or app handed over says
+//!   where it stood ([`LaunchInput::handoff`]): the media is what the launch
+//!   names, the position and play state are the view's to restore.
 //! * **Who is editing** is [`ViewCx::me`] / [`SurfaceCx::me`] for the reader
 //!   of a view, and [`ActionCx::author`](tilo_resource::ActionCx::author)
 //!   inside an action: the same id, pinned with the action so every replica

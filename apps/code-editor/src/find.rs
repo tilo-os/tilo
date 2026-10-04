@@ -380,6 +380,11 @@ impl FindBar {
     }
 
     /// Headless-review hook for the compact overflow menu.
+    #[cfg(test)]
+    pub(crate) fn options_shown(&self) -> bool {
+        self.options_open
+    }
+
     pub fn show_options_for_shots(&mut self) {
         self.options_open = true;
         // The review state must demonstrate the checked treatment as well as

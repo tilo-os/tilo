@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use ui::time::Duration;
 
 use media::{MediaEngine, Source};
+use ui::framework::{LaunchInput, RunMode};
 use ui::widget::Widget; // brings `sync` (the per-frame Widget method) into scope
 use video_player::PlayerApp;
 
@@ -111,6 +112,13 @@ fn scratch_dir() -> PathBuf {
     dir
 }
 
+/// The live player launched on `sample`, as `video-player SAMPLE` opens it.
+fn launched(sample: &Path) -> PlayerApp {
+    let mut app = PlayerApp::new(RunMode::Live);
+    app.open_launch(&LaunchInput::new(&[sample.display().to_string()], None));
+    app
+}
+
 #[test]
 fn real_file_decodes_and_reaches_the_player_surface() {
     // Case `engine_decodes_a_real_file_and_the_pts_advances`.
@@ -191,9 +199,8 @@ fn real_file_decodes_and_reaches_the_player_surface() {
         let sample = write_sample_media(&dir)
             .expect("real decode requires gst-launch-1.0 and a working encoder/muxer");
 
-        // Drive the real app entry path: open the file, then pump `sync` (the live
-        // event loop's per-frame call) until a decoded picture lands on the surface.
-        let mut app = PlayerApp::new().with_open_path(&sample);
+        // Open the file as a launch does, then pump `sync` until a picture lands.
+        let mut app = launched(&sample);
         assert!(
             app.player()
                 .engine()

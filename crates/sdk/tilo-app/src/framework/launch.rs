@@ -13,15 +13,18 @@
 //! the same door as every control, so they are checked, attributed to the
 //! participant, undoable and in history.
 
-use ui_core::application::OpenFile;
+use ui_core::application::{OpenFile, PlaybackHandoff};
 
 /// What a launch handed the app: the arguments of its command line or of an
-/// "open with" (paths, URLs), the file a host lent it, and the content store
-/// where the app keeps what a launch hands it.
+/// "open with" (paths, URLs), the file a host lent it, the content store
+/// where the app keeps what a launch hands it, and where playback of the
+/// media it names stood on the device or app that handed it over.
+#[derive(Clone, Copy)]
 pub struct LaunchInput<'a> {
     arguments: &'a [String],
     file: Option<&'a OpenFile>,
     content: Option<&'a tilo_content::ContentStore>,
+    handoff: Option<&'a PlaybackHandoff>,
 }
 
 impl<'a> LaunchInput<'a> {
@@ -33,6 +36,7 @@ impl<'a> LaunchInput<'a> {
             arguments,
             file,
             content: None,
+            handoff: None,
         }
     }
 
@@ -40,6 +44,13 @@ impl<'a> LaunchInput<'a> {
     #[must_use]
     pub fn with_content(mut self, content: Option<&'a tilo_content::ContentStore>) -> Self {
         self.content = content;
+        self
+    }
+
+    /// The same launch, continuing `handoff`'s playback.
+    #[must_use]
+    pub fn with_handoff(mut self, handoff: Option<&'a PlaybackHandoff>) -> Self {
+        self.handoff = handoff;
         self
     }
 
@@ -67,6 +78,14 @@ impl<'a> LaunchInput<'a> {
     /// the bytes reads them. `None` where the host lends none.
     pub fn content(&self) -> Option<&'a tilo_content::ContentStore> {
         self.content
+    }
+
+    /// Where playback of the media the launch names stood on the device or
+    /// app that handed it over: the position to continue from, whether it
+    /// keeps playing and what it was called there. `None` for an ordinary
+    /// launch, which starts at the beginning.
+    pub fn handoff(&self) -> Option<&'a PlaybackHandoff> {
+        self.handoff
     }
 
     /// Whether the launch named nothing: a plain start of the app.

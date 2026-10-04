@@ -306,8 +306,28 @@ pub enum ImagerAction {
     SetDeviceLabel { value: String },
     /// Enroll the setup machine's person onto the target as a new device.
     SetEnrollLocalIdentity { on: bool },
-    /// Create the empty source, history, and install profile on a new record.
-    EnsureRecords,
+}
+
+impl ImagerAction {
+    /// Whether `self` and `next` set the same text field of the profile, so
+    /// the keystrokes of one value are one undo step.
+    pub(crate) fn same_text_field(&self, next: &Self) -> bool {
+        use ImagerAction::{
+            SetDeviceLabel, SetFullName, SetHostname, SetKeyboard, SetLocale, SetTimezone,
+            SetUsername, SetWifiSsid,
+        };
+        matches!(
+            (self, next),
+            (SetHostname { .. }, SetHostname { .. })
+                | (SetFullName { .. }, SetFullName { .. })
+                | (SetUsername { .. }, SetUsername { .. })
+                | (SetLocale { .. }, SetLocale { .. })
+                | (SetTimezone { .. }, SetTimezone { .. })
+                | (SetKeyboard { .. }, SetKeyboard { .. })
+                | (SetWifiSsid { .. }, SetWifiSsid { .. })
+                | (SetDeviceLabel { .. }, SetDeviceLabel { .. })
+        )
+    }
 }
 
 impl Action for ImagerAction {
@@ -361,7 +381,6 @@ impl Action for ImagerAction {
             ImagerAction::SetEnrollLocalIdentity { on } => {
                 ImagerDoc::set_profile_enroll_local_identity(doc, *on);
             }
-            ImagerAction::EnsureRecords => ImagerDoc::seed(doc, &[]),
         }
         Ok(())
     }
@@ -1302,12 +1321,15 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_imager_record_is_created_by_the_action() {
+    fn a_new_imager_record_starts_with_empty_records() {
+        use ui::tilo_resource::Resource as _;
         let mut doc = automerge::AutoCommit::new();
         assert!(ImagerDoc::is_empty(&doc));
-        ImagerAction::EnsureRecords.apply(&mut doc).unwrap();
+        crate::resource::Imager::initialize(&mut doc).unwrap();
         assert!(!ImagerDoc::is_empty(&doc));
-        ImagerAction::EnsureRecords.apply(&mut doc).unwrap();
-        assert!(ImagerDoc::source(&doc).is_none());
+        crate::resource::Imager::initialize(&mut doc).unwrap();
+        let state = crate::resource::Imager::read(&doc).unwrap();
+        assert!(state.source.is_none());
+        assert!(state.recent.is_empty());
     }
 }

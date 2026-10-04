@@ -1551,6 +1551,9 @@ pub struct WordProcessorWidget {
     /// Set by a headless host worker (no local person): `resources` then
     /// publishes the participant-independent catalogue schema.
     participant_host: bool,
+    /// A screenshot scenario to stage in the next sync, which has the
+    /// document its actions wrote.
+    staged_scenario: Option<String>,
 }
 
 /// One process-wide built-in dictionary, shared across every word-processor
@@ -1734,6 +1737,7 @@ impl WordProcessorWidget {
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),
             participant_host: false,
+            staged_scenario: None,
         }
     }
 
@@ -3118,6 +3122,145 @@ impl WordProcessorWidget {
         self.thread_snapshot = Some(comment);
         self.focus_thread_reply(true);
         self.lifecycle.dirty = true;
+    }
+
+    /// Stage `scenario`'s view state, and the review and image edits its
+    /// paragraphs carry, in the next sync.
+    /// A plain capture stages nothing.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        self.staged_scenario = scenario.map(str::to_owned);
+        self.lifecycle.dirty = true;
+    }
+
+    fn run_staged_scenario(&mut self, state: &mut AutoCommit, scenario: &str) {
+        match scenario {
+            "styles" => self.set_styles_panel_open(true),
+            "error" => self.stage_error_for_shot(),
+            "template-picker" => self.stage_template_picker_for_shot(),
+            "toolbar-overflow" => self.stage_toolbar_overflow_for_shot(),
+            "find" => self.stage_find_for_shot(state, "report"),
+            "comments" => self.stage_review(state, false),
+            "threaded-comments" => self.stage_review(state, true),
+            "image-object" => self.stage_selected_image(state),
+            _ => {}
+        }
+    }
+
+    /// The first paragraph with text, and its length in characters.
+    fn first_text_block(state: &AutoCommit) -> Option<(String, usize)> {
+        let containers = tilo_doc::model::open(state, &automerge::ROOT).ok()?;
+        tilo_doc::model::blocks_in_order(state, &containers)
+            .into_iter()
+            .find_map(|id| {
+                let len = tilo_doc::model::block_text(state, &containers, &id)?
+                    .chars()
+                    .count();
+                (len > 0).then_some((id, len))
+            })
+    }
+
+    /// A comment by one reviewer and a tracked insertion by another on the
+    /// first paragraph, and with `thread` two replies and the thread panel
+    /// open: the review a collaborator's document arrives with.
+    fn stage_review(&mut self, state: &mut AutoCommit, thread: bool) {
+        let Some((block, len)) = Self::first_text_block(state) else {
+            return;
+        };
+        self.perform_action(
+            state,
+            &crate::actions::add_comment_action(
+                &block,
+                0,
+                len.min(12),
+                "Maya Chen",
+                "",
+                "Could we make this opening more specific?",
+            ),
+        );
+        self.perform_action(
+            state,
+            &crate::actions::RichTextAction::TrackInsert {
+                block,
+                at: len,
+                text: " — reviewed".into(),
+                author: "Jonas Weber".into(),
+                date: "2026-09-05".into(),
+            },
+        );
+        if !thread {
+            return;
+        }
+        let comments = |state: &AutoCommit| {
+            tilo_doc::model::open(state, &automerge::ROOT)
+                .map(|containers| tilo_doc::model::materialize(state, &containers).comments)
+                .unwrap_or_default()
+        };
+        let Some(comment) = comments(state).into_iter().next().map(|comment| comment.id) else {
+            return;
+        };
+        for (author, date, text) in [
+            ("Jonas Weber", "2026-09-06", "I can revise the opening."),
+            (
+                "Maya Chen",
+                "2026-09-07",
+                "Thanks — please keep the decision clear.",
+            ),
+        ] {
+            self.perform_action(
+                state,
+                &crate::actions::reply_to_comment_action(&comment, author, date, text),
+            );
+        }
+        if let Some(view) = comments(state).into_iter().find(|item| item.id == comment) {
+            self.stage_comment_thread_for_shot(view);
+        }
+    }
+
+    /// An image placed after the first paragraph, framed at an intentional
+    /// size and selected, with the object inspector open.
+    fn stage_selected_image(&mut self, state: &mut AutoCommit) {
+        // A tiny valid RGB PNG: real decodable bytes cover the renderer's
+        // blob and image-cache path, while the pixels do not matter.
+        const SHOT_PNG: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 3,
+            8, 2, 0, 0, 0, 54, 136, 73, 214, 0, 0, 0, 17, 73, 68, 65, 84, 120, 156, 99, 248, 207,
+            192, 240, 159, 1, 140, 17, 20, 0, 68, 208, 5, 251, 176, 88, 73, 172, 0, 0, 0, 0, 73,
+            69, 78, 68, 174, 66, 96, 130,
+        ];
+        let Some((block, len)) = Self::first_text_block(state) else {
+            return;
+        };
+        let Ok(hash) = self.inner.content_store().put(SHOT_PNG) else {
+            return;
+        };
+        self.perform_action(
+            state,
+            &crate::actions::insert_image_action(
+                &block,
+                len,
+                crate::actions::ImageInput::of(hash, SHOT_PNG),
+            ),
+        );
+        let image = tilo_doc::model::open(state, &automerge::ROOT)
+            .ok()
+            .and_then(|containers| {
+                tilo_doc::model::materialize(state, &containers)
+                    .blocks
+                    .into_iter()
+                    .find(|block| block.kind == "image")
+            });
+        let Some(image) = image else {
+            return;
+        };
+        self.perform_action(
+            state,
+            &crate::actions::set_image_size_action(&image.id, 300, 180),
+        );
+        self.inner.set_caret(crate::word_processor::Caret {
+            block: image.id,
+            offset: 0,
+        });
+        self.set_styles_panel_open(true);
     }
 
     pub fn model_mut(&mut self) -> &mut WordProcessor {
@@ -10554,6 +10697,10 @@ impl Widget for WordProcessorWidget {
         // if the portal worker finished.
         self.drain_portal(state);
         self.refresh_blocks(state);
+        if let Some(scenario) = self.staged_scenario.take() {
+            self.run_staged_scenario(state, &scenario);
+            self.refresh_blocks(state);
+        }
         // Other participants' views follow local and remote edits alike; a
         // participant's own applied edit hands over its next view.
         let now = ui::time::now();
@@ -11525,6 +11672,25 @@ impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
     }
 }
 
+impl WordProcessorWidget {
+    /// The tree this window's own view offers: hosted, only the edits bound
+    /// to its caret and selection beside the framework's publication of the
+    /// document; standalone, the whole document.
+    fn own_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if !self.hosted() {
+            return Self::publish_resources(self, doc);
+        }
+        if let Some(resource) = self.file_choice_resource() {
+            return vec![resource];
+        }
+        let Some(ctx) = self.wp_resource_ctx(doc) else {
+            return Vec::new();
+        };
+        let body = self.kept_body();
+        crate::actions::live_presentation_resources(&ctx, doc, body.as_deref())
+    }
+}
+
 impl ui::resources::PublishesResources for WordProcessorWidget {
     /// Publish the resource tree Ctrl+K walks (delegates to the
     /// [`PublishesResources`](ui::resources::PublishesResources) impl in
@@ -11543,7 +11709,7 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
         if let Some(invoker) = ui::invocation_scope::current_invoker() {
             return match invoker.participant {
                 Some(participant) => self.participant_resources(Some(&participant), doc),
-                None => Self::publish_resources(self, doc),
+                None => self.own_resources(doc),
             };
         }
         // Publication on a headless host worker (no local person): the
@@ -11551,19 +11717,7 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
         if self.participant_host {
             return Self::publish_catalogue_schema(self, doc);
         }
-        // The framework root already publishes this document through
-        // `tilo_resource::publish`. Keep only caret-bound extras.
-        if self.hosted() {
-            if let Some(resource) = self.file_choice_resource() {
-                return vec![resource];
-            }
-            let Some(ctx) = self.wp_resource_ctx(doc) else {
-                return Vec::new();
-            };
-            let body = self.kept_body();
-            return crate::actions::live_presentation_resources(&ctx, doc, body.as_deref());
-        }
-        Self::publish_resources(self, doc)
+        self.own_resources(doc)
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
@@ -11581,29 +11735,14 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
         if let Some(invoker) = ui::invocation_scope::current_invoker() {
             let tree = match invoker.participant {
                 Some(participant) => self.participant_resources(Some(&participant), doc),
-                None => Self::publish_resources(self, doc),
+                None => self.own_resources(doc),
             };
             return find(&tree, id);
         }
         if self.participant_host {
             return find(&Self::publish_catalogue_schema(self, doc), id);
         }
-        if self.hosted() && id == "word-processor.document" {
-            return None;
-        }
-        if let Some(found) = find(&Self::publish_resources(self, doc), id) {
-            return Some(found);
-        }
-        if self.hosted()
-            && let Some(ctx) = self.wp_resource_ctx(doc)
-        {
-            let body = self.kept_body();
-            return find(
-                &crate::actions::live_presentation_resources(&ctx, doc, body.as_deref()),
-                id,
-            );
-        }
-        None
+        find(&self.own_resources(doc), id)
     }
     fn action_directory_invocation_domain(
         &self,

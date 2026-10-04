@@ -303,6 +303,13 @@ impl<R: Resource> SurfaceCx<R> {
         self.run.content()
     }
 
+    /// What the launch that opened the app named — its arguments, the file
+    /// a host handed over, a playback handoff — as
+    /// [`ViewCx::launch`](super::ViewCx::launch).
+    pub fn launch(&self) -> super::launch::LaunchInput<'_> {
+        self.run.launch()
+    }
+
     /// What the window's launch named (paths, URLs), as
     /// [`ViewCx::launch_arguments`](super::ViewCx::launch_arguments).
     pub fn launch_arguments(&self) -> &[String] {

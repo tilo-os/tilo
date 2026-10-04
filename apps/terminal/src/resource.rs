@@ -1,422 +1,133 @@
-//! Terminal as a [`tilo_resource::Resource`]: the shared session record is
-//! document state; PTY process control is published as [`Effect`] operations.
+//! Terminal as a [`tilo_resource::Resource`]: a session record holds what the
+//! session shows — its title, where it runs, and the screen of its process —
+//! so every collaborator and every past version reads it. The process itself
+//! is the surface's; its output reaches the record as one action per batch.
 
 use automerge::transaction::Transactable;
-use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{ObjId, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{
-    Action, ActionError, ActionParam, ActionRegistry, ActionSpec, EncodedAction, OperationKind,
-    ParamType, RetryPolicy,
+    Action, ActionError, ActionParam, ActionRegistry, ActionSpec, ChangeKind, EncodedAction,
+    OperationKind, ParamType, RetryPolicy,
 };
-use ui::tilo_resource::{Doc, ModelError, Resource};
+use ui::tilo_resource::{Delta, Doc, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::TerminalWidget;
+use crate::screen::{Screen, ScreenEdit, ScreenObjects};
 
 const TERMINAL_ACTION_TYPE: &str = "terminal.action";
 
-/// Shared session fields that sync across collaborators.
+const TITLE: &str = "terminal_title";
+const PANE: &str = "terminal_pane_id";
+const LOCAL_SESSION: &str = "terminal_local_session";
+
+/// What a terminal session shows, as its record holds it.
 #[derive(Clone, Debug, Default)]
 pub struct SessionState {
     pub title: String,
+    /// The pane collaborators' presence is scoped to; empty until the
+    /// first process claims one.
     pub pane_id: String,
     /// Where this session runs. `None` until the first open records one.
     pub target: Option<crate::target::SessionTarget>,
+    /// The process whose screen this is.
+    pub local_session: Option<String>,
+    pub screen: Screen,
+    pub(crate) objects: ScreenObjects,
 }
 
-/// Document mutations for the session record (title / scrollback attribution).
-/// PTY stdin and process control are Effects in [`Terminal::local_operations`],
-/// not variants here.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Changes to a session record. None is anyone's undo step: each records
+/// what a process did or where it runs, which no undo can take back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TerminalAction {
-    /// Update the OSC / window title mirrored into the shared session.
+    /// The title the running program set (OSC 0/2).
     SetTitle { title: String },
-    /// Append one line to the shared scrollback record.
-    AppendScrollback { line: String },
-    /// A new local process is taking this tab. Drop the previous process's
-    /// grid, cursor, links, and images, and record the process id.
+    /// A new process takes this session: the previous one's screen, title
+    /// and pane are dropped.
     BindLocalSession { session_id: String },
-    /// Register one OSC 8 hyperlink on the shared session.
-    RegisterLink { id: u16, url: String },
-    /// Write the shared pane id when no peer has claimed it yet.
+    /// Scope presence to `pane_id`, unless a peer already claimed a pane.
     ClaimPane { pane_id: String },
     /// Record where this session runs (an encoded
     /// [`SessionTarget`](crate::target::SessionTarget)). The target outlives
     /// every process that runs in it, so reopening goes back to it.
     SetTarget { target: String },
-    /// Record one content-addressed image placement on the shared session.
-    PlaceImage {
-        hash: String,
-        mime: String,
-        byte_len: u64,
-        row: u64,
-        col: u64,
-        columns: u64,
-        rows: u64,
-        pixel_width: u64,
-        pixel_height: u64,
-        protocol_id: Option<u64>,
-        alternate_screen: bool,
-    },
-    /// Create the shared grid, links, images, and cursor when they are missing.
-    EnsureStructure,
-    /// Grow one grid with empty lines up to `min_len`.
-    EnsureLines { alternate: bool, min_len: u32 },
-    /// Write the shared cursor after a feed.
-    SetCursor { x: u64, y: u64 },
-    /// Replace one grid line's text and cell attributes after a print run.
-    WriteLine {
-        alternate: bool,
-        index: u32,
-        text: String,
-        attrs: Vec<u8>,
-    },
-    /// Insert one blank grid line at `index`.
-    InsertBlankLine {
-        alternate: bool,
-        index: u32,
-        text: String,
-        attrs: Vec<u8>,
-    },
-    /// Drop one grid line. Scrollback, scrolling regions, and the alternate
-    /// screen all use this.
-    DeleteGridLine { alternate: bool, index: u32 },
-    /// Drop `count` lines from the front of the main scrollback.
-    TrimGridPrefix { count: u32 },
-    /// After scrollback is trimmed, move or drop main-screen image placements.
-    ShiftImageRows { removed_rows: u32 },
+    /// What one batch of the process's output did to its screen.
+    Output { edits: Vec<ScreenEdit> },
 }
 
-impl Action for TerminalAction {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "terminal session CRDT mutations stay in one Action::apply match"
-    )]
-    fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
+impl TerminalAction {
+    /// Apply this action to a session stored under `obj` of another
+    /// resource's document: a terminal nested in an editor's panel.
+    ///
+    /// # Errors
+    /// Refuses an invalid id, title or target, and output naming lines the
+    /// screen does not have.
+    pub fn apply_under(&self, doc: &mut Doc, obj: &ObjId) -> Result<(), ActionError> {
         match self {
             Self::SetTitle { title } => {
-                let parent = session_parent(doc)?;
-                doc.put(&parent, "terminal_title", title.as_str())?;
-            }
-            Self::AppendScrollback { line } => {
-                let parent = session_parent(doc)?;
-                let list = match doc.get(&parent, "terminal_scrollback")? {
-                    Some((_, id)) => id,
-                    None => {
-                        doc.put_object(&parent, "terminal_scrollback", automerge::ObjType::List)?
-                    }
-                };
-                let index = doc.length(&list);
-                doc.insert(&list, index, line.as_str())?;
+                if crate::inner::safe_osc_text(title.as_bytes(), 256).as_deref() != Some(title) {
+                    return Err(ActionError::Refused("title is invalid".into()));
+                }
+                doc.put(obj, TITLE, title.as_str())?;
             }
             Self::BindLocalSession { session_id } => {
                 if session_id.is_empty() || session_id.len() > 128 {
                     return Err(ActionError::Refused("local session id is invalid".into()));
                 }
-                let parent = session_parent(doc)?;
-                for key in [
-                    "terminal_grid",
-                    "terminal_grid_alt",
-                    "cursor",
-                    "terminal_links",
-                    "terminal_images",
-                    "terminal_title",
-                    "terminal_pane_id",
-                ] {
-                    let _ = doc.delete(&parent, key);
+                crate::screen::clear(doc, obj)?;
+                for key in [TITLE, PANE] {
+                    if doc.get(obj, key)?.is_some() {
+                        doc.delete(obj, key)?;
+                    }
                 }
-                doc.put(&parent, "terminal_local_session", session_id.as_str())?;
-            }
-            Self::SetTarget { target } => {
-                if crate::target::SessionTarget::decode(target).is_none() {
-                    return Err(ActionError::Refused("session target is invalid".into()));
-                }
-                let parent = session_parent(doc)?;
-                doc.put(&parent, crate::target::TARGET_KEY, target.as_str())?;
-            }
-            Self::RegisterLink { id, url } => {
-                if *id == 0 || url.is_empty() || url.len() > 2 * 1024 {
-                    return Err(ActionError::Refused("hyperlink is invalid".into()));
-                }
-                let parent = session_parent(doc)?;
-                let links = match doc.get(&parent, "terminal_links")? {
-                    Some((_, existing)) => existing,
-                    None => doc.put_object(&parent, "terminal_links", automerge::ObjType::Map)?,
-                };
-                let key = id.to_string();
-                if doc.get(&links, &key)?.is_none() && doc.length(&links) >= 4096 {
-                    return Err(ActionError::Refused("hyperlink table is full".into()));
-                }
-                doc.put(&links, key, url.as_str())?;
+                doc.put(obj, LOCAL_SESSION, session_id.as_str())?;
             }
             Self::ClaimPane { pane_id } => {
                 if pane_id.is_empty() || pane_id.len() > 128 {
                     return Err(ActionError::Refused("pane id is invalid".into()));
                 }
-                let parent = session_parent(doc)?;
-                if doc.get(&parent, "terminal_pane_id")?.is_some() {
-                    return Ok(());
-                }
-                doc.put(&parent, "terminal_pane_id", pane_id.as_str())?;
-            }
-            Self::PlaceImage {
-                hash,
-                mime,
-                byte_len,
-                row,
-                col,
-                columns,
-                rows,
-                pixel_width,
-                pixel_height,
-                protocol_id,
-                alternate_screen,
-            } => {
-                if hash.is_empty()
-                    || hash.len() > 128
-                    || mime.is_empty()
-                    || mime.len() > 64
-                    || *columns == 0
-                    || *rows == 0
-                    || *columns > 1024
-                    || *rows > 1024
-                {
-                    return Err(ActionError::Refused("image placement is invalid".into()));
-                }
-                let parent = session_parent(doc)?;
-                let images = match doc.get(&parent, "terminal_images")? {
-                    Some((_, existing)) => existing,
-                    None => doc.put_object(&parent, "terminal_images", automerge::ObjType::List)?,
-                };
-                let index = doc.length(&images);
-                let placement = doc.insert_object(&images, index, automerge::ObjType::Map)?;
-                doc.put(&placement, "hash", hash.as_str())?;
-                doc.put(&placement, "mime", mime.as_str())?;
-                doc.put(&placement, "byte_len", *byte_len)?;
-                doc.put(&placement, "row", *row)?;
-                doc.put(&placement, "col", *col)?;
-                doc.put(&placement, "columns", *columns)?;
-                doc.put(&placement, "rows", *rows)?;
-                doc.put(&placement, "pixel_width", *pixel_width)?;
-                doc.put(&placement, "pixel_height", *pixel_height)?;
-                doc.put(&placement, "alternate_screen", *alternate_screen)?;
-                if let Some(protocol_id) = protocol_id {
-                    doc.put(&placement, "protocol_id", *protocol_id)?;
+                if doc.get(obj, PANE)?.is_none() {
+                    doc.put(obj, PANE, pane_id.as_str())?;
                 }
             }
-            Self::EnsureStructure => ensure_structure(doc)?,
-            Self::EnsureLines { alternate, min_len } => {
-                ensure_lines(doc, *alternate, *min_len)?;
+            Self::SetTarget { target } => {
+                if crate::target::SessionTarget::decode(target).is_none() {
+                    return Err(ActionError::Refused("session target is invalid".into()));
+                }
+                doc.put(obj, crate::target::TARGET_KEY, target.as_str())?;
             }
-            Self::SetCursor { x, y } => set_cursor(doc, *x, *y)?,
-            Self::WriteLine {
-                alternate,
-                index,
-                text,
-                attrs,
-            } => write_line(doc, *alternate, *index, text, attrs)?,
-            Self::InsertBlankLine {
-                alternate,
-                index,
-                text,
-                attrs,
-            } => insert_blank_line(doc, *alternate, *index, text, attrs)?,
-            Self::DeleteGridLine { alternate, index } => {
-                delete_grid_line(doc, *alternate, *index)?;
-            }
-            Self::TrimGridPrefix { count } => trim_grid_prefix(doc, *count)?,
-            Self::ShiftImageRows { removed_rows } => shift_image_rows(doc, *removed_rows)?,
+            Self::Output { edits } => crate::screen::apply(doc, obj, edits)?,
         }
         Ok(())
     }
 }
 
-fn session_parent(doc: &Doc) -> Result<automerge::ObjId, ActionError> {
-    match doc.get(ROOT, "terminal_panel")? {
-        Some((Value::Object(automerge::ObjType::Map), id)) => Ok(id),
-        Some(_) => Err(ActionError::Refused("terminal panel is not a map".into())),
-        None => Ok(ROOT),
+impl Action for TerminalAction {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        self.apply_under(doc, &ROOT)
     }
-}
 
-fn object_at(
-    doc: &mut Doc,
-    key: &str,
-    kind: automerge::ObjType,
-) -> Result<automerge::ObjId, ActionError> {
-    let parent = session_parent(doc)?;
-    match doc.get(&parent, key)? {
-        Some((_, existing)) => Ok(existing),
-        None => Ok(doc.put_object(&parent, key, kind)?),
+    fn change_kind(&self) -> ChangeKind {
+        ChangeKind::External
     }
-}
-
-fn ensure_structure(doc: &mut Doc) -> Result<(), ActionError> {
-    object_at(doc, "terminal_grid", automerge::ObjType::List)?;
-    object_at(doc, "terminal_grid_alt", automerge::ObjType::List)?;
-    object_at(doc, "terminal_links", automerge::ObjType::Map)?;
-    object_at(doc, "terminal_images", automerge::ObjType::List)?;
-    let parent = session_parent(doc)?;
-    if doc.get(&parent, "cursor")?.is_none() {
-        set_cursor(doc, 0, 0)?;
-    }
-    Ok(())
-}
-
-fn ensure_lines(doc: &mut Doc, alternate: bool, min_len: u32) -> Result<(), ActionError> {
-    if min_len > 4096 {
-        return Err(ActionError::Refused("grid is too tall".into()));
-    }
-    let key = if alternate {
-        "terminal_grid_alt"
-    } else {
-        "terminal_grid"
-    };
-    let grid = object_at(doc, key, automerge::ObjType::List)?;
-    let target = min_len as usize;
-    while doc.length(&grid) < target {
-        let index = doc.length(&grid);
-        let line = doc.insert_object(&grid, index, automerge::ObjType::Map)?;
-        doc.put_object(&line, "text", automerge::ObjType::Text)?;
-    }
-    Ok(())
-}
-
-fn set_cursor(doc: &mut Doc, x: u64, y: u64) -> Result<(), ActionError> {
-    let cursor = object_at(doc, "cursor", automerge::ObjType::Map)?;
-    doc.put(&cursor, "x", x)?;
-    doc.put(&cursor, "y", y)?;
-    Ok(())
-}
-
-fn line_payload_too_large(text: &str, attrs: &[u8]) -> bool {
-    text.len() > 1024 * 1024 || attrs.len() > 1024 * 1024
-}
-
-fn write_line(
-    doc: &mut Doc,
-    alternate: bool,
-    index: u32,
-    text: &str,
-    attrs: &[u8],
-) -> Result<(), ActionError> {
-    if line_payload_too_large(text, attrs) {
-        return Err(ActionError::Refused("grid line is too large".into()));
-    }
-    let key = if alternate {
-        "terminal_grid_alt"
-    } else {
-        "terminal_grid"
-    };
-    let grid = object_at(doc, key, automerge::ObjType::List)?;
-    let index = index as usize;
-    if index >= doc.length(&grid) {
-        return Err(ActionError::Refused("grid line is missing".into()));
-    }
-    let Some((Value::Object(automerge::ObjType::Map), line)) = doc.get(&grid, index)? else {
-        return Err(ActionError::Refused("grid line is missing".into()));
-    };
-    let text_id = match doc.get(&line, "text")? {
-        Some((_, id)) => id,
-        None => doc.put_object(&line, "text", automerge::ObjType::Text)?,
-    };
-    ui::doc::splice_text_diffed(doc, &text_id, text);
-    doc.put(&line, "attrs", attrs.to_vec())?;
-    Ok(())
-}
-
-fn insert_blank_line(
-    doc: &mut Doc,
-    alternate: bool,
-    index: u32,
-    text: &str,
-    attrs: &[u8],
-) -> Result<(), ActionError> {
-    if line_payload_too_large(text, attrs) {
-        return Err(ActionError::Refused("grid line is too large".into()));
-    }
-    let key = if alternate {
-        "terminal_grid_alt"
-    } else {
-        "terminal_grid"
-    };
-    let grid = object_at(doc, key, automerge::ObjType::List)?;
-    let at = index as usize;
-    if at > doc.length(&grid) {
-        return Err(ActionError::Refused("grid line is missing".into()));
-    }
-    doc.insert_object(&grid, at, automerge::ObjType::Map)?;
-    write_line(doc, alternate, index, text, attrs)
-}
-
-fn delete_grid_line(doc: &mut Doc, alternate: bool, index: u32) -> Result<(), ActionError> {
-    let key = if alternate {
-        "terminal_grid_alt"
-    } else {
-        "terminal_grid"
-    };
-    let grid = object_at(doc, key, automerge::ObjType::List)?;
-    let at = index as usize;
-    if at >= doc.length(&grid) {
-        return Err(ActionError::Refused("grid line is missing".into()));
-    }
-    doc.delete(&grid, at)?;
-    Ok(())
-}
-
-fn trim_grid_prefix(doc: &mut Doc, count: u32) -> Result<(), ActionError> {
-    if count > 100_000 {
-        return Err(ActionError::Refused("scrollback trim is too large".into()));
-    }
-    let parent = session_parent(doc)?;
-    let Some((_, grid)) = doc.get(&parent, "terminal_grid")? else {
-        return Ok(());
-    };
-    let count = (count as usize).min(doc.length(&grid));
-    for _ in 0..count {
-        doc.delete(&grid, 0)?;
-    }
-    Ok(())
-}
-
-fn shift_image_rows(doc: &mut Doc, removed_rows: u32) -> Result<(), ActionError> {
-    let parent = session_parent(doc)?;
-    let Some((_, images)) = doc.get(&parent, "terminal_images")? else {
-        return Ok(());
-    };
-    let removed = removed_rows as usize;
-    for index in (0..doc.length(&images)).rev() {
-        let Some((Value::Object(automerge::ObjType::Map), placement)) = doc.get(&images, index)?
-        else {
-            continue;
-        };
-        let alternate = matches!(
-            doc.get(&placement, "alternate_screen")?,
-            Some((Value::Scalar(value), _)) if matches!(value.as_ref(), ScalarValue::Boolean(true))
-        );
-        if alternate {
-            continue;
-        }
-        let row = match doc.get(&placement, "row")? {
-            Some((Value::Scalar(value), _)) => match value.as_ref() {
-                ScalarValue::Uint(n) => *n as usize,
-                ScalarValue::Int(n) if *n >= 0 => *n as usize,
-                _ => 0,
-            },
-            _ => 0,
-        };
-        if row < removed {
-            doc.delete(&images, index)?;
-        } else {
-            doc.put(&placement, "row", (row - removed) as u64)?;
-        }
-    }
-    Ok(())
 }
 
 /// The terminal session resource.
 pub struct Terminal;
+
+impl Terminal {
+    /// The session stored under `obj` of another resource's document.
+    pub fn read_under(doc: &Doc, obj: &ObjId) -> SessionState {
+        let (screen, objects) = crate::screen::read(doc, obj);
+        SessionState {
+            screen,
+            objects,
+            ..session_fields(doc, obj)
+        }
+    }
+}
 
 impl Resource for Terminal {
     const KIND: &'static str = "terminal.session";
@@ -431,21 +142,23 @@ impl Resource for Terminal {
     }
 
     fn read(doc: &Doc) -> Result<SessionState, ModelError> {
-        Ok(SessionState {
-            title: read_string(doc, "terminal_title").unwrap_or_else(|| "Terminal".into()),
-            pane_id: read_string(doc, "terminal_pane_id").unwrap_or_default(),
-            target: read_string(doc, crate::target::TARGET_KEY)
-                .as_deref()
-                .and_then(crate::target::SessionTarget::decode),
-        })
+        Ok(Self::read_under(doc, &ROOT))
     }
 
-    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
-        if doc.get(ROOT, "terminal_pane_id")?.is_none() {
-            let id = uuid::Uuid::new_v4().to_string();
-            doc.put(ROOT, "terminal_pane_id", id.as_str())?;
-            doc.put(ROOT, "terminal_title", "Terminal")?;
+    /// Output re-reads only the lines it touched; anything else reads the
+    /// session's few other fields again.
+    fn refresh(state: &mut SessionState, doc: &Doc, delta: &Delta) -> Result<(), ModelError> {
+        if delta.is_empty() {
+            return Ok(());
         }
+        let mut screen = std::mem::take(&mut state.screen);
+        let mut objects = std::mem::take(&mut state.objects);
+        crate::screen::refresh(&mut screen, &mut objects, doc, delta);
+        *state = SessionState {
+            screen,
+            objects,
+            ..session_fields(doc, &ROOT)
+        };
         Ok(())
     }
 
@@ -707,8 +420,8 @@ impl ResourceApp for TerminalShell {
     }
 }
 
-fn read_string(doc: &Doc, key: &str) -> Option<String> {
-    match doc.get(ROOT, key).ok().flatten() {
+fn read_string(doc: &Doc, obj: &ObjId, key: &str) -> Option<String> {
+    match doc.get(obj, key).ok().flatten() {
         Some((Value::Scalar(value), _)) => match value.as_ref() {
             ScalarValue::Str(text) => Some(text.to_string()),
             _ => None,
@@ -717,25 +430,47 @@ fn read_string(doc: &Doc, key: &str) -> Option<String> {
     }
 }
 
-#[cfg(test)]
-thread_local! {
-    static ATTACH_RETAINED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+/// The pane every replica scopes presence to. Two peers claiming a pane at
+/// once leave both claims in the document; every replica picks the same one
+/// (the first valid id in order) rather than whichever `get` exposes.
+fn shared_pane_id(doc: &Doc, obj: &ObjId) -> Option<String> {
+    let mut candidates = doc
+        .get_all(obj, PANE)
+        .ok()?
+        .into_iter()
+        .filter_map(|(value, _)| match value {
+            Value::Scalar(value) => value.as_str().map(str::to_owned),
+            Value::Object(_) => None,
+        })
+        .filter(|value| uuid::Uuid::parse_str(value).is_ok())
+        .collect::<Vec<_>>();
+    candidates.sort_unstable();
+    candidates.into_iter().next()
 }
 
-#[cfg(test)]
-fn note_attach_retained(retained: bool) {
-    ATTACH_RETAINED.with(|cell| cell.set(retained));
+/// The session's fields beside its screen.
+fn session_fields(doc: &Doc, obj: &ObjId) -> SessionState {
+    SessionState {
+        title: read_string(doc, obj, TITLE)
+            .and_then(|title| crate::inner::safe_osc_text(title.as_bytes(), 256))
+            .unwrap_or_else(|| "Terminal".into()),
+        pane_id: shared_pane_id(doc, obj).unwrap_or_default(),
+        target: read_string(doc, obj, crate::target::TARGET_KEY)
+            .as_deref()
+            .and_then(crate::target::SessionTarget::decode),
+        local_session: read_string(doc, obj, LOCAL_SESSION),
+        ..SessionState::default()
+    }
 }
 
 impl ResourceSurface<Terminal> for TerminalWidget {
-    /// The grid is this PTY's. An empty session projection must not clear it.
-    fn present(&mut self, _state: &std::rc::Rc<SessionState>) {}
+    fn present(&mut self, state: &std::rc::Rc<SessionState>) {
+        self.present_session(state);
+    }
 
     fn attach(&mut self, cx: SurfaceCx<Terminal>) {
         self.wake_through(cx.waker());
-        self.attach_framework(cx.dispatcher());
-        #[cfg(test)]
-        note_attach_retained(self.retains_framework_dispatcher());
+        self.bind(cx.dispatcher());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -777,7 +512,7 @@ mod tests {
         }
 
         let mut widget = TerminalWidget::spawn_headless().expect("headless terminal");
-        widget.force_grid(vec!["hello".into()]);
+        widget.feed(b"hello");
         assert!(!widget.is_framework_hosted());
         let doc = ui::automerge::AutoCommit::new();
         let standalone = widget.resources(&doc);
@@ -799,63 +534,8 @@ mod tests {
             &std::rc::Rc::new(SessionState::default()),
         );
         assert!(
-            widget
-                .visible_lines()
-                .iter()
-                .any(|line| line.contains("hello")),
-            "empty present must not wipe the local grid"
-        );
-    }
-
-    #[test]
-    fn attach_retains_the_dispatcher_and_hosted_lookup_does_not_rebuild_the_document_root() {
-        let mut widget = TerminalWidget::spawn_headless().expect("headless terminal");
-        assert!(!widget.retains_framework_dispatcher());
-        let mut doc = ui::automerge::AutoCommit::new();
-        let standalone = widget.resources(&doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, Terminal::KIND);
-        let root_id = standalone[0].id.as_str().to_owned();
-        assert!(ui::resources::resource(&widget, &doc, &root_id).is_some());
-
-        widget.apply_session_action(
-            &mut doc,
-            &TerminalAction::SetTitle {
-                title: "Session".into(),
-            },
-        );
-        let title = doc
-            .get(automerge::ROOT, "terminal_title")
-            .unwrap()
-            .and_then(|(value, _)| value.as_str().map(str::to_owned));
-        assert_eq!(title.as_deref(), Some("Session"));
-        assert!(
-            widget.last_session_action().is_some(),
-            "a standalone session action uses the local action host"
-        );
-
-        widget.mark_hosted_for_test();
-        assert!(
-            ui::resources::resource(&widget, &doc, &root_id).is_none(),
-            "hosted lookup does not rebuild the document root"
-        );
-        let hosted = widget.resources(&doc);
-        assert!(
-            hosted
-                .iter()
-                .all(|resource| resource.kind != Terminal::KIND && resource.id.as_str() != root_id),
-            "hosted resources must not publish a second terminal root"
-        );
-        let transcript_id = hosted[0].id.as_str().to_owned();
-        let transcript = ui::resources::resource(&widget, &doc, &transcript_id)
-            .expect("hosted transcript stays addressable");
-        assert_ne!(transcript.kind, Terminal::KIND);
-
-        super::ATTACH_RETAINED.with(|cell| cell.set(false));
-        let _app = ui::framework::testing::TestApp::<TerminalShell>::new().expect("terminal shell");
-        assert!(
-            super::ATTACH_RETAINED.with(std::cell::Cell::get),
-            "attach retains the dispatcher"
+            widget.grid_text().contains("hello"),
+            "the record must not replace the screen of a terminal running its own output"
         );
     }
 
@@ -897,309 +577,146 @@ mod tests {
         assert_eq!(target, Some(crate::target::SessionTarget::Host));
     }
 
+    fn texts(state: &SessionState) -> String {
+        state
+            .screen
+            .main
+            .iter()
+            .map(|line| line.text.trim_end())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn output_reaches_the_session_record_but_is_nobodys_undo_step() {
+        let mut app = ui::framework::testing::TestApp::<TerminalShell>::new().expect("terminal");
+        app.with_surface(|terminal: &mut TerminalWidget| {
+            terminal.feed(b"\x1b]2;build\x07first line\r\nsecond \x1b[1;31mred\x1b[0m\r\n");
+        })
+        .expect("the terminal surface is hosted");
+        app.settle();
+        let state = app.state();
+        assert!(texts(&state).contains("first line"), "{}", texts(&state));
+        assert!(texts(&state).contains("second red"), "{}", texts(&state));
+        assert_eq!(state.title, "build");
+        assert_eq!(state.screen.cursor, (0, 2));
+        assert!(!app.undo(), "a process's output is not an undo step");
+        assert!(texts(&app.state()).contains("first line"));
+
+        // More output records only what changed.
+        app.with_surface(|terminal: &mut TerminalWidget| terminal.feed(b"third\r\n"))
+            .expect("the terminal surface is hosted");
+        app.settle();
+        let state = app.state();
+        assert!(
+            texts(&state).contains("first line\nsecond red\nthird"),
+            "{}",
+            texts(&state)
+        );
+    }
+
+    #[test]
+    fn a_terminal_without_a_process_shows_the_session_record() {
+        let mut doc = Doc::new();
+        let screen = crate::screen::Screen {
+            main: vec![std::rc::Rc::new(crate::screen::Line {
+                text: "recorded elsewhere".into(),
+                attrs: Vec::new(),
+            })],
+            cursor: (3, 0),
+            ..crate::screen::Screen::default()
+        };
+        TerminalAction::Output {
+            edits: crate::screen::edits(None, &screen),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        TerminalAction::SetTitle {
+            title: "vim".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let state = Terminal::read(&doc).unwrap();
+        let mut viewer = TerminalWidget::spawn_headless().expect("headless terminal");
+        ResourceSurface::<Terminal>::present(&mut viewer, &std::rc::Rc::new(state));
+        assert!(viewer.grid_text().contains("recorded elsewhere"));
+        assert_eq!(viewer.title(), "vim");
+    }
+
     #[test]
     fn bind_local_session_drops_the_previous_process_record() {
-        use automerge::transaction::Transactable;
-        let mut doc = ui::automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, "terminal_title", "old session")
-            .unwrap();
-        doc.put(automerge::ROOT, "terminal_pane_id", "pane-1")
-            .unwrap();
-        TerminalAction::BindLocalSession {
-            session_id: "process-2".into(),
+        let mut doc = Doc::new();
+        let screen = crate::screen::Screen {
+            main: vec![std::rc::Rc::new(crate::screen::Line {
+                text: "old prompt".into(),
+                attrs: Vec::new(),
+            })],
+            ..crate::screen::Screen::default()
+        };
+        for action in [
+            TerminalAction::SetTitle {
+                title: "old session".into(),
+            },
+            TerminalAction::ClaimPane {
+                pane_id: uuid::Uuid::new_v4().to_string(),
+            },
+            TerminalAction::Output {
+                edits: crate::screen::edits(None, &screen),
+            },
+            TerminalAction::BindLocalSession {
+                session_id: "process-2".into(),
+            },
+        ] {
+            action.apply(&mut doc).unwrap();
         }
-        .apply(&mut doc)
-        .unwrap();
-        assert!(
-            doc.get(automerge::ROOT, "terminal_title")
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            doc.get(automerge::ROOT, "terminal_pane_id")
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            read_string(&doc, "terminal_local_session").as_deref(),
-            Some("process-2")
-        );
+        let state = Terminal::read(&doc).unwrap();
+        assert_eq!(state.title, "Terminal");
+        assert!(state.pane_id.is_empty());
+        assert!(state.screen.main.is_empty());
+        assert_eq!(state.local_session.as_deref(), Some("process-2"));
     }
 
     #[test]
-    fn register_link_and_claim_pane_are_replayable() {
-        let mut doc = ui::automerge::AutoCommit::new();
-        TerminalAction::RegisterLink {
-            id: 1,
-            url: "https://tilo.so".into(),
+    fn the_first_pane_claim_wins() {
+        let mut doc = Doc::new();
+        let first = uuid::Uuid::new_v4().to_string();
+        for pane_id in [first.clone(), uuid::Uuid::new_v4().to_string()] {
+            TerminalAction::ClaimPane { pane_id }
+                .apply(&mut doc)
+                .unwrap();
         }
-        .apply(&mut doc)
-        .unwrap();
-        let links = doc
-            .get(automerge::ROOT, "terminal_links")
-            .unwrap()
-            .map(|(_, id)| id)
-            .unwrap();
-        let stored = doc.get(&links, "1").unwrap().map(|(value, _)| value);
-        assert!(matches!(stored, Some(automerge::Value::Scalar(_))));
-        TerminalAction::ClaimPane {
-            pane_id: "first".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        TerminalAction::ClaimPane {
-            pane_id: "second".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        assert_eq!(
-            read_string(&doc, "terminal_pane_id").as_deref(),
-            Some("first")
-        );
+        assert_eq!(Terminal::read(&doc).unwrap().pane_id, first);
     }
 
     #[test]
-    fn place_image_records_a_content_addressed_descriptor() {
-        let mut doc = ui::automerge::AutoCommit::new();
-        TerminalAction::PlaceImage {
-            hash: "blake3:abc".into(),
-            mime: "image/png".into(),
-            byte_len: 12,
-            row: 1,
-            col: 2,
-            columns: 8,
-            rows: 4,
-            pixel_width: 64,
-            pixel_height: 32,
-            protocol_id: Some(7),
-            alternate_screen: false,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        let images = doc
-            .get(automerge::ROOT, "terminal_images")
-            .unwrap()
-            .map(|(_, id)| id)
-            .unwrap();
-        assert_eq!(doc.length(&images), 1);
-    }
-
-    #[test]
-    fn structure_lines_and_cursor_are_session_actions() {
-        let mut doc = ui::automerge::AutoCommit::new();
-        TerminalAction::EnsureStructure.apply(&mut doc).unwrap();
-        TerminalAction::EnsureStructure.apply(&mut doc).unwrap();
-        TerminalAction::EnsureLines {
-            alternate: false,
-            min_len: 2,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        TerminalAction::SetCursor { x: 3, y: 1 }
-            .apply(&mut doc)
-            .unwrap();
-        let grid = doc
-            .get(automerge::ROOT, "terminal_grid")
-            .unwrap()
-            .map(|(_, id)| id)
-            .unwrap();
-        assert_eq!(doc.length(&grid), 2);
-        let cursor = doc
-            .get(automerge::ROOT, "cursor")
-            .unwrap()
-            .map(|(_, id)| id)
-            .unwrap();
-        let x = doc
-            .get(&cursor, "x")
-            .unwrap()
-            .and_then(|(value, _)| match value {
-                automerge::Value::Scalar(value) => value.as_i64(),
-                automerge::Value::Object(_) => None,
-            });
-        assert_eq!(x, Some(3));
-        TerminalAction::WriteLine {
-            alternate: false,
-            index: 0,
-            text: "Hi".into(),
-            attrs: vec![0, 1],
-        }
-        .apply(&mut doc)
-        .unwrap();
-        let line = doc.get(&grid, 0).unwrap().map(|(_, id)| id).unwrap();
-        let text_id = doc.get(&line, "text").unwrap().map(|(_, id)| id).unwrap();
-        assert_eq!(doc.text(&text_id).unwrap(), "Hi");
-        TerminalAction::InsertBlankLine {
-            alternate: false,
-            index: 1,
-            text: " ".into(),
-            attrs: vec![0],
-        }
-        .apply(&mut doc)
-        .unwrap();
-        assert_eq!(doc.length(&grid), 3);
-        TerminalAction::TrimGridPrefix { count: 1 }
-            .apply(&mut doc)
-            .unwrap();
-        assert_eq!(doc.length(&grid), 2);
-        TerminalAction::DeleteGridLine {
-            alternate: false,
-            index: 0,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        assert_eq!(doc.length(&grid), 1);
-        TerminalAction::PlaceImage {
-            hash: "blake3:row".into(),
-            mime: "image/png".into(),
-            byte_len: 4,
-            row: 2,
-            col: 0,
-            columns: 1,
-            rows: 1,
-            pixel_width: 1,
-            pixel_height: 1,
-            protocol_id: None,
-            alternate_screen: false,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        TerminalAction::ShiftImageRows { removed_rows: 2 }
-            .apply(&mut doc)
-            .unwrap();
-        let images = doc
-            .get(automerge::ROOT, "terminal_images")
-            .unwrap()
-            .map(|(_, id)| id)
-            .unwrap();
-        let placement = doc.get(&images, 0).unwrap().map(|(_, id)| id).unwrap();
-        let row = doc
-            .get(&placement, "row")
-            .unwrap()
-            .and_then(|(value, _)| match value {
-                automerge::Value::Scalar(value) => value.as_u64(),
-                automerge::Value::Object(_) => None,
-            });
-        assert_eq!(row, Some(0));
-    }
-
-    #[test]
-    fn a_nested_panel_keeps_grid_actions_inside_the_panel() {
-        let mut doc = ui::automerge::AutoCommit::new();
+    fn a_session_nested_in_another_resource_stays_under_its_object() {
+        let mut doc = Doc::new();
         let panel = doc
-            .put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)
+            .put_object(ROOT, "terminal_panel", automerge::ObjType::Map)
             .unwrap();
-        TerminalAction::InsertBlankLine {
-            alternate: false,
-            index: 0,
-            text: "hi".into(),
-            attrs: vec![0, 0],
+        let screen = crate::screen::Screen {
+            main: vec![std::rc::Rc::new(crate::screen::Line {
+                text: "nested".into(),
+                attrs: Vec::new(),
+            })],
+            ..crate::screen::Screen::default()
+        };
+        for action in [
+            TerminalAction::BindLocalSession {
+                session_id: "process-1".into(),
+            },
+            TerminalAction::Output {
+                edits: crate::screen::edits(None, &screen),
+            },
+        ] {
+            action.apply_under(&mut doc, &panel).unwrap();
         }
-        .apply(&mut doc)
-        .unwrap();
         assert!(
-            doc.get(automerge::ROOT, "terminal_grid").unwrap().is_none(),
-            "a nested session does not create a second grid at the document root"
+            Terminal::read(&doc).unwrap().screen.main.is_empty(),
+            "nothing lands at the document root"
         );
-        let grid = doc
-            .get(&panel, "terminal_grid")
-            .unwrap()
-            .map(|(_, id)| id)
-            .expect("the blank line is inside the panel");
-        assert_eq!(doc.length(&grid), 1);
-    }
-
-    #[test]
-    fn a_nested_panel_claims_its_pane_inside_the_panel() {
-        let mut doc = ui::automerge::AutoCommit::new();
-        let panel = doc
-            .put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)
-            .unwrap();
-        TerminalAction::ClaimPane {
-            pane_id: "pane-1".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        assert!(
-            doc.get(automerge::ROOT, "terminal_pane_id")
-                .unwrap()
-                .is_none()
-        );
-        let id = doc
-            .get(&panel, "terminal_pane_id")
-            .unwrap()
-            .and_then(|(value, _)| value.as_str().map(str::to_owned));
-        assert_eq!(id.as_deref(), Some("pane-1"));
-    }
-
-    #[test]
-    fn a_nested_panel_binds_its_local_session_inside_the_panel() {
-        use automerge::transaction::Transactable;
-        let mut doc = ui::automerge::AutoCommit::new();
-        let panel = doc
-            .put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)
-            .unwrap();
-        doc.put(&panel, "terminal_title", "old session").unwrap();
-        TerminalAction::BindLocalSession {
-            session_id: "process-2".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        assert!(doc.get(&panel, "terminal_title").unwrap().is_none());
-        assert!(
-            doc.get(automerge::ROOT, "terminal_local_session")
-                .unwrap()
-                .is_none()
-        );
-        let id = doc
-            .get(&panel, "terminal_local_session")
-            .unwrap()
-            .and_then(|(value, _)| value.as_str().map(str::to_owned));
-        assert_eq!(id.as_deref(), Some("process-2"));
-    }
-
-    #[test]
-    fn a_nested_panel_keeps_its_cursor_and_deletes_its_own_line() {
-        use automerge::transaction::Transactable;
-        let mut doc = ui::automerge::AutoCommit::new();
-        let panel = doc
-            .put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)
-            .unwrap();
-        TerminalAction::EnsureStructure.apply(&mut doc).unwrap();
-        TerminalAction::SetCursor { x: 4, y: 5 }
-            .apply(&mut doc)
-            .unwrap();
-        TerminalAction::EnsureStructure.apply(&mut doc).unwrap();
-        assert!(doc.get(automerge::ROOT, "cursor").unwrap().is_none());
-        let cursor = doc
-            .get(&panel, "cursor")
-            .unwrap()
-            .map(|(_, id)| id)
-            .expect("cursor stays in the panel");
-        let x = doc
-            .get(&cursor, "x")
-            .unwrap()
-            .and_then(|(value, _)| match value {
-                automerge::Value::Scalar(value) => value.as_i64(),
-                automerge::Value::Object(_) => None,
-            });
-        assert_eq!(x, Some(4));
-        TerminalAction::EnsureLines {
-            alternate: false,
-            min_len: 2,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        TerminalAction::DeleteGridLine {
-            alternate: false,
-            index: 0,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        let grid = doc
-            .get(&panel, "terminal_grid")
-            .unwrap()
-            .map(|(_, id)| id)
-            .unwrap();
-        assert_eq!(doc.length(&grid), 1);
+        let nested = Terminal::read_under(&doc, &panel);
+        assert_eq!(nested.screen.main[0].text, "nested");
+        assert_eq!(nested.local_session.as_deref(), Some("process-1"));
     }
 }

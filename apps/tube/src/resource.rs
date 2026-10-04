@@ -291,7 +291,8 @@ impl ResourceSurface<Tube, TubeEffect> for TubeApp {
         let history = cx
             .mode()
             .is_live()
-            .then(|| cx.settings::<crate::history::WatchHistory>());
+            .then(|| cx.person::<crate::history::WatchHistory>())
+            .flatten();
         self.attach_framework(cx.dispatcher(), history);
     }
 
@@ -399,6 +400,60 @@ mod tests {
             SkipMode::Show,
             "the mode pill cycles Auto-skip to Show"
         );
+    }
+
+    #[test]
+    fn what_the_person_watched_is_kept_in_their_own_record_not_the_library() {
+        use crate::history::WatchHistory;
+        let person = "ad".repeat(32);
+        let mut app = TestApp::<TubeShell>::for_person(&person).unwrap();
+        app.effect(&TubeEffect::MarkWatched {
+            video: "vid_donut".into(),
+        })
+        .unwrap();
+        app.effect(&TubeEffect::MarkWatched {
+            video: "vid_tea".into(),
+        })
+        .unwrap();
+        // Watched in the same millisecond or not, both are kept.
+        let watched = |history: &ui::framework::PersonRecord<WatchHistory>| {
+            let mut videos = history.with(WatchHistory::videos);
+            videos.sort();
+            videos
+        };
+        let history = app.person::<WatchHistory>().unwrap();
+        assert_eq!(watched(&history), ["vid_donut", "vid_tea"]);
+        assert!(history.syncs(), "it follows the person to their devices");
+        let route = history.record().route().unwrap();
+        assert_eq!(
+            route.cluster_id.to_string(),
+            ui::record::person::scope_of(&ui::permissions::UserId(person)),
+            "in the person's own room"
+        );
+        let library = app.peer_document().save();
+        assert!(
+            !library
+                .windows(b"vid_tea".len())
+                .any(|window| window == b"vid_tea"),
+            "the shared library holds nothing of what the person watched"
+        );
+
+        // Forgetting is the person's edit: their undo brings the video back.
+        app.effect(&TubeEffect::ForgetWatched {
+            video: "vid_donut".into(),
+        })
+        .unwrap();
+        assert_eq!(watched(&history), ["vid_tea"]);
+        assert!(history.undo());
+        assert_eq!(watched(&history), ["vid_donut", "vid_tea"]);
+
+        // It is the same history after a relaunch.
+        drop(history);
+        let mut app = app.reopen().unwrap();
+        let history = app.person::<WatchHistory>().unwrap();
+        assert_eq!(watched(&history), ["vid_donut", "vid_tea"]);
+        app.effect_confirmed(&TubeEffect::ClearHistory).unwrap();
+        assert!(history.with(WatchHistory::videos).is_empty());
     }
 
     #[test]
