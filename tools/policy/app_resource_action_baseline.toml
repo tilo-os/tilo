@@ -67,5 +67,4 @@
 "apps/word-processor/src/widget.rs" = 3
 
 [ratchets.surface_document_actions]
-"apps/slides/src/resource.rs" = 1
 "apps/word-processor/src/framework.rs" = 1

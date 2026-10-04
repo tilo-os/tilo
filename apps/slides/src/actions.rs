@@ -68,7 +68,6 @@
     reason = "the operation builder deliberately owns a serializable value; enum serialization cannot fail for these derived primitive payloads"
 )]
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
@@ -1670,20 +1669,8 @@ pub struct SlideResource {
     pub elements: Vec<ElementResource>,
 }
 
-/// The current live selection. Published beside the framework root when hosted
-/// — never a second copy of the deck document door. Its actions are bound to
-/// the peer's selected element (or current slide when nothing is selected).
-#[derive(Clone)]
-pub struct SelectionResourceCtx {
-    pub slide_id: String,
-    pub element_id: Option<String>,
-    pub label: String,
-    pub actions: Vec<ActionSpec>,
-}
-
-/// The presentation context Slides hands [`provide_resources`]: the deck title,
-/// the slides it currently has open (each with its elements), and the peer's
-/// live selection. Deck rows come from the document; selection is local.
+/// The deck as its resource reads it: the title and theme, each slide with
+/// its elements, and the slides' order keys.
 #[derive(Clone)]
 pub struct SlidesResourceCtx {
     pub deck_title: String,
@@ -1692,9 +1679,6 @@ pub struct SlidesResourceCtx {
     /// The slides' order keys, in deck order: what the key of a slide
     /// inserted or moved by an author is computed from.
     pub ranks: Vec<i64>,
-    /// Per-peer current slide / selected element. Not collaborative document
-    /// state — rides [`live_presentation_resources`] when hosted.
-    pub selection: Option<SelectionResourceCtx>,
 }
 
 impl SlidesResourceCtx {
@@ -1740,7 +1724,6 @@ impl SlidesResourceCtx {
                         .collect(),
                 })
                 .collect(),
-            selection: None,
         }
     }
 }
@@ -1844,7 +1827,8 @@ impl ui::tilo_resource::Resource for SlidesDeck {
                 "Add a text box, shape, line or image to a slide, above everything on it. \
                  The new element's id is chosen when the edit applies; read the deck again to \
                  find it.",
-            ),
+            )
+            .returns(outline_result()),
             ActionDecl::new(
                 MOVE_ELEMENT,
                 "Move or resize element",
@@ -1854,7 +1838,8 @@ impl ui::tilo_resource::Resource for SlidesDeck {
             .describe(
                 "Move an element so its top-left corner is at (x, y); give w and h as well to \
                  resize it. Slide units: the slide is 1280 × 720.",
-            ),
+            )
+            .returns(outline_result()),
             ActionDecl::new(
                 RESTYLE_ELEMENT,
                 "Restyle element",
@@ -1871,7 +1856,8 @@ impl ui::tilo_resource::Resource for SlidesDeck {
             .describe(
                 "Change an element's colours (fill, text colour, outline), font size, \
                  alignment, weight, slant or corner radius. Only the styles given change.",
-            ),
+            )
+            .returns(outline_result()),
             ActionDecl::new(
                 DELETE_ELEMENT,
                 "Delete element",
@@ -1879,6 +1865,7 @@ impl ui::tilo_resource::Resource for SlidesDeck {
                 |args, _| Ok(delete_element_action(0, element_id_arg(args)?)),
             )
             .describe("Delete an element from its slide.")
+            .returns(outline_result())
             .destructive(),
             ActionDecl::new(
                 MOVE_SLIDE,
@@ -1900,7 +1887,8 @@ impl ui::tilo_resource::Resource for SlidesDeck {
                     Ok(move_slide_action(0, position, id))
                 },
             )
-            .describe("Reorder the deck: move a slide to another position."),
+            .describe("Reorder the deck: move a slide to another position.")
+            .returns(outline_result()),
             ActionDecl::new(
                 SET_SLIDE_TEXT,
                 "Set slide text",
@@ -1935,7 +1923,8 @@ impl ui::tilo_resource::Resource for SlidesDeck {
             .describe(
                 "Replace the words of a slide's title (its first text box) and/or body (its \
                  second) as plain text, keeping their place and style.",
-            ),
+            )
+            .returns(outline_result()),
         ]
     }
 
@@ -1949,6 +1938,56 @@ impl ui::tilo_resource::Resource for SlidesDeck {
             .map(|slide| slide_resource(slide, true, state))
             .collect()
     }
+
+    fn child(state: &SlidesResourceCtx, id: &str) -> Option<Resource> {
+        deck_child(state, id)
+    }
+
+    /// Every slide, element, text box and set of speaker notes, each hit
+    /// revealing it in the editor.
+    fn search(state: &SlidesResourceCtx) -> Vec<ui::tilo_resource::SearchEntry> {
+        crate::search::entries(state)
+    }
+}
+
+/// The published resource `id` — the deck, a slide, an element, its words or
+/// a slide's notes — resolved from the deck as it stands, however far past
+/// the eagerly published page it is. A deleted or replaced id resolves to
+/// nothing, so a stale request is refused rather than rebound by position.
+fn deck_child(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
+    if let Some(slide_id) = id.strip_prefix("slides.slide:") {
+        return ctx
+            .slides
+            .iter()
+            .find(|slide| slide.data.id == slide_id)
+            .map(|slide| slide_resource(slide, false, ctx));
+    }
+    if let Some(element_id) = id.strip_prefix("slides.element:") {
+        return ctx.slides.iter().find_map(|slide| {
+            slide
+                .elements
+                .iter()
+                .find(|element| element.id == element_id)
+                .map(|element| element_resource(slide, element, false))
+        });
+    }
+    if let Some(element_id) = id.strip_prefix("slides.text:") {
+        return ctx.slides.iter().find_map(|slide| {
+            slide
+                .elements
+                .iter()
+                .find(|element| element.id == element_id && element.kind == ElementKind::Text)
+                .map(|element| text_resource(slide, element))
+        });
+    }
+    if let Some(slide_id) = id.strip_prefix("slides.notes:") {
+        return ctx
+            .slides
+            .iter()
+            .find(|slide| slide.data.id == slide_id)
+            .map(notes_resource);
+    }
+    None
 }
 
 /// The starter deck every new record begins with, under fixed identities:
@@ -2174,7 +2213,7 @@ fn immediate_spec(id: &str, label: &str, action: &SlidesAction) -> ActionSpec {
 
 /// A one-line label for an element in the palette: a text element shows its
 /// first line (trimmed / capped), a shape shows its kind.
-fn element_label(kind: ElementKind, text: &str) -> String {
+pub fn element_label(kind: ElementKind, text: &str) -> String {
     if kind == ElementKind::Text {
         let line = text.lines().next().unwrap_or("").trim();
         if line.is_empty() {
@@ -2254,13 +2293,29 @@ fn deck_local_operations() -> Vec<ActionSpec> {
 /// Document ops whose payload needs the live deck: append a slide (rank after
 /// the last slide) and set the accent theme. Published through
 /// [`SlidesDeck::bound_actions`] so `tilo_resource::publish` owns them.
+/// What the deck's own edits answer their caller with: the deck's
+/// [outline](crate::outline) as they left it, so an agent sees the result
+/// without reading the deck again. Only the edits an agent composes a deck
+/// with declare it: every declared result grows the catalogue the deck
+/// publishes, whose reply is capped.
+fn outline_result() -> ResultSpec {
+    ResultSpec::Json {
+        schema: crate::outline::result_schema(),
+    }
+}
+
+fn returning_outline(mut spec: ActionSpec) -> ActionSpec {
+    spec.contract.result = outline_result();
+    spec
+}
+
 fn deck_bound_document_actions(ctx: &SlidesResourceCtx) -> Vec<ActionSpec> {
     // Deck-level: add a new slide after the whole deck. The slide's ids are
     // minted when the palette dispatches (a genuinely new slide), so this spec
     // is not asserted for byte-equality against a builder — every other action
     // here is deterministic and is.
     let rank = resource_rank_for_slot(ctx, ctx.slides.len());
-    let mut specs = vec![
+    let mut specs = vec![returning_outline(
         ActionSpec::typed(
             ADD_SLIDE,
             "Add slide",
@@ -2284,7 +2339,7 @@ fn deck_bound_document_actions(ctx: &SlidesResourceCtx) -> Vec<ActionSpec> {
             },
         )
         .reversible(),
-    ];
+    )];
 
     // Deck-level: set the accent theme, one row per palette. Collaborative
     // document state (not a per-peer View) — same CRDT path as the inspector.
@@ -2296,14 +2351,6 @@ fn deck_bound_document_actions(ctx: &SlidesResourceCtx) -> Vec<ActionSpec> {
         ));
     }
     specs
-}
-
-fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
-    let title = ctx.deck_title.trim();
-    let deck_label = if title.is_empty() { "Deck" } else { title };
-    // Declared ops, bound add-slide/theme, apply, group, View/Effect
-    // local_operations, and slides beneath — all from publish, no bolt-on.
-    ui::tilo_resource::publish::<SlidesDeck>("slides.deck", deck_label, ctx)
 }
 
 fn slide_resource(sr: &SlideResource, eager_children: bool, ctx: &SlidesResourceCtx) -> Resource {
@@ -2468,36 +2515,6 @@ fn notes_resource(sr: &SlideResource) -> Resource {
     ))
 }
 
-/// The deck's own edits answer with its [outline](crate::outline), so their
-/// caller sees the result without reading the deck again. Only these: every
-/// declared result grows the catalogue the deck publishes to the broker,
-/// whose reply is capped, and a slide or element resolved by id keeps the
-/// contract the catalogue listed.
-const RETURNING_OUTLINE: &[&str] = &[
-    "add-slide",
-    ADD_ELEMENT,
-    MOVE_ELEMENT,
-    RESTYLE_ELEMENT,
-    DELETE_ELEMENT,
-    MOVE_SLIDE,
-    SET_SLIDE_TEXT,
-];
-
-fn returning_outline(mut resource: Resource) -> Resource {
-    if resource.id.as_str() != "slides.deck" {
-        return resource;
-    }
-    for action in &mut resource.actions {
-        if RETURNING_OUTLINE.contains(&action.id.as_str()) && action.kind == OperationKind::Document
-        {
-            action.contract.result = ResultSpec::Json {
-                schema: crate::outline::result_schema(),
-            };
-        }
-    }
-    resource
-}
-
 fn read_operation() -> ActionSpec {
     operation(
         "read",
@@ -2508,178 +2525,6 @@ fn read_operation() -> ActionSpec {
     .with_description(
         "The deck as text: each slide's number, layout and {#id}, its title (# line), body and other elements each ending in its {#id}, then its speaker notes. add-slide, set-slide-text, move-slide and the element edits return this too",
     )
-}
-
-/// Build the peer's live selection from a slide snapshot and optional element id.
-/// Element-bound delete / restack / reveal ride here; slide document ops stay on
-/// the durable `slides.slide:<id>` child published via [`SlidesDeck::children`].
-pub fn selection_ctx_for(slide: &SlideResource, element_id: Option<&str>) -> SelectionResourceCtx {
-    let (label, actions) = if let Some(element_id) = element_id {
-        match slide
-            .elements
-            .iter()
-            .find(|element| element.id == element_id)
-        {
-            Some(element) => {
-                let resource = element_resource(slide, element, false);
-                (resource.label, resource.actions)
-            }
-            None => (
-                format!("Slide {}", slide.idx + 1),
-                vec![operation(
-                    "open",
-                    "Open slide",
-                    OperationKind::View,
-                    SlidesOperation::RevealSlide {
-                        slide: slide.data.id.clone(),
-                    },
-                )],
-            ),
-        }
-    } else {
-        (
-            format!("Slide {}", slide.idx + 1),
-            vec![operation(
-                "open",
-                "Open slide",
-                OperationKind::View,
-                SlidesOperation::RevealSlide {
-                    slide: slide.data.id.clone(),
-                },
-            )],
-        )
-    };
-    SelectionResourceCtx {
-        slide_id: slide.data.id.clone(),
-        element_id: element_id
-            .filter(|id| slide.elements.iter().any(|element| element.id == *id))
-            .map(str::to_owned),
-        label,
-        actions,
-    }
-}
-
-/// Live selection. Published beside the framework root when hosted — never a
-/// second copy of the deck document door. Selection-bound palette rows (delete /
-/// restack / reveal on the peer's focus) stay addressable without republishing
-/// every slide already on [`tilo_resource::publish`].
-pub fn live_presentation_resources(ctx: &SlidesResourceCtx) -> Vec<Resource> {
-    let Some(selection) = &ctx.selection else {
-        return Vec::new();
-    };
-    vec![selection_resource(selection)]
-}
-
-fn selection_resource(selection: &SelectionResourceCtx) -> Resource {
-    let id = match &selection.element_id {
-        Some(element) => format!("slides.selection:{}:{}", selection.slide_id, element),
-        None => format!("slides.selection:{}", selection.slide_id),
-    };
-    let mut resource = Resource::new(id, "slides.selection", selection.label.clone());
-    resource.actions.extend(selection.actions.clone());
-    resource
-}
-
-fn attach_live_selection(deck: &mut Resource, ctx: &SlidesResourceCtx) {
-    let Some(selection) = &ctx.selection else {
-        return;
-    };
-    let wanted = slide_resource_id(&selection.slide_id);
-    let Some(slide) = deck.children.iter_mut().find(|slide| slide.id.0 == wanted) else {
-        return;
-    };
-    slide.children.insert(0, selection_resource(selection));
-}
-
-/// Build the bounded contextual resource tree shown by the palette. Search and
-/// agents resolve everything beyond this window by stable id through
-/// [`resolve_resource`], which always rebuilds from the current deck mirror.
-/// Standalone / `--shots` / unit tests nest the live selection under its slide;
-/// when hosted, [`live_presentation_resources`] returns that slice alone.
-pub fn provide_resources(ctx: &SlidesResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    // The document is the deck once it holds one. Selection stays the peer's
-    // live focus and is attached beside that deck. A caller that has not
-    // written a deck yet still publishes the context it passed.
-    let state =
-        <SlidesDeck as ui::tilo_resource::Resource>::read(doc).unwrap_or_else(|_| ctx.clone());
-    let mut deck = returning_outline(deck_resource(&state));
-    attach_live_selection(&mut deck, ctx);
-    vec![deck]
-}
-
-/// Resolve exactly one current durable deck resource without growing the
-/// eager snapshot.  A deleted or replaced id returns `None`, so stale search,
-/// agent and collaboration requests are refused instead of being rebound by
-/// position.
-pub fn resolve_resource(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
-    resolve_unannotated(ctx, id).map(returning_outline)
-}
-
-fn resolve_unannotated(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
-    if id == "slides.deck" {
-        return Some(deck_resource(ctx));
-    }
-    if let Some(slide_id) = id.strip_prefix("slides.slide:") {
-        return ctx
-            .slides
-            .iter()
-            .find(|slide| slide.data.id == slide_id)
-            .map(|slide| slide_resource(slide, false, ctx));
-    }
-    if let Some(element_id) = id.strip_prefix("slides.element:") {
-        return ctx.slides.iter().find_map(|slide| {
-            slide
-                .elements
-                .iter()
-                .find(|element| element.id == element_id)
-                .map(|element| element_resource(slide, element, false))
-        });
-    }
-    if let Some(element_id) = id.strip_prefix("slides.text:") {
-        return ctx.slides.iter().find_map(|slide| {
-            slide
-                .elements
-                .iter()
-                .find(|element| element.id == element_id && element.kind == ElementKind::Text)
-                .map(|element| text_resource(slide, element))
-        });
-    }
-    if let Some(slide_id) = id.strip_prefix("slides.notes:") {
-        return ctx
-            .slides
-            .iter()
-            .find(|slide| slide.data.id == slide_id)
-            .map(notes_resource);
-    }
-    None
-}
-
-fn find_slides(resources: &[Resource], id: &str) -> Option<Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_slides(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::SlidesApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.slides_resource_ctx(), doc)
-    }
-
-    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let published = provide_resources(&self.slides_resource_ctx(), doc);
-        if let Some(found) = find_slides(&published, id) {
-            return Some(found);
-        }
-        // A slide or element outside the eager page is still addressable.
-        resolve_resource(&self.slides_resource_ctx(), id)
-    }
 }
 
 #[cfg(test)]
@@ -2706,7 +2551,11 @@ mod tests {
     /// The tree the deck publishes for `doc`.
     fn published(doc: &AutoCommit) -> Vec<Resource> {
         let state = <SlidesDeck as ui::tilo_resource::Resource>::read(doc).expect("the deck reads");
-        provide_resources(&state, doc)
+        vec![ui::tilo_resource::publish::<SlidesDeck>(
+            "slides.deck",
+            "Deck",
+            &state,
+        )]
     }
 
     fn deck(doc: &AutoCommit) -> crate::model::Deck {
