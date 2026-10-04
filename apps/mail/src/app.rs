@@ -24,8 +24,9 @@
 //! **not** fabricate a sample mailbox — an unconfigured account shows an empty
 //! state. The bundled sample corpus is a screenshot's fixture.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
 use ui::widget::{AppModel, ModelPath};
@@ -55,6 +56,7 @@ use ui::widget::{
 use ui::{ColorCompat, ImageStore};
 
 use crate::account::{Account, AccountStore};
+use crate::actions::{MailAction, ServerUpdate};
 use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
 use crate::doc::MailDoc;
 use ui::surface::pill;
@@ -147,6 +149,26 @@ struct PendingSend {
     request_id: EngineRequestId,
     message: Message,
     edited_draft: Option<MessageId>,
+}
+
+/// How the drain that asked for a server update hears how it went.
+type ServerUpdateDone = Box<dyn FnOnce(Result<(), String>)>;
+
+/// The server updates the document's projection asked for: queued until the
+/// next sync hands them to the engine, then carried out by it. Whichever
+/// device's drain asked, the engine's acknowledgement records the update as
+/// applied in the document ([`crate::actions::MailAction::ServerApplied`]).
+#[derive(Default)]
+pub(crate) struct ServerOutbox {
+    queued: Vec<(ServerUpdate, ServerUpdateDone)>,
+    sent: HashMap<EngineRequestId, (ServerUpdate, ServerUpdateDone)>,
+}
+
+impl ServerOutbox {
+    /// Carry out `update`, then tell `done` how it went.
+    pub(crate) fn push(&mut self, update: ServerUpdate, done: ServerUpdateDone) {
+        self.queued.push((update, done));
+    }
 }
 
 /// An attachment whose bytes were already hydrated and are now waiting for a
@@ -359,6 +381,12 @@ pub struct MailApp {
     setup_discovery: Option<PendingSetupDiscovery>,
 
     engine: Option<EngineHandle>,
+    /// What the document still has to tell mail servers, on its way to the
+    /// engine.
+    server_outbox: Rc<RefCell<ServerOutbox>>,
+    /// The drain that fills the outbox, told when a server may now accept
+    /// what it refused (a fetch arrived, the engine reconnected).
+    projection: Option<ui::framework::Projection>,
     pending_send: Option<PendingSend>,
     /// Where account changes persist. The live app targets the real user config
     /// root; the sample / shots / test constructors target a throwaway sandbox
@@ -590,6 +618,8 @@ impl MailApp {
             setup_validation: None,
             setup_discovery: None,
             engine,
+            server_outbox: Rc::default(),
+            projection: None,
             pending_send: None,
             accounts_persist,
             persisted_active_account,
@@ -2401,7 +2431,11 @@ impl MailApp {
         messages: Vec<Message>,
     ) {
         let count = messages.len();
-        st.ingest_messages(doc, &messages);
+        st.ingest_fetched(doc, account_id, &messages);
+        // The server answered: what it refused before may go through now.
+        if let Some(projection) = &self.projection {
+            projection.outside_changed();
+        }
         for message in messages {
             st.mailbox.insert(message);
         }
@@ -2475,6 +2509,10 @@ impl MailApp {
         message: &str,
     ) {
         let detail = format!("{context}: {message}");
+        let refused = self.server_outbox.borrow_mut().sent.remove(&request_id);
+        if let Some((_, done)) = refused {
+            done(Err(detail.clone()));
+        }
         st.status = Some(detail.clone());
         let account_id = st.accounts.active_config().email;
         let lower = detail.to_ascii_lowercase();
@@ -2573,11 +2611,66 @@ impl MailApp {
                 // Only the worker acknowledgement settles a queued request:
                 // connect has two payloads and successful writes have none.
                 self.pending_engine_requests.remove(&request_id);
+                let sent = self.server_outbox.borrow_mut().sent.remove(&request_id);
+                if let Some((update, done)) = sent {
+                    st.dispatch_external(doc, &MailAction::ServerApplied(update));
+                    done(Ok(()));
+                }
             }
             ignored => {
                 tracing::warn!(request_id = %ignored.request_id(), "mail: ignoring unmatched or wrong-kind engine event");
             }
         }
+    }
+
+    /// Hand the server updates the projection asked for to the engine, each
+    /// on the account it belongs to. One this device cannot carry out (no
+    /// such account here, no engine) is refused; another device with the
+    /// account carries it out.
+    fn flush_server_outbox(&mut self) {
+        let queued = std::mem::take(&mut self.server_outbox.borrow_mut().queued);
+        for (update, done) in queued {
+            let account = self
+                .shared
+                .borrow()
+                .accounts
+                .accounts
+                .iter()
+                .find(|account| account.config.email == update.account())
+                .map(|account| account.config.clone());
+            let Some(account) = account else {
+                done(Err(format!(
+                    "{} is not set up on this device",
+                    update.account()
+                )));
+                continue;
+            };
+            let message = Box::new(update.locate());
+            let request = match &update {
+                ServerUpdate::Flags { .. } => EngineRequest::store_flag(account, message),
+                ServerUpdate::Move { to, .. } => EngineRequest::move_message(account, message, *to),
+                ServerUpdate::Remove { .. } => EngineRequest::purge(account, message),
+            };
+            match self.post_engine(request) {
+                Some(request_id) => {
+                    self.server_outbox
+                        .borrow_mut()
+                        .sent
+                        .insert(request_id, (update, done));
+                }
+                None => done(Err("the mail engine is not running".into())),
+            }
+        }
+    }
+
+    /// The outbox the projection drain fills.
+    pub(crate) fn server_outbox(&self) -> Rc<RefCell<ServerOutbox>> {
+        Rc::clone(&self.server_outbox)
+    }
+
+    /// Keep the drain that fills the outbox.
+    pub(crate) fn follow_projection(&mut self, projection: ui::framework::Projection) {
+        self.projection = Some(projection);
     }
 
     fn drain_engine(&mut self, doc: &mut AutoCommit) {
@@ -4889,6 +4982,7 @@ impl Widget for MailApp {
         // Drain any engine results first so freshly-fetched messages are present
         // before layout/draw.
         self.drain_engine(state);
+        self.flush_server_outbox();
         self.drain_setup_validation();
         self.drain_setup_discovery();
         // The host Save dialog runs off-thread; its outcome is applied here
@@ -6440,6 +6534,117 @@ mod tests {
         fn drain(&mut self) {
             self.app.drain_engine(&mut self.doc);
         }
+    }
+
+    /// What the document still has to tell the server goes to the engine on
+    /// the account it belongs to, and the engine's acknowledgement records it
+    /// as applied; a refusal leaves it to tell, and an update for an account
+    /// this device does not have is left to a device that has it.
+    #[test]
+    fn server_updates_go_to_the_engine_and_its_acknowledgement_settles_them() {
+        type Outcome = Rc<RefCell<Option<Result<(), String>>>>;
+        fn push(app: &MailApp, update: ServerUpdate) -> Outcome {
+            let outcome: Outcome = Rc::default();
+            let seen = Rc::clone(&outcome);
+            app.server_outbox().borrow_mut().push(
+                update,
+                Box::new(move |result| *seen.borrow_mut() = Some(result)),
+            );
+            outcome
+        }
+
+        let (mut app, mut doc) = app();
+        let (outgoing, outgoing_rx) = std::sync::mpsc::channel();
+        let (incoming, incoming_rx) = std::sync::mpsc::channel();
+        app.engine = Some(EngineHandle {
+            tx: outgoing,
+            rx: incoming_rx,
+        });
+        let id = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].id;
+        let message = {
+            let mut state = app.shared.borrow_mut();
+            let message = state.mailbox.get_mut(id).unwrap();
+            message.rfc_message_id = Some("launch@example.test".into());
+            message.clone()
+        };
+        app.shared.borrow().ingest_fetched(
+            &mut doc,
+            "you@example.test",
+            std::slice::from_ref(&message),
+        );
+        app.shared
+            .borrow_mut()
+            .set_read(&mut doc, id, !message.read);
+        let [update] = MailDoc::server_updates(&doc).try_into().unwrap();
+
+        let outcome = push(&app, update.clone());
+        app.flush_server_outbox();
+        let request = outgoing_rx
+            .try_recv()
+            .expect("the update went to the engine");
+        let EngineRequest::StoreFlag {
+            account,
+            message: located,
+            ..
+        } = &request
+        else {
+            panic!("a flag change is a flag store: {request:?}");
+        };
+        assert_eq!(account.email, "you@example.test");
+        assert_eq!(
+            located.rfc_message_id.as_deref(),
+            Some("launch@example.test")
+        );
+        assert_eq!(located.read, !message.read);
+        assert_eq!(located.folder, Folder::Inbox);
+
+        incoming
+            .send(EngineEvent::Error {
+                request_id: request.request_id(),
+                kind: EngineRequestKind::StoreFlag,
+                context: "flag".into(),
+                message: "connection reset".into(),
+            })
+            .unwrap();
+        app.drain_engine(&mut doc);
+        assert!(matches!(outcome.borrow().as_ref(), Some(Err(_))));
+        assert_eq!(
+            MailDoc::server_updates(&doc),
+            std::slice::from_ref(&update),
+            "still to tell"
+        );
+
+        let outcome = push(&app, update);
+        app.flush_server_outbox();
+        let request = outgoing_rx.try_recv().expect("retried");
+        incoming
+            .send(EngineEvent::Completed {
+                request_id: request.request_id(),
+                kind: EngineRequestKind::StoreFlag,
+            })
+            .unwrap();
+        app.drain_engine(&mut doc);
+        assert!(matches!(outcome.borrow().as_ref(), Some(Ok(()))));
+        assert!(
+            MailDoc::server_updates(&doc).is_empty(),
+            "the server has it"
+        );
+
+        let elsewhere = push(
+            &app,
+            ServerUpdate::Remove {
+                id: id.to_string(),
+                account: "nobody@example.test".into(),
+                locator: "launch@example.test".into(),
+                folder: Folder::Trash,
+            },
+        );
+        app.flush_server_outbox();
+        assert!(
+            outgoing_rx.try_recv().is_err(),
+            "nothing went to the engine"
+        );
+        assert!(matches!(elsewhere.borrow().as_ref(), Some(Err(_))));
     }
 
     #[test]
