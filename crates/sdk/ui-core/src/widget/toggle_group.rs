@@ -1343,14 +1343,19 @@ impl ToggleGroup {
         if face.disabled {
             scene.pop_layer();
         }
-        // Keyboard focus is your colour round the whole strip.
+        // Keyboard focus is your colour round the whole strip; on tabs, which
+        // may scroll past their room, round the chosen tab.
         if face.focused && !face.disabled {
+            let ring = match face.style {
+                SegmentedStyle::Tabs => segs.get(face.selected).copied().unwrap_or(outer),
+                SegmentedStyle::Segmented | SegmentedStyle::Quiet => outer,
+            };
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
                 theme.tokens.colors.intent.you,
                 None,
-                &crate::surface::edge_outline(outer, metrics.track_radius),
+                &crate::surface::edge_outline(ring, metrics.track_radius),
             );
         }
     }

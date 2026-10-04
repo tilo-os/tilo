@@ -308,7 +308,7 @@ fn control_specs() -> Vec<Spec> {
                 .with_enabled(st != St::Disabled),
             ),
         }),
-        filling("Weekdays", 72.0, |c, _| match c.st {
+        filling("Weekdays", 112.0, |c, _| match c.st {
             St::Error => None,
             st => boxed(
                 ToggleGroup::multiple(
@@ -594,8 +594,11 @@ fn photo_rgba(width: u32, height: u32) -> Vec<u8> {
 
 /// Draw one grid page: the state header, then each row's label and cells.
 fn grid_page(theme: &Theme, cols: &[Col], specs: &[Spec], out: &Path) {
+    // Rows grow with the text, so a page at 200 % text keeps its rows apart.
+    let grow = f64::from(theme.text_scale.max(1.0));
     let cell_w = (PAGE_W - 2.0 * MARGIN - LABEL_W) / cols.len() as f64;
-    let height = MARGIN * 2.0 + HEADER_H + specs.iter().map(|s| s.height).sum::<f64>();
+    let height =
+        MARGIN * 2.0 + HEADER_H * grow + specs.iter().map(|s| s.height * grow).sum::<f64>();
     let page = Rect::new(0.0, 0.0, PAGE_W, height);
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
@@ -617,22 +620,23 @@ fn grid_page(theme: &Theme, cols: &[Col], specs: &[Spec], out: &Path) {
             &caption,
         );
     }
-    let mut y = MARGIN + HEADER_H;
+    let mut y = MARGIN + HEADER_H * grow;
     let mut drawn = Vec::new();
     for spec in specs {
+        let row_h = spec.height * grow;
         let (_, label_h) = tr.measure_style(spec.name, None, &label_style);
         tr.draw_style(
             &mut scene,
             spec.name,
             theme.tokens.colors.text_dim,
-            Affine::translate((MARGIN, y + (spec.height - f64::from(label_h)) / 2.0)),
+            Affine::translate((MARGIN, y + (row_h - f64::from(label_h)) / 2.0)),
             None,
             &label_style,
         );
         for (i, col) in cols.iter().enumerate() {
             let x0 = MARGIN + LABEL_W + i as f64 * cell_w;
             // Leave a gutter between cells so nothing in one touches the next.
-            let cell = Rect::new(x0, y, x0 + cell_w - 16.0, y + spec.height);
+            let cell = Rect::new(x0, y, x0 + cell_w - 16.0, y + row_h);
             let mut canvas = Canvas {
                 scene: &mut scene,
                 tr: &mut tr,
@@ -642,7 +646,7 @@ fn grid_page(theme: &Theme, cols: &[Col], specs: &[Spec], out: &Path) {
             };
             drawn.extend(draw_cell(&mut canvas, cell, spec, *col));
         }
-        y += spec.height;
+        y += row_h;
     }
     // The top layer goes over every cell, as a window presents it.
     let presence = PresenceCtx::default();

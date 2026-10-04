@@ -173,6 +173,10 @@ pub struct Dropdown {
     theme_caption_height: f64,
     /// The width measured for the options in the latest layout.
     measured: f64,
+    /// The open list's width for its options, from the latest paint.
+    list_width: f64,
+    /// One row of the open list: a menu row, grown with its text.
+    item_h: f64,
     /// An option, the placeholder, the caption or the icon changed since the
     /// last layout, so the measured width may have.
     layout_dirty: bool,
@@ -224,6 +228,8 @@ impl Dropdown {
             caption_style: crate::tokens::typography::stock().style(TextRole::Caption),
             theme_caption_height: 0.0,
             measured: 0.0,
+            list_width: 0.0,
+            item_h: ITEM_HEIGHT,
             layout_dirty: true,
         }
     }
@@ -478,6 +484,11 @@ impl Dropdown {
         self.caption_style = theme.text(TextRole::Caption);
         self.theme_caption_height =
             caption_height_in(&self.caption_style, f64::from(theme.tokens.spacing.s1));
+        self.item_h = f64::from(theme.tokens.metrics.menu_row_height).max(
+            (f64::from(theme.text(TextRole::Body).line_height_px())
+                + 2.0 * f64::from(theme.tokens.spacing.s1))
+            .ceil(),
+        );
     }
 
     /// The narrowest field that shows every option, the placeholder and the
@@ -544,7 +555,7 @@ impl Dropdown {
         } else {
             CONTROL_HEIGHT
         };
-        control + LIST_GAP + Self::list_box_height(self.visible_count())
+        control + LIST_GAP + self.list_box_height(self.visible_count())
     }
 
     /// Position of the selected option within `filtered`, or 0.
@@ -570,13 +581,13 @@ impl Dropdown {
 
     /// Height of the open list box for `n` filtered rows (>=1 so the
     /// "no matches" row has a box to live in).
-    fn list_box_height(n: usize) -> f64 {
-        Self::rows_height(n) + 2.0 * LIST_PAD
+    fn list_box_height(&self, n: usize) -> f64 {
+        self.rows_height(n) + 2.0 * LIST_PAD
     }
 
     /// Height of the visible rows of the open list, inside its inset.
-    fn rows_height(n: usize) -> f64 {
-        (count_f64(n.max(1)) * ITEM_HEIGHT).min(MAX_LIST_HEIGHT)
+    fn rows_height(&self, n: usize) -> f64 {
+        (count_f64(n.max(1)) * self.item_h).min(MAX_LIST_HEIGHT.max(self.item_h))
     }
 
     /// The rows' box inside the open `list`.
@@ -596,13 +607,20 @@ impl Dropdown {
     /// Hit-testing and paint share this, so a flipped list is clickable
     /// where it is drawn.
     fn list_rect(&self, n: usize) -> Rect {
-        let h = Self::list_box_height(n);
+        let h = self.list_box_height(n);
         let viewport = self
             .viewport
             .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
+        // At least as wide as the field, and as its widest option with the
+        // check beside it.
+        let width = self
+            .rect
+            .width()
+            .max(self.list_width)
+            .min(viewport.width().max(1.0));
         crate::widget::floating_surface::place_anchored(
             self.rect,
-            (self.rect.width(), h),
+            (width, h),
             crate::widget::PopoverSide::Below,
             LIST_GAP,
             viewport,
@@ -610,9 +628,22 @@ impl Dropdown {
         .0
     }
 
-    fn max_scroll(n: usize) -> f32 {
-        let content = count_f64(n) * ITEM_HEIGHT;
-        px((content - Self::rows_height(n)).max(0.0))
+    /// The open list's width for its options: each row's label, the check,
+    /// the row insets and the menu inset either side.
+    fn measure_list(&mut self, text: &mut TextRenderer, theme: &Theme) {
+        let style = theme.text(TextRole::Body);
+        let widest = self
+            .options
+            .iter()
+            .map(|option| f64::from(text.measure_style(option, None, &style).0))
+            .fold(0.0, f64::max);
+        let check = f64::from(theme.tokens.metrics.icon_sm);
+        self.list_width = (widest + 3.0 * LIST_PAD + check + 2.0 * LIST_PAD).ceil();
+    }
+
+    fn max_scroll(&self, n: usize) -> f32 {
+        let content = count_f64(n) * self.item_h;
+        px((content - self.rows_height(n)).max(0.0))
     }
 
     /// Filtered-list row index under `pos`, or `None` outside `list`/`n` rows.
@@ -631,21 +662,21 @@ impl Dropdown {
             reason = "rel >= 0.0 is checked above; this cast is the intended \
                       floor-to-row-index conversion"
         )]
-        let vi = (rel / ITEM_HEIGHT) as usize;
+        let vi = (rel / self.item_h) as usize;
         (vi < n).then_some(vi)
     }
 
     /// Scroll so the row at filtered-position `vi` is fully visible.
     fn ensure_visible(&mut self, vi: usize, n: usize) {
-        let box_h = px(Self::rows_height(n));
-        let top = px(count_f64(vi) * ITEM_HEIGHT);
-        let bottom = top + px(ITEM_HEIGHT);
+        let box_h = px(self.rows_height(n));
+        let top = px(count_f64(vi) * self.item_h);
+        let bottom = top + px(self.item_h);
         if top < self.scroll {
             self.scroll = top;
         } else if bottom > self.scroll + box_h {
             self.scroll = bottom - box_h;
         }
-        self.scroll = self.scroll.clamp(0.0, Self::max_scroll(n));
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll(n));
     }
 
     /// Arm the next option after the highlighted one whose label starts
@@ -784,7 +815,7 @@ impl Dropdown {
             MouseScrollDelta::PixelDelta(p) => px(-p.y),
         };
         let n = self.filtered().len();
-        self.scroll = (self.scroll + dy).clamp(0.0, Self::max_scroll(n));
+        self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll(n));
         *handled = true;
     }
 
@@ -908,10 +939,14 @@ impl Widget for Dropdown {
         } else {
             0.0
         };
+        // Before its options are measured the width is left to `measure`,
+        // which the layout pass asks; afterwards it is pinned to them.
         let width = if self.fill {
             Dimension::percent(1.0)
-        } else {
+        } else if self.measured > 0.0 {
             Dimension::length(px(self.measured.max(PAD_X + CHEVRON_W)))
+        } else {
+            Dimension::auto()
         };
         let node = taffy.leaf_node(Style {
             size: Size {
@@ -1066,6 +1101,7 @@ impl Widget for Dropdown {
         if let Some(viewport) = presence.viewport.get() {
             self.viewport = Some(viewport);
         }
+        self.measure_list(text_renderer, theme);
         let filtered = self.filtered();
         let list = self.list_rect(filtered.len());
         // The open list is a floating Panel (HIG §9.1 / §9.5): the panel
@@ -1090,7 +1126,7 @@ impl Widget for Dropdown {
             // ascent/descent otherwise sits the label low in the row).
             let (_, hint_h) =
                 text_renderer.measure_style("No matches", None, &theme.text(TextRole::Body));
-            let ty = rows.y0 + (ITEM_HEIGHT - f64::from(hint_h)) / 2.0;
+            let ty = rows.y0 + (self.item_h - f64::from(hint_h)) / 2.0;
             text_renderer.draw_style(
                 scene,
                 "No matches",
@@ -1101,8 +1137,8 @@ impl Widget for Dropdown {
             );
         } else {
             for (vi, &opt_idx) in filtered.iter().enumerate() {
-                let row_top = rows.y0 + (count_f64(vi) * ITEM_HEIGHT) - f64::from(self.scroll);
-                let row_bottom = row_top + ITEM_HEIGHT;
+                let row_top = rows.y0 + (count_f64(vi) * self.item_h) - f64::from(self.scroll);
+                let row_bottom = row_top + self.item_h;
                 // Cull rows scrolled out of the box (hundreds of zones).
                 if row_bottom < rows.y0 || row_top > rows.y1 {
                     continue;
@@ -1139,7 +1175,7 @@ impl Widget for Dropdown {
                         crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                     );
                 }
-                // Rows are one `ITEM_HEIGHT` tall, so a long option elides
+                // Rows are one row tall, so a long option elides
                 // rather than wrapping into the row beneath it.
                 let shown = text_renderer.elide_to_width_style(
                     opt,
@@ -1148,7 +1184,7 @@ impl Widget for Dropdown {
                 );
                 let (_, opt_h) =
                     text_renderer.measure_style(&shown, None, &theme.text(TextRole::Body));
-                let ty = row_top + (ITEM_HEIGHT - f64::from(opt_h)) / 2.0;
+                let ty = row_top + (self.item_h - f64::from(opt_h)) / 2.0;
                 text_renderer.draw_style(
                     scene,
                     &shown,
@@ -1580,8 +1616,10 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) -> Rect {
         ctx.scene.pop_layer();
     }
 
-    // The trailing chevron, centred in its slot, from the one icon set.
-    let edge = f64::from(theme.tokens.metrics.icon_sm);
+    // The trailing chevron, centred in its slot, from the one icon set; it
+    // grows with the text.
+    let edge = (f64::from(theme.tokens.metrics.icon_sm) * f64::from(theme.text_scale.max(1.0)))
+        .min(CHEVRON_W - 2.0);
     let slot_center = Point::new(face.field.x1 - CHEVRON_W / 2.0, face.field.center().y);
     crate::icons::draw_icon(
         ctx.scene,
