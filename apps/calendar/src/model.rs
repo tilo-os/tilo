@@ -561,6 +561,15 @@ pub struct Model {
     /// The plain text of each event's and task's notes that hold any, for
     /// search.
     pub notes: std::collections::BTreeMap<Id, String>,
+    /// Events on a remote calendar whose latest version still waits to be
+    /// uploaded to its server.
+    pub push_queue: Vec<Id>,
+    /// Deleted items whose server copy still waits to be deleted, with the
+    /// remote calendar it lives in.
+    pub delete_queue: Vec<(String, Id)>,
+    /// Where each queued item lives on its server: the calendar, the
+    /// resource's href and the version (`ETag`) last seen there.
+    pub bindings: std::collections::BTreeMap<Id, (String, String, Option<String>)>,
 }
 
 impl Model {
