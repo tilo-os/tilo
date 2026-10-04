@@ -271,6 +271,7 @@ fn download_reporting_limited(
     let url = safe_download_url(url)?;
     let client = tilo_net::http::blocking_client()
         .user_agent("tilo-app/0.1")
+        .connect_timeout(Duration::from_secs(10))
         .timeout(download_timeout())
         // The publisher-signed URL is the only endpoint authorized to serve
         // these bytes. Following a redirect would silently widen that trust

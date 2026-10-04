@@ -118,6 +118,57 @@ fn room_named(tree: &WorkspaceTree, name: &str) -> RoomId {
 }
 
 #[test]
+fn an_enrolled_room_waits_for_its_name_before_publishing_to_other_devices() {
+    let (laptop_device, board_device) = person_with_two_devices();
+    let mut laptop = device_tree(LAPTOP, "Home");
+    let room = room_named(&laptop, "Home");
+    let mut board = WorkspaceTree::default();
+    board.set_salt_override(BOARD);
+    // Enrollment adopts this slot before a room snapshot or signed directory
+    // supplies its name. Use the same adoption path as join_enrolled_room.
+    assert!(board.adopt_personal_room(room, "From another device", &PERSON.to_string(), None));
+    assert_eq!(board.room_authority(room), RoomAuthority::Unpinned);
+    let mut laptop_list = list_for(&laptop_device);
+    let mut board_list = list_for(&board_device);
+
+    for _ in 0..2 {
+        assert!(!board_list.publish_local(&board, PERSON));
+        assert!(entries_of(&board_list.directory).is_empty());
+    }
+    // The enrolling device can hear from the new device first. Its real name
+    // must survive that signed, authenticated directory exchange.
+    deliver(
+        &mut board_list,
+        &board_device,
+        &board,
+        &mut laptop_list,
+        &mut laptop,
+    );
+    assert_eq!(room_named(&laptop, "Home"), room);
+    assert!(deliver(
+        &mut laptop_list,
+        &laptop_device,
+        &laptop,
+        &mut board_list,
+        &mut board,
+    ));
+    assert_eq!(room_named(&board, "Home"), room);
+    assert_eq!(board.room_authority(room), RoomAuthority::Unpinned);
+
+    // A directory-confirmed room can be renamed on the new device even if
+    // its first room snapshot has not arrived yet.
+    board.desktop.workspaces[0].name = "Projects".into();
+    assert!(deliver(
+        &mut board_list,
+        &board_device,
+        &board,
+        &mut laptop_list,
+        &mut laptop,
+    ));
+    assert_eq!(room_named(&laptop, "Projects"), room);
+}
+
+#[test]
 fn a_workspace_made_on_one_device_appears_on_the_other_with_its_content() {
     let (laptop_device, board_device) = person_with_two_devices();
     let mut laptop = device_tree(LAPTOP, "Research");
