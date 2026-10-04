@@ -40,6 +40,7 @@ members = [
     "crates/session/desktop",
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
+    "crates/browser/tilo-browser-compute",
     "crates/browser/tilo-browser-peer",
     "crates/hosting/tilo-room-service",
     "crates/hosting/tilo-moq",
