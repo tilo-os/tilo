@@ -113,7 +113,10 @@ impl AuditEntry {
 }
 
 /// The release policy stored under `tilo.continuity` on this device.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The master switch starts on: on its own it only lets this device's linked
+/// devices find each other on the local network. Every capability starts off.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -131,6 +134,24 @@ pub(crate) struct ContinuityPrivacy {
     pub(crate) typed_gamepad: bool,
     pub(crate) app_continuations: bool,
     pub(crate) audit: Vec<AuditEntry>,
+}
+
+impl Default for ContinuityPrivacy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            clipboard: false,
+            notifications: false,
+            wifi_settings: false,
+            media: false,
+            display_input: false,
+            file_transfer: false,
+            realtime_sessions: false,
+            typed_gamepad: false,
+            app_continuations: false,
+            audit: Vec::new(),
+        }
+    }
 }
 
 impl ContinuityPrivacy {
@@ -217,14 +238,15 @@ mod tests {
         // Case `privacy_sensitive_facets_are_opt_in_and_master_kill_switch_wins`.
         {
             let mut policy = ContinuityPrivacy::default();
+            assert!(policy.enabled);
             for capability in Capability::ALL {
                 assert!(!policy.allowed(capability));
                 assert!(!policy.effective(capability));
             }
             policy.set_allowed(Capability::Clipboard, true);
-            assert!(!policy.effective(Capability::Clipboard));
-            policy.enabled = true;
             assert!(policy.effective(Capability::Clipboard));
+            policy.enabled = false;
+            assert!(!policy.effective(Capability::Clipboard));
         }
 
         // Case `audit_schema_cannot_hold_payloads_tokens_or_device_addresses`.

@@ -1239,6 +1239,10 @@ pub struct ShellNetwork {
     live_room_peers: Mutex<std::collections::HashSet<(u64, iroh::EndpointId)>>,
     /// The device rows last published by [`Self::export_personal_presence`]
     /// and when.
+    /// Settings for local-network discovery of the person's linked
+    /// devices; `None` on loopback-only networks.
+    lan_discovery:
+        Option<tokio::sync::watch::Sender<crate::network::lan_discovery::LanDiscoveryConfig>>,
     last_presence_export: Mutex<
         Option<(
             std::time::Instant,
@@ -1454,67 +1458,6 @@ pub struct InboundPresence {
     pub ts: u64,
 }
 
-fn lan_discovery_requested() -> bool {
-    network_env("TILO_COLLAB_LAN_DISCOVERY").is_some_and(|(_, value)| value != "0")
-}
-
-/// Start mDNS LAN peer discovery when `TILO_COLLAB_LAN_DISCOVERY` requests
-/// it, registering it with `endpoint`'s address lookup. Returns `None`
-/// when discovery is disabled, disallowed by the env var, or the mDNS
-/// service or address-lookup registry is unavailable — the caller then
-/// simply skips [`spawn_lan_discovery_forwarding`].
-fn init_lan_discovery(
-    endpoint: &iroh::Endpoint,
-) -> Option<iroh_mdns_address_lookup::MdnsAddressLookup> {
-    if !lan_discovery_requested() {
-        return None;
-    }
-    let mdns = match iroh_mdns_address_lookup::MdnsAddressLookup::builder()
-        .service_name("tilo-collab-v1")
-        .build(endpoint.id())
-    {
-        Ok(mdns) => mdns,
-        Err(error) => {
-            tracing::warn!(%error, "LAN discovery requested but could not start");
-            return None;
-        }
-    };
-    let Ok(address_lookup) = endpoint.address_lookup() else {
-        tracing::warn!("LAN discovery requested but endpoint has no address lookup registry");
-        return None;
-    };
-    address_lookup.add(mdns.clone());
-    Some(mdns)
-}
-
-/// Forward every mDNS-discovered peer into `cmd_tx` as a
-/// `NetCmd::Connect`, on a task spawned onto `runtime`.
-fn spawn_lan_discovery_forwarding(
-    runtime: &tokio::runtime::Runtime,
-    mdns: iroh_mdns_address_lookup::MdnsAddressLookup,
-    cmd_tx: &mpsc::Sender<NetCmd>,
-) {
-    let discovery_tx = cmd_tx.clone();
-    runtime.spawn(async move {
-        use futures_util::StreamExt;
-        let mut events = mdns.subscribe().await;
-        while let Some(event) = events.next().await {
-            if let iroh_mdns_address_lookup::DiscoveryEvent::Discovered { endpoint_info, .. } =
-                event
-            {
-                let _ = discovery_tx
-                    .send(NetCmd::Connect {
-                        addr: endpoint_info.into_endpoint_addr(),
-                    })
-                    .await;
-            }
-        }
-    });
-    tracing::info!(
-        "peer-sync: privacy-sensitive LAN discovery enabled; advertising on _tilo-collab-v1._udp.local"
-    );
-}
-
 impl ShellNetwork {
     /// Build a tokio runtime, spawn the iroh [`Actor`], wrap the
     /// shared `WorkspaceTree` in a [`WorkspaceTreeReplica`], and
@@ -1573,10 +1516,6 @@ impl ShellNetwork {
                     .bind(),
             )
             .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?;
-        let mdns = match reach {
-            Reach::Internet => init_lan_discovery(&endpoint),
-            Reach::Loopback => None,
-        };
         tracing::info!(
             local_peer_id = %local_peer_id,
             addr = ?endpoint.addr(),
@@ -1593,15 +1532,23 @@ impl ShellNetwork {
             ))
             .ok()
         });
+        let lan_endpoint = match reach {
+            Reach::Internet => Some(endpoint.clone()),
+            Reach::Loopback => None,
+        };
         let (cmd_tx, _join) = Actor::spawn_reporting_addrs(
             endpoint,
             lookup,
             host_identity.clone(),
             Arc::clone(&listen_addrs),
         );
-        if let Some(mdns) = mdns {
-            spawn_lan_discovery_forwarding(&runtime, mdns, &cmd_tx);
-        }
+        let lan_discovery = lan_endpoint.map(|endpoint| {
+            crate::network::lan_discovery::spawn(
+                endpoint,
+                &ed25519_dalek::SigningKey::from_bytes(&keypair.to_bytes()),
+                cmd_tx.clone(),
+            )
+        });
 
         let relay_workspace_ids =
             relay_topics_for_home_peers(tree.read().rooms(), personal_continuity_user);
@@ -1713,6 +1660,7 @@ impl ShellNetwork {
             registered_home_peer_ids: Mutex::new(home_peer_ids),
             dialed_direct_peers: Mutex::new(dialed_direct_peers),
             live_room_peers: Mutex::new(std::collections::HashSet::new()),
+            lan_discovery,
             last_presence_export: Mutex::new(None),
             registered_home_device_ids: Mutex::new(home_device_ids),
             last_home_peer_refresh: Mutex::new(None),
@@ -3193,6 +3141,7 @@ impl ShellNetwork {
         // enrolled, with or without a relay. A missing or malformed relay
         // registry must not skip them.
         changed |= self.dial_direct_peers();
+        self.update_lan_discovery();
         self.export_personal_presence();
         let mut relay_workspace_ids = self
             .replica
@@ -3316,6 +3265,67 @@ impl ShellNetwork {
             }
         }
         changed
+    }
+
+    /// The linked devices local-network discovery may find and be found
+    /// by: the enrolled direct peers and the devices whose authenticated
+    /// fabric presence this session holds, minus this device and every
+    /// device named by a root-signed revocation this session knows. A
+    /// revocation counts whatever time it names: it is permanent.
+    fn lan_discovery_peers(&self) -> std::collections::BTreeSet<[u8; 32]> {
+        let Some(user) = self.personal_continuity_user else {
+            return std::collections::BTreeSet::new();
+        };
+        let local = *self.local_peer_id.as_bytes();
+        let mut peers: std::collections::BTreeSet<[u8; 32]> =
+            personal_device_peer_addrs(&personal_device_peer_path(), Some(local))
+                .into_iter()
+                .map(|addr| *addr.id.as_bytes())
+                .collect();
+        if let Ok(fabric) = self.device_fabric.lock() {
+            peers.extend(
+                fabric
+                    .snapshots()
+                    .keys()
+                    .filter_map(|device| decode_lower_hex_32(device.as_str())),
+            );
+        }
+        peers.remove(&local);
+        let locally_revoked: std::collections::HashSet<[u8; 32]> = self
+            .host_identity
+            .as_ref()
+            .map(|identity| {
+                identity
+                    .workspace_revocations
+                    .values()
+                    .flatten()
+                    .filter(|entry| entry.user_public_key == user)
+                    .map(|entry| entry.revoked_device_public_key)
+                    .collect()
+            })
+            .unwrap_or_default();
+        peers.retain(|device| {
+            !locally_revoked.contains(device)
+                && !self.peer_identities.is_revoked(&user, device, u64::MAX)
+        });
+        peers
+    }
+
+    /// Tell local-network discovery which devices to look for, and whether
+    /// the continuity switch allows it at all.
+    fn update_lan_discovery(&self) {
+        let Some(discovery) = &self.lan_discovery else {
+            return;
+        };
+        let config = crate::network::lan_discovery::LanDiscoveryConfig {
+            enabled: self.continuity_policy().enabled(),
+            peers: self.lan_discovery_peers(),
+        };
+        discovery.send_if_modified(|current| {
+            let changed = *current != config;
+            *current = config;
+            changed
+        });
     }
 
     fn refresh_home_peer_hosts_periodically(&self) {
@@ -6680,6 +6690,7 @@ pub(crate) fn shell_network_for_test(
         registered_home_peer_ids: Mutex::new(std::collections::HashSet::new()),
         dialed_direct_peers: Mutex::new(std::collections::HashSet::new()),
         live_room_peers: Mutex::new(std::collections::HashSet::new()),
+        lan_discovery: None,
         last_presence_export: Mutex::new(None),
         registered_home_device_ids: Mutex::new(std::collections::HashSet::new()),
         last_home_peer_refresh: Mutex::new(None),
@@ -7163,12 +7174,11 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn network_config_reads_tilo_names() {
-        const NAMES: [&str; 5] = [
+        const NAMES: [&str; 4] = [
             "TILO_PEER_KEY_PATH",
             "TILO_COLLAB_HOSTS",
             "TILO_COLLAB_HOST",
             "TILO_HOME_PEERS_PATH",
-            "TILO_COLLAB_LAN_DISCOVERY",
         ];
         let mut env = tilo_test_env::ScopedEnv::new();
         for name in NAMES {
@@ -7183,17 +7193,12 @@ mod tests {
         let tilo_hosts = serde_json::to_string(&vec![iroh::EndpointAddr::new(tilo_list_host)])
             .expect("Tilo host list");
 
-        env.set("TILO_COLLAB_LAN_DISCOVERY", "1");
-        assert!(lan_discovery_requested());
-
         env.set("TILO_PEER_KEY_PATH", &tilo_key_path)
             .set("TILO_COLLAB_HOSTS", tilo_hosts)
             .set("TILO_COLLAB_HOST", tilo_single_host.to_string())
-            .set("TILO_HOME_PEERS_PATH", &tilo_home_path)
-            .set("TILO_COLLAB_LAN_DISCOVERY", "0");
+            .set("TILO_HOME_PEERS_PATH", &tilo_home_path);
         assert_eq!(peer_key_path(), tilo_key_path);
         assert_eq!(home_peer_registry_path(), tilo_home_path);
-        assert!(!lan_discovery_requested());
         assert_eq!(
             configured_host_addrs()
                 .into_iter()

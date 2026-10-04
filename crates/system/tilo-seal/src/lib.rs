@@ -7,6 +7,8 @@
 //! * [`envelope`]: at-rest XChaCha20-Poly1305 envelopes under a symmetric
 //!   key or an Argon2id password, with a versioned header, 192-bit random
 //!   nonces, mandatory [`Context`] binding and key wrapping.
+//! * [`agreement`]: a static X25519 key two device keys share, for
+//!   recognising each other without exchanging a message first.
 //! * [`web`]: AES-256-GCM under an HKDF-SHA256 key, the wrap a browser
 //!   computes with `WebCrypto`, so native code opens what a page sealed.
 //!
@@ -29,6 +31,7 @@
     )
 )]
 
+pub mod agreement;
 pub mod envelope;
 pub mod error;
 pub mod hpke;

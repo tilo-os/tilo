@@ -6959,26 +6959,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iroh-mdns-address-lookup"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cad3dfcaddd5c3681bf0a42606498fc6e8891de793408dfbc46a9fbe76f370b3"
-dependencies = [
- "data-encoding",
- "derive_more",
- "futures-util",
- "iroh",
- "iroh-base",
- "n0-error",
- "n0-future",
- "n0-watcher",
- "swarm-discovery",
- "tokio",
- "tokio-stream",
- "tracing",
-]
-
-[[package]]
 name = "iroh-metrics"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13224,7 +13204,6 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-gossip",
- "iroh-mdns-address-lookup",
  "launcher",
  "legacy-agent-protocol",
  "libc",
@@ -13259,6 +13238,7 @@ dependencies = [
  "sha2 0.11.0",
  "smithay",
  "smithay-client-toolkit",
+ "swarm-discovery",
  "sysinfo",
  "taffy",
  "tar",

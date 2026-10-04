@@ -44,11 +44,14 @@ pub enum Label {
     UserRootWrap,
     /// One app's secret in a machine's file-backed secret store.
     FileSecretStore,
+    /// The pairwise key two of a person's devices use to recognise each
+    /// other's local-network advertisements.
+    LanDiscovery,
 }
 
 impl Label {
     /// Every registered label, for uniqueness checks and documentation.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::RelayEnrollOffer,
         Self::RelayEnrollRequest,
         Self::RelayEnrollResponse,
@@ -65,6 +68,7 @@ impl Label {
         Self::CloudHostSecret,
         Self::UserRootWrap,
         Self::FileSecretStore,
+        Self::LanDiscovery,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
@@ -87,6 +91,7 @@ impl Label {
             Self::CloudHostSecret => "tilo-seal/v1/cloud-host-secret",
             Self::UserRootWrap => "tilo-seal/v1/user-root-wrap",
             Self::FileSecretStore => "tilo-seal/v1/file-secret-store",
+            Self::LanDiscovery => "tilo-seal/v1/lan-discovery",
         }
     }
 
