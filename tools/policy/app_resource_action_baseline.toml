@@ -37,7 +37,6 @@
 "apps/ebook/src/resource.rs" = 2
 "apps/feeds/src/resource.rs" = 2
 "apps/file-explorer/src/resource.rs" = 2
-"apps/firewall/src/resource.rs" = 2
 "apps/git-client/src/resource.rs" = 2
 "apps/hex-editor/src/resource.rs" = 1
 "apps/imager/src/resource.rs" = 2
@@ -69,7 +68,6 @@
 "apps/video-player/src/resource.rs" = 2
 "apps/vpn/src/resource.rs" = 2
 "apps/weather/src/resource.rs" = 2
-"apps/windows/src/resource.rs" = 2
 
 [ratchets.standalone_launch]
 "apps/api-tester/src/lib.rs" = 2
@@ -93,7 +91,6 @@
 "apps/ebook/src/main.rs" = 1
 "apps/feeds/src/lib.rs" = 2
 "apps/feeds/src/main.rs" = 2
-"apps/firewall/src/main.rs" = 2
 "apps/git-client/src/main.rs" = 2
 "apps/hex-editor/src/lib.rs" = 2
 "apps/hex-editor/src/main.rs" = 2
@@ -129,7 +126,6 @@
 "apps/typst-editor/src/main.rs" = 1
 "apps/vpn/src/main.rs" = 2
 "apps/weather/src/main.rs" = 2
-"apps/windows/src/main.rs" = 1
 "apps/word-processor/src/main.rs" = 3
 
 [ratchets.direct_document_api]
