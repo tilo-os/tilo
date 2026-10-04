@@ -1701,6 +1701,7 @@ onboarding-nearby-connected = Verbunden. Deine Arbeitsbereiche erscheinen automa
 onboarding-nearby-invalid-identity = Dein anderes Gerät hat eine ungültige Identität geliefert. Wähle „Erneut versuchen“.
 onboarding-nearby-failed = Die Kopplung wurde nicht abgeschlossen: Das Kopplungsfenster wurde geschlossen oder die Freigabe abgebrochen. Wähle „Erneut versuchen“.
 onboarding-nearby-failed-detail = Die Kopplung wurde nicht abgeschlossen: { $detail }. Wähle „Erneut versuchen“.
+onboarding-nearby-timed-out = Die Kopplung wurde nicht abgeschlossen: Kein vertrauenswürdiges Gerät hat sie rechtzeitig freigegeben. Wähle „Erneut versuchen“.
 
 # Identitätseinrichtung: verschlüsselte Sicherung
 onboarding-backup-title = Deine Tilo-Identität sichern

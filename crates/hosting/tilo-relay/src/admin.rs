@@ -263,7 +263,7 @@ fn registered_home_peer_addr(
     service: [u8; 32],
 ) -> anyhow::Result<iroh_base::EndpointAddr> {
     let service_id = iroh_base::PublicKey::from_bytes(&service)?;
-    let path = identity_root.join("home-peers.json");
+    let path = tilo_relay::home_peer_registry_path(identity_root);
     let registrations: Vec<tilo_relay::HomePeerRegistration> =
         serde_json::from_slice(&std::fs::read(path)?)?;
     let registration = registrations
@@ -287,7 +287,7 @@ fn refresh_home_peer_endpoint(
     if endpoint.id.as_bytes() != &service || endpoint.is_empty() {
         anyhow::bail!("home peer returned an invalid relay endpoint advertisement");
     }
-    let path = identity_root.join("home-peers.json");
+    let path = tilo_relay::home_peer_registry_path(identity_root);
     let mut registrations: Vec<tilo_relay::HomePeerRegistration> =
         serde_json::from_slice(&std::fs::read(&path)?)?;
     let registration = registrations
@@ -349,7 +349,7 @@ fn cmd_home_peer_remove(
     fleet_revocations.push(intent.revocation.clone());
     tilo_relay::store::save_revocations(identity_root, &fleet_revocations)?;
     persist_fleet_revocation(&intent.revocation)?;
-    if identity_root.join("home-peers.json").exists() {
+    if tilo_relay::home_peer_registry_path(identity_root).exists() {
         update_home_peer_registry(identity_root, device, None)?;
     }
 
@@ -427,7 +427,7 @@ fn retry_pending_removals(identity_root: &std::path::Path) -> anyhow::Result<()>
         relay_revocations.push(intent.revocation.clone());
         tilo_relay::store::save_revocations(identity_root, &relay_revocations)?;
         persist_fleet_revocation(&intent.revocation)?;
-        if identity_root.join("home-peers.json").exists() {
+        if tilo_relay::home_peer_registry_path(identity_root).exists() {
             update_home_peer_registry(identity_root, &intent.device, None)?;
         }
         if remote_home_peer(
@@ -525,7 +525,7 @@ fn update_home_peer_registry(
     device: &str,
     new_label: Option<String>,
 ) -> anyhow::Result<()> {
-    let path = identity_root.join("home-peers.json");
+    let path = tilo_relay::home_peer_registry_path(identity_root);
     let bytes = std::fs::read(&path)?;
     if bytes.len() > 1024 * 1024 {
         anyhow::bail!("home-peer registry is too large");
