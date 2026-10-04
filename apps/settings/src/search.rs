@@ -1,122 +1,53 @@
-//! Settings panes as a Tilo global-search source.
+//! Settings panes as search entries.
 //!
-//! Mirrors the reference wiring in `apps/contacts`: Settings declares its
-//! searchable type by implementing `SearchProvider` over the static list of
-//! [`Category`] panes, so a settings screen is findable from the unified Ctrl+K
-//! palette by its title, summary, or any of its built-in keyword synonyms
-//! ("vpn", "night light", "wallpaper", …). Each result addresses the pane's
-//! stable exported `open` View action, so search, agents, accessibility and
-//! resource navigation all use the same brokered operation.
+//! Every [`Category`] pane is findable from the unified Ctrl+K palette by its
+//! title, summary, or any of its built-in keyword synonyms ("vpn", "night
+//! light", "wallpaper", …). Each entry invokes the pane's stable exported
+//! `open` View action, so search, agents, accessibility and resource
+//! navigation all use the same brokered operation.
 //!
 //! This indexes **panes** (navigation), not individual toggles — those are
-//! already exported to Ctrl+K as *actions* through the app's
-//! [`PublishesResources`](ui::resources::PublishesResources); giving pane results a
-//! distinct `Settings` kind keeps the two groups apart in the palette.
+//! already exported to Ctrl+K as *actions* through the app's resources.
 
-use tilo_actions::{ActionAddress, Resource};
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
+use ui::tilo_resource::SearchEntry;
 
 use crate::categories::Category;
 
-/// The kind label (and result-group header) Settings produces.
 pub const SETTINGS_KIND: &str = "Personal Settings";
 
-/// A `SearchProvider` over the complete Settings destination corpus.
-///
-/// The category list is small today, but it is still a durable namespace: an
-/// old continuation must not silently skip a category when a future build
-/// adds one.  Keep it in the toolkit's incremental catalogue rather than
-/// rebuilding/filtering a `Vec` on each keystroke.  That gives the palette a
-/// bounded cursor protocol now and keeps the implementation correct when the
-/// category corpus grows or gains dynamically discovered aliases.
-#[derive(Clone, Debug)]
-pub struct SettingsSearchProvider {
-    catalog: SearchCatalog,
-}
-
-impl Default for SettingsSearchProvider {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SettingsSearchProvider {
-    #[must_use]
-    pub fn new() -> Self {
-        let catalog = SearchCatalog::new(SETTINGS_KIND);
-        for category in Category::ALL.iter().copied() {
-            // The index contains every phrase people can use to find the
-            // destination.  The materialised hit stays intentionally lean;
-            // it resolves through the canonical `open` action below.
-            let label = category.label();
-            let subtitle = category.subtitle();
-            let searchable = [label.as_str(), subtitle.as_str()]
-                .into_iter()
-                .chain(category.keywords().iter().copied())
-                .collect::<Vec<_>>()
-                .join(" ");
-            let result = SearchResult::for_action(
-                SETTINGS_KIND,
-                &label,
-                crate::actions::open_pane_address(category),
-            )
-            .with_subtitle(&subtitle)
-            .with_icon(category.icon());
-            // Every input above is static, and the result uses precisely the
-            // same stable resource id, so this can only fail if a future
-            // edit violates the catalogue's canonical-address contract.
-            debug_assert!(
-                catalog
-                    .upsert(
-                        crate::actions::pane_resource_id(category),
-                        searchable,
-                        result
-                    )
-                    .is_ok(),
-                "settings search records must use their own canonical resource id"
-            );
-        }
-        Self { catalog }
-    }
-
-    /// Resolve a static Settings navigation resource without building the
-    /// full, current resource tree.  Dynamic setting values remain in the
-    /// ordinary tree, while a search hit only needs its canonical navigation
-    /// door.  Unknown categories/actions are deliberately refused rather than
-    /// falling back to a legacy navigation token.
-    fn resolve_navigation(address: &ActionAddress) -> Option<Resource> {
-        let category = Category::ALL
-            .iter()
-            .copied()
-            .find(|category| crate::actions::pane_resource_id(*category) == address.resource)?;
-        (address.action == crate::actions::OPEN_PANE_ACTION)
-            .then(|| crate::actions::pane_navigation_resource(category))
-    }
-}
-
-impl CatalogSearchProvider for SettingsSearchProvider {
-    fn provider_name(&self) -> &str {
-        SETTINGS_KIND
-    }
-
-    fn catalog(&self) -> Option<SearchCatalog> {
-        Some(self.catalog.clone())
-    }
-
-    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
-        Self::resolve_navigation(address)
-    }
+/// Every Settings pane as a search entry: found by its name, its summary and
+/// the words people use for it ("night light" finds Displays), each opening
+/// its pane.
+#[must_use]
+pub fn pane_entries() -> Vec<SearchEntry> {
+    Category::ALL
+        .iter()
+        .copied()
+        .map(|category| {
+            SearchEntry::new(category.label(), category.keywords().join(" "))
+                .invoking(crate::actions::open_pane_address(category))
+                .grouped(SETTINGS_KIND)
+                .subtitled(category.subtitle())
+                .with_icon(category.icon().name())
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_actions::ActionAddress;
     use ui::search::{SearchProvider, SearchRegistry};
+
+    /// The app's search source, as the framework builds it.
+    fn source() -> impl SearchProvider {
+        ui::framework::testing::search_source::<crate::resource::Settings>(pane_entries())
+    }
 
     /// Keyword synonyms, browsing and budgeted paging over one provider.
     #[test]
     fn pane_search_finds_keywords_browses_and_pages_every_pane() {
-        let provider = SettingsSearchProvider::new();
+        let provider = source();
         // "night light" is a Displays keyword synonym, not in the label.
         let hits = provider.search("night light");
         assert!(
@@ -159,7 +90,7 @@ mod tests {
     #[test]
     fn result_addresses_the_exported_open_action() {
         let mut registry = SearchRegistry::new();
-        registry.register(Box::new(SettingsSearchProvider::new()));
+        registry.register(Box::new(source()));
         let hit = registry
             .query("appearance")
             .into_iter()
@@ -180,14 +111,9 @@ mod tests {
         let config = crate::prefs::test_env::ScratchConfig::new();
 
         let mut app = config.app();
-        let providers = ui::search::capability::search_providers(&app);
-        assert!(
-            !providers.is_empty(),
-            "settings publishes a search provider"
-        );
         let mut doc = AutoCommit::new();
         let resources = ui::resources::resources(&app, &doc);
-        let hits = providers[0].search("");
+        let hits = source().search("");
         assert_eq!(hits.len(), Category::ALL.len());
 
         for (category, hit) in Category::ALL.iter().copied().zip(hits) {
