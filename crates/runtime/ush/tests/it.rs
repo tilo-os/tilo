@@ -5,6 +5,8 @@
 
 #[path = "host_serve.rs"]
 pub mod host_serve;
+#[path = "network.rs"]
+pub mod network;
 #[path = "serve_handoff.rs"]
 pub mod serve_handoff;
 #[path = "socket_activation.rs"]
