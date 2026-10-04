@@ -37,7 +37,6 @@
 "apps/imager/src/resource.rs" = 2
 "apps/logs/src/resource.rs" = 2
 "apps/mail/src/resource.rs" = 2
-"apps/maps/src/resource.rs" = 2
 "apps/music/src/resource.rs" = 2
 "apps/notes/src/resource.rs" = 1
 "apps/osk/src/resource.rs" = 2
@@ -48,7 +47,6 @@
 "apps/sheets/src/resource.rs" = 1
 "apps/slides/src/app.rs" = 1
 "apps/speed-test/src/resource.rs" = 1
-"apps/store/src/resource.rs" = 2
 "apps/terminal/src/main_body.rs" = 2
 "apps/themes/src/resource.rs" = 2
 "apps/tube/src/app.rs" = 2
@@ -81,8 +79,6 @@
 "apps/imager/src/main.rs" = 1
 "apps/logs/src/main.rs" = 2
 "apps/mail/src/main.rs" = 2
-"apps/maps/src/lib.rs" = 2
-"apps/maps/src/main.rs" = 2
 "apps/music/src/lib.rs" = 2
 "apps/osk/src/main.rs" = 1
 "apps/pdf-viewer/src/lib.rs" = 2
@@ -123,8 +119,6 @@
 "apps/camera/src/search.rs" = 2
 "apps/contacts/src/framework_history.rs" = 1
 "apps/diffmerge/src/framework_history.rs" = 1
-"apps/maps/src/app/interaction.rs" = 1
-"apps/maps/src/offline_panel.rs" = 1
 "apps/music/src/doc.rs" = 1
 "apps/notes/src/actions.rs" = 1
 "apps/notes/src/framework_history.rs" = 1
