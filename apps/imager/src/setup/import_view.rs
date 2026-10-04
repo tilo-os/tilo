@@ -3016,15 +3016,18 @@ pub(crate) enum JobOutcome {
 }
 
 impl JobOutcome {
-    /// The answer its caller receives.
-    fn into_answer(self) -> Result<tilo_actions::ActionOutput, String> {
-        match self {
+    /// Answer its caller: a failure keeps its code.
+    fn answer(self, reply: EffectReply) {
+        reply.answer(match self {
             Self::Succeeded { output } => Ok(output),
-            Self::Failed { error } => Err(error.message),
-            Self::Cancelled { message } => {
-                Err(message.unwrap_or_else(|| "Folder import stopped.".into()))
-            }
-        }
+            Self::Failed { error } => Err(error),
+            Self::Cancelled { message } => Err(tilo_actions::ActionFailure {
+                code: "cancelled".into(),
+                message: message.unwrap_or_else(|| "Folder import stopped.".into()),
+                details: None,
+                retryable: true,
+            }),
+        });
     }
 }
 
@@ -3038,7 +3041,7 @@ impl ImportApp {
         if let Some(outcome) = self.settle(cancelled)
             && let Some(reply) = self.reply.take()
         {
-            reply.finish(outcome.into_answer());
+            outcome.answer(reply);
         }
     }
 }

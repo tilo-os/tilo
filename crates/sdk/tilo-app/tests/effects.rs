@@ -516,6 +516,9 @@ pub enum FileEffect {
     /// Export what was fetched to a file.
     #[effect(job, returns)]
     Export,
+    /// Sync with a device that is busy.
+    #[effect(job)]
+    SyncDevice,
 }
 
 /// Imports and exports through the host's file chooser.
@@ -545,6 +548,16 @@ impl ResourceApp for FilesApp {
                     fetched.into_bytes(),
                     |(), saved, _| Ok(Effected::value(saved)),
                 ))
+            }
+            FileEffect::SyncDevice => {
+                cx.reply()
+                    .answer(Err(tilo_app::tilo_actions::ActionFailure {
+                        code: "device_busy".into(),
+                        message: "The device is busy".into(),
+                        details: None,
+                        retryable: true,
+                    }));
+                Ok(Effected::Pending)
             }
         });
         Box::new(cx.text(|mail| mail.fetched.clone()))
@@ -687,4 +700,49 @@ fn a_view_and_a_surface_start_jobs_nobody_invoked_and_the_latest_wins() {
     let capture = TestApp::<FetcherApp>::capture(None).unwrap();
     assert_eq!(capture.state().fetched, "");
     assert!(capture.state().outbox.is_empty());
+}
+
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "test.mailbox.device")]
+pub enum DeviceEffect {
+    /// Read the mail folder on this computer.
+    #[effect(device_only)]
+    ReadLocalFolder,
+    /// Count the messages.
+    Count,
+}
+
+#[test]
+fn a_device_only_effect_is_published_as_device_only() {
+    let decl = DeviceEffect::declarations()
+        .into_iter()
+        .map(|decl| (decl.id, decl.spec("test.mailbox.device")))
+        .collect::<Vec<_>>();
+    let tagged = |id: &str| {
+        decl.iter()
+            .find(|(declared, _)| *declared == id)
+            .unwrap()
+            .1
+            .contract
+            .tags
+            .iter()
+            .any(|tag| tag == tilo_app::tilo_actions::LOCAL_DEVICE_ONLY)
+    };
+    assert!(tagged("read-local-folder"));
+    assert!(!tagged("count"));
+    assert!(
+        LocalFolders::declarations()
+            .iter()
+            .all(|decl| decl.device_only),
+        "a vocabulary marked device-only marks every effect"
+    );
+}
+
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "test.mailbox.folders", device_only)]
+pub enum LocalFolders {
+    /// Watch a folder.
+    Watch { path: String },
+    /// Forget a folder.
+    Forget { path: String },
 }

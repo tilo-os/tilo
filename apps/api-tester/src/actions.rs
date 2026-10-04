@@ -70,7 +70,7 @@ pub const ENVIRONMENT_MENU_CHOICES: &[&str] =
 
 /// Work that reaches outside the document.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "api_tester.effects")]
+#[effect(operation = "api_tester.effects", device_only)]
 pub enum ApiTesterEffect {
     /// Send request
     #[effect(job)]
