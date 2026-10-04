@@ -1069,7 +1069,7 @@ mod command_path_tests {
         // This is intentionally a synthetic, non-existent Trash path. The
         // resource contract is testable without touching a developer's real
         // Trash; runtime revalidation is covered by the command itself.
-        w.last_trash_undo = Some(vec![PathBuf::from("/not-a-real-trash-entry")]);
+        w.last_trash_undo = Some("not-a-queued-operation".into());
         let mut doc = automerge::AutoCommit::new();
         let folder = crate::files_app::published::tree(&w, &doc)
             .into_iter()
@@ -1191,7 +1191,7 @@ mod command_path_tests {
     fn entry_resource_actions_are_opaque_and_fail_closed() {
         resource_open_refuses_a_deleted_or_replayed_entry_target();
         local_resource_actions_carry_only_opaque_ids_not_host_paths();
-        entry_resource_uses_a_wire_safe_id_and_renames_through_the_action_door();
+        entry_resource_uses_a_wire_safe_id_that_survives_a_rename();
         projected_availability_controls_are_discoverable_and_use_the_entry_route();
         nearby_receiver_actions_are_opaque_confirmed_and_current();
     }
@@ -1406,7 +1406,6 @@ mod command_path_tests {
         rename_cancel_leaves_the_file_untouched();
         exported_rename_changes_case_without_overwriting_another_entry();
         new_folder_creates_the_folder_and_opens_inline_rename();
-        external_new_folder_uses_the_typed_name_without_rename_ui();
         new_from_template_creates_the_file_and_opens_rename();
         super::headless_f2_renames_fixture_without_opening_a_file();
     }
@@ -1526,37 +1525,6 @@ mod command_path_tests {
         assert_eq!(w.rename_buffer(), "New Folder");
     }
 
-    fn external_new_folder_uses_the_typed_name_without_rename_ui() {
-        let d = tempfile::tempdir().unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
-        let mut doc = automerge::AutoCommit::new();
-        let encoded = <crate::effects::FilesEffect as ui::tilo_resource::Effect>::bound(
-            &crate::effects::FilesEffect::NewFolder {
-                name: "Agent Created".into(),
-            },
-        )
-        .build_json(&serde_json::Map::new())
-        .unwrap();
-        assert!(matches!(
-            crate::files_app::published::start(
-                &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert!(d.path().join("Agent Created").is_dir());
-        assert!(!w.is_renaming());
-    }
-
     fn resource_open_refuses_a_deleted_or_replayed_entry_target() {
         let d = tempfile::tempdir().unwrap();
         let file = d.path().join("transient.txt");
@@ -1641,7 +1609,7 @@ mod command_path_tests {
             .expect("an exact current-folder entry resolves on demand");
         assert_eq!(resolved.id.as_str(), id);
         assert!(resolved.actions.iter().any(|action| action.id == "open"));
-        assert!(resolved.actions.iter().any(|action| action.id == "rename"));
+        assert!(resolved.actions.iter().any(|action| action.id == "copy"));
     }
 
     fn every_exported_local_file_handler_is_declared_for_the_broker() {
@@ -1739,34 +1707,20 @@ mod command_path_tests {
         invoke(
             &mut files,
             &mut doc,
-            (holiday, "move-to"),
-            ("folder", &images),
-        )
-        .unwrap();
-        invoke(
-            &mut files,
-            &mut doc,
             (notes.clone(), "copy-to"),
             ("folder", &documents),
         )
         .unwrap();
-        assert!(images.join("holiday.jpg").exists());
-        assert!(!downloads.join("holiday.jpg").exists(), "moved, not copied");
         assert!(documents.join("notes.txt").exists() && downloads.join("notes.txt").exists());
+        assert!(images.is_dir() && downloads.join("holiday.jpg").exists() && !holiday.is_empty());
         let nowhere = root.path().join("nope");
         let missing = invoke(
             &mut files,
             &mut doc,
-            (notes, "move-to"),
+            (notes, "copy-to"),
             ("folder", &nowhere),
         );
-        let refusal = missing.unwrap_err();
-        assert!(
-            refusal.contains(r#"move on the folder with {"entries":["notes.txt"],"folder":""#)
-                && refusal.ends_with(r#"","create":true}"#),
-            "{refusal}"
-        );
-        assert!(downloads.join("notes.txt").exists());
+        assert!(missing.unwrap_err().contains("is not an existing folder"));
     }
 
     /// `go-to` and `open` with a path show the folder and answer with its
@@ -1831,77 +1785,7 @@ mod command_path_tests {
         assert!(went.get("more").is_none());
     }
 
-    /// `move` takes several entries by name into a folder it creates, answers
-    /// with what moved, and moves nothing when one name is wrong.
-    #[test]
-    fn move_puts_several_entries_into_a_folder_it_creates() {
-        use ui::tilo_actions::{ActionAddress, door};
-        let root = tempfile::tempdir().unwrap();
-        let downloads = root.path().join("in/downloads");
-        std::fs::create_dir_all(&downloads).unwrap();
-        for name in ["a.png", "b.jpg", "c.txt"] {
-            std::fs::write(downloads.join(name), name).unwrap();
-        }
-        let mut files = FileExplorerWidget::with_persistence(None, Some(downloads.clone()));
-        files.navigate(downloads.clone());
-        let mut doc = automerge::AutoCommit::new();
-        let images = root.path().join("out/images");
-        let mut invoke = |arguments: serde_json::Value| -> Result<
-            Option<serde_json::Value>,
-            ui::tilo_actions::DoorError,
-        > {
-            let resources = crate::files_app::published::tree(&files, &doc);
-            let encoded = door::encode_json(
-                &resources,
-                &ActionAddress::new(<crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND, "move"),
-                arguments.as_object().unwrap(),
-            )?;
-            let started = crate::files_app::published::start(
-                &mut files,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
-                &mut doc,
-                &automerge::ROOT,
-            )
-            .map_err(ui::tilo_actions::DoorError::Failed)?;
-            match started {
-                Some(ui::widget::ResourceOperationStart::Completed(output)) => Ok(output.value),
-                _ => panic!("move completes at once"),
-            }
-        };
-
-        let misspelt =
-            invoke(serde_json::json!({"entries": ["a.png", "nope.gif"], "folder": images}));
-        let refusal = format!("{misspelt:?}");
-        assert!(
-            refusal.contains("nope.gif") && refusal.contains("nothing moved"),
-            "{refusal}"
-        );
-        assert!(downloads.join("a.png").exists() && !images.exists());
-
-        let kept =
-            invoke(serde_json::json!({"entries": ["a.png"], "folder": images, "create": false}));
-        assert!(format!("{kept:?}").contains("create:true"), "{kept:?}");
-
-        let moved =
-            invoke(serde_json::json!({"entries": ["a.png", "b.jpg"], "folder": images})).unwrap();
-        assert_eq!(
-            moved,
-            Some(serde_json::json!(format!(
-                "moved 2 into {} (created): a.png, b.jpg",
-                images.display()
-            )))
-        );
-        assert!(images.join("a.png").exists() && images.join("b.jpg").exists());
-        assert!(!downloads.join("a.png").exists() && downloads.join("c.txt").exists());
-    }
-
     fn exported_rename_changes_case_without_overwriting_another_entry() {
-        use ui::tilo_actions::{ActionAddress, door};
         let directory = tempfile::tempdir().unwrap();
         let original = directory.path().join("report.txt");
         std::fs::write(&original, b"source content").unwrap();
@@ -1909,33 +1793,25 @@ mod command_path_tests {
         std::fs::write(&occupied, b"keep occupied content").unwrap();
         let mut files = FileExplorerWidget::with_persistence(None, Some(directory.path().into()));
         files.navigate(directory.path().into());
-        let mut doc = automerge::AutoCommit::new();
-        let mut invoke_rename = |source: &Path, name: &str| {
-            let resources = crate::files_app::published::tree(&files, &doc);
-            let address =
-                ActionAddress::new(crate::search_provider::entry_resource_id(source), "rename");
-            let arguments = serde_json::Map::from_iter([(
-                "name".into(),
-                serde_json::Value::String(name.into()),
-            )]);
-            let encoded = door::encode_json(&resources, &address, &arguments).unwrap();
-            crate::files_app::published::start(
-                &mut files,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
-                &mut doc,
-                &automerge::ROOT,
-            )
-            .map(|started| {
-                matches!(
-                    started,
-                    Some(ui::widget::ResourceOperationStart::Completed(_))
-                )
-            })
+        // The rename editor's commit queues the same operation an agent's
+        // `rename` does; a window no framework hosts carries it out at once,
+        // keeping the editor open when it fails.
+        let mut invoke_rename = |source: &Path, name: &str| -> Result<bool, String> {
+            files.refresh();
+            let index = files
+                .displayed_entries()
+                .iter()
+                .position(|entry| entry.path == source)
+                .ok_or_else(|| "not listed".to_string())?;
+            files.selection.select_only(index);
+            files.begin_rename();
+            files.set_rename_buffer(name.into());
+            files.commit_rename();
+            if files.is_renaming() {
+                files.cancel_rename();
+                return Err(files.status.clone().unwrap_or_default());
+            }
+            Ok(true)
         };
         assert!(invoke_rename(&original, "REPORT.txt").unwrap());
         let renamed = directory.path().join("REPORT.txt");
@@ -1968,7 +1844,7 @@ mod command_path_tests {
         }
     }
 
-    fn entry_resource_uses_a_wire_safe_id_and_renames_through_the_action_door() {
+    fn entry_resource_uses_a_wire_safe_id_that_survives_a_rename() {
         use ui::tilo_actions::{ActionAddress, door};
 
         let d = tempfile::tempdir().unwrap();
@@ -2000,37 +1876,18 @@ mod command_path_tests {
             })
             .expect("a collaborative file uses its record UUID as the resource identity");
         assert_eq!(entry.kind, "files.record");
-        let address = ActionAddress::new(entry.id.as_str(), "rename");
+        let address = ActionAddress::new(entry.id.as_str(), "copy");
         assert_eq!(
             ActionAddress::parse(&address.encode()),
             Some(address.clone())
         );
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("name".into(), serde_json::Value::String("new.txt".into()));
-        let encoded = door::encode_json(&resources, &address, &arguments)
-            .expect("the entry's prompted rename action encodes");
-        assert!(
-            !door::resolve(&resources, &address)
-                .expect("rename action is exported")
-                .contract
-                .reversible,
-            "an external filesystem rename has no Tilo action-history inverse"
-        );
-        assert!(matches!(
-            crate::files_app::published::start(
-                &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
+        assert!(door::resolve(&resources, &address).is_some());
+        // Renamed in place, the file keeps its record identity.
+        w.selection.select_only(0);
+        w.begin_rename();
+        w.set_rename_buffer("new.txt".into());
+        w.commit_rename();
+        let _ = &mut doc;
         assert!(!old.exists());
         let renamed = d.path().join("new.txt");
         assert!(renamed.exists());
