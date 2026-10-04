@@ -91,7 +91,8 @@ containerfile="$repo/os/Containerfile"
 # The release gate's greetd session-context check ships beside the other
 # booted-guest checks in /usr/libexec/tilo.
 # The image ships one login session and no peer-sync marker unit.
-# The release gate's input hotplug check ships beside them.
+# The release gate's input hotplug check and the device admin's action-model
+# check ship beside them.
 # The boot units gate ships with the rollback units whose confirmation it gates.
 # The ush supervisor ships with what it runs: the two relay helpers for
 # Terminal, and the legacy VM service behind app shims. The WPE engine overlay
@@ -99,10 +100,7 @@ containerfile="$repo/os/Containerfile"
 # app store and its Chromium engine a signed runtime bundle under
 # /usr/lib/tilo-runtime, both already copied.
 # NetworkManager's Wake-on-LAN default ships as a conf.d drop-in.
-# The sibling-unlock client (/usr/bin/tilo-sibling-unlock, through
-# components.toml) and its dracut module ship in the rollback-files overlay
-# beside tilo-rollback, which the initramfs carries the same way.
-expected_contract=3870adcd0ccee448fd2bcb53381739d16637f5a10b4033652af77806f81bc94d
+expected_contract=1ba8a0e023b9811a09a261bba40bfa8fbe322cf2c8009ab0217318525ae1b8de
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

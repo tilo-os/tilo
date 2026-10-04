@@ -51,7 +51,7 @@ Each script is < 50 lines of Python, no external deps (stdlib `socket` + `json` 
 Use `tilo-control` from the command line:
 
 ```bash
-cargo build -p shell --bin tilo-control
+cargo build -p tilo-control
 
 tilo-control list-targets                  # one row per addressable widget
 tilo-control click add_workspace           # click named

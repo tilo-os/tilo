@@ -237,6 +237,22 @@ node_named() {
     return 1
 }
 
+# An app the session opened writes its output to the compositor's session
+# log, not to the opener's stderr. A tree that stops changing after an
+# accepted action says nothing on its own about why (a panic, a window that
+# never presents a frame, a refused renderer); Files' own lines there do.
+report_session_app_log() {
+    local session_log="$HOME/.local/state/tilo/session-logs/latest.log"
+    [[ -n "$session_opener" ]] || return 0
+    if [[ ! -r "$session_log" ]]; then
+        echo "no session log at $session_log" >&2
+        return 0
+    fi
+    echo "Files in the session log:" >&2
+    grep -E 'so\.tilo\.file-explorer|tilo::app_launch' "$session_log" \
+        | tail -n 60 | cut -c1-400 >&2 || true
+}
+
 wait_for_names() {
     local expected missing attempt
     missing=""
@@ -253,6 +269,7 @@ wait_for_names() {
     echo "AT-SPI tree never exposed:$missing" >&2
     printf '%s\n' "$names" >&2
     sed -n '1,120p' "$smoke_dir/file-explorer.log" >&2
+    report_session_app_log
     return 1
 }
 

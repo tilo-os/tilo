@@ -117,6 +117,17 @@ pub struct VmEntry {
     pub firmware_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware_vars: Option<String>,
+    /// A device's hostname: when its address stops answering, tilo-vm
+    /// finds it again as `<hostname>.local`. Recorded whenever tilo-vm
+    /// reaches it (`vm add`, `vm status`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    /// A device's MAC on the network it was reached on, for `vm wake`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+    /// What can wake a device, as it reported when last reached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<crate::reach::WakeInfo>,
     /// A host-built kernel the VM boots directly instead of its disk's boot
     /// loader (`tilo-vm swap kernel --direct` on libvirt, or a manually
     /// prepared development bundle on WHPX). Cleared by

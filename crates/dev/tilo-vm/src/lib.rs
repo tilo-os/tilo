@@ -18,6 +18,7 @@ pub mod host;
 pub mod hypervisor;
 pub mod image;
 pub mod imageup;
+pub mod reach;
 pub mod receipt;
 pub mod remote;
 pub mod scenario;

@@ -1398,6 +1398,8 @@ pub struct ShellNetwork {
     inbound_remote_actions: Arc<Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>>,
     /// Local callers waiting for a remote-action answer from a device.
     remote_action_replies: crate::shell::remote_action_link::ReplyWaiters,
+    /// The suspend lease actions from the person's own devices renew.
+    remote_use: Mutex<crate::shell::remote_use::RemoteUseLease>,
     /// Authenticated legacy-surface control, frame, and input messages.
     /// Frames are coalesced per surface when the render loop falls behind,
     /// keeping network jitter from turning into unbounded compositor memory.
@@ -1829,6 +1831,7 @@ impl ShellNetwork {
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
             inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
             remote_action_replies: crate::shell::remote_action_link::ReplyWaiters::default(),
+            remote_use: Mutex::default(),
             inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             workspace_control_observers: Mutex::new(Vec::new()),
             peer_departures: Arc::new(PeerDepartureHistory::default()),
@@ -3017,6 +3020,14 @@ impl ShellNetwork {
             return;
         };
         if frame.message.is_request() {
+            if let tilo_actions::remote::RemoteActionMessage::Invoke(request) = &frame.message
+                && !identity.capabilities.foreign
+                && self
+                    .personal_continuity_user
+                    .is_some_and(|user| identity.is_same_user(&user))
+            {
+                self.note_remote_use(&identity.device_cert.device_label, request);
+            }
             let mut caller = tilo_actions::remote::Caller::authenticated(
                 identity.user_pubkey,
                 identity.device_pubkey,
@@ -3038,6 +3049,40 @@ impl ShellNetwork {
             self.drain_wake.poke();
         } else if !self.remote_action_replies.deliver(peer, &frame.message) {
             tracing::debug!(peer = %peer, "remote action answer nobody was waiting for");
+        }
+    }
+
+    /// Hold the session's idle-suspend off while the person works on this
+    /// machine from another of their devices; see
+    /// [`crate::shell::remote_use`].
+    pub fn attach_session_inhibitors(&self, registry: tilo_power_mgmt::InhibitRegistry) {
+        if let Ok(mut lease) = self.remote_use.lock() {
+            lease.attach(registry);
+        }
+    }
+
+    /// One of the person's own devices invoked an action here.
+    fn note_remote_use(&self, label: &str, request: &tilo_actions::remote::InvokeRequest) {
+        let renewal = self
+            .remote_use
+            .lock()
+            .map(|mut lease| lease.renew(label, std::time::Instant::now()));
+        // An audit line per invocation: who acted on this machine, and which
+        // action, never its resource or argument.
+        tracing::info!(
+            target: "tilo::remote_actions",
+            device = label,
+            provider = request.target.provider.as_str(),
+            action = request.target.address.action.as_str(),
+            "remote action from another of your devices"
+        );
+        if matches!(renewal, Ok(crate::shell::remote_use::Renewal::Taken)) {
+            tracing::info!(
+                target: "tilo::power",
+                device = label,
+                minutes = crate::shell::remote_use::REMOTE_USE_LEASE.as_secs() / 60,
+                "remote use keeps this device from idle-suspending"
+            );
         }
     }
 
@@ -6987,6 +7032,7 @@ pub(crate) fn shell_network_for_test(
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
         remote_action_replies: crate::shell::remote_action_link::ReplyWaiters::default(),
+        remote_use: Mutex::default(),
         inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         workspace_control_observers: Mutex::new(Vec::new()),
         peer_departures: Arc::new(PeerDepartureHistory::default()),
@@ -8774,6 +8820,7 @@ mod tests {
                 },
                 online: true,
                 last_seen_unix_ms: counter,
+                wake_routes: Vec::new(),
                 stamp: FabricStamp {
                     counter,
                     device: owner.clone(),

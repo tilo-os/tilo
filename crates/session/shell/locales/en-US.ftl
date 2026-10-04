@@ -1530,6 +1530,14 @@ search-apps-opening-body = Loading…
 # Search: continuity actions across your certified devices
 search-continuity-certified-device = certified device
 search-continuity-play-on = Play { $source } on { $target }
+search-continuity-wake-device = Wake a device
+search-continuity-wake-device-subtitle = Sends a wake-up signal from a device on its network
+device-wake-app-name = Devices
+device-wake-rejoined = { $device } is awake
+device-wake-not-rejoined = { $device } did not wake up
+device-wake-not-rejoined-body = It got a wake-up signal but has not come back. It may be off or out of power.
+device-wake-failed = { $device } could not be woken
+device-wake-failed-body = No wake-up signal could be sent on its network.
 search-continuity-media-handoff-subtitle = Move this live media session to an exact certified device
 search-continuity-media-cancel = Cancel moving { $media }
 search-continuity-media-retry = Retry moving { $media }

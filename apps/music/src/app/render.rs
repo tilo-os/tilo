@@ -918,7 +918,10 @@ impl Widget for MusicApp {
     );
 
     fn take_structure_dirty(&mut self) -> bool {
-        self.open_file_layout_visible != Some(matches!(self.view, View::Home))
+        // Reported once: an app that is not rebuilt right away (a tab behind
+        // another) must not ask again on every frame.
+        let visible = Some(matches!(self.view, View::Home));
+        std::mem::replace(&mut self.open_file_layout_visible, visible) != visible
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
