@@ -1321,7 +1321,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # Audio/Video
+# alsa-ucm: the per-machine ALSA profiles PipeWire opens DSP sound cards with
+# (Qualcomm X1E, Intel SOF). Without one such a card lists no sink or source
+# (os/tests/board_audio_contract.sh).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    alsa-ucm \
     pipewire \
     pipewire-pulseaudio \
     pipewire-utils \
@@ -2038,13 +2042,16 @@ COPY \
 # source-pinned receiver simulator. No receiver hardware or live network is
 # involved, but an empty/control-plane-only session fails the stats assertions.
 COPY os/tests/airplay-encrypted-session.sh /usr/libexec/tilo/airplay-encrypted-session-test.sh
-COPY os/tests/projection-boot-check.sh /usr/libexec/tilo/projection-boot-check.sh
+# The session-context check proves a greetd login runs in the user's SELinux
+# domain and logind session scope, with each launched app in its own scope.
+COPY os/tests/projection-boot-check.sh os/tests/session-context-check.sh /usr/libexec/tilo/
 # Optional AirPlay media acceptance runs against the assembled image separately.
 # Its setup/probe timing is not an installation prerequisite. Keep the full
 # protocol/media/teardown test available; omitting it here does not claim success.
 # Native protocol tests and the GStreamer plugin checks above remain required.
 RUN chmod 0755 /usr/libexec/tilo/airplay-encrypted-session-test.sh \
-          /usr/libexec/tilo/projection-boot-check.sh
+          /usr/libexec/tilo/projection-boot-check.sh \
+          /usr/libexec/tilo/session-context-check.sh
 
 # Put both stores' command shims on PATH, so a package that declares CLI
 # commands can be run by name — the only way a CLI package is meant to be run.
@@ -2458,7 +2465,6 @@ RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-pr
 # 72-joycond.rules pulls it in when a Joy-Con appears, so it stays off the
 # boot path and off machines that never see one.
 RUN systemctl enable greetd.service && \
-    restorecon -v /usr/lib/systemd/user/tilo-graphical-session.target && \
     systemctl disable NetworkManager.service firewalld.service chronyd.service && \
     # Fedora's presets start these at boot, ordered before multi-user.target or
     # graphical.target. They start on demand instead: ModemManager and

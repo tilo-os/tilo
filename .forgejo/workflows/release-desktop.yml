@@ -51,7 +51,7 @@ env:
 
 jobs:
   validate:
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 30
     outputs:
       matrix: ${{ steps.lanes.outputs.matrix }}

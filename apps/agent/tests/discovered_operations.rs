@@ -50,10 +50,25 @@ fn granted(name: &str, app: &str) -> ui::permissions::PermissionContext {
     )
 }
 
-/// Nothing granted at all: the agent may enumerate and perform nothing.
-fn nothing_granted(name: &str) -> ui::permissions::PermissionContext {
-    use ui::permissions::{Actor, PermissionContext};
-    PermissionContext::from_capabilities(Actor::agent(name), vec![])
+/// Leave to answer in the document and nothing else: the agent may write
+/// its reply (one typed edit, or several as one) and enumerate and perform
+/// none of the app's own operations.
+fn only_answering(name: &str) -> ui::permissions::PermissionContext {
+    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    let answer = |action: &str| {
+        CapOverride::grant(
+            Subject::agent(name),
+            Scope::Action {
+                app: APP.to_string(),
+                action: action.to_string(),
+            },
+            Verb::Write,
+        )
+    };
+    PermissionContext::from_capabilities(
+        Actor::agent(name),
+        vec![answer(tilo_resource::APPLY), answer(tilo_resource::GROUP)],
+    )
 }
 
 /// A title paragraph, an image, and one instruction naming an operation the
@@ -102,8 +117,23 @@ fn word_processor_resources(doc: &AutoCommit, content: &ContentStore) -> Vec<Res
     )
 }
 
+/// The open photograph as Photos publishes it in its library's tree: the
+/// one resource this scenario edits, so the catalogue the agent plans
+/// against stays small.
 fn photos_resources(doc: &AutoCommit) -> Vec<Resource> {
-    photos::actions::PhotosResources.publish_resources(doc)
+    tilo_agent::surface::tree(
+        tilo_agent::surface::for_app_id("so.tilo.photos").expect("Photos is spoken to"),
+        doc,
+    )
+    .into_iter()
+    .flat_map(|library| library.children)
+    .filter(|child| {
+        child
+            .actions
+            .iter()
+            .any(|action| action.id == "rotate-right")
+    })
+    .collect()
 }
 
 /// Bring up the relay, seed `replica`, connect a peer under it, and run the
@@ -266,7 +296,7 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
                 await_document: Duration::ZERO,
                 settle: Duration::ZERO,
                 directory: None,
-                permissions: granted("Scribe", "word-processor"),
+                permissions: granted("Scribe", APP),
                 content: ContentStore::memory(),
             },
             replica,
@@ -345,7 +375,7 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
                 await_document: Duration::ZERO,
                 settle: Duration::ZERO,
                 directory: None,
-                permissions: nothing_granted("Scribe"),
+                permissions: only_answering("Scribe"),
                 content: ContentStore::memory(),
             },
             replica,
@@ -417,7 +447,7 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
                 await_document: Duration::ZERO,
                 settle: Duration::ZERO,
                 directory: None,
-                permissions: granted("Scribe", "word-processor"),
+                permissions: granted("Scribe", APP),
                 content: ContentStore::memory(),
             },
             replica,
@@ -669,13 +699,13 @@ fn word_processor_and_photos_permissions() -> ui::permissions::PermissionContext
         vec![
             CapOverride::grant(
                 Subject::agent("Scribe"),
-                Scope::App("word-processor".to_string()),
+                Scope::App("so.tilo.word-processor".to_string()),
                 Verb::Write,
             )
             .with_id("wp"),
             CapOverride::grant(
                 Subject::agent("Scribe"),
-                Scope::App("photos".to_string()),
+                Scope::App("so.tilo.photos".to_string()),
                 Verb::Write,
             )
             .with_id("photos"),
@@ -735,21 +765,16 @@ fn drive_photo_peer(
             } => {
                 let resources = photos_resources(&photo_replica);
                 let update = if action == photos::actions::EXPORT_EDITED_CONTENT_ACTION_ID {
-                    let encoded = resources
-                        .iter()
-                        .find(|candidate| candidate.id.as_str() == resource)
-                        .and_then(|candidate| {
-                            candidate
-                                .actions
-                                .iter()
-                                .find(|candidate| candidate.id == action)
-                        })
-                        .and_then(|spec| match &spec.input {
-                            tilo_actions::ActionInput::Immediate(encoded) => Some(encoded),
-                            tilo_actions::ActionInput::Prompted { .. }
-                            | tilo_actions::ActionInput::Deferred { .. } => None,
-                        })
-                        .expect("the published export has one immediate operation payload");
+                    let encoded = tilo_actions::door::resolve(
+                        &resources,
+                        &ActionAddress::new(resource.clone(), action.clone()),
+                    )
+                    .and_then(|spec| match &spec.input {
+                        tilo_actions::ActionInput::Immediate(encoded) => Some(encoded),
+                        tilo_actions::ActionInput::Prompted { .. }
+                        | tilo_actions::ActionInput::Deferred { .. } => None,
+                    })
+                    .expect("the published export has one immediate operation payload");
                     let result =
                         photos::actions::decode_operation(&encoded.type_id, &encoded.payload)
                             .and_then(|operation| match operation {

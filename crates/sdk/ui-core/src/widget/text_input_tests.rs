@@ -1888,6 +1888,170 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
 }
 
 #[test]
+fn secret_field_carries_a_focusable_show_hide_control() {
+    use crate::a11y::{Action, Role};
+
+    // Case `secret_is_hidden_by_default_with_a_named_show_control`.
+    {
+        let mut ti = TextInput::local()
+            .with_secret(true)
+            .with_initial_value("hunter2");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 40.0));
+        assert!(!ti.is_revealed(), "a secret starts hidden");
+        assert_eq!(ti.display_text(), "•••••••");
+        assert!(ti.has_reveal_control());
+        let control = ti.reveal_control_rect().unwrap();
+        assert_eq!(
+            control,
+            Rect::new(200.0, 0.0, 240.0, 40.0),
+            "trailing square"
+        );
+
+        let children = Widget::children(&ti);
+        assert_eq!(children.len(), 1, "the control is a real child widget");
+        let child = children.first().unwrap();
+        assert!(child.is_focusable(), "keyboard reaches the control");
+        let node = child.accessibility().unwrap();
+        assert_eq!(node.role, Role::Button);
+        assert_eq!(node.name.as_deref(), Some("Show password"));
+        assert_eq!(
+            Widget::tooltip_target_at(&ti, control.center()).map(|(_, tip)| tip),
+            Some("Show password".to_string())
+        );
+        assert_eq!(
+            Widget::cursor_shape(&ti, control.center()),
+            Some(winit::window::CursorIcon::Pointer)
+        );
+    }
+
+    // Case `activating_the_control_toggles_glyphs_and_its_name_only`.
+    {
+        let mut ti = TextInput::local()
+            .with_secret(true)
+            .with_initial_value("hunter2");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 40.0));
+        let mut doc = AutoCommit::new();
+        let activated = Widget::children_mut(&mut ti)
+            .into_iter()
+            .next()
+            .unwrap()
+            .perform_action(&Action::Activate, &mut doc, &automerge::ROOT);
+        assert!(activated, "Enter/Space and AT activation toggle");
+        assert!(ti.is_revealed());
+        assert_eq!(ti.display_text(), "hunter2");
+        let child = Widget::children(&ti).into_iter().next().unwrap();
+        assert_eq!(
+            child.accessibility().unwrap().name.as_deref(),
+            Some("Hide password")
+        );
+        let field = Widget::accessibility(&ti).unwrap();
+        assert_eq!(field.value, None, "revealing never exposes the value");
+        assert!(field.state.protected);
+        assert!(Widget::text_review(&ti).is_none());
+        assert!(
+            doc.keys(&automerge::ROOT).next().is_none(),
+            "nothing persisted"
+        );
+
+        let _ = Widget::children_mut(&mut ti)
+            .into_iter()
+            .next()
+            .unwrap()
+            .perform_action(&Action::Activate, &mut doc, &automerge::ROOT);
+        assert!(!ti.is_revealed(), "a second activation hides it again");
+    }
+
+    // Case `pointer_toggle_keeps_focus_and_caret_in_the_field`.
+    {
+        let mut ti = TextInput::local()
+            .with_secret(true)
+            .with_initial_value("hunter2");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 40.0));
+        ti.set_focus(true);
+        draw_to_populate(&mut ti);
+        let caret = ti.cursor_pos();
+        let mut doc = AutoCommit::new();
+        let target = ti.reveal_control_rect().unwrap().center();
+        drive(
+            &mut ti,
+            &mut doc,
+            &mouse_move(target.x, target.y),
+            mods(false, false),
+        );
+
+        let mut handled = false;
+        let mut focus_target = None;
+        let (taffy, node) = test_node();
+        for event in [left_press(), left_release()] {
+            ti.handle_event(
+                &event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods(false, false),
+                    state: &mut doc,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+        }
+        assert!(handled);
+        assert!(ti.is_revealed(), "a click reveals");
+        assert_eq!(focus_target, None, "the click does not move focus");
+        assert!(ti.is_focused());
+        assert_eq!(ti.cursor_pos(), caret, "the caret stays where it was");
+
+        let tap = Point::new(target.x, target.y);
+        drive(
+            &mut ti,
+            &mut doc,
+            &touch(TouchPhase::Started, 7, tap),
+            mods(false, false),
+        );
+        drive(
+            &mut ti,
+            &mut doc,
+            &touch(TouchPhase::Ended, 7, tap),
+            mods(false, false),
+        );
+        assert!(!ti.is_revealed(), "a tap hides it again");
+    }
+
+    // Case `tab_order_visits_the_text_then_the_control`.
+    {
+        let mut ti = TextInput::local().with_secret(true);
+        let mut taffy = TaffyTree::new();
+        let mut node_map = std::collections::HashMap::new();
+        let root = ti.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let (order, trapped) = crate::focus_navigation::order(root, &ti, &taffy);
+        assert!(!trapped);
+        assert_eq!(order.len(), 2, "field, then its show/hide control");
+        assert_eq!(order.first(), Some(&root));
+        assert_eq!(order.get(1), taffy.children(root).unwrap().first());
+    }
+
+    // Case `only_single_line_secrets_carry_the_control`.
+    {
+        let plain = TextInput::local();
+        assert!(!plain.has_reveal_control());
+        assert!(Widget::children(&plain).is_empty());
+        let multiline = TextInput::local().with_secret(true).multiline(true);
+        assert!(!multiline.has_reveal_control());
+    }
+
+    // Case `a_disabled_secret_offers_no_reachable_control`.
+    {
+        let mut ti = TextInput::local().with_secret(true).disabled(true);
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 40.0));
+        let child = Widget::children(&ti).into_iter().next().unwrap();
+        assert!(!child.is_focusable());
+        assert!(child.accessibility().unwrap().state.disabled);
+    }
+}
+
+#[test]
 fn accessibility_exposes_role_name_value_and_grapheme_actions() {
     // Case `accessibility_reports_text_input_role_and_value`.
     {

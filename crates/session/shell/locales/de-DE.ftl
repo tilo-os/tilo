@@ -18,6 +18,9 @@ tab-closed-group-toast = { $count } Tabs geschlossen
 tab-closed-undo = Rückgängig
 tab-closed-undo-hint = Zum Rückgängigmachen auswählen oder später { $chord } drücken
 tab-closed-undo-hint-unbound = Zum Rückgängigmachen auswählen
+workspace-deleted-toast = { $name } gelöscht
+workspace-deleted-toast-hint = Zum Rückgängigmachen auswählen
+workspace-deleted-undo = Rückgängig
 
 # Anzeigeanordnung (Super+P)
 display-sheet-title = Anzeige

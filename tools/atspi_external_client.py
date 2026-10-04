@@ -349,23 +349,26 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
         path for path in AtspiClient.named(tree, row_name)
         if "'click'" in shell.call(path, "org.a11y.atspi.Action.GetActions", check=False)
     ]
-    accepted = False
     for row in rows:
         result = shell.call(row, "org.a11y.atspi.Action.DoAction", "0", check=False)
         if "true" not in result:
             continue
-        accepted = True
         # One accepted activation launches the app; wait for it rather than
         # launching a second copy from another row.
-        deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            for bus, pid in bus_pids(address).items():
-                if bus in before:
-                    continue
-                if is_app_connection(AtspiClient(address, bus)):
-                    return bus, app_process(pid)
-            time.sleep(POLL_SECONDS * 4)
-        break
+        return wait_for_new_app(address, before, app_name)
+    raise GateError(f"no {row_name!r} row accepted its activation; session log: {app_log(app_name)}")
+
+
+def wait_for_new_app(address: str, before: set[str], app_name: str) -> tuple[str, int]:
+    """The app connection that joined the bus after BEFORE was taken."""
+    deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        for bus, pid in bus_pids(address).items():
+            if bus in before:
+                continue
+            if is_app_connection(AtspiClient(address, bus)):
+                return bus, app_process(pid)
+        time.sleep(POLL_SECONDS * 4)
     seen = []
     for bus, pid in sorted(bus_pids(address).items()):
         if bus in before:
@@ -376,13 +379,34 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
         except GateError as error:
             name = f"no application node: {error}"
         seen.append(f"{bus} (pid {pid}, process {process} {process_command(process)}): {name}")
-    if not accepted:
-        raise GateError(f"no {row_name!r} row accepted its activation; session log: {app_log(app_name)}")
     raise GateError(
         f"{app_name!r} was opened but never appeared on the AT-SPI bus; "
         f"new connections: {'; '.join(seen) or 'none'}; "
         f"session log: {app_log(app_name)}"
     )
+
+
+def open_from_launchpad_card(address: str, card: str, app_name: str) -> tuple[str, int]:
+    """Activate the empty workspace's CARD and require that it opens APP_NAME
+    itself. A card that only pre-fills the app launcher starts nothing, so
+    no app joins the bus and this fails."""
+    shell = shell_client(address)
+    before = set(bus_pids(address))
+    _, node = wait_for_shell_node(shell, card)
+    result = shell.call(node, "org.a11y.atspi.Action.DoAction", "0")
+    if "true" not in result:
+        raise GateError(f"AT-SPI launchpad card {card!r} was rejected: {result.strip()}")
+    bus, pid = wait_for_new_app(address, before, app_name)
+    # The application node is named after the executable; a sandboxed one is
+    # behind its proxy, so its command line names it too.
+    root_name = AtspiClient(address, bus).property(ROOT_PATH, "Name")
+    if app_name.lower() not in f"{root_name} {process_command(pid)}".lower():
+        close_app(pid)
+        raise GateError(
+            f"launchpad card {card!r} opened {root_name.strip()} "
+            f"({process_command(pid)}), not {app_name}"
+        )
+    return bus, pid
 
 
 def close_app(pid: int) -> None:
@@ -551,6 +575,11 @@ def main() -> int:
     typed = sub.add_parser("typed", help="check the document `type-into` opened holds exactly TEXT")
     typed.add_argument("text")
     typed.add_argument("--state", type=Path, required=True)
+    card = sub.add_parser(
+        "card", help="activate a launchpad card on the empty workspace; require that it opens its app",
+    )
+    card.add_argument("card_name")
+    card.add_argument("app_name")
     args = parser.parse_args()
     for executable in ("busctl", "gdbus"):
         if not shutil.which(executable):
@@ -567,6 +596,11 @@ def main() -> int:
             return 0
         if args.command == "typed":
             check_typed(address, args.state, args.text)
+            return 0
+        if args.command == "card":
+            _bus_name, pid = open_from_launchpad_card(address, args.card_name, args.app_name)
+            close_app(pid)
+            print(f"AT-SPI external client passed: launchpad card {args.card_name!r} opened {args.app_name}")
             return 0
         for scenario, _binary in installed_scenarios(args.payload_root):
             exercise(scenario, address)
