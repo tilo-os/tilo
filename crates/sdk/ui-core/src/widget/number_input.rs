@@ -19,7 +19,12 @@
 //! Automatic dimensions use a text-scaled compact minimum and grow horizontally
 //! to fit the formatted value, field padding and steppers. [`NumberInput::with_size`]
 //! keeps an explicit logical allocation; long values then scroll in the field.
+//!
+//! [`NumberStepperFace`] paints the same steppers (and, inline, the value
+//! between them) for a painted host that lays its own rows, so a stepper
+//! drawn by hand is the one the widget draws.
 
+use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -151,6 +156,228 @@ fn px_f32(v: f64) -> f32 {
 )]
 fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
+}
+
+/// One of a stepper's two buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepperPart {
+    /// The `−` button, at the leading end.
+    Decrease,
+    /// The `+` button, at the trailing end.
+    Increase,
+}
+
+/// Immediate-mode number stepper: `−  value  +`, the face of a
+/// [`NumberInput`]. Inline (the default) it is the toolbar stepper of
+/// [`NumberInput::compact`], bare steppers either side of the value;
+/// [`Self::framed`] gives the secondary steppers of the framed control,
+/// whose value the host's field draws.
+///
+/// The steppers are squares of the rect's height at either end; read their
+/// geometry from [`Self::steppers`] and their pointer targets from
+/// [`Self::hit_rects`], so a painted host hit-tests what it painted.
+#[derive(Clone, Copy, Debug)]
+pub struct NumberStepperFace<'a> {
+    rect: Rect,
+    value: &'a str,
+    names: (&'a str, &'a str),
+    control_size: crate::widget::ControlSize,
+    framed: bool,
+    hovered: Option<StepperPart>,
+    disabled: bool,
+}
+
+impl<'a> NumberStepperFace<'a> {
+    /// An inline stepper in `rect` showing `value` (already formatted: a
+    /// number and its unit, or the host's own terms such as a clock time).
+    #[must_use]
+    pub fn new(rect: Rect, value: &'a str) -> Self {
+        Self {
+            rect,
+            value,
+            names: ("Decrease", "Increase"),
+            control_size: crate::widget::ControlSize::Regular,
+            framed: false,
+            hovered: None,
+            disabled: false,
+        }
+    }
+
+    /// What the two buttons are called for assistive technology and
+    /// tooltips, when "Decrease" and "Increase" say less than the host's
+    /// own words ("Earlier", "Later").
+    #[must_use]
+    pub fn names(mut self, decrease: &'a str, increase: &'a str) -> Self {
+        self.names = (decrease, increase);
+        self
+    }
+
+    /// The control size the steppers and the value are set in.
+    #[must_use]
+    pub fn control_size(mut self, size: crate::widget::ControlSize) -> Self {
+        self.control_size = size;
+        self
+    }
+
+    /// The framed control's secondary steppers; the value is the host's
+    /// field, not painted here.
+    #[must_use]
+    pub fn framed(mut self) -> Self {
+        self.framed = true;
+        self
+    }
+
+    /// The button under the pointer.
+    #[must_use]
+    pub fn hovered(mut self, part: Option<StepperPart>) -> Self {
+        self.hovered = part;
+        self
+    }
+
+    /// Unavailable: painted under the disabled alpha.
+    #[must_use]
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// The control's height in `theme`.
+    #[must_use]
+    pub fn height(size: crate::widget::ControlSize, theme: &Theme) -> f64 {
+        size.height(theme)
+    }
+
+    /// The width an inline stepper of `size` needs so each of `values`
+    /// fits between its steppers without the control changing width as it
+    /// steps. Pass the widest values it can show (`"00:00"` and `"Now"`).
+    #[must_use]
+    pub fn width(
+        size: crate::widget::ControlSize,
+        values: &[&str],
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> f64 {
+        let style = size.label_style(theme).numeric();
+        let padding = f64::from(theme.padding_standard);
+        let value = values
+            .iter()
+            .map(|value| f64::from(text.measure_style(value, None, &style).0))
+            .fold(0.0, f64::max);
+        (value + 2.0 * padding + 2.0 * size.height(theme) + 2.0 * GAP).ceil()
+    }
+
+    /// The `−` and `+` button faces: squares of the rect's height.
+    #[must_use]
+    pub fn steppers(&self) -> (Rect, Rect) {
+        let r = self.rect;
+        let h = r.height();
+        (
+            Rect::new(r.x0, r.y0, r.x0 + h, r.y1),
+            Rect::new(r.x1 - h, r.y0, r.x1, r.y1),
+        )
+    }
+
+    /// The run between the steppers where the value sits.
+    #[must_use]
+    pub fn value_rect(&self) -> Rect {
+        let (minus, plus) = self.steppers();
+        Rect::new(minus.x1 + GAP, self.rect.y0, plus.x0 - GAP, self.rect.y1)
+    }
+
+    /// Where a pointer presses each button: its face grown to the minimum
+    /// target about its centre.
+    #[must_use]
+    pub fn hit_rects(&self, theme: &Theme) -> (Rect, Rect) {
+        let (minus, plus) = self.steppers();
+        (
+            self.button(minus, StepperPart::Decrease).hit_rect(theme),
+            self.button(plus, StepperPart::Increase).hit_rect(theme),
+        )
+    }
+
+    /// The button under `point`, by its pointer target.
+    #[must_use]
+    pub fn part_at(&self, theme: &Theme, point: Point) -> Option<StepperPart> {
+        let (minus, plus) = self.hit_rects(theme);
+        if minus.contains(point) {
+            Some(StepperPart::Decrease)
+        } else if plus.contains(point) {
+            Some(StepperPart::Increase)
+        } else {
+            None
+        }
+    }
+
+    fn button(&self, rect: Rect, part: StepperPart) -> crate::widget::ButtonFace<'a> {
+        let (icon, name) = match part {
+            StepperPart::Decrease => (crate::icons::Icon::Minus, self.names.0),
+            StepperPart::Increase => (crate::icons::Icon::Plus, self.names.1),
+        };
+        let role = if self.framed {
+            crate::widget::ButtonRole::Secondary
+        } else {
+            crate::widget::ButtonRole::Plain
+        };
+        crate::widget::ButtonFace::icon_only(rect, icon, name)
+            .role(role)
+            .control_size(self.control_size)
+            .hovered(self.hovered == Some(part) && !self.disabled)
+    }
+
+    /// Paint the two steppers.
+    pub fn paint_steppers(&self, ctx: &mut PaintCtx<'_>) {
+        let (minus, plus) = self.steppers();
+        for (rect, part) in [
+            (minus, StepperPart::Decrease),
+            (plus, StepperPart::Increase),
+        ] {
+            crate::widget::Button::paint(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                &self.button(rect, part),
+            );
+        }
+    }
+
+    /// Paint the value centred between the steppers, in the size's label
+    /// type with tabular figures.
+    pub fn paint_value(&self, ctx: &mut PaintCtx<'_>) {
+        let style = self.control_size.label_style(ctx.theme).numeric();
+        let (w, h) = ctx.text.measure_style(self.value, None, &style);
+        let centre = self.value_rect().center();
+        let x = centre.x - f64::from(w) / 2.0;
+        let y = centre.y - f64::from(h) / 2.0;
+        ctx.text.draw_style(
+            ctx.scene,
+            self.value,
+            ctx.theme.tokens.colors.text_primary,
+            translated(ctx.transform, x, y),
+            None,
+            &style,
+        );
+    }
+
+    /// Paint the whole stepper: the steppers and, inline, the value.
+    pub fn paint(&self, ctx: &mut PaintCtx<'_>) {
+        if self.disabled {
+            ctx.scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                ctx.transform,
+                &self.rect,
+            );
+        }
+        self.paint_steppers(ctx);
+        if !self.framed {
+            self.paint_value(ctx);
+        }
+        if self.disabled {
+            ctx.scene.pop_layer();
+        }
+    }
 }
 
 #[allow(
@@ -729,52 +956,29 @@ impl Widget for NumberInput {
             );
         }
 
-        // --- Stepper buttons: the shared button face, bare when compact ---
-        let role = if self.compact {
-            crate::widget::ButtonRole::Plain
+        // --- Steppers: the shared stepper face, bare when compact. The value
+        // is the embedded field (its own chrome), or, compact and at rest,
+        // the bare value centred between the steppers ---
+        let shown = self.format_value();
+        let hovered = if self.minus_hover {
+            Some(StepperPart::Decrease)
+        } else if self.plus_hover {
+            Some(StepperPart::Increase)
         } else {
-            crate::widget::ButtonRole::Secondary
+            None
         };
-        for (btn_rect, icon, name, hovered) in [
-            (
-                self.minus_rect,
-                crate::icons::Icon::Minus,
-                "Decrease",
-                self.minus_hover,
-            ),
-            (
-                self.plus_rect,
-                crate::icons::Icon::Plus,
-                "Increase",
-                self.plus_hover,
-            ),
-        ] {
-            let face = crate::widget::ButtonFace::icon_only(btn_rect, icon, name)
-                .role(role)
-                .control_size(self.control_size)
-                .hovered(hovered && !disabled);
-            crate::widget::Button::paint(scene, transform, text_renderer, theme, &face);
-        }
-
-        // --- Value: the embedded field (its own chrome), or, compact and at
-        // rest, the bare value centred between the steppers ---
+        let face = NumberStepperFace::new(self.rect, &shown)
+            .control_size(self.control_size)
+            .hovered(hovered)
+            .disabled(disabled);
+        let face = if self.compact { face } else { face.framed() };
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        face.paint_steppers(&mut ctx);
         if self.compact && !self.field.is_focused() {
-            let style = self.value_style_in(theme);
-            let shown = self.format_value();
-            let (w, h) = text_renderer.measure_style(&shown, None, &style);
-            let x = self.field_rect.center().x - f64::from(w) / 2.0;
-            let y = self.field_rect.center().y - f64::from(h) / 2.0;
-            text_renderer.draw_style(
-                scene,
-                &shown,
-                theme.tokens.colors.text_primary,
-                translated(transform, x, y),
-                None,
-                &style,
-            );
+            face.paint_value(&mut ctx);
         } else {
             self.field
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
         }
 
         if disabled {

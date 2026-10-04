@@ -2282,7 +2282,7 @@ pub use editable_label::{EditOutcome, EditableLabel};
 pub mod autocomplete;
 pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion, SuggestionList};
 mod number_input;
-pub use number_input::NumberInput;
+pub use number_input::{NumberInput, NumberStepperFace, StepperPart};
 pub mod marks;
 pub use marks::{Mark, MarkSpan};
 pub mod rich_text_line;
