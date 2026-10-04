@@ -100,7 +100,15 @@ pub fn apps_in(root: &Path) -> Vec<String> {
 pub fn pack(dir: &Path, out: &Path) -> Result<(), CliError> {
     let file =
         std::fs::File::create(out).map_err(CliError::io(format!("create {}", out.display())))?;
-    let mut builder = tar::Builder::new(file);
+    pack_into(dir, file)
+}
+
+/// [`pack`] into any writer.
+///
+/// # Errors
+/// I/O failures.
+pub fn pack_into(dir: &Path, out: impl std::io::Write) -> Result<(), CliError> {
+    let mut builder = tar::Builder::new(out);
     builder.follow_symlinks(false);
     for top in ["usr", "opt"] {
         let path = dir.join(top);
