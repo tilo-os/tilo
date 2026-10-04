@@ -160,10 +160,11 @@ impl AccountRoot {
             .map(|PersonAccountsRecord(record)| record.revision())
     }
 
-    /// Take into the person's accounts every account this device's file
-    /// holds that their record does not: those added before Settings kept
-    /// the record, and those Mail's own setup sheet still writes to the
-    /// file. Nothing to do outside a host.
+    /// Take into the person's accounts the accounts this device's file held
+    /// before it became the record's projection: once, on the first open
+    /// that keeps the record. After that the file only follows the record,
+    /// so an account removed on another device is never brought back.
+    /// Nothing to do outside a host.
     ///
     /// # Errors
     ///
@@ -176,21 +177,10 @@ impl AccountRoot {
             return Ok(());
         };
         let device = accounts::AccountStore::load_in(&root);
-        let mut store = record.get().store();
-        let mut missing = false;
-        for account in device.all() {
-            if store.get(&account.id).is_none() {
-                store.upsert(account.clone());
-                if device.active_id(&account.type_id) == Some(&account.id)
-                    && store.list(&account.type_id).len() == 1
-                {
-                    store.set_active(&account.type_id, &account.id);
-                }
-                missing = true;
-            }
-        }
-        if missing {
-            self.save_store(&store)?;
+        for edit in record.get().taking_in(&device) {
+            record
+                .invoke(&edit)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
         }
         Ok(())
     }
@@ -1194,36 +1184,42 @@ mod tests {
         assert!(accounts::AccountStore::load_in(dir.path()).is_empty());
     }
 
-    /// An account this device's file holds and the person's record does not
-    /// (added before Settings kept the record, or by Mail's setup sheet) is
-    /// taken into the record, and the record's own accounts stay.
+    /// The accounts this device's file held before it followed the person's
+    /// record are taken in once, the record's own accounts stay, and a file
+    /// that is the record's projection brings nothing back.
     #[test]
-    fn the_device_files_accounts_are_taken_into_the_persons_record() {
+    fn the_device_files_accounts_are_taken_into_the_persons_record_once() {
         use accounts::person::PersonAccounts;
         let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
             .expect("settings opens headlessly");
         let record = app.person::<PersonAccounts>().expect("person accounts");
         let dir = tempfile::tempdir().unwrap();
         let root = AccountRoot::at(dir.path()).with_person(record.clone());
-        // An account without connection settings is kept with empty ones.
-        let roamed = accounts::Account::new("roamed@x.example", "email");
-        let mut store = accounts::AccountStore::new();
-        store.upsert(roamed.clone());
-        root.save_store(&store).unwrap();
-        let mut roamed = roamed;
-        roamed.config = serde_json::json!({});
+        let mut kept = accounts::Account::new("kept@x.example", "email");
+        kept.config = serde_json::json!({ "imap": "imap.x.example" });
+        record.invoke(&PersonAccounts::saving(&kept)).unwrap();
 
+        // An account without connection settings is kept with empty ones.
         let mut local = accounts::Account::new("cal-1", "caldav");
-        local.config = serde_json::json!({ "url": "https://dav.example" });
-        let mut device = accounts::AccountStore::load_in(dir.path());
+        let mut device = accounts::AccountStore::new();
         device.upsert(local.clone());
         device.save_in(dir.path()).unwrap();
+        local.config = serde_json::json!({});
 
-        root.take_in_device_accounts().unwrap();
+        root.take_in_device_accounts()
+            .and_then(|()| root.project())
+            .unwrap();
         let person = record.get().store();
         assert_eq!(person.get(&local.id), Some(&local));
-        assert_eq!(person.get(&roamed.id), Some(&roamed));
+        assert_eq!(person.get(&kept.id), Some(&kept));
         assert_eq!(accounts::AccountStore::load_in(dir.path()), person);
+
+        // Removed elsewhere: the projected file does not bring it back.
+        record
+            .invoke(&PersonAccounts::REMOVE_ACCOUNT.with(ui::tilo_resource::Id::from_raw("cal-1")))
+            .unwrap();
+        root.take_in_device_accounts().unwrap();
+        assert!(record.get().store().get(&local.id).is_none());
     }
 
     /// Every account store round-trips through JSON at its contract path, and

@@ -432,9 +432,9 @@ impl SettingsApp {
             self.account_root = crate::accounts::AccountRoot::at(root);
         } else if let Some(record) = accounts {
             self.account_root = self.account_root.clone().with_person(record);
-            // Accounts the device's file holds and the record does not are
-            // taken in; then the services outside any app read the file as
-            // the record's projection.
+            // What the device's file held before it followed the record is
+            // taken in once; then the services outside any app read the file
+            // as the record's projection.
             if let Err(error) = self
                 .account_root
                 .take_in_device_accounts()
