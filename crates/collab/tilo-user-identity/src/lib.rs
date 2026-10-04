@@ -40,6 +40,16 @@
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
 //! - [`APPROVAL_RESPONSE_TAG`] — `tilo-device-approval-response-v1\0`
 //! - [`CERTIFICATION_REQUEST_TAG`] — `tilo-device-certification-request-v1\0`
+//! - [`DELEGATED_SIGNATURE_TAG`] — `tilo-delegated-signature-v1\0`
+//!
+//! # Acting for the person without the root
+//!
+//! The root key stays on the devices that can admit others. Every other
+//! device signs as the person with its own key and presents its
+//! [`DeviceCert`]; verifiers accept that chain through [`verify_chain`] and
+//! [`verify_delegated`] (see [`delegation`]). Admitting and revoking
+//! devices, issuing certificates and recovering the identity stay with the
+//! root ([`RootOnly`]).
 //!
 //! The tag terminator (`\0`) plus a version marker (`v1`) inside the
 //! literal ensure two things: (a) prefix ambiguity is impossible
@@ -81,6 +91,7 @@ pub mod canonical;
 pub mod cert;
 pub mod certification;
 pub mod cloud_enrollment;
+pub mod delegation;
 pub mod directory;
 pub mod enrollment;
 pub mod fleet;
@@ -111,6 +122,11 @@ pub use certification::{
     CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION, CertificationError,
     CertificationPolicy, CertificationRequest, MAX_CERTIFICATION_REQUEST_LIFETIME_NS,
     issue_device_cert, prepare_device_cert, verify_issued_cert,
+};
+pub use delegation::{
+    Authority, ChainError, ChainPolicy, DELEGATED_SIGNATURE_TAG, DelegatedSignature, DeviceSigner,
+    IdentitySigner, MAX_DELEGATION_DOMAIN_BYTES, RootOnly, delegated_signing_digest,
+    root_holder_labels, verify_chain, verify_delegated,
 };
 pub use directory::{
     DirectoryError, DirectoryUpdate, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,
@@ -278,6 +294,10 @@ mod tests {
             assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v2\0");
             assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 19);
 
+            assert_eq!(
+                delegation::DELEGATED_SIGNATURE_TAG,
+                b"tilo-delegated-signature-v1\0"
+            );
             assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"tilo-dir-delta-v1\0");
             assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 18);
 

@@ -6312,11 +6312,9 @@ impl ShellNetwork {
             .peer_identities
             .insert(origin.clone(), cert.clone(), now_ns)
             .is_err()
-            || self.peer_identities.is_revoked(
-                &cert.user_public_key,
-                &cert.device_public_key,
-                now_ns,
-            )
+            || self
+                .peer_identities
+                .is_revoked(&cert.user_public_key, &cert.device_public_key)
         {
             tracing::warn!(peer = %peer, "rejecting expired, invalid, or revoked peer device");
             self.peer_identities.remove(origin);

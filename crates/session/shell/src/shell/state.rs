@@ -2067,7 +2067,9 @@ impl WorkspaceTree {
                 }
             }
         }
-        !revocations.is_revoked_at(&certificate.device_public_key, now)
+        revocations
+            .revocation_of(&certificate.user_public_key, &certificate.device_public_key)
+            .is_none()
     }
 
     /// True (and logs a warning) if `candidate` would rewrite windows

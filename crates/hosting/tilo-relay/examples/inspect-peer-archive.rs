@@ -77,7 +77,9 @@ fn certificate_at(
     ensure!(at >= cert.issued_at_ns, "operation predates certificate");
     tilo_user_identity::verify_device_cert_at(cert, at)?;
     ensure!(
-        !revoked.is_revoked_at(&cert.device_public_key, at),
+        revoked
+            .revocation_of(root, &cert.device_public_key)
+            .is_none_or(|entry| at < entry.revoked_at_ns),
         "historically revoked device"
     );
     Ok(())
