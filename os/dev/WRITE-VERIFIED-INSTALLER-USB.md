@@ -22,7 +22,7 @@ then reads back all 64 GiB before it emits success evidence:
   -Acceptance C:\tilo-handoff\accepted\acceptance.json `
   -DiskNumber 1 `
   -HandoffDirectory C:\tilo-handoff\accepted `
-  -PythonPath 'C:\Users\xaver\AppData\Local\Programs\Python\Python311-arm64\python.exe'
+  -PythonPath 'C:\Users\you\AppData\Local\Programs\Python\Python311-arm64\python.exe'
 ```
 
 To perform only the non-destructive planning pass, append `-PlanOnly`. The

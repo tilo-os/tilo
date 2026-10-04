@@ -70,6 +70,7 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
                 app_id,
                 label,
                 note,
+                ..
             } => {
                 assert_eq!(app_id, APP);
                 assert_eq!(label, "Word Processor", "the peer's own name for it");

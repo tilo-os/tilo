@@ -55,13 +55,13 @@
           "name": "forgejo-pull-secret"
         }
       ],
-      "nodeName": "ip-10-72-6-180.eu-central-1.compute.internal",
+      "nodeName": "kata-node-a.internal.example",
       "nodeSelector": {
         "agent-sandbox.podesta.ai/disk-kernel": "e23e6ab7f708",
         "agent-sandbox.podesta.ai/kata": "true",
         "katacontainers.io/kata-runtime": "true",
         "kubernetes.io/arch": "arm64",
-        "kubernetes.io/hostname": "ip-10-72-6-180.eu-central-1.compute.internal"
+        "kubernetes.io/hostname": "kata-node-a.internal.example"
       },
       "overhead": {
         "cpu": "1",
@@ -208,18 +208,18 @@
           ]
         }
       ],
-      "hostIP": "10.72.6.180",
+      "hostIP": "198.51.100.10",
       "hostIPs": [
         {
-          "ip": "10.72.6.180"
+          "ip": "198.51.100.10"
         }
       ],
       "observedGeneration": 1,
       "phase": "Running",
-      "podIP": "10.72.9.63",
+      "podIP": "198.51.100.20",
       "podIPs": [
         {
-          "ip": "10.72.9.63"
+          "ip": "198.51.100.20"
         }
       ],
       "tiloClass": "Guaranteed",
