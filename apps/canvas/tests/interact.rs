@@ -533,7 +533,7 @@ fn the_eyedropper_sees_what_an_eraser_left() {
     let channels = |hex: &str| -> Vec<i32> {
         (1..7)
             .step_by(2)
-            .map(|at| i32::from_str_radix(&hex[at..at + 2], 16).unwrap())
+            .map(|at| i32::from_str_radix(hex.get(at..at + 2).unwrap(), 16).unwrap())
             .collect()
     };
     let erased = channels(erased.as_deref().unwrap());
