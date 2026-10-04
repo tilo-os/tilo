@@ -1099,6 +1099,13 @@ pub(crate) fn history_control_face(id: &str, control: HistoryControl) -> Button 
 /// The window's History control, bound to the History door: closed it
 /// opens History, open it closes it, exactly as the History shortcut and
 /// the palette do.
+#[must_use]
+pub(crate) fn history_control_button(id: &str, control: HistoryControl) -> Button {
+    history_control_face(id, control).on_action(history_control_binding(control))
+}
+
+/// The History door a press of the window's History control goes through:
+/// Open while History is closed, Hide while it shows.
 ///
 /// # Panics
 ///
@@ -1109,13 +1116,12 @@ pub(crate) fn history_control_face(id: &str, control: HistoryControl) -> Button 
     clippy::expect_used,
     reason = "fixed unit View operations and their nullary bindings serialize infallibly"
 )]
-pub(crate) fn history_control_button(id: &str, control: HistoryControl) -> Button {
-    let binding = match control {
+pub(crate) fn history_control_binding(control: HistoryControl) -> ActionBinding<()> {
+    match control {
         HistoryControl::Closed => ActionBinding::unit_for(&open_resource(), "open"),
         HistoryControl::Open => ActionBinding::unit_for(&history_resource(true, true), "hide"),
     }
-    .expect("unit history action");
-    history_control_face(id, control).on_action(binding)
+    .expect("unit history action")
 }
 
 /// The edge under a bar of window chrome: the bar stands on the content
