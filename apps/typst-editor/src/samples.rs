@@ -103,7 +103,7 @@ fn main() {
 }
 ```
 
-Use the toolbar to open the other example documents.
+Use Open to work on a .typ file of your own.
 "#;
 
 const REPORT: &str = r#"#set page(width: 16cm, height: auto, margin: 1.6cm)
