@@ -1,4 +1,7 @@
-//! Retained global-search projection for the open PDF.
+//! Retained global-search projection for the open PDF: what the document
+//! itself says — its pages' text, its outline — and the current find hits.
+//! The markup people made on it is searched through the resource
+//! ([`crate::PdfViewer`]'s `search`), so each entity has one search source.
 
 use std::collections::HashSet;
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchCatalogError, SearchResult};
@@ -6,7 +9,7 @@ use ui::search::{CatalogSearchProvider, SearchCatalog, SearchCatalogError, Searc
 use tilo_actions::ActionAddress;
 
 use crate::actions::{PdfResourceCtx, SEARCH_RESULT_RESOURCE_LIMIT, outline_resource_id};
-use crate::model::{Annotation, Comment, Page, Signature};
+use crate::model::Page;
 
 pub const PDF_SEARCH_KIND: &str = "PDF Viewer";
 
@@ -35,12 +38,9 @@ impl PdfSearchProvider {
         catalog: &SearchCatalog,
         ctx: &PdfResourceCtx,
         source_pages: &[Page],
-        annotations: &[Annotation],
-        comments: &[Comment],
-        signatures: &[Signature],
     ) -> Result<HashSet<String>, SearchCatalogError> {
         let mut ids = HashSet::new();
-        let document_id = format!("pdf.document:{}", ctx.doc_id);
+        let document_id = <crate::PdfViewer as ui::tilo_resource::Resource>::KIND.to_string();
         catalog.upsert(
             document_id.clone(),
             format!("{}\0pdf document\0find\0save annotated PDF", ctx.title),
@@ -54,7 +54,7 @@ impl PdfSearchProvider {
         ids.insert(document_id);
         for (index, page_id) in ctx.page_ids.iter().enumerate() {
             let page = index + 1;
-            let resource = format!("pdf.page:{}:{page_id}", ctx.doc_id);
+            let resource = format!("pdf.page:{page_id}");
             let source_page = ctx.page_sources.get(index).copied().unwrap_or(page);
             let text = source_pages
                 .get(source_page.saturating_sub(1))
@@ -99,76 +99,6 @@ impl PdfSearchProvider {
                     ActionAddress::new(&resource, "open"),
                 )
                 .with_subtitle(format!("Contents · page {page}")),
-            )?;
-            ids.insert(resource);
-        }
-        for annotation in annotations {
-            let resource = format!("pdf.annotation:{}", annotation.id);
-            catalog.upsert(
-                resource.clone(),
-                format!(
-                    "annotation\0{}\0page {}\0{}\0open",
-                    annotation.kind.type_key(),
-                    annotation.page,
-                    annotation.author
-                ),
-                SearchResult::for_action(
-                    PDF_SEARCH_KIND,
-                    format!("{} annotation", annotation.kind.type_key()),
-                    ActionAddress::new(&resource, "open"),
-                )
-                .with_subtitle(format!("Page {} · {}", annotation.page, annotation.author)),
-            )?;
-            ids.insert(resource);
-        }
-        for comment in comments {
-            let resource = format!("pdf.comment:{}", comment.id);
-            catalog.upsert(
-                resource.clone(),
-                format!(
-                    "comment\0{}\0{}\0page {}\0open\0reply\0resolve",
-                    comment.author, comment.body, comment.page
-                ),
-                SearchResult::for_action(
-                    PDF_SEARCH_KIND,
-                    format!("Comment — {}", comment.author),
-                    ActionAddress::new(&resource, "open"),
-                )
-                .with_subtitle(comment.body.clone()),
-            )?;
-            ids.insert(resource);
-            for reply in &comment.replies {
-                let resource = format!("pdf.reply:{}:{}", comment.id, reply.id);
-                catalog.upsert(
-                    resource.clone(),
-                    format!(
-                        "reply\0{}\0{}\0page {}\0open",
-                        reply.author, reply.body, comment.page
-                    ),
-                    SearchResult::for_action(
-                        PDF_SEARCH_KIND,
-                        format!("Reply — {}", reply.author),
-                        ActionAddress::new(&resource, "open"),
-                    )
-                    .with_subtitle(reply.body.clone()),
-                )?;
-                ids.insert(resource);
-            }
-        }
-        for signature in signatures {
-            let resource = format!("pdf.signature:{}", signature.id);
-            catalog.upsert(
-                resource.clone(),
-                format!(
-                    "signature\0{}\0{}\0page {}\0open",
-                    signature.signer, signature.date, signature.page
-                ),
-                SearchResult::for_action(
-                    PDF_SEARCH_KIND,
-                    format!("Signature by {}", signature.signer),
-                    ActionAddress::new(&resource, "open"),
-                )
-                .with_subtitle(format!("Page {} · {}", signature.page, signature.date)),
             )?;
             ids.insert(resource);
         }
