@@ -736,19 +736,22 @@ pub(crate) fn status_snapshot(
     history: &crate::state::UndoLog,
     author: Option<&crate::permissions::UserId>,
 ) -> UndoStatus {
-    let undo = history
-        .next_undo_as(author)
-        .map(|entry| (entry.before.clone(), entry.after.clone()));
-    let redo = history
-        .next_redo_as(author)
-        .map(|entry| (entry.after.clone(), entry.before.clone()));
+    let undo = history.next_undo_as(author);
+    let redo = history.next_redo_as(author);
     let mut snapshot = doc.clone();
+    // An entry an undo or redo already moved names the step it carries, not
+    // the undo change that moved it last.
+    let mut summary = |entry: &crate::state::UndoEntry, from: &[_], to: &[_]| {
+        entry
+            .step
+            .as_ref()
+            .and_then(tilo_actions::ActionContext::summary)
+            .unwrap_or_else(|| crate::history_source::change_summary(&mut snapshot, from, to))
+    };
     UndoStatus {
         can_undo: undo.is_some(),
         can_redo: redo.is_some(),
-        undo_summary: undo
-            .map(|(from, to)| crate::history_source::change_summary(&mut snapshot, &from, &to)),
-        redo_summary: redo
-            .map(|(from, to)| crate::history_source::change_summary(&mut snapshot, &from, &to)),
+        undo_summary: undo.map(|entry| summary(entry, &entry.before, &entry.after)),
+        redo_summary: redo.map(|entry| summary(entry, &entry.after, &entry.before)),
     }
 }

@@ -2704,6 +2704,7 @@ mod tests {
                 user_public_key: "33".repeat(32),
                 device_cert: None,
                 relay_workspace_ids: vec![7],
+                environments: tilo_relay_protocol::RelayEnvironments::default(),
             }];
             let device = pane.home_peers[0].device_node_id.clone();
             let mut doc = AutoCommit::new();
