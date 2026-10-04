@@ -40,7 +40,7 @@ pub type DraftComposer = Composer<DirectField>;
 pub type MessageEditor = Composer<Draft>;
 
 fn editor() -> BlockEditor {
-    tilo_rich_text::compact_editor().with_body_size(crate::render_chat::BODY_SIZE)
+    tilo_rich_text::compact_editor()
 }
 
 impl DraftComposer {
