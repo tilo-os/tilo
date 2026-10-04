@@ -201,3 +201,49 @@ fn only_the_creator_seeds_a_record() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn an_agents_presence_is_where_its_last_operation_left_it() {
+    let catalogue = catalogue();
+    let app = "so.tilo.word-processor";
+    let mut agent = Replica::open(&catalogue, app, ROOM, "writer", true, Seed::New).unwrap();
+    assert!(
+        agent.presence().is_none(),
+        "nothing done, nowhere in particular"
+    );
+    let append = agent
+        .survey()
+        .into_iter()
+        .find(|operation| operation.address.action == "append-paragraph")
+        .expect("the document publishes append-paragraph");
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("text".into(), "Héllo".into());
+    agent.invoke(&append.address, &arguments, false).unwrap();
+
+    let (anchor, head) = agent
+        .presence()
+        .expect("the append leaves the agent somewhere");
+    let (key, start, end) =
+        tilo_browser_peer::transport::read_presence_anchors(&anchor, &head).unwrap();
+    let last = agent
+        .read(|doc| {
+            let state =
+                <tilo_document::RichText as ui::tilo_resource::Resource>::read(doc).unwrap();
+            let body = state.body();
+            body.id_at(body.len() - 1).unwrap().to_owned()
+        })
+        .unwrap();
+    // The paragraph it wrote, as the record's own item: the key every
+    // collaborator's Writer draws a collaborator's caret under (as its
+    // digest, when the key outgrows the live plane's anchor).
+    let written = ui::presence::PresenceKey::Resource {
+        app: app.to_owned(),
+        id: last,
+        kind: "tilo.rich-text".to_owned(),
+    };
+    assert!(
+        key == written || Some(&key) == written.digest_form().as_ref(),
+        "{key:?}"
+    );
+    assert_eq!((start, end), (5, 5), "a caret after its five characters");
+}

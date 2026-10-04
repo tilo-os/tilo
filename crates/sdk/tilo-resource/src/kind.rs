@@ -37,7 +37,7 @@ use std::any::Any;
 use tilo_actions::{ActionRegistry, EncodedAction};
 
 use crate::model::{Doc, ModelError};
-use crate::resource::{self, Resource, SearchEntry};
+use crate::resource::{self, Place, Resource, SearchEntry};
 
 /// One resource type with its type erased: what [`Resource`] offers, reached
 /// by the kind a record names. See the [module docs](self).
@@ -54,6 +54,7 @@ pub struct ResourceKind {
     register: fn(&mut ActionRegistry),
     initialize: fn(&mut Doc) -> Result<(), ModelError>,
     encode: fn(serde_json::Value) -> Result<EncodedAction, String>,
+    lands: fn(&Doc, &EncodedAction) -> Option<Place>,
 }
 
 impl std::fmt::Debug for ResourceKind {
@@ -85,6 +86,20 @@ fn search<R: Resource>(state: &dyn Any) -> Option<Vec<SearchEntry>> {
     state.downcast_ref::<R::State>().map(R::search)
 }
 
+fn lands<R: Resource>(doc: &Doc, action: &EncodedAction) -> Option<Place> {
+    let action: R::Action = if action.type_id == R::ACTION_TYPE {
+        serde_json::from_slice(&action.payload).ok()?
+    } else if action.type_id == crate::group::group_type::<R>() {
+        serde_json::from_slice::<crate::group::ActionGroup<R::Action>>(&action.payload)
+            .ok()?
+            .actions
+            .pop()?
+    } else {
+        return None;
+    };
+    R::lands(&R::read(doc).ok()?, &action)
+}
+
 fn encode<R: Resource>(action: serde_json::Value) -> Result<EncodedAction, String> {
     let mut arguments = serde_json::Map::new();
     arguments.insert(resource::APPLY_PARAM.to_owned(), action);
@@ -109,6 +124,7 @@ impl ResourceKind {
             register: crate::group::register::<R>,
             initialize: R::initialize,
             encode: encode::<R>,
+            lands: lands::<R>,
         }
     }
 
@@ -142,6 +158,14 @@ impl ResourceKind {
     /// The registry type id its actions replay under.
     pub fn action_type(&self) -> &'static str {
         self.action_type
+    }
+
+    /// Where `action` of this kind, just applied to `doc`, leaves the
+    /// participant who took it ([`Resource::lands`]); `None` for an action
+    /// of another type or one that lands nowhere in particular. A group
+    /// lands where its last member does.
+    pub fn lands(&self, doc: &Doc, action: &EncodedAction) -> Option<Place> {
+        (self.lands)(doc, action)
     }
 
     /// The id of the app hosting it, when one registered it.

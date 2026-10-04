@@ -8,8 +8,10 @@
 //! change through the session, so the host orders it with everyone else's
 //! and every browser receives it as an ordinary durable change attributed to
 //! the agent. Around each action it publishes presence — the record it
-//! focuses and a [`LiveParticipant`] of kind agent with its label, colour
-//! and activity — so every participant shows it there. Other participants'
+//! focuses, where in it the action left it (the record's own item and
+//! position, [`Replica::presence`]), and a [`LiveParticipant`] of kind agent
+//! with its label, colour and activity — so every participant's window
+//! draws it there as it draws any collaborator. Other participants'
 //! presence arrives the same way and is readable through
 //! [`AgentParticipant::remote_members`].
 //!
@@ -30,7 +32,7 @@ use tilo_browser_peer::{
     RemoteMember,
 };
 use tilo_relay_protocol::agents::{AgentStatus, AgentStep, TaskState};
-use tilo_relay_protocol::live::{LiveParticipant, LiveRecord, ParticipantKind};
+use tilo_relay_protocol::live::{LiveAnchor, LiveParticipant, LiveRecord, ParticipantKind};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 pub mod actions;
@@ -130,6 +132,8 @@ pub struct AgentParticipant {
     changes_seen: u64,
     live: LiveState,
     focus: Option<LiveRecord>,
+    /// Where in the focused record its last operation left it.
+    place: Option<(LiveAnchor, LiveAnchor)>,
     presence_at_ms: u64,
     running: Option<Running>,
     /// The host admitted the room; everything it replayed has arrived.
@@ -198,6 +202,7 @@ impl AgentParticipant {
             changes_seen: 0,
             live: LiveState::starting_now(),
             focus: None,
+            place: None,
             presence_at_ms: 0,
             running: None,
             ready: false,
@@ -519,6 +524,7 @@ impl AgentParticipant {
             app: route.app_id.clone(),
             record: route.record.clone(),
         });
+        self.place = None;
         self.publish_presence();
         Ok(route)
     }
@@ -600,6 +606,7 @@ impl AgentParticipant {
             app: route.app_id.clone(),
             record: route.record.clone(),
         });
+        self.place = app.presence();
         self.control.set_activity(label);
         self.publish_presence();
         Ok(Some(output))
@@ -639,8 +646,10 @@ impl AgentParticipant {
         let now = now_ms();
         let participant = self.participant();
         let focus = self.focus.clone();
+        let place = self.place.clone();
         match self.live.publish_presence(now, |presence| {
             presence.focus = focus;
+            presence.selection = place;
             presence.participant = Some(participant);
         }) {
             Ok(frame) => {
@@ -654,6 +663,7 @@ impl AgentParticipant {
     fn leave(&mut self) {
         self.running = None;
         self.focus = None;
+        self.place = None;
         self.publish_presence();
         self.apps.clear();
         self.left = true;

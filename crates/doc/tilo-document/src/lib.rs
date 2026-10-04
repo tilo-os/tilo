@@ -554,6 +554,41 @@ impl Resource for RichText {
         state.objects.get(obj).cloned()
     }
 
+    /// Text written leaves its writer's caret after it; a paragraph styled
+    /// or marked leaves them on it.
+    fn lands(state: &RichTextState, action: &RichTextAction) -> Option<tilo_resource::Place> {
+        use tilo_resource::Place;
+        let caret = |item: &str, at: usize, text: &str| Place::Caret {
+            item: item.to_owned(),
+            at: at.saturating_add(text.chars().count()),
+        };
+        match action {
+            RichTextAction::AppendParagraph { text } => {
+                let body = state.body();
+                Some(caret(body.id_at(body.len().checked_sub(1)?)?, 0, text))
+            }
+            RichTextAction::InsertParagraph { after, text } => {
+                let body = state.body();
+                let index = body.all().position(|id| id == after)?;
+                Some(caret(body.id_at(index.saturating_add(1))?, 0, text))
+            }
+            RichTextAction::SpliceText { block, at, ins, .. } => Some(caret(block, *at, ins)),
+            RichTextAction::ReplaceSelection {
+                start_block,
+                start,
+                ins,
+                ..
+            } => Some(caret(start_block, *start, ins)),
+            RichTextAction::SetParagraphStyle { blocks, .. }
+            | RichTextAction::ApplyNamedStyle { blocks, .. }
+            | RichTextAction::SetBlockAttr { blocks, .. }
+            | RichTextAction::ClearBlockAttr { blocks, .. } => {
+                blocks.first().map(|block| Place::Item(block.clone()))
+            }
+            _ => None,
+        }
+    }
+
     /// A new document: the shared schema and one empty paragraph to type in.
     fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
         Self::initialize_under(doc, &automerge::ROOT)
