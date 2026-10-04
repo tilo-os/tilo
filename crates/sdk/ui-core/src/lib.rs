@@ -434,7 +434,10 @@ pub use chrome::{LabelCue, ToolbarItem};
 pub use gesture::{DragSelect, Granularity};
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use status_bubble::StatusBubble;
-pub use text_edit::{CharFilter, CharSplice, Edit, EditCore, Motion, TYPING_RUN_IDLE, TypingRun};
+pub use text_edit::{
+    CharFilter, CharSplice, Edit, EditCore, Motion, TYPING_RUN_IDLE, TypingRun,
+    delete_last_grapheme,
+};
 pub use text_render::{
     FontChoice, FontVariation, Fragmentation, GlyphOutline, HangingPunctuation, Hyphenation,
     NumericStyle, OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, PolygonTextLayout,
