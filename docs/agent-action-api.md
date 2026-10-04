@@ -51,6 +51,23 @@ by a token:
 - **Every invocation passes the same capability gate** as the palette, as the
   person at this session.
 
+Reading is an action too. A framework resource that sets
+`Resource::READABLE` and answers `Resource::read_content` is published with
+the framework's `read` view: no arguments answers the resource itself, `item`
+answers one nested resource it lists. It needs read permission only, passes
+the same gate as every other action, and is tagged as the document read, so
+the runtime MCP finds it too. Notes answers its pages and tags, and one page
+(`notes.page:<id>`) as its title, text and blocks with the ids its edit
+actions take:
+
+```bash
+tilo-control read so.tilo.notes                    # {"pages": [{"item": "notes.page:…", "title": …}], …}
+tilo-control read so.tilo.notes notes.page:<id>    # {"title": …, "text": …, "blocks": [{"id", "kind", "text"}]}
+```
+
+`read APP [ITEM]` finds the open app's `read` row among the `app-actions` the
+desktop lists and invokes it, so the caller needs no opaque id.
+
 The CLI teaches its own use: `tilo-control --help` leads with the action
 model, a socket it cannot reach is explained (and how to get one), and
 `unknown_action` / `invalid_arguments` refusals print the next command to try.
@@ -58,7 +75,7 @@ model, a socket it cannot reach is explained (and how to get one), and
 `os/tests/installed-admin-actions.sh` proves this on a booted image in
 `build-image.yml`: after first login, over the admin's ssh and with no
 `TILO_TEST_CONTROL`, it invokes Notes by address, lists it, and reads the window
-back through `tilo-control windows`.
+back through `tilo-control windows`. It then creates a note through Notes' `new-page` action and reads it back through `read`.
 
 ## `actions_enumerate`
 

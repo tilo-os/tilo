@@ -7,7 +7,9 @@
 #   2. any Notes window already open closes through its own action;
 #   3. invoking Notes' launcher action, with no listing before it, succeeds;
 #   4. `tilo-control actions list` answers, and lists Notes;
-#   5. the state read (`tilo-control windows`) shows its new window.
+#   5. the state read (`tilo-control windows`) shows its new window;
+#   6. a note created through Notes' new-page action reads back, as typed
+#      data, through Notes' read action.
 set -euo pipefail
 
 fail() { printf 'admin actions: %s\n' "$*" >&2; exit 1; }
@@ -71,14 +73,51 @@ rows = json.loads(sys.argv[1])["actions"]
 assert any(r["provider"] == "applications" and r["id"] == "so.tilo.notes" for r in rows), rows
 PY
 
+opened=""
 for _ in $(seq 1 60); do
   opened=$(notes_tabs) || fail "windows read failed"
-  if [[ -n $opened ]]; then
-    tilo-control windows
-    echo "admin actions: Notes opened through the action model"
-    exit 0
-  fi
+  [[ -n $opened ]] && break
   sleep 1
 done
-tilo-control windows >&2 || true
-fail "no Notes window 60 s after the action succeeded"
+if [[ -z $opened ]]; then
+  tilo-control windows >&2 || true
+  fail "no Notes window 60 s after the action succeeded"
+fi
+tilo-control windows
+echo "admin actions: Notes opened through the action model"
+
+# Write through Notes' own action, then read back through its `read`: content
+# is reached as typed data, never from a screenshot.
+title="Admin check $(date +%s)"
+new_page=""
+for _ in $(seq 1 30); do
+  rows=$(tilo-control actions list new note --json) || fail "actions list failed"
+  new_page=$(python3 -c 'import json,sys
+rows = json.loads(sys.argv[1])["actions"]
+print(next((r["id"] for r in rows if r["provider"] == "app-actions"
+            and r.get("application") == "so.tilo.notes" and r.get("operation") == "new-page"), ""))' "$rows")
+  [[ -n $new_page ]] && break
+  sleep 1
+done
+[[ -n $new_page ]] || fail "Notes publishes no new-page action 30 s after it opened"
+args=$(python3 -c 'import json,sys; print(json.dumps({"value": sys.argv[1]}))' "$title")
+tilo-control actions invoke app-actions "$new_page" --args-json "$args" >/dev/null \
+  || fail "creating a note through new-page failed"
+
+item=""
+for _ in $(seq 1 30); do
+  notebook=$(tilo-control read so.tilo.notes --json) || fail "reading the notebook failed"
+  item=$(python3 -c 'import json,sys
+pages = json.loads(sys.argv[1])["pages"]
+print(next((p["item"] for p in pages if p["title"] == sys.argv[2]), ""))' "$notebook" "$title")
+  [[ -n $item ]] && break
+  sleep 1
+done
+[[ -n $item ]] || fail "the notebook read does not list \"$title\": $notebook"
+note=$(tilo-control read so.tilo.notes "$item" --json) || fail "reading $item failed"
+python3 -c 'import json,sys
+note = json.loads(sys.argv[1])
+assert note["kind"] == "notes.page" and note["title"] == sys.argv[2], note
+assert isinstance(note["blocks"], list), note' "$note" "$title" \
+  || fail "reading $item did not answer the note: $note"
+echo "admin actions: a note written through new-page reads back through read"

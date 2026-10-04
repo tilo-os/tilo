@@ -217,6 +217,31 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
+    /// Whether [`read_content`](Self::read_content) answers. A resource that
+    /// does is published with the framework's `read` operation, so a script,
+    /// an agent or an assistive tool reads what it holds as typed data through
+    /// the same door, permissions and audit as every other action — never
+    /// from a screenshot.
+    const READABLE: bool = false;
+
+    /// What the resource holds, as JSON a caller can act on: with no `item`,
+    /// the resource itself (a notebook's pages); with `item`, the nested
+    /// resource of that id from [`children`](Self::children) (one page's
+    /// title and blocks). Read from `doc`, the committed document, so the
+    /// answer is never older than the action that preceded it. Called only
+    /// when [`READABLE`](Self::READABLE) is set.
+    ///
+    /// # Errors
+    /// A message naming why: no such item, or a document that cannot be read.
+    fn read_content(
+        state: &Self::State,
+        doc: &Doc,
+        item: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let _ = (state, doc, item);
+        Err(format!("a {} does not answer reads", Self::LABEL))
+    }
+
     /// The stored layout of this resource's content, for services that act
     /// on it generically: History restores a past version through it, field
     /// by field and item by item. `#[resource]` returns the record's
