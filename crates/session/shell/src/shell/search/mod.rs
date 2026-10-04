@@ -166,6 +166,11 @@ impl ResourceKindText for ResourceKind {
 pub type OpenFn = dyn Fn(&mut AutoCommit, &ObjId, &Chrome, &ActionArgs) -> Result<(), ActionError>;
 pub type InvokeFn =
     dyn Fn(&mut AutoCommit, &ObjId, &Chrome, &ActionArgs) -> Result<ActionReceipt, ActionError>;
+/// The longest an exact-address resolve waits for a provider's retained
+/// index to finish its first build. An address is valid whether or not a
+/// search ran before it; the wait only happens while a build is in flight.
+pub const RESOLVE_INDEX_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// A non-blocking admission poll. `None` means the broker has not answered
 /// yet; the compositor keeps the ticket and polls again next frame.
 pub type PendingInvocation = Rc<dyn Fn() -> Result<Option<ActionReceipt>, ActionError>>;
@@ -203,6 +208,20 @@ impl ActionReceipt {
             update: tilo_actions::InvocationUpdate::Succeeded {
                 invocation: tilo_actions::InvocationId::new(),
                 output: tilo_actions::ActionOutput::default(),
+            },
+        }
+    }
+
+    /// A completed local action that answers with `value`.
+    pub fn completed_with(value: serde_json::Value) -> Self {
+        Self {
+            broker_invocation_id: None,
+            update: tilo_actions::InvocationUpdate::Succeeded {
+                invocation: tilo_actions::InvocationId::new(),
+                output: tilo_actions::ActionOutput {
+                    value: Some(value),
+                    resources: Vec::new(),
+                },
             },
         }
     }
@@ -305,6 +324,32 @@ impl SearchResult {
     }
 }
 
+impl SearchResult {
+    /// A nullary row that shows something and answers with what it showed:
+    /// the palette runs it like any other row, and an action caller receives
+    /// the value as the receipt's typed output.
+    pub fn view_with_output(
+        kind: ResourceKind,
+        provider_id: impl Into<String>,
+        id: impl Into<String>,
+        title: impl Into<String>,
+        subtitle: Option<String>,
+        score: i32,
+        open: impl Fn(&Chrome) -> Result<serde_json::Value, ActionError> + 'static,
+    ) -> Self {
+        let open = Rc::new(open);
+        let invoke = Rc::clone(&open);
+        let mut row = Self::nullary_fallible(kind, provider_id, id, title, subtitle, score, {
+            move |_doc, _root, chrome| open(chrome).map(drop)
+        });
+        row.operation_kind = tilo_actions::OperationKind::View;
+        row.on_invoke = Some(Rc::new(move |_doc, _root, chrome, _args| {
+            invoke(chrome).map(ActionReceipt::completed_with)
+        }));
+        row
+    }
+}
+
 impl std::fmt::Debug for SearchResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SearchResult")
@@ -348,14 +393,24 @@ pub trait SearchProvider {
 
     /// Resolve one provider-local id from current provider state. The default
     /// is suitable for small providers whose empty query is their complete
-    /// action surface. Retained or remote providers override this so selecting
-    /// an already-discovered address does not issue a different search query
-    /// and discard the page that disclosed it.
+    /// action surface: it follows that query's pages to the end, so an id
+    /// past the first palette page still resolves. Retained or remote
+    /// providers override this so selecting an already-discovered address
+    /// does not issue a different search query and discard the page that
+    /// disclosed it.
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
-        self.query_page(ctx, None, SearchBudget::PALETTE)
-            .results
-            .into_iter()
-            .find(|result| result.id == id)
+        let mut cursor: Option<SearchCursor> = None;
+        for _ in 0..HEADLESS_MAX_PAGES {
+            let page = self.query_page(ctx, cursor.as_ref(), SearchBudget::PALETTE);
+            if let Some(found) = page.results.into_iter().find(|result| result.id == id) {
+                return Some(found);
+            }
+            if page.exhausted || page.stale_cursor {
+                return None;
+            }
+            cursor = Some(page.next_cursor?);
+        }
+        None
     }
 
     /// Resource hierarchy for one result already admitted to the caller's

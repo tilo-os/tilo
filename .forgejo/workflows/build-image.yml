@@ -2733,6 +2733,9 @@ jobs:
           # session's logind scope and their own app scopes, and nothing of
           # the session was denied home access in its first minute.
           ./os/dev/vm.sh ssh /usr/libexec/tilo/session-context-check.sh
+          # The device admin drives the session through the action model over
+          # their own ssh login: no TILO_TEST_CONTROL, no synthetic input.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-admin-actions.sh
 
           # Typing in a note is a keyboard's job, so the sentence reaches Notes
           # through QEMU's keyboard as key presses, never an app API. The
