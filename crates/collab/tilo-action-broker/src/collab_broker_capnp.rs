@@ -586,6 +586,26 @@ impl AdmittedJoinIdentity {
         .from_foreign_device(foreign)
     }
 
+    /// The caller this certified identity is in `room`, from its own
+    /// device: foreign when it was held to the cap there or the host keeps
+    /// a stricter restriction for it.
+    fn certified_caller(&self, room: &str, restricted: bool) -> tilo_actions::remote::Caller {
+        let verified = &self.verified;
+        match &self.agent_id {
+            Some(agent) => tilo_actions::remote::Caller::delegated_agent(
+                agent.clone(),
+                verified.user_public_key,
+                verified.device_public_key,
+            ),
+            None => tilo_actions::remote::Caller::authenticated(
+                verified.user_public_key,
+                verified.device_public_key,
+            ),
+        }
+        .in_room(room)
+        .from_foreign_device(verified.capped || restricted)
+    }
+
     fn policy_actor(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> Actor {
         let room = workspace.room.to_string();
         if let Some(agent) = &self.agent_id {
@@ -1252,13 +1272,21 @@ impl CapnpBrokerState {
         peer_id: u64,
         running: tilo_actions::InvocationId,
     ) -> Option<tilo_actions::remote::Caller> {
-        self.pending_invocations
+        // Doors that take the caller's own invocation id can admit two
+        // callers' invocations under one id; such an id names nobody.
+        let mut matching = self
+            .pending_invocations
             .lock()
             .ok()?
             .values()
-            .find(|pending| pending.peer_id == peer_id && pending.update.invocation() == running)
-            .and_then(|pending| pending.caller.clone())?
-            .current(self)
+            .filter(|pending| pending.peer_id == peer_id && pending.update.invocation() == running)
+            .map(|pending| pending.caller.clone())
+            .take(2)
+            .collect::<Vec<_>>();
+        if matching.len() != 1 {
+            return None;
+        }
+        matching.pop()??.current(self)
     }
 }
 
@@ -1268,8 +1296,15 @@ impl CapnpBrokerState {
 enum ContinuingCaller {
     /// A caller the door knew directly.
     Caller(tilo_actions::remote::Caller),
-    /// A remote device's certified caller, checked again each time.
-    Certified(Box<VerifiedActionCaller>),
+    /// A certified caller, its certificate checked again each time.
+    Certified {
+        caller: Box<VerifiedActionCaller>,
+        /// A stricter foreign-device restriction the host kept for them.
+        foreign_restriction: bool,
+        /// The exact caller the door admitted, with its execution, when it
+        /// knew one; it continues only while that execution is live.
+        direct: Option<tilo_actions::remote::Caller>,
+    },
     /// A person or agent on a connection this host admitted, in a room.
     Admitted {
         room: String,
@@ -1280,7 +1315,11 @@ enum ContinuingCaller {
 impl ContinuingCaller {
     fn from_durable(durable: DurableContext<'_>) -> Self {
         match durable {
-            DurableContext::Peer(caller, _) => Self::Certified(Box::new(caller.clone())),
+            DurableContext::Peer(caller, _) => Self::Certified {
+                caller: Box::new(caller.clone()),
+                foreign_restriction: false,
+                direct: None,
+            },
             DurableContext::Local { caller, .. } => {
                 let (room, admitted) = caller.admitted_in();
                 Self::Admitted {
@@ -1293,7 +1332,14 @@ impl ContinuingCaller {
 
     fn from_origin(origin: &InvocationCaller) -> Self {
         match origin {
-            InvocationCaller::Certified { caller, .. } => Self::Certified(caller.clone()),
+            InvocationCaller::Certified {
+                caller,
+                foreign_restriction,
+            } => Self::Certified {
+                caller: caller.clone(),
+                foreign_restriction: *foreign_restriction,
+                direct: None,
+            },
             InvocationCaller::Local { route, admitted } => Self::Admitted {
                 room: route.cluster_id.clone(),
                 admitted: admitted.clone(),
@@ -1301,15 +1347,51 @@ impl ContinuingCaller {
         }
     }
 
+    /// Who `caller` was admitted as: certified, with the custody its door
+    /// holds, when it holds one.
+    fn admitted(
+        caller: Option<&tilo_actions::remote::Caller>,
+        durable: Option<DurableContext<'_>>,
+        origin: Option<&InvocationCaller>,
+    ) -> Option<Self> {
+        match (caller, origin) {
+            (
+                Some(direct),
+                Some(InvocationCaller::Certified {
+                    caller,
+                    foreign_restriction,
+                }),
+            ) => Some(Self::Certified {
+                caller: caller.clone(),
+                foreign_restriction: *foreign_restriction,
+                direct: Some(direct.clone()),
+            }),
+            (Some(caller), _) => Some(Self::Caller(caller.clone())),
+            (None, _) => durable
+                .map(Self::from_durable)
+                .or_else(|| origin.map(Self::from_origin)),
+        }
+    }
+
     /// The caller as they stand now: a certified caller whose certificate
-    /// no longer verifies, or who changed, is nobody.
+    /// no longer verifies, who changed, or whose execution ended, is nobody.
+    /// A certified caller keeps their own device, so they stay held to the
+    /// foreign-device cap wherever that device does not govern the room.
     fn current(&self, state: &CapnpBrokerState) -> Option<tilo_actions::remote::Caller> {
         match self {
             Self::Caller(caller) => Some(caller.clone()),
-            Self::Certified(caller) => state
-                .current_action_caller(caller)
-                .ok()
-                .map(|admitted| admitted.caller(&caller.room)),
+            Self::Certified {
+                caller,
+                foreign_restriction,
+                direct,
+            } => {
+                let admitted = state.current_action_caller(caller).ok()?;
+                match direct {
+                    Some(direct) => (direct.execution_id().is_none() || direct.execution_is_live())
+                        .then(|| direct.clone()),
+                    None => Some(admitted.certified_caller(&caller.room, *foreign_restriction)),
+                }
+            }
             Self::Admitted { room, admitted } => Some(admitted.caller(room)),
         }
     }
@@ -4460,11 +4542,7 @@ impl CapnpBrokerState {
             origin,
             retained_time,
         } = provenance;
-        let continuing = caller
-            .cloned()
-            .map(ContinuingCaller::Caller)
-            .or_else(|| durable.map(ContinuingCaller::from_durable))
-            .or_else(|| origin.as_ref().map(ContinuingCaller::from_origin));
+        let continuing = ContinuingCaller::admitted(caller, durable, origin.as_ref());
         let owner = durable.map_or_else(
             || InvocationOwner::Local {
                 actor: actor.id.clone(),
