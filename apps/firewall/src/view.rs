@@ -16,7 +16,7 @@ use ui::a11y::AccessNode;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{Rhythm, TextRole};
-use ui::widget::data_table::{CellAlign, ColumnDef, ColumnWidth, DataTable};
+use ui::widget::data_table::{CellAlign, ColumnDef, ColumnWidth, DataTable, TableSort};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Badge, Banner, Button, ButtonRole, ChipStyle, Column, Decorator, Dropdown, Element, EmptyState,
@@ -34,8 +34,6 @@ use crate::model::{Action, FirewallConfig, Proto, Rule, RuleId, ServiceCatalog, 
 pub(crate) enum Intent {
     SelectZone(ZoneKind),
     SelectRule(RuleId),
-    /// Sort the rules by a column; the same column again flips direction.
-    SortRules(RuleSortKey),
     SetTab(Tab),
     SetMatchService(bool),
     SetProto(Proto),
@@ -51,74 +49,11 @@ pub(crate) enum Intent {
     Retry,
 }
 
-/// The rule columns a person can sort by.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RuleSortKey {
-    Action,
-    Rule,
-    Protocol,
-    Source,
-}
-
-impl RuleSortKey {
-    /// The rules table's column at `index`, when it sorts.
-    fn of_column(index: usize) -> Option<Self> {
-        [Self::Action, Self::Rule, Self::Protocol, Self::Source]
-            .get(index)
-            .copied()
-    }
-
-    fn column(self) -> &'static str {
-        match self {
-            Self::Action => "action",
-            Self::Rule => "rule",
-            Self::Protocol => "protocol",
-            Self::Source => "source",
-        }
-    }
-
-    fn compare(self, a: &RuleRow, b: &RuleRow) -> std::cmp::Ordering {
-        match self {
-            Self::Action => action_rank(a.action).cmp(&action_rank(b.action)),
-            Self::Rule => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
-            Self::Protocol => a.protocol.cmp(b.protocol),
-            Self::Source => a.source.cmp(&b.source),
-        }
-    }
-}
-
 /// Rules that let traffic through come before the ones that stop it.
 fn action_rank(action: Action) -> u8 {
     match action {
         Action::Allow => 0,
         Action::Deny => 1,
-    }
-}
-
-/// How the rules table is sorted: by a column, ascending or not.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RuleSort {
-    pub key: RuleSortKey,
-    pub ascending: bool,
-}
-
-impl Default for RuleSort {
-    fn default() -> Self {
-        Self {
-            key: RuleSortKey::Action,
-            ascending: true,
-        }
-    }
-}
-
-impl RuleSort {
-    /// Sorting by `key`: the same column flips, another starts ascending.
-    #[must_use]
-    pub(crate) fn by(self, key: RuleSortKey) -> Self {
-        Self {
-            key,
-            ascending: key != self.key || !self.ascending,
-        }
     }
 }
 
@@ -446,7 +381,8 @@ pub(crate) struct PageModel<'a> {
     pub zone: &'a Zone,
     pub tab: Tab,
     pub selected_rule: Option<RuleId>,
-    pub rule_sort: RuleSort,
+    /// The order a person chose for the rules, kept across rebuilds.
+    pub rule_sort: &'a LocalState<Option<TableSort>>,
     pub pending_delete: Option<&'a Rule>,
     pub draft: &'a Draft,
     /// The add-rule dialog is open.
@@ -643,19 +579,10 @@ fn rules(model: &PageModel<'_>, intents: &Intents, switches: &Switches) -> Eleme
                 .dimmed(),
         );
     }
-    let mut rows: Vec<RuleRow> = model.zone.rules.iter().map(RuleRow::of).collect();
-    let sort = model.rule_sort;
-    rows.sort_by(|a, b| {
-        let order = sort.key.compare(a, b);
-        if sort.ascending {
-            order
-        } else {
-            order.reverse()
-        }
-    });
+    let rows: Vec<RuleRow> = model.zone.rules.iter().map(RuleRow::of).collect();
     Box::new(rule_table(
         rows,
-        sort,
+        model.rule_sort,
         model.selected_rule,
         intents,
         switches,
@@ -664,17 +591,16 @@ fn rules(model: &PageModel<'_>, intents: &Intents, switches: &Switches) -> Eleme
 
 fn rule_table(
     rows: Vec<RuleRow>,
-    sort: RuleSort,
+    sort: &LocalState<Option<TableSort>>,
     selected: Option<RuleId>,
     intents: &Intents,
     switches: &Switches,
 ) -> DataTable<RuleRow> {
     let toggles = switches.clone();
     let delete = intents.clone();
-    let sorter = intents.clone();
     let mut table = DataTable::new(vec![
         ColumnDef::new("action", "Action", ColumnWidth::Auto)
-            .sortable(true)
+            .sorted_by(|a: &RuleRow, b: &RuleRow| action_rank(a.action).cmp(&action_rank(b.action)))
             .with_align(CellAlign::Center)
             .with_badge(|row: &RuleRow| {
                 let tone = match row.action {
@@ -721,18 +647,13 @@ fn rule_table(
     ])
     .with_id("firewall-rules")
     .with_accessible_name("Rules")
-    .on_header_click(move |index| {
-        if let Some(key) = RuleSortKey::of_column(index) {
-            sorter.push(Intent::SortRules(key));
-        }
-    })
+    .with_sort_state(sort)
     .selectable(true);
-    table.set_sort_indicator(sort.key.column(), sort.ascending);
     let ids: Vec<RuleId> = rows.iter().map(|row| row.id).collect();
-    if let Some(index) = selected.and_then(|id| ids.iter().position(|row| *row == id)) {
-        table.selection_mut().select_only(index);
-    }
     table.set_rows(rows);
+    if let Some(index) = selected.and_then(|id| ids.iter().position(|row| *row == id)) {
+        table.select_row(index);
+    }
     let select = intents.clone();
     table.on_row_click(move |index, _, _| {
         if let Some(id) = ids.get(index) {

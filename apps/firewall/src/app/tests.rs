@@ -388,11 +388,11 @@ fn the_rules_are_one_list_sorted_from_its_headers() {
     Framed::harness_mut(&mut app).click_at(header.x, header.y);
     Framed::harness_mut(&mut app).poll_frame().unwrap();
     assert_eq!(
-        app.rule_sort,
-        view::RuleSort {
-            key: view::RuleSortKey::Action,
+        app.rule_sort.with(Clone::clone),
+        Some(TableSort {
+            key: "action".into(),
             ascending: false
-        }
+        })
     );
     let flipped = rows(&app);
     assert!(flipped.is_sorted_by_key(|action| *action == Action::Allow));
