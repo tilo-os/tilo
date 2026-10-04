@@ -4181,7 +4181,11 @@ impl BrowserWidget {
                 WebViewEvent::LoadFinishedAt { .. }
                 | WebViewEvent::FaviconChanged { .. }
                 | WebViewEvent::TitleChanged(_)
-                | WebViewEvent::LoadProgress(_) => {}
+                | WebViewEvent::LoadProgress(_)
+                // Answers to the paint stream's own requests; its engine
+                // wrapper consumes them before they reach the browser.
+                | WebViewEvent::PaintSnapshot { .. }
+                | WebViewEvent::PaintResource { .. } => {}
                 WebViewEvent::LoadFinished => {
                     if !self.forced_load_error && !self.address_error_active {
                         self.load_error = None;
@@ -4843,7 +4847,18 @@ pub(crate) const ENGINE_INSTALL_URI: &str = "tilo-store:app/so.tilo.browser-engi
 /// Live browsing runs the Chromium engine runtime
 /// ([`ui::webview::chromium::runtime`]); there is no other engine and no
 /// simulated page. Deterministic rendering is confined to `new_headless`.
+/// `TILO_BROWSER_PAINT=1` draws its pages from the paint stream (the engine's
+/// layout as a display list, drawn by this toolkit) instead of its pixels:
+/// what a web client of this host sees.
 fn default_engine(mode: BrowsingMode) -> (SharedEngine, Option<EngineProblem>) {
+    let (engine, problem) = native_engine(mode);
+    if problem.is_none() && std::env::var("TILO_BROWSER_PAINT").as_deref() == Ok("1") {
+        return (ui::webview::paint::PaintEngine::new(engine), None);
+    }
+    (engine, problem)
+}
+
+fn native_engine(mode: BrowsingMode) -> (SharedEngine, Option<EngineProblem>) {
     if let Err(missing) = ui::webview::chromium::runtime::locate() {
         tracing::warn!(hint = %missing.developer_hint(), "browser engine is not installed");
         return (

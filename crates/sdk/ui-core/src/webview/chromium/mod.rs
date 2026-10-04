@@ -350,6 +350,18 @@ impl WebViewEngine for UnavailableEngine {
                     result: Err(super::PageFailure::new("unavailable", self.message.clone())),
                 })
             }
+            WebViewCommand::PaintCapture { request_id } => {
+                self.shared.event(WebViewEvent::PaintSnapshot {
+                    request_id,
+                    snapshot: None,
+                });
+            }
+            WebViewCommand::PaintResource { request_id, .. } => {
+                self.shared.event(WebViewEvent::PaintResource {
+                    request_id,
+                    bytes: None,
+                });
+            }
             _ => {}
         }
     }
@@ -1296,6 +1308,12 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         }
         "history" => value["back"].is_boolean() && value["forward"].is_boolean(),
         "page_result" => super::page::decode_result(value).is_some(),
+        "paint_snapshot" | "paint_resource" => {
+            value["request_id"]
+                .as_u64()
+                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
+                && value["ok"].is_boolean()
+        }
         "error" => text("url") && text("message"),
         _ => true,
     };
@@ -1342,7 +1360,8 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             *id > 0 && i32::try_from(*id).is_ok() && text.len() <= 4096
         }
         WebViewCommand::SetZoomLevel(level) => level.is_finite() && (-5.0..=9.0).contains(level),
-        WebViewCommand::RequestNavigationHistory { request_id, .. } => {
+        WebViewCommand::RequestNavigationHistory { request_id, .. }
+        | WebViewCommand::PaintCapture { request_id } => {
             *request_id > 0 && i32::try_from(*request_id).is_ok()
         }
         WebViewCommand::NavigateToHistoryEntry { request_id, id } => {
@@ -1356,6 +1375,12 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             request_id,
             request,
         } => *request_id > 0 && i32::try_from(*request_id).is_ok() && request.valid(),
+        WebViewCommand::PaintResource { request_id, url } => {
+            *request_id > 0
+                && i32::try_from(*request_id).is_ok()
+                && !url.is_empty()
+                && url.len() <= 1 << 20
+        }
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::DownloadDecision { id, .. }
         | WebViewCommand::CancelNativeDownload { id }
@@ -1574,6 +1599,30 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             let (request_id, result) = super::page::decode_result(value)?;
             WebViewEvent::PageResult { request_id, result }
         }
+        "paint_snapshot" => WebViewEvent::PaintSnapshot {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            snapshot: value["ok"]
+                .as_bool()?
+                .then(|| value["snapshot"].as_str().map(str::to_owned))
+                .flatten(),
+        },
+        "paint_resource" => WebViewEvent::PaintResource {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            bytes: value["ok"]
+                .as_bool()?
+                .then(|| {
+                    let content = value["content"].as_str()?;
+                    if value["base64"].as_bool().unwrap_or(false) {
+                        use base64::Engine as _;
+                        base64::engine::general_purpose::STANDARD
+                            .decode(content)
+                            .ok()
+                    } else {
+                        Some(content.as_bytes().to_vec())
+                    }
+                })
+                .flatten(),
+        },
         "error" => WebViewEvent::LoadFailed {
             uri: value["url"].as_str().unwrap_or_default().into(),
             error: value["message"].as_str()?.into(),
@@ -1686,6 +1735,14 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             request_id,
             request,
         } => super::page::encode_request(request_id, &request),
+        WebViewCommand::PaintCapture { request_id } => json!({
+            "op": "paint_capture",
+            "request_id": request_id,
+            "styles": tilo_paint_stream::snapshot::COMPUTED_STYLES,
+        }),
+        WebViewCommand::PaintResource { request_id, url } => {
+            json!({"op":"paint_resource","request_id":request_id,"url":url})
+        }
         WebViewCommand::StartDownload { .. }
         | WebViewCommand::SetDownloadDestination { .. }
         | WebViewCommand::CancelDownload { .. }

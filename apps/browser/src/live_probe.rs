@@ -43,6 +43,12 @@ impl WebViewEngine for LiveProbe {
     fn set_waker(&self, waker: Box<dyn Fn() + Send + Sync>) {
         self.inner.set_waker(waker);
     }
+    fn paint_frame(&self) -> Option<std::sync::Arc<ui::webview::paint::stream::Frame>> {
+        self.inner.paint_frame()
+    }
+    fn paint_blob(&self, hash: &[u8; 32]) -> Option<std::sync::Arc<Vec<u8>>> {
+        self.inner.paint_blob(hash)
+    }
     fn drain_events(&self) -> Vec<WebViewEvent> {
         let events = self.inner.drain_events();
         let mut state = self

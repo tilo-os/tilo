@@ -64,6 +64,9 @@ impl NoWayland {
     fn set_image(&self, _width: usize, _height: usize, _rgba: &[u8]) -> bool {
         false
     }
+    fn image(&self) -> Option<crate::ClipboardImage> {
+        None
+    }
 }
 
 /// Whether `target` has no system storage here, and stays in the process.
@@ -195,9 +198,33 @@ impl ClipboardBackend for NativeClipboard {
         handle.set_image(img).is_ok()
     }
 
+    fn image(&self) -> Option<crate::ClipboardImage> {
+        if let Some(wayland) = wayland() {
+            return wayland.image();
+        }
+        arboard_image()
+    }
+
     fn name(&self) -> &'static str {
         "native"
     }
+}
+
+/// The X11 clipboard's image, as a PNG.
+#[cfg(target_os = "linux")]
+fn arboard_image() -> Option<crate::ClipboardImage> {
+    let image = arboard_clipboard()?.lock().ok()?.get_image().ok()?;
+    let bytes = crate::wayland::encode_png(image.width, image.height, &image.bytes)?;
+    Some(crate::ClipboardImage {
+        mime: "image/png",
+        bytes,
+    })
+}
+
+/// Reading an image needs an encoder this target does not carry.
+#[cfg(not(target_os = "linux"))]
+fn arboard_image() -> Option<crate::ClipboardImage> {
+    None
 }
 
 /// Lazy global `arboard` handle, used **only off Wayland**.

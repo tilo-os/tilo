@@ -584,6 +584,9 @@ pub struct BlockEditor {
     /// Canonical document-level selection. Per-line selections are only its
     /// painted representation; clipboard and replacement semantics read this.
     document_selection: Option<DocumentSelection>,
+    /// Exact membership retained after a structural batch command. Text alone
+    /// cannot distinguish an included empty last block from a column-zero end.
+    retained_block_selection: Option<RetainedBlockSelection>,
     slash_menu: SlashMenu,
     /// Byte offset where `/` was typed, so `/<filter>` can be spliced
     /// back out on commit.
@@ -606,6 +609,10 @@ pub struct BlockEditor {
     transclusion_rects: Vec<Option<(Rect, PageId)>>,
     pending_transclusion_opens: Vec<PageId>,
     pending_external_link_opens: Vec<String>,
+    /// Images pasted into the editor, for its host to store and place after
+    /// the caret: the editor holds text, and an image becomes a block once
+    /// the host keeps its bytes with the document.
+    pasted_images: Vec<crate::clipboard::ClipboardImage>,
     /// Painted copy controls for fenced-code runs. Each tuple retains the
     /// inclusive block range so pointer and accessibility activation copy the
     /// exact source, including newlines, without touching document state.
@@ -678,6 +685,12 @@ pub struct BlockEditor {
     presence_key: Option<present::PresenceKeyFn>,
 }
 
+/// Structural command membership, invalidated until a local editing gesture.
+enum RetainedBlockSelection {
+    Active(Vec<String>),
+    Refused,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FindMatch {
     block: usize,
@@ -736,6 +749,7 @@ impl BlockEditor {
             cross_block_drag_start: None,
             cross_block_drag_touched: None,
             document_selection: None,
+            retained_block_selection: None,
             slash_menu: SlashMenu::new(),
             slash_open_at: None,
             link_popover: LinkPopover::new(),
@@ -747,6 +761,7 @@ impl BlockEditor {
             transclusion_rects: Vec::new(),
             pending_transclusion_opens: Vec::new(),
             pending_external_link_opens: Vec::new(),
+            pasted_images: Vec::new(),
             code_copy_hits: Vec::new(),
             copied_code_start: None,
             copied_code_feedback: None,
@@ -1214,6 +1229,7 @@ impl BlockEditor {
         }
         self.focused = None;
         self.is_focused = false;
+        self.retained_block_selection = None;
         self.document_selection = None;
         self.cross_block_drag_start = None;
         self.cross_block_drag_touched = None;
@@ -1790,6 +1806,7 @@ impl BlockEditor {
         self.blocks = new_blocks;
         // Structural changes invalidate index-addressed endpoints. A fresh
         // local selection is safer than painting stale bytes on new blocks.
+        self.retained_block_selection = None;
         self.document_selection = None;
         self.cross_block_drag_start = None;
         self.cross_block_drag_touched = None;
@@ -1929,6 +1946,7 @@ impl BlockEditor {
             return;
         };
         self.clear_find_document_selection();
+        self.retained_block_selection = None;
         self.document_selection = None;
         self.focus_block(found.block, CursorPlacement::Byte(found.end));
         if let Some(block) = self.blocks.get_mut(found.block) {
@@ -2170,6 +2188,7 @@ impl BlockEditor {
     }
 
     pub fn focus_block(&mut self, idx: usize, cursor_at: CursorPlacement) {
+        self.retained_block_selection = None;
         self.tab_navigation = false;
         for table in self.table_editors.values_mut() {
             table.blur_projection();
@@ -2554,6 +2573,34 @@ impl BlockEditor {
     /// Selected roots and their descendants, including entire code
     /// fences. A selection ending at column zero does not include that block.
     pub fn selected_block_range(&self) -> Option<std::ops::Range<usize>> {
+        if let Some(retained) = &self.retained_block_selection {
+            let RetainedBlockSelection::Active(ids) = retained else {
+                return None;
+            };
+            let start = self
+                .blocks
+                .iter()
+                .position(|block| Some(&block.id) == ids.first())?;
+            let end = start.checked_add(ids.len())?;
+            if !self
+                .blocks
+                .get(start..end)?
+                .iter()
+                .map(|block| &block.id)
+                .eq(ids)
+            {
+                return None;
+            }
+            let mut root = start;
+            while root < end {
+                let group = self.movable_group(root);
+                if group.start != root || group.end > end {
+                    return None;
+                }
+                root = group.end;
+            }
+            return Some(start..end);
+        }
         let Some(selection) = self.document_selection else {
             return self.focused.and_then(|index| self.block_group_range(index));
         };
@@ -2583,6 +2630,40 @@ impl BlockEditor {
     pub fn block_group_range(&self, index: usize) -> Option<std::ops::Range<usize>> {
         self.blocks.get(index)?;
         Some(self.movable_group(index))
+    }
+
+    /// Plan a selected sibling batch's move past its adjacent sibling subtree.
+    /// Returns the source rows and the insertion boundary in the current order.
+    /// A move never implicitly changes a root's parent or splits a code fence.
+    pub fn selected_block_move(&self, up: bool) -> Option<(std::ops::Range<usize>, usize)> {
+        let range = self.selected_block_range()?;
+        let depth = self.blocks.get(range.start)?.indent();
+        let mut root = range.start;
+        while root < range.end {
+            if self.blocks.get(root)?.indent() != depth {
+                return None;
+            }
+            root = self.movable_group(root).end;
+        }
+        if root != range.end {
+            return None;
+        }
+        let mut adjacent = if up {
+            range.start.checked_sub(1)?
+        } else {
+            range.end
+        };
+        if up {
+            while self.blocks.get(adjacent)?.indent() > depth {
+                adjacent = adjacent.checked_sub(1)?;
+            }
+        }
+        if self.blocks.get(adjacent)?.indent() != depth {
+            return None;
+        }
+        let neighbor = self.movable_group(adjacent);
+        let boundary = if up { neighbor.start } else { neighbor.end };
+        Some((range, boundary))
     }
 
     fn try_indent_selection(&mut self, delta: i8) -> bool {
@@ -3072,6 +3153,9 @@ impl BlockEditor {
             return true;
         };
         if matches!(command, "copy" | "cut") && selection.anchor == selection.cursor {
+            return true;
+        }
+        if command == "paste" && self.paste_image() {
             return true;
         }
         // An unavailable clipboard must never turn Paste into Delete.
@@ -3593,6 +3677,73 @@ impl BlockEditor {
 
     pub fn take_external_link_open(&mut self) -> Option<String> {
         self.pending_external_link_opens.pop()
+    }
+
+    /// The images pasted since the last call, oldest first, for the host to
+    /// store with the document and insert after the focused block.
+    pub fn take_pasted_images(&mut self) -> Vec<crate::clipboard::ClipboardImage> {
+        std::mem::take(&mut self.pasted_images)
+    }
+
+    /// Paste the clipboard's image, when it holds one and the caret is in
+    /// prose (code and tables take text). A selection is replaced, as a text
+    /// paste replaces it.
+    fn paste_image(&mut self) -> bool {
+        if self.read_only {
+            return false;
+        }
+        let in_prose = self
+            .focused
+            .and_then(|index| self.blocks.get(index))
+            .is_some_and(|block| {
+                !matches!(
+                    block.kind,
+                    BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
+                )
+            });
+        if !in_prose {
+            return false;
+        }
+        let Some(image) = crate::clipboard_paste_image() else {
+            return false;
+        };
+        if self.document_selection.is_some() {
+            self.replace_document_selection("");
+        }
+        self.pasted_images.push(image);
+        self.dirty = true;
+        true
+    }
+
+    /// Ctrl+V (Cmd+V) with an image on the clipboard.
+    fn try_paste_image_key(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        use winit::event::{ElementState, KeyEvent};
+        use winit::keyboard::Key;
+
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Character(key),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let mods = ctx.modifiers.state();
+        let command = mods.control_key() || mods.super_key();
+        if !self.is_focused
+            || !command
+            || mods.alt_key()
+            || !key.eq_ignore_ascii_case("v")
+            || !self.paste_image()
+        {
+            return false;
+        }
+        *ctx.handled = true;
+        true
     }
 
     fn copy_code_run(&mut self, start: usize, end: usize) -> bool {
@@ -5463,6 +5614,7 @@ impl BlockEditor {
     /// Set and paint a document range using UTF-8 byte offsets. Positions are
     /// clamped to existing block/character boundaries.
     pub fn select_document_range(&mut self, anchor: DocumentPosition, cursor: DocumentPosition) {
+        self.retained_block_selection = None;
         if self.blocks.is_empty() {
             return;
         }
@@ -5484,6 +5636,47 @@ impl BlockEditor {
         };
         self.focus_block(cursor_block, CursorPlacement::Byte(cursor_byte));
         self.paint_cross_block_selection(anchor_block, anchor_byte, cursor_block, cursor_byte);
+    }
+
+    /// Retain the exact batch after a structural command, including empty rows.
+    /// Missing or interleaved IDs refuse restoration instead of selecting peers.
+    pub fn retain_block_selection(&mut self, ids: Vec<String>, reverse: bool) {
+        self.retained_block_selection = Some(RetainedBlockSelection::Active(ids.clone()));
+        let Some(range) = self.selected_block_range() else {
+            self.reconcile_block_selection();
+            return;
+        };
+        let start = DocumentPosition {
+            block: range.start,
+            byte: 0,
+        };
+        let last = range.end.saturating_sub(1);
+        let end = DocumentPosition {
+            block: last,
+            byte: self.blocks[last].text().len(),
+        };
+        let (anchor, cursor) = if reverse { (end, start) } else { (start, end) };
+        self.select_document_range(anchor, cursor);
+        self.retained_block_selection = Some(RetainedBlockSelection::Active(ids));
+    }
+
+    /// Peer structural edits must not turn the old batch into a text selection
+    /// that silently includes new content. Keep a refused marker until the next
+    /// explicit caret/selection gesture, so a pending command cannot fall back
+    /// to moving just the caret's block.
+    fn reconcile_block_selection(&mut self) {
+        if self.retained_block_selection.is_some() && self.selected_block_range().is_none() {
+            self.clear_document_selection();
+            // Presentation may already have discarded the old drag bounds.
+            // Collapse every retained line's paint, including nonfocused rows.
+            for block in &mut self.blocks {
+                if block.line.selection_range().is_some() {
+                    let cursor = block.line.cursor_pos();
+                    block.line.inner_mut().set_selection(cursor, cursor);
+                }
+            }
+            self.retained_block_selection = Some(RetainedBlockSelection::Refused);
+        }
     }
 
     /// Clear selection and its keyboard/drag anchors without changing text.
@@ -5615,6 +5808,7 @@ impl BlockEditor {
             self.insert_replacement_tail(start.block, &first_kind, &inserted, suffix, suffix_marks)
         };
 
+        self.retained_block_selection = None;
         self.document_selection = None;
         self.cross_block_drag_start = None;
         self.cross_block_drag_touched = None;
@@ -5733,6 +5927,9 @@ impl BlockEditor {
                     if let Some(position) = collapse {
                         self.clear_cross_block_selection();
                         self.focus_block(position.block, CursorPlacement::Byte(position.byte));
+                        if *logical_key == Key::Named(NamedKey::Escape) {
+                            self.tab_navigation = true;
+                        }
                         return true;
                     }
                 }
@@ -5841,6 +6038,7 @@ impl BlockEditor {
         end_block: usize,
         end_byte: usize,
     ) {
+        self.retained_block_selection = None;
         self.document_selection =
             ((start_block, start_byte) != (end_block, end_byte)).then_some(DocumentSelection {
                 anchor: DocumentPosition {
@@ -5935,6 +6133,7 @@ impl BlockEditor {
     /// Called on the next fresh click so the new selection doesn't OR
     /// with the old one.
     fn clear_cross_block_selection(&mut self) {
+        self.retained_block_selection = None;
         self.document_selection = None;
         if let Some((lo, hi)) = self.cross_block_drag_touched.take() {
             for i in lo..=hi {
@@ -7589,6 +7788,10 @@ impl Widget for BlockEditor {
         let mut drag_offset = active_drag
             .map(|drag| self.last_mouse_pos - drag.start)
             .unwrap_or_default();
+        let selected_blocks = self
+            .retained_block_selection
+            .as_ref()
+            .and_then(|_| self.selected_block_range());
         let mut ctx = BlockDrawCtx {
             scene,
             text_renderer,
@@ -7624,6 +7827,19 @@ impl Widget for BlockEditor {
                 .as_ref()
                 .filter(|group| group.contains(&idx))
                 .map(|_| std::mem::take(ctx.scene));
+            if b.text().is_empty()
+                && selected_blocks
+                    .as_ref()
+                    .is_some_and(|range| range.contains(&idx))
+            {
+                ctx.scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    ctx.theme.accent_primary.with_alpha_factor(0.35),
+                    None,
+                    &b.line.get_rect(),
+                );
+            }
             b.line
                 .inner_mut()
                 .suppress_caret_paint(preceding.is_some() || self.caret_paint_suppressed);
@@ -8169,6 +8385,7 @@ impl Widget for BlockEditor {
                 }
                 self.edit_scope = EditScope::Anywhere;
                 self.blocks = vec![block];
+                self.retained_block_selection = None;
                 self.document_selection = None;
                 self.structure_dirty = true;
                 self.focus_block(0, CursorPlacement::End);
@@ -8176,6 +8393,7 @@ impl Widget for BlockEditor {
                 true
             }
             Action::SetSelection { anchor, focus } => {
+                self.retained_block_selection = None;
                 let text = self
                     .blocks
                     .iter()
@@ -8207,6 +8425,7 @@ impl Widget for BlockEditor {
                 let (anchor, focus) = (position(byte_at(*anchor)), position(byte_at(*focus)));
                 self.focus_block(focus.block, CursorPlacement::Byte(focus.byte));
                 if anchor.block == focus.block {
+                    self.retained_block_selection = None;
                     self.document_selection = None;
                     if let Some(block) = self.blocks.get_mut(focus.block) {
                         block
@@ -8359,6 +8578,10 @@ impl Widget for BlockEditor {
             ]);
         }
         let total = self.blocks.len();
+        let selected_blocks = self
+            .retained_block_selection
+            .as_ref()
+            .and_then(|_| self.selected_block_range());
         children.extend(self.blocks.iter().enumerate().map(|(index, block)| {
             let up_disabled = self.neighboring_group(index, true).is_none();
             let position = index.saturating_add(1);
@@ -8600,6 +8823,13 @@ impl Widget for BlockEditor {
                     accessible_kind_name(&block.kind)
                 ))
                 .with_semantic_key(format!("notes.block:{}", block.id))
+                .with_state(
+                    AccessState::new().selected(
+                        selected_blocks
+                            .as_ref()
+                            .is_some_and(|range| range.contains(&index)),
+                    ),
+                )
                 .with_hashed_key(format!("notes.block:group:{}", block.id))
                 .with_position(position, total)
                 .with_level(level)
@@ -9888,6 +10118,10 @@ mod retained_layout_tests;
 #[path = "block_editor_outline_tests.rs"]
 mod outline_tests;
 
+#[cfg(test)]
+#[path = "block_editor_image_paste_tests.rs"]
+mod image_paste_tests;
+
 impl BlockEditor {
     /// The current representation uses one stable block per source line.
     /// Keyboard commands operate on one authored fence, across its source rows.
@@ -10932,7 +11166,42 @@ impl BlockEditor {
             return;
         }
 
+        let changes_selection = match event {
+            WindowEvent::Ime(winit::event::Ime::Commit(_)) => true,
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                match &event.logical_key {
+                    Key::Named(
+                        NamedKey::ArrowLeft
+                        | NamedKey::ArrowRight
+                        | NamedKey::ArrowUp
+                        | NamedKey::ArrowDown
+                        | NamedKey::Home
+                        | NamedKey::End
+                        | NamedKey::PageUp
+                        | NamedKey::PageDown
+                        | NamedKey::Backspace
+                        | NamedKey::Delete
+                        | NamedKey::Enter
+                        | NamedKey::Space,
+                    ) => true,
+                    Key::Character(_) => {
+                        let held = ctx.modifiers.state();
+                        !held.control_key() && !held.super_key() && !held.alt_key()
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        };
+        if changes_selection {
+            self.retained_block_selection = None;
+        }
+
         if self.handle_find_event(event, ctx) {
+            return;
+        }
+
+        if self.try_paste_image_key(event, ctx) {
             return;
         }
 
@@ -11040,6 +11309,7 @@ impl BlockEditor {
             && self.is_focused
         {
             if event.logical_key == Key::Named(NamedKey::Escape) {
+                self.clear_document_selection();
                 self.tab_navigation = true;
                 *ctx.handled = true;
                 return;

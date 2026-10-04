@@ -112,6 +112,7 @@ fn write_approver_fixture(
             FILE_WORKSPACE,
             tilo_relay::personal_continuity_workspace_id(&user),
         ],
+        environments: tilo_relay_protocol::RelayEnvironments::default(),
     };
     tilo_files::native::atomic::write_creating_parent(
         &tilo_relay::home_peer_registry_path(root_dir),
