@@ -71,6 +71,8 @@ pub use secrets::{
     CredentialCandidate, CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem,
     SecretItemKind, SecretStore,
 };
+#[cfg(feature = "person")]
+pub mod person;
 pub mod status;
 pub use status::{
     AccountSyncHealth, AccountSyncReporter, AccountSyncStatus, AccountSyncStatusStore,
