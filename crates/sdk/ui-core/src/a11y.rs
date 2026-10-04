@@ -56,6 +56,9 @@ pub enum Role {
     /// Use [`AccessState::checked`].
     Switch,
     Slider,
+    /// A focusable divider between two panes that moves with the arrow
+    /// keys; its value is the first pane's share in percent.
+    Separator,
     SpinButton,
     /// Use [`AccessState::expanded`].
     ComboBox,
@@ -353,6 +356,7 @@ impl AccessNode {
                     | Role::Switch
                     | Role::ComboBox
                     | Role::Slider
+                    | Role::Separator
                     | Role::SpinButton
                     | Role::TextInput
                     | Role::MultilineTextInput

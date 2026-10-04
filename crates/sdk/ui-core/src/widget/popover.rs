@@ -592,9 +592,11 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
-        // A zero-extent leaf: the panel is placed against the anchor, not by
-        // the parent's flexbox. Registered so the host's sweeps reach it.
+        // A zero-extent leaf out of the flow: the panel is placed against
+        // the anchor, not by the parent's layout, and takes no room or gap
+        // there. Registered so the host's sweeps reach it.
         let node = taffy.leaf_node(Style {
+            position: taffy::Position::Absolute,
             size: Size {
                 width: Dimension::length(0.0),
                 height: Dimension::length(0.0),

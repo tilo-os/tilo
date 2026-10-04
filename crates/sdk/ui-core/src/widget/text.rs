@@ -151,8 +151,11 @@ pub struct Text {
     color: Option<vello::peniko::Color>,
     /// Resolve to the active theme's secondary ink.
     dimmed: bool,
-    /// Resolve to the theme's danger ink: a validation message.
-    danger: bool,
+    /// Resolve to this status tone's ink, measured against the ground at
+    /// draw time (a validation message, a "Running" state).
+    tone: Option<super::Tone>,
+    /// How assistive technology meets this text.
+    access: TextAccess,
     rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -176,6 +179,18 @@ pub struct Text {
     cache_rect: vello::kurbo::Rect,
 }
 
+/// How assistive technology meets a [`Text`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextAccess {
+    /// Static text (or a heading at its level).
+    Text,
+    /// The visible name of a control that already carries it as its own
+    /// accessible name: read once, through the control.
+    Presentational,
+    /// The label of a value beside it (a read-only form field).
+    Label,
+}
+
 impl Text {
     pub fn new(label: &str) -> Self {
         Self {
@@ -193,7 +208,8 @@ impl Text {
             engine_revision: 0,
             color: None,
             dimmed: false,
-            danger: false,
+            tone: None,
+            access: TextAccess::Text,
             rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -601,6 +617,21 @@ impl Text {
         &self.style
     }
 
+    /// Bound text (`from_state`, `dynamic`, `from_document`) that currently
+    /// renders nothing takes no room and no gap. A static empty `Text::new`
+    /// stays an empty line.
+    fn collapsed(&self) -> bool {
+        self.source.is_some() && self.label.is_empty()
+    }
+
+    fn flow_display(&self) -> taffy::Display {
+        if self.collapsed() {
+            taffy::Display::None
+        } else {
+            taffy::Display::DEFAULT
+        }
+    }
+
     /// External-layout assignment for callers placing this label outside
     /// the taffy tree. Mirrors
     /// [`crate::widget::TextInput::apply_layout_external`].
@@ -643,10 +674,36 @@ impl Text {
     /// The theme's danger ink, measured against the ground: a validation
     /// message under the control it is about ([`crate::widget::Field::with_error`]).
     #[must_use]
-    pub(crate) fn danger(mut self) -> Self {
+    pub(crate) fn danger(self) -> Self {
+        self.tone(super::Tone::Danger)
+    }
+
+    /// The visible label of a control that is already named by it: hidden
+    /// from assistive technology, so the name is read once, on the control.
+    #[must_use]
+    pub(crate) fn naming_its_control(mut self) -> Self {
+        self.access = TextAccess::Presentational;
+        self
+    }
+
+    /// The label of a value beside it, announced as a label.
+    #[must_use]
+    pub(crate) fn announced_as_label(mut self) -> Self {
+        self.access = TextAccess::Label;
+        self
+    }
+
+    /// Status text in `tone`'s ink: "Running" in success, "Stopped" in
+    /// danger, a person's name in their presence colour. The ink is
+    /// resolved when the text is drawn, against the ground it is drawn on,
+    /// and stepped out until it reads at the role's size, so it follows
+    /// the theme and stays legible in a sidebar, an inspector or a popover.
+    /// `Tone::Neutral` is the secondary ink.
+    #[must_use]
+    pub fn tone(mut self, tone: super::Tone) -> Self {
         self.color = None;
         self.dimmed = false;
-        self.danger = true;
+        self.tone = Some(tone);
         self.dirty = true;
         self
     }
@@ -700,6 +757,7 @@ impl Widget for Text {
     ) -> NodeId {
         self.observe_theme(theme);
         let node = taffy.leaf_node(Style {
+            display: self.flow_display(),
             size: Size {
                 width: taffy::Dimension::auto(),
                 height: taffy::Dimension::auto(),
@@ -712,6 +770,20 @@ impl Widget for Text {
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    /// A bound text that has nothing to say leaves its container's flow,
+    /// so its container skips the gap it would have taken.
+    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let display = self.flow_display();
+        match taffy.style(node) {
+            Ok(style) if style.display != display => {
+                let mut style = style.clone();
+                style.display = display;
+                taffy.set_style(node, style).is_ok()
+            }
+            _ => false,
+        }
     }
 
     fn measure(
@@ -796,12 +868,15 @@ impl Widget for Text {
         self.observe_engine_revision();
         let color = self.color.unwrap_or({
             let colors = &theme.tokens.colors;
-            if self.danger {
-                colors.ink_on_any(
-                    &[colors.surfaces.content],
-                    colors.semantic.danger,
-                    crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
-                )
+            if let Some(tone) = self.tone {
+                // Small type needs the stronger floor to read once
+                // anti-aliased; larger roles hold body-text contrast.
+                let floor = if matches!(self.role, TextRole::Caption | TextRole::Label) {
+                    crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST
+                } else {
+                    crate::tokens::colors::ON_FILL_MIN_CONTRAST
+                };
+                colors.ink_on_any(&[colors.surfaces.content], tone.colour(theme), floor)
             } else if self.dimmed {
                 theme.text_dim
             } else {
@@ -885,7 +960,7 @@ impl Widget for Text {
     /// an unrelated sibling reflow shouldn't drag a re-shape along.
     /// `Rect::ZERO` means "not laid out yet," so the first frame still runs.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == vello::kurbo::Rect::ZERO
+        (self.rect == vello::kurbo::Rect::ZERO && !self.collapsed())
             || self.layout_dirty
             || self.i18n_revision != crate::i18n::I18nManager::revision()
     }
@@ -911,12 +986,15 @@ impl Widget for Text {
         // The FTL-resolved text *is* the accessible name. Empty text carries no
         // meaning, so it stays presentational (collapses out of the tree).
         let label = self.resolved_label();
-        if label.is_empty() {
+        if label.is_empty() || self.access == TextAccess::Presentational {
             return None;
         }
-        let role = self
-            .accessible_heading_level()
-            .map_or(Role::StaticText, |level| Role::Heading { level });
+        let role = if self.access == TextAccess::Label {
+            Role::Label
+        } else {
+            self.accessible_heading_level()
+                .map_or(Role::StaticText, |level| Role::Heading { level })
+        };
         let mut node = AccessNode::new(role).with_name(label);
         if let Some(politeness) = self.live {
             node = node.with_live(politeness);

@@ -144,6 +144,21 @@ impl<'a> PaintCtx<'a> {
     }
 }
 
+/// `rect` on whole logical pixels. A crisp 1 px edge, a hairline or a
+/// separator stroked on a fractional rect covers two device pixels at half
+/// coverage and stops registering; layout may hand out fractions, the
+/// paint should not. Painted hosts snap a surface's rect before edging it,
+/// as `surface::card` does.
+#[must_use]
+pub fn snap_rect(rect: Rect) -> Rect {
+    Rect::new(
+        rect.x0.round(),
+        rect.y0.round(),
+        rect.x1.round(),
+        rect.y1.round(),
+    )
+}
+
 /// Fill `rect` with a solid colour.
 pub fn fill_rect(scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
     scene.fill(Fill::NonZero, transform, color, None, &rect);

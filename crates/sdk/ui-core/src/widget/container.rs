@@ -48,8 +48,21 @@ pub struct Container {
     min_width: Option<f32>,
     /// Mutually independent from [`Container::fill_height`].
     fixed_height: Option<f32>,
+    /// `max_width` keeps the container on its parent's leading edge
+    /// instead of centring it.
+    leading: bool,
+    /// See [`Container::readable`]: the readable width, resolved from the
+    /// theme at layout time.
+    readable: bool,
+    /// See [`Container::hug`].
+    hug: bool,
+    /// See [`Container::with_inset`].
+    inset: Option<crate::tokens::Rhythm>,
     /// Pressing the container activates it; it lifts under the pointer.
     activation: crate::widget::activation::Activation,
+    /// How far a hugging container's lift reaches past its rect (across,
+    /// along), resolved at layout.
+    bleed: (f64, f64),
     /// Grows from a zero basis instead of claiming `percent(1.0)`. In a
     /// wrapping flex row this is the difference between filling the
     /// leftover width AFTER siblings are placed (correct) and demanding
@@ -81,7 +94,12 @@ impl Container {
             min_width: None,
             max_width: None,
             fixed_height: None,
+            leading: false,
+            readable: false,
+            hug: false,
+            inset: None,
             activation: crate::widget::activation::Activation::default(),
+            bleed: (0.0, 0.0),
             flex_grow: false,
         }
     }
@@ -180,6 +198,55 @@ impl Container {
     #[must_use]
     pub fn with_centered_max_width(mut self, px: f32) -> Self {
         self.max_width = Some(px);
+        self.leading = false;
+        self.readable = false;
+        self
+    }
+
+    /// Bound the content to the readable width (`metrics.readable_width`,
+    /// resolved from the theme so it follows `ui_scale`; any inset sits
+    /// outside it) on the parent's leading edge: a form, a page of facts, settings. A wider parent
+    /// leaves its extra room beside it, not around it; a narrower one
+    /// shrinks it. Use [`Container::with_centered_max_width`] only for
+    /// content that is genuinely centred (an empty state, a sign-in card).
+    #[must_use]
+    pub fn readable(mut self) -> Self {
+        self.readable = true;
+        self.leading = true;
+        self.max_width = None;
+        self
+    }
+
+    /// Centre a [`Container::readable`] column in a wider parent: a wizard
+    /// or a sign-in page that stands alone in its window.
+    #[must_use]
+    pub fn centered(mut self) -> Self {
+        self.leading = false;
+        self
+    }
+
+    /// Inset the content by a rhythm step on every side, resolved from the
+    /// theme at layout time (the page gutter is `Rhythm::Group`). With
+    /// [`Container::readable`] the inset sits outside the readable measure.
+    #[must_use]
+    pub fn with_inset(mut self, inset: crate::tokens::Rhythm) -> Self {
+        self.inset = Some(inset);
+        self.no_padding = false;
+        self.padding_override = None;
+        self
+    }
+
+    /// Size to the content instead of filling the parent's width, with no
+    /// inset of its own, so the content lines up with its neighbours. An
+    /// interactive hugging container lifts beyond its rect (by
+    /// `rhythm.related` across and `rhythm.tight` along), so the hover and
+    /// pressed lift frames the content instead of cutting it at its edge,
+    /// and that lifted area is also where it takes the pointer.
+    #[must_use]
+    pub fn hug(mut self) -> Self {
+        self.hug = true;
+        self.no_padding = true;
+        self.padding_override = None;
         self
     }
 
@@ -195,6 +262,7 @@ impl Container {
     /// still shrinking naturally on compact windows.
     #[must_use]
     pub fn with_max_width(mut self, px: f32) -> Self {
+        self.readable = false;
         self.max_width = Some(px);
         self
     }
@@ -262,30 +330,37 @@ impl Container {
         }
     }
 
+    /// The rect the surface paints and takes the pointer in: the layout
+    /// rect, or past it by the lift's bleed for a hugging container.
+    fn lift_rect(&self, theme: &Theme) -> Rect {
+        if self.hug {
+            let rhythm = theme.tokens.spacing.rhythm;
+            self.rect
+                .inflate(f64::from(rhythm.related), f64::from(rhythm.tight))
+        } else {
+            self.rect
+        }
+    }
+
     fn paint_surface(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let rect = self.lift_rect(theme);
         match self.surface_fill(theme) {
             // Rest edge derived from the fill itself (HIG §9.5), crisp 1 px
             // inset so the stroke sits on the surface.
             Some(fill) if self.has_background => {
-                crate::surface::card(scene, transform, self.rect, theme.radius_standard, fill);
+                crate::surface::card(scene, transform, rect, theme.radius_standard, fill);
             }
             Some(fill) => scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
                 fill,
                 None,
-                &vello::kurbo::RoundedRect::from_rect(self.rect, theme.radius_standard),
+                &vello::kurbo::RoundedRect::from_rect(rect, theme.radius_standard),
             ),
             None => {}
         }
         if self.activation.state.focused && self.activation.is_bound() {
-            crate::widget::paint_focus_ring(
-                scene,
-                transform,
-                self.rect,
-                theme.radius_standard,
-                theme,
-            );
+            crate::widget::paint_focus_ring(scene, transform, rect, theme.radius_standard, theme);
         }
     }
 
@@ -348,14 +423,29 @@ impl Widget for Container {
 
         let pad = if self.no_padding {
             0.0
+        } else if let Some(inset) = self.inset {
+            theme.tokens.spacing.rhythm.get(inset)
         } else {
             self.padding_override.unwrap_or(theme.padding_standard)
         };
+        self.bleed = if self.hug {
+            let rhythm = theme.tokens.spacing.rhythm;
+            (f64::from(rhythm.related), f64::from(rhythm.tight))
+        } else {
+            (0.0, 0.0)
+        };
+        // The readable measure is the content's; the inset is outside it.
+        let max_width = if self.readable {
+            Some(theme.tokens.metrics.readable_width + 2.0 * pad)
+        } else {
+            self.max_width
+        };
+        let centred = max_width.is_some() && !self.leading;
         let width = match self.fixed_width {
             Some(px) => length(px),
             // `auto` so the basis is zero (the wrap decision ignores it);
             // flex_grow below fills the leftover line width.
-            None if self.flex_grow => taffy::Dimension::auto(),
+            None if self.flex_grow || self.hug => taffy::Dimension::auto(),
             None => percent(1.0_f32),
         };
         let height = match self.fixed_height {
@@ -381,20 +471,16 @@ impl Widget for Container {
                 height: taffy::Dimension::auto(),
             },
             max_size: taffy::Size {
-                width: self.max_width.map_or(taffy::Dimension::auto(), length),
+                width: max_width.map_or(taffy::Dimension::auto(), length),
                 height: taffy::Dimension::auto(),
             },
+            // A hugging container takes its content's width in a stretching
+            // parent too.
+            align_self: self.hug.then_some(taffy::AlignSelf::Start),
+
             margin: taffy::Rect {
-                left: if self.max_width.is_some() {
-                    auto()
-                } else {
-                    length(0.0_f32)
-                },
-                right: if self.max_width.is_some() {
-                    auto()
-                } else {
-                    length(0.0_f32)
-                },
+                left: if centred { auto() } else { length(0.0_f32) },
+                right: if centred { auto() } else { length(0.0_f32) },
                 top: length(0.0_f32),
                 bottom: length(0.0_f32),
             },
@@ -453,13 +539,18 @@ impl Widget for Container {
                 self.activation.state.pressed = false;
                 return;
             }
-            self.activation.handle_pointer(event, ctx, self.rect, &[]);
+            let target = self.rect.inflate(self.bleed.0, self.bleed.1);
+            self.activation.handle_pointer(event, ctx, target, &[]);
         }
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        (self.activation.is_bound() && self.rect.contains(point))
-            .then_some(winit::window::CursorIcon::Pointer)
+        (self.activation.is_bound()
+            && self
+                .rect
+                .inflate(self.bleed.0, self.bleed.1)
+                .contains(point))
+        .then_some(winit::window::CursorIcon::Pointer)
     }
 
     fn is_focusable(&self) -> bool {
@@ -664,6 +755,64 @@ mod tests {
         c.apply_layout(&taffy, node, Point::ZERO);
         let r = c.get_rect();
         (c, r)
+    }
+
+    #[test]
+    fn a_readable_container_keeps_to_the_leading_edge() {
+        for scale in [1.0_f32, 1.5] {
+            let theme = Theme::dark().with_ui_scale(scale);
+            let mut outer = Container::new()
+                .with_no_padding()
+                .with_child(Box::new(Container::new().with_no_padding().readable()));
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = outer.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(2400.0),
+                        height: taffy::AvailableSpace::Definite(600.0),
+                    },
+                )
+                .unwrap();
+            outer.apply_layout(&taffy, node, Point::ZERO);
+            let inner = outer.children()[0].get_rect();
+            assert!(inner.x0.abs() < 0.5, "leading, not centred: {inner:?}");
+            let readable = f64::from(theme.tokens.metrics.readable_width);
+            assert!((inner.width() - readable).abs() < 0.5, "{inner:?}");
+        }
+        // Narrower than the measure, it shrinks with its parent.
+        let (narrow, _) = lay_out(
+            Container::new()
+                .with_no_padding()
+                .with_width(400.0)
+                .with_child(Box::new(Container::new().readable())),
+        );
+        assert!((narrow.children()[0].get_rect().width() - 400.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn a_hugging_container_takes_its_content_width_and_lifts_past_it() {
+        let (hugging, _) = lay_out(
+            Container::new().with_no_padding().with_child(Box::new(
+                Container::new()
+                    .hug()
+                    .interactive("open", || {})
+                    .with_child(Box::new(Container::new().with_size(120.0, 30.0))),
+            )),
+        );
+        let inner = hugging.children()[0];
+        let rect = inner.get_rect();
+        assert!((rect.width() - 120.0).abs() < 0.5, "{rect:?}");
+        assert!(rect.x0.abs() < 0.5, "no inset of its own");
+        let theme = Theme::dark();
+        let related = f64::from(theme.tokens.spacing.rhythm.related);
+        assert_eq!(
+            inner.cursor_shape(Point::new(rect.x0 - related / 2.0, rect.center().y)),
+            Some(winit::window::CursorIcon::Pointer),
+            "the lifted bleed takes the pointer"
+        );
     }
 
     #[test]

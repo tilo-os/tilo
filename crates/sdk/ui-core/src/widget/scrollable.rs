@@ -34,8 +34,10 @@ enum CursorMoveOutcome {
     Coalesced,
 }
 
+/// The thumb and its margins before a theme is known (`metrics.scroll_thumb`
+/// and `(metrics.scrollbar_gutter - scroll_thumb) / 2` at 1x).
 const BAR_THICKNESS: f64 = 8.0;
-const BAR_MARGIN: f64 = 2.0;
+const BAR_MARGIN: f64 = 4.0;
 const MIN_THUMB_LEN: f64 = crate::widget::scrollbar::MIN_THUMB_LEN;
 /// Content must exceed the viewport by more than this (logical px) before
 /// its scrollbar is shown.
@@ -49,8 +51,6 @@ const LINE_STEP: f32 = 48.0;
     reason = "PAGE_FRACTION is a fixed 0..1 fraction; narrowing to f32 loses only unused precision"
 )]
 const PAGE_FRACTION: f32 = crate::widget::scrollbar::PAGE_FRACTION as f32;
-const VISIBLE_HOLD_MS: u64 = 900;
-const FADE_MS: u64 = 320;
 const HOLD_INITIAL_MS: u64 = 300;
 const HOLD_REPEAT_MS: u64 = 55;
 
@@ -178,6 +178,20 @@ pub struct Scrollable {
     /// The trailing lane reserved for the vertical bar
     /// (`metrics.scrollbar_gutter`), resolved in `build_layout`.
     content_gutter: f32,
+    /// Thumb thickness and the margin around it in the gutter, from the
+    /// theme (`metrics.scroll_thumb`, `metrics.scrollbar_gutter`).
+    bar_thickness: f64,
+    bar_margin: f64,
+    /// Whether the content overflowed on the last layout, so the bar's
+    /// lane is reserved: vertical (trailing edge) and horizontal (bottom).
+    /// Content that fits keeps the full width.
+    reserve_vertical: bool,
+    reserve_horizontal: bool,
+    /// See [`Scrollable::with_edge_fade`].
+    edge_fade: bool,
+    /// Reports the trailing lane currently reserved, for a pinned footer
+    /// that shares this scroller's measure.
+    gutter_probe: Option<Rc<Cell<f32>>>,
     /// Reserved bottom lane that is excluded from both painting and scroll
     /// metrics. Sticky-footer dialogs use this to end overflowing prose on a
     /// clean boundary instead of clipping half a text baseline against the
@@ -236,6 +250,12 @@ impl Scrollable {
             kinetic: crate::virtual_viewport::KineticSampler::new(),
             persisted_offset: None,
             content_gutter: 0.0,
+            bar_thickness: BAR_THICKNESS,
+            bar_margin: BAR_MARGIN,
+            reserve_vertical: false,
+            reserve_horizontal: false,
+            edge_fade: false,
+            gutter_probe: None,
             bottom_content_inset: 0.0,
             compact_bottom_content_inset: None,
             semantic_key: None,
@@ -340,14 +360,53 @@ impl Scrollable {
         self
     }
 
+    /// Take the height the parent leaves: the rest of a column under a
+    /// fixed bar, the whole of a grid row or a fixed-height container,
+    /// including at the root of a window whose content has a max width.
     #[must_use]
     pub fn fill_parent_height(mut self) -> Self {
         self.fill_parent_height = true;
         self
     }
 
-    /// The seeded offset is left unclamped — content/viewport aren't known
-    /// until the first `apply_layout`, which clamps it for real.
+    /// Fade the content out at an edge while more of it can scroll in from
+    /// there (`ui::surface::content_edge_fade` against the ground it is
+    /// drawn on), so a cut-off line reads as "more below" rather than as
+    /// clipped. Nothing fades at an edge the content has reached.
+    #[must_use]
+    pub fn with_edge_fade(mut self) -> Self {
+        self.edge_fade = true;
+        self
+    }
+
+    /// [`Self::with_cursor`] on a scroller that is already built.
+    pub(crate) fn set_cursor(&mut self, cursor: Point) {
+        self.last_cursor = cursor;
+    }
+
+    /// [`Self::with_semantic_key`] on a scroller that is already built.
+    pub(crate) fn set_semantic_key(&mut self, key: impl Into<String>) {
+        self.semantic_key = Some(key.into());
+    }
+
+    /// [`Self::with_persisted_offset`] on a scroller that is already built.
+    pub(crate) fn set_persisted_offset(&mut self, cell: Rc<Cell<(f32, f32)>>) {
+        let (x, y) = cell.get();
+        self.offset_x = x;
+        self.offset_y = y;
+        self.persisted_offset = Some(cell);
+    }
+
+    /// Share the trailing lane this scroller reserves for its bar (zero
+    /// while the content fits) with a sibling laid out to the same measure.
+    pub(crate) fn with_gutter_probe(mut self, probe: Rc<Cell<f32>>) -> Self {
+        self.gutter_probe = Some(probe);
+        self
+    }
+
+    /// The seeded offset is clamped to the content and viewport the first
+    /// layout resolves, before the content is placed, so a restored offset
+    /// past the end of shorter content never shows a blank frame.
     #[must_use]
     pub fn with_persisted_offset(mut self, cell: Rc<Cell<(f32, f32)>>) -> Self {
         let (x, y) = cell.get();
@@ -546,6 +605,52 @@ impl Scrollable {
             self.cursor_initialized = false;
         }
     }
+    /// Reserve the bar's lane on the edge it scrolls along while the solved
+    /// content overflows the viewport, and give it back once it fits.
+    /// Narrower content is never shorter, so this settles in one step.
+    fn follow_overflow(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        layout: &taffy::Layout,
+    ) -> bool {
+        let Some(child) = self.child_node else {
+            return false;
+        };
+        let Ok(content) = taffy.layout(child).copied() else {
+            return false;
+        };
+        let viewport_w = layout.size.width - layout.padding.right;
+        let viewport_h = layout.size.height - layout.padding.bottom;
+        let content_w = content.size.width.max(content.content_size.width);
+        let content_h = content.size.height.max(content.content_size.height);
+        let vertical = self.axis_has_vertical()
+            && self.show_scrollbar
+            && viewport_h > 0.0
+            && content_h > viewport_h - self.active_bottom_content_inset() + FIT_EPS;
+        let horizontal = self.axis_has_horizontal()
+            && self.show_scrollbar
+            && viewport_w > 0.0
+            && content_w > viewport_w + FIT_EPS;
+        if vertical == self.reserve_vertical && horizontal == self.reserve_horizontal {
+            return false;
+        }
+        self.reserve_vertical = vertical;
+        self.reserve_horizontal = horizontal;
+        if let Some(probe) = &self.gutter_probe {
+            probe.set(if vertical { self.content_gutter } else { 0.0 });
+        }
+        let Ok(current) = taffy.style(node) else {
+            return false;
+        };
+        let mut style = current.clone();
+        style.padding.right =
+            taffy::LengthPercentage::length(if vertical { self.content_gutter } else { 0.0 });
+        style.padding.bottom =
+            taffy::LengthPercentage::length(if horizontal { self.content_gutter } else { 0.0 });
+        taffy.set_style(node, style).is_ok()
+    }
+
     fn clamp(&mut self) {
         let max_x = (self.content_w - self.viewport_w).max(0.0);
         let max_y = self.max_offset_y();
@@ -583,12 +688,13 @@ impl Scrollable {
         if !self.vbar_active() {
             return None;
         }
-        let x1 = self.rect.x1 - BAR_MARGIN;
-        let x0 = x1 - BAR_THICKNESS;
-        let y0 = self.rect.y0 + BAR_MARGIN;
-        let mut y1 = self.content_viewport_rect().y1 - BAR_MARGIN;
+        let (thickness, margin) = (self.bar_thickness, self.bar_margin);
+        let x1 = self.rect.x1 - margin;
+        let x0 = x1 - thickness;
+        let y0 = self.rect.y0 + margin;
+        let mut y1 = self.content_viewport_rect().y1 - margin;
         if self.hbar_active() {
-            y1 -= BAR_THICKNESS + BAR_MARGIN;
+            y1 -= thickness + margin;
         }
         if y1 - y0 <= MIN_THUMB_LEN.min(1.0) {
             return None;
@@ -600,12 +706,13 @@ impl Scrollable {
         if !self.hbar_active() {
             return None;
         }
-        let y1 = self.rect.y1 - BAR_MARGIN;
-        let y0 = y1 - BAR_THICKNESS;
-        let x0 = self.rect.x0 + BAR_MARGIN;
-        let mut x1 = self.rect.x1 - BAR_MARGIN;
+        let (thickness, margin) = (self.bar_thickness, self.bar_margin);
+        let y1 = self.rect.y1 - margin;
+        let y0 = y1 - thickness;
+        let x0 = self.rect.x0 + margin;
+        let mut x1 = self.rect.x1 - margin;
         if self.vbar_active() {
-            x1 -= BAR_THICKNESS + BAR_MARGIN;
+            x1 -= thickness + margin;
         }
         if x1 - x0 <= MIN_THUMB_LEN.min(1.0) {
             return None;
@@ -673,39 +780,20 @@ impl Scrollable {
 
     /// `now`/`reduce_motion` injected so the fade curve is unit-testable.
     fn bar_opacity_at(&self, now: Instant, reduce_motion: bool) -> f32 {
-        if !self.overlay || reduce_motion || self.bar_pinned() {
-            return 1.0;
-        }
-        let Some(t) = self.last_activity else {
-            return 0.0;
-        };
-        let elapsed = now.saturating_duration_since(t);
-        let hold = Duration::from_millis(VISIBLE_HOLD_MS);
-        let fade = Duration::from_millis(FADE_MS);
-        // `checked_sub` doubles as the "still within the hold window" test —
-        // a `None` here means `elapsed < hold`.
-        let Some(since_hold) = elapsed.checked_sub(hold) else {
-            return 1.0;
-        };
-        if since_hold >= fade {
-            return 0.0;
-        }
-        1.0 - since_hold.as_secs_f32() / fade.as_secs_f32()
+        let held = !self.overlay || reduce_motion || self.bar_pinned();
+        crate::widget::scrollbar::BarFade::opacity(self.last_activity, now, held)
     }
 
     fn bar_opacity(&self, theme: &Theme) -> f32 {
         self.bar_opacity_at(crate::time::now(), theme.reduce_motion)
     }
 
+    fn fade_held(&self) -> bool {
+        !self.overlay || self.reduce_motion_active || self.bar_pinned()
+    }
+
     fn fade_in_progress_at(&self, now: Instant) -> bool {
-        if !self.overlay || self.reduce_motion_active || self.bar_pinned() {
-            return false;
-        }
-        self.last_activity.is_some_and(|activity| {
-            let elapsed = now.saturating_duration_since(activity);
-            elapsed >= Duration::from_millis(VISIBLE_HOLD_MS)
-                && elapsed < Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS)
-        })
+        crate::widget::scrollbar::BarFade::fading(self.last_activity, now, self.fade_held())
     }
 
     fn fade_in_progress(&self) -> bool {
@@ -713,12 +801,7 @@ impl Scrollable {
     }
 
     fn fade_start_deadline_at(&self, now: Instant) -> Option<Instant> {
-        if !self.overlay || self.reduce_motion_active || self.bar_pinned() {
-            return None;
-        }
-        self.last_activity?
-            .checked_add(Duration::from_millis(VISIBLE_HOLD_MS))
-            .filter(|deadline| *deadline > now)
+        crate::widget::scrollbar::BarFade::fade_deadline(self.last_activity, now, self.fade_held())
     }
 
     /// Once the fade deadline passes, the compositor still needs one frame to
@@ -727,13 +810,8 @@ impl Scrollable {
     fn needs_terminal_fade_frame_at(&self, now: Instant) -> bool {
         self.terminal_fade_damage.get()
             || (self.bar_visible_last_draw.get()
-                && self.overlay
-                && !self.reduce_motion_active
-                && !self.bar_pinned()
-                && self.last_activity.is_some_and(|activity| {
-                    now.saturating_duration_since(activity)
-                        >= Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS)
-                }))
+                && !self.fade_held()
+                && crate::widget::scrollbar::BarFade::finished(self.last_activity, now))
     }
 
     fn needs_terminal_fade_frame(&self) -> bool {
@@ -784,6 +862,52 @@ impl Scrollable {
         }
     }
 
+    /// The edges more content can scroll in from, while edge fades are on.
+    fn faded_edges(&self) -> Vec<crate::surface::ContentEdge> {
+        use crate::surface::ContentEdge;
+        let mut edges = Vec::new();
+        if !self.edge_fade {
+            return edges;
+        }
+        if self.axis_has_vertical() {
+            if self.offset_y > FIT_EPS {
+                edges.push(ContentEdge::Top);
+            }
+            if self.max_offset_y() - self.offset_y > FIT_EPS {
+                edges.push(ContentEdge::Bottom);
+            }
+        }
+        if self.axis_has_horizontal() {
+            let max_x = (self.content_w - self.viewport_w).max(0.0);
+            if self.offset_x > FIT_EPS {
+                edges.push(ContentEdge::Leading);
+            }
+            if max_x - self.offset_x > FIT_EPS {
+                edges.push(ContentEdge::Trailing);
+            }
+        }
+        edges
+    }
+
+    fn draw_edge_fades(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let edges = self.faded_edges();
+        if edges.is_empty() {
+            return;
+        }
+        // The content's own lanes: the bar's gutter is not content.
+        let mut area = self.content_viewport_rect();
+        if self.reserve_vertical {
+            area.x1 -= f64::from(self.content_gutter);
+        }
+        if self.reserve_horizontal {
+            area.y1 -= f64::from(self.content_gutter);
+        }
+        let ground = theme.tokens.colors.surfaces.content;
+        for edge in edges {
+            crate::surface::content_edge_fade(scene, transform, area, edge, ground);
+        }
+    }
+
     fn draw_scrollbars(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let opacity = self.bar_opacity(theme);
         let visible = self.show_scrollbar && opacity > 0.003;
@@ -793,7 +917,7 @@ impl Scrollable {
         if !visible {
             return;
         }
-        let radius = BAR_THICKNESS / 2.0;
+        let radius = self.bar_thickness / 2.0;
         // An idle overlay bar is just the thumb, like macOS/GNOME.
         let expanded = !self.overlay || self.bar_pinned();
         let track_color = crate::widget::scrollbar::track_color(theme).with_alpha_factor(opacity);
@@ -1223,25 +1347,71 @@ impl Widget for Scrollable {
             .child
             .as_mut()
             .map(|c| c.build_layout(taffy, theme, node_map));
+        // Content that only scrolls sideways is as wide as it wants to be
+        // (its max-content width), not squeezed into the viewport.
+        if matches!(self.axis, ScrollAxis::Horizontal)
+            && let Some(child) = self.child_node
+            && let Ok(current) = taffy.style(child)
+        {
+            let mut style = current.clone();
+            style.size.width = Dimension::auto();
+            style.flex_shrink = 0.0;
+            let _ = taffy.set_style(child, style);
+        }
         let height = match self.fixed_height {
             Some(px) => Dimension::length(px),
-            None if self.fill_parent_height => Dimension::length(0.0),
+            None if self.fill_parent_height => Dimension::auto(),
             None if self.max_height.is_some() => Dimension::auto(),
             None => Dimension::percent(1.0),
         };
-        // A vertical scroll view keeps `metrics.scrollbar_gutter` free on its
-        // trailing edge, so its bar never covers content.
-        self.content_gutter = if self.axis_has_vertical() && self.show_scrollbar {
-            theme.tokens.metrics.scrollbar_gutter
+        let metrics = &theme.tokens.metrics;
+        self.bar_thickness = f64::from(metrics.scroll_thumb);
+        self.bar_margin =
+            f64::from((metrics.scrollbar_gutter - metrics.scroll_thumb).max(0.0) / 2.0);
+        // A scroll view keeps `metrics.scrollbar_gutter` free on its trailing
+        // edge (and its bottom edge for a horizontal bar) while its content
+        // overflows, so its bar never covers content; content that fits
+        // keeps the full width. `adjust_layout_style` follows the overflow.
+        let gutter = if self.show_scrollbar {
+            metrics.scrollbar_gutter
         } else {
             0.0
         };
-        let pad_right = taffy::LengthPercentage::length(self.content_gutter);
+        self.content_gutter = gutter;
+        let pad_right =
+            taffy::LengthPercentage::length(if self.reserve_vertical && self.axis_has_vertical() {
+                gutter
+            } else {
+                0.0
+            });
+        let pad_bottom = taffy::LengthPercentage::length(
+            if self.reserve_horizontal && self.axis_has_horizontal() {
+                gutter
+            } else {
+                0.0
+            },
+        );
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height,
             },
+            // Growing into the parent's room never takes a content-sized
+            // minimum, or a long page would push its parent taller.
+            min_size: Size {
+                width: Dimension::auto(),
+                height: if self.fill_parent_height {
+                    Dimension::length(0.0)
+                } else {
+                    Dimension::auto()
+                },
+            },
+            flex_basis: if self.fill_parent_height {
+                Dimension::length(0.0)
+            } else {
+                Dimension::auto()
+            },
+            align_self: self.fill_parent_height.then_some(taffy::AlignSelf::Stretch),
             // Vertical content must keep its intrinsic height so overflow is
             // measurable. Scope the flex-row cross-axis opt-out to this
             // parent; child `align_self` remains available to normal Row and
@@ -1266,7 +1436,7 @@ impl Widget for Scrollable {
                 left: taffy::LengthPercentage::length(0.0),
                 right: pad_right,
                 top: taffy::LengthPercentage::length(0.0),
-                bottom: taffy::LengthPercentage::length(0.0),
+                bottom: pad_bottom,
             },
             ..Default::default()
         };
@@ -1279,20 +1449,20 @@ impl Widget for Scrollable {
     }
 
     fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        let Some(minimum) = &self.content_min_viewport_height else {
+        let Ok(layout) = taffy.layout(node).copied() else {
             return false;
         };
-        let Ok(layout) = taffy.layout(node) else {
-            return false;
-        };
-        let height = layout.size.height.max(0.0);
-        if (minimum.get() - height).abs() < f32::EPSILON {
-            return false;
+        let mut changed = self.follow_overflow(taffy, node, &layout);
+        if let Some(minimum) = &self.content_min_viewport_height {
+            let height = layout.size.height.max(0.0);
+            if (minimum.get() - height).abs() >= f32::EPSILON {
+                // Inherited decision only. The wrapper's hook changes its OWN
+                // style, regardless of the host's node visitation order.
+                minimum.set(height);
+                changed = true;
+            }
         }
-        // Inherited decision only. The wrapper's hook changes its OWN style,
-        // regardless of the host's node visitation order.
-        minimum.set(height);
-        true
+        changed
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1308,6 +1478,14 @@ impl Widget for Scrollable {
         );
         self.viewport_w = l.size.width;
         self.viewport_h = l.size.height;
+        // Clamp a seeded or restored offset against the solved content
+        // before anything is placed with it.
+        if let Some(child_node) = self.child_node {
+            let cl = taffy.layout(child_node).copied().unwrap_or_default();
+            self.content_w = cl.content_size.width.max(cl.size.width);
+            self.content_h = cl.content_size.height.max(cl.size.height);
+            self.clamp();
+        }
         if let Some(c) = &mut self.child {
             if let Some(child_node) = self.child_node {
                 c.apply_layout(
@@ -1411,6 +1589,7 @@ impl Widget for Scrollable {
         }
         presence.pop_viewport(previous_viewport);
         scene.pop_layer();
+        self.draw_edge_fades(scene, transform, theme);
         self.draw_scrollbars(scene, transform, theme);
     }
 
@@ -1443,6 +1622,7 @@ impl Widget for Scrollable {
         }
         presence.pop_viewport(prev_vp);
         scene.pop_layer();
+        self.draw_edge_fades(scene, transform, theme);
         self.draw_scrollbars(scene, transform, theme);
     }
 
@@ -1777,6 +1957,7 @@ impl crate::widget::controls::ActionControls for Scrollable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::scrollbar::{BAR_FADE_MS as FADE_MS, BAR_HOLD_MS as VISIBLE_HOLD_MS};
     use automerge::AutoCommit;
 
     fn vertical(content_h: f32) -> Scrollable {
@@ -2237,6 +2418,29 @@ mod tests {
                     },
                 )
                 .unwrap();
+            // The host's adjust pass reserves the lane once the content
+            // overflows; solve again as the host does.
+            assert!(scroll.adjust_layout_style(&mut taffy, node));
+            taffy
+                .compute_layout_with_measure(
+                    parent,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(400.0),
+                        height: taffy::AvailableSpace::Definite(300.0),
+                    },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = node_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, &mut tr) }
+                        } else {
+                            Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+            assert!(
+                !scroll.adjust_layout_style(&mut taffy, node),
+                "the lane settles in one step"
+            );
             scroll.apply_layout(&taffy, node, Point::ZERO);
 
             let child = &scroll.children()[0];
@@ -2598,7 +2802,7 @@ mod tests {
         }
     }
 
-    use crate::widget::{Column, Text};
+    use crate::widget::{Column, Row, Text};
     use std::collections::HashMap;
 
     fn viewport_height_under_indefinite_parent(mut scroll: Scrollable) -> f64 {
@@ -2633,6 +2837,163 @@ mod tests {
             .unwrap();
         scroll.apply_layout(&taffy, scroll_node, Point::ZERO);
         scroll.get_rect().height()
+    }
+
+    /// Solve `root` the way the host does: measure, adjust, repeat.
+    fn host_solve(root: &mut dyn Widget, width: f32, height: f32) {
+        use std::collections::HashMap;
+        let theme = Theme::dark();
+        let mut tree = TaffyTree::<()>::new();
+        let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = root.build_layout(&mut tree, &theme, &mut nodes);
+        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        let mut text = crate::font_catalog::fixture_renderer();
+        // SAFETY: exact live, exclusively owned widget tree and matching maps.
+        unsafe {
+            bindings.rebuild(root, &tree, node, &nodes);
+            crate::widget::compute_widget_layout(
+                &mut tree,
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::Definite(height),
+                },
+                &nodes,
+                &bindings,
+                &mut text,
+            )
+            .unwrap();
+        }
+        root.apply_layout(&tree, node, Point::ZERO);
+    }
+
+    fn scroll_of(root: &mut dyn Widget) -> &mut Scrollable {
+        fn find(widget: &mut dyn Widget) -> Option<&mut Scrollable> {
+            if widget.name() == "Scrollable" {
+                return widget.as_any_mut()?.downcast_mut::<Scrollable>();
+            }
+            widget.children_mut().into_iter().find_map(find)
+        }
+        find(root).expect("a scrollable")
+    }
+
+    #[test]
+    fn the_bar_lane_is_reserved_only_while_the_content_overflows() {
+        let short = || -> Element {
+            Box::new(
+                Column::new()
+                    .with_intrinsic_height()
+                    .push(Box::new(Text::new("one line"))),
+            )
+        };
+        let mut fits = Scrollable::new_vertical()
+            .with_child(short())
+            .with_height(300.0);
+        host_solve(&mut fits, 400.0, 300.0);
+        let child = fits.children()[0].get_rect();
+        assert!(
+            (child.x1 - fits.rect.x1).abs() < 0.5,
+            "fitting content keeps the full width: {child:?}"
+        );
+
+        let mut overflows = Scrollable::new_vertical()
+            .with_child(tall_child())
+            .with_height(300.0);
+        host_solve(&mut overflows, 400.0, 300.0);
+        let child = overflows.children()[0].get_rect();
+        let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
+        assert!(
+            (overflows.rect.x1 - child.x1 - gutter).abs() < 0.5,
+            "{child:?}"
+        );
+        let track = overflows.vertical_track().expect("bar");
+        let thumb = f64::from(Theme::dark().tokens.metrics.scroll_thumb);
+        assert!((track.width() - thumb).abs() < 1e-6);
+        assert!(
+            ((overflows.rect.x1 - track.x1) - (track.x0 - child.x1)).abs() < 0.5,
+            "the thumb is centred in its lane"
+        );
+    }
+
+    #[test]
+    fn a_restored_offset_is_clamped_before_the_content_is_placed() {
+        let cell = Rc::new(Cell::new((0.0_f32, 50_000.0_f32)));
+        let mut scroll = Scrollable::new_vertical()
+            .with_child(tall_child())
+            .with_height(300.0)
+            .with_persisted_offset(Rc::clone(&cell));
+        host_solve(&mut scroll, 400.0, 300.0);
+        let content = scroll.children()[0].get_rect();
+        assert!(
+            content.y1 >= scroll.rect.y1 - 0.5,
+            "the end of the content fills the viewport, no blank frame: {content:?}"
+        );
+        assert!(cell.get().1 <= scroll.max_offset_y() + 0.01);
+    }
+
+    #[test]
+    fn horizontal_content_is_laid_out_at_its_max_content_width() {
+        let wide = Row::new()
+            .no_wrap()
+            .with_gap(0.0)
+            .push(Box::new(
+                crate::widget::Container::new().with_size(500.0, 20.0),
+            ))
+            .push(Box::new(
+                crate::widget::Container::new().with_size(500.0, 20.0),
+            ));
+        let mut scroll = Scrollable::new_horizontal()
+            .with_child(Box::new(wide))
+            .with_height(80.0);
+        host_solve(&mut scroll, 300.0, 80.0);
+        assert!(scroll.children()[0].get_rect().width() >= 999.0);
+        assert!(scroll.hbar_active(), "wide content scrolls sideways");
+        let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
+        assert!(
+            (scroll.rect.height() - f64::from(scroll.viewport_h)).abs() < 0.5
+                && scroll.children()[0].get_rect().height() <= 80.0 - gutter + 0.5,
+            "the bar's lane at the bottom is reserved"
+        );
+    }
+
+    #[test]
+    fn fill_parent_height_fills_a_row_or_a_root_container() {
+        let mut root = crate::widget::Container::new()
+            .with_no_padding()
+            .with_max_width(500.0)
+            .filling()
+            .with_child(Box::new(
+                Scrollable::new_vertical()
+                    .fill_parent_height()
+                    .with_child(tall_child()),
+            ));
+        host_solve(&mut root, 800.0, 600.0);
+        let scroll = scroll_of(&mut root);
+        assert!(
+            (scroll.rect.height() - 600.0).abs() < 0.5,
+            "the scroller takes the root's height: {:?}",
+            scroll.rect
+        );
+        assert!(scroll.vertical_overflows());
+    }
+
+    #[test]
+    fn edge_fades_show_only_where_more_content_can_scroll_in() {
+        use crate::surface::ContentEdge;
+        let mut scroll = vertical(900.0).with_edge_fade();
+        assert_eq!(scroll.faded_edges(), vec![ContentEdge::Bottom]);
+        scroll.set_offset_y(100.0);
+        assert_eq!(
+            scroll.faded_edges(),
+            vec![ContentEdge::Top, ContentEdge::Bottom]
+        );
+        scroll.set_offset_y(f32::MAX);
+        assert_eq!(scroll.faded_edges(), vec![ContentEdge::Top]);
+        assert!(vertical(900.0).faded_edges().is_empty(), "off unless asked");
+        assert!(
+            vertical(100.0).with_edge_fade().faded_edges().is_empty(),
+            "fits"
+        );
     }
 
     fn tall_child() -> Element {

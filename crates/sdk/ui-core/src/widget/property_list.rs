@@ -80,6 +80,8 @@ struct ListMetrics {
     action: f64,
     icon: f64,
     radius: f64,
+    /// The widest a list runs: the readable width, grown with the text.
+    readable: f64,
 }
 
 impl ListMetrics {
@@ -99,6 +101,9 @@ impl ListMetrics {
             action: f64::from(metrics.bar_control_height),
             icon: f64::from(metrics.icon_sm),
             radius: f64::from(theme.tokens.radii.item),
+            readable: f64::from(
+                metrics.readable_width * crate::tokens::Metrics::text_growth(theme.text_scale),
+            ),
         }
     }
 
@@ -106,9 +111,6 @@ impl ListMetrics {
         self.value.clone().with_kind(row.kind)
     }
 }
-
-/// The widest a list runs, in line boxes of its value text.
-const READABLE_LINES: u8 = 32;
 
 /// The value column's minimum width before the list stacks, in line boxes.
 const MIN_VALUE_LINES: u8 = 8;
@@ -138,11 +140,9 @@ fn lay_out(
     origin: Point,
     width: f64,
 ) -> ListLayout {
-    // A list of facts reads at a bounded measure, so a trailing action stays
-    // beside its value on a wide window.
-    let readable =
-        f64::from(READABLE_LINES) * f64::from(text.measure_style("Ag", None, &m.value).1);
-    let width = width.min(readable);
+    // A list of facts reads at the readable width, so a trailing action
+    // stays beside its value on a wide window.
+    let width = width.min(m.readable);
     let label_col = rows
         .iter()
         .map(|row| f64::from(text.measure_style(row.label, None, &m.label).0))

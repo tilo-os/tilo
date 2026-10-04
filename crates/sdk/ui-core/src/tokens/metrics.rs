@@ -24,8 +24,9 @@ pub struct Metrics {
     pub panel_row_height: f32,
     /// One row of a menu (context menu, dropdown list).
     pub menu_row_height: f32,
-    /// Room a scroll view keeps on its trailing edge for its scroll bar, so
-    /// the bar never covers content.
+    /// Room a scroll view keeps on its trailing edge for its scroll bar
+    /// while its content overflows, so the bar never covers content: the
+    /// thumb ([`Metrics::scroll_thumb`]) plus `s1` on each side.
     pub scrollbar_gutter: f32,
     /// A compact selector (chip, tab pill, dropdown trigger in a Panel).
     pub selector_height: f32,
@@ -86,6 +87,24 @@ pub struct Metrics {
     /// Narrowest the detail column beside an overview may become before the
     /// two become push screens.
     pub detail_min_width: f32,
+    /// The widest a form, a settings page or a page of facts grows
+    /// (`FormPage`, `Page`, `PropertyList`, `Container::readable`). Wider
+    /// windows leave the extra room beside it.
+    pub readable_width: f32,
+    /// The line length of long-form reading text (documents, books, notes):
+    /// about 66 characters of the `Reading` role at the stock text size.
+    pub reading_measure: f32,
+    /// The width a compact chooser (dropdown, segmented switch, single-line
+    /// entry) keeps beside its label in a form row.
+    pub chooser_width: f32,
+    /// How far one notch of a line-stepping wheel scrolls.
+    pub wheel_line: f32,
+    /// Thickness of a scroll bar's thumb at rest; the bar's gutter is the
+    /// thumb plus `s1` on each side.
+    pub scroll_thumb: f32,
+    /// How far a row must be swiped sideways before letting go commits its
+    /// swipe action rather than springing back.
+    pub swipe_commit: f32,
 }
 
 impl Metrics {
@@ -95,7 +114,7 @@ impl Metrics {
         bar_control_height: 28.0,
         panel_row_height: 44.0,
         menu_row_height: 32.0,
-        scrollbar_gutter: 12.0,
+        scrollbar_gutter: 16.0,
         selector_height: 28.0,
         min_pointer_target: 32.0,
         panel_width_utility: 320.0,
@@ -118,6 +137,12 @@ impl Metrics {
         sidebar_max_width: 420.0,
         content_min_width: 560.0,
         detail_min_width: 360.0,
+        readable_width: 720.0,
+        reading_measure: 640.0,
+        chooser_width: 224.0,
+        wheel_line: 60.0,
+        scroll_thumb: 8.0,
+        swipe_commit: 88.0,
     };
 
     /// The factor a **text-sized** width or breakpoint grows by at a given
@@ -172,6 +197,12 @@ impl Metrics {
             sidebar_max_width: self.sidebar_max_width * factor,
             content_min_width: self.content_min_width * factor,
             detail_min_width: self.detail_min_width * factor,
+            readable_width: self.readable_width * factor,
+            reading_measure: self.reading_measure * factor,
+            chooser_width: self.chooser_width * factor,
+            wheel_line: self.wheel_line * factor,
+            scroll_thumb: self.scroll_thumb * factor,
+            swipe_commit: self.swipe_commit * factor,
         }
     }
 }
@@ -179,5 +210,32 @@ impl Metrics {
 impl Default for Metrics {
     fn default() -> Self {
         Self::BASE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Metrics;
+
+    #[test]
+    fn readable_and_scroll_metrics_follow_ui_scale() {
+        let base = Metrics::BASE;
+        assert!((base.readable_width - 720.0).abs() < f32::EPSILON);
+        let scaled = base.scaled(1.5);
+        for (one, scaled) in [
+            (base.readable_width, scaled.readable_width),
+            (base.reading_measure, scaled.reading_measure),
+            (base.chooser_width, scaled.chooser_width),
+            (base.wheel_line, scaled.wheel_line),
+            (base.scroll_thumb, scaled.scroll_thumb),
+            (base.swipe_commit, scaled.swipe_commit),
+        ] {
+            assert!((one * 1.5 - scaled).abs() < 1e-3);
+        }
+        let theme = crate::Theme::dark().with_ui_scale(2.0);
+        assert!((theme.tokens.metrics.readable_width - 1440.0).abs() < 1e-3);
+        // A readable column still fits beside a docked sidebar's content.
+        assert!(base.reading_measure <= base.readable_width);
+        assert!(base.chooser_width < base.content_min_width);
     }
 }

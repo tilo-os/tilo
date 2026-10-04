@@ -1,14 +1,14 @@
-//! `ResizableSplit` — a two-pane container with a draggable divider.
+//! `ResizableSplit` — a two-pane container with a draggable divider — and
+//! the divider itself, [`SplitHandle`], for hosts that paint their panes.
 //!
-//! Splits its rect between a `left` and a `right` child. Dragging the
-//! divider re-balances the panes, clamped to `SPLIT_MIN`..=`SPLIT_MAX`
-//! so neither child ever fully collapses. The colour swap on hover/drag
-//! additionally confirms the gesture even in a headless capture.
+//! The divider is a hairline at rest with a wider target around it; it
+//! thickens under the pointer and while dragged. Dragging it, or the arrow
+//! keys while it holds keyboard focus, moves the [`SplitRatio`], clamped so
+//! neither pane collapses. Assistive technology meets it as a separator
+//! whose value is the first pane's share.
 //!
-//! State lives on the widget rather than the CRDT: `split_position` is a
-//! per-instance visual tuning, not replicated content. The two children
-//! handle their own state — `ResizableSplit` just forwards events to
-//! whichever pane the cursor is over.
+//! State lives on the widget rather than the CRDT: the ratio is a
+//! per-instance visual tuning, not replicated content.
 
 use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
@@ -16,6 +16,7 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::permissions::PermissionScope;
 use crate::presence::{PresenceCtx, PresenceKey};
@@ -24,29 +25,13 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// Base divider thickness (px) along the split axis.
-const DIVIDER_PX: f64 = 4.0;
-/// Extra width added to the divider on hover — ~6px total (4 base + 2
-/// each side), wide enough to read as draggable without obscuring the panes.
-const DIVIDER_HOVER_EXTRA_PX: f64 = 2.0;
-
-/// `split_position` clamp: guarantees both panes retain at least 10% of
-/// the split axis so a child can never be lost off-screen by over-dragging.
+/// The least share either pane keeps, so neither is lost off-screen.
 const SPLIT_MIN: f32 = 0.1;
 /// See [`SPLIT_MIN`].
 const SPLIT_MAX: f32 = 0.9;
 const SPLIT_DEFAULT: f32 = 0.5;
-
-/// Narrows a bounded screen-space `f64` (divider/split geometry) to `f32`
-/// for taffy; split geometry stays far below `f32::MAX`.
-#[inline]
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space pixel values in this widget never approach f32::MAX"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
-}
+/// How far one arrow key moves the divider.
+const KEY_STEP: f32 = 0.05;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SplitOrientation {
@@ -56,22 +41,374 @@ pub enum SplitOrientation {
     Vertical,
 }
 
+/// The share of a two-pane split the first pane takes, clamped to bounds
+/// so neither pane collapses. One model for [`ResizableSplit`] and for
+/// painted hosts ([`SplitHandle`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SplitRatio {
+    position: f32,
+    min: f32,
+    max: f32,
+}
+
+impl Default for SplitRatio {
+    fn default() -> Self {
+        Self::new(SPLIT_DEFAULT)
+    }
+}
+
+impl SplitRatio {
+    /// A split with the first pane at `position` of the extent (`0..1`),
+    /// within the default 10–90 % bounds.
+    #[must_use]
+    pub fn new(position: f32) -> Self {
+        Self {
+            position: position.clamp(SPLIT_MIN, SPLIT_MAX),
+            min: SPLIT_MIN,
+            max: SPLIT_MAX,
+        }
+    }
+
+    /// Narrow the range the divider may move in.
+    #[must_use]
+    pub fn with_bounds(mut self, min: f32, max: f32) -> Self {
+        self.min = min.clamp(0.0, 1.0);
+        self.max = max.clamp(self.min, 1.0);
+        self.position = self.position.clamp(self.min, self.max);
+        self
+    }
+
+    /// The first pane's share.
+    #[must_use]
+    pub fn position(&self) -> f32 {
+        self.position
+    }
+
+    /// Move to `position` (clamped); returns whether it moved.
+    pub fn set(&mut self, position: f32) -> bool {
+        let next = position.clamp(self.min, self.max);
+        let moved = (next - self.position).abs() > f32::EPSILON;
+        self.position = next;
+        moved
+    }
+
+    /// Move by `delta` (clamped); returns whether it moved.
+    pub fn step(&mut self, delta: f32) -> bool {
+        self.set(self.position + delta)
+    }
+
+    /// Follow a pointer at `along` on an extent from `start` that is
+    /// `extent` long; returns whether it moved.
+    pub fn follow(&mut self, along: f64, start: f64, extent: f64) -> bool {
+        self.set(crate::num::f32_of_f64((along - start) / extent.max(1.0)))
+    }
+
+    /// The first pane's length on an extent `total` long.
+    #[must_use]
+    pub fn first_extent(&self, total: f64) -> f64 {
+        total * f64::from(self.position)
+    }
+
+    /// The share in whole percent, for assistive technology.
+    #[must_use]
+    pub fn percent(&self) -> u32 {
+        // A clamped 0..1 share: the product is 0..=100.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a share in 0..=1 times 100 rounds into 0..=100"
+        )]
+        let percent = (self.position * 100.0).round() as u32;
+        percent
+    }
+}
+
+/// The divider between two panes: hit-testing, hover, dragging, keyboard
+/// steps, painting and its accessible separator node. [`ResizableSplit`]
+/// keeps one; a host that paints its panes itself (a query editor over its
+/// results, a source beside its preview) keeps one too, sets its rect each
+/// layout and lays its panes out in [`SplitHandle::pane_rects`].
+#[derive(Clone, Debug)]
+pub struct SplitHandle {
+    orientation: SplitOrientation,
+    ratio: SplitRatio,
+    rect: Rect,
+    divider: Rect,
+    hit_half: f64,
+    hover: bool,
+    /// `Some(offset)` while dragging: cursor distance from the divider's
+    /// centre at press time, so moves translate without snapping.
+    drag: Option<f64>,
+    focused: bool,
+    cursor: Point,
+    label: String,
+}
+
+impl SplitHandle {
+    #[must_use]
+    pub fn new(orientation: SplitOrientation, ratio: SplitRatio) -> Self {
+        Self {
+            orientation,
+            ratio,
+            rect: Rect::ZERO,
+            divider: Rect::ZERO,
+            hit_half: 4.0,
+            hover: false,
+            drag: None,
+            focused: false,
+            cursor: Point::ZERO,
+            label: "Resize panes".to_string(),
+        }
+    }
+
+    /// What assistive technology calls the divider ("Resize sidebar").
+    #[must_use]
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = label.into();
+        self
+    }
+
+    #[must_use]
+    pub fn ratio(&self) -> SplitRatio {
+        self.ratio
+    }
+
+    pub fn ratio_mut(&mut self) -> &mut SplitRatio {
+        &mut self.ratio
+    }
+
+    /// The whole split, divider included, for this layout; the hit area
+    /// follows `rhythm.tight` on each side of the hairline.
+    pub fn set_rect(&mut self, rect: Rect, theme: &Theme) {
+        self.rect = rect;
+        self.hit_half = f64::from(theme.tokens.spacing.rhythm.tight);
+        self.place();
+    }
+
+    /// Move the split to `rect`, keeping the hit area from the last
+    /// [`Self::set_rect`] (`rhythm.tight` each side by default), for a host
+    /// that lays out without a theme in hand.
+    pub fn set_bounds(&mut self, rect: Rect) {
+        self.rect = rect;
+        self.place();
+    }
+
+    fn place(&mut self) {
+        let r = self.rect;
+        self.divider = match self.orientation {
+            SplitOrientation::Horizontal => {
+                let x = (r.x0 + self.ratio.first_extent(r.width())).round();
+                Rect::new(x - self.hit_half, r.y0, x + self.hit_half, r.y1)
+            }
+            SplitOrientation::Vertical => {
+                let y = (r.y0 + self.ratio.first_extent(r.height())).round();
+                Rect::new(r.x0, y - self.hit_half, r.x1, y + self.hit_half)
+            }
+        };
+    }
+
+    /// Where the divider takes the pointer.
+    #[must_use]
+    pub fn hit_rect(&self) -> Rect {
+        self.divider
+    }
+
+    /// The two panes, either side of the hairline.
+    #[must_use]
+    pub fn pane_rects(&self) -> (Rect, Rect) {
+        let r = self.rect;
+        match self.orientation {
+            SplitOrientation::Horizontal => {
+                let x = self.divider.center().x;
+                (
+                    Rect::new(r.x0, r.y0, x, r.y1),
+                    Rect::new(x, r.y0, r.x1, r.y1),
+                )
+            }
+            SplitOrientation::Vertical => {
+                let y = self.divider.center().y;
+                (
+                    Rect::new(r.x0, r.y0, r.x1, y),
+                    Rect::new(r.x0, y, r.x1, r.y1),
+                )
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn is_dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    #[must_use]
+    pub fn is_hovered(&self) -> bool {
+        self.hover
+    }
+
+    /// Follow the host's keyboard focus on the divider.
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    /// The resize cursor over the divider and throughout a drag.
+    #[must_use]
+    pub fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        (self.drag.is_some() || self.divider.contains(point)).then_some(match self.orientation {
+            SplitOrientation::Horizontal => winit::window::CursorIcon::EwResize,
+            SplitOrientation::Vertical => winit::window::CursorIcon::NsResize,
+        })
+    }
+
+    /// Hover, drag and keyboard steps. Marks the event handled when the
+    /// divider took it and asks for keyboard focus on a press. Returns
+    /// whether the ratio moved.
+    pub fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.hover = self.divider.contains(self.cursor);
+                if let Some(offset) = self.drag {
+                    *ctx.handled = true;
+                    let r = self.rect;
+                    let moved = match self.orientation {
+                        SplitOrientation::Horizontal => {
+                            self.ratio.follow(self.cursor.x - offset, r.x0, r.width())
+                        }
+                        SplitOrientation::Vertical => {
+                            self.ratio.follow(self.cursor.y - offset, r.y0, r.height())
+                        }
+                    };
+                    self.place();
+                    return moved;
+                }
+                false
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.hover = false;
+                false
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.divider.contains(self.cursor) => {
+                let centre = self.divider.center();
+                self.drag = Some(match self.orientation {
+                    SplitOrientation::Horizontal => self.cursor.x - centre.x,
+                    SplitOrientation::Vertical => self.cursor.y - centre.y,
+                });
+                *ctx.focus_target = Some(ctx.node_id);
+                *ctx.handled = true;
+                false
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.drag.is_some() => {
+                self.drag = None;
+                *ctx.handled = true;
+                false
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if self.focused && event.state == ElementState::Pressed =>
+            {
+                let (back, forward) = match self.orientation {
+                    SplitOrientation::Horizontal => (NamedKey::ArrowLeft, NamedKey::ArrowRight),
+                    SplitOrientation::Vertical => (NamedKey::ArrowUp, NamedKey::ArrowDown),
+                };
+                let moved = match &event.logical_key {
+                    Key::Named(key) if *key == back => self.ratio.step(-KEY_STEP),
+                    Key::Named(key) if *key == forward => self.ratio.step(KEY_STEP),
+                    Key::Named(NamedKey::Home) => self.ratio.set(0.0),
+                    Key::Named(NamedKey::End) => self.ratio.set(1.0),
+                    _ => return false,
+                };
+                *ctx.handled = true;
+                self.place();
+                moved
+            }
+            _ => false,
+        }
+    }
+
+    /// Apply an assistive-technology step; returns whether it moved.
+    pub fn perform_action(&mut self, action: &crate::a11y::Action) -> bool {
+        let moved = match action {
+            crate::a11y::Action::Increment => self.ratio.step(KEY_STEP),
+            crate::a11y::Action::Decrement => self.ratio.step(-KEY_STEP),
+            crate::a11y::Action::SetValue(value) => value
+                .trim_end_matches('%')
+                .trim()
+                .parse::<f32>()
+                .is_ok_and(|percent| self.ratio.set(percent / 100.0)),
+            _ => return false,
+        };
+        self.place();
+        moved
+    }
+
+    /// Paint the divider: a hairline derived from `ground` at rest, the
+    /// inverted fill (thicker) under the pointer, while dragged and while
+    /// focused (with the focus ring).
+    pub fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        ground: vello::peniko::Color,
+        theme: &Theme,
+    ) {
+        let active = self.hover || self.drag.is_some() || self.focused;
+        let centre = self.divider.center();
+        let half = if active { 1.5 } else { 0.5 };
+        let line = match self.orientation {
+            SplitOrientation::Horizontal => {
+                let x = centre.x.round();
+                Rect::new(x - half, self.divider.y0, x + half, self.divider.y1)
+            }
+            SplitOrientation::Vertical => {
+                let y = centre.y.round();
+                Rect::new(self.divider.x0, y - half, self.divider.x1, y + half)
+            }
+        };
+        let colour = if active {
+            theme.tokens.colors.intent.inverted
+        } else {
+            crate::surface::edge_on(ground)
+        };
+        scene.fill(vello::peniko::Fill::NonZero, transform, colour, None, &line);
+        if self.focused {
+            crate::widget::paint_focus_ring(scene, transform, self.divider, 2.0, theme);
+        }
+    }
+
+    /// The divider as a separator node with the first pane's share as its
+    /// value.
+    pub fn accessibility(&self) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        AccessNode::new(Role::Separator)
+            .with_name(self.label.clone())
+            .with_value(format!("{}%", self.ratio.percent()))
+            .with_state(AccessState::new().focusable(true).focused(self.focused))
+    }
+}
+
+/// Two panes and the divider between them.
 pub struct ResizableSplit<L: Widget, R: Widget> {
     left: L,
     right: R,
     orientation: SplitOrientation,
-    /// Fraction (`0.1..=0.9`) of the split-axis extent taken by `left`;
-    /// `right` takes `1.0 - split_position`.
-    split_position: f32,
-    /// True while the cursor sits inside [`Self::divider_rect`]; drives the
-    /// wider, accent-tinted divider paint.
-    divider_hover: bool,
-    /// `Some(offset)` while dragging: cursor distance from the divider's
-    /// centre at press time, so moves translate without snapping.
-    divider_drag: Option<f64>,
+    handle: SplitHandle,
+    /// The first pane takes its content's size until the divider is moved.
+    content_sized_first: bool,
+    /// The ratio moved since the panes were last laid out.
+    layout_dirty: bool,
     rect: Rect,
-    /// Recomputed on every `apply_layout`; used by both paint and events.
-    divider_rect: Rect,
 }
 
 impl<L: Widget, R: Widget> ResizableSplit<L, R> {
@@ -80,90 +417,88 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             left,
             right,
             orientation,
-            split_position: SPLIT_DEFAULT,
-            divider_hover: false,
-            divider_drag: None,
+            handle: SplitHandle::new(orientation, SplitRatio::default()),
+            content_sized_first: false,
+            layout_dirty: false,
             rect: Rect::ZERO,
-            divider_rect: Rect::ZERO,
         }
     }
 
-    /// Clamped to `[SPLIT_MIN, SPLIT_MAX]` so a caller can't construct a
-    /// split where one pane is invisible from the start.
+    /// Clamped to the ratio's bounds so a caller can't construct a split
+    /// where one pane is invisible from the start.
     #[must_use]
     pub fn with_split_position(mut self, position: f32) -> Self {
-        self.split_position = position.clamp(SPLIT_MIN, SPLIT_MAX);
+        self.handle.ratio_mut().set(position);
+        self
+    }
+
+    /// Bound how far the divider moves (default 10–90 %).
+    #[must_use]
+    pub fn with_bounds(mut self, min: f32, max: f32) -> Self {
+        let ratio = self.handle.ratio().with_bounds(min, max);
+        *self.handle.ratio_mut() = ratio;
+        self
+    }
+
+    /// The first pane takes its content's size (a toolbar-like editor over
+    /// a results table) until the person moves the divider.
+    #[must_use]
+    pub fn with_content_sized_first(mut self) -> Self {
+        self.content_sized_first = true;
+        self
+    }
+
+    /// What assistive technology calls the divider.
+    #[must_use]
+    pub fn with_divider_label(mut self, label: impl Into<String>) -> Self {
+        self.handle = self.handle.with_label(label);
         self
     }
 
     pub fn split_position(&self) -> f32 {
-        self.split_position
+        self.handle.ratio().position()
     }
 
-    /// Pulled out of `apply_layout` so the press and drag paths can both
-    /// call it after mutating `split_position` without a taffy pass.
-    fn recompute_divider_rect(&mut self) {
-        let r = self.rect;
-        let s = f64::from(self.split_position);
-        let half = DIVIDER_PX / 2.0;
-        self.divider_rect = match self.orientation {
-            SplitOrientation::Horizontal => {
-                let w = r.width();
-                let cx = r.x0 + w * s;
-                Rect::new(cx - half, r.y0, cx + half, r.y1)
-            }
-            SplitOrientation::Vertical => {
-                let h = r.height();
-                let cy = r.y0 + h * s;
-                Rect::new(r.x0, cy - half, r.x1, cy + half)
-            }
-        };
-    }
-
-    /// Used by both the draw pass and the event router.
-    fn child_rects(&self) -> (Rect, Rect) {
-        let r = self.rect;
-        let s = f64::from(self.split_position);
-        let half = DIVIDER_PX / 2.0;
-        match self.orientation {
-            SplitOrientation::Horizontal => {
-                let w = r.width();
-                let cx = r.x0 + w * s;
-                let left = Rect::new(r.x0, r.y0, cx - half, r.y1);
-                let right = Rect::new(cx + half, r.y0, r.x1, r.y1);
-                (left, right)
-            }
-            SplitOrientation::Vertical => {
-                let h = r.height();
-                let cy = r.y0 + h * s;
-                let top = Rect::new(r.x0, r.y0, r.x1, cy - half);
-                let bottom = Rect::new(r.x0, cy + half, r.x1, r.y1);
-                (top, bottom)
-            }
+    /// Move the divider (clamped).
+    pub fn set_split_position(&mut self, position: f32) {
+        if self.handle.ratio_mut().set(position) {
+            self.content_sized_first = false;
+            self.layout_dirty = true;
         }
     }
 
-    /// Applies an in-progress divider drag to cursor point `pt`, updating
-    /// `split_position` and `divider_rect`. Returns whether a drag was
-    /// active (and thus consumed the move).
-    fn apply_divider_drag(&mut self, pt: Point) -> bool {
-        let Some(offset) = self.divider_drag else {
-            return false;
-        };
-        let r = self.rect;
-        let new_pos = match self.orientation {
-            SplitOrientation::Horizontal => {
-                let extent = r.width().max(1.0);
-                px((pt.x - offset - r.x0) / extent)
-            }
-            SplitOrientation::Vertical => {
-                let extent = r.height().max(1.0);
-                px((pt.y - offset - r.y0) / extent)
-            }
-        };
-        self.split_position = new_pos.clamp(SPLIT_MIN, SPLIT_MAX);
-        self.recompute_divider_rect();
-        true
+    /// The first (leading or top) pane.
+    pub fn left(&self) -> &L {
+        &self.left
+    }
+
+    pub fn left_mut(&mut self) -> &mut L {
+        &mut self.left
+    }
+
+    /// The second (trailing or bottom) pane.
+    pub fn right(&self) -> &R {
+        &self.right
+    }
+
+    pub fn right_mut(&mut self) -> &mut R {
+        &mut self.right
+    }
+
+    fn moved(&mut self) {
+        self.content_sized_first = false;
+        self.layout_dirty = true;
+    }
+
+    /// Grow factors for the two panes: the ratio, or the first pane at its
+    /// content size.
+    fn grows(&self) -> (f32, f32, bool) {
+        if self.content_sized_first {
+            (0.0, 1.0, true)
+        } else {
+            let s = self.handle.ratio().position();
+            (s, 1.0 - s, false)
+        }
     }
 
     /// Not consumed by the divider — forward to whichever pane the cursor is
@@ -183,7 +518,8 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             None
         };
 
-        let (left_rect, right_rect) = self.child_rects();
+        let left_rect = self.left.get_rect();
+        let right_rect = self.right.get_rect();
         if let Some(pt) = cursor_pt {
             if left_rect.contains(pt) {
                 if let Some(n) = left_node {
@@ -199,8 +535,6 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             return;
         }
 
-        // Non-positional events: dispatch to both, stopping at the first
-        // to claim `handled`. Same convention `Row` and `Column` use.
         if let Some(n) = left_node {
             self.left
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
@@ -213,6 +547,54 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
     }
+
+    fn style_panes(
+        &self,
+        taffy: &mut TaffyTree<()>,
+        left_node: NodeId,
+        right_node: NodeId,
+    ) -> bool {
+        let (left_grow, right_grow, content_sized) = self.grows();
+        let cross = match self.orientation {
+            SplitOrientation::Horizontal => taffy::Size {
+                width: taffy::Dimension::auto(),
+                height: percent(1.0_f32),
+            },
+            SplitOrientation::Vertical => taffy::Size {
+                width: percent(1.0_f32),
+                height: taffy::Dimension::auto(),
+            },
+        };
+        let mut changed = false;
+        for (node, grow, sized_by_content) in [
+            (left_node, left_grow, content_sized),
+            (right_node, right_grow, false),
+        ] {
+            if let Ok(current) = taffy.style(node) {
+                let mut style = current.clone();
+                // A zero basis divides the available axis by the two grow
+                // factors, avoiding percentage sizing's circular
+                // intrinsic-width calculation. A content-sized pane keeps
+                // its own size along the split.
+                if sized_by_content {
+                    match self.orientation {
+                        SplitOrientation::Horizontal => style.size.height = cross.height,
+                        SplitOrientation::Vertical => style.size.width = cross.width,
+                    }
+                    style.flex_basis = taffy::Dimension::auto();
+                } else {
+                    style.size = cross;
+                    style.flex_basis = length(0.0_f32);
+                }
+                style.flex_grow = grow;
+                style.flex_shrink = 1.0;
+                if *current != style {
+                    changed |= taffy.set_style(node, style).is_ok();
+                }
+            }
+        }
+        changed
+    }
 }
 
 impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
@@ -222,6 +604,21 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         dyn crate::undo::UndoPoints
     );
 
+    fn update(
+        &mut self,
+        state: &mut crate::widget::AppModel,
+        path: &crate::widget::ModelPath,
+    ) -> bool {
+        let left = self.left.update(state, path);
+        let right = self.right.update(state, path);
+        left || right
+    }
+
+    fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        self.left.sync(state, path);
+        self.right.sync(state, path);
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -230,60 +627,19 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     ) -> NodeId {
         let left_node = self.left.build_layout(taffy, theme, node_map);
         let right_node = self.right.build_layout(taffy, theme, node_map);
-
+        self.handle.set_rect(self.rect, theme);
         // The layout tree has exactly the two children returned by
         // `Widget::children`. The divider is painted and hit-tested by this
         // container instead of masquerading as a third widget-less child;
         // keeping those trees aligned is required by focus/action traversal.
-        let s = self.split_position;
-        let (left_size, right_size, flex_direction) = match self.orientation {
-            SplitOrientation::Horizontal => (
-                taffy::Size {
-                    width: taffy::Dimension::auto(),
-                    height: percent(1.0_f32),
-                },
-                taffy::Size {
-                    width: taffy::Dimension::auto(),
-                    height: percent(1.0_f32),
-                },
-                taffy::FlexDirection::Row,
-            ),
-            SplitOrientation::Vertical => (
-                taffy::Size {
-                    width: percent(1.0_f32),
-                    height: taffy::Dimension::auto(),
-                },
-                taffy::Size {
-                    width: percent(1.0_f32),
-                    height: taffy::Dimension::auto(),
-                },
-                taffy::FlexDirection::Column,
-            ),
-        };
-
-        // A zero basis divides the available axis by the two grow factors,
-        // avoiding percentage sizing's circular intrinsic-width calculation.
-        if let Ok(mut style) = taffy.style(left_node).cloned() {
-            style.size = left_size;
-            style.flex_basis = length(0.0_f32);
-            style.flex_grow = s;
-            style.flex_shrink = 1.0;
-            let _ = taffy.set_style(left_node, style);
-        }
-        if let Ok(mut style) = taffy.style(right_node).cloned() {
-            style.size = right_size;
-            style.flex_basis = length(0.0_f32);
-            style.flex_grow = 1.0 - s;
-            style.flex_shrink = 1.0;
-            let _ = taffy.set_style(right_node, style);
-        }
-
-        let _ = theme; // unused — kept in signature for trait conformance
-
+        self.style_panes(taffy, left_node, right_node);
         let node = taffy.parent_node(
             Style {
                 display: taffy::Display::Flex,
-                flex_direction,
+                flex_direction: match self.orientation {
+                    SplitOrientation::Horizontal => taffy::FlexDirection::Row,
+                    SplitOrientation::Vertical => taffy::FlexDirection::Column,
+                },
                 size: taffy::Size {
                     width: percent(1.0_f32),
                     height: percent(1.0_f32),
@@ -294,6 +650,21 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    /// The panes follow a moved divider without rebuilding the tree.
+    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Ok(children) = taffy.children(node) else {
+            return false;
+        };
+        let (Some(&left), Some(&right)) = (children.first(), children.get(1)) else {
+            return false;
+        };
+        self.style_panes(taffy, left, right)
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.layout_dirty || self.left.is_layout_dirty() || self.right.is_layout_dirty()
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -313,7 +684,21 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         if let Some(&n) = children.get(1) {
             self.right.apply_layout(taffy, n, new_origin);
         }
-        self.recompute_divider_rect();
+        if self.content_sized_first {
+            // The divider sits where the content-sized pane ends.
+            let first = self.left.get_rect();
+            let (along, extent) = match self.orientation {
+                SplitOrientation::Horizontal => (first.x1, self.rect.width()),
+                SplitOrientation::Vertical => (first.y1, self.rect.height()),
+            };
+            let start = match self.orientation {
+                SplitOrientation::Horizontal => self.rect.x0,
+                SplitOrientation::Vertical => self.rect.y0,
+            };
+            self.handle.ratio_mut().follow(along, start, extent);
+        }
+        self.layout_dirty = false;
+        self.handle.set_bounds(self.rect);
     }
 
     fn draw(
@@ -329,84 +714,52 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             .draw(scene, transform, text_renderer, theme, presence);
         self.right
             .draw(scene, transform, text_renderer, theme, presence);
-
-        // The hit-rect (`divider_rect`) is unchanged — only the painted strip
-        // inflates — so the press path still resolves against the original
-        // 4px target without a "tug" on hover.
-        let active = self.divider_hover || self.divider_drag.is_some();
-        let paint_rect = if active {
-            match self.orientation {
-                SplitOrientation::Horizontal => Rect::new(
-                    self.divider_rect.x0 - DIVIDER_HOVER_EXTRA_PX,
-                    self.divider_rect.y0,
-                    self.divider_rect.x1 + DIVIDER_HOVER_EXTRA_PX,
-                    self.divider_rect.y1,
-                ),
-                SplitOrientation::Vertical => Rect::new(
-                    self.divider_rect.x0,
-                    self.divider_rect.y0 - DIVIDER_HOVER_EXTRA_PX,
-                    self.divider_rect.x1,
-                    self.divider_rect.y1 + DIVIDER_HOVER_EXTRA_PX,
-                ),
-            }
-        } else {
-            self.divider_rect
-        };
-        // The idle divider is a derived rule on the base surface (HIG
-        // §9.5); the accent marks a live drag.
-        let color = if active {
-            theme.tokens.colors.intent.inverted
-        } else {
-            crate::surface::edge_on(theme.tokens.colors.surfaces.base)
-        };
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        self.handle.paint(
+            scene,
             transform,
-            color,
-            None,
-            &paint_rect,
+            theme.tokens.colors.surfaces.content,
+            theme,
         );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                // Update hover first so a drag-release-and-stay still
-                // reflects the cursor's resting state under the divider.
-                self.divider_hover = self.divider_rect.contains(pt);
-
-                // Apply the press-time offset so the divider doesn't snap to centre.
-                if self.apply_divider_drag(pt) {
-                    *ctx.handled = true;
-                    return;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if self.divider_hover => {
-                // `0.0` rather than a re-derived cursor offset: winit only
-                // delivers a position on CursorMoved, and the most recent
-                // hover position is already encoded by the divider centre.
-                self.divider_drag = Some(0.0);
-                *ctx.handled = true;
-                return;
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } if self.divider_drag.is_some() => {
-                self.divider_drag = None;
-                *ctx.handled = true;
-                return;
-            }
-            _ => {}
+        let was_dragging = self.handle.is_dragging();
+        if self.handle.handle_event(event, ctx) {
+            self.moved();
         }
-
+        if *ctx.handled || was_dragging {
+            return;
+        }
         self.forward_to_children(event, ctx);
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.handle.set_focused(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.handle.focused
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        Some(self.handle.accessibility())
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut crate::widget::AppModel,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        let moved = self.handle.perform_action(action);
+        if moved {
+            self.moved();
+        }
+        moved
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -434,13 +787,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     /// Off the divider, `None` lets the pane under the point claim its
     /// own cursor via the host's `node_map` sweep.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.divider_drag.is_some() || self.divider_rect.contains(point) {
-            return Some(match self.orientation {
-                SplitOrientation::Horizontal => winit::window::CursorIcon::EwResize,
-                SplitOrientation::Vertical => winit::window::CursorIcon::NsResize,
-            });
-        }
-        None
+        self.handle.cursor_shape(point)
     }
 
     fn name(&self) -> &'static str {
@@ -456,7 +803,9 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     fn wants_pointer_capture(&self) -> bool {
         // Without this, straying outside the strip mid-drag routes the
         // release to a sibling and the drag silently ends early.
-        self.divider_drag.is_some()
+        self.handle.is_dragging()
+            || self.left.wants_pointer_capture()
+            || self.right.wants_pointer_capture()
     }
 
     fn draw_with_presence(
@@ -487,40 +836,11 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             presence,
             permissions,
         );
-        // Children already drew above, so passing through `draw` here
-        // would double-paint — inline the divider strip instead.
-        let active = self.divider_hover || self.divider_drag.is_some();
-        let paint_rect = if active {
-            match self.orientation {
-                SplitOrientation::Horizontal => Rect::new(
-                    self.divider_rect.x0 - DIVIDER_HOVER_EXTRA_PX,
-                    self.divider_rect.y0,
-                    self.divider_rect.x1 + DIVIDER_HOVER_EXTRA_PX,
-                    self.divider_rect.y1,
-                ),
-                SplitOrientation::Vertical => Rect::new(
-                    self.divider_rect.x0,
-                    self.divider_rect.y0 - DIVIDER_HOVER_EXTRA_PX,
-                    self.divider_rect.x1,
-                    self.divider_rect.y1 + DIVIDER_HOVER_EXTRA_PX,
-                ),
-            }
-        } else {
-            self.divider_rect
-        };
-        // The idle divider is a derived rule on the base surface (HIG
-        // §9.5); the accent marks a live drag.
-        let color = if active {
-            theme.tokens.colors.intent.inverted
-        } else {
-            crate::surface::edge_on(theme.tokens.colors.surfaces.base)
-        };
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        self.handle.paint(
+            scene,
             transform,
-            color,
-            None,
-            &paint_rect,
+            theme.tokens.colors.surfaces.content,
+            theme,
         );
     }
 }
@@ -562,11 +882,17 @@ mod tests {
     /// Bare-minimum `Widget` for use as a `ResizableSplit` child in tests.
     struct TestLeaf {
         rect: Rect,
+        updates: std::rc::Rc<std::cell::Cell<u32>>,
+        width: Option<f32>,
     }
 
     impl TestLeaf {
         fn new() -> Self {
-            Self { rect: Rect::ZERO }
+            Self {
+                rect: Rect::ZERO,
+                updates: std::rc::Rc::default(),
+                width: None,
+            }
         }
     }
 
@@ -577,9 +903,24 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.leaf_node(Style::default());
+            let node = taffy.leaf_node(Style {
+                size: taffy::Size {
+                    width: self.width.map_or(taffy::Dimension::auto(), length),
+                    height: taffy::Dimension::auto(),
+                },
+                ..Style::default()
+            });
             node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
+        }
+
+        fn update(
+            &mut self,
+            _state: &mut crate::widget::AppModel,
+            _path: &crate::widget::ModelPath,
+        ) -> bool {
+            self.updates.set(self.updates.get() + 1);
+            true
         }
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -611,18 +952,37 @@ mod tests {
         }
     }
 
-    /// Own rect hand-stamped to the given extents so tests skip a taffy pass.
-    fn split_at(
-        x0: f64,
-        y0: f64,
-        x1: f64,
-        y1: f64,
-        orientation: SplitOrientation,
-    ) -> ResizableSplit<TestLeaf, TestLeaf> {
-        let mut s = ResizableSplit::new(TestLeaf::new(), TestLeaf::new(), orientation);
-        s.rect = Rect::new(x0, y0, x1, y1);
-        s.recompute_divider_rect();
-        s
+    /// Lay the split out at `width` × `height` and return the tree, so a
+    /// test can re-solve it after an event as the host would.
+    fn solve<L: Widget + 'static, R: Widget + 'static>(
+        split: &mut ResizableSplit<L, R>,
+        width: f32,
+        height: f32,
+    ) -> (TaffyTree<()>, NodeId) {
+        let mut tree = TaffyTree::<()>::new();
+        let mut node_map = HashMap::new();
+        let node = split.build_layout(&mut tree, &Theme::dark(), &mut node_map);
+        relayout(split, &mut tree, node, width, height);
+        (tree, node)
+    }
+
+    fn relayout<L: Widget + 'static, R: Widget + 'static>(
+        split: &mut ResizableSplit<L, R>,
+        tree: &mut TaffyTree<()>,
+        node: NodeId,
+        width: f32,
+        height: f32,
+    ) {
+        split.adjust_layout_style(tree, node);
+        tree.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(width),
+                height: taffy::AvailableSpace::Definite(height),
+            },
+        )
+        .expect("valid split layout");
+        split.apply_layout(tree, node, Point::ZERO);
     }
 
     fn cursor_moved(x: f64, y: f64) -> WindowEvent {
@@ -650,13 +1010,10 @@ mod tests {
 
     fn dispatch<L: Widget + 'static, R: Widget + 'static>(
         s: &mut ResizableSplit<L, R>,
+        tree: &TaffyTree<()>,
+        node: NodeId,
         event: &WindowEvent,
     ) {
-        let mut tree = TaffyTree::<()>::new();
-        // Node count must match the production `build_layout` shape.
-        let left = tree.leaf_node(Style::default());
-        let right = tree.leaf_node(Style::default());
-        let node = tree.parent_node(Style::default(), &[left, right]);
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = AutoCommit::new();
@@ -671,137 +1028,136 @@ mod tests {
                 handled: &mut handled,
                 focus_target: &mut focus_target,
                 node_id: node,
-                taffy: &tree,
+                taffy: tree,
             },
         );
     }
 
-    #[test]
-    fn split_layout_starts_even_and_fills_the_axis() {
-        // Case `resizable_split_initial_position_split_evenly`.
-        {
-            let s = ResizableSplit::new(
-                TestLeaf::new(),
-                TestLeaf::new(),
-                SplitOrientation::Horizontal,
-            );
-            assert_eq!(s.split_position(), 0.5);
-        }
-
-        // Case `layout_children_match_widget_children_and_fill_the_available_axis`.
-        {
-            let mut split = ResizableSplit::new(
-                TestLeaf::new(),
-                TestLeaf::new(),
-                SplitOrientation::Horizontal,
-            )
-            .with_split_position(0.32);
-            let mut tree = TaffyTree::<()>::new();
-            let mut node_map = HashMap::new();
-            let node = split.build_layout(&mut tree, &Theme::dark(), &mut node_map);
-            let root = tree.parent_node(
-                Style {
-                    size: taffy::Size {
-                        width: length(1000.0_f32),
-                        height: length(640.0_f32),
-                    },
-                    ..Default::default()
-                },
-                &[node],
-            );
-            tree.compute_layout(
-                root,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(1000.0),
-                    height: taffy::AvailableSpace::Definite(640.0),
-                },
-            )
-            .expect("valid split layout");
-            split.apply_layout(&tree, node, Point::ZERO);
-
-            assert_eq!(tree.children(node).expect("split children").len(), 2);
-            assert!((split.left.rect.width() - 320.0).abs() < 0.1);
-            assert!((split.right.rect.width() - 680.0).abs() < 0.1);
-        }
+    fn split(orientation: SplitOrientation) -> ResizableSplit<TestLeaf, TestLeaf> {
+        ResizableSplit::new(TestLeaf::new(), TestLeaf::new(), orientation)
     }
 
     #[test]
-    fn divider_drag_moves_the_split_within_bounds_with_a_resize_cursor() {
-        // Case `resizable_split_dragging_divider_changes_split_position`.
-        {
-            // Rect is 400 wide; divider starts at x=200 (centre). Drag the
-            // cursor to x=100 and assert the split now sits at 0.25.
-            let mut s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
-            dispatch(&mut s, &cursor_moved(200.0, 150.0));
-            assert!(
-                s.divider_hover,
-                "cursor inside divider_rect should set hover=true",
-            );
-            dispatch(&mut s, &mouse_press());
-            assert!(
-                s.divider_drag.is_some(),
-                "press while hovered should start a drag"
-            );
-            dispatch(&mut s, &cursor_moved(100.0, 150.0));
-            dispatch(&mut s, &mouse_release());
-            assert!(s.divider_drag.is_none(), "release must end the drag");
-            // Tolerance insulates against future ratio tweaks.
-            let pos = s.split_position();
-            assert!(
-                (pos - 0.25).abs() < 1e-3,
-                "split_position should be ~0.25 after drag; got {pos}",
-            );
-        }
+    fn split_layout_starts_even_and_fills_the_axis() {
+        assert_eq!(split(SplitOrientation::Horizontal).split_position(), 0.5);
+        let mut s = split(SplitOrientation::Horizontal).with_split_position(0.32);
+        let (tree, node) = solve(&mut s, 1000.0, 640.0);
+        assert_eq!(tree.children(node).expect("split children").len(), 2);
+        assert!((s.left().rect.width() - 320.0).abs() < 0.1);
+        assert!((s.right().rect.width() - 680.0).abs() < 0.1);
+    }
 
-        // Case `cursor_shape_over_divider_is_resize_per_orientation`.
-        {
-            // Rect is 400 wide; default 50% divider is centred at x = 200.
-            let s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
-            assert_eq!(
-                Widget::cursor_shape(&s, Point::new(200.0, 150.0)),
-                Some(winit::window::CursorIcon::EwResize),
-                "pointer over a horizontal split's divider requests EwResize",
-            );
-            assert_eq!(
-                Widget::cursor_shape(&s, Point::new(50.0, 150.0)),
-                None,
-                "off the divider the split defers to its panes (no claim here)",
-            );
+    #[test]
+    fn dragging_the_divider_relays_out_the_panes_within_bounds() {
+        let mut s = split(SplitOrientation::Horizontal);
+        let (mut tree, node) = solve(&mut s, 400.0, 300.0);
+        dispatch(&mut s, &tree, node, &cursor_moved(200.0, 150.0));
+        assert!(s.handle.is_hovered(), "the divider is under the pointer");
+        assert_eq!(
+            Widget::cursor_shape(&s, Point::new(200.0, 150.0)),
+            Some(winit::window::CursorIcon::EwResize)
+        );
+        assert_eq!(Widget::cursor_shape(&s, Point::new(50.0, 150.0)), None);
+        dispatch(&mut s, &tree, node, &mouse_press());
+        assert!(s.handle.is_dragging());
+        dispatch(&mut s, &tree, node, &cursor_moved(100.0, 150.0));
+        dispatch(&mut s, &tree, node, &mouse_release());
+        assert!(!s.handle.is_dragging());
+        assert!(
+            (s.split_position() - 0.25).abs() < 1e-3,
+            "{}",
+            s.split_position()
+        );
+        assert!(s.is_layout_dirty(), "the panes follow the divider");
+        relayout(&mut s, &mut tree, node, 400.0, 300.0);
+        assert!(
+            (s.left().rect.width() - 100.0).abs() < 0.5,
+            "{:?}",
+            s.left().rect
+        );
+        assert!(!s.layout_dirty, "laid out at the new ratio");
 
-            // Rect is 300 tall; default 50% divider is centred at y = 150.
-            let s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Vertical);
-            assert_eq!(
-                Widget::cursor_shape(&s, Point::new(200.0, 150.0)),
-                Some(winit::window::CursorIcon::NsResize),
-                "pointer over a vertical split's divider requests NsResize",
-            );
-        }
+        // Dragging past either end clamps.
+        dispatch(&mut s, &tree, node, &cursor_moved(100.0, 150.0));
+        dispatch(&mut s, &tree, node, &mouse_press());
+        dispatch(&mut s, &tree, node, &cursor_moved(2.0, 150.0));
+        dispatch(&mut s, &tree, node, &mouse_release());
+        assert_eq!(s.split_position(), SPLIT_MIN);
 
-        // Case `resizable_split_clamps_position_to_min_max_bounds`.
-        {
-            // Drag to a cursor x that would yield 0.01 (4px); assert clamp to 0.1.
-            let mut s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
-            dispatch(&mut s, &cursor_moved(200.0, 150.0));
-            dispatch(&mut s, &mouse_press());
-            dispatch(&mut s, &cursor_moved(4.0, 150.0));
-            dispatch(&mut s, &mouse_release());
-            assert_eq!(
-                s.split_position(),
-                SPLIT_MIN,
-                "split_position must clamp to {SPLIT_MIN} on the low end",
-            );
+        let v = split(SplitOrientation::Vertical);
+        let mut v = v;
+        solve(&mut v, 400.0, 300.0);
+        assert_eq!(
+            Widget::cursor_shape(&v, Point::new(200.0, 150.0)),
+            Some(winit::window::CursorIcon::NsResize)
+        );
+    }
 
-            // Drag to 0.99 → clamp to 0.9.
-            let mut s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
-            dispatch(&mut s, &cursor_moved(200.0, 150.0));
-            dispatch(&mut s, &mouse_press());
-            dispatch(&mut s, &cursor_moved(396.0, 150.0));
-            dispatch(&mut s, &mouse_release());
-            assert_eq!(
-                s.split_position(),
-                SPLIT_MAX,
-                "split_position must clamp to {SPLIT_MAX} on the high end",
-            );
-        }
+    #[test]
+    fn the_divider_steps_with_the_keyboard_and_reads_as_a_separator() {
+        let mut s = split(SplitOrientation::Horizontal).with_divider_label("Resize preview");
+        let (tree, node) = solve(&mut s, 400.0, 300.0);
+        assert!(s.is_focusable());
+        s.set_focus(true);
+        let right = crate::synthetic_input::key_event(
+            &Key::Named(NamedKey::ArrowRight),
+            ElementState::Pressed,
+        );
+        dispatch(&mut s, &tree, node, &right);
+        assert!((s.split_position() - 0.55).abs() < 1e-4);
+        let node_access = s.accessibility().expect("a separator");
+        assert_eq!(node_access.role, crate::a11y::Role::Separator);
+        assert_eq!(node_access.name.as_deref(), Some("Resize preview"));
+        assert_eq!(node_access.value.as_deref(), Some("55%"));
+        let mut doc = AutoCommit::new();
+        assert!(s.perform_action(&crate::a11y::Action::Decrement, &mut doc, &automerge::ROOT));
+        assert!((s.split_position() - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_per_frame_update_reaches_both_panes() {
+        let mut s = split(SplitOrientation::Horizontal);
+        let (left, right) = (s.left().updates.clone(), s.right().updates.clone());
+        let mut doc = AutoCommit::new();
+        assert!(Widget::update(&mut s, &mut doc, &automerge::ROOT));
+        assert_eq!((left.get(), right.get()), (1, 1));
+    }
+
+    #[test]
+    fn a_content_sized_first_pane_keeps_its_size_until_the_divider_moves() {
+        let mut first = TestLeaf::new();
+        first.width = Some(120.0);
+        let mut s = ResizableSplit::new(first, TestLeaf::new(), SplitOrientation::Horizontal)
+            .with_content_sized_first();
+        let (mut tree, node) = solve(&mut s, 600.0, 300.0);
+        assert!(
+            (s.left().rect.width() - 120.0).abs() < 0.5,
+            "{:?}",
+            s.left().rect
+        );
+        assert!(
+            (s.split_position() - 0.2).abs() < 1e-3,
+            "the divider sits where it ends"
+        );
+        s.set_split_position(0.5);
+        relayout(&mut s, &mut tree, node, 600.0, 300.0);
+        assert!((s.left().rect.width() - 300.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn a_painted_host_shares_the_ratio_model() {
+        let theme = Theme::dark();
+        let mut handle = SplitHandle::new(SplitOrientation::Vertical, SplitRatio::new(0.3));
+        handle.set_rect(Rect::new(0.0, 0.0, 400.0, 500.0), &theme);
+        let (top, bottom) = handle.pane_rects();
+        assert!((top.height() - 150.0).abs() < 0.5);
+        assert!(
+            (top.y1 - bottom.y0).abs() < 1e-9,
+            "the panes meet at the hairline"
+        );
+        let mut ratio = SplitRatio::new(0.5).with_bounds(0.2, 0.6);
+        assert!(ratio.set(0.9));
+        assert!((ratio.position() - 0.6).abs() < 1e-6);
+        assert!(!ratio.step(0.1), "already at the bound");
     }
 }

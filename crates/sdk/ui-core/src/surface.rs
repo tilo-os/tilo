@@ -607,16 +607,9 @@ pub fn edge_outline(rect: Rect, radius: f64) -> RoundedRect {
     RoundedRect::from_rect(rect.inset(-0.5), (radius - 0.5).max(0.0))
 }
 
-/// Whole logical pixels for an edged surface: a 1 px edge stroked on a
-/// fractional rect covers two device pixels at half coverage on each and
-/// stops registering. Layout may hand us fractions; the paint does not.
+/// Whole logical pixels for an edged surface ([`crate::paint::snap_rect`]).
 fn snap(rect: Rect) -> Rect {
-    Rect::new(
-        rect.x0.round(),
-        rect.y0.round(),
-        rect.x1.round(),
-        rect.y1.round(),
-    )
+    crate::paint::snap_rect(rect)
 }
 
 /// Fill a card / row / tile and give it its derived rest edge in one call —
@@ -754,6 +747,103 @@ pub fn separator(
     scene.fill(Fill::NonZero, transform, edge_on(surface), None, &rule);
 }
 
+/// A 1 px vertical separator between two columns or panes, derived against
+/// `surface` like [`separator`], inset `inset` from both ends and centred
+/// on `x`. The column rule of a painted split, a gutter beside a list.
+pub fn vertical_separator(
+    scene: &mut Scene,
+    transform: Affine,
+    x: f64,
+    y0: f64,
+    y1: f64,
+    inset: f64,
+    surface: Color,
+) {
+    let (a, b) = (y0 + inset, y1 - inset);
+    if b <= a {
+        return;
+    }
+    let left = (x - 0.5).round();
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        edge_on(surface),
+        None,
+        &Rect::new(left, a, left + 1.0, b),
+    );
+}
+
+/// The edge of a viewport that content can scroll in from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentEdge {
+    Top,
+    Bottom,
+    Leading,
+    Trailing,
+}
+
+/// How far a [`content_edge_fade`] reaches into the viewport, at most a
+/// third of it.
+const CONTENT_FADE_PX: f64 = 24.0;
+
+/// Fade content out toward `edge` of the viewport `rect`: the `ground` the
+/// content is drawn on, opaque at the edge and clear a short way in, eased
+/// so it has no start line. Paint it over the content, and only while
+/// more content can scroll in from that edge (a `Scrollable` with
+/// `with_edge_fade` does both). The replacement for a media scrim, a
+/// `DestOut` mask or a hand-made gradient at the end of a list.
+pub fn content_edge_fade(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    edge: ContentEdge,
+    ground: Color,
+) {
+    let along = match edge {
+        ContentEdge::Top | ContentEdge::Bottom => rect.height(),
+        ContentEdge::Leading | ContentEdge::Trailing => rect.width(),
+    };
+    let reach = CONTENT_FADE_PX.min(along / 3.0);
+    if reach <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let (band, strong, clear) = match edge {
+        ContentEdge::Top => (
+            Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + reach),
+            (rect.x0, rect.y0),
+            (rect.x0, rect.y0 + reach),
+        ),
+        ContentEdge::Bottom => (
+            Rect::new(rect.x0, rect.y1 - reach, rect.x1, rect.y1),
+            (rect.x0, rect.y1),
+            (rect.x0, rect.y1 - reach),
+        ),
+        ContentEdge::Leading => (
+            Rect::new(rect.x0, rect.y0, rect.x0 + reach, rect.y1),
+            (rect.x0, rect.y0),
+            (rect.x0 + reach, rect.y0),
+        ),
+        ContentEdge::Trailing => (
+            Rect::new(rect.x1 - reach, rect.y0, rect.x1, rect.y1),
+            (rect.x1, rect.y0),
+            (rect.x1 - reach, rect.y0),
+        ),
+    };
+    const STOPS: usize = 7;
+    let stops: [vello::peniko::ColorStop; STOPS] = std::array::from_fn(|i| {
+        #[allow(clippy::cast_precision_loss, reason = "i < STOPS, a single digit")]
+        let t = i as f32 / (STOPS - 1) as f32;
+        vello::peniko::ColorStop {
+            offset: t,
+            color: ground
+                .with_alpha(crate::overlay::scrim::fade_alpha(f64::from(t), 1.0))
+                .into(),
+        }
+    });
+    let gradient = vello::peniko::Gradient::new_linear(strong, clear).with_stops(stops.as_slice());
+    scene.fill(Fill::NonZero, transform, &gradient, None, &band);
+}
+
 /// The one device-pixel row a separator centred on `y` occupies: `y` is
 /// snapped so a caller passing a whole-pixel coordinate gets a crisp rule,
 /// not a two-row smear at half alpha (which would fall under
@@ -771,6 +861,60 @@ pub fn separator_rect(x0: f64, x1: f64, y: f64, inset: f64) -> Option<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_edge_fade_is_one_gradient_inside_its_edge_band() {
+        let ground = Theme::dark().tokens.colors.surfaces.content;
+        for edge in [
+            ContentEdge::Top,
+            ContentEdge::Bottom,
+            ContentEdge::Leading,
+            ContentEdge::Trailing,
+        ] {
+            let mut scene = Scene::new();
+            content_edge_fade(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 300.0, 200.0),
+                edge,
+                ground,
+            );
+            let tags = &scene.encoding().draw_tags;
+            assert_eq!(tags.len(), 1, "{edge:?}");
+            assert!(
+                tags[0] == vello_encoding::DrawTag::LINEAR_GRADIENT,
+                "{edge:?}"
+            );
+        }
+        // A viewport too small to fade paints nothing.
+        let mut scene = Scene::new();
+        content_edge_fade(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::ZERO,
+            ContentEdge::Top,
+            ground,
+        );
+        assert!(scene.encoding().draw_tags.is_empty());
+    }
+
+    #[test]
+    fn a_vertical_separator_is_one_crisp_column() {
+        let mut scene = Scene::new();
+        let surface = Theme::light().tokens.colors.surfaces.content;
+        vertical_separator(&mut scene, Affine::IDENTITY, 100.3, 0.0, 50.0, 4.0, surface);
+        assert_eq!(scene.encoding().draw_tags.len(), 1);
+        let mut empty = Scene::new();
+        vertical_separator(&mut empty, Affine::IDENTITY, 10.0, 0.0, 6.0, 4.0, surface);
+        assert!(
+            empty.encoding().draw_tags.is_empty(),
+            "inset past its length"
+        );
+        assert_eq!(
+            crate::paint::snap_rect(Rect::new(0.4, 1.6, 10.5, 9.49)),
+            Rect::new(0.0, 2.0, 11.0, 9.0)
+        );
+    }
 
     #[test]
     fn edges_and_chips_register_on_every_preset_surface() {
