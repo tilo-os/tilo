@@ -6,6 +6,9 @@ ConditionPathExists=/var/lib/tilo/device-revocations
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/tilo-home-peer-control prune-revoked
+# Reading the directory is bounded and never blocks on a planted FIFO; this
+# is the backstop.
+TimeoutStartSec=30s
 UMask=0022
 LimitCORE=0
 NoNewPrivileges=yes
@@ -38,3 +41,7 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@clock @debug @keyring @module @mount @obsolete @raw-io @reboot @resources @swap
 SystemCallErrorNumber=EPERM
+
+[Install]
+# Revocations recorded while the machine was off apply at boot.
+WantedBy=multi-user.target

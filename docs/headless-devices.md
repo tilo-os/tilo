@@ -146,11 +146,15 @@ What revocation reaches, and when:
   `tilo-enroll discover-device`, then the polkit/sudo helper
   `tilo-home-peer-control approve-device`, the same path Settings uses. The
   helper runs `tilo-enroll approve-device` as you (it signs with your
-  identity), then records the new device in
-  `/var/lib/tilo/personal-device-peers.json`, which only root may change. It
-  accepts only a certificate that names the device you chose, is not a home
-  server, and is signed by the same identity that certified this machine's own
-  device key.
+  identity), then records the new device, with the identity that certified
+  it, in `/var/lib/tilo/personal-device-peers.json`, which only root may
+  change. It accepts only a certificate that names the device you chose, is
+  not a home server, and is signed by the same identity that certified this
+  machine's own device key.
+- A revocation in `/var/lib/tilo/device-revocations` (writable by the
+  `tilo-identity` group, sticky) removes a direct peer only when the identity
+  recorded with that peer signed it; a revocation from any other identity
+  changes nothing.
 - The new device receives the approver's room list
   (`~/.local/state/tilo/personal-rooms.json`, kept by the session) and stores
   it as `/var/lib/tilo/personal-rooms.json`, plus every other ordinary device

@@ -735,49 +735,27 @@ fn remember_approved_device(
     }
     tilo_relay_protocol::personal_devices::remember_direct_peers(
         &identity_root.join(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE),
-        &[cert.device_public_key],
+        &[tilo_relay_protocol::personal_devices::DirectPeer {
+            identity: cert.user_public_key,
+            device: cert.device_public_key,
+        }],
     )
     .context("record the approved device as a direct peer")?;
     Ok(())
 }
 
-/// Prune from the direct-peer list under `identity_root` the devices that an
-/// identity this machine is certified for revoked. The revocation directory is
-/// writable by the identity group, so the identity whose revocations count is
-/// taken only from this machine's own certificates: a key this machine does not
-/// hold a valid certificate of can neither revoke nor prune anything here.
-/// Returns the devices removed.
-fn prune_revoked(identity_root: &Path) -> anyhow::Result<Vec<[u8; 32]>> {
-    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
-    let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
-        .context("this machine's device key is unreadable")?;
-    let device = device.verifying_key().to_bytes();
-    let revocations = tilo_relay_protocol::personal_devices::read_revocations(identity_root)?;
-    let mut identities: Vec<[u8; 32]> = revocations
-        .iter()
-        .map(|entry| entry.user_public_key)
-        .collect();
-    identities.sort_unstable();
-    identities.dedup();
-    let mut removed = Vec::new();
-    for user in identities {
-        let own = tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(&user))
-            .or_else(|_| tilo_user_identity::persist::read_device_cert(&paths.device_cert))
-            .ok()
-            .filter(|cert| {
-                cert.user_public_key == user
-                    && cert.device_public_key == device
-                    && tilo_user_identity::verify_device_cert(cert).is_ok()
-            });
-        if own.is_none() {
-            continue;
-        }
-        removed.extend(
-            tilo_relay_protocol::personal_devices::prune_revoked_direct_peers(identity_root, &user)
-                .context("prune the direct-peer list")?,
-        );
-    }
-    Ok(removed)
+/// Prune from the direct-peer list under `identity_root` every entry whose
+/// device the identity it was recorded under revoked. The revocation
+/// directory is writable by the identity group, but an entry there can only
+/// remove list entries recorded under the root that signed it, and only a
+/// privileged enrollment, after checking that root's certificate, records
+/// entries. A revocation from any other root, with whatever certificates
+/// were planted beside it, removes nothing. Returns the entries removed.
+fn prune_revoked(
+    identity_root: &Path,
+) -> anyhow::Result<Vec<tilo_relay_protocol::personal_devices::DirectPeer>> {
+    tilo_relay_protocol::personal_devices::prune_revoked_direct_peers(identity_root)
+        .context("prune the direct-peer list")
 }
 
 fn main() -> anyhow::Result<std::process::ExitCode> {
@@ -793,8 +771,8 @@ fn run() -> anyhow::Result<()> {
     match Cli::parse().command {
         BrokerCommand::Apply => apply(&read_request()?),
         BrokerCommand::PruneRevoked => {
-            for device in prune_revoked(Path::new(IDENTITY_ROOT))? {
-                println!("{}", hex::encode(device));
+            for peer in prune_revoked(Path::new(IDENTITY_ROOT))? {
+                println!("{}", hex::encode(peer.device));
             }
             Ok(())
         }
@@ -873,8 +851,8 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
 
     #[test]
-    fn only_this_machines_own_identities_prune_its_direct_peers() {
-        use tilo_relay_protocol::personal_devices as devices;
+    fn a_planted_certificate_and_a_strangers_revocation_prune_nothing() {
+        use tilo_relay_protocol::personal_devices::{self as devices, DirectPeer};
         use tilo_user_identity::{
             DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
         };
@@ -884,19 +862,37 @@ mod tests {
         let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths).unwrap();
         let root = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
         let stranger = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: device.verifying_key().to_bytes(),
-            device_label: "Board A".into(),
-            capabilities: DeviceCapabilities::primary(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
+        let certify = |by: &ed25519_dalek::SigningKey| {
+            let mut cert = DeviceCert {
+                user_public_key: by.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "Board A".into(),
+                capabilities: DeviceCapabilities::primary(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_device_cert(&mut cert, by).unwrap();
+            cert
         };
-        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &certify(&root))
+            .unwrap();
+        // The identity group can write the certificate directory: the
+        // stranger certifies this machine's key under its own root.
+        let stranger_key = stranger.verifying_key().to_bytes();
+        std::fs::create_dir_all(paths.device_cert_for_user(&stranger_key).parent().unwrap())
+            .unwrap();
+        tilo_user_identity::persist::write_device_cert(
+            &paths.device_cert_for_user(&stranger_key),
+            &certify(&stranger),
+        )
+        .unwrap();
+        let ours = |device: u8| DirectPeer {
+            identity: root.verifying_key().to_bytes(),
+            device: [device; 32],
+        };
         let peers = dir.path().join(devices::DIRECT_PEERS_FILE);
-        devices::remember_direct_peers(&peers, &[[1; 32], [2; 32]]).unwrap();
+        devices::remember_direct_peers(&peers, &[ours(1), ours(2)]).unwrap();
         let revoke = |by: &ed25519_dalek::SigningKey, device: [u8; 32]| {
             let mut entry = RevocationEntry {
                 user_public_key: by.verifying_key().to_bytes(),
@@ -908,12 +904,15 @@ mod tests {
             tilo_user_identity::sign_revocation_entry(&mut entry, by).unwrap();
             devices::record_revocation(dir.path(), &entry).unwrap();
         };
-        // A stranger's identity cannot prune this machine's peers.
         revoke(&stranger, [2; 32]);
         assert!(prune_revoked(dir.path()).unwrap().is_empty());
+        assert_eq!(
+            devices::read_direct_peers(&peers).unwrap(),
+            vec![ours(1), ours(2)]
+        );
         revoke(&root, [1; 32]);
-        assert_eq!(prune_revoked(dir.path()).unwrap(), vec![[1; 32]]);
-        assert_eq!(devices::read_direct_peers(&peers).unwrap(), vec![[2; 32]]);
+        assert_eq!(prune_revoked(dir.path()).unwrap(), vec![ours(1)]);
+        assert_eq!(devices::read_direct_peers(&peers).unwrap(), vec![ours(2)]);
     }
 
     #[test]
@@ -990,7 +989,10 @@ mod tests {
         remember_approved_device(dir.path(), &chosen, &report(&member)).unwrap();
         assert_eq!(
             tilo_relay_protocol::personal_devices::read_direct_peers(&peers).unwrap(),
-            vec![board]
+            vec![tilo_relay_protocol::personal_devices::DirectPeer {
+                identity: person.verifying_key().to_bytes(),
+                device: board,
+            }]
         );
     }
 

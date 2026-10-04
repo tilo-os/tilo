@@ -2475,7 +2475,7 @@ RUN systemctl enable greetd.service && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
     systemctl enable tilo-fs-start.timer fs-identity.path && \
-    systemctl enable tilo-direct-peer-prune.path && \
+    systemctl enable tilo-direct-peer-prune.path tilo-direct-peer-prune.service && \
     systemctl enable tilo-system-extension-dispatcher.socket && \
     systemctl enable tilo-system-extension-boot-pack-status.timer && \
     systemctl enable tilo-system-extension-boot-pack-stage.path && \

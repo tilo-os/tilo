@@ -660,13 +660,22 @@ fn copy_home_peers(
         })?;
     fs::create_dir_all(parent)?;
     tilo_files::native::atomic::write(&parent.join("home-peers.json"), &encoded)?;
+    // Both devices belong to the identity that certified this one; each
+    // records the other under it.
+    let peer = |device| tilo_relay_protocol::personal_devices::DirectPeer {
+        identity: local_cert.user_public_key,
+        device,
+    };
     tilo_relay_protocol::personal_devices::remember_direct_peers(
         &parent.join(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE),
-        &[local_cert.device_public_key],
+        &[peer(local_cert.device_public_key)],
     )?;
     let local_peers =
         source.with_file_name(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE);
-    tilo_relay_protocol::personal_devices::remember_direct_peers(&local_peers, &[joined_device])?;
+    tilo_relay_protocol::personal_devices::remember_direct_peers(
+        &local_peers,
+        &[peer(joined_device)],
+    )?;
     Ok(())
 }
 
@@ -1550,16 +1559,28 @@ mod tests {
                 .all(|entry| entry.relay_service_node_id != service),
             "a machine that cannot host is not recorded as a relay"
         );
-        let direct: Vec<String> = serde_json::from_slice(
-            &std::fs::read(dir.path().join("var/lib/tilo/personal-device-peers.json")).unwrap(),
+        let direct = tilo_relay_protocol::personal_devices::read_direct_peers(
+            &dir.path().join("var/lib/tilo/personal-device-peers.json"),
         )
         .unwrap();
-        assert_eq!(direct, vec![hex::encode(local_cert.device_public_key)]);
-        let local_direct: Vec<String> = serde_json::from_slice(
-            &std::fs::read(peers.with_file_name("personal-device-peers.json")).unwrap(),
+        assert_eq!(
+            direct,
+            vec![tilo_relay_protocol::personal_devices::DirectPeer {
+                identity: local_cert.user_public_key,
+                device: local_cert.device_public_key,
+            }]
+        );
+        let local_direct = tilo_relay_protocol::personal_devices::read_direct_peers(
+            &peers.with_file_name("personal-device-peers.json"),
         )
         .unwrap();
-        assert_eq!(local_direct, vec![hex::encode(cert.device_public_key)]);
+        assert_eq!(
+            local_direct,
+            vec![tilo_relay_protocol::personal_devices::DirectPeer {
+                identity: local_cert.user_public_key,
+                device: cert.device_public_key,
+            }]
+        );
         let rooms: Vec<String> = serde_json::from_slice(
             &std::fs::read(dir.path().join("var/lib/tilo/personal-rooms.json")).unwrap(),
         )

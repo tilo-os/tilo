@@ -919,7 +919,8 @@ fn personal_device_peer_addrs(
         (Some(person), Some(root)) => {
             tilo_relay_protocol::personal_devices::live_direct_peers(root, person, known)
         }
-        _ => tilo_relay_protocol::personal_devices::read_direct_peers(path),
+        _ => tilo_relay_protocol::personal_devices::read_direct_peers(path)
+            .map(|peers| peers.into_iter().map(|peer| peer.device).collect()),
     };
     let devices = match devices {
         Ok(devices) => devices,
@@ -3144,8 +3145,14 @@ impl ShellNetwork {
             return;
         };
         let local = *self.local_peer_id.as_bytes();
-        let direct =
-            personal_devices::read_direct_peers(&personal_device_peer_path()).unwrap_or_default();
+        let person = self.personal_continuity_user;
+        let direct: Vec<[u8; 32]> =
+            personal_devices::read_direct_peers(&personal_device_peer_path())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|peer| person.is_none_or(|person| peer.identity == person))
+                .map(|peer| peer.device)
+                .collect();
         let mut last_seen = std::collections::BTreeMap::<[u8; 32], u64>::new();
         if let Ok(fabric) = self.device_fabric.lock() {
             for (device, snapshot) in fabric.snapshots() {
@@ -6992,9 +6999,13 @@ mod tests {
         let path = dir.path().join("personal-device-peers.json");
         let own = [0x11; 32];
         let peer = [0x22; 32];
+        let identity = [0x33; 32];
         std::fs::write(
             &path,
-            serde_json::to_vec(&vec![hex::encode(own), hex::encode(peer)]).unwrap(),
+            tilo_relay_protocol::personal_devices::encode_direct_peers(&[own, peer].map(
+                |device| tilo_relay_protocol::personal_devices::DirectPeer { identity, device },
+            ))
+            .unwrap(),
         )
         .unwrap();
         let addrs = personal_device_peer_addrs(
@@ -7005,6 +7016,22 @@ mod tests {
         );
         assert_eq!(addrs.len(), 1);
         assert_eq!(*addrs[0].id.as_bytes(), peer);
+    }
+
+    /// A direct-peer list recording `devices` under `identity`.
+    fn direct_peers_of(identity: [u8; 32], devices: &[[u8; 32]]) -> Vec<u8> {
+        tilo_relay_protocol::personal_devices::encode_direct_peers(
+            &devices
+                .iter()
+                .map(
+                    |&device| tilo_relay_protocol::personal_devices::DirectPeer {
+                        identity,
+                        device,
+                    },
+                )
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
     }
 
     fn revocation_of(
@@ -7030,9 +7057,25 @@ mod tests {
         let user = root.verifying_key().to_bytes();
         let [own, recorded, held, live] = [0x11_u8, 0x22, 0x33, 0x44]
             .map(|seed| *iroh::SecretKey::from_bytes(&[seed; 32]).public().as_bytes());
+        let other = ed25519_dalek::SigningKey::from_bytes(&[0x53; 32])
+            .verifying_key()
+            .to_bytes();
+        let mut entries = [own, recorded, held, live]
+            .map(|device| tilo_relay_protocol::personal_devices::DirectPeer {
+                identity: user,
+                device,
+            })
+            .to_vec();
+        // A device recorded under another identity is not this person's
+        // direct peer.
+        let elsewhere = *iroh::SecretKey::from_bytes(&[0x55; 32]).public().as_bytes();
+        entries.push(tilo_relay_protocol::personal_devices::DirectPeer {
+            identity: other,
+            device: elsewhere,
+        });
         std::fs::write(
             &path,
-            serde_json::to_vec(&[own, recorded, held, live].map(hex::encode)).unwrap(),
+            tilo_relay_protocol::personal_devices::encode_direct_peers(&entries).unwrap(),
         )
         .unwrap();
         // One revocation recorded beside the list, one only held in memory.
@@ -7092,14 +7135,20 @@ mod tests {
         let peers = dir.path().join("home-peers.json");
         std::fs::write(&peers, b"[]").unwrap();
         let device = [0x22_u8; 32];
+        let user = [0x44_u8; 32];
         std::fs::write(
             dir.path().join("personal-device-peers.json"),
-            serde_json::to_vec(&vec![hex::encode(device)]).unwrap(),
+            tilo_relay_protocol::personal_devices::encode_direct_peers(&[
+                tilo_relay_protocol::personal_devices::DirectPeer {
+                    identity: user,
+                    device,
+                },
+            ])
+            .unwrap(),
         )
         .unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_HOME_PEERS_PATH", &peers);
-        let user = [0x44_u8; 32];
         let (mut net, mut commands) = personal_continuity_network_for_test(user);
         net.continuity_policy_override = Some(test_continuity_policy(false, false, false));
         let id = crate::shell::personal_continuity::DeviceId::new(hex::encode(device)).unwrap();
@@ -7138,7 +7187,7 @@ mod tests {
         let device = [0x22_u8; 32];
         std::fs::write(
             dir.path().join("personal-device-peers.json"),
-            serde_json::to_vec(&vec![hex::encode(device)]).unwrap(),
+            direct_peers_of([0x44; 32], &[device]),
         )
         .unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -7243,7 +7292,7 @@ mod tests {
         let device = [0x22_u8; 32];
         std::fs::write(
             dir.path().join("personal-device-peers.json"),
-            serde_json::to_vec(&vec![hex::encode(device)]).unwrap(),
+            direct_peers_of([0x44; 32], &[device]),
         )
         .unwrap();
         let absent = "11111111-1111-4111-8111-111111111111";
@@ -7300,7 +7349,7 @@ mod tests {
         let device = [0x22_u8; 32];
         std::fs::write(
             dir.path().join("personal-device-peers.json"),
-            serde_json::to_vec(&vec![hex::encode(device)]).unwrap(),
+            direct_peers_of([0x44; 32], &[device]),
         )
         .unwrap();
         let room = "11111111-1111-4111-8111-111111111111";

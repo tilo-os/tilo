@@ -1502,13 +1502,17 @@ mod unix {
         if let Err(error) = personal_devices::record_revocation(identity_root, entry) {
             return PeerPruning::Failed(error.to_string());
         }
-        match personal_devices::prune_revoked_direct_peers(identity_root, &entry.user_public_key) {
+        let revoked = personal_devices::DirectPeer {
+            identity: entry.user_public_key,
+            device: entry.revoked_device_public_key,
+        };
+        match personal_devices::prune_revoked_direct_peers(identity_root) {
             Ok(_)
                 if !personal_devices::read_direct_peers(
                     &identity_root.join(personal_devices::DIRECT_PEERS_FILE),
                 )
                 .unwrap_or_default()
-                .contains(&entry.revoked_device_public_key) =>
+                .contains(&revoked) =>
             {
                 PeerPruning::Removed
             }

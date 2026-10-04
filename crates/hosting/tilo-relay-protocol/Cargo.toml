@@ -36,6 +36,11 @@ blake3.workspace = true
 hex.workspace = true
 uuid.workspace = true
 
+# Reading the shared revocation directory without following symlinks or
+# blocking on FIFOs.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 # Browser peers mint ids from JavaScript's entropy source.
 [target.'cfg(target_family = "wasm")'.dependencies]
 uuid = { workspace = true, features = ["js"] }

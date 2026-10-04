@@ -5,11 +5,13 @@ ConditionKernelCommandLine=!tilo.install
 
 [Path]
 # A session or `tilo-identity revoke` drops a root-signed revocation here; the
-# service removes the device from personal-device-peers.json. The directory is
-# writable by the identity group, so the service trusts only revocations by an
-# identity this machine holds a valid certificate of.
+# service removes the device from personal-device-peers.json, but only an
+# entry recorded under the identity that signed the revocation. Entries stay
+# in the directory, so the trigger is a change, never "not empty" (which would
+# start the service again after every run). The boot run is the service's own
+# multi-user.target hook.
 PathChanged=/var/lib/tilo/device-revocations
-DirectoryNotEmpty=/var/lib/tilo/device-revocations
+PathModified=/var/lib/tilo/device-revocations
 Unit=tilo-direct-peer-prune.service
 
 [Install]

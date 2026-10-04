@@ -16258,6 +16258,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "hex",
  "iroh-base",
+ "libc",
  "postcard",
  "serde",
  "serde_bytes",

@@ -527,13 +527,16 @@ struct CheckedPersonalProjection {
 }
 
 /// The person's other ordinary devices the new device dials directly: the
-/// approver and every other certified, unrevoked member of the fleet. Home
-/// servers are reached through the home-peer registry instead.
+/// approver and every other certified, unrevoked member of `identity`'s
+/// fleet. Home servers are reached through the home-peer registry instead.
+/// Each entry records `identity`, the root that certified the new device.
 fn direct_peers_from_fleet(
     fleet: &[u8],
+    identity: [u8; 32],
     enrolled_device: [u8; 32],
     approver_device: Option<[u8; 32]>,
-) -> anyhow::Result<Vec<[u8; 32]>> {
+) -> anyhow::Result<Vec<tilo_relay_protocol::personal_devices::DirectPeer>> {
+    use tilo_relay_protocol::personal_devices::DirectPeer;
     let fleet: FleetProjection = serde_json::from_slice(fleet)?;
     let mut revocations = RevocationList::new();
     for entry in fleet.revocations {
@@ -541,17 +544,27 @@ fn direct_peers_from_fleet(
             .insert(entry)
             .context("approval returned an invalid revocation")?;
     }
-    if approver_device.is_some_and(|device| revocations.is_revoked(&device)) {
+    let revoked = |device: &[u8; 32]| revocations.revocation_of(&identity, device).is_some();
+    if approver_device.is_some_and(|device| revoked(&device)) {
         bail!("the approving device is revoked in the fleet it sent");
     }
-    let mut peers: Vec<[u8; 32]> = approver_device.into_iter().collect();
+    let mut peers: Vec<DirectPeer> = approver_device
+        .into_iter()
+        .map(|device| DirectPeer { identity, device })
+        .collect();
     for cert in fleet.certificates {
-        if cert.device_public_key != enrolled_device
+        let peer = DirectPeer {
+            identity,
+            device: cert.device_public_key,
+        };
+        if cert.user_public_key == identity
+            && cert.device_public_key != enrolled_device
             && !cert.capabilities.can_act_as_host
-            && !revocations.is_revoked(&cert.device_public_key)
-            && !peers.contains(&cert.device_public_key)
+            && verify_device_cert(&cert).is_ok()
+            && !revoked(&cert.device_public_key)
+            && !peers.contains(&peer)
         {
-            peers.push(cert.device_public_key);
+            peers.push(peer);
         }
     }
     peers.truncate(tilo_relay_protocol::personal_devices::MAX_DIRECT_PEERS);
@@ -652,8 +665,12 @@ fn personal_links(
         .fleet_json
         .as_ref()
         .context("approval omitted the fleet")?;
-    let direct_peers =
-        direct_peers_from_fleet(fleet, payload.cert.device_public_key, approver_device)?;
+    let direct_peers = direct_peers_from_fleet(
+        fleet,
+        payload.cert.user_public_key,
+        payload.cert.device_public_key,
+        approver_device,
+    )?;
     let rooms = payload
         .personal_rooms_json
         .as_deref()
@@ -662,7 +679,7 @@ fn personal_links(
         .context("approval returned an invalid room list")?
         .unwrap_or_default();
     Ok((
-        serde_json::to_vec_pretty(&direct_peers.iter().map(hex::encode).collect::<Vec<_>>())?,
+        tilo_relay_protocol::personal_devices::encode_direct_peers(&direct_peers)?,
         serde_json::to_vec_pretty(&rooms)?,
     ))
 }
@@ -2495,7 +2512,10 @@ fn remember_approved_device(identity_root: &std::path::Path, cert: &DeviceCert) 
     let path = identity_root.join(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE);
     match tilo_relay_protocol::personal_devices::remember_direct_peers(
         &path,
-        &[cert.device_public_key],
+        &[tilo_relay_protocol::personal_devices::DirectPeer {
+            identity: cert.user_public_key,
+            device: cert.device_public_key,
+        }],
     ) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => eprintln!(
@@ -3786,7 +3806,10 @@ mod tests {
                 &new_root.path().join(personal_devices::DIRECT_PEERS_FILE)
             )
             .unwrap(),
-            vec![issuer.verifying_key().to_bytes()]
+            vec![personal_devices::DirectPeer {
+                identity: root.verifying_key().to_bytes(),
+                device: issuer.verifying_key().to_bytes(),
+            }]
         );
         assert_eq!(
             personal_devices::read_rooms(&new_root.path().join(personal_devices::ROOMS_FILE))
@@ -3800,7 +3823,10 @@ mod tests {
                     .join(personal_devices::DIRECT_PEERS_FILE)
             )
             .unwrap(),
-            vec![new_device.verifying_key().to_bytes()]
+            vec![personal_devices::DirectPeer {
+                identity: root.verifying_key().to_bytes(),
+                device: new_device.verifying_key().to_bytes(),
+            }]
         );
     }
 
