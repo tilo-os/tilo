@@ -22,6 +22,98 @@ const PROCESS_TEST: &str =
 const PROCESS_ROOT: &str = "TILO_STANDALONE_TEST_ROOT";
 const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
 
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the broker fixture owns its authority and invocation registry for the whole scenario"
+)]
+fn runtime_invocation_ownership_survives_device_normalization() {
+    use tilo_action_broker::{
+        collab_broker::CrdtRoute,
+        collab_broker_capnp::{
+            CapnpBrokerState, PublishedAction, PublishedInput, PublishedSurface,
+        },
+        test_support::{Workspace, WorkspaceId, WorkspaceTree},
+    };
+    use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
+
+    let mut workspace = Workspace::new(WorkspaceId(41), "Execution isolation");
+    workspace.set_owner("a1".repeat(32));
+    let room = workspace.room.to_string();
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.workspaces.push(workspace);
+    let membership = tree.shared();
+    let broker =
+        CapnpBrokerState::test_broker_with_authority(membership.authority(), membership.services());
+    broker.replace_published_surfaces_for_test(vec![PublishedSurface {
+        peer_id: 7,
+        app_id: "so.tilo.files".into(),
+        route: CrdtRoute::app("so.tilo.files", room.clone()),
+        actions: vec![PublishedAction {
+            resource: "files.entry:/tmp/synthetic-report".into(),
+            action: "refresh".into(),
+            resource_kind: "files.entry".into(),
+            resource_label: "Synthetic report".into(),
+            action_label: "Refresh".into(),
+            description: None,
+            operation_kind: tilo_actions::OperationKind::Effect,
+            params: Vec::new(),
+            contract: tilo_actions::ActionContract {
+                execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                result: tilo_actions::ResultSpec::Job,
+                ..Default::default()
+            },
+            input: PublishedInput::None,
+            view: None,
+        }],
+        live: true,
+    }]);
+    let mut invocations = broker.capture_invocations_for_test(7);
+    let host = RuntimeActionHost(broker);
+    let owner = Caller::local_person("a1".repeat(32))
+        .in_room(room)
+        .in_new_execution();
+    let other = owner.clone().in_new_execution();
+    let id = tilo_actions::InvocationId::new();
+    let request = InvokeRequest {
+        invocation: id,
+        target: RemoteActionTarget {
+            provider: "7".into(),
+            address: tilo_actions::ActionAddress::new(
+                "files.entry:/tmp/synthetic-report",
+                "refresh",
+            ),
+        },
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+    };
+    let PendingPoll::Ready(Ok(receipt)) = host.invoke(&owner, request.clone()).poll_ready() else {
+        panic!("the synthetic app must accept the invocation");
+    };
+    assert!(invocations.try_recv().is_ok());
+    assert!(host.observe(&owner, &id).is_some());
+    assert!(host.observe(&other, &id).is_none());
+    assert_eq!(
+        host.cancel(&other, &id),
+        Err(ActionHostError::UnknownInvocation)
+    );
+    assert!(matches!(
+        host.invoke(&owner, request.clone()).poll_ready(),
+        PendingPoll::Ready(Ok(retry)) if retry == receipt
+    ));
+    assert!(matches!(
+        host.invoke(&other, request).poll_ready(),
+        PendingPoll::Ready(Err(ActionHostError::InvocationConflict))
+    ));
+    assert!(
+        invocations.try_recv().is_err(),
+        "retries must not dispatch again"
+    );
+    assert_eq!(host.cancel(&owner, &id), Ok(()));
+}
+
 /// In the parent, runs the test at path `test` again in a child process
 /// whose profile environment is private, and returns `None`; in that child,
 /// returns the profile to serve.

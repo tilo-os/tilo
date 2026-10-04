@@ -14,6 +14,8 @@ pub struct McpServer<H> {
     host: H,
     room: String,
     actor: String,
+    /// One transport-issued execution scope, independent of history labels.
+    caller: Caller,
     /// The agent run every invocation of this connection is attributed to.
     run: Option<tilo_actions::ActionGroup>,
     /// Pixel fallback, when the host runs beside a compositor.
@@ -284,10 +286,14 @@ fn tool_result(result: Result<Value, String>) -> Value {
 impl<H: ActionHost + Send + Sync> McpServer<H> {
     #[must_use]
     pub fn new(host: H, room: String, actor: String) -> Self {
+        let caller = Caller::local_person(actor.clone())
+            .in_room(room.clone())
+            .in_new_execution();
         Self {
             host,
             room,
             actor,
+            caller,
             run: None,
             computer: None,
             detail: Detail::Compact,
@@ -827,7 +833,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         }
         let run = self.run.as_ref().map(|run| run.id.clone());
         Ok(
-            json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"run":run}}},"serverInfo":{"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")}}),
+            json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"run":run,"execution_id":self.caller.execution_id()}}},"serverInfo":{"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")}}),
         )
     }
     /// One catalogue page from the action host, as this bridge's caller.
@@ -1965,7 +1971,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     }
     /// The fixed profile actor, confined to the profile's workspace.
     fn caller(&self) -> Caller {
-        Caller::local_person(self.actor.clone()).in_room(self.room.clone())
+        self.caller.clone()
     }
     fn status(&self, id: tilo_actions::InvocationId) -> Result<Value, String> {
         self.host()

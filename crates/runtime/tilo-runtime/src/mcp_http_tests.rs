@@ -28,6 +28,7 @@ mod schema_rows {
 #[derive(Clone, Default)]
 struct StubHost {
     invoked: Arc<StdMutex<Vec<InvokeRequest>>>,
+    callers: Arc<StdMutex<Vec<Caller>>>,
     confirmation: tilo_actions::ConfirmationPolicy,
     /// Observations a started invocation stays accepted for before it
     /// succeeds.
@@ -91,7 +92,7 @@ impl ActionHost for StubHost {
 
     fn invoke(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let invocation = request.invocation;
@@ -101,6 +102,7 @@ impl ActionHost for StubHost {
         {
             return Pending::ready(Err(ActionHostError::ConfirmationRequired));
         }
+        self.callers.lock().unwrap().push(caller.clone());
         self.invoked.lock().unwrap().push(request);
         Pending::ready(Ok(InvocationState::new(
             invocation,
@@ -330,6 +332,7 @@ fn sessions_are_created_by_initialize_and_required_after() {
 fn each_session_is_its_own_attributed_agent_run() {
     let host = StubHost::default();
     let invoked = Arc::clone(&host.invoked);
+    let callers = Arc::clone(&host.callers);
     let endpoint = endpoint(host, None);
     run(async {
         let first = open(&endpoint, "Researcher").await;
@@ -337,6 +340,7 @@ fn each_session_is_its_own_attributed_agent_run() {
         assert_ne!(first, second);
         invoke(&endpoint, &first).await;
         invoke(&endpoint, &second).await;
+        invoke(&endpoint, &first).await;
     });
     let groups: Vec<_> = invoked
         .lock()
@@ -344,11 +348,20 @@ fn each_session_is_its_own_attributed_agent_run() {
         .iter()
         .map(|request| request.context.clone().unwrap().group.unwrap())
         .collect();
-    assert_eq!(groups.len(), 2);
+    assert_eq!(groups.len(), 3);
     assert_ne!(groups[0].id, groups[1].id);
+    assert_eq!(groups[0], groups[2]);
     assert!(groups.iter().all(|group| group.kind == "agent-run"));
     assert_eq!(groups[0].label, "Researcher");
     assert_eq!(groups[1].label, "Writer");
+    let executions: Vec<_> = callers
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|caller| caller.execution_id().expect("admitted execution"))
+        .collect();
+    assert_ne!(executions[0], executions[1]);
+    assert_eq!(executions[0], executions[2]);
 }
 
 /// A stdio connection (one `--connect` client, as `.cursor/mcp.json` runs)
@@ -1288,5 +1301,60 @@ fn opening_a_host_application_answers_without_waiting_for_a_peer() {
             "{reply}"
         );
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    });
+}
+
+#[test]
+fn continued_history_and_client_names_cannot_select_execution_identity() {
+    let host = StubHost::default();
+    let callers = Arc::clone(&host.callers);
+    let invoked = Arc::clone(&host.invoked);
+    run(async {
+        let history = "mcp:11111111-1111-4111-8111-111111111111";
+        let mut executions: Vec<String> = Vec::new();
+        for _ in 0..2 {
+            let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+            let forged_execution = executions
+                .first()
+                .map_or("11111111-1111-4111-8111-111111111111", String::as_str);
+            let init = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                "protocolVersion":"2025-06-18","clientInfo":{"name":"Same name","version":"1"},
+                "capabilities":{"experimental":{"so.tilo.mcp":{"run":history,"execution_id":forged_execution}}}
+            }});
+            let first = server.handle(init.clone()).await.unwrap();
+            let again = server.handle(init).await.unwrap();
+            let execution = first
+                .pointer("/result/capabilities/experimental/so.tilo.mcp/execution_id")
+                .and_then(Value::as_str)
+                .expect("host-issued execution id");
+            assert_eq!(
+                again
+                    .pointer("/result/capabilities/experimental/so.tilo.mcp/execution_id")
+                    .and_then(Value::as_str),
+                Some(execution)
+            );
+            assert_ne!(execution, history);
+            assert_ne!(execution, forged_execution);
+            executions.push(execution.to_owned());
+            tool(
+                &mut server,
+                "tilo_invoke",
+                json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY}),
+            )
+            .await;
+        }
+        assert_ne!(executions[0], executions[1]);
+        let callers = callers.lock().unwrap().clone();
+        assert_eq!(callers[0].principal(), callers[1].principal());
+        assert_ne!(callers[0].execution_id(), callers[1].execution_id());
+        for (caller, execution) in callers.iter().zip(executions) {
+            assert_eq!(caller.execution_id().unwrap().to_string(), execution);
+        }
+        for request in invoked.lock().unwrap().iter() {
+            assert_eq!(
+                request.context.as_ref().unwrap().group.as_ref().unwrap().id,
+                history
+            );
+        }
     });
 }
