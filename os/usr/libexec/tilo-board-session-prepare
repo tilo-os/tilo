@@ -104,12 +104,24 @@ wait_network() {
 
 # A board has no battery-backed clock and boots at the epoch or the image's
 # build date. Relay TLS and the device certificate check both fail on that
-# clock, so the session waits for chrony's first synchronisation.
+# clock, so the session waits for chrony's first synchronisation while chrony
+# has a time source to synchronise to. A board on a network with no time
+# source (no internet, no local NTP) starts with its own clock after a short
+# grace instead: its linked devices on the same network still reach it.
 wait_clock() {
-  local n=0 limit=${TILO_BOARD_CLOCK_WAIT_SECS:-180}
+  local n=0 limit=${TILO_BOARD_CLOCK_WAIT_SECS:-180} grace=${TILO_BOARD_CLOCK_SOURCELESS_SECS:-10} sourceless=0
   command -v chronyc >/dev/null 2>&1 || return 0
   while [ "$n" -lt "$limit" ]; do
     chronyc -n waitsync 1 >/dev/null 2>&1 && return 0
+    if [ -n "$(chronyc -n -c sources 2>/dev/null)" ]; then
+      sourceless=0
+    else
+      sourceless=$((sourceless + 1))
+      if [ "$sourceless" -ge "$grace" ]; then
+        printf '%s\n' 'board session: no time source is reachable; starting with the local clock' >&2
+        return 0
+      fi
+    fi
     n=$((n + 1))
     sleep 1
   done

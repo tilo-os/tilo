@@ -236,6 +236,33 @@ else
   bad 'a desktop was not judged by greetd'
 fi
 
+# --- clock wait -----------------------------------------------------------
+# chronyc fake: CHRONY_SYNCED says whether waitsync succeeds, CHRONY_SOURCES
+# whether `sources` lists any.
+cat >"$bin/chronyc" <<'EOF'
+#!/bin/sh
+case "$*" in
+  *waitsync*) [ "${CHRONY_SYNCED:-0}" = 1 ] ;;
+  *sources*) [ "${CHRONY_SOURCES:-0}" = 1 ] && echo '^,?,192.0.2.1,2,6,377,1,0,0,0'; exit 0 ;;
+esac
+EOF
+chmod +x "$bin/chronyc"
+clock() {
+  env -i PATH="$bin:/usr/bin:/bin" TILO_BOARD_CLOCK_WAIT_SECS=4 TILO_BOARD_CLOCK_SOURCELESS_SECS=2 "$@" \
+    "$libexec/tilo-board-session-prepare" clock 2>"$work/clock.err"
+}
+if clock CHRONY_SYNCED=1; then ok 'a synchronised clock starts the session'; else bad 'a synchronised clock held the session back'; fi
+if clock CHRONY_SOURCES=1; then
+  bad 'an unsynchronised clock with a reachable time source started the session'
+else
+  ok 'the session waits while a time source can still set the clock'
+fi
+if clock && grep -q 'no time source' "$work/clock.err"; then
+  ok 'a board with no reachable time source starts with its own clock'
+else
+  bad 'a board with no time source never started its session'
+fi
+
 # --- unit and image wiring -----------------------------------------------
 for step in 'user-manager %i' network clock; do
   grep -Fqx "ExecStartPre=/usr/libexec/tilo-board-session-prepare $step" "$unit" \
