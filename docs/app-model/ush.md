@@ -197,6 +197,19 @@ these hold (`crates/runtime/ush/src/host.rs`):
    `{"result":"host-not-allowed",…}`; a shell-hosted Terminal tab then raises
    the shell's permission prompt, which records the answer there.
 
+### Environments on a relay
+
+`{"kind":"environment","record":…,"location":{"kind":"relay","relay":<endpoint id>}}`
+runs the environment on one of the person's relays: those this device
+enrolled as home peers for its user's personal workspace
+(`home-peers.json` beside the identity keys; `{"op":"list-relays"}` lists
+them). The supervisor still hands back a pty, and runs
+`tilo-relay-environment` on its other end to carry it to the session there
+(`crates/runtime/ush/src/relay.rs`). The answer's `relay_session` names the
+session, which outlives the tab; a later request with
+`"relay_session":<hex>` re-attaches to it. Tools the relay builds for the
+session are added to the record as `pkg install` here would.
+
 ### Environments
 
 `{"op":"list-environments"}`, `{"op":"create-environment","name":…}` and
