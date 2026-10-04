@@ -227,6 +227,21 @@ impl BlockingClient {
         )
     }
 
+    /// The person's app repositories, as `app repo list --json` prints them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host service cannot read them.
+    pub fn repositories(&self) -> Result<String, String> {
+        let request = self.client.repositories_request();
+        text_result(
+            self.wait(request.send().promise)?
+                .get()
+                .map_err(|e| e.to_string())?
+                .get_json(),
+        )
+    }
+
     /// Add or remove a user Flatpak remote through the host service.
     ///
     /// # Errors

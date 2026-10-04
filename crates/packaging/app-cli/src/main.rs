@@ -78,7 +78,12 @@ enum Cmd {
 
 #[derive(Debug, Subcommand)]
 enum RepoCmd {
-    List,
+    List {
+        /// Print the repositories as JSON: the list the App Store reads
+        /// through the app host.
+        #[arg(long)]
+        json: bool,
+    },
     Add {
         name: String,
         url: String,
@@ -804,7 +809,19 @@ fn repo(cmd: RepoCmd) -> ExitCode {
     use app_cli::config;
     let mut registries = config::load_registries();
     let confirmation = match cmd {
-        RepoCmd::List => {
+        RepoCmd::List { json: true } => {
+            return match serde_json::to_string(&registries) {
+                Ok(value) => {
+                    println!("{value}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("app: could not encode the repositories: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        RepoCmd::List { json: false } => {
             for registry in registries.registries {
                 println!(
                     "{}  {}  ({}, {}, key pinned)",

@@ -128,7 +128,11 @@ record="$("$vm" ssh "bash /tmp/tilo-join.sh $(printf '%q' "$TILO_PASS"); rm -f /
 note "joined record $record"
 "$vm" ssh "test ! -e $identity_dir/primary.json && test ! -e /var/lib/tilo/user-identity/privkey.bin" \
   || die "joining left a root identity on the device"
-cert_before="$("$vm" ssh 'sha256sum /var/lib/tilo/device/cert.bin')"
+# The device certificate is root's to read.
+device_cert_digest() {
+  "$vm" ssh "printf '%s\\n' $(printf '%q' "$TILO_PASS") | sudo -S -p '' sha256sum /var/lib/tilo/device/cert.bin"
+}
+cert_before="$(device_cert_digest)" || die "the joined device's certificate cannot be read"
 "$vm" ssh "ls -la $identity_dir /var/lib/tilo/device /var/lib/tilo/device-private /var/lib/tilo/user-identity" \
   > "$out/joined-layout.txt" 2>&1 || true
 
@@ -157,7 +161,7 @@ if "$vm" ssh 'journalctl -b --no-pager -o cat _UID=$(id -u)' \
 fi
 "$vm" ssh "test ! -e $identity_dir/primary.json && test ! -e /var/lib/tilo/user-identity/privkey.bin" \
   || die "startup minted a root identity on a joined device"
-[ "$("$vm" ssh 'sha256sum /var/lib/tilo/device/cert.bin')" = "$cert_before" ] \
+[ "$(device_cert_digest)" = "$cert_before" ] \
   || die "startup replaced the joined device's certificate"
 # An authored app starts on the joined device: its launch brokers the joined
 # identity, which holds no key of its own, and only reads the identity store.
