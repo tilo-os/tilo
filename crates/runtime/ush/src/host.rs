@@ -43,7 +43,62 @@ pub struct HostPolicy {
     pub capabilities: Vec<CapOverride>,
 }
 
+/// This login session's allows: `Expiry::EndOfSession` and `Expiry::AfterUse`
+/// grants, which are never written to disk. They live in the supervisor,
+/// which the user's service manager runs for the login session, so they are
+/// gone at logout.
+static SESSION_GRANTS: std::sync::Mutex<Vec<CapOverride>> = std::sync::Mutex::new(Vec::new());
+
 impl HostPolicy {
+    /// Every decision in force: those kept on disk and this session's.
+    pub fn in_force(store: &crate::store::Store) -> Self {
+        let mut policy = Self::load(&Self::path(store));
+        if let Ok(session) = SESSION_GRANTS.lock() {
+            policy.capabilities.extend(session.iter().cloned());
+        }
+        policy
+    }
+
+    /// Record the person's allow for `app_id` with its lifetime, from the
+    /// shared vocabulary: "Always" (`Never`, or a deadline) on disk; "This
+    /// session" (`EndOfSession`) and "Allow" (`AfterUse`) in this session
+    /// only.
+    ///
+    /// # Errors
+    /// Returns the write error for a decision kept on disk.
+    pub fn record_allow(
+        store: &crate::store::Store,
+        app_id: &str,
+        expiry: collab_types::caps::Expiry,
+    ) -> std::io::Result<()> {
+        let mut grant = Self::default();
+        let id = grant.allow_host_shell(app_id);
+        let Some(mut cap) = grant.capabilities.pop() else {
+            return Ok(());
+        };
+        cap.expiry = expiry;
+        if expiry.persists_across_restart() {
+            let path = Self::path(store);
+            let mut policy = Self::load(&path);
+            policy.capabilities.retain(|c| c.id != id);
+            policy.capabilities.push(cap);
+            return policy.save(&path);
+        }
+        if let Ok(mut session) = SESSION_GRANTS.lock() {
+            session.retain(|c| c.id != id);
+            session.push(cap);
+        }
+        Ok(())
+    }
+
+    /// A one-time allow is spent by the session it let open.
+    pub fn spend_one_time(app_id: &str) {
+        let id = format!("ush-host-shell-{app_id}");
+        if let Ok(mut session) = SESSION_GRANTS.lock() {
+            session.retain(|c| !(c.id == id && c.expiry == collab_types::caps::Expiry::AfterUse));
+        }
+    }
+
     /// Where the decisions are kept for `store`.
     pub fn path(store: &crate::store::Store) -> PathBuf {
         store.root().join("host-shell.json")
