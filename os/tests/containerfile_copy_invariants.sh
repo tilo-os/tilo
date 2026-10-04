@@ -91,10 +91,11 @@ containerfile="$repo/os/Containerfile"
 # The release gate's greetd session-context check ships beside the other
 # booted-guest checks in /usr/libexec/tilo.
 # The release gate's input hotplug check ships beside them.
+# The boot units gate ships with the rollback units whose confirmation it gates.
 # The WPE engine overlay and /usr/bin/browser are deliberate removals: the
 # Browser is a tapp in the app store and its Chromium engine a signed runtime
 # bundle under /usr/lib/tilo-runtime, both already copied.
-expected_contract=b7405b0f71e226da905b34819a678fa341348f5c41f557471e6fda0b16d1493c
+expected_contract=e7b91909c30fabf89164e2ad1c653bd56bab857090ab855890daa3f73cc6522f
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
