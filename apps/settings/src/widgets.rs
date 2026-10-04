@@ -115,20 +115,14 @@ fn stack(items: Vec<El>, gap: f32) -> Column {
 /// A category is a real page, not merely the selected row in a navigation
 /// list. Keeping its identity in plain type (rather than another raised card)
 /// establishes where the person is while avoiding the old card-within-page
-/// treatment. The small "Settings" eyebrow also makes the shared shell's
-/// arrow unambiguous on a narrow content screen: it returns to the Settings
-/// list, not to a previous app/window.
+/// treatment. The window already says it is Settings, so the heading carries
+/// no eyebrow label repeating it.
 pub fn page_heading(title: &str, subtitle: &str) -> El {
     Box::new(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(spacing().s1)
-            .push(Box::new(
-                Text::new(&crate::i18n::t("settings-page-eyebrow"))
-                    .with_scaled_size(12.0)
-                    .dimmed(),
-            ))
             .push(Box::new(Text::new(title).with_scaled_size(24.0)))
             .push(Box::new(
                 Text::new(subtitle).with_scaled_size(13.0).dimmed(),
@@ -200,6 +194,40 @@ pub fn setting_row_described(label: &str, description: &str, control: El) -> El 
 /// A dim helper-text line, for captions and "best-effort" notes.
 pub fn caption(text: &str) -> El {
     Box::new(Text::new(text).with_scaled_size(12.0).dimmed())
+}
+
+/// A reading the pane could not make, said as a failure. `message` is the
+/// whole sentence ("Can't read network status: …"); it replaces the value
+/// the pane would otherwise show, so a failed read never looks like a state
+/// of the device ("Not connected", "Off", an empty list). Screen readers
+/// announce it when it appears.
+pub fn error_caption(message: &str) -> El {
+    Box::new(
+        Text::new(message)
+            .with_scaled_size(12.0)
+            .with_weight(ui::text_render::TextWeight::Semibold)
+            .with_live(ui::a11y::Politeness::Polite),
+    )
+}
+
+/// A label whose value could not be read: the label keeps its place in the
+/// card and the failure stands where the value would be.
+pub fn error_row(label: &str, message: &str) -> El {
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing().s1)
+            .push(setting_row(
+                label,
+                Box::new(
+                    Text::new(&crate::i18n::t("settings-read-error"))
+                        .with_size(13.0)
+                        .with_weight(ui::text_render::TextWeight::Semibold),
+                ),
+            ))
+            .push(error_caption(message)),
+    )
 }
 
 /// Default width (logical px) a compact right-aligned control (dropdown,
@@ -361,4 +389,22 @@ pub fn hero(icon: Icon, title: &str, subtitle: &str) -> El {
 /// Horizontal spacing inside a control row.
 pub fn hgap(px: f32) -> El {
     Box::new(Container::new().with_no_padding().with_size(px, 1.0))
+}
+
+/// Every name and value a screen reader would announce in `widget`'s tree,
+/// in tree order: what a pane says, for tests to read back.
+#[cfg(test)]
+pub fn announced_text(widget: &dyn Widget) -> Vec<String> {
+    fn walk(widget: &dyn Widget, out: &mut Vec<String>) {
+        if let Some(node) = widget.accessibility() {
+            out.extend(node.name);
+            out.extend(node.value);
+        }
+        for child in widget.children() {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(widget, &mut out);
+    out
 }
