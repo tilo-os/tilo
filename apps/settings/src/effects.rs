@@ -205,7 +205,7 @@ pub enum NavigationEffect {
 }
 
 fn answer_navigation(
-    app: &mut SettingsApp,
+    app: &SettingsApp,
     effect: NavigationEffect,
     _cx: &mut EffectCx<Settings, SettingsApp>,
 ) -> EffectAnswer {
@@ -213,7 +213,7 @@ fn answer_navigation(
         NavigationEffect::OpenPane { pane } => {
             let category = Category::from_slug(&pane)
                 .ok_or_else(|| format!("Settings has no pane `{pane}`"))?;
-            app.select(category);
+            app.request_pane(category);
             Ok(ui::framework::Effected::done())
         }
     }
