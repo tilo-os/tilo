@@ -152,6 +152,8 @@ pub enum Icon {
     Type,
     /// An eyedropper that picks a colour. Lucide `pipette`.
     Pipette,
+    /// An eraser. Lucide `eraser`.
+    Eraser,
     /// Hidden. Lucide `eye-off`.
     EyeOff,
     /// Locked. Lucide `lock`.
@@ -773,6 +775,12 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
                 "m18 9 .4.4a1 1 0 1 1-3 3l-3.8-3.8a1 1 0 1 1 3-3l.4.4 3.4-3.4a1 1 0 1 1 3 3z",
             ),
             path_from_d("m2 22 .414-.414"),
+        ],
+        Icon::Eraser => vec![
+            path_from_d(
+                "M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21",
+            ),
+            path_from_d("m5.082 11.09 8.828 8.828"),
         ],
         Icon::EyeOff => vec![
             path_from_d(
@@ -1452,6 +1460,7 @@ mod tests {
                 Icon::Slash,
                 Icon::Type,
                 Icon::Pipette,
+                Icon::Eraser,
                 Icon::EyeOff,
                 Icon::Lock,
                 Icon::LockOpen,

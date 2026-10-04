@@ -97,6 +97,28 @@ pub(crate) struct Shared {
     peer_windows: Rc<RefCell<HashMap<TabId, PeerWindow>>>,
     /// Legacy windows asked for and not opened yet, by key.
     pending_peer_windows: Rc<RefCell<HashMap<String, PeerWindow>>>,
+    /// Legacy windows the person closed while they still streamed: not
+    /// opened again, and reported once so the page closes them at their
+    /// source.
+    dismissed_peer_windows: Rc<RefCell<std::collections::HashSet<String>>>,
+    /// Of those, the ones not reported yet.
+    newly_dismissed: Rc<RefCell<Vec<String>>>,
+    /// The legacy applications the node beside the host runs, which the
+    /// person can open there and see here as legacy windows.
+    node_apps: Rc<RefCell<Vec<NodeApp>>>,
+    /// Node applications the person asked to open, by id, for the page to
+    /// ask the node.
+    node_app_requests: Rc<RefCell<Vec<String>>>,
+}
+
+/// Launch name of a legacy application the node runs.
+pub(crate) const NODE_APP_LAUNCH: &str = "tilo.node-app:";
+
+/// A legacy application on the node: its launch id there and its name.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct NodeApp {
+    pub id: String,
+    pub title: String,
 }
 
 /// Launch name of the window showing the legacy window `key`.
@@ -169,7 +191,14 @@ impl Shared {
             .map(|tab| tab.id)
             .collect();
         let mut open = self.peer_windows.borrow_mut();
-        open.retain(|tab, _| live.contains(tab));
+        self.note_dismissed(&mut open, &live);
+        let mut dismissed = self.dismissed_peer_windows.borrow_mut();
+        dismissed.retain(|key| wanted.iter().any(|window| window.key == *key));
+        let wanted: Vec<PeerWindow> = wanted
+            .into_iter()
+            .filter(|window| !dismissed.contains(&window.key))
+            .collect();
+        drop(dismissed);
         let mut close = Vec::new();
         for tab in tree
             .workspaces
@@ -199,9 +228,68 @@ impl Shared {
         (launch, close)
     }
 
+    /// The legacy applications the node runs, as the page listed them.
+    pub fn set_node_apps(&self, apps: Vec<NodeApp>) {
+        *self.node_apps.borrow_mut() = apps;
+    }
+
+    /// The node applications the person asked to open since the last call.
+    pub fn take_node_app_requests(&self) -> Vec<String> {
+        std::mem::take(&mut *self.node_app_requests.borrow_mut())
+    }
+
+    /// The applications this desktop opens: the bundle's, then the node's.
+    pub fn catalogue(&self) -> Vec<Application> {
+        catalogue()
+            .into_iter()
+            .chain(self.node_apps.borrow().iter().map(|app| Application {
+                id: format!("{NODE_APP_LAUNCH}{}", app.id),
+                label: app.title.clone(),
+            }))
+            .collect()
+    }
+
     /// Forget the legacy window `tab` showed.
     pub fn closed_peer_window(&self, tab: TabId) {
         self.peer_windows.borrow_mut().remove(&tab);
+    }
+
+    /// Move the windows whose tabs are gone from `live` (the person closed
+    /// them) to the dismissed ones.
+    fn note_dismissed(
+        &self,
+        open: &mut HashMap<TabId, PeerWindow>,
+        live: &std::collections::HashSet<TabId>,
+    ) {
+        let mut dismissed = self.dismissed_peer_windows.borrow_mut();
+        let mut newly = self.newly_dismissed.borrow_mut();
+        open.retain(|tab, window| {
+            if live.contains(tab) {
+                return true;
+            }
+            if dismissed.insert(window.key.clone()) {
+                newly.push(window.key.clone());
+            }
+            false
+        });
+    }
+
+    /// The legacy windows the person closed since the last call, by key:
+    /// the page asks their sources to close them.
+    pub fn take_dismissed_peer_windows(
+        &self,
+        tree: &tilo_desktop_model::DesktopTree,
+    ) -> Vec<String> {
+        let live: std::collections::HashSet<_> = tree
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect();
+        self.note_dismissed(&mut self.peer_windows.borrow_mut(), &live);
+        std::mem::take(&mut *self.newly_dismissed.borrow_mut())
     }
 
     /// Every tab's bound record.
@@ -396,6 +484,23 @@ impl TileSource for Tiles {
     }
 
     fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
+        if let Some(node_app) = app.strip_prefix(NODE_APP_LAUNCH) {
+            // Opened on the node; its window arrives as a legacy window.
+            if self
+                .shared
+                .node_apps
+                .borrow()
+                .iter()
+                .any(|known| known.id == node_app)
+            {
+                self.shared
+                    .node_app_requests
+                    .borrow_mut()
+                    .push(node_app.to_owned());
+                self.shared.wake();
+            }
+            return None;
+        }
         if let Some(key) = app.strip_prefix(PEER_WINDOW_LAUNCH) {
             let window = self.shared.pending_peer_windows.borrow_mut().remove(key)?;
             let tab = Tab {
@@ -423,6 +528,20 @@ impl TileSource for Tiles {
                 description: None,
                 unavailable: None,
             })
+            .chain(
+                self.shared
+                    .node_apps
+                    .borrow()
+                    .iter()
+                    .map(|app| tilo_desktop_search::providers::AppEntry {
+                        id: format!("{NODE_APP_LAUNCH}{}", app.id),
+                        title: app.title.clone(),
+                        category: None,
+                        description: None,
+                        unavailable: None,
+                    })
+                    .collect::<Vec<_>>(),
+            )
             .chain(tilo_desktop_search::availability::unavailable_on(&["web"]))
             .collect()
     }

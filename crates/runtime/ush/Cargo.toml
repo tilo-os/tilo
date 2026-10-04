@@ -21,6 +21,8 @@ runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
 # The environment record a guest is built from, and the tool builder seam.
 tilo-environment = { path = "../environment" }
+# Builds the tool images `pkg install` adds.
+env-tools = { path = "../env-tools" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # The record is stored as Terminal stores its own records.
 tilo-app-state = { path = "../../system/app-state" }
@@ -29,8 +31,10 @@ durable-store = { path = "../../system/durable-store" }
 package-store = { path = "../../packaging/package-store", features = ["store"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 semver.workspace = true
-# This device's key signs the tool images its builder makes.
+# This device's key signs the tool images its builder makes; the user's
+# fleet says which other devices' images are trusted.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+hex.workspace = true
 # Landlock ruleset installation and seccomp deny-list compilation, shared
 # with the application launcher.
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
@@ -50,6 +54,7 @@ uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }

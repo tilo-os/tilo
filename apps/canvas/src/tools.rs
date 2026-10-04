@@ -11,6 +11,7 @@ use ui::LocalState;
 use ui::icons::Icon;
 use ui::vello::peniko::Color;
 
+use crate::brushes::{DYNAMICS, Dynamics, Preset};
 use crate::gesture::Ink;
 use crate::model::Artwork;
 use crate::render::Renderer;
@@ -37,11 +38,12 @@ pub enum Tool {
     Wand,
     /// Fills like colour touching a point.
     Bucket,
+    Eraser,
 }
 
 impl Tool {
     /// The tools in the rail's order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Select,
         Self::Marquee,
         Self::Oval,
@@ -49,6 +51,7 @@ impl Tool {
         Self::Wand,
         Self::Brush,
         Self::Bucket,
+        Self::Eraser,
         Self::Rect,
         Self::Ellipse,
         Self::Line,
@@ -78,6 +81,7 @@ impl Tool {
             Self::Lasso => "canvas-tool-lasso",
             Self::Wand => "canvas-tool-wand",
             Self::Bucket => "canvas-tool-bucket",
+            Self::Eraser => "canvas-tool-eraser",
         }
     }
 
@@ -96,6 +100,7 @@ impl Tool {
             Self::Lasso => Icon::Lasso,
             Self::Wand => Icon::WandSparkles,
             Self::Bucket => Icon::PaintBucket,
+            Self::Eraser => Icon::Eraser,
         }
     }
 
@@ -115,6 +120,7 @@ impl Tool {
             Self::Lasso => "q",
             Self::Wand => "w",
             Self::Bucket => "g",
+            Self::Eraser => "x",
         }
     }
 
@@ -172,6 +178,22 @@ pub struct Tools {
     pub saving: Rc<RefCell<Option<ui::portal::SaveChannel>>>,
     /// A picture being chosen to add, until the chooser answers.
     pub picking: Rc<RefCell<Option<ui::portal::ContentsChannel>>>,
+    /// The preset the brush lays strokes with on a plain layer.
+    pub preset: LocalState<Preset>,
+    /// The brush's opacity, `0..=1`.
+    pub opacity: LocalState<f64>,
+    /// The brush's dynamics as the person set them, starting at its
+    /// preset's own.
+    pub flow: LocalState<f64>,
+    pub hardness: LocalState<f64>,
+    pub smoothing: LocalState<f64>,
+    pub taper: LocalState<f64>,
+    /// What the eraser takes: whole strokes, or the paint under it.
+    pub erasing: LocalState<Erasing>,
+    /// How crisp the eraser's edge is, `0..=1`.
+    pub eraser_hardness: LocalState<f64>,
+    /// How much paint the eraser takes off, `0..=1`.
+    pub eraser_strength: LocalState<f64>,
     /// Draws the artwork and keeps painted layers' simulations, shared by
     /// the canvas and the layer thumbnails so each layer is simulated once.
     pub renderer: Rc<RefCell<Renderer>>,
@@ -240,8 +262,19 @@ pub enum ViewRequest {
     Actual,
 }
 
+/// What the eraser takes off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Erasing {
+    /// The paint under it, as an eraser mark of its own.
+    #[default]
+    Paint,
+    /// Every stroke it touches, whole.
+    Strokes,
+}
+
 impl Default for Tools {
     fn default() -> Self {
+        let round = Dynamics::of(Preset::Round, &BTreeMap::new());
         Self {
             tool: LocalState::new(Tool::Brush),
             // The brush starts loaded with ultramarine: a paint colour, not
@@ -263,6 +296,15 @@ impl Default for Tools {
             export: LocalState::new(String::new()),
             saving: Rc::default(),
             layer_adjust: LocalState::new(false),
+            preset: LocalState::new(Preset::Round),
+            opacity: LocalState::new(1.0),
+            flow: LocalState::new(round.flow),
+            hardness: LocalState::new(round.hardness),
+            smoothing: LocalState::new(round.smoothing),
+            taper: LocalState::new(round.taper),
+            erasing: LocalState::new(Erasing::Paint),
+            eraser_hardness: LocalState::new(1.0),
+            eraser_strength: LocalState::new(1.0),
             renderer: Rc::default(),
         }
     }
@@ -341,9 +383,55 @@ impl Tools {
             .set(format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b));
     }
 
-    /// The medium parameters a stroke on `layer` carries: its load, when
-    /// the layer is painted and the load was set.
+    /// Load the brush with `preset`, its dynamics starting at the
+    /// preset's own.
+    pub fn choose_preset(&self, preset: Preset) {
+        let dynamics = Dynamics::of(preset, &BTreeMap::new());
+        self.preset.set(preset);
+        self.flow.set(dynamics.flow);
+        self.hardness.set(dynamics.hardness);
+        self.smoothing.set(dynamics.smoothing);
+        self.taper.set(dynamics.taper);
+    }
+
+    /// The preset name a stroke on `layer` is laid with: the brush's on a
+    /// plain layer; a painted layer's medium paints it.
+    pub fn brush_name(&self, art: &Artwork, layer: &str) -> Option<String> {
+        if art
+            .layer(layer)
+            .is_some_and(|layer| !layer.medium.is_empty())
+        {
+            return None;
+        }
+        crate::brushes::stored(self.preset.with(|preset| preset.name()))
+    }
+
+    /// The parameters a stroke on `layer` carries: on a painted layer its
+    /// load, when the load was set; on a plain layer the dynamics the
+    /// person moved away from the preset's.
     pub fn stroke_params(&self, art: &Artwork, layer: &str) -> Option<BTreeMap<String, f64>> {
+        let plain = art
+            .layer(layer)
+            .or_else(|| art.layers.last())
+            .is_some_and(|layer| layer.medium.is_empty());
+        if plain {
+            let preset = self.preset.with(|preset| *preset);
+            let defaults = Dynamics::of(preset, &BTreeMap::new());
+            let set = [
+                (self.flow.with(|value| *value), defaults.flow),
+                (self.hardness.with(|value| *value), defaults.hardness),
+                (defaults.spacing, defaults.spacing),
+                (self.smoothing.with(|value| *value), defaults.smoothing),
+                (self.taper.with(|value| *value), defaults.taper),
+            ];
+            let params: BTreeMap<String, f64> = DYNAMICS
+                .iter()
+                .zip(set)
+                .filter(|(_, (value, default))| (value - default).abs() > 0.005)
+                .map(|(name, (value, _))| ((*name).to_owned(), (value * 100.0).round() / 100.0))
+                .collect();
+            return (!params.is_empty()).then_some(params);
+        }
         let travel = self.load.with(|load| *load);
         let (min, max) = load_range(art, layer)?;
         Some(BTreeMap::from([(

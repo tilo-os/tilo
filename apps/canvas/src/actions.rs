@@ -62,6 +62,26 @@ pub struct AddLayer {
     pub texture: Option<f64>,
 }
 
+/// A value whose schema another action already teaches: its parameter
+/// names that action instead of repeating the whole schema, which keeps
+/// what an agent reads before it can act small. Serialized as the value.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Taught<T>(pub T);
+
+impl<T> JsonSchema for Taught<T> {
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+}
+
+impl<T> std::ops::Deref for Taught<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
 /// Change a layer.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -78,8 +98,8 @@ pub struct EditLayer {
     pub to: Option<String>,
     /// `0..=1`: let the ground's tooth show through the layer's marks.
     pub texture: Option<f64>,
-    /// Colour and tone of all on it; given steps replace, `{}` clears.
-    pub adjust: Option<Box<Adjust>>,
+    /// Colour and tone of all on it, as `edit-marks` adjust; `{}` clears.
+    pub adjust: Option<Taught<Box<Adjust>>>,
     /// `reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint
     /// greys on, white shows, black hides.
     pub mask: Option<String>,
@@ -118,8 +138,10 @@ pub struct NewMark {
     pub stroke_width: Option<f64>,
     /// `0..=1`.
     pub opacity: Option<f64>,
-    /// Painted layers: the brush width a filled shape is laid in with.
-    pub brush: Option<f64>,
+    /// Painted layers: the brush size a filled shape is laid in with.
+    pub brush_size: Option<f64>,
+    /// A stroke's brush preset, as `paint` takes it.
+    pub brush: Option<String>,
     /// Painted layers: the brushwork's direction in degrees.
     pub angle: Option<f64>,
     /// Painted layers: paint into what is still wet.
@@ -165,6 +187,7 @@ impl NewMark {
             stroke: None,
             stroke_width: None,
             opacity: None,
+            brush_size: None,
             brush: None,
             angle: None,
             wet: None,
@@ -204,13 +227,22 @@ pub struct NewStroke {
     pub points: Vec<StrokePoint>,
     /// Brush width in units.
     pub size: f64,
-    /// `#rrggbb[aa]` or `pigment:<name>`.
+    /// `#rrggbb[aa]` or `pigment:<name>`; an eraser takes none.
+    #[serde(default)]
     pub colour: String,
+    /// Plain layers: `pen` (crisp ink, pressure sets width), `pencil`
+    /// (grainy, pressure sets darkness), `marker` (flat, overlaps darken),
+    /// `airbrush` (soft spray that builds up), `charcoal` (picks up the
+    /// ground's tooth), `calligraphy` (broad nib at `angle`, default 45).
+    /// Any layer: `eraser` clears paint beneath it on its layer. A round
+    /// ink brush when absent.
+    pub brush: Option<String>,
     pub opacity: Option<f64>,
     /// Paint into what is still wet: blends in oil, bleeds in watercolour.
     pub wet: Option<bool>,
-    /// Medium parameter overrides for this stroke (`{"load": 0.2}` for dry
-    /// brush).
+    /// Medium overrides on a painted layer (`{"load": 0.2}` for dry brush);
+    /// on a plain layer the brush's flow, hardness, spacing, smoothing and
+    /// taper, each 0..=1.
     pub params: Option<BTreeMap<String, f64>>,
     /// A limb that lifts to a point and forks this many times (1-6) into
     /// ever thinner twigs: a branch or a bare tree in one stroke.
@@ -252,8 +284,9 @@ pub struct EditMarks {
     /// Marks, or groups (all their members).
     pub ids: Vec<String>,
     pub name: Option<String>,
-    /// Replace the geometry (e.g. edit a path's `d`).
-    pub shape: Option<Shape>,
+    /// Replace the geometry: a shape as `draw` takes it (e.g. a path's
+    /// new `d`).
+    pub shape: Option<Taught<Shape>>,
     /// `[]` removes dashes.
     pub dash: Option<Vec<f64>>,
     pub cap: Option<String>,
@@ -278,7 +311,12 @@ pub struct EditMarks {
     pub stroke: Option<String>,
     pub stroke_width: Option<f64>,
     pub opacity: Option<f64>,
-    pub brush: Option<f64>,
+    /// A stroke's brush preset (see paint).
+    pub brush: Option<String>,
+    /// A stroke's width.
+    pub size: Option<f64>,
+    /// Painted layers: the brush size a filled shape is laid in with.
+    pub brush_size: Option<f64>,
     pub angle: Option<f64>,
     pub wet: Option<bool>,
     pub params: Option<BTreeMap<String, f64>>,
@@ -302,6 +340,18 @@ pub struct EditMarks {
     pub straighten: Option<f64>,
     /// Colour and tone; given steps replace, `{}` clears.
     pub adjust: Option<Adjust>,
+    /// Strokes: take the wobble out of their paths, 0..=1.
+    pub smooth: Option<f64>,
+    /// Strokes: drop points within this many units of the line.
+    pub simplify: Option<f64>,
+    /// A stroke: continue it through these points, from the end they start
+    /// nearer.
+    pub extend: Option<Vec<StrokePoint>>,
+    /// A stroke: cut it in two at the point nearest [x, y]; the far part
+    /// gets a new id.
+    pub split: Option<[f64; 2]>,
+    /// Strokes: join them, in the order named, into the first.
+    pub merge: Option<bool>,
 }
 
 /// Remove marks by id, or every mark of a layer.
@@ -310,8 +360,11 @@ pub struct EditMarks {
 pub struct RemoveMarks {
     #[serde(default)]
     pub ids: Vec<String>,
-    /// Remove every mark on this layer.
+    /// Remove every mark on this layer (with along: only its strokes).
     pub layer: Option<String>,
+    /// Remove the brush strokes this path `[[x, y], …]` crosses, as a
+    /// stroke eraser does.
+    pub along: Option<Vec<[f64; 2]>>,
 }
 
 /// Move marks within their layer's stacking order.
@@ -730,6 +783,7 @@ pub(crate) fn add_marks(
             check_transform(transform).map_err(problem)?;
         }
         check_style(art, layer, &mark.style).map_err(problem)?;
+        check_brush(art, layer, mark).map_err(problem)?;
         if !mark.group.is_empty() {
             check_group(art, &mark.group, &ids).map_err(problem)?;
         }
@@ -816,7 +870,8 @@ impl Draw {
                         .stroke_width
                         .unwrap_or_else(|| if mark.stroke.is_some() { 2.0 } else { 0.0 }),
                     opacity: mark.opacity,
-                    brush: mark.brush,
+                    brush: mark.brush.as_deref().and_then(crate::brushes::stored),
+                    brush_size: mark.brush_size,
                     angle: mark.angle,
                     wet: mark.wet.unwrap_or(false),
                     params: mark.params.clone().unwrap_or_default(),
@@ -883,7 +938,8 @@ impl Paint {
                     .clone()
                     .unwrap_or_else(|| derived_id("s", stroke, index));
                 let style = Style {
-                    stroke: Some(stroke.colour.clone()),
+                    stroke: (!stroke.colour.is_empty()).then(|| stroke.colour.clone()),
+                    brush: stroke.brush.as_deref().and_then(crate::brushes::stored),
                     opacity: stroke.opacity,
                     wet: stroke.wet.unwrap_or(false),
                     params: stroke.params.clone().unwrap_or_default(),
@@ -903,8 +959,35 @@ impl Paint {
                 mark.clip = clips.get(index).cloned().unwrap_or_default();
                 mark
             })
-            .collect();
+            .collect::<Vec<Mark>>();
+        for (index, (mark, stroke)) in marks.iter().zip(&self.strokes).enumerate() {
+            if let Some(brush) = &stroke.brush
+                && crate::brushes::Preset::parse(brush).is_none()
+            {
+                return Err(refuse(format!(
+                    "stroke {index}: brush {brush:?} is not a preset; use one of {}",
+                    crate::brushes::Preset::names()
+                )));
+            }
+            if mark.style.stroke.is_none() && !mark.erases() {
+                return Err(refuse(format!(
+                    "stroke {index}: give a colour (#rrggbb or pigment:<name>); only an eraser paints none"
+                )));
+            }
+        }
         add_marks(doc, art, &layer, marks)
+    }
+}
+
+/// Why a stroke's preset or dynamics cannot draw it on its layer.
+fn check_brush(art: &Artwork, layer: &str, mark: &Mark) -> Result<(), ActionError> {
+    if !matches!(mark.shape, Shape::Stroke { .. }) {
+        return Ok(());
+    }
+    let plain = art.layer(layer).is_none_or(|layer| layer.medium.is_empty());
+    match crate::brushes::problem(mark.style.brush.as_deref(), &mark.style.params, plain) {
+        Some(problem) => Err(refuse(problem)),
+        None => Ok(()),
     }
 }
 
@@ -923,6 +1006,25 @@ fn colour_patch(value: Option<&String>) -> ColourEdit {
 
 impl EditMarks {
     fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
+        self.check_reshape()?;
+        if self.merge == Some(true) {
+            let kept = crate::strokes::merge(doc, art, &self.ids)?;
+            return Self {
+                ids: vec![kept],
+                merge: None,
+                ..self.clone()
+            }
+            .apply(doc, &doc::read(doc));
+        }
+        if let Some(at) = self.split {
+            let made = crate::strokes::split(doc, art, &self.ids, at)?;
+            return Self {
+                ids: made,
+                split: None,
+                ..self.clone()
+            }
+            .apply(doc, &doc::read(doc));
+        }
         let units = units(art, &self.ids)?;
         let count: usize = units.iter().map(Vec::len).sum();
         let destination = match &self.layer {
@@ -943,7 +1045,7 @@ impl EditMarks {
         if !scale.is_finite() || scale <= 0.0 || !rotate.is_finite() {
             return Err(refuse("scale must be positive and rotate finite"));
         }
-        if let Some(problem) = self.shape.as_ref().and_then(Shape::problem) {
+        if let Some(problem) = self.shape.as_deref().and_then(Shape::problem) {
             return Err(refuse(problem));
         }
         if let Some(group) = self.group.as_deref().filter(|group| !group.is_empty()) {
@@ -952,6 +1054,63 @@ impl EditMarks {
         if let Some(transform) = self.transform {
             check_transform(transform)?;
         }
+        let (mirror, crop) = self.picture_edits()?;
+        for unit in units {
+            let centre = extent(art, &unit).center() + ui::vello::kurbo::Vec2::new(dx, dy);
+            let about = ui::vello::kurbo::Affine::translate(centre.to_vec2())
+                * ui::vello::kurbo::Affine::rotate(rotate.to_radians())
+                * ui::vello::kurbo::Affine::scale(scale)
+                * mirror
+                * ui::vello::kurbo::Affine::translate(-centre.to_vec2());
+            for original in unit {
+                let mut mark = original.clone();
+                if let Some(layer) = &destination
+                    && *layer != mark.layer
+                {
+                    mark.layer.clone_from(layer);
+                    if let Some(order) = orders.next() {
+                        mark.order = order;
+                    }
+                }
+                if let Some(shape) = &self.shape {
+                    mark.shape = shape.0.clone();
+                }
+                if let Some(group) = &self.group {
+                    mark.group.clone_from(group);
+                }
+                if let Some(clip) = &self.clip {
+                    if !clip.is_empty() {
+                        check_clip(art, (&mark.id, &mark.group), clip, &[])?;
+                    }
+                    mark.clip.clone_from(clip);
+                }
+                self.restyle(&mut mark);
+                self.reframe(&mut mark, crop)?;
+                self.reshape(&mut mark);
+                if dx != 0.0 || dy != 0.0 {
+                    mark = mark.moved(dx, dy);
+                }
+                if self.scale.is_some() || self.rotate.is_some() || self.flip.is_some() {
+                    mark.transform = Some((about * mark.affine()).as_coeffs());
+                }
+                if let Some(transform) = self.transform {
+                    mark = mark.transformed(ui::vello::kurbo::Affine::new(transform));
+                }
+                check_style(art, &mark.layer, &mark.style)
+                    .and_then(|()| check_brush(art, &mark.layer, &mark))
+                    .map_err(|error| refuse(format!("mark {:?}: {error}", mark.id)))?;
+                if let Some(problem) = mark.shape.problem() {
+                    return Err(refuse(format!("mark {:?}: {problem}", mark.id)));
+                }
+                doc::write_mark(doc, &mark)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The flip as an affine about the origin, and the crop asked for,
+    /// refusing what cannot be.
+    fn picture_edits(&self) -> Result<(ui::vello::kurbo::Affine, Option<[f64; 4]>), ActionError> {
         let mirror = match self.flip.as_deref() {
             None => ui::vello::kurbo::Affine::IDENTITY,
             Some("horizontal") => ui::vello::kurbo::Affine::FLIP_X,
@@ -975,52 +1134,7 @@ impl EditMarks {
                 ));
             }
         };
-        for unit in units {
-            let centre = extent(art, &unit).center() + ui::vello::kurbo::Vec2::new(dx, dy);
-            let about = ui::vello::kurbo::Affine::translate(centre.to_vec2())
-                * ui::vello::kurbo::Affine::rotate(rotate.to_radians())
-                * ui::vello::kurbo::Affine::scale(scale)
-                * mirror
-                * ui::vello::kurbo::Affine::translate(-centre.to_vec2());
-            for original in unit {
-                let mut mark = original.clone();
-                if let Some(layer) = &destination
-                    && *layer != mark.layer
-                {
-                    mark.layer.clone_from(layer);
-                    if let Some(order) = orders.next() {
-                        mark.order = order;
-                    }
-                }
-                if let Some(shape) = &self.shape {
-                    mark.shape = shape.clone();
-                }
-                if let Some(group) = &self.group {
-                    mark.group.clone_from(group);
-                }
-                if let Some(clip) = &self.clip {
-                    if !clip.is_empty() {
-                        check_clip(art, (&mark.id, &mark.group), clip, &[])?;
-                    }
-                    mark.clip.clone_from(clip);
-                }
-                self.restyle(&mut mark);
-                self.reframe(&mut mark, crop)?;
-                if dx != 0.0 || dy != 0.0 {
-                    mark = mark.moved(dx, dy);
-                }
-                if self.scale.is_some() || self.rotate.is_some() || self.flip.is_some() {
-                    mark.transform = Some((about * mark.affine()).as_coeffs());
-                }
-                if let Some(transform) = self.transform {
-                    mark = mark.transformed(ui::vello::kurbo::Affine::new(transform));
-                }
-                check_style(art, &mark.layer, &mark.style)
-                    .map_err(|error| refuse(format!("mark {:?}: {error}", mark.id)))?;
-                doc::write_mark(doc, &mark)?;
-            }
-        }
-        Ok(())
+        Ok((mirror, crop))
     }
 
     /// An image's crop and straightening, onto `mark`.
@@ -1046,6 +1160,59 @@ impl EditMarks {
             return Err(refuse(format!("mark {:?}: {problem}", mark.id)));
         }
         Ok(())
+    }
+
+    /// Refuse reshaping values no stroke can take.
+    fn check_reshape(&self) -> Result<(), ActionError> {
+        check_unit(self.smooth, "smooth")?;
+        if self
+            .simplify
+            .is_some_and(|tolerance| !(0.0..=MAX_SIDE).contains(&tolerance))
+        {
+            return Err(refuse("simplify is a distance in units, 0 or more"));
+        }
+        if self
+            .size
+            .is_some_and(|size| !size.is_finite() || size <= 0.0 || size > MAX_SIDE)
+        {
+            return Err(refuse("size must be positive"));
+        }
+        if self
+            .split
+            .is_some_and(|[x, y]| !x.is_finite() || !y.is_finite())
+        {
+            return Err(refuse("split is a finite [x, y]"));
+        }
+        if let Some(points) = &self.extend
+            && (points.is_empty()
+                || !points.iter().all(|point| {
+                    (2..=3).contains(&point.len()) && point.iter().all(|value| value.is_finite())
+                }))
+        {
+            return Err(refuse("extend is points [[x, y] or [x, y, pressure], …]"));
+        }
+        Ok(())
+    }
+
+    /// The stroke edits, onto `mark`: its width and path.
+    fn reshape(&self, mark: &mut Mark) {
+        let Shape::Stroke { points, size, .. } = &mut mark.shape else {
+            return;
+        };
+        if let Some(width) = self.size {
+            *size = width;
+        }
+        if let Some(amount) = self.smooth {
+            // Laid evenly to smooth it, then as few points as keep its curve.
+            let smooth = crate::brushes::smoothed(points, amount);
+            *points = crate::brushes::simplified(&smooth, 0.1);
+        }
+        if let Some(tolerance) = self.simplify {
+            *points = crate::brushes::simplified(points, tolerance);
+        }
+        if let Some(more) = &self.extend {
+            crate::strokes::extend(points, more);
+        }
     }
 
     /// The style edits, onto `mark`.
@@ -1104,8 +1271,11 @@ impl EditMarks {
             if let Some(opacity) = self.opacity {
                 mark.style.opacity = Some(opacity);
             }
-            if self.brush.is_some() {
-                mark.style.brush = self.brush;
+            if let Some(brush) = &self.brush {
+                mark.style.brush = crate::brushes::stored(brush);
+            }
+            if self.brush_size.is_some() {
+                mark.style.brush_size = self.brush_size;
             }
             if self.angle.is_some() {
                 mark.style.angle = self.angle;
@@ -1292,7 +1462,19 @@ impl tilo_actions::Action for CanvasAction {
                         .map(|mark| mark.id.clone())
                         .collect()
                 };
-                if let Some(layer) = &remove.layer {
+                if let Some(path) = &remove.along {
+                    let layer = match &remove.layer {
+                        Some(layer) => Some(target_layer(&art, Some(layer))?),
+                        None => None,
+                    };
+                    let crossed = crate::strokes::crossed(&art, path, layer.as_deref());
+                    if crossed.is_empty() && ids.is_empty() {
+                        return Err(refuse(
+                            "along crosses no brush stroke on a shown, unlocked layer; look with grid: true to find them",
+                        ));
+                    }
+                    ids.extend(crossed);
+                } else if let Some(layer) = &remove.layer {
                     let layer = target_layer(&art, Some(layer))?;
                     ids.extend(art.marks_of(&layer).map(|mark| mark.id.clone()));
                     if ids.is_empty() {
@@ -1300,7 +1482,9 @@ impl tilo_actions::Action for CanvasAction {
                     }
                 }
                 if ids.is_empty() {
-                    return Err(refuse("name marks or groups in ids, or a layer to clear"));
+                    return Err(refuse(
+                        "name marks or groups in ids, a layer to clear, or a path along",
+                    ));
                 }
                 for id in ids {
                     doc::remove(doc, doc::MARKS, &id)?;
