@@ -177,7 +177,6 @@ const DIRECTORY_IMPORT_PER_FRAME: usize = 2;
 /// A receipt must not retain an unbounded directory's diagnostics. The total
 /// count remains visible; these are the concrete entries a person can inspect.
 const DIRECTORY_FAILURE_DETAIL_LIMIT: usize = 20;
-const DIRECTORY_FAILURES_PER_PAGE: usize = 4;
 const ANALYSIS_QUEUE_LIMIT: usize = 2;
 /// One bounded materialized library page. This is intentionally independent
 /// of the number of cards that happen to fit in a particular window.
@@ -500,8 +499,6 @@ enum SelectionHit {
     CancelDestinationChooser,
     CloseDestinationChooser,
     ApplyDestination,
-    PreviousDestinationPage,
-    NextDestinationPage,
     AddToAlbum,
     Done,
 }
@@ -621,10 +618,6 @@ enum LibraryAnalysisHit {
     RetryFailures,
 }
 
-/// One chooser page always fits: six chips in a desktop row or a 3×2 compact
-/// grid. The complete album collection remains available through paging.
-const SELECTION_ALBUMS_PER_PAGE: usize = 6;
-
 /// A compact materialised card.  The full library remains canonical in the
 /// document; this carries just enough metadata to make the visible shelf
 /// scannable without another document walk while painting.
@@ -712,6 +705,9 @@ struct ViewerDetails {
     reason = "library mode and the three independent transient album-editor flags have distinct event and reconciliation lifecycles"
 )]
 pub struct PhotosApp {
+    /// The app's name in the person's language: the window's title while
+    /// no photograph is open.
+    app_name: String,
     /// Canonical dispatcher shared by toolbar edits and exported document actions.
     actions: crate::resource::ActionSink,
     /// Where imported originals are kept and photographs are read from. The
@@ -759,7 +755,9 @@ pub struct PhotosApp {
     /// Paths stay device-local and are reduced to file names in presentation.
     directory_import_receipt: Option<DirectoryImportReceipt>,
     directory_import_details_open: bool,
-    directory_import_details_page: usize,
+    /// The issues list in the details sheet: every kept issue, scrolled
+    /// inside the sheet's body.
+    directory_import_details_scroll: ui::widget::ScrollRegion,
     directory_import_details_layout: Option<ModalLayout>,
     directory_import_pending: Rc<Cell<Option<DirectoryStatusHit>>>,
     directory_import_buttons: Vec<(DirectoryStatusHit, Button)>,
@@ -1012,9 +1010,8 @@ pub struct PhotosApp {
     /// album currently being browsed (which would commonly be a no-op).
     selection_destination_album: Option<String>,
     selection_album_chooser: bool,
-    /// The chooser pages a bounded materialised slice rather than silently
-    /// clipping albums beyond the available shelf height.
-    selection_album_page: usize,
+    /// The chooser lists every album, scrolled inside the sheet's body.
+    selection_album_scroll: ui::widget::ScrollRegion,
     /// Projection refreshed from the shared library; it lets the visible
     /// batch control say Favorite or Unfavorite truthfully without storing
     /// selection state in the document.
@@ -1599,7 +1596,7 @@ impl PhotosApp {
             directory_import: None,
             directory_import_receipt: None,
             directory_import_details_open: false,
-            directory_import_details_page: 0,
+            directory_import_details_scroll: ui::widget::ScrollRegion::vertical(),
             directory_import_details_layout: None,
             directory_import_buttons: build_directory_import_buttons(&directory_import_pending),
             directory_import_pending,
@@ -1748,7 +1745,8 @@ impl PhotosApp {
             selection_anchor: None,
             selection_destination_album: None,
             selection_album_chooser: false,
-            selection_album_page: 0,
+            selection_album_scroll: ui::widget::ScrollRegion::vertical(),
+            app_name: tr("photos-app"),
             selection_all_favorite: false,
             selection_hits: Vec::new(),
             selection_destination_hits: Vec::new(),
@@ -2570,7 +2568,7 @@ impl PhotosApp {
         self.selection_anchor = None;
         self.selection_destination_album = None;
         self.selection_album_chooser = false;
-        self.selection_album_page = 0;
+        self.selection_album_scroll.set_offset(Vec2::ZERO);
         self.selection_all_favorite = false;
         self.notice = Some(tr("photos-selection-hint"));
     }
@@ -2581,7 +2579,7 @@ impl PhotosApp {
         self.selection_anchor = None;
         self.selection_destination_album = None;
         self.selection_album_chooser = false;
-        self.selection_album_page = 0;
+        self.selection_album_scroll.set_offset(Vec2::ZERO);
         self.selection_all_favorite = false;
     }
 
@@ -2701,7 +2699,7 @@ impl PhotosApp {
                     self.notice = Some(tr("photos-selection-need-album"));
                 } else {
                     self.selection_album_chooser = true;
-                    self.selection_album_page = 0;
+                    self.selection_album_scroll.set_offset(Vec2::ZERO);
                 }
             }
             SelectionHit::CancelDestinationChooser | SelectionHit::CloseDestinationChooser => {
@@ -2713,17 +2711,6 @@ impl PhotosApp {
                 } else {
                     self.notice = Some(tr("photos-selection-choose-album"));
                 }
-            }
-            SelectionHit::PreviousDestinationPage => {
-                self.selection_album_page = self.selection_album_page.saturating_sub(1);
-            }
-            SelectionHit::NextDestinationPage => {
-                let page_count = self
-                    .library_albums
-                    .len()
-                    .div_ceil(SELECTION_ALBUMS_PER_PAGE);
-                self.selection_album_page =
-                    (self.selection_album_page + 1).min(page_count.saturating_sub(1));
             }
             SelectionHit::AddToAlbum => self.add_selected_to_destination_album(doc),
             SelectionHit::Done => self.finish_selection(),
@@ -2921,7 +2908,7 @@ impl PhotosApp {
             limit_reached: false,
         });
         self.directory_import_details_open = true;
-        self.directory_import_details_page = 0;
+        self.directory_import_details_scroll.set_offset(Vec2::ZERO);
     }
 
     /// Pose the ordinary selection shelf for deterministic visual coverage.
@@ -2936,8 +2923,8 @@ impl PhotosApp {
         }
     }
 
-    /// Pose the first page of a deliberately long destination list. The
-    /// selection is local; this exists only to make pagination visible in the
+    /// Pose a deliberately long destination list. The selection is local;
+    /// this exists only to make the scrolling list visible in the
     /// deterministic accessibility and responsive screenshots.
     pub fn show_selection_destination_chooser_for_shot(&mut self, doc: &AutoCommit) {
         if let Some(photo) = PhotosDoc::library(doc).photos.first() {
@@ -2945,7 +2932,7 @@ impl PhotosApp {
             self.selection_anchor = Some(photo.id.clone());
         }
         self.selection_album_chooser = true;
-        self.selection_album_page = 0;
+        self.selection_album_scroll.set_offset(Vec2::ZERO);
     }
 
     /// Zoom the canvas, as the scroll wheel would. Lets a caller frame a crop
@@ -5144,17 +5131,6 @@ impl PhotosApp {
                             "photos:selection:destination-apply",
                             self.selection_destination_album.is_none(),
                         ),
-                        SelectionHit::PreviousDestinationPage => (
-                            "photos-a11y-earlier-albums",
-                            "photos:selection:destination-previous",
-                            self.selection_album_page == 0,
-                        ),
-                        SelectionHit::NextDestinationPage => (
-                            "photos-a11y-more-albums",
-                            "photos:selection:destination-next",
-                            (self.selection_album_page + 1) * SELECTION_ALBUMS_PER_PAGE
-                                >= self.library_albums.len(),
-                        ),
                         SelectionHit::AddToAlbum => (
                             "photos-a11y-add-selection",
                             "photos:selection:add-to-album",
@@ -5532,13 +5508,9 @@ impl PhotosApp {
                 (&[][..], 0)
             };
             let retained = failures.len().min(DIRECTORY_FAILURE_DETAIL_LIMIT);
-            let pages = retained.div_ceil(DIRECTORY_FAILURES_PER_PAGE).max(1);
-            let page = self.directory_import_details_page.min(pages - 1);
             let mut detail_children = failures
                 .iter()
                 .take(retained)
-                .skip(page * DIRECTORY_FAILURES_PER_PAGE)
-                .take(DIRECTORY_FAILURES_PER_PAGE)
                 .enumerate()
                 .map(|(index, failure)| {
                     let name = failure
@@ -5562,46 +5534,19 @@ impl PhotosApp {
                                 ),
                             ],
                         ))
-                        .with_hashed_key(format!("photos:directory-failure:{page}:{index}"))
+                        .with_hashed_key(format!("photos:directory-failure:{index}"))
                 })
                 .collect::<Vec<_>>();
             detail_children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(tr_args(
-                        "photos-import-issues-range",
-                        &[
-                            (
-                                "first",
-                                ArgValue::Number((page * DIRECTORY_FAILURES_PER_PAGE + 1) as f64),
-                            ),
-                            (
-                                "last",
-                                ArgValue::Number(
-                                    ((page + 1) * DIRECTORY_FAILURES_PER_PAGE).min(retained) as f64,
-                                ),
-                            ),
-                            ("kept", ArgValue::Number(retained as f64)),
-                        ],
-                    ))
-                    .with_hashed_key("photos:directory-failure-summary"),
+                AccessNode::new(Role::Button)
+                    .with_name(tr("photos-close"))
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    })
+                    .with_action_target("photos:directory-import:details-close")
+                    .with_hashed_key("photos:directory-import:details-close"),
             );
-            for (key, label, disabled) in [
-                ("details-previous", "photos-previous", page == 0),
-                ("details-next", "photos-next", page + 1 >= pages),
-                ("details-close", "photos-close", false),
-            ] {
-                detail_children.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(tr(label))
-                        .with_state(AccessState {
-                            disabled,
-                            focusable: !disabled,
-                            ..Default::default()
-                        })
-                        .with_action_target(format!("photos:directory-import:{key}"))
-                        .with_hashed_key(format!("photos:directory-import:{key}")),
-                );
-            }
             children.push(
                 AccessNode::new(Role::Dialog)
                     .with_name(tr("photos-import-issues-title"))
@@ -5661,24 +5606,7 @@ impl PhotosApp {
                 }
                 return available;
             }
-            if !self.directory_import_details_open {
-                return false;
-            }
-            let retained = self.directory_import.as_ref().map_or_else(
-                || {
-                    self.directory_import_receipt
-                        .as_ref()
-                        .map_or(0, |receipt| receipt.failures.len())
-                },
-                |job| job.failures.len().min(DIRECTORY_FAILURE_DETAIL_LIMIT),
-            );
-            let pages = retained.div_ceil(DIRECTORY_FAILURES_PER_PAGE).max(1);
-            return match command {
-                "details-previous" => self.directory_import_details_page > 0,
-                "details-next" => self.directory_import_details_page + 1 < pages,
-                "details-close" => true,
-                _ => false,
-            };
+            return self.directory_import_details_open && command == "details-close";
         }
         if !matches!(action, AccessAction::Activate) {
             return false;
@@ -5687,8 +5615,6 @@ impl PhotosApp {
             "stop" => self.activate_directory_status(DirectoryStatusHit::Stop),
             "details" => self.activate_directory_status(DirectoryStatusHit::Details),
             "dismiss" => self.activate_directory_status(DirectoryStatusHit::Dismiss),
-            "details-previous" => self.page_directory_details(false),
-            "details-next" => self.page_directory_details(true),
             "details-close" => self.close_directory_details(),
             _ => false,
         }
@@ -5938,8 +5864,6 @@ impl PhotosApp {
                     "destination-cancel" => SelectionHit::CancelDestinationChooser,
                     "destination-close" => SelectionHit::CloseDestinationChooser,
                     "destination-apply" => SelectionHit::ApplyDestination,
-                    "destination-previous" => SelectionHit::PreviousDestinationPage,
-                    "destination-next" => SelectionHit::NextDestinationPage,
                     "add-to-album" => SelectionHit::AddToAlbum,
                     "done" => SelectionHit::Done,
                     _ => return false,
@@ -6206,7 +6130,7 @@ impl PhotosApp {
         }
         self.directory_import_receipt = None;
         self.directory_import_details_open = false;
-        self.directory_import_details_page = 0;
+        self.directory_import_details_scroll.set_offset(Vec2::ZERO);
         self.directory_import = Some(DirectoryImport {
             receiver,
             cancel,
@@ -6264,7 +6188,7 @@ impl PhotosApp {
                         .is_some_and(|receipt| receipt.failure_count > 0);
                 if has_failures {
                     self.directory_import_details_open = true;
-                    self.directory_import_details_page = 0;
+                    self.directory_import_details_scroll.set_offset(Vec2::ZERO);
                 }
                 has_failures
             }
@@ -6278,31 +6202,6 @@ impl PhotosApp {
                 true
             }
         }
-    }
-
-    fn page_directory_details(&mut self, forward: bool) -> bool {
-        if !self.directory_import_details_open {
-            return false;
-        }
-        let retained = self.directory_import.as_ref().map_or_else(
-            || {
-                self.directory_import_receipt
-                    .as_ref()
-                    .map_or(0, |receipt| receipt.failures.len())
-            },
-            |job| job.failures.len().min(DIRECTORY_FAILURE_DETAIL_LIMIT),
-        );
-        let pages = retained.div_ceil(DIRECTORY_FAILURES_PER_PAGE).max(1);
-        let next = if forward {
-            (self.directory_import_details_page + 1).min(pages - 1)
-        } else {
-            self.directory_import_details_page.saturating_sub(1)
-        };
-        if next == self.directory_import_details_page {
-            return false;
-        }
-        self.directory_import_details_page = next;
-        true
     }
 
     fn close_directory_details(&mut self) -> bool {
@@ -7476,8 +7375,8 @@ impl PhotosApp {
         }
     }
 
-    /// The folder import's issues, one page at a time, in a modal sheet over
-    /// the window. Painted in the top layer.
+    /// The folder import's issues in a modal sheet over the window, the list
+    /// scrolling in the sheet's body. Painted in the top layer.
     #[expect(
         clippy::too_many_lines,
         reason = "the sheet measures, lays out and paints its rows and actions in one pass"
@@ -7509,20 +7408,12 @@ impl PhotosApp {
             return;
         }
         let retained = failures.len().min(DIRECTORY_FAILURE_DETAIL_LIMIT);
-        let pages = retained.div_ceil(DIRECTORY_FAILURES_PER_PAGE).max(1);
-        self.directory_import_details_page = self
-            .directory_import_details_page
-            .min(pages.saturating_sub(1));
-        let page = self.directory_import_details_page;
         let window = presence.viewport.get().unwrap_or(self.rect);
         let max_width = f64::from(theme.tokens.metrics.panel_width_sheet);
         let body_w = ui::widget::modal_dialog::body_width(window, max_width, theme);
-        let first = page * DIRECTORY_FAILURES_PER_PAGE;
         let rows: Vec<(String, String, String)> = failures
             .iter()
             .take(retained)
-            .skip(first)
-            .take(DIRECTORY_FAILURES_PER_PAGE)
             .map(|failure| {
                 (
                     failure
@@ -7539,27 +7430,21 @@ impl PhotosApp {
                 )
             })
             .collect();
-        // Which issues this page lists, out of those kept; and, when there
-        // were more than were kept, how many in all.
+        // When there were more issues than were kept, how many in all.
         let count = |n: usize| ArgValue::Number(n as f64);
-        let mut overview = tr_args(
-            "photos-import-issues-range",
-            &[
-                ("first", count(first + 1)),
-                ("last", count(first + rows.len())),
-                ("kept", count(retained)),
-            ],
-        );
-        if failure_count > retained {
-            overview.push(' ');
-            overview.push_str(&tr_args(
+        let overview = (failure_count > retained).then(|| {
+            tr_args(
                 "photos-import-issues-total",
                 &[("kept", count(retained)), ("count", count(failure_count))],
-            ));
-        }
-        let overview_h = PaintCtx::new(scene, transform, text_renderer, theme)
-            .measure_role(&overview, ui::TextRole::Caption, Some(body_w as f32))
-            .height;
+            )
+        });
+        let gap = f64::from(theme.tokens.spacing.rhythm.related);
+        let overview_h = overview.as_deref().map_or(0.0, |overview| {
+            PaintCtx::new(scene, transform, text_renderer, theme)
+                .measure_role(overview, ui::TextRole::Caption, Some(body_w as f32))
+                .height
+                + gap
+        });
         let faces: Vec<ListRowFace<'_>> = rows
             .iter()
             .enumerate()
@@ -7572,23 +7457,13 @@ impl PhotosApp {
                 }
             })
             .collect();
-        let gap = f64::from(theme.tokens.spacing.rhythm.related);
         let list_h: f64 = faces
             .iter()
             .map(|face| face.height(text_renderer, theme))
             .sum();
-        let body_h = overview_h + gap + list_h;
-        let (previous, next, close, sheet_title) = (
-            tr("photos-previous"),
-            tr("photos-next"),
-            tr("photos-close"),
-            tr("photos-import-issues-title"),
-        );
-        let actions = [
-            ModalAction::secondary(&previous).enabled(page > 0),
-            ModalAction::secondary(&next).enabled(page + 1 < pages),
-            ModalAction::primary(&close),
-        ];
+        let body_h = overview_h + list_h;
+        let (close, sheet_title) = (tr("photos-close"), tr("photos-import-issues-title"));
+        let actions = [ModalAction::primary(&close)];
         let base_spec = ModalSpec::new(&sheet_title)
             .actions(&actions)
             .body_height(body_h)
@@ -7601,15 +7476,7 @@ impl PhotosApp {
                 .get(index)
                 .is_some_and(|rect| rect.contains(self.pointer))
         };
-        let actions = [
-            ModalAction::secondary(&previous)
-                .enabled(page > 0)
-                .hovered(hovered(0)),
-            ModalAction::secondary(&next)
-                .enabled(page + 1 < pages)
-                .hovered(hovered(1)),
-            ModalAction::primary(&close).hovered(hovered(2)),
-        ];
+        let actions = [ModalAction::primary(&close).hovered(hovered(0))];
         let spec = ModalSpec::new(&sheet_title)
             .actions(&actions)
             .body_height(body_h)
@@ -7625,31 +7492,32 @@ impl PhotosApp {
             &spec,
         );
         let sheet = theme.on_ground(ui::chrome::panel_ground(theme));
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &layout.body,
-        );
-        let mut ctx = PaintCtx::new(scene, transform, text_renderer, &sheet);
-        ctx.text_role(
-            &overview,
-            ui::TextRole::Caption,
-            sheet.text_dim,
-            Point::new(layout.body.x0, layout.body.y0),
-            Some(layout.body.width() as f32),
-        );
-        let mut y = layout.body.y0 + overview_h + gap;
-        for face in &faces {
-            let h = face.height(ctx.text, &sheet);
-            face.paint(
-                &mut ctx,
-                Rect::new(layout.body.x0, y, layout.body.x1, y + h),
-            );
-            y += h;
-        }
-        scene.pop_layer();
+        let scroll = &mut self.directory_import_details_scroll;
+        scroll.set_viewport(layout.body, theme);
+        scroll.set_content_size(layout.body.width(), body_h);
+        let width = scroll.content_rect().width();
+        let visible = scroll.visible_content();
+        scroll.paint(scene, transform, &sheet, |scene, content| {
+            let mut ctx = PaintCtx::new(scene, content, text_renderer, &sheet);
+            if let Some(overview) = overview.as_deref() {
+                ctx.text_role(
+                    overview,
+                    ui::TextRole::Caption,
+                    sheet.text_dim,
+                    Point::ZERO,
+                    Some(width as f32),
+                );
+            }
+            let mut y = overview_h;
+            for face in &faces {
+                let h = face.height(ctx.text, &sheet);
+                let row = Rect::new(0.0, y, width, y + h);
+                if row.y1 >= visible.y0 && row.y0 <= visible.y1 {
+                    face.paint(&mut ctx, row);
+                }
+                y += h;
+            }
+        });
         ui::widget::modal_dialog::paint_actions(
             scene,
             transform,
@@ -9127,23 +8995,12 @@ impl PhotosApp {
         if !self.library_mode || !self.selection_album_chooser {
             return;
         }
-        let page_count = self
-            .library_albums
-            .len()
-            .div_ceil(SELECTION_ALBUMS_PER_PAGE);
-        self.selection_album_page = self.selection_album_page.min(page_count.saturating_sub(1));
-        let start = self.selection_album_page * SELECTION_ALBUMS_PER_PAGE;
-        let end = (start + SELECTION_ALBUMS_PER_PAGE).min(self.library_albums.len());
-        let previous_enabled = self.selection_album_page > 0;
-        let next_enabled = end < self.library_albums.len();
         let apply_enabled = self.selection_destination_album.is_some();
         let window = presence.viewport.get().unwrap_or(self.rect);
         let max_width = f64::from(theme.tokens.metrics.panel_width_sheet);
 
         let visible_albums: Vec<(String, String, String)> = self
             .library_albums
-            .get(start..end)
-            .unwrap_or_default()
             .iter()
             .map(|(id, name, count)| {
                 (
@@ -9178,21 +9035,15 @@ impl PhotosApp {
             .map(|face| face.height(text_renderer, &sheet))
             .collect();
         let body_h: f64 = heights.iter().sum();
-        let paged = page_count > 1;
-        let (previous, next, cancel, choose, sheet_title) = (
-            tr("photos-previous"),
-            tr("photos-next"),
+        let (cancel, choose, sheet_title) = (
             tr("photos-cancel"),
             tr("photos-choose-album"),
             tr("photos-add-to-album"),
         );
-        let mut base_actions = Vec::new();
-        if paged {
-            base_actions.push(ModalAction::secondary(&previous).enabled(previous_enabled));
-            base_actions.push(ModalAction::secondary(&next).enabled(next_enabled));
-        }
-        base_actions.push(ModalAction::secondary(&cancel));
-        base_actions.push(ModalAction::primary(&choose).enabled(apply_enabled));
+        let base_actions = [
+            ModalAction::secondary(&cancel),
+            ModalAction::primary(&choose).enabled(apply_enabled),
+        ];
         let base_spec = ModalSpec::new(&sheet_title)
             .actions(&base_actions)
             .body_height(body_h)
@@ -9225,26 +9076,32 @@ impl PhotosApp {
             &layout,
             &spec,
         );
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &layout.body,
-        );
-        let mut ctx = PaintCtx::new(scene, transform, text_renderer, &sheet);
-        let mut y = layout.body.y0;
-        for ((face, h), (id, _, _)) in faces.iter().zip(&heights).zip(&visible_albums) {
-            let row = Rect::new(layout.body.x0, y, layout.body.x1, y + h);
-            let face = face.clone().interaction(ui::widget::Interaction {
-                hovered: row.contains(self.pointer),
-                ..Default::default()
-            });
-            face.paint(&mut ctx, row);
-            self.selection_destination_hits.push((id.clone(), row));
-            y += h;
-        }
-        scene.pop_layer();
+        let scroll = &mut self.selection_album_scroll;
+        scroll.set_viewport(layout.body, theme);
+        scroll.set_content_size(layout.body.width(), body_h);
+        let shown = scroll.content_rect();
+        let visible = scroll.visible_content();
+        let to_window = Vec2::new(shown.x0, shown.y0) - scroll.offset();
+        let pointer = shown
+            .contains(self.pointer)
+            .then(|| scroll.to_content(self.pointer));
+        let hits = &mut self.selection_destination_hits;
+        scroll.paint(scene, transform, &sheet, |scene, content| {
+            let mut ctx = PaintCtx::new(scene, content, text_renderer, &sheet);
+            let mut y = 0.0;
+            for ((face, h), (id, _, _)) in faces.iter().zip(&heights).zip(&visible_albums) {
+                let row = Rect::new(0.0, y, shown.width(), y + h);
+                if row.y1 >= visible.y0 && row.y0 <= visible.y1 {
+                    let face = face.clone().interaction(ui::widget::Interaction {
+                        hovered: pointer.is_some_and(|point| row.contains(point)),
+                        ..Default::default()
+                    });
+                    face.paint(&mut ctx, row);
+                }
+                hits.push((id.clone(), row + to_window));
+                y += h;
+            }
+        });
         ui::widget::modal_dialog::paint_actions(
             scene,
             transform,
@@ -9254,18 +9111,6 @@ impl PhotosApp {
             &spec,
         );
         let mut rects = layout.actions.iter().copied();
-        if paged {
-            let previous_rect = rects.next().unwrap_or(Rect::ZERO);
-            let next_rect = rects.next().unwrap_or(Rect::ZERO);
-            if previous_enabled {
-                self.selection_hits
-                    .push((SelectionHit::PreviousDestinationPage, previous_rect));
-            }
-            if next_enabled {
-                self.selection_hits
-                    .push((SelectionHit::NextDestinationPage, next_rect));
-            }
-        }
         let cancel_rect = rects.next().unwrap_or(Rect::ZERO);
         let apply_rect = rects.next().unwrap_or(Rect::ZERO);
         self.selection_hits
@@ -9479,11 +9324,13 @@ impl PhotosApp {
         let strip = Rect::new(body.x0, body.y0, body.x1, body.y0 + strip_h);
         let labels = [tr("photos-organize"), tr("photos-time-and-place")];
         let label_refs = [labels[0].as_str(), labels[1].as_str()];
-        let half = strip.width() / 2.0;
-        let segments = [
-            Rect::new(strip.x0, strip.y0, strip.x0 + half, strip.y1),
-            Rect::new(strip.x0 + half, strip.y0, strip.x1, strip.y1),
-        ];
+        let segments = SegmentedFace::partition(
+            strip,
+            &label_refs,
+            ui::widget::ControlSize::Regular,
+            text_renderer,
+            &local,
+        );
         let selected =
             usize::from(self.metadata_editor_section == MetadataEditorSection::TimeAndPlace);
         let hovered = segments
@@ -9496,8 +9343,11 @@ impl PhotosApp {
             &local,
             &SegmentedFace::new(&segments, &label_refs, selected).hovered(hovered),
         );
-        hits.push((MetadataEditorHit::Organize, segments[0]));
-        hits.push((MetadataEditorHit::TimeAndPlace, segments[1]));
+        hits.extend(
+            [MetadataEditorHit::Organize, MetadataEditorHit::TimeAndPlace]
+                .into_iter()
+                .zip(segments.iter().copied()),
+        );
 
         let fields_top = strip.y1 + sibling;
         let region = Rect::new(body.x0, fields_top, body.x1, body.y1.max(fields_top));
@@ -10398,6 +10248,7 @@ impl PhotosApp {
     /// invocation draining, and operation dispatch cannot drift apart.
     fn retained_buttons(&self) -> Vec<&Button> {
         let mut buttons = vec![&self.chrome.back, &self.chrome.search];
+        buttons.extend(self.chrome.history.button());
         buttons.extend(
             self.directory_import_buttons
                 .iter()
@@ -10424,6 +10275,7 @@ impl PhotosApp {
 
     fn retained_buttons_mut(&mut self) -> Vec<&mut Button> {
         let mut buttons = vec![&mut self.chrome.back, &mut self.chrome.search];
+        buttons.extend(self.chrome.history.button_mut());
         buttons.extend(
             self.directory_import_buttons
                 .iter_mut()
@@ -10571,8 +10423,30 @@ impl Widget for PhotosApp {
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
+        dyn ui::search::capability::SearchSource,
+        dyn ui::widget::WindowHeader
     );
+
+    /// The window's History button is the one retained child: the host
+    /// finds, focuses and announces it like the same control in a
+    /// `NavShell` header. Photos places, paints and routes it itself.
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.chrome
+            .history
+            .button()
+            .map(|button| button as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.chrome
+            .history
+            .button_mut()
+            .map(|button| button as &mut (dyn Widget + '_))
+            .into_iter()
+            .collect()
+    }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.places_motion_reduced = reduced;
@@ -11080,6 +10954,7 @@ impl Widget for PhotosApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
+        self.chrome.history.tree_rebuilt();
         self.chrome.drawer.scale_for(theme);
         // A docked sidebar or inspector takes its column beside the content;
         // in a narrow window each floats over it and takes nothing.
@@ -11328,18 +11203,19 @@ impl Widget for PhotosApp {
             self.pointer = next;
         }
         if self.directory_import_details_open {
+            let theme = self.layout_theme.clone();
+            self.directory_import_details_scroll.set_focused(true);
+            self.directory_import_details_scroll
+                .handle_event(event, ctx, &theme);
+            if *ctx.handled {
+                return;
+            }
             if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
                 && key.state == winit::event::ElementState::Pressed
             {
                 match &key.logical_key {
                     Key::Named(NamedKey::Escape | NamedKey::Enter) => {
                         self.close_directory_details();
-                    }
-                    Key::Named(NamedKey::ArrowLeft) => {
-                        self.page_directory_details(false);
-                    }
-                    Key::Named(NamedKey::ArrowRight) => {
-                        self.page_directory_details(true);
                     }
                     _ => return,
                 }
@@ -11356,14 +11232,8 @@ impl Widget for PhotosApp {
             ) {
                 if let Some(layout) = self.directory_import_details_layout.clone() {
                     match layout.hit(self.pointer) {
-                        Some(ModalHit::Close | ModalHit::Scrim | ModalHit::Action(2)) => {
+                        Some(ModalHit::Close | ModalHit::Scrim | ModalHit::Action(0)) => {
                             self.close_directory_details();
-                        }
-                        Some(ModalHit::Action(0)) => {
-                            self.page_directory_details(false);
-                        }
-                        Some(ModalHit::Action(1)) => {
-                            self.page_directory_details(true);
                         }
                         Some(ModalHit::Card | ModalHit::Action(_)) | None => {}
                     }
@@ -11375,6 +11245,14 @@ impl Widget for PhotosApp {
             // cursor motion still reaches it so hover feedback remains live.
             if !matches!(event, winit::event::WindowEvent::CursorMoved { .. }) {
                 *ctx.handled = true;
+                return;
+            }
+        }
+        if self.library_mode && self.selection_album_chooser {
+            let theme = self.layout_theme.clone();
+            self.selection_album_scroll.set_focused(true);
+            self.selection_album_scroll.handle_event(event, ctx, &theme);
+            if *ctx.handled {
                 return;
             }
         }
@@ -11876,6 +11754,10 @@ impl Widget for PhotosApp {
                     ..
                 }
             )
+            && self
+                .selection_album_scroll
+                .content_rect()
+                .contains(self.pointer)
             && let Some((album_id, _)) = self
                 .selection_destination_hits
                 .iter()
@@ -12229,6 +12111,13 @@ impl ui::widget::controls::ActionControls for PhotosApp {
         for button in self.retained_buttons_mut() {
             button.refresh_control_action_availability(allowed);
         }
+    }
+}
+
+impl ui::widget::WindowHeader for PhotosApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        self.chrome.history.set_control(control);
+        self.structure_dirty |= self.chrome.history.take_rebuilt();
     }
 }
 
@@ -12635,7 +12524,7 @@ impl ui::widget::AppWidget for PhotosApp {
         self.open_image_path()
             .and_then(|p| p.rsplit('/').next())
             .filter(|n| !n.is_empty())
-            .unwrap_or("Photos")
+            .unwrap_or(&self.app_name)
     }
 
     fn app_icon(&self) -> ui::widget::IconDescriptor {

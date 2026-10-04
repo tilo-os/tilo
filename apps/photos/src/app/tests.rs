@@ -1249,13 +1249,13 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         );
     }
 
-    eprintln!("phase destination_chooser_pages_every_album_and_refuses_a_stale_target");
+    eprintln!("phase destination_chooser_lists_every_album_and_refuses_a_stale_target");
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
-        let albums: Vec<_> = (1..=SELECTION_ALBUMS_PER_PAGE + 1)
+        let albums: Vec<_> = (1..=7)
             .map(|number| Album {
                 id: format!("photos.album:destination-{number}"),
                 name: format!("Destination {number}"),
@@ -1281,12 +1281,6 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
             &AccessAction::Activate,
             &mut doc,
         ));
-        assert!(app.perform_library_semantic_action(
-            "photos:selection:destination-next",
-            &AccessAction::Activate,
-            &mut doc,
-        ));
-        assert_eq!(app.selection_album_page, 1);
         assert!(app.perform_library_semantic_action(
             "photos:selection:destination:photos.album:destination-7",
             &AccessAction::Activate,
@@ -2397,7 +2391,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
                 .iter()
                 .filter(|node| node.role == Role::ListItem)
                 .count(),
-            DIRECTORY_FAILURES_PER_PAGE
+            receipt.failures.len()
         );
         assert!(dialog.description.as_deref().is_some_and(|text| text
             == tr_args(
@@ -2415,11 +2409,6 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
                     .unwrap_or_default()
                     .contains("/home/")
         }));
-        assert!(app.perform_directory_semantic_action(
-            "photos:directory-import:details-next",
-            &AccessAction::Activate,
-        ));
-        assert_eq!(app.directory_import_details_page, 1);
         assert!(app.perform_directory_semantic_action(
             "photos:directory-import:details-close",
             &AccessAction::Activate,

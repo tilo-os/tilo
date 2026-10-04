@@ -16,7 +16,9 @@ pub static HISTORY: HistoryDefinition = HistoryDefinition {
     app_id: "so.tilo.photos",
     scopes: &[HistoryScopeDefinition {
         key: "photos",
-        title: "Photograph and photo library",
+        // A message key: the History host names the scope through the
+        // toolkit's lookup, in the person's language.
+        title: "photos-history-scope",
         presentation: HistoryPresentation::DomainWithAssets {
             create: preview,
             assets: || {

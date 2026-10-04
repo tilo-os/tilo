@@ -272,7 +272,7 @@ fn history_previews_use_actual_historic_pixels_and_never_substitute_current_ones
             (1000, 750),
         )
         .unwrap();
-        driver.click_named("history-open").unwrap();
+        driver.click_named("window-history").unwrap();
         select_version(&mut driver, selected);
         let stale = held.0.take();
         assert!(!stale.is_empty());
@@ -349,7 +349,7 @@ fn history_previews_use_actual_historic_pixels_and_never_substitute_current_ones
             (1000, 750),
         )
         .unwrap();
-        closing_driver.click_named("history-open").unwrap();
+        closing_driver.click_named("window-history").unwrap();
         select_version(&mut closing_driver, selected);
         let closing = held.0.take();
         assert!(!closing.is_empty());
