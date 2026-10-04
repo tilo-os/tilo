@@ -26,7 +26,7 @@
 //! Document-mutating → an action: creating, renaming, moving, retagging, and
 //! tombstoning durable files/folders (and creating a file's text body). Presentation →
 //! never an action: which file is open, the tab order, the caret / selection /
-//! scroll, the sidebar flap, the active theme, the bottom-panel tab. Those local
+//! scroll, the sidebar, the bottom-panel tab. Those local
 //! operations are still exported on file resources: opening a file is a view
 //! operation and saving its collaborative buffer to disk is an effect. The
 //! language server, linter, and embedded terminal remain app-owned services.
@@ -43,7 +43,7 @@ use tilo_actions::{
     RetryPolicy,
 };
 
-use crate::command_palette::Command;
+use crate::commands::Command;
 use crate::doc::{CollaborativeFile, EditorDoc, FilePatch, ParentPatch};
 
 /// Registry `type_id` for every Code action.
@@ -57,14 +57,12 @@ pub enum CodeEditorOperation {
     },
     /// Open a file and reproduce an exact editor location. A disk path is
     /// carried for project-search hits whose lazy tree node is not revealed
-    /// yet; symbols use `node` directly. `show_search` restores the results
-    /// panel for a result row but stays false for file/symbol navigation.
+    /// yet; symbols use `node` directly.
     RevealLocation {
         file_id: Option<String>,
         path: Option<String>,
         line: usize,
         col: usize,
-        show_search: bool,
     },
     OpenFile {
         path: Option<String>,
@@ -1322,7 +1320,7 @@ pub(crate) fn publish_document_children(
 /// create stays on [`Resource::declarations`].
 pub(crate) fn project_view_effect_specs() -> Vec<ActionSpec> {
     let mut specs = Vec::new();
-    for (command, command_label, _) in Command::catalogue() {
+    for (command, command_label) in Command::catalogue() {
         let operation = CodeEditorOperation::Command {
             id: command.id().to_string(),
             argument: None,
@@ -1419,7 +1417,6 @@ fn symbol_resource(symbol: &SymbolRef) -> Resource {
             path: None,
             line: symbol.line,
             col: symbol.col,
-            show_search: false,
         },
     ))
 }
@@ -1439,7 +1436,6 @@ fn result_resource(result: &SearchResultRef) -> Resource {
             path: result.disk_path.clone(),
             line: result.line,
             col: result.col,
-            show_search: true,
         },
     ))
 }
