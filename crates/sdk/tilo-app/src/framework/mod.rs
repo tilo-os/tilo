@@ -122,6 +122,12 @@
 //!   operates it. The connections it serves the session through (an input
 //!   method, a virtual keyboard) are the surface's own, opened in a live run
 //!   ([`SurfaceCx::mode`]) and woken through [`SurfaceCx::waker`].
+//! * **Mounted in another process** — the shell hosting a terminal tab in
+//!   its own — the app is the same component, on a record the host opens
+//!   for it, publishing into the host's palette and agent door. What only
+//!   the host can provide (the session's process supervisor) it lends
+//!   ([`HostContext::lend`](ui_core::application::HostContext::lend)); the
+//!   view takes it with [`ViewCx::take_lent`] and otherwise uses its own.
 //! * **Who is editing** is [`ViewCx::me`] / [`SurfaceCx::me`] for the reader
 //!   of a view, and [`ActionCx::author`](tilo_resource::ActionCx::author)
 //!   inside an action: the same id, pinned with the action so every replica
