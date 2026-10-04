@@ -2136,7 +2136,7 @@ pub(crate) fn notebook_bound_declarations(
     workspace: &crate::Workspace,
 ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::Notebook>> {
     let order = PageResourceIndex::new(workspace.pages()).next_order(None);
-    vec![
+    let mut declarations = vec![
         ui::tilo_resource::ActionDecl::new(
             "new-page",
             "New note",
@@ -2155,42 +2155,41 @@ pub(crate) fn notebook_bound_declarations(
             },
         )
         .describe("Create a new root note."),
-    ]
+    ];
+    let title = today_title();
+    if !workspace.pages().iter().any(|page| page.title == title) {
+        declarations.push(
+            ui::tilo_resource::ActionDecl::new(
+                "daily-note",
+                "Create today's note",
+                Vec::new(),
+                move |_, _| Ok(new_page_action(Uuid::new_v4(), None, order, &title)),
+            )
+            .describe("Create today's note, titled with the date."),
+        );
+    }
+    declarations
 }
 
-/// Today's note: opened when the notebook has it, created otherwise. The
-/// new note's id is minted when the action is taken, not when it is
-/// published.
+/// Today's note, when the notebook has it: opened from the notebook.
 pub(crate) fn notebook_bound_actions(workspace: &crate::Workspace) -> Vec<ActionSpec> {
     let title = today_title();
-    if let Some(page) = workspace.pages().iter().find(|page| page.title == title) {
-        return view_operation_spec(
-            "daily-note",
-            "Open today's note",
-            &NotesOperation::OpenPage {
-                page: page.id,
-                block_id: None,
-            },
-        )
+    workspace
+        .pages()
+        .iter()
+        .find(|page| page.title == title)
+        .and_then(|page| {
+            view_operation_spec(
+                "daily-note",
+                "Open today's note",
+                &NotesOperation::OpenPage {
+                    page: page.id,
+                    block_id: None,
+                },
+            )
+        })
         .into_iter()
-        .collect();
-    }
-    let order = PageResourceIndex::new(workspace.pages()).next_order(None);
-    let domain = BuilderDomain::DailyCreate {
-        title: title.clone(),
-        order,
-    };
-    vec![
-        ActionSpec::deferred(
-            "daily-note",
-            "Create today's note",
-            ExecutionLocus::ClientLocal,
-            NOTES_ACTION_TYPE,
-            move || encode(&new_page_action(Uuid::new_v4(), None, order, &title)),
-        )
-        .reversible()
-        .with_continuation_identity(continuation::builder(domain)),
-    ]
+        .collect()
 }
 
 /// The title of today's note: the local date.
