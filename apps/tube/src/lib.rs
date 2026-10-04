@@ -64,8 +64,6 @@ pub mod widgets;
 
 pub use app::TubeApp;
 
-use ui::widget::Widget;
-
 /// Descriptors used by hosts that want type-specific search presentation in
 /// addition to Tube's standard [`ui::search::SearchProvider`] integration.
 pub fn searchable_types() -> Vec<search_type::SearchableType> {
@@ -77,42 +75,12 @@ pub fn searchable_types() -> Vec<search_type::SearchableType> {
     ]
 }
 
-/// The conventional entry point for a host embedding Tube. Starts with an
-/// empty catalogue — the bundled `sample` data has to be asked for by name,
-/// via [`TubeApp::new`], on a `--shots` path.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(TubeApp::empty())
-}
-
-/// The app as every host mounts it: the live root, which fetches the
-/// catalogue where the network worker can run.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    fn live_root() -> Box<dyn Widget> {
-        Box::new(TubeApp::new().online())
-    }
-    ui::launch::LaunchSpec::new("so.tilo.tube", live_root)
-        .component_actions(actions::register)
-        .as_definition("Tube")
+    ui::framework::definition::<TubeShell>()
 }
 
-/// `--shots` variant for a narrow viewport: the nav rail is forced open as an
-/// overlay flap with its dimming scrim, and starts from [`TubeApp::new`] (the
-/// sample catalogue) since a shot of an empty grid says nothing about the
-/// rail. Pair with a sub-breakpoint `--viewport` width.
-pub fn app_root_narrow_shot() -> Box<dyn Widget> {
-    Box::new(TubeApp::new().with_open_sidebar_shot())
-}
-
-/// `--shots` variant that starts on a named [`model::Route`], so each screen
-/// (home / trending / search / settings / …) can be captured for visual
-/// self-inspection — in particular the selected-nav-item and selected-chip
-/// contrast. Shots-only; the live app derives its route from sample/persisted
-/// state.
-pub fn app_root_route_shot(route: model::Route) -> Box<dyn Widget> {
-    Box::new(TubeApp::new().with_route_shot(route))
-}
-
-pub use resource::{Tube, TubeShared, TubeShell, launch_spec, standalone_launch};
+pub use resource::{Tube, TubeShared, TubeShell};
 
 #[cfg(test)]
 mod tests {
@@ -120,7 +88,7 @@ mod tests {
     use crate::search_type::{CHANNEL_TYPE_ID, HISTORY_TYPE_ID, PLAYLIST_TYPE_ID, VIDEO_TYPE_ID};
 
     #[test]
-    fn app_root_registers_search_types_and_starts_empty() {
+    fn search_types_are_registered_and_an_empty_app_starts_without_a_catalogue() {
         // Case `registers_all_tube_searchable_types`.
         {
             let types = searchable_types();
@@ -144,21 +112,20 @@ mod tests {
             // Every result can carry a thumbnail, so an OS palette reserves image space.
             assert!(types.iter().all(|t| t.has_thumbnail));
         }
-        // Case `app_root_starts_with_no_catalogue`:
-        // A host embedding Tube the documented way must not be handed the
-        // bundled sample catalogue (invented channels, subscriber and view
-        // counts) as though it were real.
+        // An app without the network must not show the bundled sample
+        // catalogue (invented channels, subscriber and view counts) as
+        // though it were real.
         {
             let app = TubeApp::empty();
             let m = app.model_for_test();
             assert!(
                 m.videos.is_empty(),
-                "app_root must not hand a host {} invented videos",
+                "an empty app must not show {} invented videos",
                 m.videos.len()
             );
             assert!(
                 m.channels.is_empty(),
-                "app_root must not hand a host {} invented channels",
+                "an empty app must not show {} invented channels",
                 m.channels.len()
             );
             assert!(
