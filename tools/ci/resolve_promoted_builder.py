@@ -10,10 +10,10 @@ import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
-REPOSITORY = "registry.tilo.so/tilo/tilo-builder"
 RESOLVER_SPEC = importlib.util.spec_from_file_location("builder_resolver", Path(__file__).with_name("resolve_builder.py"))
 resolver = importlib.util.module_from_spec(RESOLVER_SPEC)
 RESOLVER_SPEC.loader.exec_module(resolver)
+REPOSITORY = resolver.IMAGE
 PROMOTION_SPEC = importlib.util.spec_from_file_location("native_index", ROOT / "os/dev/promote-native-index.py")
 promotion = importlib.util.module_from_spec(PROMOTION_SPEC)
 PROMOTION_SPEC.loader.exec_module(promotion)
