@@ -445,11 +445,10 @@ impl SearchProvider for PlaceSearchProvider {
         } else if let Some(id) = resource.strip_prefix(POI_ROW) {
             let poi = local.pois.iter().find(|poi| poi.id == id)?;
             (PlaceHit::Poi(id.to_owned()), poi.name.clone())
-        } else if let Some(query) = resource.strip_prefix(HISTORY_ROW) {
+        } else {
+            let query = resource.strip_prefix(HISTORY_ROW)?;
             let query = local.recents.iter().find(|recent| *recent == query)?;
             (PlaceHit::Recent(query.clone()), query.clone())
-        } else {
-            return None;
         };
         let resource = hit.resource(&label);
         resource

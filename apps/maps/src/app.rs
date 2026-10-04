@@ -1216,12 +1216,11 @@ impl MapsApp {
                 .place_search
                 .geocoded(id)
                 .ok_or("Map place is no longer available")?;
+            let query = place.name.clone();
             self.perform(&MapsAction::UpsertPlaces {
-                places: vec![place.clone()],
+                places: vec![place],
             });
-            self.perform(&MapsAction::CommitSearch {
-                query: place.name.clone(),
-            });
+            self.perform(&MapsAction::CommitSearch { query });
         }
         self.select_place(id);
         Ok(())
