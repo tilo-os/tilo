@@ -822,7 +822,12 @@ mod tests {
                 let resource = PhotosResources
                     .publish_resource(&doc, &address.resource)
                     .expect("search must resolve the exact timeline resource");
-                assert!(resource.actions.iter().any(|action| action.id == "view-timeline"));
+                assert!(
+                    resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "view-timeline")
+                );
             }
         }
 
@@ -996,7 +1001,12 @@ mod tests {
             let resource = PhotosResources
                 .publish_resource(&doc, &address.resource)
                 .expect("the late stable album id resolves lazily");
-            assert!(resource.actions.iter().any(|action| action.id == "view-album"));
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "view-album")
+            );
         }
 
         {
