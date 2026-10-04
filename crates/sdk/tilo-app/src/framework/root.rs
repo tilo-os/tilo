@@ -595,7 +595,7 @@ impl SearchProvider for ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn ui_core::history_mode::capability::DocumentHistory; inner = content);
 
     type Inner = dyn Widget;
 
@@ -942,6 +942,67 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
     fn has_pending_control_invocation(&self) -> bool {
         self.dispatch.has_pending()
             || ui_core::widget::controls::has_pending_control_invocation(self.content.as_ref())
+    }
+}
+
+// The root owns the file whose history it shows beside the resource's (the
+// runner checks the source it registered is this root's); everything else
+// about History is its content's, as before.
+impl<R: Resource> ui_core::history_mode::capability::DocumentHistory for ResourceRoot<R> {
+    fn history_registration(
+        &self,
+    ) -> Result<
+        Option<ui_core::history_mode::HistoryRegistration>,
+        ui_core::history_mode::HistoryRegistrationError,
+    > {
+        match &self.run.file_history {
+            Some((source, definition)) => {
+                let scopes = definition.scopes.iter().map(|scope| {
+                    ui_core::history_mode::HistorySourceRegistration::CheckedFiles {
+                        scope: scope.key,
+                        source: source.clone(),
+                    }
+                });
+                ui_core::history_mode::HistoryRegistration::new(definition, scopes.collect())
+                    .map(Some)
+            }
+            None => ui_core::history_mode::capability::history_registration(self.content.as_ref()),
+        }
+    }
+
+    fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
+        ui_core::widget::capability::capability::<
+            dyn ui_core::history_mode::capability::DocumentHistory,
+        >(self.content.as_ref())
+        .map_or(Ok(()), |content| content.history_restore_readiness(scope))
+    }
+
+    fn document_history_definition(
+        &self,
+    ) -> Option<&'static ui_core::history_mode::HistoryDefinition> {
+        ui_core::history_mode::capability::document_history_definition(self.content.as_ref())
+    }
+
+    fn provides_document_history(&self) -> bool {
+        ui_core::widget::capability::capability::<
+            dyn ui_core::history_mode::capability::DocumentHistory,
+        >(self.content.as_ref())
+        .is_some_and(ui_core::history_mode::capability::DocumentHistory::provides_document_history)
+    }
+
+    fn document_action_applied(
+        &mut self,
+        action: &tilo_actions::EncodedAction,
+        before: &[ui_core::automerge::ChangeHash],
+        doc: &ui_core::automerge::AutoCommit,
+        path: &ui_core::automerge::ObjId,
+    ) {
+        if let Some(content) = ui_core::widget::capability::capability_mut::<
+            dyn ui_core::history_mode::capability::DocumentHistory,
+        >(self.content.as_mut())
+        {
+            content.document_action_applied(action, before, doc, path);
+        }
     }
 }
 
