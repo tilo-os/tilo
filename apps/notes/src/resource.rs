@@ -43,6 +43,7 @@ impl Resource for Notebook {
             .map(|(page, tag)| crate::model::TagAssignment { page, tag })
             .collect();
         workspace.bodies = std::sync::Arc::new(crate::actions::read_bodies(doc, workspace.pages()));
+        workspace.body_states = Rc::new(crate::actions::read_body_states(doc, workspace.pages()));
         Ok(workspace)
     }
 

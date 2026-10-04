@@ -69,6 +69,9 @@ pub struct Workspace {
     pub data: WorkspaceData,
     /// What every note says, when the workspace was read from a notebook.
     pub bodies: std::sync::Arc<crate::actions::Bodies>,
+    /// Each note's body as the rich text it is, published as the note's
+    /// body resource.
+    pub body_states: std::rc::Rc<std::collections::HashMap<PageId, tilo_document::RichTextState>>,
 }
 
 impl Workspace {

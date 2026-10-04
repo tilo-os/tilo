@@ -1208,6 +1208,7 @@ impl NotesResourceCtx {
                     .collect(),
             },
             bodies: std::sync::Arc::new(bodies),
+            ..crate::Workspace::default()
         }
     }
 }
@@ -1235,6 +1236,22 @@ pub fn read_bodies(doc: &AutoCommit, pages: &[PageMeta]) -> Bodies {
     pages
         .iter()
         .map(|page| (page.id, NotesDoc::page_stored_blocks(doc, page.id)))
+        .collect()
+}
+
+/// Each note's body as rich text, read where the notebook keeps it.
+pub fn read_body_states(
+    doc: &AutoCommit,
+    pages: &[PageMeta],
+) -> HashMap<PageId, tilo_document::RichTextState> {
+    pages
+        .iter()
+        .filter_map(|page| {
+            let body = NotesDoc::page_body(doc, page.id)?;
+            RichText::read_under(doc, &body)
+                .ok()
+                .map(|state| (page.id, state))
+        })
         .collect()
 }
 
@@ -1676,12 +1693,12 @@ pub(crate) fn page_body_dispatcher(
 
 /// A page's body, published as the rich-text resource it is: its actions
 /// apply as the notebook's [`NotesAction::EditBody`] on that page.
-fn page_body_child(page: &PageMeta) -> Resource {
+fn page_body_child(page: &PageMeta, state: Option<&tilo_document::RichTextState>) -> Resource {
     let id = page_body_id(page.id);
     let mut body = ui::tilo_resource::publish_child::<RichText, crate::resource::Notebook>(
         &id,
         &page.title,
-        None,
+        state,
         page_body_edit(page.id),
     );
     stamp_published_dynamic_continuations(&mut body, id.as_bytes());
@@ -1836,7 +1853,10 @@ fn page_resource_from_index(
         }
     }
     // Nested rich-text body — same action vocabulary as a root RichText.
-    res = res.with_child(page_body_child(m));
+    res = res.with_child(page_body_child(
+        m,
+        workspace.and_then(|workspace| workspace.body_states.get(&m.id)),
+    ));
     res
 }
 
@@ -1967,10 +1987,9 @@ fn block_resource_in_page(
 /// tree, each exporting rename / delete / new-child. Every document-mutating
 /// operation is exported as the same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &NotesResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    vec![notebook_resource(
-        ctx,
-        &ctx.workspace(read_bodies(doc, &ctx.pages)),
-    )]
+    let mut workspace = ctx.workspace(read_bodies(doc, &ctx.pages));
+    workspace.body_states = std::rc::Rc::new(read_body_states(doc, &ctx.pages));
+    vec![notebook_resource(ctx, &workspace)]
 }
 
 /// Attach Draft continuation domains to published dynamic doors that still
