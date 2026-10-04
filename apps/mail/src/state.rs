@@ -190,6 +190,8 @@ pub enum Command {
     Bulk(BulkAction),
     /// Apply an action to the open message.
     Message(CtxAction),
+    /// Offer every action on the open message in a menu.
+    MessageMenu,
 }
 
 /// The whole app's mutable state, minus the transient overlays (composer,

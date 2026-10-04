@@ -641,9 +641,13 @@ impl MailApp {
             .map(|message| message.id)
             .collect();
         let mut state = self.shared.borrow_mut();
+        for id in &ids {
+            state.mailbox.move_to(*id, Folder::Trash);
+        }
+        // The selection is made where it lives: in the open Trash.
+        state.reveal_folder(Folder::Trash);
         state.set_bulk_selecting(true);
         for id in ids {
-            state.mailbox.move_to(id, Folder::Trash);
             state.toggle_bulk_selection(id);
         }
         state.push_intent(Intent::ConfirmBulkPurge);
@@ -1246,6 +1250,18 @@ impl MailApp {
                             .apply_message_action(doc, id, action);
                     }
                 }
+                Command::MessageMenu => {
+                    let selected = self.shared.borrow().selected;
+                    if let Some(id) = selected {
+                        // The menu hangs from the trailing end of the
+                        // message's header, where the button that asked
+                        // for it stands.
+                        let geometry = self.nav.geometry();
+                        let column = geometry.content_column;
+                        let at = Point::new(column.x1, column.y0 + geometry.header_height);
+                        self.open_menu(id, at, None);
+                    }
+                }
             }
         }
         self.process_intents();
@@ -1345,8 +1361,13 @@ impl MailApp {
             .secondary("Ag")
             .two_line_secondary()
             .height(text, theme);
-        let top = column.y0 + geometry.header_height + index as f64 * row_h;
-        let row = Rect::new(column.x0, top, column.x1, top + row_h);
+        let list = Rect::new(
+            column.x0,
+            column.y0 + geometry.header_height,
+            column.x1,
+            column.y1,
+        );
+        let row = crate::list::RowFrame::new(list, row_h, false, theme).row(index, 0.0);
         let at = Point::new(column.x0 + column.width() * 0.6, row.center().y);
         self.open_menu(id, at, Some(row));
     }
@@ -1485,7 +1506,7 @@ impl MailApp {
             msg.subject,
             msg.body
         );
-        self.compose.open_reply("", &subj, &quote);
+        self.compose.open_forward(&subj, &quote);
         self.close_menu();
         self.dirty = true;
     }
@@ -7311,7 +7332,7 @@ mod tests {
             assert_eq!(app.setup_editing, Some(1));
             assert_eq!(
                 app.read_setup_config().email,
-                "sam.rivera@northwind.example",
+                "sam@northwind.example",
                 "the account-settings form is scoped to the clicked account"
             );
         }
