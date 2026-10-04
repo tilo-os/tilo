@@ -69,17 +69,38 @@ impl ZoneKind {
         ZoneKind::ALL.iter().copied().find(|z| z.name() == name)
     }
 
+    /// The zone as people read it: sentence case, with the acronym kept.
+    pub fn title(self) -> &'static str {
+        match self {
+            ZoneKind::Drop => "Drop",
+            ZoneKind::Block => "Block",
+            ZoneKind::Public => "Public",
+            ZoneKind::External => "External",
+            ZoneKind::Dmz => "DMZ",
+            ZoneKind::Work => "Work",
+            ZoneKind::Home => "Home",
+            ZoneKind::Internal => "Internal",
+            ZoneKind::Trusted => "Trusted",
+        }
+    }
+
     /// One-line description shown under the zone title in the summary.
     pub fn description(self) -> &'static str {
         match self {
-            ZoneKind::Drop => "Incoming packets are dropped with no reply. Outgoing allowed.",
-            ZoneKind::Block => "Incoming rejected with icmp-host-prohibited. Outgoing allowed.",
-            ZoneKind::Public => "For untrusted public networks. Only selected services accepted.",
-            ZoneKind::External => "For routers with masquerading enabled. Untrusted networks.",
-            ZoneKind::Dmz => "For a demilitarized zone — limited internal access, public-facing.",
-            ZoneKind::Work => "For mostly-trusted work networks.",
-            ZoneKind::Home => "For trusted home networks. Peers mostly allowed.",
-            ZoneKind::Internal => "For internal networks. Peers mostly trusted.",
+            ZoneKind::Drop => {
+                "Incoming traffic is dropped without a reply. Outgoing traffic is allowed."
+            }
+            ZoneKind::Block => "Incoming connections are refused. Outgoing traffic is allowed.",
+            ZoneKind::Public => {
+                "For untrusted public networks. Only the services you allow are reachable."
+            }
+            ZoneKind::External => "For the outside of a router that masquerades your network.",
+            ZoneKind::Dmz => "For public-facing hosts with limited access to the internal network.",
+            ZoneKind::Work => "For work networks where you mostly trust the other computers.",
+            ZoneKind::Home => "For home networks where you mostly trust the other computers.",
+            ZoneKind::Internal => {
+                "For internal networks where you mostly trust the other computers."
+            }
             ZoneKind::Trusted => "All network connections are accepted.",
         }
     }
@@ -132,6 +153,15 @@ impl Target {
         }
     }
 
+    /// What happens to traffic no rule matched, as a sentence-case value.
+    pub fn outcome(self) -> &'static str {
+        match self {
+            Target::Default | Target::Reject => "Rejected",
+            Target::Accept => "Accepted",
+            Target::Drop => "Dropped",
+        }
+    }
+
     pub const ALL: [Target; 4] = [
         Target::Default,
         Target::Accept,
@@ -152,6 +182,13 @@ impl Proto {
         match self {
             Proto::Tcp => "tcp",
             Proto::Udp => "udp",
+        }
+    }
+    /// The protocol as it is written in prose: an acronym.
+    pub fn title(self) -> &'static str {
+        match self {
+            Proto::Tcp => "TCP",
+            Proto::Udp => "UDP",
         }
     }
     pub const ALL: [Proto; 2] = [Proto::Tcp, Proto::Udp];
@@ -176,6 +213,13 @@ impl Action {
         match self {
             Action::Allow => "allow",
             Action::Deny => "deny",
+        }
+    }
+    /// The action as a sentence-case word.
+    pub fn title(self) -> &'static str {
+        match self {
+            Action::Allow => "Allow",
+            Action::Deny => "Deny",
         }
     }
     pub const ALL: [Action; 2] = [Action::Allow, Action::Deny];
@@ -210,6 +254,23 @@ impl Matcher {
         match self {
             Matcher::Service(s) => ServiceCatalog::proto_of(s).to_string(),
             Matcher::Port { proto, .. } => proto.label().to_string(),
+        }
+    }
+
+    /// What the rule matches as people read it: the service's name, or
+    /// the port (range); the protocol has a column of its own.
+    pub fn title(&self) -> String {
+        match self {
+            Matcher::Service(s) => ServiceCatalog::name_of(s).to_string(),
+            Matcher::Port { port, .. } => format!("Port {port}"),
+        }
+    }
+
+    /// The protocol column: acronyms, both named when a service uses both.
+    pub fn proto_title(&self) -> &'static str {
+        match self {
+            Matcher::Service(s) => ServiceCatalog::proto_title(ServiceCatalog::proto_of(s)),
+            Matcher::Port { proto, .. } => proto.title(),
         }
     }
 
@@ -388,7 +449,7 @@ impl FirewallConfig {
 pub fn validate_port(port: &str) -> Result<(), String> {
     let value = port.trim();
     if value.is_empty() {
-        return Err("port is required".into());
+        return Err("Enter a port or a port range.".into());
     }
     let (first, last) = match value.split_once('-') {
         Some(range) => range,
@@ -398,12 +459,12 @@ pub fn validate_port(port: &str) -> Result<(), String> {
         part.parse::<u16>()
             .ok()
             .filter(|number| *number > 0)
-            .ok_or_else(|| "use a port from 1 to 65535".into())
+            .ok_or_else(|| "Use a port from 1 to 65535.".into())
     };
     let first = parse(first)?;
     let last = parse(last)?;
     if first > last {
-        return Err("a port range must run from low to high".into());
+        return Err("Start a port range with the lower port.".into());
     }
     Ok(())
 }
@@ -425,14 +486,14 @@ pub fn validate_source(source: &str) -> Result<(), String> {
         .split_once('/')
         .map_or((value, None), |(ip, p)| (ip, Some(p)));
     if address.parse::<std::net::Ipv4Addr>().is_err() {
-        return Err("source must be an IPv4 address or CIDR".into());
+        return Err("Enter an IPv4 address or network, such as 192.168.1.0/24.".into());
     }
     if let Some(prefix) = prefix {
         prefix
             .parse::<u8>()
             .ok()
             .filter(|prefix| *prefix <= 32)
-            .ok_or_else(|| "CIDR prefix must be from /0 to /32".to_string())?;
+            .ok_or_else(|| "Use a network prefix from /0 to /32.".to_string())?;
     }
     Ok(())
 }
@@ -479,21 +540,21 @@ impl ServiceCatalog {
             name: "SSH",
             ports: "22",
             proto: "tcp",
-            description: "Secure Shell remote login",
+            description: "Remote login over Secure Shell",
         },
         ServiceDef {
             id: "http",
             name: "HTTP",
             ports: "80",
             proto: "tcp",
-            description: "Web server (cleartext)",
+            description: "Unencrypted web server",
         },
         ServiceDef {
             id: "https",
             name: "HTTPS",
             ports: "443",
             proto: "tcp",
-            description: "Web server (TLS)",
+            description: "Encrypted web server",
         },
         ServiceDef {
             id: "dns",
@@ -507,11 +568,11 @@ impl ServiceCatalog {
             name: "mDNS",
             ports: "5353",
             proto: "udp",
-            description: "Multicast DNS / service discovery",
+            description: "Service discovery on the local network",
         },
         ServiceDef {
             id: "dhcpv6-client",
-            name: "DHCPv6 Client",
+            name: "DHCPv6 client",
             ports: "546",
             proto: "udp",
             description: "IPv6 address autoconfiguration",
@@ -521,11 +582,11 @@ impl ServiceCatalog {
             name: "Samba",
             ports: "137-139,445",
             proto: "tcp/udp",
-            description: "Windows file & printer sharing",
+            description: "Windows file and printer sharing",
         },
         ServiceDef {
             id: "samba-client",
-            name: "Samba Client",
+            name: "Samba client",
             ports: "137-138",
             proto: "udp",
             description: "Browse Windows shares",
@@ -542,7 +603,7 @@ impl ServiceCatalog {
             name: "IPP",
             ports: "631",
             proto: "tcp",
-            description: "Internet printing protocol",
+            description: "Network printing",
         },
         ServiceDef {
             id: "nfs",
@@ -563,14 +624,14 @@ impl ServiceCatalog {
             name: "NTP",
             ports: "123",
             proto: "udp",
-            description: "Network time sync",
+            description: "Network time",
         },
         ServiceDef {
             id: "ftp",
             name: "FTP",
             ports: "21",
             proto: "tcp",
-            description: "File transfer (legacy)",
+            description: "Unencrypted file transfer",
         },
     ];
 
@@ -584,6 +645,15 @@ impl ServiceCatalog {
 
     pub fn proto_of(id: &str) -> &'static str {
         Self::get(id).map_or("tcp", |s| s.proto)
+    }
+
+    /// A catalog protocol (`tcp`, `udp`, `tcp/udp`) as it reads in prose.
+    pub fn proto_title(proto: &str) -> &'static str {
+        match proto {
+            "tcp/udp" => "TCP and UDP",
+            "udp" => "UDP",
+            _ => "TCP",
+        }
     }
 
     /// The list of catalog ids — used to seed the service dropdown in the
