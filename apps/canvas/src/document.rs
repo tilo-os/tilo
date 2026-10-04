@@ -5,10 +5,16 @@
 //! replaces it as one step of its history, so Undo brings the old one back;
 //! a new tab starts a separate artwork beside it.
 //!
-//! The file (`.artwork`) is the artwork's content as JSON: its title, size,
-//! ground, layers in order, marks in order and the media saved in it. It is
-//! the same data every collaborator simulates from, so a painting opened
-//! from a file paints exactly as it was saved.
+//! The file (`.artwork`) is a ZIP package, so it travels whole: a
+//! `mimetype` entry first, `artwork.json` (the artwork's content: its
+//! title, size, ground, layers in order, marks in order and the media saved
+//! in it) and, under `content/`, each picture its marks show, once however
+//! often it is placed, as the bytes it was placed from and named by its
+//! content address. The JSON is the same data every collaborator simulates
+//! from, so a painting opened from a file paints exactly as it was saved;
+//! opening it puts its pictures back in the content store, so they show on
+//! a machine that never had them. The JSON alone still opens as an artwork
+//! without pictures of its own.
 
 use std::collections::BTreeMap;
 
@@ -21,11 +27,15 @@ use crate::model::{Artwork, Ground, MarkBody};
 /// The file extension of a saved artwork.
 pub const EXTENSION: &str = "artwork";
 /// The media type of a saved artwork.
-pub const MEDIA_TYPE: &str = "application/vnd.tilo.artwork+json";
+pub const MEDIA_TYPE: &str = "application/vnd.tilo.artwork+zip";
 /// What the file says it is.
 const FORMAT: &str = "tilo-artwork";
-/// The largest artwork file read, in bytes.
-pub const MAX_FILE_BYTES: usize = 64 << 20;
+/// The largest artwork file read, in bytes: room for a few large photos.
+pub const MAX_FILE_BYTES: usize = 256 << 20;
+/// The package's entry holding the artwork's JSON.
+const DOCUMENT_ENTRY: &str = "artwork.json";
+/// Where the package keeps pictures, each named by its content hash.
+const CONTENT_DIR: &str = "content/";
 
 /// A size a new artwork starts at.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -285,15 +295,27 @@ impl ArtworkFile {
         }
     }
 
-    /// The file's bytes: indented JSON, so a saved artwork diffs and merges
-    /// as text too.
-    pub fn to_bytes(&self) -> Vec<u8> {
+    /// The artwork's JSON, indented, as the package's `artwork.json` keeps
+    /// it and an `open-artwork` action carries it.
+    pub fn to_json(&self) -> Vec<u8> {
         let mut bytes = serde_json::to_vec_pretty(self).unwrap_or_default();
         bytes.push(b'\n');
         bytes
     }
 
-    /// Read a saved artwork.
+    /// The content addresses of the pictures the marks show, each once.
+    pub fn pictures(&self) -> std::collections::BTreeSet<&str> {
+        self.marks
+            .iter()
+            .filter_map(|mark| match &mark.body.shape {
+                crate::model::Shape::Image { src, .. } => Some(src.as_str()),
+                _ => None,
+            })
+            .filter(|src| ui::tilo_actions::content_hash(src).is_some())
+            .collect()
+    }
+
+    /// Read an artwork's JSON.
     ///
     /// # Errors
     /// Says why the bytes are not an artwork this version reads.
@@ -412,6 +434,96 @@ pub mod recents {
     }
 }
 
+/// The package of `file`: its JSON and every picture its marks show that
+/// `store` holds, as the bytes it holds them as. Also the pictures it does
+/// not hold, by address: the file opens without them, as the artwork shows
+/// now.
+///
+/// # Errors
+/// Says why the package cannot be written (in memory, it always can).
+pub fn pack(
+    file: &ArtworkFile,
+    store: &tilo_content::ContentStore,
+) -> Result<(Vec<u8>, Vec<String>), String> {
+    use std::io::Write as _;
+    use zip::CompressionMethod::{Deflated, Stored};
+    use zip::write::SimpleFileOptions;
+    let failed = |error: &dyn std::fmt::Display| format!("the artwork cannot be packed: {error}");
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    // First and stored, so the type shows at a fixed place in the file.
+    let stored = SimpleFileOptions::default().compression_method(Stored);
+    zip.start_file("mimetype", stored)
+        .map_err(|error| failed(&error))?;
+    zip.write_all(MEDIA_TYPE.as_bytes())
+        .map_err(|error| failed(&error))?;
+    zip.start_file(
+        DOCUMENT_ENTRY,
+        SimpleFileOptions::default().compression_method(Deflated),
+    )
+    .map_err(|error| failed(&error))?;
+    zip.write_all(&file.to_json())
+        .map_err(|error| failed(&error))?;
+    let mut missing = Vec::new();
+    for address in file.pictures() {
+        let held = ui::tilo_actions::content_hash(address)
+            .and_then(|hash| Some((hash, store.read(hash)?)));
+        let Some((hash, bytes)) = held else {
+            missing.push(address.to_owned());
+            continue;
+        };
+        // Pictures are compressed already: kept as they are.
+        zip.start_file(format!("{CONTENT_DIR}{hash}"), stored)
+            .map_err(|error| failed(&error))?;
+        zip.write_all(&bytes).map_err(|error| failed(&error))?;
+    }
+    let bytes = zip.finish().map_err(|error| failed(&error))?.into_inner();
+    Ok((bytes, missing))
+}
+
+/// Read a saved artwork: a package, its pictures put in `store`, or the
+/// artwork's JSON alone.
+///
+/// # Errors
+/// Says why the bytes are not an artwork this version reads, or a picture
+/// in it is not the content its name says.
+pub fn unpack(bytes: &[u8], store: &tilo_content::ContentStore) -> Result<ArtworkFile, String> {
+    if !bytes.starts_with(b"PK\x03\x04") {
+        return ArtworkFile::parse(bytes);
+    }
+    let broken = |error: bounded_zip::ZipError| format!("this artwork file is damaged: {error}");
+    let limits = bounded_zip::ZipLimits {
+        max_parts: crate::model::MAX_MARKS.saturating_add(2),
+        max_part_bytes: MAX_FILE_BYTES as u64,
+        max_total_bytes: (MAX_FILE_BYTES as u64).saturating_mul(2),
+    };
+    let mut archive = bounded_zip::BoundedArchive::from_bytes(bytes, limits).map_err(broken)?;
+    let json = archive
+        .read(DOCUMENT_ENTRY, MAX_FILE_BYTES as u64)
+        .map_err(broken)?;
+    let file = ArtworkFile::parse(&json)?;
+    let names: Vec<String> = archive.file_names().map(str::to_owned).collect();
+    for name in names {
+        let Some(hash) = name.strip_prefix(CONTENT_DIR) else {
+            continue;
+        };
+        if store.has(hash) {
+            continue;
+        }
+        let picture = archive
+            .read(&name, crate::picture::MAX_PICTURE_BYTES as u64)
+            .map_err(broken)?;
+        if !tilo_content::verify(hash, &picture) {
+            return Err(format!(
+                "this artwork file is damaged: its picture {hash} is not that content"
+            ));
+        }
+        store
+            .put(&picture)
+            .map_err(|error| format!("the artwork's picture could not be kept: {error}"))?;
+    }
+    Ok(file)
+}
+
 /// Answer `save-artwork`: write the artwork's file to the path given, or
 /// keep it as content.
 ///
@@ -421,23 +533,34 @@ pub fn save(
     art: &Artwork,
     save: &crate::resource::SaveArtwork,
 ) -> Result<serde_json::Value, String> {
-    let bytes = ArtworkFile::of(art).to_bytes();
+    let (bytes, missing) = pack(
+        &ArtworkFile::of(art),
+        &tilo_content::ContentStore::for_app(),
+    )?;
     let size = bytes.len();
-    let Some(path) = &save.path else {
-        let address = crate::resource::store(&bytes)?;
-        return Ok(serde_json::json!({"content": address, "bytes": size}));
+    let mut answer = match &save.path {
+        None => serde_json::json!({"content": crate::resource::store(&bytes)?, "bytes": size}),
+        Some(path) => {
+            let path = std::path::Path::new(path);
+            if !path.is_absolute()
+                || path.extension().and_then(|extension| extension.to_str()) != Some(EXTENSION)
+            {
+                return Err(format!(
+                    "path is an absolute path ending in .{EXTENSION}, not {}",
+                    path.display()
+                ));
+            }
+            write(path, &bytes)?;
+            serde_json::json!({"path": path.display().to_string(), "bytes": size})
+        }
     };
-    let path = std::path::Path::new(path);
-    if !path.is_absolute()
-        || path.extension().and_then(|extension| extension.to_str()) != Some(EXTENSION)
-    {
-        return Err(format!(
-            "path is an absolute path ending in .{EXTENSION}, not {}",
-            path.display()
-        ));
+    if !missing.is_empty() {
+        // Saved all the same: the file shows what the artwork shows now.
+        if let Some(answer) = answer.as_object_mut() {
+            answer.insert("missing_pictures".into(), serde_json::json!(missing));
+        }
     }
-    write(path, &bytes)?;
-    Ok(serde_json::json!({"path": path.display().to_string(), "bytes": size}))
+    Ok(answer)
 }
 
 /// Write `bytes` to the file at `path`, replacing it.
@@ -450,11 +573,12 @@ pub fn write(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     tilo_files::blocking::write_atomic(&dir, &name, bytes).map_err(cannot)
 }
 
-/// Read the artwork file at `path`.
+/// Read the artwork file at `path`, its pictures put in the app's content
+/// store.
 ///
 /// # Errors
 /// Says why it cannot be read or is not an artwork.
 pub fn read(path: &std::path::Path) -> Result<ArtworkFile, String> {
     let bytes = crate::resource::read_file(&path.display().to_string(), MAX_FILE_BYTES)?;
-    ArtworkFile::parse(&bytes)
+    unpack(&bytes, &tilo_content::ContentStore::for_app())
 }
