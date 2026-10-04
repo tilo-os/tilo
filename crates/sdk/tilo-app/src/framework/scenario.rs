@@ -62,6 +62,8 @@ pub(crate) struct Fixtures {
 pub(crate) struct Run {
     pub(crate) mode: RunMode,
     pub(crate) fixtures: Rc<Fixtures>,
+    /// What the launch named: paths, URLs.
+    pub(crate) arguments: Rc<[String]>,
 }
 
 impl Run {
@@ -72,13 +74,21 @@ impl Run {
                 content,
                 ..Fixtures::default()
             }),
+            arguments: Rc::from([]),
         }
+    }
+
+    /// This run, launched naming `arguments`.
+    pub(crate) fn launched_on(mut self, arguments: &[String]) -> Self {
+        self.arguments = Rc::from(arguments);
+        self
     }
 
     pub(crate) fn past() -> Self {
         Self {
             mode: RunMode::Past,
             fixtures: Rc::default(),
+            arguments: Rc::from([]),
         }
     }
 
@@ -213,6 +223,7 @@ impl<R: Resource> Fixture<R> {
                 content: self.content,
                 _directory: self.directory,
             }),
+            arguments: Rc::from([]),
         }
     }
 

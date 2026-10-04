@@ -168,3 +168,59 @@ fn a_launch_naming_a_file_the_app_opens_hands_it_that_file() {
         .collect();
     assert_eq!(notes, ["keeper"]);
 }
+
+/// An app that opens every file, and shows where it was launched.
+struct InspectorApp;
+
+impl ResourceApp for InspectorApp {
+    type Resource = Sketch;
+    const ID: &'static str = "so.tilo.test-inspector";
+    const TITLE: &'static str = "Inspector";
+    const OPENS: &'static [&'static str] = &[ANY_MEDIA_TYPE];
+    const ARGUMENTS: usize = 1;
+
+    fn view(cx: &mut ViewCx<Sketch>) -> Element {
+        let launched = cx.launch_arguments().join(" ");
+        Box::new(Text::new(&format!("Launched on {launched}")))
+    }
+
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Sketch>> {
+        input
+            .file()
+            .map(|file| Sketch::NOTE.with(format!("{} {}", file.name(), file.media_type())))
+            .into_iter()
+            .collect()
+    }
+}
+
+#[test]
+fn an_app_that_opens_every_file_is_handed_one_of_no_known_type_and_its_view_sees_the_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("firmware");
+    std::fs::write(&path, [0xde, 0xad]).unwrap();
+    let path = path.to_str().unwrap();
+    let definition = tilo_app::framework::definition::<InspectorApp>();
+    assert!(definition.opens_media_type("application/pdf"));
+    assert!(definition.opens_media_type("application/octet-stream"));
+
+    let mut app = TestApp::<InspectorApp>::launched(&[path]).unwrap();
+    app.harness().relayout();
+    let notes: Vec<String> = app
+        .state()
+        .notes
+        .values()
+        .map(|note| note.text.clone())
+        .collect();
+    assert_eq!(notes, ["firmware application/octet-stream"]);
+    let expected = format!("Launched on {path}");
+    assert!(
+        app.harness().inspection_json().unwrap().contains(&expected),
+        "the view reads the launch's arguments"
+    );
+
+    // A folder is no file to hand over.
+    let mut plain =
+        TestApp::<InspectorApp>::launched(&[directory.path().to_str().unwrap()]).unwrap();
+    plain.harness().relayout();
+    assert!(plain.state().notes.is_empty());
+}

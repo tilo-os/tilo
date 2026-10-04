@@ -1,202 +1,159 @@
-//! Local vault Effects and the live item catalogue.
+//! What Passwords does with the vault, as a typed effect vocabulary, and the
+//! live rows it publishes for the vault's items.
 //!
-//! Shared filter/search/selection preferences are document actions on
-//! [`crate::resource::Passwords`]. Add / import / export are Effects with no
-//! document delta. Item rows expose edit / copy / reveal / delete for agents;
-//! the widget also commits selection into the shared document when focusing.
+//! The vault is this device's encrypted credential store
+//! ([`accounts::SecretStore`]), never a document: every change to it is an
+//! effect the surface answers. The palette, agents and scripts reach the same
+//! handler the window's controls do.
 
-use serde::{Deserialize, Serialize};
-use ui::tilo_actions::{ActionSpec, EncodedAction, ExecutionLocus, OperationKind, Resource};
+use accounts::{SecretItem, SecretItemKind};
+use ui::framework::LiveRow;
+use ui::tilo_resource::{self, Effect};
 
-use accounts::SecretItem;
+/// The prefix of an item row's id; the rest is the item's opaque vault id.
+pub const ITEM_PREFIX: &str = "passwords:item:";
 
-use crate::resource::{Passwords, VaultState};
-use crate::showcase::ShowcaseMode;
-
-pub const OPERATION_TYPE: &str = "tilo.passwords.operation";
-pub const VAULT_RESOURCE_ID: &str = "passwords:vault";
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum PasswordOperation {
+/// What Passwords does with the vault.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "passwords.effect")]
+pub enum PasswordsEffect {
+    /// New item.
+    #[effect(permission = "read")]
     Add,
-    SaveDraft,
-    CancelDraft,
-    GeneratePassword,
-    Edit { id: String },
-    Copy { id: String },
-    Reveal { id: String },
-    RequestDelete { id: String },
-    ImportCsv,
-    ExportCsv,
+    /// Save.
+    ///
+    /// Saves the item open in the editor to the vault.
+    Save,
+    /// Cancel editing.
+    #[effect(permission = "read")]
+    Cancel,
+    /// Generate strong password.
+    ///
+    /// Fills the editor's password with a new strong one.
+    Generate,
+    /// Edit.
+    Edit {
+        #[param("Opaque id of the vault item")]
+        item: String,
+    },
+    /// Copy secret.
+    ///
+    /// Copies the item's password, key or note to the clipboard, which
+    /// clears after 30 seconds.
+    #[effect(privileged, permission = "read")]
+    Copy {
+        #[param("Opaque id of the vault item")]
+        item: String,
+    },
+    /// Reveal secret for 10 seconds.
+    #[effect(privileged, permission = "read")]
+    Reveal {
+        #[param("Opaque id of the vault item")]
+        item: String,
+    },
+    /// Delete item.
+    #[effect(destructive)]
+    Delete {
+        #[param("Opaque id of the vault item")]
+        item: String,
+    },
+    /// Import passwords.
+    ///
+    /// Opens the system file chooser for a browser password CSV.
+    Import,
+    /// Export CSV…
+    ///
+    /// Asks for confirmation, then writes every item unencrypted to a file
+    /// the person chooses.
+    Export,
+    /// Search vault.
+    #[effect(permission = "read")]
+    Search {
+        #[param("Text to find in titles, usernames, origins, or tags")]
+        query: Option<String>,
+    },
+    /// Filter vault.
+    #[effect(permission = "read")]
+    Filter {
+        #[param("all | favorites | login | api-key | note | wifi | other")]
+        filter: String,
+    },
+    /// Select item.
+    #[effect(permission = "read")]
+    Select {
+        #[param("Opaque id of the vault item")]
+        item: String,
+    },
 }
 
-fn operation(id: &str, label: &str, kind: OperationKind, value: &PasswordOperation) -> ActionSpec {
-    ActionSpec::operation(id, label, kind, OPERATION_TYPE, value).unwrap_or_else(|_| {
-        ActionSpec::immediate_encoded(
-            id,
-            label,
-            ExecutionLocus::ClientLocal,
-            EncodedAction {
-                type_id: "tilo.invalid-arguments".into(),
-                payload: Vec::new(),
-            },
-        )
-    })
+/// The published id of the vault item `id`.
+pub fn item_resource_id(id: &str) -> String {
+    format!("{ITEM_PREFIX}{id}")
 }
 
-/// Vault-level Effects / Views with no document delta (always published).
-pub fn vault_effect_specs() -> Vec<ActionSpec> {
-    vec![
-        operation(
-            "add",
-            "New item",
-            OperationKind::View,
-            &PasswordOperation::Add,
-        ),
-        operation(
-            "import",
-            "Import passwords",
-            OperationKind::Effect,
-            &PasswordOperation::ImportCsv,
-        ),
-        operation(
-            "export",
-            "Export CSV…",
-            OperationKind::Effect,
-            &PasswordOperation::ExportCsv,
-        ),
-    ]
-}
-
-/// Editor-session Effects / Views overlaid when a draft is open.
-pub fn editor_session_specs() -> Vec<ActionSpec> {
-    vec![
-        operation(
-            "save",
-            "Save",
-            OperationKind::Effect,
-            &PasswordOperation::SaveDraft,
-        ),
-        operation(
-            "cancel",
-            "Cancel editing",
-            OperationKind::View,
-            &PasswordOperation::CancelDraft,
-        ),
-        operation(
-            "generate",
-            "Generate strong password",
-            OperationKind::Effect,
-            &PasswordOperation::GeneratePassword,
-        ),
-    ]
-}
-
-pub fn item_resource(item: &SecretItem) -> Resource {
+/// One vault item as a live row. Rows feed system-wide search and
+/// collaboration, so the encrypted vault metadata (a title, an account, an
+/// origin) is not copied into it: it names the item by its opaque id and
+/// kind, and no operation carries a secret.
+pub fn item_row(item: &SecretItem) -> LiveRow {
     let id = item.id.0.clone();
-    let (resource_type, resource_name, copy_label, reveal_label) = match item.kind {
-        accounts::SecretItemKind::Login => (
+    let (kind, name, copy, reveal) = match item.kind {
+        SecretItemKind::Login => (
             "passwords.login",
             "Saved login",
             "Copy password",
             "Reveal password for 10 seconds",
         ),
-        accounts::SecretItemKind::ApiKey => (
+        SecretItemKind::ApiKey => (
             "passwords.api-key",
             "Saved API key",
             "Copy API key",
             "Reveal API key for 10 seconds",
         ),
-        accounts::SecretItemKind::SecureNote => (
+        SecretItemKind::SecureNote => (
             "passwords.note",
             "Saved secure note",
             "Copy note",
             "Reveal note for 10 seconds",
         ),
-        accounts::SecretItemKind::Wifi => (
+        SecretItemKind::Wifi => (
             "passwords.wifi",
             "Saved Wi-Fi password",
             "Copy Wi-Fi password",
             "Reveal password for 10 seconds",
         ),
-        accounts::SecretItemKind::Other => (
+        SecretItemKind::Other => (
             "passwords.secret",
             "Saved secret",
             "Copy secret",
             "Reveal secret for 10 seconds",
         ),
     };
-    // Resources feed system-wide search and collaboration. The encrypted
-    // vault metadata (including a title, account and origin) is intentionally
-    // not copied into this public descriptor; only an opaque item id is used
-    // in the client-local action payload, and no action carries a secret.
-    Resource::new(format!("passwords:item:{id}"), resource_type, resource_name)
-        .with_action(operation(
-            "edit",
-            "Edit",
-            OperationKind::View,
-            &PasswordOperation::Edit { id: id.clone() },
-        ))
-        .with_action(operation(
-            "copy",
-            copy_label,
-            OperationKind::Effect,
-            &PasswordOperation::Copy { id: id.clone() },
-        ))
-        .with_action(operation(
-            "reveal",
-            reveal_label,
-            OperationKind::View,
-            &PasswordOperation::Reveal { id: id.clone() },
-        ))
-        .with_action(operation(
-            "delete",
-            "Delete…",
-            OperationKind::Effect,
-            &PasswordOperation::RequestDelete { id },
-        ))
-}
-
-/// Live vault item rows (no `passwords.vault` root).
-pub fn live_item_resources(items: &[SecretItem]) -> Vec<Resource> {
-    items.iter().map(item_resource).collect()
-}
-
-/// Standalone / `--shots` overlay: [`tilo_resource::publish`] root plus live
-/// item children, with editor-session ops when drafting.
-pub fn standalone_resources(
-    items: &[SecretItem],
-    mode: ShowcaseMode,
-    state: &VaultState,
-) -> Vec<Resource> {
-    let mut root =
-        ui::tilo_resource::publish::<Passwords>(VAULT_RESOURCE_ID, "Password vault", state);
-    if matches!(mode, ShowcaseMode::Editor | ShowcaseMode::DeleteConfirm) {
-        for spec in editor_session_specs() {
-            root = root.with_action(spec);
-        }
-    }
-    root.children = live_item_resources(items);
-    vec![root]
+    let mut copy_spec = PasswordsEffect::Copy { item: id.clone() }.bound();
+    copy.clone_into(&mut copy_spec.label);
+    let mut reveal_spec = PasswordsEffect::Reveal { item: id.clone() }.bound();
+    reveal.clone_into(&mut reveal_spec.label);
+    LiveRow::new(item_resource_id(&id), kind, name)
+        .operation(PasswordsEffect::Edit { item: id.clone() }.bound())
+        .operation(copy_spec)
+        .operation(reveal_spec)
+        .operation(PasswordsEffect::Delete { item: id }.bound())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use accounts::SecretItem;
-    use ui::tilo_actions::ActionRegistry;
 
     #[test]
-    fn item_resources_keep_encrypted_metadata_out_of_public_descriptors() {
+    fn item_rows_keep_encrypted_metadata_out_of_public_descriptors() {
         let mut item = SecretItem::login("Private bank", "ada@private.example", "not-public");
         item.add_origin("https://private.example").unwrap();
-        let resource = item_resource(&item);
+        let resource = item_row(&item).into_resource();
         let mut public = format!("{} {} {}", resource.id.0, resource.kind, resource.label);
         for action in &resource.actions {
             public.push_str(&action.label);
-            let encoded = action
-                .build_args(Vec::<(String, ui::tilo_actions::ArgValue)>::new())
-                .unwrap();
+            let encoded = action.build_json(&serde_json::Map::new()).unwrap();
             public.push_str(&String::from_utf8_lossy(&encoded.payload));
         }
 
@@ -209,21 +166,20 @@ mod tests {
         ] {
             assert!(!public.contains(private), "resource leaked {private:?}");
         }
-        assert!(public.contains("Reveal"));
-    }
-
-    // Shared filter declarations plus Effects form the palette door; item
-    // ops ride the standalone overlay's live children.
-    ui::action_contract_tests! {
-        seed: ui::automerge::AutoCommit::new(),
-        registry: {
-            let mut registry = ActionRegistry::new();
-            <Passwords as ui::tilo_resource::Resource>::register(&mut registry);
-            registry
-        },
-        resources: |doc| {
-            crate::PasswordsSurface::demo(crate::ShowcaseMode::Editor).publish_resources(doc)
-        },
-        palette: ["New item", "Import passwords", "Generate strong password", "Copy password", "Search vault"],
+        let ids: Vec<&str> = resource.actions.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["edit", "copy", "reveal", "delete"]);
+        assert!(public.contains("Reveal password"));
+        let delete = resource.actions.iter().find(|a| a.id == "delete").unwrap();
+        assert_eq!(
+            delete.contract.risk,
+            ui::tilo_actions::RiskLevel::Destructive,
+            "deleting asks first"
+        );
+        let copy = resource.actions.iter().find(|a| a.id == "copy").unwrap();
+        assert_eq!(
+            copy.contract.confirmation,
+            ui::tilo_actions::ConfirmationPolicy::Confirm,
+            "handing out a secret asks first"
+        );
     }
 }

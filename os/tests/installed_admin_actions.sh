@@ -4,9 +4,10 @@
 # the admin's own ssh login after first login is complete.
 #
 #   1. the compositor serves the admin control socket by default;
-#   2. `tilo-control actions list` answers, and lists Notes;
+#   2. any Notes window already open closes through its own action;
 #   3. invoking Notes' launcher action, with no listing before it, succeeds;
-#   4. the state read (`tilo-control windows`) shows its window.
+#   4. `tilo-control actions list` answers, and lists Notes;
+#   5. the state read (`tilo-control windows`) shows its new window.
 set -euo pipefail
 
 fail() { printf 'admin actions: %s\n' "$*" >&2; exit 1; }
@@ -33,11 +34,24 @@ if tr '\0' '\n' <"/proc/$shell_pid/environ" | grep -q '^TILO_TEST_CONTROL='; the
   fail "the compositor runs with TILO_TEST_CONTROL; this check must not depend on it"
 fi
 
-windows_with_notes() {
+notes_tabs() {
   tilo-control windows --json \
-    | python3 -c 'import json,sys; print(sum(1 for w in json.load(sys.stdin) if w.get("app_id") == "so.tilo.notes"))'
+    | python3 -c 'import json,sys; [print("%s:%s" % (w["group"], w["tab"])) for w in json.load(sys.stdin) if w.get("app_id") == "so.tilo.notes"]'
 }
-before=$(windows_with_notes) || fail "windows read failed"
+
+# Earlier checks may have left Notes open, and opening an open app only
+# focuses it. Close those windows through their own actions first, so the
+# launch below must produce a new one.
+open_tabs=$(notes_tabs) || fail "windows read failed"
+for tab in $open_tabs; do
+  tilo-control actions invoke desktop-windows "tab.close:$tab" >/dev/null \
+    || fail "closing Notes tab $tab through desktop-windows:tab.close:$tab failed"
+done
+for _ in $(seq 1 30); do
+  [[ -z $(notes_tabs) ]] && break
+  sleep 1
+done
+[[ -z $(notes_tabs) ]] || fail "Notes tabs still open 30 s after closing them: $(notes_tabs)"
 
 # Invoke by address first: an address resolves without a listing before it.
 answer=$(tilo-control actions invoke applications so.tilo.notes) \
@@ -58,8 +72,8 @@ assert any(r["provider"] == "applications" and r["id"] == "so.tilo.notes" for r 
 PY
 
 for _ in $(seq 1 60); do
-  after=$(windows_with_notes) || fail "windows read failed"
-  if (( after > before )); then
+  opened=$(notes_tabs) || fail "windows read failed"
+  if [[ -n $opened ]]; then
     tilo-control windows
     echo "admin actions: Notes opened through the action model"
     exit 0

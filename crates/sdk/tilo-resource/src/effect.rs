@@ -35,7 +35,9 @@
 //! Variant options: `label = "…"` (else the first doc line), `job` (runs in
 //! the background and reports progress, then its result), `cancellable`
 //! (a job the caller may cancel), `returns` (answers with a JSON value),
-//! `destructive` (asks for confirmation) and `permission = "read"` (any
+//! `destructive` (asks for confirmation), `privileged` (hands out or shows
+//! a credential, such as copying a one-time code: asks for confirmation
+//! too) and `permission = "read"` (any
 //! participant may invoke it; the default needs write access). Field
 //! `#[param("…")]` describes a parameter.
 
@@ -137,6 +139,9 @@ pub struct EffectDecl {
     pub answers: Answers,
     /// Asks for confirmation: deletes, overwrites, sends.
     pub destructive: bool,
+    /// Hands out or shows a credential (copies a one-time code, reveals a
+    /// password): asks for confirmation, though nothing is lost.
+    pub privileged: bool,
     pub permission: PermissionRequirement,
 }
 
@@ -194,10 +199,12 @@ impl EffectDecl {
             permission: self.permission,
             risk: if self.destructive {
                 RiskLevel::Destructive
+            } else if self.privileged {
+                RiskLevel::Privileged
             } else {
                 RiskLevel::Low
             },
-            confirmation: if self.destructive {
+            confirmation: if self.destructive || self.privileged {
                 ConfirmationPolicy::Confirm
             } else {
                 ConfirmationPolicy::None
@@ -306,13 +313,16 @@ mod tests {
         },
         #[effect(label = "Wipe", job, cancellable, destructive)]
         Wipe { passes: u32 },
+        /// Copy a thing's key.
+        #[effect(privileged, permission = "read")]
+        CopyKey { thing: String },
     }
 
     #[test]
     fn a_derived_vocabulary_publishes_each_variant_and_round_trips_through_its_spec() {
         let specs = Sample::specs();
         let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(ids, ["reload", "rename-thing", "wipe"]);
+        assert_eq!(ids, ["reload", "rename-thing", "wipe", "copy-key"]);
 
         let rename = &specs[1];
         assert_eq!(rename.label, "Rename a thing");
@@ -368,6 +378,22 @@ mod tests {
             Sample::Wipe { passes: 3 }
         );
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
+    }
+
+    #[test]
+    fn a_privileged_effect_asks_first_and_binds_to_the_entity_it_names() {
+        let copy = Sample::CopyKey { thing: "a".into() };
+        let bound = copy.bound();
+        assert_eq!(bound.id, "copy-key");
+        assert_eq!(bound.label, "Copy a thing's key");
+        assert_eq!(bound.kind, OperationKind::Effect);
+        assert!(bound.params().is_empty(), "the row names the thing already");
+        assert_eq!(bound.contract.risk, RiskLevel::Privileged);
+        assert_eq!(bound.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert_eq!(bound.contract.permission, PermissionRequirement::Read);
+        let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(encoded.type_id, "test.effects");
+        assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), copy);
     }
 
     #[test]

@@ -171,6 +171,7 @@ fn native_publication_closed_families_do_not_promote_presence_or_requests() {
             since: vec![],
             room: peer.room().into(),
             invite_id: None,
+            nonce: 0,
         },
         NeighbourMsg::PresenceCleared {
             peer: 0,
