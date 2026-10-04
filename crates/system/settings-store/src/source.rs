@@ -1,10 +1,11 @@
 //! A settings document the host provides instead of the local file.
 //!
-//! A host with no config directory (a browser page) or one that keeps
-//! settings somewhere of its own installs a [`SettingsSource`];
-//! [`crate::load`], [`crate::load_section`] and [`crate::update_section`]
-//! then read and merge into it. Nothing is installed natively, so native
-//! builds keep reading and writing `settings.json`.
+//! A host that keeps settings somewhere of its own installs a
+//! [`SettingsSource`]; [`crate::load`], [`crate::load_section`] and
+//! [`crate::update_section`] then read and merge into it. The shell installs
+//! its session's records ([`crate::SessionSettings`]); a browser page, which
+//! has no config directory, installs a [`HostDocument`]. Every other process
+//! reads and writes `settings.json`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};

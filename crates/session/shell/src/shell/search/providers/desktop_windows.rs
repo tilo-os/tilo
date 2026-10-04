@@ -822,7 +822,8 @@ mod tests {
             let app = match tile {
                 TileContent::Foreign { app_id, .. }
                 | TileContent::LocalApp { app_id, .. }
-                | TileContent::PeerWindow { app_id, .. } => app_id.as_str(),
+                | TileContent::PeerWindow { app_id, .. }
+                | TileContent::HostedWindow { app_id, .. } => app_id.as_str(),
                 other => panic!("{} wore a tile with no app face: {other:?}", row.id),
             };
             let expected = if row.id.contains(":100:2") || row.id == "group.close:100" {

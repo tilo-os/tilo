@@ -133,7 +133,7 @@ def disks(directory, rows, final, disk_size=SIZE, staged=True):
 class DirectFinalTests(unittest.TestCase):
     def test_readback_binds_hardware_id_and_independent_gpt_guid(self):
         plan, rows, final, size = direct_fixture()
-        plan["windows_disk"]["unique_id"] = "eui.002538A441BE8A46"
+        plan["windows_disk"]["unique_id"] = "eui.0025380000000001"
         expected = str(uuid.UUID(int=99))
         with tempfile.TemporaryDirectory() as tmp:
             _, target_path = disks(Path(tmp), rows, final, size, staged=False)
@@ -141,7 +141,7 @@ class DirectFinalTests(unittest.TestCase):
                 current = {**plan["windows_disk"], "partitions": rows}
                 self.assertEqual(copy.validate_physical(plan, None, current, target)[2], expected)
                 reviewed = copy.verified_disk_readback(plan, target, rows, expected)
-                self.assertEqual(reviewed["unique_id"], "eui.002538A441BE8A46")
+                self.assertEqual(reviewed["unique_id"], "eui.0025380000000001")
                 self.assertEqual(reviewed["disk_guid"], expected)
                 changed = {**current, "unique_id": "eui.different"}
                 with self.assertRaisesRegex(ValueError, "identity"):
