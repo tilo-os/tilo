@@ -378,6 +378,151 @@ mod tests {
         directory_request_flows_through_overlay_to_folder_reply();
     }
 
+    /// Every key the overlay sees, as the compositor hands it over.
+    fn press(overlay: &mut FilePickerOverlay, key: &winit::keyboard::Key, modifiers: Modifiers) {
+        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut doc = automerge::AutoCommit::new();
+        let mut handled = false;
+        let mut focus_target = None;
+        let taffy = TaffyTree::<()>::new();
+        for pressed in [true, false] {
+            let event = crate::shell::test_control::keyboard_input_event(key, pressed);
+            assert!(overlay.handle_event(
+                viewport,
+                &event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: taffy::NodeId::from(0_u64),
+                    taffy: &taffy,
+                },
+            ));
+        }
+    }
+
+    use winit::event::Modifiers;
+    use winit::keyboard::{Key, NamedKey};
+
+    #[test]
+    fn a_save_over_an_existing_file_waits_for_replace() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
+        let photo = root.join("labrador.jpg");
+        std::fs::write(&photo, b"original").unwrap();
+
+        let tree = WorkspaceTree::bootstrap_demo();
+        let workspace = tree
+            .desktop
+            .active_workspace()
+            .expect("active workspace")
+            .id;
+        let chrome = ChromeState::new(tree);
+        let queue = crate::portal::FilePickerQueue::new();
+        let (reply, mut received) = oneshot::channel();
+        queue.spawn(FilePickerRequest {
+            caller: crate::portal::PortalCaller::new(workspace, "so.tilo.canvas"),
+            title: "Export a picture".into(),
+            save: true,
+            directory: false,
+            multiple: false,
+            accept_label: Some("Export".into()),
+            current_name: Some("labrador.jpg".into()),
+            filters: Vec::new(),
+            scope: Some(crate::portal::PickerScope {
+                initial_dir: root.clone(),
+                roots: vec![root.clone()],
+            }),
+            reply,
+        });
+        let mut overlay = FilePickerOverlay::default();
+        overlay.set_queue(queue);
+        assert!(overlay.pump(Some(&chrome)));
+
+        let none = Modifiers::default();
+        press(&mut overlay, &Key::Named(NamedKey::Enter), none);
+        overlay.pump(Some(&chrome));
+        assert!(received.try_recv().is_err(), "the app hears nothing yet");
+        assert_eq!(
+            overlay.widget().and_then(|w| w.replace_prompt()),
+            Some(photo.as_path())
+        );
+
+        // Escape takes back the Save, not the whole chooser.
+        press(&mut overlay, &Key::Named(NamedKey::Escape), none);
+        overlay.pump(Some(&chrome));
+        assert!(received.try_recv().is_err());
+        let widget = overlay.widget().expect("chooser still up");
+        assert_eq!(widget.replace_prompt(), None);
+
+        // A new name: Ctrl+A selects the suggested one, typing replaces it.
+        let mut ctrl = winit::keyboard::ModifiersState::empty();
+        ctrl.set(winit::keyboard::ModifiersState::CONTROL, true);
+        press(
+            &mut overlay,
+            &Key::Character("a".into()),
+            Modifiers::from(ctrl),
+        );
+        for ch in ["e", "d", "i", "t", ".", "j", "p", "g"] {
+            press(&mut overlay, &Key::Character(ch.into()), none);
+        }
+        assert_eq!(
+            overlay.widget().map(ui::widget::FilePicker::filename),
+            Some("edit.jpg")
+        );
+        press(&mut overlay, &Key::Named(NamedKey::Enter), none);
+        assert!(overlay.pump(Some(&chrome)));
+        assert_eq!(
+            received.try_recv().unwrap(),
+            Some(vec![root.join("edit.jpg")])
+        );
+        assert_eq!(std::fs::read(&photo).unwrap(), b"original");
+    }
+
+    #[test]
+    fn replace_answers_with_the_existing_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
+        let photo = root.join("labrador.jpg");
+        std::fs::write(&photo, b"original").unwrap();
+        let tree = WorkspaceTree::bootstrap_demo();
+        let workspace = tree
+            .desktop
+            .active_workspace()
+            .expect("active workspace")
+            .id;
+        let chrome = ChromeState::new(tree);
+        let queue = crate::portal::FilePickerQueue::new();
+        let (reply, mut received) = oneshot::channel();
+        queue.spawn(FilePickerRequest {
+            caller: crate::portal::PortalCaller::new(workspace, "so.tilo.canvas"),
+            title: "Export a picture".into(),
+            save: true,
+            directory: false,
+            multiple: false,
+            accept_label: Some("Export".into()),
+            current_name: Some("labrador.jpg".into()),
+            filters: Vec::new(),
+            scope: Some(crate::portal::PickerScope {
+                initial_dir: root.clone(),
+                roots: vec![root],
+            }),
+            reply,
+        });
+        let mut overlay = FilePickerOverlay::default();
+        overlay.set_queue(queue);
+        assert!(overlay.pump(Some(&chrome)));
+        let none = Modifiers::default();
+        press(&mut overlay, &Key::Named(NamedKey::Enter), none);
+        press(&mut overlay, &Key::Named(NamedKey::Tab), none);
+        press(&mut overlay, &Key::Named(NamedKey::Enter), none);
+        assert!(overlay.pump(Some(&chrome)));
+        assert_eq!(received.try_recv().unwrap(), Some(vec![photo]));
+    }
+
     #[test]
     fn a_scope_decided_with_the_request_replaces_the_users_directories() {
         let temp = tempfile::tempdir().expect("tempdir");

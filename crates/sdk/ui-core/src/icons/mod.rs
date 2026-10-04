@@ -208,6 +208,24 @@ pub enum Icon {
     ALargeSmall,
     /// Accessibility options. Lucide `accessibility`.
     Accessibility,
+    /// Lined up along their left edges. Lucide `align-start-vertical`.
+    AlignStartVertical,
+    /// Lined up on a vertical centre line. Lucide `align-center-vertical`.
+    AlignCenterVertical,
+    /// Lined up along their right edges. Lucide `align-end-vertical`.
+    AlignEndVertical,
+    /// Lined up along their top edges. Lucide `align-start-horizontal`.
+    AlignStartHorizontal,
+    /// Lined up on a horizontal centre line. Lucide `align-center-horizontal`.
+    AlignCenterHorizontal,
+    /// Lined up along their bottom edges. Lucide `align-end-horizontal`.
+    AlignEndHorizontal,
+    /// Spaced evenly from left to right. Lucide
+    /// `align-horizontal-distribute-center`.
+    AlignHorizontalDistributeCenter,
+    /// Spaced evenly from top to bottom. Lucide
+    /// `align-vertical-distribute-center`.
+    AlignVerticalDistributeCenter,
 }
 
 impl Icon {
@@ -1320,6 +1338,62 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             );
             paths
         }
+        Icon::AlignStartVertical => vec![
+            rect_path(6.0, 14.0, 9.0, 6.0, 2.0),
+            rect_path(6.0, 4.0, 16.0, 6.0, 2.0),
+            path_from_d("M2 2v20"),
+        ],
+        Icon::AlignCenterVertical => [
+            "M12 2v20",
+            "M8 10H4a2 2 0 0 1-2-2V6c0-1.1.9-2 2-2h4",
+            "M16 10h4a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-4",
+            "M8 20H7a2 2 0 0 1-2-2v-2c0-1.1.9-2 2-2h1",
+            "M16 14h1a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-1",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::AlignEndVertical => vec![
+            rect_path(2.0, 4.0, 16.0, 6.0, 2.0),
+            rect_path(9.0, 14.0, 9.0, 6.0, 2.0),
+            path_from_d("M22 22V2"),
+        ],
+        Icon::AlignStartHorizontal => vec![
+            rect_path(4.0, 6.0, 6.0, 16.0, 2.0),
+            rect_path(14.0, 6.0, 6.0, 9.0, 2.0),
+            path_from_d("M22 2H2"),
+        ],
+        Icon::AlignCenterHorizontal => [
+            "M2 12h20",
+            "M10 16v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-4",
+            "M10 8V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v4",
+            "M20 16v1a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2v-1",
+            "M14 8V7c0-1.1.9-2 2-2h2a2 2 0 0 1 2 2v1",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::AlignEndHorizontal => vec![
+            rect_path(4.0, 2.0, 6.0, 16.0, 2.0),
+            rect_path(14.0, 9.0, 6.0, 9.0, 2.0),
+            path_from_d("M22 22H2"),
+        ],
+        Icon::AlignHorizontalDistributeCenter => vec![
+            rect_path(4.0, 5.0, 6.0, 14.0, 2.0),
+            rect_path(14.0, 7.0, 6.0, 10.0, 2.0),
+            path_from_d("M17 22v-5"),
+            path_from_d("M17 7V2"),
+            path_from_d("M7 22v-3"),
+            path_from_d("M7 5V2"),
+        ],
+        Icon::AlignVerticalDistributeCenter => vec![
+            path_from_d("M22 17h-3"),
+            path_from_d("M22 7h-5"),
+            path_from_d("M5 17H2"),
+            path_from_d("M7 7H2"),
+            rect_path(5.0, 14.0, 14.0, 6.0, 2.0),
+            rect_path(7.0, 4.0, 10.0, 6.0, 2.0),
+        ],
     }
 }
 
@@ -2055,6 +2129,14 @@ mod tests {
                 Icon::Moon,
                 Icon::ALargeSmall,
                 Icon::Accessibility,
+                Icon::AlignStartVertical,
+                Icon::AlignCenterVertical,
+                Icon::AlignEndVertical,
+                Icon::AlignStartHorizontal,
+                Icon::AlignCenterHorizontal,
+                Icon::AlignEndHorizontal,
+                Icon::AlignHorizontalDistributeCenter,
+                Icon::AlignVerticalDistributeCenter,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
