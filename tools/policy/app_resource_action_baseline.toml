@@ -57,8 +57,6 @@
 "apps/terminal/src/main_body.rs" = 2
 "apps/themes/src/resource.rs" = 2
 "apps/totp/src/resource.rs" = 1
-"apps/tube/src/app.rs" = 2
-"apps/tube/src/resource.rs" = 2
 "apps/typst-editor/src/app.rs" = 2
 "apps/video-editor/src/resource.rs" = 1
 "apps/video-player/src/resource.rs" = 2
@@ -165,7 +163,6 @@
 "apps/settings/src/resource.rs" = 1
 "apps/slides/src/framework_history.rs" = 2
 "apps/themes/src/framework_history.rs" = 1
-"apps/tube/src/app.rs" = 3
 "apps/typst-editor/src/framework_history.rs" = 1
 "apps/video-editor/src/project_file.rs" = 2
 "apps/video-player/src/actions.rs" = 1
@@ -183,6 +180,5 @@
 "apps/settings/src/resource.rs" = 1
 "apps/sheets/src/resource.rs" = 1
 "apps/slides/src/resource.rs" = 1
-"apps/tube/src/resource.rs" = 1
 "apps/video-editor/src/app.rs" = 1
 "apps/word-processor/src/framework.rs" = 1

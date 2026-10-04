@@ -20,10 +20,8 @@ web-features = ["media"]
 
 [dependencies]
 fnv.workspace = true
-hex.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Shared streaming and playback layer. The watch-page `VideoPlayer` uses the
 # same `media::MediaEngine` as the local player and editor preview.
@@ -45,11 +43,10 @@ anyhow.workspace = true
 # Live fetch (Invidious / SponsorBlock / DeArrow), driven by a background
 # worker and excluded from the shots path.
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["http", "json"] }
-# The owner-only watch history file.
+# Grayjay device-sync peers file.
 tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 bounded-command = { path = "../../crates/system/bounded-command", optional = true }
-blake3.workspace = true
 
 # Live YouTube backend (off by default): rustypipe handles InnerTube requests
 # and botguard tokens without ffmpeg or yt-dlp.

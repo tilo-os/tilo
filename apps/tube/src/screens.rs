@@ -12,6 +12,7 @@ use ui::widget::{IconWidget, ScrollAxis, Scrollable, TextInput};
 use vello::peniko::Color;
 
 use crate::action::{Action, ActionBus, SettingFlag};
+use crate::actions::{TubeAction, TubeEffect};
 use crate::images::Imgs;
 use crate::model::{Category, Channel, Playlist, Route, SearchType, SkipMode, TubeModel, Video};
 use crate::util::{clock, human_count, human_views};
@@ -232,7 +233,7 @@ fn icon_button(theme: &Theme, bus: &ActionBus, kind: Icon, action: Action) -> Fl
 /// affordance on a wide window (the rail is already docked) that becomes the
 /// way to summon the rail once it has collapsed into an overlay flap on a
 /// narrow one.
-fn menu_button(theme: &Theme) -> Flex {
+fn menu_button(theme: &Theme, bus: &ActionBus) -> Flex {
     let m = &theme.tokens.metrics;
     let button = Flex::row()
         .id("nav_toggle")
@@ -247,11 +248,7 @@ fn menu_button(theme: &Theme) -> Flex {
         })
         .hover_surface(hover_pill_surface(theme))
         .accessible_name("Show or hide navigation");
-    if let Some(binding) = crate::actions::sidebar_binding() {
-        button.on_action(binding)
-    } else {
-        button
-    }
+    button.on_click(bus, Action::ToggleSidebar)
 }
 
 fn section_header(theme: &Theme, kind: Icon, title: &str, subtitle: &str) -> Flex {
@@ -399,7 +396,7 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
 /// not optimistically mutated here: its server-preferred action either commits
 /// through the collaboration host and comes back in the document projection,
 /// or remains unchanged. That keeps the visible state honest when offline.
-fn queue_control(model: &TubeModel, theme: &Theme, video_id: &str) -> Flex {
+fn queue_control(model: &TubeModel, theme: &Theme, bus: &ActionBus, video_id: &str) -> Flex {
     let queued = model.is_queued(video_id);
     let label = if queued { "In queue" } else { "Add to queue" };
     let sel = selected_accent_fill(theme);
@@ -435,11 +432,13 @@ fn queue_control(model: &TubeModel, theme: &Theme, video_id: &str) -> Flex {
         .accessible_name(format!("{label}: shared watch queue"))
         .push(icon(Icon::ListVideo, 15.0, fg))
         .push(text_c(label, 12.5, fg));
-    if let Some(binding) = crate::actions::queue_binding(model, video_id) {
-        control.on_action(binding)
-    } else {
-        control
-    }
+    control.on_click(
+        bus,
+        Action::Edit(TubeAction::SetQueueMembership {
+            video_id: video_id.to_owned(),
+            queued: !queued,
+        }),
+    )
 }
 
 /// A "N views • date" line that drops any missing part (and its separator), so a
@@ -548,6 +547,7 @@ fn skeleton_grid(theme: &Theme, n: usize) -> Flex {
 
 fn nav_item(
     theme: &Theme,
+    bus: &ActionBus,
     kind: Icon,
     label: &str,
     route: &Route,
@@ -618,14 +618,10 @@ fn nav_item(
             .push(icon(kind, 22.0, fg))
             .push(text_c(label, 11.0, fg))
     };
-    if let Some(binding) = crate::actions::navigation_binding(route) {
-        item.on_action(binding)
-    } else {
-        item
-    }
+    item.on_click(bus, Action::Navigate(route.clone()))
 }
 
-pub fn nav_rail(model: &TubeModel, theme: &Theme, _bus: &ActionBus, width: f64) -> Flex {
+pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus, width: f64) -> Flex {
     let sec = model.route.nav_section();
     let expanded = width > NAV_RAIL_W;
     Flex::col()
@@ -656,6 +652,7 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, _bus: &ActionBus, width: f64) 
         .push(gap(1.0, 6.0))
         .push(nav_item(
             theme,
+            bus,
             Icon::Home,
             "Home",
             &Route::Home,
@@ -664,6 +661,7 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, _bus: &ActionBus, width: f64) 
         ))
         .push(nav_item(
             theme,
+            bus,
             Icon::Flame,
             "Trending",
             &Route::Trending,
@@ -672,6 +670,7 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, _bus: &ActionBus, width: f64) 
         ))
         .push(nav_item(
             theme,
+            bus,
             Icon::GalleryVerticalEnd,
             "Subs",
             &Route::Subscriptions,
@@ -680,6 +679,7 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, _bus: &ActionBus, width: f64) 
         ))
         .push(nav_item(
             theme,
+            bus,
             Icon::ListVideo,
             "Queue",
             &Route::Queue,
@@ -688,6 +688,7 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, _bus: &ActionBus, width: f64) 
         ))
         .push(nav_item(
             theme,
+            bus,
             Icon::History,
             "History",
             &Route::History,
@@ -697,6 +698,7 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, _bus: &ActionBus, width: f64) 
         .push(spring())
         .push(nav_item(
             theme,
+            bus,
             Icon::Settings,
             "Settings",
             &Route::Settings,
@@ -787,7 +789,7 @@ pub fn top_bar(
             radius: 0.0,
             border: Some((1.0, ui::chrome::chrome_hairline(theme))),
         })
-        .push(menu_button(theme))
+        .push(menu_button(theme, bus))
         .push_if(can_back, back_button(theme, bus))
         // The OS owns the window title/app-name — no "Tube" wordmark here.
         .push(search)
@@ -1022,8 +1024,8 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
     for v in vids {
         col = col.push(compact_card(model, theme, bus, imgs, v));
     }
-    if let Some(recovery) = &model.history_recovery_notice {
-        col = col.push(empty_state(theme, "History recovery needed", recovery));
+    if let Some(recovery) = &model.history_notice {
+        col = col.push(empty_state(theme, "History not saved", recovery));
     }
     scroll(
         Flex::col()
@@ -1049,7 +1051,7 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
                             bus,
                             "Clear history",
                             Some(Icon::Trash),
-                            Action::ClearHistory,
+                            Action::Confirm(TubeEffect::ClearHistory),
                             false,
                         ),
                     ),
@@ -1092,7 +1094,7 @@ pub fn queue(
                 .fill_w()
                 .gap(8.0)
                 .push(compact_card(model, theme, bus, imgs, video))
-                .push(queue_control(model, theme, &video.id)),
+                .push(queue_control(model, theme, bus, &video.id)),
         );
     }
     if unavailable > 0 {
@@ -1605,7 +1607,7 @@ pub fn channel(
                 bus,
                 "Subscribed",
                 Some(Icon::Bell),
-                Action::ToggleSubscribe(ch.id.clone()),
+                subscribe_edit(model, &ch.id),
                 false,
             )
         } else {
@@ -1614,7 +1616,7 @@ pub fn channel(
                 bus,
                 "Subscribe",
                 None,
-                Action::ToggleSubscribe(ch.id.clone()),
+                subscribe_edit(model, &ch.id),
                 true,
             )
         });
@@ -1859,7 +1861,10 @@ pub fn watch(
                 bus,
                 &human_count(model.display_likes(v)),
                 Some(Icon::ThumbsUp),
-                Action::ToggleLike(v.id.clone()),
+                Action::Edit(TubeAction::SetVideoLiked {
+                    video_id: v.id.clone(),
+                    liked: !liked,
+                }),
                 liked,
             )
             .id("like_btn"),
@@ -1873,7 +1878,7 @@ pub fn watch(
             .map_or_else(|| "—".to_string(), human_count);
         meta = meta.push(stat_pill(theme, &label, Icon::ThumbsDown).id("dislike_pill"));
     }
-    meta = meta.push(queue_control(model, theme, &v.id));
+    meta = meta.push(queue_control(model, theme, bus, &v.id));
     let meta = meta.push(
         pill(
             theme,
@@ -1927,7 +1932,7 @@ pub fn watch(
                     bus,
                     "Subscribed",
                     Some(Icon::Bell),
-                    Action::ToggleSubscribe(v.channel_id.clone()),
+                    subscribe_edit(model, &v.channel_id),
                     false,
                 )
             } else {
@@ -1936,7 +1941,7 @@ pub fn watch(
                     bus,
                     "Subscribe",
                     None,
-                    Action::ToggleSubscribe(v.channel_id.clone()),
+                    subscribe_edit(model, &v.channel_id),
                     true,
                 )
             }
@@ -2039,7 +2044,12 @@ fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
             radius: f64::from(theme.tokens.radii.md),
             border: Some((1.0, subtle_edge(theme))),
         })
-        .on_click(bus, Action::SetQuality(next.to_string()))
+        .on_click(
+            bus,
+            Action::Edit(TubeAction::SetPreferredQuality {
+                quality: next.to_string(),
+            }),
+        )
         .accessible_name(format!(
             "Playback quality, currently {}",
             model.settings.preferred_quality
@@ -2061,7 +2071,7 @@ fn autoplay_toggle(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
             Switch::new(
                 model.settings.autoplay,
                 bus,
-                Action::ToggleSetting(SettingFlag::Autoplay),
+                toggle_setting(model, SettingFlag::Autoplay),
             )
             .accessible_name("Autoplay"),
         )
@@ -2242,7 +2252,13 @@ fn mode_pill(theme: &Theme, bus: &ActionBus, cat: Category, mode: SkipMode) -> F
             radius: f64::from(theme.tokens.radii.full),
             border,
         })
-        .on_click(bus, Action::ToggleCategory(cat))
+        .on_click(
+            bus,
+            Action::Edit(TubeAction::SetSponsorCategory {
+                category: cat,
+                mode: mode.next(),
+            }),
+        )
         .accessible_name(format!("{}: {}", cat.label(), mode.label()))
         .push(text_c(mode.label(), 12.5, fg))
 }
@@ -2315,7 +2331,7 @@ fn playback_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> 
                 Switch::new(
                     s.autoplay,
                     bus,
-                    Action::ToggleSetting(SettingFlag::Autoplay),
+                    toggle_setting(model, SettingFlag::Autoplay),
                 )
                 .id("switch_autoplay")
                 .accessible_name("Autoplay next video"),
@@ -2327,7 +2343,7 @@ fn playback_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> 
                 Switch::new(
                     s.show_comments,
                     bus,
-                    Action::ToggleSetting(SettingFlag::ShowComments),
+                    toggle_setting(model, SettingFlag::ShowComments),
                 )
                 .id("switch_comments")
                 .accessible_name("Show comments"),
@@ -2339,7 +2355,7 @@ fn playback_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> 
                 Switch::new(
                     s.return_dislike_enabled,
                     bus,
-                    Action::ToggleSetting(SettingFlag::ReturnDislike),
+                    toggle_setting(model, SettingFlag::ReturnDislike),
                 )
                 .id("switch_dislikes")
                 .accessible_name("Show dislikes"),
@@ -2363,7 +2379,7 @@ fn sponsorblock_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus)
         Switch::new(
             s.sponsorblock_enabled,
             bus,
-            Action::ToggleSetting(SettingFlag::SponsorBlock),
+            toggle_setting(model, SettingFlag::SponsorBlock),
         )
         .id("switch_sponsorblock")
         .accessible_name("Enable SponsorBlock"),
@@ -2419,7 +2435,7 @@ fn dearrow_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> F
                 Switch::new(
                     s.dearrow_enabled,
                     bus,
-                    Action::ToggleSetting(SettingFlag::DeArrow),
+                    toggle_setting(model, SettingFlag::DeArrow),
                 )
                 .id("switch_dearrow")
                 .accessible_name("Enable DeArrow"),
@@ -2435,7 +2451,7 @@ fn dearrow_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> F
                 Switch::new(
                     s.dearrow_titles,
                     bus,
-                    Action::ToggleSetting(SettingFlag::DeArrowTitles),
+                    toggle_setting(model, SettingFlag::DeArrowTitles),
                 )
                 .id("switch_dearrow_titles")
                 .accessible_name("Replace clickbait titles"),
@@ -2448,7 +2464,7 @@ fn dearrow_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> F
                 Switch::new(
                     s.dearrow_thumbnails,
                     bus,
-                    Action::ToggleSetting(SettingFlag::DeArrowThumbnails),
+                    toggle_setting(model, SettingFlag::DeArrowThumbnails),
                 )
                 .id("switch_dearrow_thumbs")
                 .accessible_name("Replace thumbnails"),
@@ -2683,7 +2699,9 @@ fn pending_device_row(theme: &Theme, bus: &ActionBus, peer: &crate::sync::PeerRe
             bus,
             &format!("grayjay_approve_{}", peer.short_id()),
             "Approve",
-            Action::ApproveDevice(peer.id.clone()),
+            Action::Confirm(TubeEffect::ApproveDevice {
+                device: peer.id.clone(),
+            }),
             false,
         ))
 }
@@ -2723,7 +2741,7 @@ fn add_active_devices(
                     bus,
                     "grayjay_sync_now",
                     "Sync now",
-                    Action::SyncDevices,
+                    Action::Confirm(TubeEffect::SyncDevices),
                     false,
                 )),
         );
@@ -2760,7 +2778,9 @@ fn active_device_row(theme: &Theme, bus: &ActionBus, peer: &crate::sync::PeerRec
             bus,
             &format!("grayjay_revoke_{}", peer.short_id()),
             "Revoke",
-            Action::RevokeDevice(peer.id.clone()),
+            Action::Confirm(TubeEffect::RevokeDevice {
+                device: peer.id.clone(),
+            }),
             true,
         ))
 }
@@ -2936,6 +2956,33 @@ pub fn command_palette(
             .accessible_name("Close action search")
             .push(card),
     )
+}
+
+/// Subscribe to the creator `id`, or unsubscribe from it under the key the
+/// library holds it by (an imported subscription may be its channel URL).
+fn subscribe_edit(model: &TubeModel, id: &str) -> Action {
+    Action::Edit(TubeAction::SetSubscription {
+        channel_id: model.subscription_key(id).unwrap_or(id).to_owned(),
+        subscribed: !model.is_subscribed(id),
+    })
+}
+
+/// Flip the boolean setting `setting`.
+fn toggle_setting(model: &TubeModel, setting: SettingFlag) -> Action {
+    let settings = &model.settings;
+    let enabled = match setting {
+        SettingFlag::SponsorBlock => settings.sponsorblock_enabled,
+        SettingFlag::DeArrow => settings.dearrow_enabled,
+        SettingFlag::DeArrowTitles => settings.dearrow_titles,
+        SettingFlag::DeArrowThumbnails => settings.dearrow_thumbnails,
+        SettingFlag::ReturnDislike => settings.return_dislike_enabled,
+        SettingFlag::Autoplay => settings.autoplay,
+        SettingFlag::ShowComments => settings.show_comments,
+    };
+    Action::Edit(TubeAction::SetSetting {
+        setting,
+        enabled: !enabled,
+    })
 }
 
 #[cfg(test)]

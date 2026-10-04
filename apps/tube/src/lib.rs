@@ -4,10 +4,11 @@
 //! public Invidious instances; `SponsorBlock` marks and auto-skips sponsor /
 //! intro / outro segments; `DeArrow` swaps clickbait titles and thumbnails
 //! for community-sourced factual ones. Everything is built on the CRDT-
-//! native `ui` toolkit. Explicit subscriptions and playback settings are
-//! collaborative actions; fetched catalogues, navigation, playback and watch
-//! history stay device-local so a remote refresh never rewrites a collaborator's
-//! screen or personal viewing trail.
+//! native `ui` toolkit. Likes, the watch queue, subscriptions, comment likes
+//! and replies, and playback settings are the shared library, changed by
+//! actions; fetched catalogues, navigation and playback stay with the window,
+//! and the watch history follows the person to their own devices without
+//! reaching collaborators.
 //!
 //! The live (online) app starts with an EMPTY catalogue and populates only
 //! from live results (yt-dlp / rustypipe / trending). The bundled [`sample`]
@@ -50,11 +51,12 @@ pub mod api;
 pub mod app;
 pub mod backend;
 pub mod contrast;
-pub mod history_store;
+pub mod history;
 pub mod images;
 pub mod model;
 pub mod recommend;
 pub mod resource;
+mod rows;
 pub mod sample;
 pub mod screens;
 pub mod search_type;
