@@ -1634,6 +1634,12 @@ impl WasmPeer {
         receipt.await.map_err(|_| js_error("peer session closed"))
     }
 
+    /// Current local authority snapshot for rejecting stale semantic receipts.
+    #[wasm_bindgen(js_name = semanticGeneration)]
+    pub fn semantic_generation(&self) -> String {
+        self.handle.semantic_generation().to_string()
+    }
+
     /// Open semantic activity for an explicitly allowed app/record, using the
     /// authenticated carrier publisher (never a publisher claimed by payload).
     /// Options are `{room, app, record, publisher}`; publisher is device hex.
@@ -1687,7 +1693,8 @@ impl WasmPeer {
             serde_json::from_str(&event.interaction_json).map_err(js_error)?;
         serde_json::to_string(
             &serde_json::json!({"kind":"semantic", "publisher":hex::encode(opened.publisher),
-            "principal":hex::encode(opened.user), "membershipEpoch":opened.epoch, "record":record,
+            "principal":hex::encode(opened.user), "membershipEpoch":opened.epoch,"authorityGeneration":opened.authority_generation.to_string(),
+            "authorityObservedAtMs":opened.authority_observed_at_ms,"authorityExpiresAtMs":opened.authority_expires_at_ms,"record":record,
             "version":event.version,"sequence":event.seq,"sourceTimeMs":event.sent_at_ms,
             "execution":event.execution,"peer":event.peer,"interaction":interaction}),
         )
