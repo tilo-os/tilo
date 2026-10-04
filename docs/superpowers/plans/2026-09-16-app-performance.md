@@ -1,6 +1,6 @@
 # Application p99 frame performance implementation plan
 
-> **For agentic workers:** Use subagent-driven-development for independent bounded work and review. Preserve concurrent changes in this linked worktree.
+> **For agentic workers:** Use subagent-driven-development for independent bounded work and review.
 
 **Goal:** Improve the shared application framework until measurable gains stall, then optimize individual apps until every GUI app sustains the 60fps p99 target under representative interaction workloads.
 
@@ -52,7 +52,6 @@
 
 ## Progress ledger
 
-- Existing linked worktree `codex/macos-shell` verified; unrelated active edits will be preserved.
 - Optimized baseline build started. Existing dev observations are diagnostic only.
 - Read-only app inventory delegated; opt-in worker-outcome instrumentation delegated independently.
 - Completed optimized diagnostic baseline: `target/runtime-proof/20260916-085258/`, zero skipped measured frames; Photos CPU p99 3.038ms, Word Processor10.925ms. No60fps qualification claimed.
@@ -217,9 +216,8 @@ Batch-reservation candidate verified:15 renderer regressions pass, native
 build succeeds, two coordinated idle-window scroll runs show CPU p994.868/4.737ms
 but display p9925ms. Bundle/binary4e6df4a4… saved; no live parent processes.
 
-Parallel user-authorized runtime proof obligation now active from task
-01a0ac14-9223-76c2-b3d2-bee3d6ecd9d6: Photos export-edited-content contract
-published. Read-only audit found old proof inserts original bytes and agent
+A parallel runtime proof obligation is now active: the Photos
+export-edited-content contract is published. Read-only audit found old proof inserts original bytes and agent
 broker result could fall back to local Photos product. Implementation owner is
 fixing production session/surface fallback; our subagent photos_handoff_audit
 owns NEW test-only session sequence regressions using existing local Unix
@@ -237,10 +235,7 @@ Borrowed uniform glyph-run candidate d74a7c42…: all16 renderer regressions and
 optimized native build pass. Plain large-scroll runs154417/154459 each retain
 1200 measured frames and1260 verified movements; CPU p994.568/4.978ms and
 display p9916.666708ms, maxima25ms. Styled old/new comparison is next; no shared
-stall or app qualification established. Previous conversational goal turn was
-no progress (timing explanation only); current continuation revalidated logs,
-worktree and processes and released edited_native_proof's held build. Parent
-has no benchmark running while that proof builds/runs. All47apps remain open.
+stall or app qualification established. All47apps remain open.
 
 
 Styled comparison now complete: alternating candidate/prior1200-frame runs
