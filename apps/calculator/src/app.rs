@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
@@ -104,6 +104,8 @@ pub struct CalculatorApp {
     /// `mark_drawn`; without it the default (dirty every frame) repainted the
     /// whole desktop on every pointer move while the Calculator was active.
     dirty: bool,
+    /// An effect taken on the next sync, where the document is.
+    pending_effect: Option<actions::CalculatorEffect>,
     node: Option<NodeId>,
 
     /// The resource's door: every on-screen affordance submits its
@@ -153,6 +155,7 @@ impl CalculatorApp {
             last_click_pos: Point::ZERO,
             model_dirty: false,
             dirty: true,
+            pending_effect: None,
             node: None,
             dispatch: None,
             rows: Rc::default(),
@@ -1139,49 +1142,37 @@ fn key_accessible_name(key: &model::Key) -> String {
 }
 
 impl CalculatorApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
+    /// Take `effect` on the next sync, where the document is: showing a graph
+    /// for the first time adds its starter row.
+    pub(crate) fn queue_effect(&mut self, effect: actions::CalculatorEffect) -> Result<(), String> {
+        if let actions::CalculatorEffect::Open { entry } = &effect
+            && !self.rows.history.iter().any(|(row, _)| row == entry)
+        {
+            return Err("Calculation no longer exists".into());
         }
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
+        self.pending_effect = Some(effect);
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn perform_effect(&mut self, effect: actions::CalculatorEffect, doc: &mut AutoCommit) {
+        let mode = match effect {
+            actions::CalculatorEffect::Open { entry } => {
+                if let Some((_, past)) = self.rows.history.iter().find(|(row, _)| *row == entry) {
+                    self.model.expr.clone_from(&past.expr);
+                    self.model.after_equals = false;
+                    self.model_dirty = true;
+                    self.set_mode(Mode::Calc);
+                }
+                return;
+            }
+            actions::CalculatorEffect::ShowCalculator => Mode::Calc,
+            actions::CalculatorEffect::ShowGraph2d => Mode::Graph2d,
+            actions::CalculatorEffect::ShowGraph3d => Mode::Graph3d,
         };
-        if kind != tilo_actions::OperationKind::View {
-            return Err("Mode changes require a View invocation".into());
-        }
-        if let actions::CalculatorOperation::RecallHistory { id } = &operation {
-            let (_, entry) = self
-                .rows
-                .history
-                .iter()
-                .find(|(row, _)| row == id)
-                .ok_or("Calculation no longer exists")?;
-            self.model.expr.clone_from(&entry.expr);
-            self.model.after_equals = false;
-            self.model_dirty = true;
-            self.set_mode(Mode::Calc);
-            return Ok(true);
-        }
         // Showing a mode is presentation, except that a first graph visit
         // adds its starter row through the resource's action.
-        self.switch_mode(
-            match operation {
-                actions::CalculatorOperation::ShowCalculator => Mode::Calc,
-                actions::CalculatorOperation::ShowGraph2d => Mode::Graph2d,
-                actions::CalculatorOperation::ShowGraph3d => Mode::Graph3d,
-                actions::CalculatorOperation::RecallHistory { .. } => {
-                    return Ok(false);
-                }
-            },
-            doc,
-        );
-        Ok(true)
+        self.switch_mode(mode, doc);
     }
 }
 
@@ -1215,29 +1206,11 @@ impl Widget for CalculatorApp {
             .then_some(winit::window::ImePurpose::Normal)
     }
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[actions::CALCULATOR_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        if let Some(effect) = self.pending_effect.take() {
+            let (doc, _) = ui::doc::document(state, path);
+            self.perform_effect(effect, doc);
         }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
     }
 
     fn build_layout(
@@ -2293,7 +2266,12 @@ mod tests {
     /// and is presentation only, open to a participant who may only view.
     #[test]
     fn history_recall_by_published_action_uses_stable_identity() {
-        let mut app = TestApp::<CalculatorShell>::capture(Some("graph3d")).unwrap();
+        // A window someone uses, where effects run, over the scenario's book.
+        let mut app = TestApp::<CalculatorShell>::new().unwrap();
+        for invoke in <CalculatorShell as ui::framework::ResourceApp>::scenario(Some("graph3d")) {
+            app.invoke(invoke).unwrap();
+        }
+        app.settle();
         let (id, expression) = app.state().history[1].clone();
         let expression = expression.expr;
         // A new calculation moves every positional index.

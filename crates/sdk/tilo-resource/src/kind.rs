@@ -257,8 +257,8 @@ pub struct Kinds {
 impl Kinds {
     /// No types.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self { kinds: Vec::new() }
     }
 
     /// These and `kind`. A kind registered again replaces the earlier entry.

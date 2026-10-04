@@ -1,9 +1,5 @@
 //! Comparison-only Writer invocation identities; never authority.
-use super::{
-    RegionKind, SelectionTarget, Span, WORD_PROCESSOR_OPERATION_TYPE, WordProcessorOperation,
-};
-use crate::WpFormat;
-use std::path::PathBuf;
+use super::{RegionKind, SelectionTarget, Span};
 use tilo_actions::{
     ActionInput, ActionSpec, ContinuationArguments, ContinuationEvidence, ContinuationKey,
     ContinuationQuery, EncodedAction,
@@ -115,81 +111,6 @@ pub(crate) fn pure(spec: ActionSpec, handler: &'static str, domain: Parts) -> Ac
     })
 }
 
-#[derive(Clone)]
-pub(crate) struct FileContext {
-    pub(crate) path: Option<PathBuf>,
-    pub(crate) format: Option<WpFormat>,
-}
-fn format_tag(format: WpFormat) -> u8 {
-    match format {
-        WpFormat::Odt => 0,
-        WpFormat::Docx => 1,
-        WpFormat::Markdown => 2,
-        WpFormat::Pdf => 3,
-        WpFormat::Html => 4,
-        WpFormat::Rtf => 5,
-        WpFormat::Epub => 6,
-        WpFormat::Text => 7,
-    }
-}
-impl FileContext {
-    fn parts(&self, variant: u8) -> Parts {
-        let mut parts = vec![vec![variant]];
-        match &self.path {
-            Some(path) => parts.extend([vec![1], path.as_os_str().as_encoded_bytes().to_vec()]),
-            None => parts.push(vec![0]),
-        }
-        match self.format {
-            Some(format) => parts.push(vec![1, format_tag(format)]),
-            None => parts.push(vec![0]),
-        }
-        // The current filename controls the chooser's suggested name. Filters,
-        // path interpretation and post-save adoption are versioned by handler.
-        parts
-    }
-}
-pub(super) fn file(spec: ActionSpec, variant: u8, context: Option<&FileContext>) -> ActionSpec {
-    let Some(context) = context.cloned() else {
-        return spec;
-    };
-    let builder = spec.clone();
-    spec.with_continuation_identity(move |query| {
-        let domain = context.parts(variant);
-        match query {
-            ContinuationQuery::Draft => {
-                Some(evidence("file-operation-and-chooser.v1", domain, false))
-            }
-            ContinuationQuery::Exact(args) => {
-                let encoded = pure_encoding(&builder, &args)?;
-                let operation =
-                    super::decode_operation(&encoded.type_id, &encoded.payload).ok()??;
-                let (path, format) = match operation {
-                    WordProcessorOperation::Save { path: Some(path) }
-                    | WordProcessorOperation::SaveAs { path: Some(path) } => {
-                        let path = PathBuf::from(path);
-                        let format = WpFormat::from_path(&path);
-                        (path, format)
-                    }
-                    WordProcessorOperation::Save { path: None } => {
-                        (context.path.clone()?, context.format?)
-                    }
-                    // Open: native destination mount unresolved. Anything else: no
-                    // invented destination for a future picker.
-                    _ => return None,
-                };
-                let mut target = domain;
-                target.extend([
-                    path.as_os_str().as_encoded_bytes().to_vec(),
-                    vec![format_tag(format)],
-                    WORD_PROCESSOR_OPERATION_TYPE.as_bytes().to_vec(),
-                    encoded.payload,
-                ]);
-                Some(evidence("file-operation-and-chooser.v1", target, true))
-            }
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::*;
@@ -240,7 +161,7 @@ mod tests {
     fn writer_continuation_captured_selection_and_span_domains_are_exact() {
         let (doc, ctx) = document();
         for id in ["set-hyperlink", "replace-selection", "add-comment"] {
-            let a = action(&provide_resources(&ctx, &doc), id);
+            let a = action(&live_presentation_resources(&ctx, &doc, None), id);
             let evidence = a
                 .continuation_identity(ContinuationQuery::Draft)
                 .expect("real Writer dynamic action needs captured domain");
@@ -251,13 +172,16 @@ mod tests {
             let mut changed = ctx.clone();
             changed.format_spans[0].end += 1;
             changed.selection.as_mut().unwrap().end += 1;
-            let b = action(&provide_resources(&changed, &doc), id);
+            let b = action(&live_presentation_resources(&changed, &doc, None), id);
             assert_ne!(
                 b.continuation_identity(ContinuationQuery::Draft),
                 Some(evidence)
             );
         }
-        let a = action(&provide_resources(&ctx, &doc), "set-hyperlink");
+        let a = action(
+            &live_presentation_resources(&ctx, &doc, None),
+            "set-hyperlink",
+        );
         let first = serde_json::json!({"target":" https://example.test/path "});
         let normalized = serde_json::json!({"target":"https://example.test/path"});
         assert_eq!(
@@ -276,41 +200,6 @@ mod tests {
         );
     }
     #[test]
-    fn writer_continuation_file_context_changes_but_chooser_destination_is_unknown() {
-        let (mut doc, _) = document();
-        let mut widget = attached(&mut doc);
-        widget.set_file(
-            std::path::PathBuf::from("first.md"),
-            crate::WpFormat::Markdown,
-        );
-        let first = action(&widget.publish_resources(&doc), "save-as");
-        let draft = first
-            .continuation_identity(ContinuationQuery::Draft)
-            .expect("actual file context");
-        widget.set_file(
-            std::path::PathBuf::from("second.md"),
-            crate::WpFormat::Markdown,
-        );
-        let next = action(&widget.publish_resources(&doc), "save-as");
-        assert_ne!(
-            next.continuation_identity(ContinuationQuery::Draft),
-            Some(draft)
-        );
-        assert!(
-            next.continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Json(
-                &serde_json::Map::new()
-            )))
-            .is_none()
-        );
-        let path = serde_json::json!({"path":"chosen.md"});
-        assert!(
-            next.continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Json(
-                path.as_object().unwrap()
-            )))
-            .is_some()
-        );
-    }
-    #[test]
     fn writer_continuation_blob_domain_stays_unknown() {
         let (mut doc, _) = document();
         let widget = attached(&mut doc);
@@ -318,7 +207,11 @@ mod tests {
             ui::resources::action_directory_invocation_domain(&widget, &doc),
             ActionDirectoryInvocationDomain::Unsupported
         );
-        let image = action(&widget.publish_resources(&doc), "place-image");
+        let ctx = widget.wp_resource_ctx(&doc).unwrap();
+        let image = action(
+            &live_presentation_resources(&ctx, &doc, None),
+            "place-image",
+        );
         assert!(
             image
                 .continuation_identity(ContinuationQuery::Draft)
@@ -334,9 +227,12 @@ mod tests {
             end: 4,
         });
         let identity = |context: &WpResourceCtx| {
-            action(&provide_resources(context, &doc), "set-hyperlink")
-                .continuation_identity(ContinuationQuery::Draft)
-                .unwrap()
+            action(
+                &live_presentation_resources(context, &doc, None),
+                "set-hyperlink",
+            )
+            .continuation_identity(ContinuationQuery::Draft)
+            .unwrap()
         };
         let before = identity(&ctx);
         let mut changed = ctx.clone();
@@ -375,23 +271,7 @@ mod tests {
     }
 
     #[test]
-    fn writer_continuation_save_uses_actual_default_format_and_read_encodes() {
-        let (mut doc, _) = document();
-        let mut widget = attached(&mut doc);
-        widget.set_file("same-name.md".into(), crate::WpFormat::Html);
-        let first = action(&widget.publish_resources(&doc), "save");
-        let args = serde_json::Map::new();
-        let before = first
-            .continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Json(&args)));
-        assert!(before.is_some());
-        widget.set_file("same-name.md".into(), crate::WpFormat::Markdown);
-        let second = action(&widget.publish_resources(&doc), "save");
-        assert_ne!(
-            second.continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Json(
-                &args
-            ))),
-            before
-        );
+    fn writer_continuation_read_text_stays_dynamic_and_encodes() {
         let read = crate::semantic_read::action::spec();
         assert!(
             read.continuation_identity(ContinuationQuery::Draft)

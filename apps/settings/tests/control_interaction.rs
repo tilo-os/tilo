@@ -19,9 +19,8 @@
 )]
 
 use std::collections::HashMap;
-use ui::doc::read_bool;
 
-use automerge::{AutoCommit, ReadDoc};
+use automerge::AutoCommit;
 use settings::SettingsApp;
 use settings::categories::Category;
 use taffy::{NodeId, TaffyTree};
@@ -245,14 +244,6 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
         let heads = doc.get_heads();
         app.sync(&mut doc, &root);
         assert_eq!(doc.get_heads(), heads);
-        assert!(
-            read_bool(
-                &doc,
-                &automerge::ROOT,
-                settings::panes::network::WIFI_ENABLED_KEY
-            )
-            .is_none()
-        );
     }
 }
 
@@ -271,24 +262,11 @@ fn all_panels_navigate_and_seed_their_controls() {
         // sync; run one so the seed lands before we assert on it.
         let heads_before_idle_sync = doc.get_heads();
         app.sync(&mut doc, &automerge::ROOT);
-        // Hardware panes render from process-local snapshots and must not
-        // seed their primary device state into the collaborative document.
-        let seeded_key = match target {
-            Category::Network => Some(settings::panes::network::WIFI_ENABLED_KEY),
-            Category::Sound => Some(settings::panes::audio::VOLUME_KEY),
-            Category::Displays => Some(settings::panes::display::BRIGHTNESS_KEY),
-            _ => None,
-        };
-        if let Some(key) = seeded_key {
-            assert_eq!(
-                doc.get_heads(),
-                heads_before_idle_sync,
-                "{target:?} idle sync must leave the collaborative document unchanged"
-            );
-            assert!(
-                doc.get(&automerge::ROOT, key).ok().flatten().is_none(),
-                "{target:?} must keep device-local control key {key} out of collaboration"
-            );
-        }
+        // Panes render from their models and never write the document.
+        assert_eq!(
+            doc.get_heads(),
+            heads_before_idle_sync,
+            "{target:?} idle sync must leave the collaborative document unchanged"
+        );
     }
 }

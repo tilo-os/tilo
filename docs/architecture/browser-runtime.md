@@ -748,13 +748,14 @@ cursor is drawn by every participant.
   confirmation and binding as the live host. `tilo-automation` Shortcuts
   lower to the same catalogue.
 
-The mechanism chosen for browser sessions is generic: **mount the app's
-`ApplicationDefinition` component headless on the room's record and use
-only its published surface.** This is the same component the browser
-runtime mounts, so an agent reaches exactly what a person in the page can.
-Declared actions carry an app's domain vocabulary; the semantic projection
-covers everything else. On a native desktop, the same agent code can
-target `BrokerActionHost` instead, because both are the same door.
+The mechanism chosen for browser sessions is generic: **hold the room's
+record as a replica of the app's resource and use only what the resource
+publishes.** The resource type is looked up by the kind the record names
+(`ui::framework::hosted_kinds`), so the agent links no app's code at the
+call site and renders nothing: it reaches the same document operations a
+person's window offers, checked, attributed and replayed the same way. On
+a native desktop, the same agent code can target `BrokerActionHost`
+instead, because both are the same door.
 
 ### Identity and consent
 
@@ -802,58 +803,38 @@ is the same one a page runs.
 
 - **Joining.** It joins the room's durable and live planes. The host's
   `Ready` follows its replay, so a task never starts on a half-seen room.
-- **Opening an app.** `open(app, record)` seeds the record from the
-  durable changes the host replayed and mounts the component (`HostedApp`)
-  as an agent principal holding the editor role. Without a record it
-  creates one and publishes it.
+- **Opening an app.** `open(app, record)` holds the record, from the
+  durable changes the host replayed, as a `ui::framework::Participant` of
+  the app's resource kind (`Replica`), as an agent principal holding the
+  editor role. Without a record it creates one (the resource's genesis)
+  and publishes it.
 - **Which apps.** `component_apps()` is the browser desktop's registry:
   `tools/web/generate_web_desktop.py` writes the same manifest-derived app
   list into agent-participant (`src/web_apps.rs` and its Cargo block) as
   into `tilo-web-desktop`, and `--check` covers both.
-- **Acting.** `invoke` goes through the app's door
-  (`FrameHarness::invoke_action`), so availability, confirmation and
-  argument binding are the app's own. It then commits the change the
+- **Acting.** `invoke` goes through the resource's door
+  (`Participant::invoke`), so permission, confirmation and argument
+  binding are the resource's own. It then commits the change the
   action made as a signed `Commit`. The host orders it with every other
   participant's change and fans it out; browsers receive it through
   `/events`, attributed to the agent's device.
-  - `HostedApp::take_mutation` returns only this participant's own
+  - `Replica::take_mutation` returns only this participant's own
     changes. Changes it received are never republished.
   - The first take of a new record is a snapshot.
 - **Presence.** Around each action it publishes a presence frame: focus on
-  the record, the pointer where a person would point (the control a
-  semantic action drives; for a declared action the control whose name
-  matches its label, else the record's own surface), and
-  `participant: {kind: Agent, label, colour, activity}`, with a 1 s
-  keepalive. `remote_members()` is everyone else's presence as the agent
-  sees it. The pointer is in the focused record's own surface: a page
-  draws it inside the window showing that record (`live-cursors.mjs`
-  `placePointer` over the runtime's `desktop_record_windows`, from the
-  desktop surface's `shown_tabs`), within its bounds, and not at all while
-  no window there shows the record. Pointers without a focus stay in the
-  page surface's coordinates.
-- **Seeding.** Only a record's creator writes its initial content. The
-  component adapter tells an adapted root how it came to its record while
-  it is built (`ui::launch::record_launch()`: `Created` or `Joined`). A
-  root on a record never reads or writes its app-wide state file (Sheets'
-  `workbook.automerge` was imported into shared workbooks), and a joined
-  root leaves an uninitialized record untouched until the creator's
-  content arrives, because get-or-create reads would write a second root
-  object that competes with the creator's in the merge and hides every
-  edit made in the loser. Components (Notes) initialize only on
-  `LaunchTarget::New` and refuse an uninitialized existing record.
+  the record and `participant: {kind: Agent, label, colour, activity}`,
+  with a 1 s keepalive. It renders nothing, so it publishes no pointer.
+  `remote_members()` is everyone else's presence as the agent sees it.
+- **Seeding.** Only a record's creator writes its initial content: a
+  joined replica writes nothing of its own.
   `replicas::only_the_creator_seeds_a_record` checks every web app.
-- **Controls.** `operate(route, control, input)` does what a person's
-  input does to an on-screen control: press, focus, set its value, type
-  into it, scroll it, toggle, step, expand. It uses
-  `FrameHarness::controls`/`operate_control` (below), commits the change
-  and points the agent's cursor at the control.
 - **Tasks.** Each task is planned by a `Planner` into steps
-  (`StepAction`: invoke a published action, operate a control, open an
-  app, or continue planning once earlier steps changed what is
-  published). The planner sees only descriptors and controls, and every
-  step is re-checked against the delegation and the door.
-  - `DirectPlanner` reads steps written as JSON (`{app, resource|control,
-    action, arguments}` or `{app, control, input, text|value|dx|dy}`).
+  (`StepAction`: invoke a published operation, open an app, or continue
+  planning once earlier steps changed what is published). The planner sees
+  only descriptors, and every step is re-checked against the delegation and
+  the door.
+  - `DirectPlanner` reads steps written as JSON (`{app, resource, action,
+    arguments}`).
   - `ModelPlanner` reads JSON steps the same way and sends any other text
     to a `PlanModel`. `GatewayModel` is `apps/agent`'s action discovery
     (`tilo_agent::tools` over a `surface::Catalogue`) through
@@ -915,26 +896,14 @@ it. `--agent-model` chooses the planner:
 `ModelPlanner` also offers the room's existing records of an app before a
 new one, so "add a sheet named …" edits the sheet people already have.
 
-**Each agent has a profile of its own.** Agents' apps run in the host
-process, so without care they would open the host user's files and
-Keychain (TOTP's vault, Passwords, Sheets' workbook). Each agent's thread
-runs under `tilo_paths::scope_profile(<state>/agents/<agent id>/profile)`,
-which moves `home()`, the per-user base folders, the XDG variables and
-`AppPaths::for_app` below that root and mounts no workspace, and under
-`tilo_secrets::scope_thread` with a store of its own kept in memory (lost
-when the host stops). Apps resolve their folders through `tilo-paths`
-rather than reading `HOME` or `XDG_*` themselves. The planner and the
-apps' theme and fonts stay the host's: planning runs `unscoped`, so
-`settings` finds the host user's provider and gateway. `--agent-host-profile`
-(`AgentHost::share_host_profile`) grants agents the host user's own
-profile and secret store instead. Scopes are per thread: a worker thread
-an app starts sees the process's folders, and a store keeps the backend it
-was created with.
+**Agents run no app's code.** An agent holds records as replicas of their
+resources, so nothing it does reads the host user's files or secret store;
+it plans with the host's model.
 
 `host_agents` covers it end to end: a page requests a grant, a laptop
 approves it with its delegation, the page spawns with a plain-words task, the
-agent edits Notes and Sheets, the page merges the edits and sees the agent's
-cursor move between the controls it used with its activity; after a host
+agent edits Notes and Sheets, the page merges the edits and sees the agent
+move between the records it works in with its activity; after a host
 restart the agent resumes on the room's sheet, a stopped agent stays
 stopped, and revoking a grant ends its agent and forgets its key.
 `a_browser_sees_every_task_of_an_agent_live_and_after_a_reload` has an agent
@@ -1044,42 +1013,23 @@ Browser previews (`ops/<record>` tracks) are not bridged to iroh yet.
 
 ### Per-app coverage
 
-Two tests exercise every registered web app, finding a user-equivalent
-edit without app knowledge. They try, in order: the app's declared document
-actions; filling empty non-search fields with a value of the kind the
-field's name asks for; typing into text surfaces; other declared actions;
-then buttons, submit-like first, skipping destructive or external ones. They
-survey again after every attempt.
+Two tests exercise every registered web app, finding an edit without app
+knowledge: they try the record's document operations that need no
+confirmation, with a value of each declared type, surveying again after
+every attempt.
 
-- `app_coverage` runs this on headless mounts.
+- `app_coverage` runs this on replicas.
 - `session_coverage` runs it over the real session: an iroh agent with its
   own device and delegation edits, and an HTTPS/WebTransport browser merges
-  the agent-authored changes into its own mount and sees the agent's
-  cursor. It then runs a plain-words task through `ModelPlanner` and the
+  the agent-authored changes into its own replica and sees the agent on the
+  record. It then runs a plain-words task through `ModelPlanner` and the
   `actionsV1` checks.
 
-| App | User-equivalent edit | Via | Browser merged | Agent cursor |
-|---|---|---|---|---|
-| calculator | `calculator.workspace#add-function` | declared | yes | yes |
-| clocks | none: device-local state file | — | yes (open) | yes |
-| contacts | `contacts.book#new-contact` | declared | yes | yes |
-| diffmerge | `diffmerge.merge#edit-merged` | declared | yes | yes |
-| ebook | `ebook.library#toggle-hide-read` | declared | yes | yes |
-| hex-editor | none: edits a local file | — | yes (open) | yes |
-| notes | `notes.notebook#new-page` | declared | yes | yes |
-| passwords | none: device secret store | — | yes (open) | yes |
-| scratchpad | `scratchpad.note#edit` | declared | yes | yes |
-| sheets | `sheets.workbook#insert-column-chart` | declared | yes | yes |
-| slides | `slides.deck#add-slide` | declared | yes | yes |
-| snippets | `snippets.library#new-snippet` | declared | yes | yes |
-| themes | `themes.library#new-theme` | declared | yes | yes |
-| totp | fill Issuer/Account/Secret, press "Add account" | control input | yes | yes, with pointer |
-| typst-editor | set "Typst source" | control input | yes | yes |
-| word-processor | `word-processor.document#insert-table` | declared | yes | yes |
-
-Clocks, hex-editor and passwords keep their state off the shared record
-by design. The agent operates them like anyone else, and there is nothing to
-sync.
+Every app takes an edit through a published operation (Writer's
+`append-paragraph`, Photos' `create-album`, Chat's `new-channel`, …), except
+three whose state stays off the shared record by design: hex-editor (edits a
+local file), passwords and totp (secrets in the device's store; adding a
+TOTP account is the device's own).
 
 ## Reused from PR 541
 
@@ -1337,7 +1287,7 @@ Status after integrating the parallel branches (`feat/browser-runtime`).
      `LiveParticipant` in presence); `Relay::register_agent`/`withdraw_agent`,
      `Caller::delegated_agent`, the browser-to-iroh presence bridge;
      remote-action frames in `tilo-browser-peer`;
-     `crates/agent/agent-participant` (`HostedApp`, `AgentParticipant`,
+     `crates/agent/agent-participant` (`Replica`, `AgentParticipant`,
      `AgentSupervisor` + `SupervisorHost`, `DirectPlanner`); `peer.agents`
      (`web/agents.mjs`), `sendRemoteAction`, `takeRemoteActionEvents`,
      `verifyAgentDelegation`. Tests: `shared_session`, `replicas`,

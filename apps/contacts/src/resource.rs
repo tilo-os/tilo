@@ -269,6 +269,7 @@ impl ResourceSurface<Contacts, ContactsEffect> for ContactsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Contacts>) {
         self.attach_dispatcher(cx.dispatcher());
+        self.jobs = Some(cx.jobs());
         // A vCard file the app was opened with ("open with", a dropped
         // file) is imported into the address book.
         if let Some(file) = cx.launch().file() {

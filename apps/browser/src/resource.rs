@@ -450,6 +450,17 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserTabs {
     fn live_rows(&self) -> Vec<LiveRow> {
         self.active_page().live_rows()
     }
+
+    /// A history page or download a search hit names, past the published
+    /// page of rows.
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.active_page().search_row(id)
+    }
+
+    /// The person's browsing history and this device's downloads.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.active_page().search_entries()
+    }
 }
 
 #[cfg(test)]

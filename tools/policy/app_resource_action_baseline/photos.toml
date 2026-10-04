@@ -4,4 +4,3 @@
 [ratchets.app_action_host]
 
 [ratchets.raw_operation_handler]
-"apps/photos/src/app.rs" = 2

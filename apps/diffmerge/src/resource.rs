@@ -7,13 +7,13 @@ use automerge::transaction::Transactable;
 use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{ActionSpec, Resource as PublishedResource};
+use ui::tilo_actions::Resource as PublishedResource;
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, PlainText, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
     DIFFMERGE_ACTION_TYPE, DiffmergeAction, DiffmergeEffect, declarations, document_children,
-    merged_resource_id, register, sample_actions, view_operations,
+    merged_resource_id, register, sample_actions,
 };
 use crate::app::DiffMergeApp;
 use crate::doc::{MergeDoc, MergeState, keys};
@@ -89,10 +89,6 @@ impl ResourceApp for DiffmergeShell {
 
     fn view(cx: &mut ViewCx<Diffmerge>) -> Element {
         cx.surface(DiffMergeApp::new())
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        view_operations()
     }
 
     fn scenarios() -> &'static [&'static str] {

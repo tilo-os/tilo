@@ -994,7 +994,6 @@ impl Widget for BrowserTabs {
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::widget::Continuable,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::search::capability::SearchSource,
         dyn ui::component_lifecycle::ComponentLifecycle
     );
 
@@ -1594,12 +1593,6 @@ impl ui::component_lifecycle::ComponentLifecycle for BrowserTabs {
     }
     fn take_window_close_intent(&mut self) -> bool {
         std::mem::take(&mut self.close_intent)
-    }
-}
-
-impl ui::search::capability::SearchSource for BrowserTabs {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        self.active().search_providers()
     }
 }
 

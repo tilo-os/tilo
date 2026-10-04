@@ -663,3 +663,23 @@ fn the_persons_own_words_are_spelled_right_in_every_window() {
         app.with_surface(|editor: &mut WordProcessorWidget| editor.is_spelled_right("qwordz"));
     assert_eq!(known, Some(true), "the person's own word is known");
 }
+
+/// The edits bound to the caret are published on the document itself, and
+/// invoking one there builds it at the caret.
+#[test]
+fn an_edit_bound_to_the_caret_is_invoked_on_the_document() {
+    let mut app = open();
+    app.harness().type_text("Hello");
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("text".into(), " world".into());
+    app.harness()
+        .invoke_action(
+            &tilo_actions::ActionAddress::new("tilo.rich-text", "type-text"),
+            &arguments,
+            true,
+            None,
+        )
+        .unwrap();
+    app.harness().relayout();
+    assert_eq!(paragraphs(&app), ["Hello world"]);
+}

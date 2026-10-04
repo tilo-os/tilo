@@ -93,15 +93,16 @@ impl App {
         else {
             return false;
         };
-        let mut component = replacement.component;
+        let (mut component, outcome) = replacement.into_parts();
         let Some(handle) = self.wake_scope.as_ref().map(crate::wake::WakeScope::handle) else {
             let _ = component.close();
+            outcome.answer(Err("this window cannot show another record".into()));
             return false;
         };
         let retirement = component.take_root_retirement();
         if let Err(error) = component.mount(move |_| handle.wake()) {
-            tracing::warn!(%error, "the record asked for could not be shown");
             let _ = component.close();
+            outcome.answer(Err(error.to_string()));
             return false;
         }
         let binding = component.callback_binding();
@@ -110,11 +111,15 @@ impl App {
         if let Some(registration) = &history
             && let Err(error) = registration.validate_root(root.as_ref())
         {
-            tracing::warn!(%error, "the record asked for could not be shown");
             self.component_close_reports
                 .extend(crate::component_lifecycle::close_components(root.as_mut()));
+            outcome.answer(Err(error.to_string()));
             return false;
         }
+        // The asking component answers the operation that asked before it
+        // closes.
+        outcome.answer(Ok(()));
+        self.poll_directed_invocations();
         // The outgoing component is closed whole: its controls, its
         // semantic mount and its writer.
         self.close_components();

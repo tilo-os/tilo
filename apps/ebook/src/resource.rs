@@ -239,6 +239,12 @@ impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
     fn bound_declarations(&self) -> Vec<ActionDecl<Ebook>> {
         self.reading_declarations()
     }
+
+    /// The books with their chapters' prose, their annotations and the
+    /// library's remote books: what the reader holds, not the document.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.book_search_entries()
+    }
 }
 
 /// A dispatcher of the library for tests that drive the reader (or one of
