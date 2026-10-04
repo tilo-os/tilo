@@ -1,9 +1,20 @@
 // Uses the real signed authority, private worker, RPC directory and SDK authorizer above.
 fn local_host_evidence(env: &Environment) -> (tilo_actions::remote::Caller, Vec<u8>) {
-    let key = SigningKey::from_bytes(&[93; 32]);
+    member_device_evidence(env, 93, false)
+}
+
+/// A member device `seed` of the host's person, foreign or not, that the
+/// host's authority currently accepts.
+fn member_device_evidence(
+    env: &Environment,
+    seed: u8,
+    foreign: bool,
+) -> (tilo_actions::remote::Caller, Vec<u8>) {
+    let key = SigningKey::from_bytes(&[seed; 32]);
     let mut cert = env.cert.clone();
     cert.device_public_key = key.verifying_key().to_bytes();
     cert.capabilities = tilo_user_identity::DeviceCapabilities::member();
+    cert.capabilities.foreign = foreign;
     cert.expires_at_ns = Some(cert.issued_at_ns + 6_000_000_000);
     tilo_user_identity::sign_device_cert(&mut cert, &env.person).unwrap();
     env.authority
@@ -475,6 +486,98 @@ async fn certified_local_host_retains_stricter_foreign_restriction_in_actual_wor
                 no_delivery(&rig).await;
                 rig.stop().await;
             }
+        })
+        .await;
+}
+
+/// On a host that governs the room, a certified caller from another device
+/// is held to the foreign-device cap in the edits its effect submits, just as
+/// in its own invocation, and so is a stricter restriction the host retained
+/// for it: continuing it never makes the caller look like the host itself.
+#[tokio::test(flavor = "current_thread")]
+async fn a_continuing_certified_caller_keeps_its_foreign_device_cap() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            use crate::collab_broker_capnp::{
+                ContinuingCaller, published_invocation::InvocationCaller,
+            };
+            let env = Environment::new();
+            env.authority.governs_room.store(true, Ordering::SeqCst);
+            let rig = Rig::new(&env).await;
+            let room = env.route.cluster_id.clone();
+            for (seed, foreign, restricted) in [(94, true, false), (95, false, true)] {
+                let (_, evidence) = member_device_evidence(&env, seed, foreign);
+                let verified = rig.state.verify_action_caller(&room, &evidence).unwrap();
+                assert_eq!(verified.admitted.broker_actor().capped, foreign);
+                let continued = ContinuingCaller::from_origin(&InvocationCaller::Certified {
+                    caller: Box::new(verified),
+                    foreign_restriction: restricted,
+                })
+                .current(&rig.state)
+                .expect("the caller still verifies");
+                assert!(
+                    rig.state.caller_actor(&continued, &room).capped,
+                    "a foreign device (certified {foreign}, restricted {restricted}) stays capped"
+                );
+            }
+            // The control: a device that is not foreign is not capped.
+            let (_, evidence) = member_device_evidence(&env, 96, false);
+            let verified = rig.state.verify_action_caller(&room, &evidence).unwrap();
+            let continued = ContinuingCaller::from_origin(&InvocationCaller::Certified {
+                caller: Box::new(verified),
+                foreign_restriction: false,
+            })
+            .current(&rig.state)
+            .unwrap();
+            assert!(!rig.state.caller_actor(&continued, &room).capped);
+            rig.stop().await;
+        })
+        .await;
+}
+
+/// The certified local door's effect edits are admitted for its caller only
+/// while that caller's certificate still verifies: revoked mid-run, the
+/// running effect continues nothing, as the caller's own invoke would fail.
+#[tokio::test(flavor = "current_thread")]
+async fn a_certified_local_continuation_ends_with_its_certificate() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let row = directory_state("original-r1").borrow().row();
+            rig.worker
+                .handle
+                .publish_actions(&env.route.app_id, &[row.descriptor.unwrap()])
+                .await
+                .unwrap();
+            let (caller, evidence) = local_host_evidence(&env);
+            let facade =
+                crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+            let host = facade
+                .certified_local_action_host(&caller, &evidence)
+                .unwrap();
+            let request = local_host_request(false);
+            local_host_answer(host.invoke(&caller, request.clone()))
+                .await
+                .unwrap();
+            let _lease = local_host_lease(&rig, &caller, request.invocation).await;
+            let continued = rig
+                .state
+                .continuing_caller(903, request.invocation)
+                .expect("the running invocation continues for its caller");
+            assert_eq!(continued.execution_id(), caller.execution_id());
+            env.authority
+                .additional_certificates
+                .lock()
+                .unwrap()
+                .clear();
+            assert!(
+                rig.state
+                    .continuing_caller(903, request.invocation)
+                    .is_none(),
+                "a revoked certificate continues nothing"
+            );
+            rig.stop().await;
         })
         .await;
 }
