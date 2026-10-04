@@ -468,10 +468,7 @@ fn create<A: ResourceApp>(
     // capture shows the one it staged.
     let opener = (!capture).then(|| {
         let reopener = context.reopener();
-        super::launch::OpenHere::new(move |arguments| {
-            open_in_place::<A>(&reopener, arguments);
-            Ok(())
-        })
+        super::launch::OpenHere::new(move |arguments| open_in_place::<A>(&reopener, arguments))
     });
     let run = match context.capture().cloned() {
         Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
@@ -746,11 +743,12 @@ fn hand_launch_to(
 /// `arguments` opens ([`ResourceApp::launch_record`], [`ResourceApp::launch`]):
 /// the component built for that record takes the window, its own record and
 /// history with it. The store's refusal of the record, an unreadable file
-/// or the app's refusal to build leaves the window as it is.
+/// or the app's refusal to build leaves the window as it is, and is the
+/// answer the returned outcome gives.
 fn open_in_place<A: ResourceApp>(
     reopener: &ui_core::application::Reopener,
     arguments: Vec<String>,
-) {
+) -> ui_core::application::ReplacementOutcome {
     // Built when the host takes it: the record store is busy while the
     // asking view handles the event or operation that asked.
     reopener.replace_with(move |reopener| {
@@ -760,11 +758,10 @@ fn open_in_place<A: ResourceApp>(
         let (mut context, target) = reopener.prepare(definition, record)?;
         hand_launch_to(definition, &arguments, &mut context)?;
         let component = definition.instantiate(context, target, RestoreInput::None)?;
-        Ok(ui_core::application::ComponentReplacement {
-            component,
-            arguments,
-        })
-    });
+        Ok(ui_core::application::ComponentReplacement::new(
+            component, arguments,
+        ))
+    })
 }
 
 /// The file at `path` to hand the component, when `definition` opens its
