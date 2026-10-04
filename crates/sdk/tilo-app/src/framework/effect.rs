@@ -33,7 +33,7 @@ use tilo_actions::{
 };
 use tilo_resource::{ActionRef, Effect, Invoke, Resource};
 use ui_core::WakeHandle;
-use ui_core::portal::{ContentsOutcome, PickRequest, PickedContents, SaveOutcome};
+use ui_core::portal::{ContentsOutcome, PickRequest, PickedContents, PortalOutcome, SaveOutcome};
 use ui_core::widget::{ResourceOperation, ResourceOperationStart};
 
 use super::dispatch::Dispatcher;
@@ -375,6 +375,26 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         })
     }
 
+    /// Ask the person to choose a file with the host's chooser and run
+    /// `then` on the UI thread with its path on this device, or `None` when
+    /// they cancelled: for a file the app reads in place rather than into
+    /// memory (a disk image, a video). Only a host whose files have paths
+    /// answers; elsewhere use [`Self::choose_file`]. The effect must be
+    /// declared `job`.
+    pub fn choose_path(
+        &mut self,
+        request: PickRequest,
+        then: impl FnOnce(&mut H, Option<std::path::PathBuf>, &mut Self) -> EffectAnswer + 'static,
+    ) -> Effected {
+        let chosen = request.send();
+        self.wait_for(chosen, move |host, outcome, cx| match outcome {
+            Some(PortalOutcome::Opened(path)) => then(host, Some(path), cx),
+            Some(PortalOutcome::Cancelled) => then(host, None, cx),
+            Some(PortalOutcome::Failed(reason)) => Err(reason),
+            None => Err(CHOOSER_GONE.into()),
+        })
+    }
+
     /// Ask the person where to save `bytes` with the host's chooser
     /// (`request` is a Save request suggesting a file name; a browser page
     /// downloads them under it), then run `then` on the UI thread with
@@ -421,6 +441,14 @@ impl<R: Resource> Clone for Jobs<R> {
     }
 }
 
+/// Where a running job last said it is, as its [`Progress`] reported it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobProgress {
+    pub phase: String,
+    pub completed: Option<u64>,
+    pub total: Option<u64>,
+}
+
 /// What the jobs' owner has yet to take up.
 #[derive(Default)]
 struct JobQueue {
@@ -428,6 +456,8 @@ struct JobQueue {
     started: Vec<(String, Box<dyn Any>)>,
     cancelled: Vec<String>,
     running: std::collections::HashSet<String>,
+    /// The last progress each running job reported.
+    progress: HashMap<String, JobProgress>,
 }
 
 impl<R: Resource> Jobs<R> {
@@ -459,6 +489,7 @@ impl<R: Resource> Jobs<R> {
                 queue.cancelled.retain(|cancelled| *cancelled != key);
                 queue.started.retain(|(queued, _)| *queued != key);
                 queue.running.insert(key.clone());
+                queue.progress.remove(&key);
                 queue.started.push((key, Box::new(started)));
             }
             (answer, started) => {
@@ -476,6 +507,7 @@ impl<R: Resource> Jobs<R> {
     pub fn cancel(&self, key: &str) {
         let mut queue = self.queue.borrow_mut();
         queue.started.retain(|(queued, _)| queued != key);
+        queue.progress.remove(key);
         if queue.running.remove(key) {
             queue.cancelled.push(key.to_owned());
         }
@@ -484,6 +516,12 @@ impl<R: Resource> Jobs<R> {
     /// Whether the job `key` is still running.
     pub fn is_running(&self, key: &str) -> bool {
         self.queue.borrow().running.contains(key)
+    }
+
+    /// Where the running job `key` last said it is, for the view to show
+    /// and publish; `None` before its first report and once it ended.
+    pub fn progress(&self, key: &str) -> Option<JobProgress> {
+        self.queue.borrow().progress.get(key).cloned()
     }
 }
 
@@ -523,14 +561,32 @@ impl<R: Resource, H: 'static> OwnedJobs<R, H> {
         }
         for key in self.running.keys() {
             while let Some(polled) = self.running.poll(&key, host, &env, None) {
-                let Polled::Finished(result) = polled else {
-                    continue;
+                let result = match polled {
+                    Polled::Progress {
+                        phase,
+                        completed,
+                        total,
+                        ..
+                    } => {
+                        self.jobs.queue.borrow_mut().progress.insert(
+                            key.clone(),
+                            JobProgress {
+                                phase,
+                                completed,
+                                total,
+                            },
+                        );
+                        continue;
+                    }
+                    Polled::Finished(result) => result,
                 };
                 if let Some(result) = result {
                     if let Err(error) = result {
                         tracing::warn!(error = %error.message, kind = R::KIND, %key, "a job failed");
                     }
-                    self.jobs.queue.borrow_mut().running.remove(&key);
+                    let mut queue = self.jobs.queue.borrow_mut();
+                    queue.running.remove(&key);
+                    queue.progress.remove(&key);
                 }
                 break;
             }

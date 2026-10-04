@@ -702,6 +702,71 @@ fn a_view_and_a_surface_start_jobs_nobody_invoked_and_the_latest_wins() {
     assert!(capture.state().outbox.is_empty());
 }
 
+thread_local! {
+    /// The jobs of the running [`ProgressApp`], for the test to read.
+    static PROGRESS_JOBS: RefCell<Option<tilo_app::framework::Jobs<Mailbox>>> =
+        const { RefCell::new(None) };
+}
+
+/// Lets the reporting job finish.
+static RELEASE_SYNC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A view whose sync job says how far it is, then waits to be let go.
+struct ProgressApp;
+
+impl ResourceApp for ProgressApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-progress";
+    const TITLE: &'static str = "Progress";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        let jobs = cx.jobs();
+        jobs.start::<()>("sync", |cx| {
+            Ok(cx.thread(
+                |progress| {
+                    progress.report("syncing", Some(1), Some(2));
+                    while !RELEASE_SYNC.load(std::sync::atomic::Ordering::Acquire) {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                },
+                |(), (), _| Ok(Effected::done()),
+            ))
+        });
+        PROGRESS_JOBS.with(|slot| *slot.borrow_mut() = Some(jobs));
+        Box::new(cx.text(|mail| mail.fetched.clone()))
+    }
+}
+
+#[test]
+fn a_job_nobody_invoked_says_how_far_it_is_until_it_ends() {
+    let mut app = TestApp::<ProgressApp>::new().unwrap();
+    let progress = || PROGRESS_JOBS.with(|slot| slot.borrow().as_ref().unwrap().progress("sync"));
+    for _ in 0..500 {
+        app.settle();
+        if progress().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(
+        progress(),
+        Some(tilo_app::framework::JobProgress {
+            phase: "syncing".into(),
+            completed: Some(1),
+            total: Some(2),
+        })
+    );
+    RELEASE_SYNC.store(true, std::sync::atomic::Ordering::Release);
+    for _ in 0..500 {
+        app.settle();
+        if !PROGRESS_JOBS.with(|slot| slot.borrow().as_ref().unwrap().is_running("sync")) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(progress(), None, "an ended job reports nothing");
+}
+
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "test.mailbox.device")]
 pub enum DeviceEffect {
