@@ -432,6 +432,8 @@ portal-email-attachments = { $count ->
    *[other] { $count } attachments will be available through the document portal.
 }
 portal-remember-device = Remember on this device
+portal-a11y-name = Name
+portal-a11y-answer = Answer
 portal-secret-required = Fill in every required field.
 portal-secret-wifi-length = A Wi-Fi password is 8 to 63 characters, or 64 hexadecimal digits.
 portal-network-heading = Network
