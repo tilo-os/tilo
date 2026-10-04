@@ -140,8 +140,8 @@ done
 "$vm" shot joined-desktop >/dev/null 2>&1 \
   && cp -f "$TILO_RUN/joined-desktop.png" "$out/" 2>/dev/null || true
 
-# The read-only gate the graphical session wrapper runs at login, in the
-# person's own session so their secret store answers.
+# The identity chain check the release gate runs on an installed session, in
+# the person's own session so their secret store answers.
 "$vm" ssh 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus /usr/bin/shell --verify-collaboration-identity' \
   > "$out/verify-identity.txt" 2>&1 || {
     cat "$out/verify-identity.txt" >&2
