@@ -51,3 +51,21 @@ fn a_short_note_has_nothing_beyond_its_window() {
     open(&mut app, page);
     assert!(app.harness().complete_content().is_none());
 }
+
+#[test]
+fn a_long_note_handed_over_is_captured_whole() {
+    ui::i18n::I18nManager::init("en-US");
+    let body = (1..=52)
+        .map(|n| format!("Complete capture {n:02} continues beyond the window."))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let (file, _receipt) =
+        ui::application::OpenFile::new("Complete capture.md", "text/markdown", body.into_bytes())
+            .unwrap();
+    let mut app = ui::framework::testing::TestApp::<notes::NotesShell>::handed(file).unwrap();
+    app.settle();
+    assert!(
+        app.harness().complete_content().is_some(),
+        "a note handed over as a file is captured beyond the window"
+    );
+}
