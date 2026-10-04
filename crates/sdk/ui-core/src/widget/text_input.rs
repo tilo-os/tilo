@@ -157,7 +157,8 @@ const SPELL_EDIT_SETTLE: Duration = Duration::from_millis(250);
 /// External Hunspell sessions are persistent but still use IPC. Coalesce the
 /// prefixes of a rapidly typed non-English word while preserving prior spans.
 const EXTERNAL_SPELLCHECK_DELAY: Duration = Duration::from_millis(100);
-const ML_PAD_X: f64 = 10.0;
+/// Where a wrapping document line's text starts inside its rect.
+pub(crate) const ML_PAD_X: f64 = 10.0;
 const ML_PAD_Y: f64 = 8.0;
 const GUTTER_DIGIT_RATIO: f64 = 0.62;
 const GUTTER_PAD_L: f64 = 8.0;
@@ -952,6 +953,7 @@ impl TextInput {
         family.hash(&mut hash);
         size.to_bits().hash(&mut hash);
         self.kind.text_kind().hash(&mut hash);
+        self.text_role.weight().hash(&mut hash);
         (self.align as u8).hash(&mut hash);
         width.map(f32::to_bits).hash(&mut hash);
         if !self.preedit.is_empty() {
@@ -2063,8 +2065,11 @@ impl TextInput {
         let family = self.family.clone().unwrap_or(self.role_family());
         // Already grown by the text scale here, so the renderer paints it as
         // given.
+        // The role sets the weight too: a heading line is semibold in
+        // measurement and paint alike.
         let mut style = TextStyle::new(self.effective_font_size() * scale)
             .with_line_height(LINE_HEIGHT_RATIO)
+            .with_weight(self.text_role.weight())
             .with_family(family);
         style.scaling = TextScaling::Resolved;
         style.kind = self.kind.text_kind();
@@ -3465,6 +3470,7 @@ impl TextInput {
     /// so a serif or mono field shows a serif or mono prompt.
     fn placeholder_style(&self, size: f32) -> TextStyle {
         let mut style = TextStyle::new(size)
+            .with_weight(self.text_role.weight())
             .with_family(self.family.clone().unwrap_or_else(|| self.role_family()));
         if self.content_sized {
             style.scaling = TextScaling::Content;
@@ -5784,6 +5790,7 @@ impl TextInput {
             let layout_size = text_size * text_scale;
             let mut style = TextStyle::new(layout_size)
                 .with_line_height(LINE_HEIGHT_RATIO)
+                .with_weight(self.text_role.weight())
                 .with_family(family.clone());
             style.kind = self.kind.text_kind();
             let base = self.shaped_signature(display, &family, layout_size, None);
