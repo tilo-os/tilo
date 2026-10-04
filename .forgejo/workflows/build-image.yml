@@ -467,6 +467,7 @@ jobs:
           # Check the ioctl before the expensive release build; publishing must
           # never spend hours running the installed-desktop gate under TCG.
           if python3 os/dev/probe-kvm.py '${{ matrix.arch }}'; then
+            echo 'TILO_VM_KVM=1' >> "$GITHUB_ENV"
             echo '::notice::installed-desktop gate will use KVM acceleration'
           elif [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
             echo '::error::release runner cannot create a KVM VM; restore nested virtualization before publishing'
@@ -2706,6 +2707,19 @@ jobs:
             sleep 1
           done
           ./os/dev/vm.sh keys tab ret
+
+          # The compositor presented this login's first-use flow on the
+          # presenter its GPU allows, within budget: direct GPU scanout
+          # wherever the renderer shares the scanout GPU and never a readback
+          # that one failed frame made permanent. The guest renders with Mesa
+          # software Vulkan on both displays here, so the budgets are a
+          # software renderer's; TCG only proves the contract.
+          if [[ ${TILO_VM_KVM:-0} == 1 ]]; then
+            render_budgets='--render-budget-ms 1000 --frame-work-budget-ms 100'
+          else
+            render_budgets='--render-budget-ms 10000 --frame-work-budget-ms 2000'
+          fi
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo-session-report --render-gate $render_budgets"
 
           ./os/dev/vm.sh ssh /usr/libexec/tilo/projection-boot-check.sh
           # Optional AirPlay encrypted-media acceptance (#57): phase-bounded
