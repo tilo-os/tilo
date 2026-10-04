@@ -1,6 +1,11 @@
 //! The overview column: the articles of the chosen place, one
 //! [`ListRowFace`] each, under the refresh progress while feeds refresh;
 //! or the empty state when there is nothing to list.
+//!
+//! The rows are painted, and a [`Scrollable`] scrolls them: it owns the
+//! offset, the wheel and touchpad gestures, momentum and the overlay scroll
+//! bar that fades when idle. The empty state is the retained [`EmptyState`],
+//! so its one action takes part in focus and activation like any button.
 
 use std::collections::HashMap;
 
@@ -11,15 +16,16 @@ use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::time::Instant;
 use ui::tokens::TextRole;
 use ui::widget::{
-    EmptyState, EmptyStateContent, Interaction, ListRowFace, PressOutcome, ProgressBar, RowAction,
-    ScrollMetrics, Scrollbar, Widget,
+    AppModel, EmptyState, Interaction, ListRowFace, ModelPath, ProgressBar, RowAction, Scrollable,
+    TaffyTreeExt, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::app::{Core, Shared};
 use crate::model::{Article, Filter, Id, relative_time};
@@ -41,18 +47,13 @@ pub(crate) struct ListState {
     pub(crate) rect: Rect,
     /// The rows' viewport, below the refresh progress.
     pub(crate) viewport: Rect,
-    pub(crate) scroll: f64,
+    /// Scrolls the painted rows.
+    pub(crate) scroller: Scrollable,
     /// Scroll the open article's row into view on the next paint.
     pub(crate) reveal: bool,
+    /// The rows' full height, with their insets.
     pub(crate) content: f64,
-    /// One row's height: a wheel line scrolls by it.
-    line: f64,
-    bar: Scrollbar,
-    /// How far the thumb sits inside the scroll gutter.
-    bar_inset: f64,
     pub(crate) rows: Vec<RowHit>,
-    /// The empty state's action.
-    pub(crate) empty_action: Option<Rect>,
     progress: ProgressBar,
 }
 
@@ -61,35 +62,46 @@ impl Default for ListState {
         Self {
             rect: Rect::ZERO,
             viewport: Rect::ZERO,
-            scroll: 0.0,
+            scroller: Scrollable::new_vertical(),
             reveal: true,
             content: 0.0,
-            line: 0.0,
-            bar: Scrollbar::vertical(),
-            bar_inset: 0.0,
             rows: Vec::new(),
-            empty_action: None,
             progress: ProgressBar::new(0.0).with_label("Refreshing feeds"),
         }
     }
 }
 
 impl ListState {
-    fn metrics(&self) -> ScrollMetrics {
-        ScrollMetrics::new(self.content, self.viewport.height(), self.scroll)
+    /// How far the rows are scrolled.
+    pub(crate) fn scroll(&self) -> f64 {
+        f64::from(self.scroller.offset_y())
     }
 
-    fn track(&self, gutter: f64) -> Rect {
-        Rect::new(
-            self.viewport.x1 - gutter + self.bar_inset,
-            self.viewport.y0 + self.bar_inset,
-            self.viewport.x1 - self.bar_inset,
-            self.viewport.y1 - self.bar_inset,
-        )
+    /// Back to the top of the list.
+    pub(crate) fn scroll_to_top(&mut self) {
+        self.scroller.set_offset_y(0.0);
     }
+}
 
-    fn max_scroll(&self) -> f64 {
-        (self.content - self.viewport.height()).max(0.0)
+/// What the list says when it has no rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EmptyList {
+    title: &'static str,
+    icon: Icon,
+    /// The empty library offers its one action.
+    add_feed: bool,
+}
+
+impl EmptyList {
+    fn widget(self) -> EmptyState {
+        let state = EmptyState::new(self.title).with_icon(self.icon);
+        if self.add_feed {
+            state
+                .with_action("Add feed")
+                .with_action_id("feeds.empty.add")
+        } else {
+            state
+        }
     }
 }
 
@@ -114,6 +126,31 @@ impl Core {
         }
     }
 
+    /// What the list says while the chosen place holds no articles: an
+    /// empty library offers its one action, an empty place says what would
+    /// fill it.
+    pub(crate) fn empty_list(&self) -> Option<EmptyList> {
+        if !self.store.articles_for(self.filter).is_empty() {
+            return None;
+        }
+        let library_empty = self.store.feeds.is_empty();
+        let (title, icon) = if library_empty {
+            (EMPTY_LIBRARY_TITLE, Icon::Inbox)
+        } else {
+            match self.filter {
+                Filter::Unread => ("No unread articles", Icon::Check),
+                Filter::Starred => ("No starred articles", Icon::Star),
+                Filter::Tag(_) => ("No articles with this tag", Icon::Inbox),
+                _ => ("No articles yet", Icon::FileText),
+            }
+        };
+        Some(EmptyList {
+            title,
+            icon,
+            add_feed: library_empty,
+        })
+    }
+
     pub(crate) fn paint_list(
         &mut self,
         scene: &mut Scene,
@@ -124,14 +161,12 @@ impl Core {
         area: Rect,
     ) {
         self.list.rows.clear();
-        self.list.empty_action = None;
         let resized = self.list.rect.size() != area.size();
         self.list.rect = area;
         if area.width() <= 0.0 || area.height() <= 0.0 {
             return;
         }
-        let spacing = &theme.tokens.spacing;
-        let inset = f64::from(spacing.s2);
+        let inset = f64::from(theme.tokens.spacing.s2);
         let top = if self.refresh.visible() {
             self.paint_refresh(scene, t, text, theme, presence, area)
         } else {
@@ -139,6 +174,7 @@ impl Core {
         };
         let viewport = Rect::new(area.x0, top, area.x1, area.y1);
         self.list.viewport = viewport;
+        self.list.scroller.set_viewport_rect(viewport);
 
         let ids: Vec<Id> = self
             .store
@@ -146,47 +182,49 @@ impl Core {
             .iter()
             .map(|a| a.id)
             .collect();
-        if ids.is_empty() {
-            self.list.content = 0.0;
-            self.paint_list_empty(scene, t, text, theme, viewport);
-            return;
-        }
-
-        let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
-        // The thumb stands half a step inside its gutter, as a scroll view's does.
-        self.list.bar_inset = f64::from(spacing.s1) / 2.0;
         let row_h = ListRowFace::new("Ag")
             .secondary("Ag")
             .meta("Ag")
             .height(text, theme);
-        self.list.line = row_h;
-        self.list.content = row_h * ids.len() as f64 + inset * 2.0;
+        self.list.content = if ids.is_empty() {
+            0.0
+        } else {
+            row_h * ids.len() as f64 + inset * 2.0
+        };
+        self.list
+            .scroller
+            .set_content_size(viewport.width() as f32, self.list.content as f32);
+        if ids.is_empty() {
+            return;
+        }
         if (std::mem::take(&mut self.list.reveal) || resized)
             && let Some(index) = self
                 .selected
                 .and_then(|sel| ids.iter().position(|id| *id == sel))
         {
-            let row_top = inset + row_h * index as f64;
-            let row_bottom = row_top + row_h;
-            if row_top - inset < self.list.scroll {
-                self.list.scroll = row_top - inset;
-            } else if row_bottom + inset > self.list.scroll + viewport.height() {
-                self.list.scroll = row_bottom + inset - viewport.height();
-            }
+            // The row with the list's inset above and below it.
+            let row_top = row_h * index as f64;
+            self.list.scroller.scroll_into_view(
+                0.0,
+                row_top as f32,
+                viewport.width() as f32,
+                (row_h + inset * 2.0) as f32,
+            );
         }
-        self.list.scroll = self.list.scroll.clamp(0.0, self.list.max_scroll());
-        let overflows = self.list.metrics().overflows();
-        let x1 = viewport.x1 - inset.max(if overflows { gutter } else { 0.0 });
+        let scroll = self.list.scroll();
+        // Rows span the column, as a list in a section does, so their text
+        // shares the column title's edge; the trailing gutter stays free for
+        // the scroll bar.
+        let x1 = viewport.x1 - f64::from(theme.tokens.metrics.scrollbar_gutter);
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &viewport);
-        let mut y = viewport.y0 + inset - self.list.scroll;
-        let first = ((self.list.scroll - inset) / row_h).floor().max(0.0) as usize;
-        y += row_h * first as f64;
+        let first = ((scroll - inset) / row_h).floor().max(0.0) as usize;
+        let mut y = viewport.y0 + inset - scroll + row_h * first as f64;
         for (i, id) in ids.iter().enumerate().skip(first) {
             if y > viewport.y1 {
                 break;
             }
-            let rect = Rect::new(viewport.x0 + inset, y, x1, y + row_h);
+            let rect = Rect::new(viewport.x0, y, x1, y + row_h);
             y += row_h;
             self.paint_row(
                 &mut PaintCtx::new(scene, t, text, theme),
@@ -196,17 +234,7 @@ impl Core {
             );
         }
         scene.pop_layer();
-
-        if overflows {
-            self.list.bar.draw(
-                scene,
-                t,
-                self.list.track(gutter),
-                self.list.metrics(),
-                theme,
-                false,
-            );
-        }
+        self.list.scroller.draw_bar_overlay(scene, t, theme);
     }
 
     /// One article's row at `rect`; `next` is the article below it.
@@ -262,7 +290,8 @@ impl Core {
         let spacing = &theme.tokens.spacing;
         let caption = theme.text(TextRole::Caption);
         let line = f64::from(text.measure_style("Ag", None, &caption).1);
-        let pad_x = f64::from(spacing.s4);
+        // The column title's edge.
+        let pad_x = f64::from(spacing.s3);
         let band_y = area.y0 + f64::from(spacing.s3);
         text.draw_style(
             scene,
@@ -300,122 +329,47 @@ impl Core {
         top
     }
 
-    /// The list's empty state: an empty library offers its one action; an
-    /// empty place says what would fill it.
-    fn paint_list_empty(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) {
-        let library_empty = self.store.feeds.is_empty();
-        let (title, icon) = if library_empty {
-            (EMPTY_LIBRARY_TITLE, Icon::Inbox)
-        } else {
-            match self.filter {
-                Filter::Unread => ("No unread articles", Icon::Check),
-                Filter::Starred => ("No starred articles", Icon::Star),
-                Filter::Tag(_) => ("No articles with this tag", Icon::Inbox),
-                _ => ("No articles yet", Icon::FileText),
-            }
-        };
-        let content = EmptyStateContent {
-            icon: Some(icon),
-            action_label: library_empty.then_some("Add feed"),
-            ..EmptyStateContent::new(title)
-        };
-        self.list.empty_action = EmptyState::paint(
-            &mut PaintCtx::new(scene, t, text, theme),
-            area,
-            &content,
-            self.pointer,
-        );
-    }
-
     /// Route `event` to the list. Returns whether the list used it.
     pub(crate) fn list_event(
         &mut self,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
-        gutter: f64,
     ) -> bool {
-        let viewport = self.list.viewport;
-        let inside = self.list.rect.contains(self.pointer);
-        match event {
-            WindowEvent::CursorMoved { .. } => {
-                let track = self.list.track(gutter);
-                let metrics = self.list.metrics();
-                if let Some(offset) = self.list.bar.drag_to(track, metrics, self.pointer) {
-                    self.list.scroll = offset;
-                    return true;
-                }
-                self.list.bar.update_hover(track, metrics, self.pointer);
-                false
-            }
-            WindowEvent::MouseWheel { delta, .. } if inside => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.list.line,
-                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
-                };
-                self.list.scroll = (self.list.scroll - dy).clamp(0.0, self.list.max_scroll());
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if inside => {
-                if self
-                    .list
-                    .empty_action
-                    .is_some_and(|r| r.contains(self.pointer))
-                {
-                    self.open_add_subscription();
-                    return true;
-                }
-                let metrics = self.list.metrics();
-                if metrics.overflows() && viewport.contains(self.pointer) {
-                    match self
-                        .list
-                        .bar
-                        .press(self.list.track(gutter), metrics, self.pointer)
-                    {
-                        PressOutcome::Thumb => return true,
-                        PressOutcome::Page(offset) => {
-                            self.list.scroll = offset;
-                            return true;
-                        }
-                        PressOutcome::Miss => {}
-                    }
-                }
-                let hit = self
-                    .list
-                    .rows
-                    .iter()
-                    .find(|row| row.rect.contains(self.pointer))
-                    .copied();
-                if let Some(row) = hit {
-                    if row.star.is_some_and(|r| r.contains(self.pointer)) {
-                        self.toggle_star(row.id, ctx.state);
-                    } else {
-                        self.select_article(row.id, ctx.state);
-                    }
-                }
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => self.list.bar.release(),
-            _ => false,
+        // The scroll view takes the wheel, touchpad gestures and its bar.
+        self.list.scroller.handle_event(event, ctx);
+        if *ctx.handled {
+            return true;
         }
+        let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        if !self.list.viewport.contains(self.pointer) {
+            return false;
+        }
+        let hit = self
+            .list
+            .rows
+            .iter()
+            .find(|row| row.rect.contains(self.pointer))
+            .copied();
+        let Some(row) = hit else {
+            return false;
+        };
+        if row.star.is_some_and(|r| r.contains(self.pointer)) {
+            self.toggle_star(row.id, ctx.state);
+        } else {
+            self.select_article(row.id, ctx.state);
+        }
+        true
     }
 
     pub(crate) fn list_accessibility(&self) -> AccessNode {
-        let mut children: Vec<AccessNode> = self
+        let children: Vec<AccessNode> = self
             .list
             .rows
             .iter()
@@ -438,15 +392,6 @@ impl Core {
                 Some(node)
             })
             .collect();
-        if let Some(rect) = self.list.empty_action {
-            children.push(
-                AccessNode::new(Role::Button)
-                    .with_name("Add feed")
-                    .with_state(AccessState::new().focusable(true))
-                    .with_bounds(rect)
-                    .with_action_target("feeds.empty.add"),
-            );
-        }
         AccessNode::new(Role::List)
             .with_name(self.filter_title())
             .with_bounds(self.list.rect)
@@ -463,36 +408,113 @@ impl Core {
     }
 }
 
-/// The overview column widget: paints the list from the shared core.
+/// The overview column widget: paints the list from the shared core, or
+/// holds the empty state while there is nothing to list.
 pub(crate) struct ListPane {
     core: Shared,
     rect: Rect,
-    gutter: f64,
+    /// The empty state on show, and what it says.
+    empty: Option<(EmptyList, EmptyState)>,
+    empty_node: Option<NodeId>,
+    /// The empty state came or went: the tree must be rebuilt.
+    structure_dirty: bool,
 }
 
 impl ListPane {
     pub(crate) fn new(core: &Shared) -> Self {
-        Self {
+        let mut pane = Self {
             core: std::rc::Rc::clone(core),
             rect: Rect::ZERO,
-            gutter: 0.0,
+            empty: None,
+            empty_node: None,
+            structure_dirty: false,
+        };
+        pane.follow();
+        pane
+    }
+
+    /// Show the empty state the library calls for.
+    fn follow(&mut self) {
+        let Ok(core) = self.core.try_borrow() else {
+            return;
+        };
+        let wanted = core.empty_list();
+        drop(core);
+        if wanted != self.empty.as_ref().map(|(shown, _)| *shown) {
+            self.empty = wanted.map(|empty| (empty, empty.widget()));
+            self.structure_dirty = true;
         }
     }
 }
 
 impl Widget for ListPane {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        self.follow();
+        if let Some((_, empty)) = self.empty.as_mut() {
+            empty.sync(state, path);
+        }
+    }
+
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        self.follow();
+        let scrolled = self.core.borrow_mut().list.scroller.update(state, path);
+        let empty = self
+            .empty
+            .as_mut()
+            .is_some_and(|(_, empty)| empty.update(state, path));
+        scrolled || empty
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
-        crate::reader_pane::fill_leaf(taffy, node_map, self)
+        self.empty_node = self
+            .empty
+            .as_mut()
+            .map(|(_, empty)| empty.build_layout(taffy, theme, node_map));
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        };
+        let node = match self.empty_node {
+            Some(child) => taffy.parent_node(style, &[child]),
+            None => taffy.leaf_node(style),
+        };
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::reader_pane::leaf_rect(taffy, node, origin);
+        if let (Some((_, empty)), Some(child)) = (self.empty.as_mut(), self.empty_node) {
+            empty.apply_layout(taffy, child, self.rect.origin());
+        }
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.structure_dirty)
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.empty
+            .as_ref()
+            .map(|(_, empty)| empty as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.empty
+            .as_mut()
+            .map(|(_, empty)| empty as &mut (dyn Widget + '_))
+            .into_iter()
+            .collect()
     }
 
     fn draw(
@@ -503,9 +525,16 @@ impl Widget for ListPane {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.core
-            .borrow_mut()
-            .paint_list(scene, transform, text, theme, presence, self.rect);
+        let viewport = {
+            let mut core = self.core.borrow_mut();
+            core.paint_list(scene, transform, text, theme, presence, self.rect);
+            core.list.viewport
+        };
+        if let Some((_, empty)) = self.empty.as_mut() {
+            // Centred in the rows' viewport, below any refresh progress.
+            empty.apply_layout_external(viewport);
+            empty.draw(scene, transform, text, theme, presence);
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -513,13 +542,26 @@ impl Widget for ListPane {
             self.core.borrow_mut().pointer =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
-        if self.core.borrow_mut().list_event(event, ctx, self.gutter) {
+        if let (Some((_, empty)), Some(node)) = (self.empty.as_mut(), self.empty_node) {
+            empty.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if empty.take_action() {
+                self.core.borrow_mut().open_add_subscription();
+            }
+            if *ctx.handled {
+                return;
+            }
+        }
+        if self.core.borrow_mut().list_event(event, ctx) {
             *ctx.handled = true;
         }
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
-        Some(self.core.borrow().list_accessibility())
+        let list = self.core.borrow().list_accessibility();
+        Some(match &self.empty {
+            Some((_, empty)) => list.with_children(empty.accessibility().into_iter().collect()),
+            None => list,
+        })
     }
 
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
@@ -527,18 +569,54 @@ impl Widget for ListPane {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if let Some((_, empty)) = &self.empty {
+            return empty.cursor_shape(point);
+        }
         let core = self.core.borrow();
-        let over_star = core
-            .list
+        core.list
             .rows
             .iter()
-            .any(|row| row.star.is_some_and(|r| r.contains(point)));
-        let over_action = core.list.empty_action.is_some_and(|r| r.contains(point));
-        (over_star || over_action).then_some(winit::window::CursorIcon::Pointer)
+            .any(|row| row.star.is_some_and(|r| r.contains(point)))
+            .then_some(winit::window::CursorIcon::Pointer)
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.core.borrow().list.bar.is_dragging()
+        self.core
+            .try_borrow()
+            .is_ok_and(|core| core.list.scroller.wants_pointer_capture())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.core
+            .try_borrow()
+            .is_ok_and(|core| core.list.scroller.needs_animation_frame())
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.core
+            .try_borrow()
+            .ok()
+            .and_then(|core| core.list.scroller.next_wake_deadline())
+    }
+
+    // The rows are painted every frame, as a leaf's are.
+    fn needs_redraw(&self) -> bool {
+        true
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        true
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        true
+    }
+
+    fn mark_drawn(&mut self) {
+        self.core.borrow_mut().list.scroller.mark_drawn();
+        if let Some((_, empty)) = self.empty.as_mut() {
+            empty.mark_drawn();
+        }
     }
 
     fn name(&self) -> &'static str {

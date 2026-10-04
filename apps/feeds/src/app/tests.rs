@@ -370,7 +370,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         let mounted = framed(a);
         let tree = mounted.accessibility().expect("a semantic window");
         let progress = find_role(&tree, Role::ProgressBar).expect("refresh progress");
-        assert_eq!(progress.name.as_deref(), Some("Refreshing 4 of 12 feeds"));
+        assert_eq!(progress.name.as_deref(), Some("Refreshing 3 of 7 feeds"));
         let core = mounted.core();
         assert!(
             core.list.viewport.y0 > core.list.rect.y0,
@@ -930,6 +930,17 @@ fn sidebar_counts_and_titles_follow_the_library() {
     let mut doc = synced(&mut a);
     let feed = a.core().store.feeds[1].id;
     let sections = a.core().nav_sections();
+    let library = &sections[0].items;
+    assert_eq!(
+        library[0].count, None,
+        "Unread already counts every new article"
+    );
+    assert_eq!(
+        library[1].count,
+        Some(ui::chrome::NavCount::Neutral(
+            u32::try_from(a.core().store.total_unread()).unwrap()
+        ))
+    );
     let feeds = sections
         .iter()
         .find(|s| s.id == "feeds")
@@ -1018,7 +1029,7 @@ fn the_list_scrolls_and_keeps_the_open_article_in_view() {
         phase: winit::event::TouchPhase::Moved,
     });
     harness.relayout();
-    let scroll = mounted.core().list.scroll;
+    let scroll = mounted.core().list.scroll();
     assert!(
         (scroll - max).abs() < 0.5,
         "scrolled to the end: {scroll} of {max}"
@@ -1029,7 +1040,7 @@ fn the_list_scrolls_and_keeps_the_open_article_in_view() {
     let first = a.core().store.articles_for(Filter::All)[0].id;
     a.core_mut().select_article(first, &mut st.doc);
     settle(&mut mounted);
-    assert_eq!(mounted.core().list.scroll, 0.0);
+    assert_eq!(mounted.core().list.scroll(), 0.0);
 }
 
 /// Links open only web, Gemini and mail addresses.
