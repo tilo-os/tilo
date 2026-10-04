@@ -222,6 +222,29 @@ pub fn nullable(schema: Value) -> Value {
     }
 }
 
+/// `schema` with its numeric bounds narrowed to `minimum` and `maximum`,
+/// those given: `#[schema(range(min = 1, max = 100))]` on a field. An
+/// optional field's bounds go on its value's alternative.
+pub fn range(schema: Value, minimum: Option<Value>, maximum: Option<Value>) -> Value {
+    let Value::Object(mut object) = schema else {
+        return schema;
+    };
+    if let Some(Value::Array(alternatives)) = object.get_mut("oneOf") {
+        for alternative in alternatives.iter_mut() {
+            if alternative.get("type") != Some(&json!("null")) {
+                *alternative = range(alternative.take(), minimum.clone(), maximum.clone());
+            }
+        }
+        return Value::Object(object);
+    }
+    for (key, bound) in [("minimum", minimum), ("maximum", maximum)] {
+        if let Some(bound) = bound {
+            object.insert(key.into(), bound);
+        }
+    }
+    Value::Object(object)
+}
+
 /// `schema` with `description`, when there is one.
 pub fn describe(schema: Value, description: &str) -> Value {
     if description.is_empty() {

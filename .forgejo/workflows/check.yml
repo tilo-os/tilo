@@ -356,6 +356,18 @@ jobs:
           bash tools/test-env.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}"
 
+      # The shard's affected graphical apps through the same production-root
+      # native audit the nightly runs for every app, so a change that breaks
+      # an app's Tilo-native contract fails here, not overnight.
+      - name: Certify affected apps of shard ${{ matrix.shard }}
+        if: matrix.test_packages != ''
+        env:
+          TILO_REQUIRE_GPU: "1"
+        run: >-
+          bash tools/ci/measure.sh "certify affected apps shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "tilo-app certify (affected shard ${{ matrix.shard }})" --
+          cargo run --locked -p tilo-app-cli --bin tilo-app -- certify --workspace ${{ matrix.test_packages }}
+
       # The saved headless scenarios of each selected example, through the
       # example's own binary with the native audit: what `tilo-app check`
       # runs as its scenario stage.
