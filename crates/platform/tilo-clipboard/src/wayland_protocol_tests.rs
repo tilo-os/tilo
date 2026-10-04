@@ -486,7 +486,7 @@ impl Harness {
         self.query(|state| std::mem::take(&mut state.held))
     }
 
-    fn assert_closed(&self, pipes: Held) {
+    fn assert_closed(&self, pipes: Held, phase: &str) {
         self.remaining();
         assert_eq!(pipes.len(), 2);
         assert!(pipes.iter().any(|(mime, _)| mime == "text/html"));
@@ -501,12 +501,12 @@ impl Harness {
             assert_eq!(
                 unsafe { libc::poll(&raw mut poll, 1, 0) },
                 1,
-                "reader closed for {mime}"
+                "{phase}: reader closed for {mime}"
             );
             assert_ne!(
                 poll.revents & libc::POLLERR,
                 0,
-                "reader retained for {mime}"
+                "{phase}: reader retained for {mime}"
             );
             let error = std::fs::File::from(fd)
                 .write_all(b"late")
@@ -559,7 +559,7 @@ fn leave_and_null_cancel_both_pending_pipes_before_the_deadline() {
     let pipes = h.take_pending();
     h.leave(0);
     h.fence();
-    h.assert_closed(pipes);
+    h.assert_closed(pipes, "Leave");
     assert!(h.backend().rich_text().is_none());
     h.select(0, Some("fresh"), false);
     h.enter(0, 1);
@@ -568,7 +568,7 @@ fn leave_and_null_cancel_both_pending_pipes_before_the_deadline() {
     let pipes = h.take_pending();
     h.select(0, None, false);
     h.fence();
-    h.assert_closed(pipes);
+    h.assert_closed(pipes, "NULL");
     assert!(h.backend().rich_text().is_none());
     h.select(0, Some("after NULL"), false);
     h.assert_offer("after NULL");
@@ -626,7 +626,7 @@ fn production_deadline_closes_both_pipes_without_focus_or_selection_changes() {
         },
         "production read deadline",
     );
-    h.assert_closed(pipes);
+    h.assert_closed(pipes, "production deadline");
     assert!(h.backend().rich_text().is_none());
     h.select(0, Some("after timeout"), false);
     h.assert_offer("after timeout");

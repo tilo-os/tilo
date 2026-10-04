@@ -444,3 +444,11 @@ required. Linux execution is still pending; these client-worker tests complement
 the real-compositor authorization tests. The local Linux shell cross-check stops
 in glib-sys because no Linux pkg-config sysroot is configured on this Mac.
 This transport does not release the History-held Notes rich-paste consumer.
+
+The first deterministic Linux run (`dd629311eb`, focused run 67474) executed all
+eight requested worker/cache cases: seven passed and pending NULL cancellation
+failed. SCTK 0.20 clears a NULL selection without invoking its selection callback.
+The adapter now forwards raw data-device events through SCTK and additionally
+processes NULL for rich text, preserving SCTK child initialization and the
+existing image handler. The both-pipe closure and late-write assertions remain
+unchanged; fixed-source execution is required before lifting the hold.
