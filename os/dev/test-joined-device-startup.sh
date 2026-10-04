@@ -16,6 +16,8 @@
 #   2. The read-only identity gate the session wrapper runs at login passes.
 #   3. Startup never minted a second identity or rewrote the enrollment: no
 #      primary record, no root key on disk, the device certificate unchanged.
+#   4. An authored app (Notes) opens, and its launch leaves the public record
+#      as it was rather than giving it a secret it does not have.
 #
 # Usage: os/dev/test-joined-device-startup.sh DISK_QCOW2 [--out DIR] [--display gl|2d]
 #
@@ -148,13 +150,23 @@ done
     die "the joined identity does not verify at login"
   }
 if "$vm" ssh 'journalctl -b --no-pager -o cat _UID=$(id -u)' \
-    | grep -E 'needs recovery|identity secret has an invalid size|pre-enrolled device identity is not usable'; then
+    | grep -E 'needs recovery|identity secret has an invalid size|pre-enrolled device identity is not usable|refusing authored launch'; then
   die "the session treated the joined identity as one that needs recovery"
 fi
 "$vm" ssh "test ! -e $identity_dir/primary.json && test ! -e /var/lib/tilo/user-identity/privkey.bin" \
   || die "startup minted a root identity on a joined device"
 [ "$("$vm" ssh 'sha256sum /var/lib/tilo/device/cert.bin')" = "$cert_before" ] \
   || die "startup replaced the joined device's certificate"
+# An authored app starts on the joined device: its launch brokers the joined
+# identity, which holds no key of its own.
+"$vm" ssh '/usr/libexec/tilo/installed-atspi-apps.sh open Notes' > "$out/notes-open.txt" 2>&1 || {
+  cat "$out/notes-open.txt" >&2
+  die "Notes did not open on the joined device"
+}
+"$vm" shot joined-notes >/dev/null 2>&1 \
+  && cp -f "$TILO_RUN/joined-notes.png" "$out/" 2>/dev/null || true
+"$vm" ssh "grep -q '\"schema_version\": 1' $(printf '%q' "$record")" \
+  || die "launching an app rewrote the joined identity record to reference a secret"
 # Still the desktop once startup settles: nothing replaced it afterwards.
 "$vm" ssh /usr/libexec/tilo/native-atspi-smoke.sh established \
   || die "the joined device's desktop did not stay up"
