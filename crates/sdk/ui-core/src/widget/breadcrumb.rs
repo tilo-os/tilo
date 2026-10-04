@@ -1,5 +1,5 @@
 //! Breadcrumb widget — a horizontal path indicator with clickable ancestor
-//! segments and a chevron (`>`) separator between them.
+//! segments and a chevron icon between them.
 //!
 //! When the total width exceeds the available rect, the widget truncates
 //! the middle with `...`: keeps the first segment, inserts `...`, keeps the
@@ -17,9 +17,11 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::text::centered_text_top;
 
-/// ASCII `>` so it always falls back to the system font even when no
-/// fancy chevron face is loaded.
-const SEPARATOR_GLYPH: &str = ">";
+/// The separator between two segments: a chevron from the one icon set,
+/// at the small glyph size, never a typed character.
+fn separator_width(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.icon_sm)
+}
 
 /// Three ASCII dots (rather than the `…` codepoint) keep the truncation
 /// visible in plain-text dumps.
@@ -150,8 +152,7 @@ impl Breadcrumb {
         // painted by `draw` but never needs its own rect (never clickable).
         let style = theme.text(TextRole::Caption);
         let sep_pad = f64::from(theme.tokens.spacing.s2);
-        let (sep_w, _sep_h) = tr.measure_style(SEPARATOR_GLYPH, None, &style);
-        let sep_w = f64::from(sep_w);
+        let sep_w = separator_width(theme);
         let mut rects = Vec::with_capacity(labels.len());
         let mut cursor_x = self.rect.x0;
         let pill_y0 = self.rect.y0;
@@ -188,8 +189,7 @@ impl Breadcrumb {
 fn measure_total_width(labels: &[String], theme: &Theme, tr: &mut TextRenderer) -> f64 {
     let style = theme.text(TextRole::Caption);
     let sep_pad = f64::from(theme.tokens.spacing.s2);
-    let (sep_w, _) = tr.measure_style(SEPARATOR_GLYPH, None, &style);
-    let sep_block = f64::from(sep_w) + sep_pad * 2.0;
+    let sep_block = separator_width(theme) + sep_pad * 2.0;
     let mut total = 0.0_f64;
     for (i, label) in labels.iter().enumerate() {
         let (w, _) = tr.measure_style(label, None, &style);
@@ -265,7 +265,7 @@ impl Widget for Breadcrumb {
         // single lines at one style, so cosmic-text gives each the same line
         // box. Centre that, not the font style — the latter sat the whole
         // trail 1.5 px below the row's centre.
-        let (_, line_h) = text_renderer.measure_style(SEPARATOR_GLYPH, None, &style);
+        let (_, line_h) = text_renderer.measure_style("Home", None, &style);
         let text_y = centered_text_top(self.rect.y0, self.rect.height(), f64::from(line_h));
 
         let active_origin = self.segments.len().saturating_sub(1);
@@ -302,14 +302,15 @@ impl Widget for Breadcrumb {
             );
             // Always dim — the chevron is chrome, not content.
             if i.saturating_add(1) < n {
-                let sep_x = r.x1 + sep_pad;
-                text_renderer.draw_style(
+                let edge = separator_width(theme);
+                let centre = Point::new(r.x1 + sep_pad + edge / 2.0, self.rect.center().y);
+                crate::icons::draw_icon(
                     scene,
-                    SEPARATOR_GLYPH,
+                    transform,
+                    Rect::from_center_size(centre, (edge, edge)),
+                    crate::icons::Icon::ChevronRight,
                     text_dim,
-                    translated(transform, sep_x, text_y),
-                    None,
-                    &style,
+                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
         }
@@ -472,11 +473,11 @@ mod tests {
             );
             assert_eq!(
                 scene.encoding().resources.glyph_runs.len(),
-                3,
-                "home, chevron, docs"
+                2,
+                "home and docs; the chevron is an icon, not a glyph"
             );
             let style = theme.text(TextRole::Caption);
-            for (index, text) in ["home", SEPARATOR_GLYPH, "docs"].into_iter().enumerate() {
+            for (index, text) in ["home", "docs"].into_iter().enumerate() {
                 crate::widget::text::assert_glyph_run_centred_in_band(
                     &scene,
                     index,

@@ -3559,7 +3559,7 @@ async fn spawn_context_stream(
                     .map(|collaborator| Collaborator {
                         id: collaborator.user_id,
                         name: collaborator.display_name,
-                        color: unpack_color(collaborator.color),
+                        colour: Collaborator::colour_from_packed(collaborator.color),
                         is_agent: collaborator.is_agent,
                         is_self: collaborator.is_self,
                     })
@@ -5556,20 +5556,6 @@ fn decrypt_document_payload(
             Err(refused(collab_types::DocumentMutationError::RouteMismatch))
         }
     }
-}
-
-/// Unpack the SDK's 0x00RRGGBB u32 into [R, G, B] floats in 0..1 — the
-/// shape the legacy dialect already used, so existing consumers render
-/// identically.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "each channel is masked to 0..=255 by `& 0xFF`, always exactly representable in f32"
-)]
-fn unpack_color(packed: u32) -> [f32; 3] {
-    let r = ((packed >> 16) & 0xFF) as f32 / 255.0;
-    let g = ((packed >> 8) & 0xFF) as f32 / 255.0;
-    let b = (packed & 0xFF) as f32 / 255.0;
-    [r, g, b]
 }
 
 /// Translate an SDK [`runtime_collab::PresenceEvent`] into a
@@ -9753,7 +9739,7 @@ mod tests {
                 context_backlog: vec![SeedContext {
                     collaborators: vec![
                         ("alice".to_owned(), "Alice".to_owned(), 0x00FF_8000),
-                        ("bob".to_owned(), "Bob".to_owned(), 0x0000_80FF),
+                        ("bob".to_owned(), "Bob".to_owned(), 0),
                     ],
                     permissions: vec!["edit".to_owned(), "share".to_owned()],
                 }],
@@ -9781,10 +9767,9 @@ mod tests {
             assert_eq!(collabs.len(), 2);
             assert_eq!(collabs[0].id, "alice");
             assert_eq!(collabs[0].name, "Alice");
-            // 0x00FF8000 → R=255, G=128, B=0.
-            assert!((collabs[0].color[0] - 1.0).abs() < 1e-3);
-            assert!((collabs[0].color[1] - 128.0 / 255.0).abs() < 1e-3);
-            assert!(collabs[0].color[2].abs() < 1e-3);
+            // 0x00FF8000 is an orange; 0 says no colour.
+            assert_eq!(collabs[0].colour, Some(crate::tokens::PresenceHue::Orange));
+            assert_eq!(collabs[1].colour, None);
             assert_eq!(perms, vec!["edit".to_owned(), "share".to_owned()]);
         }
 

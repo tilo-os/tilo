@@ -86,6 +86,8 @@ pub struct RunRecord {
     pub shortcut_id: String,
     pub name: String,
     pub status: RunStatus,
+    /// When the run started, as the person reads the clock.
+    pub started: String,
 }
 
 /// The outcome of the last save or delete, for the person to read.
@@ -254,12 +256,8 @@ impl DoorCore {
         let catalog = catalog.ok_or("the action catalogue has not been read yet")?;
         self.state.update(|state| state.notice = None);
         let problems = editor::problems(&draft, &catalog, &saved);
-        if let Some((path, reasons)) = problems.iter().next() {
-            return Err(format!(
-                "{}: {}",
-                if path.is_empty() { "shortcut" } else { path },
-                reasons.join("; ")
-            ));
+        if let Some(first) = editor::problem_lines(&draft.program.0.steps, &problems).first() {
+            return Err(first.clone());
         }
         let shortcut = editor::candidate(&draft, &catalog);
         let action = if saved.iter().any(|other| other.id == shortcut.id) {
@@ -314,6 +312,7 @@ impl DoorCore {
                     shortcut_id: shortcut.to_owned(),
                     name,
                     status: RunStatus::Running,
+                    started: ui::clock::local_now().format("%H:%M").to_string(),
                 },
             );
         });

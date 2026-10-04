@@ -7,6 +7,8 @@
 //! consents, and checked against the catalogue. It is only ever offered to
 //! the person to open as a draft; saving still goes through the grant review.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value, json};
 use tilo_automation::{
     AGENT_APP_ID, AGENT_FREEFORM_ACTION, AGENT_TRANSFORM_KIND, ActionCatalog, SHORTCUTS_APP_ID,
@@ -14,6 +16,7 @@ use tilo_automation::{
 };
 use ui::tilo_actions::remote::RemoteActionTarget;
 
+use crate::editor;
 use crate::grant;
 
 /// Largest description a person may give.
@@ -142,7 +145,16 @@ pub fn adopt(value: Value, saved: &[Shortcut], catalog: &ActionCatalog) -> Resul
     let resolver = |id: &str| saved.iter().find(|other| other.id == id).cloned();
     let problems = match check(&shortcut, catalog, &resolver) {
         Ok(()) => Vec::new(),
-        Err(errors) => errors.iter().map(ToString::to_string).collect(),
+        Err(errors) => {
+            let mut by_step: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for error in &errors {
+                by_step
+                    .entry(error.path.as_str().to_owned())
+                    .or_default()
+                    .push(editor::explain(error, &shortcut.steps, catalog));
+            }
+            editor::problem_lines(&shortcut.steps, &by_step)
+        }
     };
     Ok(Drafted { shortcut, problems })
 }
@@ -216,7 +228,7 @@ mod tests {
             drafted
                 .problems
                 .iter()
-                .any(|problem| problem.contains("pinned")),
+                .any(|problem| problem == "Step 2: Pin it needs a value"),
             "the checker's verdict comes with it: {:?}",
             drafted.problems
         );

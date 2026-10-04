@@ -80,8 +80,10 @@ pub fn chip_rect(anchor: Rect, size: (f64, f64), viewport: Rect) -> Rect {
     Rect::new(x0, y0, x0 + w, y0 + h)
 }
 
-/// `surfaces.overlay` — the same opaque tier the context menu and dropdown
-/// use — so the chip never bleeds the content beneath it, in either theme.
+/// The floating material every floating surface is made of (blurred where
+/// the renderer runs the backdrop pass, the opaque panel ground otherwise),
+/// with the panel edge, at the control radius: a tooltip is a small
+/// floating Panel, not a card.
 pub fn draw_chip(
     scene: &mut Scene,
     transform: Affine,
@@ -90,7 +92,7 @@ pub fn draw_chip(
     rect: Rect,
     label: &str,
 ) {
-    let radius = f64::from(theme.tokens.radii.detail);
+    let radius = f64::from(theme.tokens.radii.control);
 
     // The elevation token's own blur, following the chip's radius — the same
     // painter every other raised surface uses, rather than two hand-offset
@@ -103,24 +105,18 @@ pub fn draw_chip(
         &theme.tokens.elevation.floating,
     );
 
-    // Fill + a rest edge derived from the fill itself (HIG §9.5 "Tooltip:
-    // as today, `edge_on(fill)`"), as a crisp 1 px inset stroke. The chip is
-    // centred under its anchor and so usually lands on a half pixel; snap
-    // the painted box to the grid or the hairline smears across two
-    // columns at half strength and stops registering on the dark preset.
+    // The Panel row: material, panel edge and, on a dark material, the
+    // inner light edge. The chip is centred under its anchor and so usually
+    // lands on a half pixel; snap the painted box to the grid or the
+    // hairline smears across two columns at half strength.
     let snapped = Rect::new(
         rect.x0.round(),
         rect.y0.round(),
         rect.x1.round(),
         rect.y1.round(),
     );
-    crate::surface::card(
-        scene,
-        transform,
-        snapped,
-        radius,
-        theme.tokens.colors.surfaces.overlay,
-    );
+    crate::surface::panel(scene, transform, snapped, radius, theme);
+    let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
 
     let text_style = theme.text(TextRole::Caption);
     // Centre on the measured line, not the font size: the chip's box is
@@ -131,7 +127,7 @@ pub fn draw_chip(
     text_renderer.draw_style(
         scene,
         label,
-        theme.tokens.colors.text_primary,
+        on_panel.tokens.colors.text_primary,
         translated(transform, rect.x0 + CHIP_PAD_X, text_y),
         None,
         &text_style,

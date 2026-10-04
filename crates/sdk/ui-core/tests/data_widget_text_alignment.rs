@@ -623,7 +623,16 @@ fn data_rows_centre_their_text_and_scale_once() {
             let label_run = ink(&cap.image, label);
             label_ink.push(label_run);
             let glyph_and_label = ink(&cap.image, cell);
-            assert_centered("glyph + label block", glyph_and_label, cell, 1.5);
+            // The block is centred by its line box, not its ink: the label's
+            // descender space (no letter of "Documents" reaches into it) lifts
+            // the ink a little, by an amount that grows with the type.
+            let block_tolerance = 1.5 * f64::from(scale);
+            assert_centered(
+                "glyph + label block",
+                glyph_and_label,
+                cell,
+                block_tolerance,
+            );
             let drift = glyph_and_label.center().x - cell.center().x;
             assert!(
                 drift.abs() <= 1.5,
@@ -633,7 +642,7 @@ fn data_rows_centre_their_text_and_scale_once() {
             // reflowed into columns rather than one cell per row.
             let second = Rect::new(cell.x1 + s3, cell.y0, cell.x1 + s3 + cell_w, cell.y1);
             let second_content = ink(&cap.image, second);
-            assert_centered("second cell block", second_content, second, 1.5);
+            assert_centered("second cell block", second_content, second, block_tolerance);
         }
         assert_scaled_once("icon label", label_ink[0], label_ink[1]);
         // "Documents" fits the 2x cell whole: a cell that had stayed 96 px wide
