@@ -342,6 +342,30 @@ pub fn seal_image(
     Ok(packed)
 }
 
+/// [`seal_image`] for `publisher`, whose key is elsewhere: the package
+/// carries a placeholder signature until
+/// [`crate::pack::sign_placeholder_root`] signs it.
+///
+/// # Errors
+///
+/// As [`seal_image`].
+pub fn seal_image_for(
+    tree: &Path,
+    spec: &ImageSpec,
+    publisher: [u8; 32],
+) -> Result<Packed, ImageError> {
+    let manifest = image_manifest(spec, publisher)?;
+    let tree_spec = TreeSpec::scan(tree)?;
+    let packed = crate::pack::pack_with_files_for(
+        tree,
+        &manifest,
+        publisher,
+        vec![(TREE_FILE.to_owned(), tree_spec.to_bytes()?)],
+    )?;
+    tree_spec.check(&packed.meta.collection)?;
+    Ok(packed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
