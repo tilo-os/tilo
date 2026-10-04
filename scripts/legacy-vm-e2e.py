@@ -264,17 +264,19 @@ def run(args: argparse.Namespace) -> None:
         result = legacy.guest("echo hi; exit 3", timeout=900)
         print(f"first launch (create + boot) took {time.monotonic() - started:.0f}s", flush=True)
         check(result.stdout == "hi\n" and result.returncode == 3,
-              f"stdout and exit status relay (got {result.stdout!r}, {result.returncode})")
+              f"stdout and exit status relay (got {result.stdout!r}, {result.returncode}; "
+              f"stderr {result.stderr[-800:]!r})")
 
         # 2. a granted directory at the same path.
         shared = root / "shared"
         shared.mkdir()
         (shared / "marker.txt").write_text("from the host\n")
         granted = legacy.run("grant", str(shared))
-        check(granted.returncode == 0, f"grant {shared}")
+        check(granted.returncode == 0, f"grant {shared} ({granted.stderr[-400:]!r})")
         seen = legacy.guest(f"cat '{shared}/marker.txt'")
         check(seen.stdout == "from the host\n",
-              f"granted directory visible in the guest at {shared} (got {seen.stdout!r})")
+              f"granted directory visible in the guest at {shared} "
+              f"(got {seen.stdout!r}; stderr {seen.stderr[-800:]!r})")
         boot_before = legacy.guest("cat /proc/sys/kernel/random/boot_id").stdout.strip()
         check(len(boot_before) == 36, f"guest boot id {boot_before!r}")
         status = legacy.run("status", timeout=60).stdout

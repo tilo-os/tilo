@@ -60,7 +60,7 @@ pub fn render_domain_xml(config: &VmConfig, backend: VsockBackend) -> Result<Str
 <memballoon model='virtio'><stats period='5'/></memballoon>\
 <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>\
 <serial type='file'><source path='{console}'/><target port='0'/></serial>\
-<graphics type='none'/><video><model type='none'/></video>\
+<video><model type='none'/></video>\
 </devices>{commandline}</domain>",
         max = memory.max_mib,
         base = memory.base_mib,
@@ -139,11 +139,17 @@ mod tests {
                 "<cid auto='yes'/>",
                 "<memballoon model='virtio'>",
                 "<source file='/d/tilo/legacy/linux/disk.qcow2'/>",
-                "<graphics type='none'/>",
+                "<video><model type='none'/></video>",
             ] {
                 assert!(xml.contains(required), "missing {required}");
             }
-            for forbidden in ["<filesystem", "type='network'", "<hostdev", "spice"] {
+            for forbidden in [
+                "<filesystem",
+                "type='network'",
+                "<hostdev",
+                "spice",
+                "<graphics",
+            ] {
                 assert!(!xml.contains(forbidden), "unexpected {forbidden}");
             }
             assert!(is_ours(&xml, &config));
