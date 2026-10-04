@@ -109,6 +109,9 @@ pub(crate) struct Shared {
     /// Node applications the person asked to open, by id, for the page to
     /// ask the node.
     node_app_requests: Rc<RefCell<Vec<String>>>,
+    /// Pages a host streams as display lists (`tilo-paint`), by window key:
+    /// drawn here by the toolkit instead of decoded as video.
+    paint_pages: Rc<RefCell<HashMap<String, Arc<tilo_browser_peer::remote_page::RemotePage>>>>,
 }
 
 /// Launch name of a legacy application the node runs.
@@ -125,12 +128,21 @@ pub(crate) struct NodeApp {
 pub(crate) const PEER_WINDOW_LAUNCH: &str = "tilo.peer-window:";
 
 /// Another member's legacy window, as the page streams it: its key (the
-/// page's name for the stream), app id and title.
+/// page's name for the stream), app id, title and codec.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub(crate) struct PeerWindow {
     pub key: String,
     pub app: String,
     pub title: String,
+    #[serde(default)]
+    pub codec: String,
+}
+
+impl PeerWindow {
+    /// A page this desktop draws itself rather than a video it is shown.
+    fn is_paint(&self) -> bool {
+        self.codec == tilo_relay_protocol::legacy_window::PAINT
+    }
 }
 
 impl Shared {
@@ -166,6 +178,28 @@ impl Shared {
         )
     }
 
+    /// The page behind a painted window, created on first use.
+    pub fn paint_page(&self, key: &str) -> Arc<tilo_browser_peer::remote_page::RemotePage> {
+        Arc::clone(
+            self.paint_pages
+                .borrow_mut()
+                .entry(key.to_owned())
+                .or_insert_with(tilo_browser_peer::remote_page::RemotePage::new),
+        )
+    }
+
+    /// Input on painted windows since the last call, by window key.
+    pub fn take_paint_input(
+        &self,
+    ) -> Vec<(String, Vec<tilo_relay_protocol::legacy_window::InputEvent>)> {
+        self.paint_pages
+            .borrow()
+            .iter()
+            .map(|(key, page)| (key.clone(), page.take_input()))
+            .filter(|(_, events)| !events.is_empty())
+            .collect()
+    }
+
     /// The legacy window `tab` shows, if it shows one.
     pub fn peer_window_of(&self, tab: TabId) -> Option<String> {
         self.peer_windows
@@ -199,6 +233,12 @@ impl Shared {
             .filter(|window| !dismissed.contains(&window.key))
             .collect();
         drop(dismissed);
+        // A page no longer shared stops being kept.
+        self.paint_pages.borrow_mut().retain(|key, _| {
+            wanted
+                .iter()
+                .any(|window| window.key == *key && window.is_paint())
+        });
         let mut close = Vec::new();
         for tab in tree
             .workspaces
@@ -460,6 +500,20 @@ impl TileSource for Tiles {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
         if let Some(notice) = crate::crash::quarantined(tab.id, &tab.title) {
             return TileHost::new(notice);
+        }
+        // A painted page is a window this desktop draws, like its own apps.
+        let painted = self
+            .shared
+            .peer_windows
+            .borrow()
+            .get(&tab.id)
+            .filter(|window| window.is_paint())
+            .map(|window| window.key.clone());
+        if let Some(key) = painted {
+            let view = ui::widget::WebView::new(self.shared.paint_page(&key))
+                .with_test_id("peer-page")
+                .with_accessible_name(tab.title.clone());
+            return TileHost::new(ui::widget::TileContent::App(Box::new(view)));
         }
         match self.component(tab) {
             Ok(component) => {

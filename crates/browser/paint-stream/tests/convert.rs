@@ -254,3 +254,63 @@ fn inline_svg_travels_as_vector_shapes_with_resolved_colours() {
         "circle as arcs"
     );
 }
+
+#[test]
+fn a_stream_of_payloads_reproduces_the_frames_and_marks_its_keyframes() {
+    use tilo_paint_stream::wire::{Payload, Receiver};
+    let frames: Vec<Frame> = ["top", "scrolled", "sidebar", "typed"]
+        .iter()
+        .zip(1..)
+        .map(|(s, seq)| frame(s, seq))
+        .collect();
+    let key = Payload::Key(frames[0].clone()).encode().expect("encode");
+    assert!(Payload::is_key(&key));
+    let mut viewer = Receiver::new();
+    viewer.apply(Payload::decode(&key).expect("decode"));
+    for pair in frames.windows(2) {
+        let bytes = Payload::Patches(vec![pair[0].diff(&pair[1])])
+            .encode()
+            .expect("encode");
+        assert!(!Payload::is_key(&bytes));
+        viewer.apply(Payload::decode(&bytes).expect("decode"));
+        assert_eq!(viewer.frame(), Some(&pair[1]));
+    }
+    let blob = Payload::Blob {
+        hash: [7; 32],
+        bytes: vec![1, 2, 3],
+    }
+    .encode()
+    .expect("encode");
+    assert!(!Payload::is_key(&blob));
+    assert_eq!(
+        viewer.apply(Payload::decode(&blob).expect("decode")),
+        Some(([7; 32], vec![1, 2, 3]))
+    );
+}
+
+#[test]
+fn a_viewer_that_misses_a_patch_waits_for_the_next_keyframe() {
+    use tilo_paint_stream::wire::{Payload, Receiver};
+    let (a, b, c) = (frame("top", 1), frame("scrolled", 2), frame("sidebar", 3));
+    let mut viewer = Receiver::new();
+    viewer.apply(Payload::Key(a));
+    // The patch a -> b was lost; b -> c does not apply to a.
+    viewer.apply(Payload::Patches(vec![b.diff(&c)]));
+    assert!(viewer.is_lost());
+    viewer.apply(Payload::Patches(vec![b.diff(&c)]));
+    assert!(viewer.is_lost(), "patches are ignored until a keyframe");
+    viewer.apply(Payload::Key(c.clone()));
+    assert!(!viewer.is_lost());
+    assert_eq!(viewer.frame(), Some(&c));
+}
+
+#[test]
+fn a_password_never_leaves_the_host() {
+    let f = frame("password", 5);
+    let all: Vec<String> = f.layers.keys().flat_map(|id| texts(&f, *id)).collect();
+    assert!(all.iter().all(|t| !t.contains("secret")), "{all:?}");
+    assert!(
+        all.iter().any(|t| t == "\u{2022}".repeat(6).as_str()),
+        "shown as six dots: {all:?}"
+    );
+}
