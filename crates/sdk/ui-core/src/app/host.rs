@@ -436,6 +436,7 @@ fn run_layout_pass(
 
 /// Every widget's layout box in tree order. Two snapshots of one unchanged
 /// tree are equal exactly when no widget moved or resized.
+#[cfg(feature = "native")]
 fn widget_geometry(root: &dyn crate::widget::Widget) -> Vec<KurboRect> {
     fn walk(widget: &dyn crate::widget::Widget, out: &mut Vec<KurboRect>) {
         out.push(widget.get_rect());
