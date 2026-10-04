@@ -809,6 +809,8 @@ pub struct FileExplorerWidget {
     /// The row the person last chose in the places list itself, so the
     /// navigation that follows does not rebuild a list that already shows it.
     places_choice: Rc<RefCell<Option<String>>>,
+    /// A capture shows a favourite being dragged in the places list.
+    stage_favorite_drag: bool,
     /// Per-user config dir for persisting favourites + zoom (`None` when the
     /// environment has no config dir — the UI still works, just doesn't persist).
     config_dir: Option<PathBuf>,
@@ -1369,6 +1371,7 @@ impl FileExplorerWidget {
             favs: places_sidebar::new_store(favorites),
             places_shown: None,
             places_choice: Rc::new(RefCell::new(None)),
+            stage_favorite_drag: false,
             config_dir,
             zoom_level,
             show_hidden,
@@ -1650,9 +1653,14 @@ impl FileExplorerWidget {
             self.places_shown = Some((sections, selected));
             return;
         }
-        self.nav.set_sidebar(Some(Box::new(
-            places.nav_list(&self.cmds, &self.places_choice),
-        )));
+        let drag = std::mem::take(&mut self.stage_favorite_drag)
+            .then(|| places.favorite_drag())
+            .flatten();
+        let mut list = places.nav_list(&self.cmds, &self.places_choice);
+        if let Some((dragged, before)) = drag {
+            list.stage_drag(&dragged, &before);
+        }
+        self.nav.set_sidebar(Some(Box::new(list)));
         *self.places_choice.borrow_mut() = None;
         self.places_shown = Some((sections, selected));
     }
@@ -4223,6 +4231,15 @@ impl FileExplorerWidget {
     pub fn debug_open_places_drawer(&mut self) {
         self.nav.open_sidebar();
         self.nav.snap();
+    }
+
+    /// Show a favourite being dragged to the top of Favourites, for a
+    /// capture: the places list is rebuilt with the drag staged.
+    #[doc(hidden)]
+    pub fn debug_stage_favorite_drag(&mut self) {
+        self.stage_favorite_drag = true;
+        self.places_shown = None;
+        self.structure_dirty = true;
     }
 
     /// Whether the places drawer / docked sidebar is currently revealed.

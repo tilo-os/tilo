@@ -114,7 +114,7 @@ pub(crate) fn section_list(
         if counted { item.count(count(n)) } else { item }
     };
     let items = vec![
-        item(Place::Containers, Icon::Archive, engine.containers.len()),
+        item(Place::Containers, Icon::Box, engine.containers.len()),
         item(Place::Images, Icon::Layers, engine.images.len()),
         item(Place::Volumes, Icon::HardDrive, engine.volumes.len()),
         item(Place::Distrobox, Icon::Terminal, engine.distroboxes.len()),
@@ -308,7 +308,7 @@ fn containers_empty(live: bool, intents: &Intents) -> Element {
     if live {
         Box::new(ActOnEmpty::new(
             EmptyState::new("No containers")
-                .with_icon(Icon::Archive)
+                .with_icon(Icon::Box)
                 .with_message("Create a container from an image to run it here.")
                 .with_action("New container"),
             Intent::NewContainer,
@@ -323,7 +323,7 @@ fn containers_empty(live: bool, intents: &Intents) -> Element {
 pub(crate) fn engine_missing(intents: &Intents) -> Element {
     Box::new(ActOnEmpty::new(
         EmptyState::new("Podman isn't available")
-            .with_icon(Icon::Archive)
+            .with_icon(Icon::Box)
             .with_message("Install Podman or start its user service to manage containers here.")
             .with_action("Try again"),
         Intent::Reconnect,
@@ -335,7 +335,7 @@ pub(crate) fn engine_missing(intents: &Intents) -> Element {
 pub(crate) fn nothing_selected() -> Element {
     Box::new(
         EmptyState::new("No container selected")
-            .with_icon(Icon::Archive)
+            .with_icon(Icon::Box)
             .with_message("Choose a container to see its logs, usage and settings."),
     )
 }

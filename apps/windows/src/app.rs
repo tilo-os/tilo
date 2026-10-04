@@ -1494,29 +1494,31 @@ impl WindowsApp {
             {
                 banner = banner.with_message(detail);
             }
-            page.head.push(Box::new(banner));
-            let mut recovery: Vec<Element> = Vec::new();
+            // The ways out of a failed setup are the banner's own actions.
             if app.can_retry_install {
-                recovery.push(Box::new(action_button(
+                banner = banner.with_action(action_button(
                     "windows-retry-install",
                     "windows-retry-install",
                     ButtonRole::Primary,
                     intents,
                     Intent::Retry,
-                )));
+                ));
             }
             if app.can_escalate_install_to_vm {
-                recovery.push(Box::new(action_button(
+                let escalate = action_button(
                     "windows-escalate-install-to-vm",
                     "windows-escalate-install-to-vm",
                     ButtonRole::Secondary,
                     intents,
                     Intent::Escalate,
-                )));
+                );
+                banner = if app.can_retry_install {
+                    banner.with_secondary_action(escalate)
+                } else {
+                    banner.with_action(escalate)
+                };
             }
-            if !recovery.is_empty() {
-                page.head.push(Box::new(row(recovery)));
-            }
+            page.head.push(Box::new(banner));
         }
 
         // The ways to open the app. A setup that failed has nothing to open.
@@ -1796,21 +1798,21 @@ impl WindowsApp {
             } else {
                 Banner::info(title)
             };
-            page.head.push(Box::new(
-                banner.with_message(strings::t("windows-appliance-not-installed-body")),
-            ));
-            let mut actions: Vec<Element> = vec![Box::new(
-                action_button(
-                    "windows-choose-windows-iso",
-                    "windows-appliance-set-up",
-                    ButtonRole::Primary,
-                    intents,
-                    Intent::ChooseIso,
-                )
-                .with_enabled(!busy),
-            )];
+            // Setting Windows up resolves the notice, so the banner holds it.
+            let mut banner = banner
+                .with_message(strings::t("windows-appliance-not-installed-body"))
+                .with_action(
+                    action_button(
+                        "windows-choose-windows-iso",
+                        "windows-appliance-set-up",
+                        ButtonRole::Primary,
+                        intents,
+                        Intent::ChooseIso,
+                    )
+                    .with_enabled(!busy),
+                );
             if status.detail.is_some() {
-                actions.push(Box::new(action_button(
+                banner = banner.with_secondary_action(action_button(
                     "windows-appliance-details",
                     if self.appliance_details {
                         "windows-hide-details"
@@ -1820,9 +1822,9 @@ impl WindowsApp {
                     ButtonRole::Plain,
                     intents,
                     Intent::ToggleApplianceDetails,
-                )));
+                ));
             }
-            page.head.push(Box::new(row(actions)));
+            page.head.push(Box::new(banner));
             if self.appliance_details
                 && let Some(detail) = &status.detail
             {

@@ -4155,23 +4155,14 @@ impl TerminalWidget {
         self.chrome_top_band = y - self.rect.y0;
     }
 
-    /// The height a banner reading `message` needs in `width`: the title in
-    /// the banner's own role, wrapped beside its icon, between the banner's
-    /// insets.
+    /// The height a banner reading `message` needs in `width`.
     fn banner_height(message: &str, width: f64, theme: &Theme, tr: &mut TextRenderer) -> f64 {
-        let t = &theme.tokens;
-        let text_width = (width
-            - f64::from(t.spacing.s4) * 2.0
-            - f64::from(t.metrics.icon_md)
-            - f64::from(t.spacing.s3))
-        .max(1.0);
-        let (_, text_height) = tr.measure_style(
-            message,
-            Some(text_width as f32),
-            &theme.text(TextRole::Body).strong(),
-        );
-        (f64::from(text_height) + f64::from(t.spacing.s3) * 2.0)
-            .max(f64::from(t.metrics.panel_row_height))
+        Banner::height(
+            &BannerContent::new(BannerKind::Warning, message),
+            width,
+            tr,
+            theme,
+        )
     }
 
     /// Paint the find bar and the session banner laid out by

@@ -1,15 +1,22 @@
 //! Breadcrumb widget — a horizontal path indicator with clickable ancestor
 //! segments and a chevron icon between them.
 //!
-//! When the total width exceeds the available rect, the widget truncates
-//! the middle with `...`: keeps the first segment, inserts `...`, keeps the
+//! The trail takes the width it is given. When its segments do not fit, it
+//! truncates the middle: keeps the first segment, puts the
+//! [`Icon::MoreHorizontal`] glyph in place of the hidden ones, keeps the
 //! last two. A trail of 4 or fewer segments never truncates (the truncated
 //! form wouldn't be shorter).
+//!
+//! An optional root icon ([`Breadcrumb::root_icon`]) leads the first
+//! segment (a drive, Home). A trail that doubles as an editable path
+//! reports a click on its empty space through
+//! [`Breadcrumb::on_edit_requested`], so the host can swap in a field.
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::icons::Icon;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -23,8 +30,8 @@ fn separator_width(theme: &Theme) -> f64 {
     f64::from(theme.tokens.metrics.icon_sm)
 }
 
-/// Three ASCII dots (rather than the `…` codepoint) keep the truncation
-/// visible in plain-text dumps.
+/// The stand-in for the hidden middle segments in the visible list; it
+/// paints as [`Icon::MoreHorizontal`], never as text.
 const ELLIPSIS: &str = "...";
 
 /// `segment_rects` and `visible_origin` mirror the truncated
@@ -45,6 +52,11 @@ pub struct Breadcrumb {
     /// Index (into `cached_visible`) the cursor is hovering. Ellipsis
     /// entries don't latch hover.
     hover_idx: Option<usize>,
+    /// A glyph leading the first segment.
+    root_icon: Option<Icon>,
+    last_cursor: Option<Point>,
+    /// A click on the trail's empty space asks to edit the path.
+    on_edit_requested: Option<Box<dyn FnMut()>>,
     rect: Rect,
 }
 
@@ -59,7 +71,34 @@ impl Breadcrumb {
             visible_origin: Vec::new(),
             cached_visible: Vec::new(),
             hover_idx: None,
+            root_icon: None,
+            last_cursor: None,
+            on_edit_requested: None,
             rect: Rect::ZERO,
+        }
+    }
+
+    /// Lead the first segment with `icon` (a drive, Home). It belongs to
+    /// the first segment: a click on it navigates there.
+    #[must_use]
+    pub fn root_icon(mut self, icon: Icon) -> Self {
+        self.root_icon = Some(icon);
+        self
+    }
+
+    /// Called when the person clicks the trail's empty space, past its last
+    /// segment: the host swaps the trail for an editable path field.
+    #[must_use]
+    pub fn on_edit_requested<F: FnMut() + 'static>(mut self, f: F) -> Self {
+        self.on_edit_requested = Some(Box::new(f));
+        self
+    }
+
+    /// Replace the segments (the path changed).
+    pub fn set_segments(&mut self, segments: Vec<String>) {
+        if segments != self.segments {
+            self.segments = segments;
+            self.hover_idx = None;
         }
     }
 
@@ -97,7 +136,7 @@ impl Breadcrumb {
         if self.segments.is_empty() {
             return Vec::new();
         }
-        let full_width = measure_total_width(&self.segments, theme, tr);
+        let full_width = measure_total_width(&self.segments, theme, tr) + self.root_width(theme);
         if full_width <= available_width {
             return self.segments.clone();
         }
@@ -150,6 +189,7 @@ impl Breadcrumb {
 
         // Lay the labels out left-to-right; the chevron between segments is
         // painted by `draw` but never needs its own rect (never clickable).
+        // The root icon leads the first segment's rect.
         let style = theme.text(TextRole::Caption);
         let sep_pad = f64::from(theme.tokens.spacing.s2);
         let sep_w = separator_width(theme);
@@ -158,8 +198,11 @@ impl Breadcrumb {
         let pill_y0 = self.rect.y0;
         let pill_y1 = self.rect.y1;
         for (i, label) in labels.iter().enumerate() {
-            let (w, _h) = tr.measure_style(label, None, &style);
-            let w = f64::from(w);
+            let w = if label == ELLIPSIS && origin.get(i).copied().flatten().is_none() {
+                f64::from(theme.tokens.metrics.icon_sm)
+            } else {
+                f64::from(tr.measure_style(label, None, &style).0)
+            } + if i == 0 { self.root_width(theme) } else { 0.0 };
             let r = Rect::new(cursor_x, pill_y0, cursor_x + w, pill_y1);
             rects.push(r);
             cursor_x += w;
@@ -171,6 +214,22 @@ impl Breadcrumb {
         self.cached_visible = labels;
         self.segment_rects = rects;
         self.visible_origin = origin;
+    }
+
+    /// The room the root icon takes before the first label, with its gap.
+    fn root_width(&self, theme: &Theme) -> f64 {
+        self.root_icon.map_or(0.0, |_| {
+            f64::from(theme.tokens.metrics.icon_sm) + f64::from(theme.tokens.metrics.icon_label_gap)
+        })
+    }
+
+    /// The trail's empty space: past the last segment, inside the rect.
+    fn in_empty_space(&self, point: Point) -> bool {
+        let end = self
+            .segment_rects
+            .last()
+            .map_or(self.rect.x0, |rect| rect.x1);
+        self.rect.contains(point) && point.x > end
     }
 
     /// Test-only helper: rebuild rects against a synthetic `self.rect`
@@ -219,15 +278,21 @@ impl Widget for Breadcrumb {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Width isn't known until taffy runs, so leave it auto; height is a
-        // single line of `sm` text plus 1.5x line-height for click comfort.
+        // The trail takes the width its parent gives it (and truncates to
+        // it); the height is a line of `Caption` with room for a click.
+        // In a row it shrinks to what its neighbours leave and stretches to
+        // the row's height; in a column it spans the column.
         let line_h = theme.tokens.typography.size(TextRole::Caption) * 1.5;
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::auto(),
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            min_size: Size {
+                width: Dimension::length(0.0),
                 height: Dimension::length(line_h),
             },
-            flex_shrink: 0.0,
+            flex_shrink: 1.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -275,6 +340,23 @@ impl Widget for Breadcrumb {
 
         let labels = self.cached_visible.clone();
         let n = labels.len();
+        if let (Some(icon), Some(first)) = (self.root_icon, self.segment_rects.first()) {
+            let edge = f64::from(theme.tokens.metrics.icon_sm);
+            let hovered = self.hover_idx == Some(0) && active_origin != 0;
+            icon.draw(
+                scene,
+                transform,
+                Rect::from_center_size(
+                    Point::new(first.x0 + edge / 2.0, self.rect.center().y),
+                    (edge, edge),
+                ),
+                if hovered || active_origin == 0 {
+                    text_primary
+                } else {
+                    text_dim
+                },
+            );
+        }
         // Zipped rather than indexed by a shared `i`: `rebuild_rects` builds
         // `cached_visible`, `segment_rects` and `visible_origin` together
         // from the same label list, so they're always the same length —
@@ -292,14 +374,32 @@ impl Widget for Breadcrumb {
                 Some(_) if Some(i) == self.hover_idx => accent,
                 _ => text_dim,
             };
-            text_renderer.draw_style(
-                scene,
-                label,
-                color,
-                translated(transform, r.x0, text_y),
-                None,
-                &style,
-            );
+            if orig.is_none() {
+                let edge = f64::from(theme.tokens.metrics.icon_sm);
+                Icon::MoreHorizontal.draw(
+                    scene,
+                    transform,
+                    Rect::from_center_size(
+                        Point::new(r.center().x, self.rect.center().y),
+                        (edge, edge),
+                    ),
+                    color,
+                );
+            } else {
+                let x = if i == 0 {
+                    r.x0 + self.root_width(theme)
+                } else {
+                    r.x0
+                };
+                text_renderer.draw_style(
+                    scene,
+                    label,
+                    color,
+                    translated(transform, x, text_y),
+                    None,
+                    &style,
+                );
+            }
             // Always dim — the chevron is chrome, not content.
             if i.saturating_add(1) < n {
                 let edge = separator_width(theme);
@@ -321,6 +421,7 @@ impl Widget for Breadcrumb {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = Some(logical);
                 let mut new_hover: Option<usize> = None;
                 let active_origin = self.segments.len().saturating_sub(1);
                 for (i, r) in self.segment_rects.iter().enumerate() {
@@ -354,6 +455,12 @@ impl Widget for Breadcrumb {
                         cb(orig);
                     }
                     *ctx.handled = true;
+                } else if let Some(point) = self.last_cursor
+                    && self.in_empty_space(point)
+                    && let Some(cb) = self.on_edit_requested.as_mut()
+                {
+                    cb();
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -375,7 +482,7 @@ impl Widget for Breadcrumb {
         let value = self.segments.last().cloned();
         Some(
             AccessNode::new(Role::List)
-                .with_name("Breadcrumb")
+                .with_name(crate::i18n::widget_format("widget-breadcrumb", &[]))
                 .with_optional_value(value)
                 .with_state(AccessState::default()),
         )
@@ -561,7 +668,7 @@ mod tests {
             ]);
             let node = Widget::accessibility(&bc).expect("breadcrumb is not presentational");
             assert_eq!(node.role, Role::List);
-            assert_eq!(node.name.as_deref(), Some("Breadcrumb"));
+            assert_eq!(node.name.as_deref(), Some("Path"));
             assert_eq!(
                 node.value.as_deref(),
                 Some("readme.md"),

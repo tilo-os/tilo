@@ -560,6 +560,7 @@ mod tests {
             id: Uuid::new_v4(),
             name: "Chinook sample".into(),
             engine: Engine::Sqlite,
+            address: String::new(),
             removable: false,
         }
     }

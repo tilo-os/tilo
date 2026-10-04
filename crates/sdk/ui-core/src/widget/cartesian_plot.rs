@@ -712,6 +712,38 @@ pub struct CartesianPlot {
     reduce_motion: bool,
     domain_cache: RefCell<Option<DomainCache>>,
     touch: ChartTouchTracker,
+    /// The bands around the plot, measured from the theme and the labels
+    /// at the last draw.
+    bands: Bands,
+    /// Keyboard inspection only while the plot has focus.
+    focused: bool,
+}
+
+/// The space around a plot: tick labels, axis titles, the chart's title and
+/// its legend, each from the theme's type and spacing and measured text.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Bands {
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+    /// Where the legend's first row starts.
+    legend_top: f64,
+    gap: f64,
+    tick_line: f64,
+}
+
+impl Bands {
+    /// Before the first draw: the stock theme's caption metrics.
+    const STOCK: Self = Self {
+        left: 56.0,
+        top: 30.0,
+        right: 12.0,
+        bottom: 34.0,
+        legend_top: 12.0,
+        gap: 8.0,
+        tick_line: 16.0,
+    };
 }
 
 impl CartesianPlot {
@@ -768,6 +800,8 @@ impl CartesianPlot {
             reduce_motion: false,
             domain_cache: RefCell::new(None),
             touch: ChartTouchTracker::default(),
+            bands: Bands::STOCK,
+            focused: false,
         }
     }
 
@@ -1134,47 +1168,93 @@ impl CartesianPlot {
     }
 
     fn plot_rect(&self) -> Rect {
+        let b = self.bands;
+        Rect::new(
+            self.rect.x0 + b.left,
+            self.rect.y0 + b.top,
+            (self.rect.x1 - b.right).max(self.rect.x0 + b.left + 1.0),
+            (self.rect.y1 - b.bottom).max(self.rect.y0 + b.top + 1.0),
+        )
+    }
+
+    /// Measure the bands around the plot in `theme`: the widest y tick
+    /// label and the tick, title and legend lines, each a spacing step from
+    /// its neighbour.
+    fn measure_bands(&self, tr: &mut TextRenderer, theme: &Theme) -> Bands {
+        let spacing = &theme.tokens.spacing;
+        let gap = f64::from(spacing.s2);
+        let tight = f64::from(spacing.s1);
+        let caption = theme.text(TextRole::Caption);
+        let tick_line = f64::from(tr.measure_style("0", None, &caption).1);
+        let title_line = f64::from(
+            tr.measure_style("Ag", None, &theme.text(TextRole::Heading))
+                .1,
+        );
+        let yd = self.domain(&self.style.y_axis, false);
+        let widest_tick = Self::ticks(&self.style.y_axis, yd, self.rect.height().max(1.0))
+            .iter()
+            .map(|tick| f64::from(tr.measure_style(&tick.label, None, &caption).0))
+            .fold(0.0, f64::max);
+        let y_title = if self.style.y_axis.title.is_empty() {
+            0.0
+        } else {
+            tick_line + tight
+        };
+        let x_title = if self.style.x_axis.title.is_empty() {
+            0.0
+        } else {
+            tick_line + tight
+        };
+        let left = (gap + y_title + widest_tick + gap).ceil();
+        let right = self.style.plot_padding.max(gap);
         let legend_rows = if self.style.legend == LegendPosition::Hidden {
             0
         } else {
             chart_legend::rows(
                 self.series.iter().map(|series| series.name.as_str()),
-                self.rect.x0 + 56.0,
-                self.rect.x1 - 12.0,
+                self.rect.x0 + left,
+                self.rect.x1 - right,
             )
         };
-        let legend = crate::num::f64_of_usize(legend_rows) * chart_legend::ROW_HEIGHT + 6.0;
-        let top = 30.0
-            + if self.title.is_empty() { 0.0 } else { 24.0 }
+        let legend = if legend_rows == 0 {
+            0.0
+        } else {
+            crate::num::f64_of_usize(legend_rows) * chart_legend::ROW_HEIGHT + gap
+        };
+        let title = if self.title.is_empty() {
+            0.0
+        } else {
+            title_line + gap
+        };
+        let legend_top = gap + title;
+        // The top tick label is centred on the top gridline: half a line of
+        // it sits above the plot, clear of the legend by a step.
+        let top = legend_top
             + if self.style.legend == LegendPosition::Top {
                 legend
             } else {
                 0.0
-            };
-        let bottom = 34.0
+            }
+            + tick_line / 2.0
+            + gap;
+        let bottom = gap
+            + tick_line
+            + x_title
+            + gap
             + if self.style.legend == LegendPosition::Bottom {
                 legend
             } else {
                 0.0
             };
-        Rect::new(
-            self.rect.x0
-                + 56.0
-                + if self.style.y_axis.title.is_empty() {
-                    0.0
-                } else {
-                    22.0
-                },
-            self.rect.y0 + top,
-            self.rect.x1 - self.style.plot_padding,
-            self.rect.y1
-                - bottom
-                - if self.style.x_axis.title.is_empty() {
-                    0.0
-                } else {
-                    22.0
-                },
-        )
+        Bands {
+            left,
+            top: top.ceil(),
+            right,
+            bottom: bottom.ceil(),
+            legend_top,
+            gap,
+            tick_line,
+        }
     }
 
     fn domain(&self, axis: &PlotAxis, x_axis: bool) -> Domain {
@@ -1768,12 +1848,16 @@ impl CartesianPlot {
                     &Line::new((plot.x0, y), (plot.x1, y)),
                 );
             }
-            let (width, _) = tr.measure_style(&tick.label, None, &size);
+            let (width, height) = tr.measure_style(&tick.label, None, &size);
             tr.draw_style(
                 scene,
                 &tick.label,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((plot.x0 - f64::from(width) - 10.0, y - 6.0)),
+                transform
+                    * Affine::translate((
+                        plot.x0 - f64::from(width) - self.bands.gap,
+                        y - f64::from(height) / 2.0,
+                    )),
                 None,
                 &size,
             );
@@ -1802,7 +1886,8 @@ impl CartesianPlot {
                 scene,
                 &tick.label,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((x - f64::from(width) / 2.0, plot.y1 + 10.0)),
+                transform
+                    * Affine::translate((x - f64::from(width) / 2.0, plot.y1 + self.bands.gap)),
                 None,
                 &size,
             );
@@ -1816,7 +1901,10 @@ impl CartesianPlot {
                 &title,
                 theme.tokens.colors.text_dim,
                 transform
-                    * Affine::translate((plot.center().x - f64::from(width) / 2.0, plot.y1 + 30.0)),
+                    * Affine::translate((
+                        plot.center().x - f64::from(width) / 2.0,
+                        plot.y1 + self.bands.gap + self.bands.tick_line + self.bands.gap / 2.0,
+                    )),
                 None,
                 &title_style.clone().with_weight(TextWeight::Semibold),
             );
@@ -1830,7 +1918,7 @@ impl CartesianPlot {
                 theme.tokens.colors.text_dim,
                 transform
                     * Affine::translate((
-                        self.rect.x0 + 10.0,
+                        self.rect.x0 + self.bands.gap,
                         plot.center().y + f64::from(width) / 2.0,
                     ))
                     * Affine::rotate(-std::f64::consts::FRAC_PI_2),
@@ -2443,20 +2531,22 @@ impl CartesianPlot {
         if self.style.legend == LegendPosition::Hidden {
             return;
         }
+        let left = self.rect.x0 + self.bands.left;
+        let right = self.rect.x1 - self.bands.right;
         let y = if self.style.legend == LegendPosition::Top {
-            self.rect.y0 + if self.title.is_empty() { 12.0 } else { 38.0 }
+            self.rect.y0 + self.bands.legend_top
         } else {
             let rows = chart_legend::rows(
                 self.series.iter().map(|series| series.name.as_str()),
-                self.rect.x0 + 56.0,
-                self.rect.x1 - 12.0,
+                left,
+                right,
             );
             self.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT
         };
         let items = chart_legend::layout(
             self.series.iter().map(|series| series.name.as_str()),
-            self.rect.x0 + 56.0,
-            self.rect.x1 - 12.0,
+            left,
+            right,
             y,
         );
         for (series, item) in self.series.iter().zip(items) {
@@ -2963,6 +3053,7 @@ impl Widget for CartesianPlot {
     ) {
         self.reduce_motion = theme.reduce_motion;
         let now = crate::time::now();
+        self.bands = self.measure_bands(tr, theme);
         let plot = self.plot_rect();
         let xd = self.domain(&self.style.x_axis, true);
         let yd = self.domain(&self.style.y_axis, false);
@@ -2992,7 +3083,11 @@ impl Widget for CartesianPlot {
                 scene,
                 &self.title,
                 theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
+                transform
+                    * Affine::translate((
+                        self.rect.x0 + self.bands.gap,
+                        self.rect.y0 + self.bands.gap,
+                    )),
                 None,
                 &theme.text(TextRole::Heading),
             );
@@ -3038,7 +3133,11 @@ impl Widget for CartesianPlot {
             }
             return;
         }
-        if let Some(action) = chart_nav_action(event) {
+        // Keys inspect the plot only while it has focus; otherwise they
+        // belong to whatever does.
+        if self.focused
+            && let Some(action) = chart_nav_action(event)
+        {
             if action == ChartNavAction::Activate {
                 let _ = self.activate_inspected();
             } else {
@@ -3257,6 +3356,17 @@ impl Widget for CartesianPlot {
     }
     fn is_focusable(&self) -> bool {
         true
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        if !focused && self.keyboard_inspection {
+            self.keyboard_inspection = false;
+            self.hovered = None;
+            self.hovered_annotation = None;
+        }
+    }
+    fn is_focused(&self) -> bool {
+        self.focused
     }
     fn wants_pointer_capture(&self) -> bool {
         self.pan_last.is_some() || self.brush_start.is_some()

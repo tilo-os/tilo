@@ -129,6 +129,8 @@ pub struct HexView {
     // --- chrome ---
     /// The inspector: docked when wide, a floating drawer when narrow.
     drawer: SidebarDrawer,
+    /// The window's History control, which the header row holds.
+    history: ui::widget::HistoryOpener,
     /// The edit-mode strip in the header, and the pick the person made.
     mode_group: ToggleGroup,
     mode_pick: Rc<Cell<Option<usize>>>,
@@ -216,6 +218,7 @@ impl HexView {
             drawer: SidebarDrawer::new()
                 .right()
                 .docked_width(f64::from(ui::tokens::Metrics::BASE.inspector_width)),
+            history: ui::widget::HistoryOpener::new(),
             mode_group: strip("hex.mode", &MODE_LABELS, &mode_pick),
             mode_pick,
             endian_group: strip("hex.endian", &ENDIAN_LABELS, &endian_pick).fill(),
@@ -876,7 +879,9 @@ impl HexView {
 impl Widget for HexView {
     ui::provides!(
         dyn ui::resources::PublishesResources,
-        dyn ui::widget::Findable
+        dyn ui::widget::Findable,
+        dyn ui::widget::WindowHeader,
+        dyn ui::widget::controls::ActionControls
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -1072,6 +1077,17 @@ impl Widget for HexView {
         let ctrl = ctx.modifiers.state().control_key();
         let shift = ctx.modifiers.state().shift_key();
 
+        let hovered = self.history.is_hovered();
+        if self
+            .history
+            .handle_event(event, self.geo.history, ctx.scale_factor)
+        {
+            *ctx.handled = true;
+            self.dirty = true;
+            return;
+        }
+        self.dirty |= hovered != self.history.is_hovered();
+
         if !self.has_file {
             self.handle_empty_event(event, ctx);
             return;
@@ -1256,6 +1272,7 @@ impl Widget for HexView {
                     .with_action_target("hex.open"),
             );
         }
+        children.extend(self.history.accessibility(self.geo.history));
         Some(
             AccessNode::new(Role::Document)
                 .with_name("Hex editor")
@@ -1285,6 +1302,9 @@ impl Widget for HexView {
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        if self.history.perform_semantic_action(target, action) {
+            return true;
+        }
         if matches!(action, ui::a11y::Action::Activate) {
             match target {
                 "hex.open" => self.begin_open(),
@@ -1695,6 +1715,27 @@ impl HexView {
             _ => {}
         }
         self.dirty = true;
+    }
+}
+
+/// The view's header row is the window's: it holds the History control the
+/// host offers, so the window draws no History bar above the editor.
+impl ui::widget::WindowHeader for HexView {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        if self.history.control() != control {
+            self.history.set_control(control);
+            self.dirty = true;
+        }
+    }
+}
+
+impl ui::widget::controls::ActionControls for HexView {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.history.take().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
     }
 }
 

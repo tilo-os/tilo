@@ -173,33 +173,30 @@ impl Draft {
     }
 }
 
-/// The zone list: the active zone first, then every other zone in
-/// firewalld's order from least to most trusted.
+/// The zone list, in firewalld's order from least to most trusted; the
+/// active zone says so on its row.
 pub(crate) fn zone_list(config: &FirewallConfig, selected: ZoneKind, intents: &Intents) -> NavList {
-    let item = |zone: &Zone| NavItem::new(zone_id(zone.kind), zone.kind.title()).without_actions();
-    let active: Vec<NavItem> = config
-        .zone(config.default_zone)
-        .map(item)
-        .into_iter()
-        .collect();
-    let others: Vec<NavItem> = ZoneKind::ALL
+    let zones: Vec<NavItem> = ZoneKind::ALL
         .iter()
-        .filter(|kind| **kind != config.default_zone)
         .filter_map(|kind| config.zone(*kind))
-        .map(item)
+        .map(|zone: &Zone| {
+            let item = NavItem::new(zone_id(zone.kind), zone.kind.title()).without_actions();
+            if zone.kind == config.default_zone {
+                item.status_label("Active", Tone::Success)
+            } else {
+                item
+            }
+        })
         .collect();
     let intents = intents.clone();
-    NavList::new(vec![
-        NavSection::new("active", "Active", active),
-        NavSection::new("zones", "Other zones", others),
-    ])
-    .selected(&zone_id(selected))
-    .with_accessible_name("Firewall zones")
-    .on_select(move |id| {
-        if let Some(zone) = id.strip_prefix("zone:").and_then(ZoneKind::from_name) {
-            intents.push(Intent::SelectZone(zone));
-        }
-    })
+    NavList::new(vec![NavSection::untitled("zones", zones)])
+        .selected(&zone_id(selected))
+        .with_accessible_name("Firewall zones")
+        .on_select(move |id| {
+            if let Some(zone) = id.strip_prefix("zone:").and_then(ZoneKind::from_name) {
+                intents.push(Intent::SelectZone(zone));
+            }
+        })
 }
 
 pub(crate) fn zone_id(zone: ZoneKind) -> String {

@@ -538,7 +538,8 @@ impl Default for SearchField {
 impl Widget for SearchField {
     crate::provides!(
         dyn crate::undo::UndoPoints,
-        dyn crate::widget::controls::ActionControls
+        dyn crate::widget::controls::ActionControls,
+        SearchField
     );
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
