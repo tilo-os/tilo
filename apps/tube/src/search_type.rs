@@ -83,9 +83,20 @@ pub fn history_searchable_type() -> SearchableType {
     }
 }
 
-/// A video hit: a media row with its creator and length.
-fn video_result(group: &str, video: &Video, title: &str, address: ActionAddress) -> SearchResult {
+/// A video hit: a media row with its thumbnail, creator and length.
+fn video_result(
+    group: &str,
+    model: &TubeModel,
+    video: &Video,
+    images: Option<&ui::ImageStore>,
+    address: ActionAddress,
+) -> SearchResult {
+    let title = video.display_title(model.settings.dearrow_titles_on());
     let mut row = SearchRow::media(title).byline(&video.channel_name);
+    let thumbnail = model.display_thumbnail_url(video);
+    if let Some(images) = images.filter(|_| !thumbnail.is_empty()) {
+        row = row.thumbnail(images.app_image(thumbnail));
+    }
     if video.duration > 0 && !video.live {
         row = row.duration(clock(f64::from(video.duration)));
     }
@@ -203,25 +214,23 @@ impl LiveSearch {
 
 /// The hits the live backend returned for `query` (in its order), with the
 /// resources that open them.
-pub fn live_results(model: &TubeModel, query: &str) -> (Vec<SearchResult>, Vec<Resource>) {
+pub fn live_results(
+    model: &TubeModel,
+    images: Option<&ui::ImageStore>,
+    query: &str,
+) -> (Vec<SearchResult>, Vec<Resource>) {
     let mut results = Vec::new();
     let mut resources = Vec::new();
     if model.search_hits_query != query {
         return (results, resources);
     }
-    let dearrow = model.settings.dearrow_titles_on();
     for video in model
         .search_display(query)
         .into_iter()
         .take(MAX_INDEXED_ENTITIES)
     {
         let address = ActionAddress::new(format!("tube.video:{}", video.id), "open");
-        results.push(video_result(
-            "Videos",
-            video,
-            video.display_title(dearrow),
-            address,
-        ));
+        results.push(video_result("Videos", model, video, images, address));
         resources.extend(crate::actions::video_resource(model, &video.id, false));
     }
     for channel in model.search_creators_display(query) {
@@ -254,20 +263,15 @@ pub struct TubeSearchProvider {
 }
 
 impl TubeSearchProvider {
-    pub fn new(model: &TubeModel) -> Self {
+    /// Thumbnails load through `images` where the app has one.
+    pub fn new(model: &TubeModel, images: Option<&ui::ImageStore>) -> Self {
         let provider = Self {
             catalog: SearchCatalog::new(TUBE_SEARCH_KIND),
             live: None,
         };
-        let dearrow = model.settings.dearrow_titles_on();
         for video in model.videos.iter().take(MAX_INDEXED_ENTITIES) {
             let address = ActionAddress::new(format!("tube.video:{}", video.id), "open");
-            let result = video_result(
-                "Videos",
-                video,
-                video.display_title(dearrow),
-                address.clone(),
-            );
+            let result = video_result("Videos", model, video, images, address.clone());
             let searchable = format!("{}\0{}\0{}", video.title, video.channel_name, video.id);
             let _ = provider
                 .catalog
@@ -301,13 +305,8 @@ impl TubeSearchProvider {
                 continue;
             };
             let address = ActionAddress::new(format!("tube.history:{video_id}"), "open");
-            let result = video_result(
-                "Watch history",
-                video,
-                video.display_title(dearrow),
-                address.clone(),
-            )
-            .with_icon(Icon::History);
+            let result = video_result("Watch history", model, video, images, address.clone())
+                .with_icon(Icon::History);
             let searchable = format!("{}\0{}\0{}", video.title, video.channel_name, video_id);
             let _ = provider
                 .catalog
@@ -436,7 +435,7 @@ mod tests {
             video_count: 1,
             video_ids: vec![video_id],
         });
-        let provider = TubeSearchProvider::new(&model);
+        let provider = TubeSearchProvider::new(&model, None);
         for (query, resource) in [
             ("compositor", "tube.video:"),
             ("watchlist", "tube.playlist:"),
@@ -466,7 +465,7 @@ mod tests {
     fn youtube_answers_as_a_slow_page() {
         let mut model = crate::sample::model();
         let live = LiveSearch::default();
-        let provider = TubeSearchProvider::new(&model).with_live(live.clone());
+        let provider = TubeSearchProvider::new(&model, None).with_live(live.clone());
 
         let page = provider.search_page(&SearchQuery::new("donut"), None, 64, 64);
         let token = page.pending.expect("the YouTube page is on its way");
@@ -481,7 +480,7 @@ mod tests {
         model.videos.push(found);
         model.search_hits_query = "donut".into();
         model.search_hits = vec!["found-on-youtube".into()];
-        live.answer("donut", live_results(&model, "donut"));
+        live.answer("donut", live_results(&model, None, "donut"));
 
         let PagePoll::Ready(page) = provider.poll_page(&token) else {
             panic!("the answer is ready");

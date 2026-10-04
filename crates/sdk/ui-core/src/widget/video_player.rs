@@ -417,7 +417,8 @@ impl VideoPlayer {
 
     /// A still that shows, contain-fitted on the letterbox, until the first
     /// frame arrives. A [`MediaSource::Url`](crate::widget::MediaSource) loads
-    /// in the background.
+    /// in the background; a `Paint` source paints the host's own art on a
+    /// 16:9 picture. The controls stand over either.
     #[must_use]
     pub fn with_poster(mut self, poster: crate::widget::MediaSource) -> Self {
         self.set_poster(Some(poster));
@@ -1095,6 +1096,26 @@ impl VideoPlayer {
                     &dest,
                 );
             }
+        } else if let Some(crate::widget::MediaSource::Paint(paint)) = &self.poster {
+            // Art the host paints (a video with no still of its own), on a
+            // 16:9 picture contain-fitted like a frame, under the controls.
+            let (rw, rh) = (self.rect.width(), self.rect.height());
+            let (dw, dh) = if rw * 9.0 > rh * 16.0 {
+                (rh * 16.0 / 9.0, rh)
+            } else {
+                (rw, rw * 9.0 / 16.0)
+            };
+            let picture = Rect::from_center_size(self.rect.center(), (dw, dh));
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &picture,
+            );
+            let mut ctx = crate::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+            paint(&mut ctx, picture);
+            scene.pop_layer();
         } else {
             self.paint_empty_placeholder(scene, transform, theme);
         }

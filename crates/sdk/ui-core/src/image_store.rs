@@ -358,6 +358,22 @@ thread_local! {
     static HOST_FACTORY: std::cell::RefCell<Option<std::rc::Rc<dyn Fn(u32) -> ImageStore>>> = const { std::cell::RefCell::new(None) };
 }
 
+/// An [`ImageStore`] image as chrome artwork: see [`ImageStore::app_image`].
+struct StoreImage {
+    store: ImageStore,
+    url: String,
+}
+
+impl crate::icons::AppImageSource for StoreImage {
+    fn key(&self) -> &str {
+        &self.url
+    }
+
+    fn pixels(&self, _device_px: u32) -> Option<PenikoImage> {
+        self.store.get(&self.url)
+    }
+}
+
 impl ImageStore {
     /// Install a legacy host factory for thumbnail-sized browser images.
     ///
@@ -449,6 +465,17 @@ impl ImageStore {
             workers: workers.clamp(1, MAX_IMAGE_WORKERS),
         }));
         store
+    }
+
+    /// The image at `url` as artwork chrome paints (a search row's
+    /// thumbnail, a menu item's art): it loads in the background like
+    /// [`Self::get`], and chrome shows its placeholder until it lands.
+    #[must_use]
+    pub fn app_image(&self, url: &str) -> crate::icons::AppImage {
+        crate::icons::AppImage::new(StoreImage {
+            store: self.clone(),
+            url: url.to_owned(),
+        })
     }
 
     /// Decoded image for `url`, kicking off an async load the first time a URL
