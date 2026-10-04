@@ -330,7 +330,9 @@ fn main() -> anyhow::Result<()> {
 
 #[allow(clippy::too_many_lines, reason = "one dispatch arm per subcommand")]
 async fn serve_cli() -> anyhow::Result<()> {
+    // Commands print their JSON result on stdout; logs go to stderr.
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
