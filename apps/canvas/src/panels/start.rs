@@ -151,7 +151,7 @@ impl Swatch {
 
 /// The long side of the small artwork a swatch draws, in units: enough
 /// for the ground's tooth to read, few enough cells to make at once.
-const SWATCH_UNITS: f64 = 240.0;
+const SWATCH_UNITS: f64 = 240.0; // artwork units of a swatch, not on-screen spacing
 
 impl Widget for Swatch {
     fn build_layout(

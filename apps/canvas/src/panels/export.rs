@@ -68,7 +68,7 @@ pub enum Area {
 /// The sizes offered, as pixels per artwork unit.
 pub const SCALES: [f64; 5] = [0.5, 1.0, 2.0, 3.0, 4.0];
 /// The longest side a picture may have.
-pub const MAX_PIXELS: f64 = 8192.0;
+pub const MAX_PIXELS: f64 = 8192.0; // a picture size limit in pixels, not on-screen spacing
 
 /// What the export dialog is set to.
 #[derive(Clone, Copy, Debug, PartialEq)]
