@@ -191,13 +191,16 @@ impl TimelineProjection {
 
     pub fn date_markers(&self, viewport: f64) -> Vec<(String, f64, bool)> {
         let denominator = self.max_scroll(viewport);
+        // A year boundary is where one year gives way to the next: the
+        // newest day opens the timeline and stands at the top of the track,
+        // so it is no boundary and draws no mark.
         let mut previous_year = "";
         self.days
             .iter()
             .map(|day| {
                 let year = day.key.get(..4).unwrap_or_default();
-                let major = year.len() == 4 && year != previous_year;
-                if major {
+                let major = year.len() == 4 && !previous_year.is_empty() && year != previous_year;
+                if year != previous_year {
                     previous_year = year;
                 }
                 let position = if denominator > 0.0 {

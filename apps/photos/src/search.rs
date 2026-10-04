@@ -301,10 +301,10 @@ impl PhotosSearchProvider {
             };
         let root = SearchResult::for_action(
             PHOTO_SEARCH_KIND,
-            "Photo library",
+            crate::strings::tr("photos-search-library"),
             ActionAddress::new("photos.library", "open"),
         )
-        .with_subtitle("Import and browse photographs")
+        .with_subtitle(crate::strings::tr("photos-search-library-subtitle"))
         .with_icon(Icon::Image);
         insert(
             "photos.library".to_owned(),

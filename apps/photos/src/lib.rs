@@ -113,18 +113,17 @@ pub fn camera_import_photo(
                     .bytes()
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         })
-        .ok_or_else(|| "invalid Camera media identity".to_owned())?;
+        .ok_or_else(|| crate::strings::tr("photos-camera-error-identity"))?;
     // The store verifies what it reads against the hash; content that fails
     // that check reads as absent.
-    let bytes = store.read(hash).ok_or_else(|| {
-        "Camera media bytes are not available on this device; retry after they sync".to_owned()
-    })?;
+    let bytes = store
+        .read(hash)
+        .ok_or_else(|| crate::strings::tr("photos-camera-error-not-here"))?;
     if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 {
-        return Err("Camera media bytes failed integrity validation".to_owned());
+        return Err(crate::strings::tr("photos-camera-error-integrity"));
     }
-    let image = pixels::decode(&bytes).ok_or_else(|| {
-        "Camera media is not a supported, safely decodable still image".to_owned()
-    })?;
+    let image = pixels::decode(&bytes)
+        .ok_or_else(|| crate::strings::tr("photos-camera-error-unsupported"))?;
     let open = OpenImage {
         path: name.to_owned(),
         name: name.to_owned(),
@@ -158,7 +157,7 @@ pub fn import_camera_media(
     doc::PhotosDoc::set_library(doc, &library);
     let selected = library
         .photo(&id)
-        .ok_or_else(|| "Camera import did not produce a library photograph".to_owned())?;
+        .ok_or_else(|| crate::strings::tr("photos-camera-error-failed"))?;
     doc::PhotosDoc::set_image(doc, Some(&selected.image));
     Ok(id)
 }
@@ -206,8 +205,229 @@ pub const SHOT_SCENARIOS: &[&str] = &[
 
 /// A generated test pattern, used **only** by `--shots`.
 ///
-/// Generated in memory for deterministic offscreen screenshots. Wide (3:2) and
-/// asymmetric to exercise letterboxing, orientation and crop.
+/// Generated in memory for deterministic offscreen screenshots: a sea under
+/// a sky with a sun left of centre, so the picture has an unambiguous up,
+/// left and right for letterboxing, orientation and crop.
+pub fn shots_pattern(w: u32, h: u32) -> pixels::Rgba {
+    shots_pattern_variant(w, h, 0)
+}
+
+/// One generated landscape: its sky, its land or water, what stands on the
+/// horizon and where the sun or moon is.
+struct FixtureScene {
+    sky_top: [f32; 3],
+    sky_bottom: [f32; 3],
+    ground_near: [f32; 3],
+    ground_far: [f32; 3],
+    /// Height of the horizon, as a fraction of the picture from the top.
+    horizon: f32,
+    /// What rises above the horizon.
+    skyline: Skyline,
+    /// Whether below the horizon is water, which mirrors the sun.
+    water: bool,
+    skyline_colour: [f32; 3],
+    /// Centre of the sun as fractions of the width and height, its radius
+    /// as a fraction of the shorter side, and its colour.
+    sun: (f32, f32, f32),
+    sun_colour: [f32; 3],
+}
+
+#[derive(Clone, Copy)]
+enum Skyline {
+    /// Open water or a plain: nothing on the horizon.
+    Open,
+    /// A ridge of mountains.
+    Mountains,
+    /// Soft hills.
+    Hills,
+    /// A row of buildings.
+    City,
+}
+
+/// The thirteen fixture scenes, one per photograph in the shot library.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one literal entry per fixture scene reads better than a table of bare numbers"
+)]
+fn fixture_scene(variant: u8) -> FixtureScene {
+    let c = |r: u8, g: u8, b: u8| [f32::from(r), f32::from(g), f32::from(b)];
+    match variant % 13 {
+        // Harbour at dusk: violet sky, dark water, a low pink sun.
+        0 => FixtureScene {
+            sky_top: c(46, 52, 112),
+            sky_bottom: c(214, 128, 132),
+            ground_near: c(20, 26, 52),
+            ground_far: c(70, 64, 104),
+            horizon: 0.62,
+            skyline: Skyline::City,
+            water: true,
+            skyline_colour: c(32, 30, 58),
+            sun: (0.7, 0.5, 0.07),
+            sun_colour: c(255, 178, 150),
+        },
+        // A summer trail: clear blue sky over green hills.
+        1 => FixtureScene {
+            sky_top: c(54, 132, 214),
+            sky_bottom: c(184, 222, 246),
+            ground_near: c(70, 120, 46),
+            ground_far: c(126, 170, 82),
+            horizon: 0.58,
+            skyline: Skyline::Hills,
+            water: false,
+            skyline_colour: c(96, 146, 70),
+            sun: (0.28, 0.32, 0.08),
+            sun_colour: c(255, 246, 204),
+        },
+        // Museum light: a pale, overcast plain with a white sun.
+        2 => FixtureScene {
+            sky_top: c(150, 160, 172),
+            sky_bottom: c(222, 220, 212),
+            ground_near: c(118, 104, 88),
+            ground_far: c(176, 160, 138),
+            horizon: 0.66,
+            skyline: Skyline::City,
+            water: false,
+            skyline_colour: c(134, 132, 136),
+            sun: (0.62, 0.34, 0.06),
+            sun_colour: c(250, 248, 238),
+        },
+        // A rainy market: grey-green, the sun hidden behind cloud.
+        3 => FixtureScene {
+            sky_top: c(84, 96, 104),
+            sky_bottom: c(150, 162, 164),
+            ground_near: c(44, 52, 54),
+            ground_far: c(92, 104, 102),
+            horizon: 0.55,
+            skyline: Skyline::City,
+            water: false,
+            skyline_colour: c(62, 72, 76),
+            sun: (0.3, 0.32, 0.05),
+            sun_colour: c(186, 194, 192),
+        },
+        // A lake in the afternoon: turquoise water under mountains.
+        4 => FixtureScene {
+            sky_top: c(40, 110, 196),
+            sky_bottom: c(166, 210, 236),
+            ground_near: c(14, 88, 110),
+            ground_far: c(46, 150, 160),
+            horizon: 0.52,
+            skyline: Skyline::Mountains,
+            water: true,
+            skyline_colour: c(70, 92, 120),
+            sun: (0.26, 0.3, 0.07),
+            sun_colour: c(255, 238, 186),
+        },
+        // A window at night: deep blue with a cool moon.
+        5 => FixtureScene {
+            sky_top: c(10, 16, 46),
+            sky_bottom: c(40, 58, 110),
+            ground_near: c(12, 14, 24),
+            ground_far: c(30, 36, 60),
+            horizon: 0.7,
+            skyline: Skyline::City,
+            water: true,
+            skyline_colour: c(18, 22, 40),
+            sun: (0.7, 0.32, 0.06),
+            sun_colour: c(226, 234, 250),
+        },
+        // A sunset ferry: orange sky over the sea, the sun on the water.
+        6 => FixtureScene {
+            sky_top: c(120, 70, 120),
+            sky_bottom: c(250, 160, 84),
+            ground_near: c(48, 40, 70),
+            ground_far: c(178, 106, 86),
+            horizon: 0.6,
+            skyline: Skyline::Open,
+            water: true,
+            skyline_colour: c(0, 0, 0),
+            sun: (0.5, 0.56, 0.09),
+            sun_colour: c(255, 214, 120),
+        },
+        // A garden supper: warm green evening light.
+        7 => FixtureScene {
+            sky_top: c(92, 120, 150),
+            sky_bottom: c(236, 206, 150),
+            ground_near: c(48, 78, 40),
+            ground_far: c(110, 132, 66),
+            horizon: 0.5,
+            skyline: Skyline::Hills,
+            water: false,
+            skyline_colour: c(66, 98, 54),
+            sun: (0.82, 0.36, 0.06),
+            sun_colour: c(255, 222, 160),
+        },
+        // Paper lanterns: a dark red festival night.
+        8 => FixtureScene {
+            sky_top: c(34, 14, 30),
+            sky_bottom: c(110, 40, 52),
+            ground_near: c(26, 12, 16),
+            ground_far: c(80, 30, 34),
+            horizon: 0.64,
+            skyline: Skyline::City,
+            water: true,
+            skyline_colour: c(46, 16, 26),
+            sun: (0.36, 0.3, 0.05),
+            sun_colour: c(255, 170, 96),
+        },
+        // A mountain lookout: crisp morning over snow peaks.
+        9 => FixtureScene {
+            sky_top: c(70, 120, 186),
+            sky_bottom: c(214, 226, 236),
+            ground_near: c(84, 96, 88),
+            ground_far: c(150, 160, 156),
+            horizon: 0.6,
+            skyline: Skyline::Mountains,
+            water: true,
+            skyline_colour: c(196, 206, 220),
+            sun: (0.22, 0.3, 0.06),
+            sun_colour: c(255, 250, 230),
+        },
+        // A studio morning: soft peach and sand.
+        10 => FixtureScene {
+            sky_top: c(226, 186, 170),
+            sky_bottom: c(246, 226, 204),
+            ground_near: c(168, 132, 102),
+            ground_far: c(214, 184, 150),
+            horizon: 0.57,
+            skyline: Skyline::Open,
+            water: false,
+            skyline_colour: c(0, 0, 0),
+            sun: (0.66, 0.3, 0.08),
+            sun_colour: c(255, 244, 226),
+        },
+        // A first swim: bright midday sea.
+        11 => FixtureScene {
+            sky_top: c(20, 120, 220),
+            sky_bottom: c(140, 206, 246),
+            ground_near: c(10, 96, 150),
+            ground_far: c(60, 170, 200),
+            horizon: 0.45,
+            skyline: Skyline::Open,
+            water: true,
+            skyline_colour: c(0, 0, 0),
+            sun: (0.74, 0.3, 0.07),
+            sun_colour: c(255, 252, 220),
+        },
+        // The harbour in golden hour: teal water, a gold sky, the quay.
+        _ => FixtureScene {
+            sky_top: c(60, 96, 130),
+            sky_bottom: c(240, 196, 120),
+            ground_near: c(16, 60, 70),
+            ground_far: c(80, 130, 128),
+            horizon: 0.6,
+            skyline: Skyline::City,
+            water: true,
+            skyline_colour: c(40, 52, 62),
+            sun: (0.3, 0.42, 0.07),
+            sun_colour: c(255, 230, 160),
+        },
+    }
+}
+
+/// Deterministic, hermetic gallery fixtures: thirteen procedural landscapes,
+/// each with its own light, colour and horizon, so an offscreen library reads
+/// as a collection rather than copies of one placeholder. The sun is round
+/// whatever the picture's shape.
 ///
 /// # Panics
 ///
@@ -215,92 +435,80 @@ pub const SHOT_SCENARIOS: &[&str] = &[
 /// scenario size, so this never fires in practice.
 #[allow(
     clippy::many_single_char_names,
-    reason = "x/y/r/g/b/t/dx/dy are the idiomatic names for pixel coordinates, \
-              colour channels and an interpolation factor"
+    reason = "x/y/t are the idiomatic names for pixel coordinates and an interpolation factor"
 )]
 #[allow(
     clippy::expect_used,
     reason = "the buffer this builds is always exactly w*h*4 bytes, and every \
               call site passes a fixed non-zero w/h"
 )]
-pub fn shots_pattern(w: u32, h: u32) -> pixels::Rgba {
+pub fn shots_pattern_variant(w: u32, h: u32, variant: u8) -> pixels::Rgba {
+    let scene = fixture_scene(variant);
+    let mix = |a: [f32; 3], b: [f32; 3], t: f32| {
+        let t = t.clamp(0.0, 1.0);
+        [
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+        ]
+    };
+    let (wf, hf) = (w as f32, h as f32);
+    let short = wf.min(hf);
+    let (sun_x, sun_y, sun_r) = (scene.sun.0 * wf, scene.sun.1 * hf, scene.sun.2 * short);
+    let phase = f32::from(variant) * 1.7;
     let mut bytes = Vec::with_capacity((w as usize) * (h as usize) * 4);
     for y in 0..h {
         for x in 0..w {
-            let fx = x as f32 / w as f32;
-            let fy = y as f32 / h as f32;
-            // A sky-to-water gradient with a horizon and a sun, so the image
-            // has an unambiguous up, left and right.
-            let horizon = 0.55;
-            let (r, g, b) = if fy < horizon {
-                let t = fy / horizon;
-                (
-                    (40.0 + 150.0 * t) as u8,
-                    (90.0 + 110.0 * t) as u8,
-                    (160.0 + 70.0 * t) as u8,
-                )
+            let (fx, fy) = (x as f32 / wf, y as f32 / hf);
+            let ridge = match scene.skyline {
+                Skyline::Open => 0.0,
+                Skyline::Mountains => {
+                    let peaks = (fx * 9.0 + phase).sin().abs() * 0.6
+                        + (fx * 23.0 + phase * 2.0).sin().abs() * 0.25;
+                    peaks * 0.2
+                }
+                Skyline::Hills => ((fx * 4.0 + phase).sin() * 0.5 + 0.5) * 0.08,
+                Skyline::City => {
+                    // Blocks of varied height, each a twentieth of the width.
+                    let block = (fx * 20.0).floor();
+                    let height = ((block * 12.9898 + phase).sin() * 43_758.547).fract().abs();
+                    0.04 + height * 0.14
+                }
+            };
+            let mut colour = if fy < scene.horizon {
+                mix(scene.sky_top, scene.sky_bottom, fy / scene.horizon)
             } else {
-                let t = (fy - horizon) / (1.0 - horizon);
-                (
-                    (20.0 + 40.0 * t) as u8,
-                    (60.0 + 60.0 * t) as u8,
-                    (110.0 - 40.0 * t) as u8,
+                mix(
+                    scene.ground_far,
+                    scene.ground_near,
+                    (fy - scene.horizon) / (1.0 - scene.horizon),
                 )
             };
-            // The sun sits left of centre and above the horizon.
-            let dx = fx - 0.28;
-            let dy = fy - 0.3;
-            let sun = (dx * dx + (dy * dy) * 2.25).sqrt();
-            let (r, g, b) = if sun < 0.09 {
-                (255, 226, 160)
-            } else {
-                (r, g, b)
-            };
-            bytes.extend_from_slice(&[r, g, b, 255]);
+            let (dx, dy) = (x as f32 - sun_x, y as f32 - sun_y);
+            let distance = (dx * dx + dy * dy).sqrt();
+            if fy < scene.horizon {
+                if distance < sun_r {
+                    colour = scene.sun_colour;
+                } else if distance < sun_r * 2.2 {
+                    // A soft glow around the sun.
+                    let glow = 1.0 - (distance - sun_r) / (sun_r * 1.2);
+                    colour = mix(colour, scene.sun_colour, glow * glow * 0.35);
+                }
+                if ridge > 0.0 && fy > scene.horizon - ridge {
+                    colour = scene.skyline_colour;
+                }
+            } else if scene.water
+                && dx.abs() < sun_r * 1.4
+                && (y as f32 - hf * scene.horizon) as u32 % 6 < 3
+            {
+                // The sun's reflection on water, broken into ripples.
+                let fade = 1.0 - (y as f32 - hf * scene.horizon) / (hf * (1.0 - scene.horizon));
+                colour = mix(colour, scene.sun_colour, fade * 0.25);
+            }
+            bytes.extend_from_slice(&[colour[0] as u8, colour[1] as u8, colour[2] as u8, 255]);
         }
     }
     pixels::Rgba::new(w, h, bytes).expect("generated pattern is well formed")
-}
-
-/// Deterministic, hermetic gallery fixtures. They are deliberately derived
-/// from the same small procedural scene rather than bundled stock imagery,
-/// but each has a distinct light and colour story so an offscreen library
-/// reads as a collection instead of four copies of one placeholder.
-#[allow(
-    clippy::many_single_char_names,
-    clippy::indexing_slicing,
-    reason = "chunks_exact_mut(4) proves each RGBA pixel has the indexed channels"
-)]
-pub fn shots_pattern_variant(w: u32, h: u32, variant: u8) -> pixels::Rgba {
-    let mut image = shots_pattern(w, h);
-    for pixel in image.bytes.chunks_exact_mut(4) {
-        let (r, g, b) = (pixel[0], pixel[1], pixel[2]);
-        match variant % 5 {
-            // Warm trail, cool gallery lights, and rain respectively.
-            0 => {}
-            1 => {
-                pixel[0] = r.saturating_add(32);
-                pixel[1] = g.saturating_add(14);
-                pixel[2] = b.saturating_sub(30);
-            }
-            2 => {
-                pixel[0] = b.saturating_sub(18);
-                pixel[1] = r.saturating_add(12);
-                pixel[2] = g.saturating_add(28);
-            }
-            3 => {
-                pixel[0] = ((u16::from(r) + u16::from(g)) / 3) as u8;
-                pixel[1] = ((u16::from(g) + u16::from(b)) / 3) as u8;
-                pixel[2] = b.saturating_add(18);
-            }
-            _ => {
-                pixel[0] = r.saturating_sub(20);
-                pixel[1] = g.saturating_add(25);
-                pixel[2] = b.saturating_add(35);
-            }
-        }
-    }
-    image
 }
 
 /// Pose the app for one named `--shots` scenario.
@@ -345,7 +553,7 @@ pub fn seed_scenario(
     }
 
     let path = dir.join("harbour.png");
-    let pattern = shots_pattern_variant(1200, 800, 4);
+    let pattern = shots_pattern_variant(1200, 800, 12);
     if let Some(png) = pixels::encode_png(&pattern)
         && !files::StateFile::at(&path).is_some_and(|file| file.write(&png))
     {
@@ -362,7 +570,7 @@ pub fn seed_scenario(
     {
         photo.captured_at = Some("2026-07-12 18:16".into());
         photo.folder = Some("Travel 2026".into());
-        photo.people = vec!["Élodie".into(), "Sam".into()];
+        photo.people = vec!["Élodie".into()];
         photo.tags = vec!["golden hour".into()];
         PhotosDoc::set_library(doc, &seeded_library);
     }
@@ -476,6 +684,14 @@ pub fn seed_scenario(
                 name: "Travel".into(),
                 photo_ids: travel.clone(),
             });
+            // Each album opens with a different photograph, so its cover is
+            // its own.
+            let pick = |indices: &[usize]| -> Vec<String> {
+                indices
+                    .iter()
+                    .filter_map(|index| travel.get(*index).cloned())
+                    .collect()
+            };
             if scenario == "albums" {
                 library.albums.extend([
                     crate::model::Album {
@@ -484,9 +700,9 @@ pub fn seed_scenario(
                         photo_ids: travel.iter().skip(1).take(6).cloned().collect(),
                     },
                     crate::model::Album {
-                        id: "photos.album:family-favourites".into(),
-                        name: "Family favourites".into(),
-                        photo_ids: travel.iter().step_by(2).take(5).cloned().collect(),
+                        id: "photos.album:family-favorites".into(),
+                        name: "Family favorites".into(),
+                        photo_ids: pick(&[7, 4, 11, 5, 1]),
                     },
                     crate::model::Album {
                         id: "photos.album:ideas".into(),
@@ -496,16 +712,23 @@ pub fn seed_scenario(
                     crate::model::Album {
                         id: "photos.album:new-home".into(),
                         name: "New home".into(),
-                        photo_ids: travel.iter().skip(4).take(2).cloned().collect(),
+                        photo_ids: pick(&[10, 5]),
                     },
                 ]);
             }
             if scenario == "selection-many-albums" {
-                for number in 1..=17 {
+                for (id, name, members) in [
+                    ("summer-weekends", "Summer weekends", &[1, 2, 3, 4][..]),
+                    ("family-favorites", "Family favorites", &[7, 4, 11, 5, 1]),
+                    ("ideas", "Ideas for next time", &[11, 10, 9]),
+                    ("new-home", "New home", &[10, 5]),
+                    ("lisbon", "A weekend in Lisbon", &[3, 8, 0]),
+                    ("birthday", "Birthday dinner", &[7, 8]),
+                ] {
                     library.albums.push(crate::model::Album {
-                        id: format!("photos.album:destination-{number}"),
-                        name: format!("Destination album {number}"),
-                        photo_ids: Vec::new(),
+                        id: format!("photos.album:{id}"),
+                        name: name.into(),
+                        photo_ids: pick(members),
                     });
                 }
             }

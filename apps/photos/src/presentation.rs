@@ -1,10 +1,12 @@
 //! Worker-free Photos rendering shared with the live library and viewer.
+use crate::strings::{tr, tr_args, tr_count, tr_with};
 use crate::{
     framework_history::asset_id,
     model::{Edits, OpenImage, PhotoLibrary},
     pixels,
 };
 use std::collections::BTreeMap;
+use ui::ArgValue;
 use ui::history_mode::{
     FrozenPreviewAssets, HistoryPreview, PreviewAccessibility, PreviewNavigation, PreviewView,
 };
@@ -55,14 +57,17 @@ impl PhotoPresentation {
         let mut pages = Vec::new();
         let mut kinds = Vec::new();
         if let Some(o) = &open {
-            pages.push(("image".into(), format!("Open photograph: {}", o.name)));
+            pages.push((
+                "image".into(),
+                tr_with("photos-history-open-photo", "name", &o.name),
+            ));
             kinds.push(Page::Image);
         }
         let all = (0..library.photos.len()).collect::<Vec<_>>();
         for (i, chunk) in all.chunks(24).enumerate() {
             pages.push((
                 format!("library:{i}"),
-                format!("Photo library — page {}", i + 1),
+                tr_count("photos-history-library-page", i + 1),
             ));
             kinds.push(Page::Grid(chunk.to_vec()));
         }
@@ -81,14 +86,20 @@ impl PhotoPresentation {
             if members.is_empty() {
                 pages.push((
                     format!("album:{}:0", album.id),
-                    format!("Album: {} — empty", album.name),
+                    tr_with("photos-history-album-empty", "name", &album.name),
                 ));
                 kinds.push(Page::Grid(Vec::new()));
             }
             for (i, chunk) in members.chunks(24).enumerate() {
                 pages.push((
                     format!("album:{}:{i}", album.id),
-                    format!("Album: {} — page {}", album.name, i + 1),
+                    tr_args(
+                        "photos-history-album-page",
+                        &[
+                            ("name", ArgValue::Text(album.name.clone())),
+                            ("count", ArgValue::Number((i + 1) as f64)),
+                        ],
+                    ),
                 ));
                 kinds.push(Page::Grid(chunk.to_vec()));
             }
@@ -155,20 +166,21 @@ impl PhotoPresentation {
             .map(|a| a.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let mut label = format!(
-            "{}{}. {}",
-            p.image.name,
-            if p.favorite { ". Favorite" } else { "" },
-            crate::app::dimensions_label(p.image.width, p.image.height)
-        );
+        let mut label = p.image.name.clone();
+        if p.favorite {
+            label.push_str(". ");
+            label.push_str(&tr("photos-favorite"));
+        }
+        label.push_str(". ");
+        label.push_str(&crate::app::dimensions_label(p.image.width, p.image.height));
         let summary = p.metadata_summary();
         if !summary.is_empty() {
             label.push_str(". ");
             label.push_str(&summary);
         }
         if !albums.is_empty() {
-            label.push_str(". Albums: ");
-            label.push_str(&albums);
+            label.push_str(". ");
+            label.push_str(&tr_with("photos-history-in-albums", "names", &albums));
         }
         label
     }
@@ -263,7 +275,7 @@ impl HistoryPreview for PhotoPresentation {
                     .iter()
                     .find(|(id, _)| Some(id) == self.view.page.as_ref())
                     .map_or_else(
-                        || "No photos were recorded".into(),
+                        || crate::strings::tr("photos-history-nothing"),
                         |(_, label)| label.clone(),
                     ),
                 String::new(),
@@ -386,6 +398,7 @@ impl HistoryPreview for PhotoPresentation {
                 transform,
                 &self.canvas,
             );
+            let not_recorded = crate::strings::tr("photos-history-not-recorded");
             for (i, card, _) in &self.cards {
                 let Some(photo) = self.library.photos.get(*i) else {
                     continue;
@@ -399,7 +412,7 @@ impl HistoryPreview for PhotoPresentation {
                         .aspect(CARD_ASPECT)
                         .title(&photo.image.name);
                 if image.is_none() {
-                    face = face.meta("Pixels not recorded");
+                    face = face.meta(&not_recorded);
                 } else if !meta.is_empty() {
                     face = face.meta(&meta);
                 }
@@ -410,7 +423,7 @@ impl HistoryPreview for PhotoPresentation {
             self.viewport().draw(image, scene, transform, theme);
         } else if self.selected().is_some() {
             PaintCtx::new(scene, transform, tr, theme).text_role(
-                "The pixels of this version were not recorded.",
+                &crate::strings::tr("photos-history-version-missing"),
                 TextRole::Body,
                 theme.text_dim,
                 Point::new(self.canvas.x0, self.canvas.y0),
@@ -486,8 +499,8 @@ impl HistoryPreview for PhotoPresentation {
         let mut descriptions = Vec::new();
         if let Some(open) = &self.open {
             descriptions.push(format!(
-                "Open photograph: {}. {}",
-                open.name,
+                "{}. {}",
+                tr_with("photos-history-open-photo", "name", &open.name),
                 crate::app::dimensions_label(open.width, open.height)
             ));
         }
@@ -502,7 +515,7 @@ impl HistoryPreview for PhotoPresentation {
                                 .map_or_else(|| self.assets.get(&id).is_none(), Option::is_none)
                         })
                     }) {
-                        descriptions.push("Historical pixels unavailable".into());
+                        descriptions.push(tr("photos-history-pixels-missing"));
                     }
                 }
             }
@@ -510,16 +523,22 @@ impl HistoryPreview for PhotoPresentation {
             _ => {}
         }
         if let Some((_, edits)) = self.selected() {
-            descriptions.push(format!(
-                "Crop {} wide and {} high at {}, {}. Rotation {} quarter turns",
-                edits.crop.w, edits.crop.h, edits.crop.x, edits.crop.y, edits.rotate_quarters
+            descriptions.push(tr_args(
+                "photos-history-edit",
+                &[
+                    ("width", ArgValue::Number(edits.crop.w)),
+                    ("height", ArgValue::Number(edits.crop.h)),
+                    ("x", ArgValue::Number(edits.crop.x)),
+                    ("y", ArgValue::Number(edits.crop.y)),
+                    ("turns", ArgValue::Number(f64::from(edits.rotate_quarters))),
+                ],
             ));
             if self.full.as_ref().is_none_or(|(_, image)| image.is_none()) {
-                descriptions.push("Historical pixels unavailable".into());
+                descriptions.push(tr("photos-history-pixels-missing"));
             }
         }
         if descriptions.is_empty() {
-            descriptions.push("Empty photo library — no photograph recorded".into());
+            descriptions.push(tr("photos-history-empty"));
         }
         PreviewAccessibility {
             description: descriptions.join("\n"),
