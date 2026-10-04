@@ -383,6 +383,7 @@ mod tests {
             let opened =
                 crate::shell::tab_binding::adopt_toplevel(&mut tree, 9_101, Some(APP.into()));
             let (tabs, active) = group_tabs(&tree, fixture.group);
+            drop(tree);
             assert_eq!(tabs, vec![fixture.page, opened, fixture.other]);
             assert_eq!(active, opened, "a tab opened in front is the one shown");
         }
@@ -403,6 +404,7 @@ mod tests {
             let opened =
                 crate::shell::tab_binding::adopt_toplevel(&mut tree, 9_102, Some(APP.into()));
             let (tabs, active) = group_tabs(&tree, fixture.group);
+            drop(tree);
             assert_eq!(tabs, vec![fixture.page, opened, fixture.other]);
             assert_eq!(active, fixture.other, "a background tab never takes focus");
         }
@@ -418,8 +420,9 @@ mod tests {
             apply_request(&mut st, APP, None, AppTabRequest::ReopenClosed).unwrap();
             let tree = st.tree();
             let (tabs, _) = group_tabs(&tree, fixture.group);
-            assert_eq!(tabs, vec![fixture.page, fixture.other], "back where it was");
             let reopened = anchor_for_tab(&tree, fixture.page).unwrap();
+            drop(tree);
+            assert_eq!(tabs, vec![fixture.page, fixture.other], "back where it was");
             assert_eq!(reopened.index, 0);
         }
 
@@ -458,7 +461,9 @@ mod tests {
                 let tab = crate::shell::window_actions::active_tab_id(&chrome).unwrap();
                 let tree = chrome.tree();
                 let anchor = anchor_for_tab(&tree, tab).unwrap();
-                (anchor.group, group_tabs(&tree, anchor.group).0)
+                let tabs = group_tabs(&tree, anchor.group).0;
+                drop(tree);
+                (anchor.group, tabs)
             };
             let (group, before) = group_of(&frame);
             let mut chord = |frame: &mut crate::shell::test_support::PopulatedShellFixture,

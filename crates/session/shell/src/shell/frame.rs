@@ -955,7 +955,7 @@ impl FrameBuilder {
     /// Ctrl+Shift+T that the app left unhandled are the desktop's tab chords —
     /// another instance beside it, close its tab, reopen the last closed one.
     /// Never while chrome (a palette, a menu, a dialog) holds the keyboard.
-    fn apply_hosted_tab_chord(&mut self, event: &WindowEvent, modifiers: &Modifiers) -> bool {
+    fn apply_hosted_tab_chord(&mut self, event: &WindowEvent, modifiers: Modifiers) -> bool {
         use crate::shell::state::TileContent;
         use ui::shell_tabs::TabRequest;
         let WindowEvent::KeyboardInput { event: key, .. } = event else {
@@ -3262,7 +3262,7 @@ impl FrameBuilder {
                 handled = true;
             }
         }
-        if !handled && self.apply_hosted_tab_chord(event, modifiers) {
+        if !handled && self.apply_hosted_tab_chord(event, *modifiers) {
             return true;
         }
         // Match `ui::App`: unmodified Tab advances the global DFS focus order
