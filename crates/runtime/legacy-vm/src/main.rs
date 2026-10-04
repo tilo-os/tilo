@@ -105,6 +105,8 @@ fn main() -> ExitCode {
         "stop" => stop(&options, &paths),
         "image" if rest.first().map(String::as_str) == Some("fetch") => fetch_image(&paths),
         "serve" => serve(&options, paths),
+        #[cfg(feature = "relay-stream")]
+        "relay-stream" => relay_stream(&options, &paths, &rest),
         "help" | "--help" | "-h" => {
             print!("{USAGE}");
             Ok(ExitCode::SUCCESS)
@@ -185,6 +187,56 @@ fn spawn_supervisor(options: &Options, paths: &Paths) -> Result<(), String> {
         });
     }
     command.spawn().map(drop).map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "relay-stream")]
+/// `relay-stream --shell SHELL -- APP [ARG…]`: run one app for a relay's
+/// KVM worker, its window as encoded frames on stdout, input on stdin.
+fn relay_stream(options: &Options, paths: &Paths, args: &[String]) -> Result<ExitCode, String> {
+    let mut shell = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--shell" => shell = rest.next().map(PathBuf::from),
+            "--" => break,
+            other => return Err(format!("relay-stream: unexpected {other:?}")),
+        }
+    }
+    let shell = shell.ok_or("relay-stream: --shell names the headless shell")?;
+    let (app, app_args) = rest
+        .as_slice()
+        .split_first()
+        .ok_or("relay-stream: which app?")?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut run: Vec<std::ffi::OsString> = vec![exe.into()];
+    if let Some(image) = &options.image {
+        run.extend(["--image".into(), image.clone().into_os_string()]);
+    }
+    if let Some(idle) = options.idle_suspend {
+        run.extend(["--idle-suspend".into(), idle.as_secs().to_string().into()]);
+    }
+    run.extend(["run".into(), "--".into()]);
+    // An installed app runs as its Flatpak; anything else is a guest command.
+    match Registry::load(&paths.apps()).find(app) {
+        Some(installed) => {
+            run.extend(["flatpak".into(), "run".into(), installed.id.clone().into()]);
+        }
+        None => run.push(app.into()),
+    }
+    run.extend(app_args.iter().map(Into::into));
+    let stream_args = legacy_vm::stream::StreamArgs {
+        shell,
+        runtime: paths.runtime.join("relay"),
+        run,
+    };
+    let code = legacy_vm::stream::relay_stream(
+        &stream_args,
+        Box::new(std::io::stdout()),
+        Box::new(std::io::stdin()),
+    );
+    Ok(ExitCode::from(
+        u8::try_from(code.unwrap_or(1).clamp(0, 255)).unwrap_or(1),
+    ))
 }
 
 fn serve(options: &Options, paths: Paths) -> Result<ExitCode, String> {

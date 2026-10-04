@@ -173,6 +173,8 @@ mod host_appearance;
 #[cfg(not(target_arch = "wasm32"))]
 mod host_chrome;
 pub mod host_data;
+/// The session's read-only vello pipeline cache every app starts from.
+pub mod pipeline_seed;
 #[cfg(all(windows, feature = "native"))]
 pub use native::host_notifications;
 #[cfg(not(all(windows, feature = "native")))]
@@ -302,7 +304,7 @@ pub use input::{
 };
 pub use interaction::{
     ControllerFamily, InputAvailability, InputDevice, InputModality, InteractionEnvironment,
-    KeyboardFamily, PointerPrecision,
+    KeyboardFamily, PointerPrecision, TouchPointerEmulator, TouchPointerEvent,
 };
 pub use keycaps::{KeycapLanguage, Keycaps};
 pub use local_state::{
@@ -437,7 +439,10 @@ pub use chrome::{LabelCue, ToolbarItem};
 pub use gesture::{DragSelect, Granularity};
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use status_bubble::StatusBubble;
-pub use text_edit::{CharFilter, CharSplice, Edit, EditCore, Motion, TYPING_RUN_IDLE, TypingRun};
+pub use text_edit::{
+    CharFilter, CharSplice, Edit, EditCore, Motion, TYPING_RUN_IDLE, TypingRun,
+    delete_last_grapheme,
+};
 pub use text_render::{
     FontChoice, FontVariation, Fragmentation, GlyphOutline, HangingPunctuation, Hyphenation,
     NumericStyle, OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, PolygonTextLayout,

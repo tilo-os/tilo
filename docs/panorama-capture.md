@@ -165,3 +165,20 @@ The existing all-nine performance gates remain independent prerequisites; no
 new benchmark, model/API call, credential grant or private capture is authorized
 by this feature. Synthetic success establishes neither 80 real agents nor 80
 concurrent tasks, runtime throughput, unique presented fps, or shoot readiness.
+
+## Semantic geometry seam
+
+Single-app mounts can additionally register exact publication targets through
+`observeSemanticTarget`; see [semantic-locus.md](semantic-locus.md#browser-publicationpresentation-seam).
+Its read-only receipt is latched synchronously with `capture.present`, carrying
+the same frame, GPU generation and observation timestamp as that presentation's
+pixel copy. The returned rectangle stays in source logical coordinates. This
+increment does not draw semantic markers or consume network semantic events.
+A future admitted consumer must require equality with the captured pane receipt
+and use its identical transform and clipping. A missing/stale geometry receipt
+remains a gap, never a resource midpoint or fallback caret.
+Transport publication aliases are local to their issuing host and component
+lifetime. A native replica's alias cannot resolve a browser component without
+an independently authenticated canonical mapping to its current publication.
+Missing mapping remains a gap; neither labels nor decoded alias resource hex
+provide a fallback.

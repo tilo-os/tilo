@@ -49,3 +49,7 @@ notes-a11y-new-child-under = Untergeordnete Notiz erstellen unter
 notes-a11y-more-actions-for = Weitere Aktionen für
 
 notes-view-editor = Editor
+
+notes-help-block-duplicate = Blöcke mit Unterelementen duplizieren
+
+notes-help-block-move = Fokussierte oder ausgewählte Blöcke verschieben

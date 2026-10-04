@@ -514,6 +514,7 @@ host-session-action-blocked = Session action blocked
 host-action-started = Started “{ $title }”
 host-action-admitted = Action job { $job } was admitted
 host-action-cannot-run = Can't run “{ $title }”
+launchpad-action-unanswered = The app never answered
 host-search-placeholder = Search…
 host-search-in = Search in { $scope }…
 host-search-in-resource-fallback = resource
@@ -1700,6 +1701,7 @@ onboarding-nearby-connected = Connected. Your workspaces will appear automatical
 onboarding-nearby-invalid-identity = Your other device returned an invalid identity. Choose Try again.
 onboarding-nearby-failed = Pairing did not finish: the pairing window closed or approval was cancelled. Choose Try again.
 onboarding-nearby-failed-detail = Pairing did not finish: { $detail }. Choose Try again.
+onboarding-nearby-timed-out = Pairing did not finish: no trusted device approved it in time. Choose Try again.
 
 # First-login identity setup: encrypted backup
 onboarding-backup-title = Back up your Tilo identity
