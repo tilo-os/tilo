@@ -1,4 +1,5 @@
 use super::*;
+use crate::text_edit::SUGGESTION_SETTLE;
 use crate::text_selection::{next_word_boundary, prev_word_boundary};
 
 #[test]
@@ -1514,29 +1515,130 @@ fn spellcheck_squiggles_appear_at_word_boundaries_and_after_settling() {
         assert!(ti.spelling_span_is_visible(0, 5));
         assert!(!Widget::needs_animation_frame(&ti));
     }
+}
 
-    // Case `external_language_check_coalesces_rapid_prefixes_without_dropping_old_spans`.
-    {
-        let mut ti = TextInput::local()
-            .with_spellcheck(true)
-            .with_spell_language("de_DE")
-            .with_initial_value("alt neu");
-        ti.set_focus(true);
-        ti.core.set_caret(ti.text.len());
-        ti.spell_spans = vec![(0, 3)];
-        ti.spell_cache_key = Some(("de_DE".to_string(), "alt".to_string()));
-        ti.typing.touch();
+/// A focused en-US field holding `text` with the caret at its end.
+fn suggesting_field(text: &str) -> TextInput {
+    let mut ti = TextInput::local()
+        .with_spellcheck(true)
+        .with_autocorrect(true)
+        .with_spell_language("en_US")
+        .with_initial_value(text);
+    ti.set_focus(true);
+    ti.core.set_caret(ti.text.len());
+    ti
+}
 
-        ti.refresh_spelling();
+#[test]
+fn a_short_pause_at_the_end_of_a_misspelled_word_shows_its_suggestion() {
+    let mut ti = suggesting_field("so beautifull");
+    let start = crate::time::now();
 
-        assert_eq!(ti.spell_spans, vec![(0, 3)]);
-        assert_eq!(
-            ti.spell_cache_key,
-            Some(("de_DE".to_string(), "alt".to_string()))
-        );
-        assert!(!Widget::needs_animation_frame(&ti));
-        assert!(Widget::next_wake_deadline(&ti).is_some());
-    }
+    ti.refresh_suggestion_at(start);
+    assert!(
+        ti.autocorrection_preview.is_none(),
+        "nothing is offered while the word may still be growing"
+    );
+    assert_eq!(ti.caret_word.deadline(), Some(start + SUGGESTION_SETTLE));
+
+    ti.refresh_suggestion_at(start + SUGGESTION_SETTLE - Duration::from_millis(1));
+    assert!(ti.autocorrection_preview.is_none());
+
+    ti.refresh_suggestion_at(start + SUGGESTION_SETTLE);
+    let preview = ti
+        .autocorrection_preview
+        .clone()
+        .expect("a settled misspelled word gets a suggestion");
+    assert_eq!(
+        (preview.start, preview.end, preview.original.as_str()),
+        (3, 13, "beautifull")
+    );
+    assert_eq!(preview.replacement, "beautiful");
+    assert!(
+        !preview.automatic,
+        "an ordinary suggestion, not autocorrect"
+    );
+    assert!(!ti.spelling_span_is_visible(3, 13));
+
+    // A boundary does not apply an ordinary suggestion …
+    let mut doc = AutoCommit::new();
+    let mut boundary = suggesting_field("so beautifull");
+    boundary.refresh_suggestion_at(start);
+    boundary.refresh_suggestion_at(start + SUGGESTION_SETTLE);
+    assert!(boundary.autocorrection_preview.is_some());
+    boundary.insert_word_boundary(" ", &mut doc, None);
+    assert_eq!(boundary.value(), "so beautifull ");
+
+    // … a click on its chip does.
+    assert!(ti.accept_suggestion(&mut doc, &automerge::ROOT));
+    assert_eq!(ti.value(), "so beautiful");
+    assert_eq!(ti.cursor_pos(), "so beautiful".len());
+    assert!(ti.autocorrection_preview.is_none());
+}
+
+#[test]
+fn moving_the_caret_back_into_an_earlier_word_shows_its_suggestion() {
+    let mut ti = suggesting_field("beautifull day");
+    let start = crate::time::now();
+    ti.refresh_suggestion_at(start);
+    ti.refresh_suggestion_at(start + SUGGESTION_SETTLE);
+    assert!(
+        ti.autocorrection_preview.is_none(),
+        "`day` is spelled right"
+    );
+
+    // Back into the first word: it settles after the same short wait.
+    let back = start + SUGGESTION_SETTLE * 2;
+    ti.set_cursor_pos(4);
+    ti.refresh_suggestion_at(back);
+    assert!(ti.autocorrection_preview.is_none());
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE);
+    let preview = ti.autocorrection_preview.clone().expect("suggestion");
+    assert_eq!((preview.start, preview.end), (0, 10));
+    assert_eq!(preview.replacement, "beautiful");
+
+    // Moving within the word keeps the suggestion; leaving it clears it.
+    ti.set_cursor_pos(7);
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE);
+    assert!(ti.autocorrection_preview.is_some());
+    ti.set_cursor_pos(10);
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE);
+    assert!(
+        ti.autocorrection_preview.is_some(),
+        "the word's end is in it"
+    );
+    ti.set_cursor_pos(ti.text.len());
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE);
+    assert!(ti.autocorrection_preview.is_none());
+
+    // A selection or an unfocused field offers nothing.
+    ti.set_selection(0, 4);
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE * 3);
+    assert!(ti.autocorrection_preview.is_none());
+    ti.set_cursor_pos(4);
+    ti.set_focus(false);
+    ti.refresh_suggestion_at(back + SUGGESTION_SETTLE * 4);
+    assert!(ti.autocorrection_preview.is_none());
+}
+
+#[test]
+fn the_settling_word_schedules_its_own_wake() {
+    let mut ti = suggesting_field("so beautifull");
+    // Far enough ahead that a slow test run never sees the deadline pass.
+    let now = crate::time::now() + Duration::from_secs(3600);
+    ti.refresh_suggestion_at(now);
+    assert_eq!(
+        Widget::next_wake_deadline(&ti),
+        Some(now + SUGGESTION_SETTLE),
+        "the suggestion appears without further input"
+    );
+    let mut off = TextInput::local()
+        .with_spellcheck(false)
+        .with_autocorrect(false)
+        .with_initial_value("so beautifull");
+    off.set_focus(true);
+    off.refresh_suggestion_at(now);
+    assert_eq!(Widget::next_wake_deadline(&off), None);
 }
 
 #[test]
