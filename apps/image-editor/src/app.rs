@@ -363,8 +363,10 @@ pub struct ImageEditorApp {
     toolbar_toggles: (bool, bool),
     inspector_text: InspectorText,
     header_buttons: Vec<(ToolbarCommand, Button)>,
-    /// The History button: the app owns the window's one header row, so
-    /// History lives in it instead of a bar of its own.
+    /// The window's History control: the app owns the window's one header
+    /// row, so History stands in its trailing corner instead of a bar of
+    /// its own.
+    history: ui::widget::HistoryOpener,
     empty_state: EmptyState,
     toolbar_pending: Rc<Cell<Option<ToolbarCommand>>>,
     /// A screenshot asked for the toolbar's More menu; opened once the
@@ -462,6 +464,7 @@ impl ImageEditorApp {
             toolbar_toggles: (false, false),
             inspector_text: InspectorText::default(),
             header_buttons,
+            history: ui::widget::HistoryOpener::new(),
             empty_state,
             toolbar_pending: pending,
             staged_overflow: false,
@@ -1680,16 +1683,22 @@ impl ImageEditorApp {
 
         // The header: the project's name, its toolbar, then undo and redo,
         // Open and Export at the trailing edge.
-        self.header_rect = Rect::new(
-            rect.x0,
-            rect.y0,
-            rect.x1,
-            rect.y0 + f64::from(metrics.header_height),
-        );
+        // The window's header row: its height, inset and title start are
+        // the ones every header row shares.
+        let row =
+            ui::chrome::HeaderRowFace::new(rect, theme).with_history_if(self.history.is_shown());
+        if let Some(button) = self.history.button_mut() {
+            button.apply_layout_external(row.history_rect());
+        }
+        self.header_rect = row.row;
         let band = self.header_rect;
         let control_h = ButtonFace::height(ControlSize::Regular, theme);
         let control_y = band.center().y - control_h / 2.0;
-        let mut x = band.x1 - s4;
+        let mut x = if self.history.is_shown() {
+            row.title.x1 - row.metrics().gap
+        } else {
+            row.title.x1
+        };
         // With no image the empty state's one action opens it, so the
         // header holds no second Open.
         let mut gap = 0.0;
@@ -1721,7 +1730,7 @@ impl ImageEditorApp {
         }
         x -= gap;
         let trailing_end = x - (s4 - s2);
-        let title_style = theme.text(TextRole::Title);
+        let title_style = theme.text(TextRole::Heading);
         let toolbar_h = f64::from(metrics.min_pointer_target);
         for _compact in [false, true] {
             let trailing_x0 = trailing_end;
@@ -1733,11 +1742,11 @@ impl ImageEditorApp {
                 String::new()
             };
             let title_w = f64::from(tr.measure_style(&self.title, None, &title_style).0);
-            self.title_origin = Point::new(band.x0 + s4, band.y0);
+            self.title_origin = Point::new(row.title.x0, band.y0);
             let toolbar_x0 = if self.title.is_empty() {
-                band.x0 + s4
+                row.title.x0
             } else {
-                band.x0 + s4 + title_w + s6
+                row.title.x0 + title_w + s6
             };
             let toolbar_rect = Rect::new(
                 toolbar_x0,
@@ -2123,11 +2132,15 @@ impl ImageEditorApp {
                     .iter()
                     .find(|(step_id, _)| step_id == id)
                     .map(|(_, image)| image);
+                // The step's own picture, cover-fitted in a square tile;
+                // its initials until the preview has rendered.
+                let leading = match thumb {
+                    Some(image) => RowLeading::Thumbnail(image),
+                    None => RowLeading::Avatar(AvatarFace::new(title, id).square()),
+                };
                 let face = ListRowFace::new(title)
                     .secondary(step)
-                    .leading(RowLeading::Avatar(
-                        AvatarFace::new(title, id).image(thumb).square(),
-                    ))
+                    .leading(leading)
                     .selected(selected[index]);
                 match selected.get(index + 1) {
                     Some(next) => face.separator(*next),
@@ -2432,7 +2445,8 @@ impl Widget for ImageEditorApp {
         dyn ui::undo::CommittedActions,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
+        dyn ui::search::capability::SearchSource,
+        dyn ui::widget::WindowHeader
     );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -2471,6 +2485,7 @@ impl Widget for ImageEditorApp {
             ..Default::default()
         });
         m.insert(n, std::ptr::from_mut::<dyn Widget>(self));
+        self.history.tree_rebuilt();
         n
     }
     fn apply_layout(&mut self, t: &TaffyTree<()>, n: NodeId, o: Point) {
@@ -2508,7 +2523,7 @@ impl Widget for ImageEditorApp {
         if !self.title.is_empty() {
             PaintCtx::new(s, a, tr, theme).text_role_in_band(
                 &self.title,
-                TextRole::Title,
+                TextRole::Heading,
                 theme.text_primary,
                 self.title_origin.x,
                 self.header_rect,
@@ -2520,6 +2535,9 @@ impl Widget for ImageEditorApp {
             if button.get_rect().area() > 0.0 {
                 button.draw(s, a, tr, theme, presence);
             }
+        }
+        if let Some(history) = self.history.button_mut() {
+            history.draw(s, a, tr, theme, presence);
         }
 
         // The canvas, the graph, or the empty state.
@@ -2570,12 +2588,24 @@ impl Widget for ImageEditorApp {
         self.toolbar.traps_focus()
     }
 
-    /// The History button is shown to the window, which then draws no
-    /// History bar of its own.
-    fn for_each_child(&self, _visitor: &mut dyn FnMut(&dyn Widget)) {}
-
+    /// The History button is the one retained child: the window finds,
+    /// focuses and announces it like the same control in a `NavShell`
+    /// header, and draws no History bar of its own. The app places, paints
+    /// and routes it.
     fn children(&self) -> Vec<&dyn Widget> {
-        Vec::new()
+        self.history
+            .button()
+            .map(|button| button as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.history
+            .button_mut()
+            .map(|button| button as &mut (dyn Widget + '_))
+            .into_iter()
+            .collect()
     }
 
     fn handle_event(&mut self, e: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -2589,6 +2619,9 @@ impl Widget for ImageEditorApp {
             }
             *ctx.handled = true;
             return;
+        }
+        if let Some(history) = self.history.button_mut() {
+            history.handle_event(e, &mut ctx.reborrow(ctx.path, ctx.node_id));
         }
         for button in self.retained_buttons_mut() {
             if button.get_rect().area() <= 0.0 {
@@ -3657,6 +3690,13 @@ impl ImageEditorApp {
             &label,
             &project,
         )
+    }
+}
+
+impl ui::widget::WindowHeader for ImageEditorApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        self.history.set_control(control);
+        self.history.take_rebuilt();
     }
 }
 
