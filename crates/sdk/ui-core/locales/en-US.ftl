@@ -427,3 +427,13 @@ widget-block-duplicate-selection = Duplicate selected or focused blocks
 
 widget-block-move-selection-up = Move selected blocks up
 widget-block-move-selection-down = Move selected blocks down
+
+widget-block-select = Select block and children
+widget-block-select-all = Select all blocks
+widget-block-select-up = Extend block selection up
+widget-block-select-down = Extend block selection down
+widget-block-edit = Edit selected block
+widget-block-copy = Copy selected blocks
+widget-block-cut = Cut selected blocks
+widget-block-delete = Delete block and children
+widget-block-delete-selection = Delete selected or focused blocks

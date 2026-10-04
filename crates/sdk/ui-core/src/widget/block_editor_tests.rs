@@ -1,6 +1,93 @@
 use super::*;
 
 #[test]
+fn whole_block_selection_tracks_groups_empty_rows_and_refused_membership() {
+    let mut child = BlockContent::paragraph("child", "Nested");
+    child.nesting = 1;
+    let rows = vec![
+        BlockContent::paragraph("parent", "A"),
+        child,
+        BlockContent::paragraph("empty", ""),
+        BlockContent::paragraph("last", "C"),
+    ];
+    let mut editor = BlockEditor::new();
+    editor.present_blocks(&rows);
+    assert!(editor.select_block_group(0));
+    assert!(editor.is_block_selection_mode());
+    assert_eq!(editor.selected_block_range(), Some(0..2));
+    assert!(!editor.can_navigate_block_selection(true));
+    assert!(editor.can_navigate_block_selection(false));
+    assert!(editor.navigate_block_selection(false, true));
+    assert_eq!(editor.selected_block_range(), Some(0..3));
+    assert!(editor.navigate_block_selection(true, true));
+    assert_eq!(editor.selected_block_range(), Some(0..2));
+    assert!(editor.select_block_group(2));
+    assert_eq!(editor.document_selection(), None);
+    assert!(editor.is_block_selection_mode());
+    editor.present_blocks(&[
+        rows[0].clone(),
+        rows[1].clone(),
+        rows[3].clone(),
+        rows[2].clone(),
+    ]);
+    editor.retain_block_selection(vec!["empty".into()], false);
+    assert!(editor.is_block_selection_mode());
+    assert_eq!(editor.selected_block_range(), Some(3..4));
+    assert!(editor.select_block_group(0));
+    let mut peer = BlockContent::paragraph("peer", "Peer child");
+    peer.nesting = 1;
+    editor.present_blocks(&[
+        rows[0].clone(),
+        rows[1].clone(),
+        peer,
+        rows[2].clone(),
+        rows[3].clone(),
+    ]);
+    assert!(editor.is_block_selection_mode());
+    assert_eq!(editor.selected_block_range(), None);
+    assert!(
+        editor
+            .blocks()
+            .iter()
+            .all(|block| block.line.selection_range().is_none())
+    );
+    editor.present_blocks(&rows);
+    assert_eq!(
+        editor.selected_block_range(),
+        None,
+        "whole selection refusal stays latched"
+    );
+    assert!(editor.leave_block_selection());
+    assert!(!editor.is_block_selection_mode());
+    assert!(editor.select_block_group(0));
+    editor.retain_block_selection(vec!["parent".into(), "missing".into()], false);
+    assert!(editor.is_block_selection_mode());
+    assert_eq!(editor.selected_block_range(), None);
+}
+
+#[test]
+fn leaving_whole_selection_clears_every_line_and_restores_active_root_caret() {
+    let mut editor = BlockEditor::new();
+    editor.present_blocks(&[
+        BlockContent::paragraph("a", "Ä"),
+        BlockContent::paragraph("b", "日本"),
+    ]);
+    assert!(editor.select_block_group(1));
+    assert!(editor.navigate_block_selection(true, true));
+    assert_eq!(editor.selected_block_range(), Some(0..2));
+    assert!(editor.leave_block_selection());
+    assert_eq!(editor.focused_index(), Some(0));
+    assert_eq!(editor.blocks()[0].line.cursor_pos(), "Ä".len());
+    assert!(
+        editor
+            .blocks()
+            .iter()
+            .all(|block| block.line.selection_range().is_none())
+    );
+    assert_eq!(editor.document_selection(), None);
+}
+
+#[test]
 fn retained_block_batches_include_empty_rows_and_refuse_interleaved_peers() {
     let rows = vec![
         BlockContent::paragraph("a", "First"),

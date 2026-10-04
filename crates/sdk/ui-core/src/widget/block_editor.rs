@@ -684,8 +684,17 @@ pub struct BlockEditor {
 /// Structural command membership, invalidated until a local editing gesture.
 enum RetainedBlockSelection {
     Active(Vec<String>),
+    Whole {
+        ids: Vec<String>,
+        anchor: String,
+        cursor: String,
+    },
     Refused,
+    RefusedWhole,
 }
+
+#[path = "block_editor_selection.rs"]
+mod block_selection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FindMatch {
@@ -2566,8 +2575,13 @@ impl BlockEditor {
     /// fences. A selection ending at column zero does not include that block.
     pub fn selected_block_range(&self) -> Option<std::ops::Range<usize>> {
         if let Some(retained) = &self.retained_block_selection {
-            let RetainedBlockSelection::Active(ids) = retained else {
-                return None;
+            let ids = match retained {
+                RetainedBlockSelection::Active(ids) | RetainedBlockSelection::Whole { ids, .. } => {
+                    ids
+                }
+                RetainedBlockSelection::Refused | RetainedBlockSelection::RefusedWhole => {
+                    return None;
+                }
             };
             let start = self
                 .blocks
@@ -5580,7 +5594,20 @@ impl BlockEditor {
     /// Retain the exact batch after a structural command, including empty rows.
     /// Missing or interleaved IDs refuse restoration instead of selecting peers.
     pub fn retain_block_selection(&mut self, ids: Vec<String>, reverse: bool) {
-        self.retained_block_selection = Some(RetainedBlockSelection::Active(ids.clone()));
+        let whole = match &self.retained_block_selection {
+            Some(RetainedBlockSelection::Whole { anchor, cursor, .. }) => {
+                Some((anchor.clone(), cursor.clone()))
+            }
+            _ => None,
+        };
+        self.retained_block_selection = Some(match &whole {
+            Some((anchor, cursor)) => RetainedBlockSelection::Whole {
+                ids: ids.clone(),
+                anchor: anchor.clone(),
+                cursor: cursor.clone(),
+            },
+            None => RetainedBlockSelection::Active(ids.clone()),
+        });
         let Some(range) = self.selected_block_range() else {
             self.reconcile_block_selection();
             return;
@@ -5596,7 +5623,16 @@ impl BlockEditor {
         };
         let (anchor, cursor) = if reverse { (end, start) } else { (start, end) };
         self.select_document_range(anchor, cursor);
-        self.retained_block_selection = Some(RetainedBlockSelection::Active(ids));
+        self.retained_block_selection = Some(match whole {
+            Some((anchor, cursor)) if ids.contains(&anchor) && ids.contains(&cursor) => {
+                RetainedBlockSelection::Whole {
+                    ids,
+                    anchor,
+                    cursor,
+                }
+            }
+            _ => RetainedBlockSelection::Active(ids),
+        });
     }
 
     /// Peer structural edits must not turn the old batch into a text selection
@@ -5605,6 +5641,7 @@ impl BlockEditor {
     /// to moving just the caret's block.
     fn reconcile_block_selection(&mut self) {
         if self.retained_block_selection.is_some() && self.selected_block_range().is_none() {
+            let whole = self.is_block_selection_mode();
             self.clear_document_selection();
             // Presentation may already have discarded the old drag bounds.
             // Collapse every retained line's paint, including nonfocused rows.
@@ -5614,7 +5651,11 @@ impl BlockEditor {
                     block.line.inner_mut().set_selection(cursor, cursor);
                 }
             }
-            self.retained_block_selection = Some(RetainedBlockSelection::Refused);
+            self.retained_block_selection = Some(if whole {
+                RetainedBlockSelection::RefusedWhole
+            } else {
+                RetainedBlockSelection::Refused
+            });
         }
     }
 
@@ -11093,6 +11134,7 @@ impl BlockEditor {
             return;
         }
 
+        self.leave_block_selection_for_input(event, *ctx.modifiers);
         let changes_selection = match event {
             WindowEvent::Ime(winit::event::Ime::Commit(_)) => true,
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {

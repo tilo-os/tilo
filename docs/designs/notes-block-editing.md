@@ -35,9 +35,9 @@ Unchecked entries need implementation or caller-level qualification.
 | P1 | Callouts / toggles | No editor kinds | Define safe canonical representation, export/import and a11y |
 | P1 | Slash menu | Shared `SlashMenu` | Expand action commands and aliases |
 | P1 | Markdown input shortcuts | SDK promotion and `RichTextLine` input | Audit common prefixes and deliberate differences from Notion |
-| P0 | Selection / multiselect | Cross-block text selection, subtree-aware indent/duplicate/move batches | Dedicated whole-block selection mode and delete/convert commands |
+| P0 | Selection / multiselect | Cross-block text and whole-block selection, subtree-aware indent/duplicate/move/delete batches | Batch conversion; broader pointer qualification |
 | P1 | Move / drag and drop | Shared atomic selected sibling batches, per-ID group movement and semantic controls (increment 3) | Pointer batch dragging and browser qualification |
-| P1 | Duplicate / delete / convert | Shared duplication of focused/selected blocks and subtrees (increment 2); canonical insert/delete/style actions | Whole-block delete/convert batches and pointer menu |
+| P1 | Duplicate / delete / convert | Shared duplication and atomic whole-block deletion (increments 2/4) | Batch conversion and pointer block menu |
 | P0 | Plain / rich / Markdown paste | Text clipboard and canonical paste vocabulary | Rich clipboard negotiation, formatting and literal/plain modes |
 | P0 | Markdown import/export | Notes `markdown`, canonical page projection | Nested/inline/code/table round trips; document extension limits |
 | P0 | Undo / redo | Canonical Notes actions; indent and duplicate atomicity/concurrency caller tests | Independent first-type undo-to-empty failure; remaining command qualification |
@@ -203,3 +203,51 @@ The refusal stays latched if a later peer edit makes the old IDs contiguous agai
   Alt+Down check leaves block order unchanged. Semantic commands work; fixing
   focused-editor browser routing requires coordination with the host owner.
   No keyboard assertion was weakened to claim a browser shortcut pass.
+
+
+- Merged PR: [#2622](https://code.tilo.so/tilo/tilo/pulls/2622), merge
+  `6113de9b505dd3693c5aaa65879ec9c60092ee0b`, verified on main.
+  Browser shortcut evidence was delivered to the host owner for a separate fix.
+
+### Increment 4: explicit block selection and deletion
+
+Escape selects a whole block/subtree/fence. Up/Down moves the selection;
+Shift+Up/Down extends or shrinks it from the original anchor. Ctrl/Cmd+A selects
+all blocks, including empty rows. Delete/Backspace removes selected blocks through
+canonical actions. Deleting everything creates one persistent empty paragraph in
+the same undo step. Enter, ordinary typing, paste and IME composition return to
+the active block's caret; other selected blocks are preserved. Escape followed by
+Tab/Shift+Tab retains the existing host focus escape.
+
+Block selection, extension, edit, copy, cut and delete have accessible actions.
+The existing Notes text context menu calls the shared rich-text surface. Clipboard
+copy/cut currently offers plain text, preserving the established clipboard format;
+rich/Markdown clipboard negotiation remains a separate increment. A rejected
+clipboard write never deletes selected content. Viewers can select and copy;
+mutations and active-composition commands refuse. Peer structural edits invalidate
+an incomplete selection without falling back to destructive text replacement.
+
+- Red: the real Notes Escape/Delete regression failed before implementation.
+- Ten real Notes caller regressions pass, covering keyboard selection reversal,
+  empty rows, canonical delete-all, undo/redo, nested marked Unicode lists, fences,
+  tables, reopen, concurrent peer edits, read-only and IME refusal, Option-generated
+  text, and real pointer-opened context-menu copy/cut/paste/select-all with an
+  isolated refusing clipboard. No system clipboard or user documents are used.
+- Independent review found and fixed Option input replacing a block selection and
+  the legacy context menu bypassing shared deletion. Follow-up review is clean.
+- Final verification: 59 SDK block-editor tests and 34 rich-text tests pass;
+  strict all-target Clippy and required shell test compilation pass.
+- Full Notes nextest: 151 passed, one existing interactive skip, and one
+  first-type undo-to-empty failure at `canonical_actions.rs:727`. A controlled
+  comparison restored every candidate file to unchanged `9dad26be4846` and
+  reproduced that exact failure, then restored all candidate files.
+- The standard Notes WASM bundle builds offline. Disposable Chrome passes actual
+  Escape/Shift+Arrow/Delete/Backspace, reverse extension, atomic undo/redo,
+  Enter-to-edit, accessible delete-all, and Japanese composition without replacing
+  other selected blocks. No browser exceptions. Native tests cover the real
+  context-menu clipboard with an isolated backend; browser rich clipboard and
+  assistive-technology qualification remain open.
+
+Still missing: batch conversion, rich clipboard modes, callouts/toggles,
+color/highlight controls, replace, pointer batch dragging and the broader
+qualifications in the matrix. No schema migration or Notion parity is claimed.

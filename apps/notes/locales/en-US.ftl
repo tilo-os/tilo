@@ -55,3 +55,7 @@ notes-view-editor = Editor
 notes-help-block-duplicate = Duplicate blocks and their children
 
 notes-help-block-move = Move focused or selected blocks
+
+notes-help-block-select = Select a block / extend block selection
+notes-help-block-delete = Delete selected blocks
+notes-help-block-edit = Return from block selection to text

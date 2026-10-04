@@ -119,3 +119,6 @@ mod continuation_discovery;
 
 #[path = "block_commands.rs"]
 mod block_commands;
+
+#[path = "block_selection.rs"]
+mod block_selection;

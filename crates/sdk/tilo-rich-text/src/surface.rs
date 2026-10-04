@@ -18,6 +18,9 @@ use crate::convert::content_of;
 use crate::edit::{self, Host};
 use crate::source::{Hosted, RichTextField, RichTextSource};
 
+#[path = "selection.rs"]
+mod selection;
+
 /// The key that sends what an embedded field holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubmitKey {
@@ -198,7 +201,11 @@ impl<S: RichTextSource> RichTextSurface<S> {
         use ui::winit::event::{ElementState, KeyEvent};
         use ui::winit::keyboard::{Key, NamedKey};
         let key = self.submit?;
-        if !self.editor.is_focused() || self.editor.has_open_popup() {
+        if !self.editor.is_focused()
+            || self.editor.has_open_popup()
+            || self.is_composing()
+            || self.editor.is_block_selection_mode()
+        {
             return None;
         }
         let WindowEvent::KeyboardInput {
@@ -466,7 +473,7 @@ impl<S: RichTextSource> RichTextSurface<S> {
         }
         self.source.sync(doc);
         self.present_state(None);
-        if selection.is_some() {
+        if selection.is_some() || self.editor.is_block_selection_mode() {
             self.editor.retain_block_selection(ids, reverse);
         }
         true
@@ -770,6 +777,9 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             *ctx.handled = true;
             return;
         }
+        if self.handle_selection_key(event, ctx) {
+            return;
+        }
         if self.is_duplicate_key(event, *ctx.modifiers) {
             self.duplicate_blocks(ctx.state, None);
             *ctx.handled = true;
@@ -831,6 +841,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             movement.bounds = tree.bounds;
             tree.children.push(movement);
         }
+        self.selection_accessibility(&mut tree);
         Some(tree)
     }
 
@@ -841,6 +852,9 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        if let Some(handled) = self.selection_action(target, action, state, path) {
+            return handled;
+        }
         if matches!(target, "notes.editor:move-up" | "notes.editor:move-down") {
             if !matches!(action, ui::a11y::Action::Activate) {
                 return false;

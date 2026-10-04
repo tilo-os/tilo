@@ -53,3 +53,7 @@ notes-view-editor = Editor
 notes-help-block-duplicate = Blöcke mit Unterelementen duplizieren
 
 notes-help-block-move = Fokussierte oder ausgewählte Blöcke verschieben
+
+notes-help-block-select = Block auswählen / Blockauswahl erweitern
+notes-help-block-delete = Ausgewählte Blöcke löschen
+notes-help-block-edit = Von Blockauswahl zur Texteingabe wechseln

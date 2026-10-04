@@ -421,3 +421,13 @@ widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizi
 
 widget-block-move-selection-up = Ausgewählte Blöcke nach oben verschieben
 widget-block-move-selection-down = Ausgewählte Blöcke nach unten verschieben
+
+widget-block-select = Block und Unterblöcke auswählen
+widget-block-select-all = Alle Blöcke auswählen
+widget-block-select-up = Blockauswahl nach oben erweitern
+widget-block-select-down = Blockauswahl nach unten erweitern
+widget-block-edit = Ausgewählten Block bearbeiten
+widget-block-copy = Ausgewählte Blöcke kopieren
+widget-block-cut = Ausgewählte Blöcke ausschneiden
+widget-block-delete = Block und Unterblöcke löschen
+widget-block-delete-selection = Ausgewählte oder fokussierte Blöcke löschen

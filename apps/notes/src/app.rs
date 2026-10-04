@@ -5640,7 +5640,7 @@ impl NotesApp {
                 {
                     return;
                 }
-                self.main.editor_mut().perform_semantic_action(
+                self.main.body_editor_mut().perform_semantic_action(
                     &format!("notes.editor:{command}"),
                     &ui::a11y::Action::Activate,
                     state,
