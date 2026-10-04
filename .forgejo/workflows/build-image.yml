@@ -3428,6 +3428,17 @@ jobs:
               | jq -er '.Labels["org.opencontainers.image.base.child.digest"]')"
           } >> "$GITHUB_ENV"
 
+      # The Lenovo's sound card needs its topology, DSP firmware and UCM
+      # profile in the image; booting it on the laptop is the only test of the
+      # sound itself (DEVELOPMENT.md, "Board dev images on real hardware").
+      - name: Check the board image's audio stack
+        if: matrix.board == 'lenovo-83ed'
+        run: |
+          set -euo pipefail
+          podman run --rm --network none --entrypoint bash \
+            -v "$PWD/os/tests/board_audio_contract.sh:/run/board_audio_contract.sh:ro,z" \
+            "$BOARD_IMAGE" /run/board_audio_contract.sh --root /
+
       # build-image.sh with TILO_SKIP_BUILD=1 installs the image as dev-disk.yml
       # does. The lane sealed the UKI with the digest install computes
       # (os/dev/build-board-image.sh) and moved the board's -ci tag to it.
