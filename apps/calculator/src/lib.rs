@@ -4,10 +4,10 @@
 //! graphing. Durable artifacts (history and plotted functions) live in an
 //! Automerge document so undo/redo and live collaboration use the same state;
 //! per-window expression, selection, angle unit, and camera state stay local.
-//! The panels are custom Vello-drawn widgets.
+//! The panels are painted by the app over the toolkit's controls and regions.
 //!
-//! `app_root()` is the single integration point used by both the live
-//! event loop and the `--shots` offscreen renderer.
+//! `app_root()` is the single integration point of the standalone widget tree;
+//! the framework app ([`CalculatorShell`]) hosts the same widget as a surface.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app, not the desktop. The tax of proving every layout sum cannot
@@ -40,6 +40,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod chrome;
 pub mod component;
 pub mod doc;
 pub mod draw;
@@ -49,6 +50,7 @@ pub mod graph3d;
 pub mod keypad;
 pub mod mathfield;
 pub mod model;
+pub mod plot_panel;
 pub mod resource;
 pub mod zoom;
 
@@ -61,12 +63,6 @@ use ui::widget::Widget;
 /// Any persisted state is adopted from the CRDT on the first sync.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(CalculatorApp::new())
-}
-
-/// Build a seeded root for the headless `--shots` renderer and demos. This is
-/// the path that seeds sample content; the live [`app_root`] does not.
-pub fn app_root_offline() -> Box<dyn Widget> {
-    Box::new(CalculatorApp::seeded())
 }
 
 pub use resource::{Calculator, CalculatorShell};
