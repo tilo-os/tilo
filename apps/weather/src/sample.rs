@@ -109,11 +109,13 @@ fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
         time: format!("2026-06-30T{:02}:00", spec.now_hour),
     };
 
-    // 7-day outlook: vary code + temps a little each day.
+    // 7-day outlook: vary code + temps a little each day. Today keeps the
+    // day's own range, so it agrees with the hourly curve and the reading
+    // now.
     let week_codes = [spec.code_day, 2, 61, 80, 3, 1, spec.code_day];
+    let week_drift = [0.0, -0.4, -1.6, -2.2, -0.8, 0.6, 1.2];
     let mut daily = Vec::new();
-    for (d, &code) in week_codes.iter().enumerate() {
-        let drift = (d as f64 - 3.0) * 0.8;
+    for (d, (&code, &drift)) in week_codes.iter().zip(&week_drift).enumerate() {
         let wet = crate::wxcode::Sky::from_code(code).is_wet();
         daily.push(DayForecast {
             // Placeholder; the clean rolling date sequence is assigned in
