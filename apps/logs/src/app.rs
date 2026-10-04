@@ -32,7 +32,9 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::{ActionAddress, ActionBinding, ControlInvocation, OperationKind, Resource};
 use ui::tokens::Spacing;
-use ui::widget::{Button, Element, InspectorPlacement, NavShell, TaffyTreeExt, Widget};
+use ui::widget::{
+    Button, Element, FilterCount, InspectorPlacement, NavShell, SearchField, TaffyTreeExt, Widget,
+};
 
 use crate::actions::{self, LogsOperation};
 use crate::model::{Filter, LogEntry, Priority};
@@ -184,6 +186,11 @@ impl LogsApp {
         let shell = NavShell::new()
             .with_id("logs.shell")
             .content(Box::new(JournalPane::new(Rc::clone(&shared))))
+            .with_filter(
+                SearchField::filter()
+                    .with_id("logs.filter")
+                    .with_placeholder("Filter messages and units"),
+            )
             .content_header("", header_actions(&door, false))
             .inspector(crate::view::entry_detail(None, &Spacing::default()));
         let mut app = Self {
@@ -423,6 +430,16 @@ impl LogsApp {
             bridge.placeholder = self.placeholder();
             bridge.has_entries = !self.entries.is_empty();
             bridge.total = self.entries.len();
+        }
+        if let Some(field) = self.shell.filter_mut() {
+            if field.value() != self.filter.search {
+                field.set_query(&self.filter.search);
+            }
+            // "12 of 96" while any filter narrows the journal.
+            field.set_count(
+                (!self.filter.is_clear())
+                    .then(|| FilterCount::new(self.filtered.len(), self.entries.len())),
+            );
         }
         if self.shown_live_tail != self.live_tail {
             self.shown_live_tail = self.live_tail;
