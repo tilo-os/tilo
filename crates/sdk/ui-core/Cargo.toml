@@ -100,6 +100,9 @@ fnv.workspace = true
 # notifications, media sessions, location and screen capture, and their
 # native backends. Re-exported under the toolkit's own module paths.
 tilo-host = { version = "0.1.0", path = "../tilo-host" }
+# The paint stream: a page as a layered display list the WebView can draw
+# instead of the engine's pixels, natively and in the WASM client alike.
+tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream" }
 # The desktop's light/dark, accent, contrast and motion preferences, which a
 # standalone app outside Tilo OS follows (`host_appearance`).
 tilo-appearance = { version = "0.1.0", path = "../../platform/tilo-appearance", optional = true }
@@ -108,6 +111,8 @@ tilo-host-search = { version = "0.1.0", path = "../../platform/tilo-host-search"
 # Test builds bound the pairing broker exchange with the shared hang bound.
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
+# Browser processes on one profile meet at one Chromium host (`webview::chromium`).
+tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 # The content store a host lends a component (`HostContext::content`), in every
 # build; the unix `native` build adds the launcher's device store below.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
@@ -198,6 +203,7 @@ serde_json.workspace = true
 base64.workspace = true
 uuid.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
+tilo-image-codec = { version = "0.1.0", path = "../../platform/tilo-image-codec" }
 chrono = { workspace = true, features = ["clock", "std"] }
 # Shared Tilo media layer. The `VideoPlayer` widget owns a `media::MediaEngine`
 # and pulls frames from it; `media`'s default (no `decode`) build carries no
@@ -342,6 +348,8 @@ tilo-host = { path = "../tilo-host", features = ["test-support"] }
 # Same pin runtime-collab tests use.
 capnp.workspace = true
 tokio-util.workspace = true
+# The settings capability the shell hands an app, served by the fake broker.
+runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-host"] }
 
 [[test]]
 name = "it"
@@ -403,6 +411,9 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 # Private files and the pairing flow's TLS client need an OS; the browser
 # supplies both through its host instead.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The paint stream's host side turns SVG images into vector items, so a page's
+# logos reach every client as paths rather than as bytes it cannot decode.
+tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream", features = ["svg"] }
 private-fs = { version = "0.1.0", path = "../../system/private-fs" }
 rustls.workspace = true
 # Hyphenation patterns for every language. The browser toolkit core keeps

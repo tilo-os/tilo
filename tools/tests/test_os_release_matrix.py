@@ -256,7 +256,10 @@ class OsDevLaneTests(unittest.TestCase):
         step = workflow.split("      - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)\n", 1)[1]
         step = step.split("\n      - name:", 1)[0]
         self.assertIn("DEV_BUILD: ${{ github.event_name == 'workflow_call' }}", step)
-        self.assertIn('for ref in "$BASE_REF" "$RPMS_REF" "$KERNEL_RPMS_REF"; do', step)
+        self.assertIn('for ref in "$BASE_REF" "$RPMS_REF"; do', step)
+        # The kernel snapshot changes several times a day; in the epoch it
+        # invalidated every rootfs layer.
+        self.assertNotIn("KERNEL_RPMS_REF", step.split("if [[ $DEV_BUILD == true ]]", 1)[1])
         # image.created keeps the commit time either way.
         self.assertLess(step.index("SOURCE_DATE_ISO="), step.index("if [[ $DEV_BUILD == true ]]"))
 

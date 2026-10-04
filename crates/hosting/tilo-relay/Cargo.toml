@@ -43,6 +43,12 @@ path = "src/enroll.rs"
 name = "tilo-home-peer-control"
 path = "src/home_peer_control.rs"
 
+# A terminal's pty carried to an environment session on a relay; the
+# device's `ush` supervisor runs it for a relay environment target.
+[[bin]]
+name = "tilo-relay-environment"
+path = "src/environment_cli.rs"
+
 # The host / relay daemon.
 #
 # `tilo-relay` is the WAN transport + host tier of the sync/host model:
@@ -121,7 +127,7 @@ uuid.workspace = true
 
 # Runtime + config.
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio", "postcard"] }
 n0-future = "0.3.2"
 thiserror.workspace = true
 
@@ -152,6 +158,11 @@ bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
 # Installed packages and their integrity records.
 package-store = { path = "../../packaging/package-store" }
+# The environment record a relay session is opened from.
+tilo-environment = { path = "../../runtime/environment" }
+# Members' tool builds: built as the member, signed here.
+env-tools = { path = "../../runtime/env-tools" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # Exclusive, owner-only publication of the relay's node secret.
 private-fs = { path = "../../system/private-fs" }
 clap.workspace = true
@@ -177,6 +188,12 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 socket2 = "0.6"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Only the local Linux guest backend needs namespaces, Landlock and vsock.
+# Portable relay routing and remote environment sessions do not link it.
+ush = { path = "../../runtime/ush" }
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }

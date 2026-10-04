@@ -7,8 +7,7 @@ use ui::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use tilo_actions::remote::RemoteActionMessage;
 use ui::collaboration::{
-    CertifiedEndpointIdentity, CollabEvent, CollabRequest, DocumentMutation, PresencePayload,
-    RouteSpec,
+    CertifiedEndpointIdentity, CollabEvent, CollabRequest, PresencePayload, RouteSpec,
 };
 use ui::permissions::PermissionContext;
 use ui::presence::{PathSegment, PresenceKey};
@@ -1563,18 +1562,7 @@ impl Session {
                     self.set_broker_surfaces(surfaces);
                 }
                 Some(event @ CollabEvent::Document { .. }) => {
-                    match event
-                        .document_mutation()
-                        .transpose()?
-                        .ok_or_else(|| anyhow::anyhow!("document event lost its mutation"))?
-                    {
-                        DocumentMutation::Snapshot(data) => {
-                            let _ = self.absorb_snapshot(&data)?;
-                        }
-                        DocumentMutation::Incremental(data) => {
-                            let _ = self.merge_incremental_anywhere(&data)?;
-                        }
-                    }
+                    let _ = self.absorb_document_event(&event)?;
                 }
                 Some(event) => deferred.push(event),
             }
@@ -1708,19 +1696,39 @@ impl Session {
     /// something.
     ///
     /// Returns whether the agent's replica moved.
-    fn absorb_snapshot(&mut self, data: &[u8]) -> Result<bool> {
+    fn absorb_snapshot(&mut self, artifact: collab_types::ArtifactId, data: &[u8]) -> Result<bool> {
+        let cluster = self.cfg.cluster.to_string();
+        let primary = surface::for_app_id(&self.cfg.app_id);
+        let on_primary_route = artifact
+            == collab_types::document_artifact_id(
+                &self.cfg.app_id,
+                &cluster,
+                self.cfg.record.as_deref().unwrap_or_default(),
+            );
         let Some(ed) = self.editor.as_mut() else {
-            if !crate::apply::looks_like_a_document(data) {
+            let Some(contract) = primary else {
+                return self.absorb_peer(artifact, data);
+            };
+            // Without a record, the page is whichever document arrives
+            // first; with one, the route settles it.
+            let ours = on_primary_route
+                || (self.cfg.record.is_none() && Editor::looks_like_a_document(data));
+            if !ours {
                 // Not a page this agent authors into — but it may still be
                 // another application's room state, which belongs in
                 // `peers` rather than being dropped outright.
-                return self.absorb_peer(data);
+                return self.absorb_peer(artifact, data);
             }
-            self.editor = Some(Editor::from_snapshot(data, &self.cfg.agent_id)?);
+            self.editor = Some(Editor::from_snapshot(
+                contract,
+                data,
+                &self.cfg.agent_id,
+                self.cfg.permissions.clone(),
+            )?);
             tracing::info!(bytes = data.len(), "received the document");
             return Ok(true);
         };
-        if ed.merge_full(data)? {
+        if ed.merge_full(data) {
             return Ok(true);
         }
         // It did not merge, so it is not this document. Worth having only
@@ -1741,25 +1749,32 @@ impl Session {
         // the room holds more than the document we were invited to, and an
         // instruction may name an operation that belongs to whatever else
         // is here.
-        self.absorb_peer(data)
+        self.absorb_peer(artifact, data)
     }
 
     /// Take a peer's whole-document frame as a *second* application's
     /// state — one this session was not invited to, but whose operations
     /// [`Self::offers`] can still discover and [`Self::perform`] can still
-    /// dispatch, once its own contract recognises it.
-    fn absorb_peer(&mut self, data: &[u8]) -> Result<bool> {
-        let Some(contract) = crate::apply::attribute(data) else {
+    /// dispatch. Which app it is comes from the authenticated route it
+    /// arrived on.
+    fn absorb_peer(&mut self, artifact: collab_types::ArtifactId, data: &[u8]) -> Result<bool> {
+        let Some(contract) = surface::for_artifact(&self.cfg.cluster.to_string(), artifact) else {
             tracing::debug!(
                 bytes = data.len(),
-                "ignored a peer's state: no app here claims it"
+                "ignored a peer's state: no app the agent speaks to wrote it"
             );
             return Ok(false);
         };
         if let Some(peer) = self.peers.get_mut(contract.namespace) {
-            return peer.merge_full_any(data);
+            return Ok(peer.merge_full(data));
         }
-        let peer = Editor::peer_from_snapshot(contract, data, &self.cfg.agent_id)?;
+        let peer = Editor::peer_from_snapshot_on_route(
+            contract,
+            contract.app_id(),
+            data,
+            &self.cfg.agent_id,
+            self.cfg.permissions.clone(),
+        )?;
         tracing::info!(
             app = contract.namespace,
             bytes = data.len(),
@@ -1769,33 +1784,15 @@ impl Session {
         Ok(true)
     }
 
-    /// Apply a peer's incremental change to whichever replica it belongs
-    /// to — the primary document first, since that is the common case,
-    /// then each held peer. A delta belonging to a document this session
-    /// holds neither of is silently not this agent's business.
-    fn merge_incremental_anywhere(&mut self, data: &[u8]) -> Result<bool> {
-        if let Some(ed) = self.editor.as_mut()
-            && ed.merge_incremental(data)?
-        {
-            return Ok(true);
-        }
-        for peer in self.peers.values_mut() {
-            if peer.merge_incremental(data)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     /// Every document this session holds, primary first, as the pairs
     /// [`surface::offers`] and [`surface::facts`] are built from.
     fn held(&self) -> Vec<(&'static AppContract, &automerge::AutoCommit)> {
         let mut out = Vec::new();
         if let Some(ed) = self.editor.as_ref() {
-            out.push((ed.contract(), &ed.doc));
+            out.push((ed.contract(), ed.doc()));
         }
         for peer in self.peers.values() {
-            out.push((peer.contract(), &peer.doc));
+            out.push((peer.contract(), peer.doc()));
         }
         out
     }
@@ -1828,14 +1825,20 @@ impl Session {
         }
         let mut offers =
             Self::document_broker_offers(&self.broker_catalogue, &self.cfg.permissions);
-        for local in surface::offers(held, view, &self.cfg.permissions) {
-            if !offers
-                .iter()
-                .any(|broker| broker.address() == local.address())
-            {
-                offers.push(local);
-            }
-        }
+        // An app's own live publication is the whole of what it offers:
+        // beside its document's tree it carries what only its window knows
+        // (an edit at the caret). The tree read off the held replica stands
+        // in only for an app whose publication has not arrived yet.
+        let live: HashSet<String> = offers.iter().map(|offer| offer.app.clone()).collect();
+        let mut local = surface::offers(held, view, &self.cfg.permissions);
+        local.retain(|offer| {
+            surface::for_namespace(&offer.app)
+                .is_none_or(|contract| !live.contains(contract.app_id()))
+                && !offers
+                    .iter()
+                    .any(|broker| broker.address() == offer.address())
+        });
+        offers.extend(local);
         offers
     }
 
@@ -1850,7 +1853,9 @@ impl Session {
     ) -> Vec<surface::Offer> {
         surface::broker_offers(catalogue)
             .into_iter()
-            .filter(|offer| surface::permitted_descriptor(permissions, &offer.descriptor))
+            .filter(|offer| {
+                surface::permitted_descriptor(permissions, &offer.app, &offer.descriptor)
+            })
             .collect()
     }
 
@@ -1859,11 +1864,7 @@ impl Session {
     fn view(&self, focus: Option<String>) -> View {
         View {
             focus_block: focus.clone(),
-            focus_offset: 0,
             target_blocks: focus.into_iter().collect(),
-            format_spans: Vec::new(),
-            selection: None,
-            region: word_processor::actions::RegionKind::Body,
             subject: None,
             directory: self.cfg.directory.clone(),
             content: self.cfg.content.clone(),
@@ -1957,12 +1958,21 @@ impl Session {
         Ok(found)
     }
 
-    /// Fetch the catalogue unless the one held is fresh.
+    /// Fetch the catalogue unless the one held is fresh and already names
+    /// every app whose document the agent holds: an app publishes its
+    /// actions before its document reaches the agent, so a document from an
+    /// app the catalogue does not name means the catalogue is older than it.
     fn refresh_stale_catalogue(&mut self) -> Result<()> {
-        if self
+        let fresh = self
             .catalogue_fetched
-            .is_some_and(|at| at.elapsed() < CATALOGUE_FRESH_FOR)
-        {
+            .is_some_and(|at| at.elapsed() < CATALOGUE_FRESH_FOR);
+        let names_every_held_app = self.held().iter().all(|(contract, _)| {
+            self.broker_catalogue
+                .rows
+                .iter()
+                .any(|row| row.app_id == contract.app_id())
+        });
+        if fresh && names_every_held_app {
             return Ok(());
         }
         self.refresh_catalogue()
@@ -2344,7 +2354,8 @@ impl Session {
     fn instruction_issuer(&mut self) -> Option<String> {
         let editor = self.editor.as_mut()?;
         let mine = editor.actor_hex();
-        tilo_resource::history::versions(&mut editor.doc)
+        editor
+            .versions()
             .into_iter()
             .rev()
             .find(|version| {
@@ -2394,23 +2405,13 @@ impl Session {
         if run.steps.is_empty() {
             return Ok(());
         }
-        let by = editor.actor_hex();
-        if ui::record_run_with_details(
-            &mut editor.doc,
+        if let Some(data) = editor.record_run(
             &run.instruction,
-            Some(&by),
             run.issued_by.as_deref(),
-            Some(&run.instruction),
             Some(&run.decision),
             &run.steps,
-        )
-        .is_some()
-        {
-            tilo_resource::history::commit_stamped(&mut editor.doc);
-            let data = editor.doc.save_incremental();
-            if !data.is_empty() {
-                self.link.send(&CollabRequest::document_incremental(data))?;
-            }
+        ) {
+            self.link.send(&CollabRequest::document_incremental(data))?;
         }
         for editor in self.peers.values_mut() {
             editor.set_history_context(None);
@@ -2457,7 +2458,7 @@ impl Session {
         let view = self.view(Some(ins_id.to_string()));
         let catalogue = surface::Catalogue {
             offers: self.offers(&held, &view),
-            facts: surface::facts(&held, &view),
+            facts: surface::facts(&held),
             held: held
                 .iter()
                 .map(|(contract, _)| contract.namespace)
@@ -2664,7 +2665,8 @@ impl Session {
     fn edit(&mut self, focus: &str, action: &RichTextAction) -> Result<()> {
         let before = self.editor.as_mut().and_then(Editor::latest_entry_id);
         let invocation = tilo_actions::InvocationId::new();
-        let resource_id = "word-processor.document".to_string();
+        let resource_id =
+            <word_processor::framework::Document as ui::tilo_resource::Resource>::KIND.to_string();
         let agent_id = self.cfg.agent_id.clone();
         let app_id = self.cfg.app_id.clone();
         let resource_label = self
@@ -2692,14 +2694,13 @@ impl Session {
             },
             resource: tilo_actions::ActionResource {
                 id: resource_id.clone(),
-                kind: "word-processor.document".into(),
+                kind: resource_id.clone(),
                 label: resource_label.clone(),
             },
             anchor: word_action_anchor(action, focus),
             group: group.clone(),
         };
-        let interaction_key =
-            PresenceKey::resource(&self.cfg.app_id, &resource_id, "word-processor.document");
+        let interaction_key = PresenceKey::resource(&self.cfg.app_id, &resource_id, &resource_id);
         let _ = self.link.send(&CollabRequest::Presence {
             key: interaction_key.clone(),
             payload: PresencePayload::Interaction(Box::new(semantic(
@@ -2722,11 +2723,9 @@ impl Session {
             key: block_key(focus),
             payload: PresencePayload::Caret { pos: caret_pos },
         })?;
-        let delta = self
-            .editor
-            .as_mut()
-            .context("no document yet")?
-            .apply(action)?;
+        let editor = self.editor.as_mut().context("no document yet")?;
+        let actions = crate::apply::authored(action, &self.cfg.agent_id);
+        let delta = editor.apply::<word_processor::framework::Document>(&actions)?;
         if let Some(data) = delta {
             self.link.send(&CollabRequest::document_incremental(data))?;
             if let RichTextAction::SpliceText { at, ins, .. } = action
@@ -4207,12 +4206,18 @@ mod tests {
                 let content = content.clone();
                 let mut replica = document.clone();
                 let caret = instruction_id.clone();
+                let open_image = image_id.clone();
                 threads.push(std::thread::spawn(move || {
                     // Each typed manager is constructed and used on its owner thread.
                     let mut client = if is_photo {
                         let mut client = connect_peer(&worker_socket, PHOTOS, "photos", None);
-                        let mut photo_resources =
-                            photos::actions::PhotosResources.publish_resources(&photo);
+                        // The open photograph, as Photos publishes it.
+                        let mut photo_resources: Vec<_> =
+                            surface::tree(surface::for_app_id(PHOTOS).unwrap(), &photo)
+                                .into_iter()
+                                .flat_map(|library| library.children)
+                                .filter(|child| child.id.as_str() == open_image)
+                                .collect();
                         for resource in &mut photo_resources {
                             resource.children.clear();
                             resource
@@ -4305,7 +4310,7 @@ mod tests {
             }
             let permissions = PermissionContext::from_capabilities(
                 ui::permissions::Actor::agent("Scribe"),
-                ["photos", "word-processor"]
+                [PHOTOS, WRITER]
                     .into_iter()
                     .map(|app| {
                         ui::permissions::CapOverride::grant(
@@ -4335,15 +4340,25 @@ mod tests {
                 content: content.clone(),
             })
             .unwrap();
-            session.editor = Some(Editor::from_snapshot(&document.save(), "Scribe").unwrap());
+            session.editor = Some(
+                Editor::from_snapshot(
+                    surface::for_app_id(WRITER).unwrap(),
+                    &document.save(),
+                    "Scribe",
+                    session.cfg.permissions.clone(),
+                )
+                .unwrap(),
+            );
             // A usable held photo is essential: it exposes the forbidden
             // broker-result fallback that empty-replica tests would miss.
             session.peers.insert(
                 "photos",
-                Editor::peer_from_snapshot(
+                Editor::peer_from_snapshot_on_route(
                     surface::for_app_id(PHOTOS).unwrap(),
+                    PHOTOS,
                     &photo.save(),
                     "Scribe",
+                    session.cfg.permissions.clone(),
                 )
                 .unwrap(),
             );
@@ -4428,7 +4443,7 @@ mod tests {
                         _ => None,
                     })
                     .collect(),
-                rotation: photos::doc::PhotosDoc::edits(&session.peers["photos"].doc)
+                rotation: photos::doc::PhotosDoc::edits(session.peers["photos"].doc())
                     .rotate_quarters,
             }
         }

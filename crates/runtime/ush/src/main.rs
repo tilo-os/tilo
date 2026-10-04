@@ -30,7 +30,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use ush::broker::{Request, Response};
-use ush::images::{DirImages, Images, NoImages, StoreImages};
+use ush::images::{Images, SharedBuilds};
 use ush::store::Store;
 use ush::supervisor::{Session, SessionOptions};
 
@@ -54,6 +54,7 @@ fn main() -> ExitCode {
         "restart" => guest::restart(),
         "tilo" | "app" | "store" | "system" => guest::host_cli(&prog_name, rest),
         "ush" => host(rest),
+        name if guest::is_legacy_shim(name) => guest::legacy_launch(name, rest),
         _ => dispatch(rest),
     };
 
@@ -106,7 +107,8 @@ Inside a guest:
   app update [APP]                  update apps (`store` is an alias)
   system update                     update the Tilo system image
   pkg install PKG…                 pkg remove PKG…    pkg list
-  perm trust-dir DIR               perm list          perm revoke ID
+  perm trust-dir DIR               perm allow-host HOST
+  perm list                        perm revoke ID
   scan PATH
   guard status
   quarantine list | add PATH | restore PATH
@@ -160,7 +162,9 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
 
     init_tracing(opts.verbose);
     let store = Store::discover();
-    let mut session = Session::new(store, opts, images(), builder());
+    let images = images();
+    let builder = Arc::new(SharedBuilds::new(builder(), Arc::clone(&images)));
+    let mut session = Session::new(store, opts, images, builder);
     if let Some(script) = script {
         let resolved = session.resolve()?;
         let trees: Vec<PathBuf> = resolved.images.into_iter().map(|(_, p)| p).collect();
@@ -178,20 +182,20 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
 /// Where images come from on this device: the package store, or fixture
 /// trees under `TILO_USH_IMAGES` in tests.
 fn images() -> Arc<dyn Images> {
-    if let Some(root) = std::env::var_os("TILO_USH_IMAGES") {
-        return Arc::new(DirImages::at(PathBuf::from(root)));
-    }
-    match StoreImages::from_env() {
-        Ok(images) => Arc::new(images),
-        Err(reason) => Arc::new(NoImages(format!(
-            "the package store cannot be opened: {reason}"
-        ))),
-    }
+    ush::images::on_this_device()
 }
 
-/// How `pkg install` builds tool images on this device.
+/// How `pkg install` builds tool images: into the store [`images`] reads
+/// them from on this device, or, for a member's supervisor on a relay, by
+/// the relay's worker, which holds the key this process must not.
 fn builder() -> Arc<dyn tilo_environment::ToolBuilder> {
-    Arc::new(tilo_environment::NoToolBuilder)
+    if let Some(remote) = env_tools::delegated::RemoteBuilder::from_env() {
+        return Arc::new(remote);
+    }
+    if let Some(root) = std::env::var_os("TILO_USH_IMAGES") {
+        return env_tools::store::dir_tool_builder(Path::new(&root));
+    }
+    env_tools::store::device_tool_builder()
 }
 
 fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
@@ -285,7 +289,7 @@ mod guest {
     fn report(resp: Response) -> i32 {
         match resp {
             Response::Ok => 0,
-            Response::NeedsRestart { detail } => {
+            Response::NeedsRestart { detail } | Response::Applied { detail } => {
                 println!("{detail}");
                 0
             }
@@ -324,6 +328,32 @@ Usage:\n  tilo app ...             App discovery and updates (`store` is an alia
 Examples:\n  tilo app u browser\n  tilo system status\n  tilo update\n\n\
 Unavailable providers are skipped by `tilo update`; explicit provider commands\n\
 explain when the host does not offer them.\n";
+
+    /// A legacy app's command inside a guest: a symlink in the guest's bin
+    /// directory that is none of the runtime's own names.
+    pub fn is_legacy_shim(name: &str) -> bool {
+        !name.is_empty()
+            && name != "tilo-ush"
+            && !ush::GUEST_COMMANDS.contains(&name)
+            && Path::new(ush::GUEST_BIN_DIR).join(name).is_symlink()
+            && Path::new(ush::GUEST_BROKER_SOCK).exists()
+    }
+
+    /// `code .` in an environment: the app runs in the legacy VM, in this
+    /// directory when it is shared, and its windows open in the current strip.
+    pub fn legacy_launch(app: &str, args: &[String]) -> anyhow::Result<i32> {
+        let cwd = std::env::current_dir()?;
+        let request = Request::LegacyLaunch {
+            app: app.to_string(),
+            args: args.to_vec(),
+            cwd,
+        };
+        match ask(&request)? {
+            Response::Command { code, .. } => Ok(code),
+            Response::Denied { reason } => anyhow::bail!("{reason}"),
+            other => anyhow::bail!("the broker returned an unexpected response: {other:?}"),
+        }
+    }
 
     pub fn host_cli(program: &str, args: &[String]) -> anyhow::Result<i32> {
         if let Some(help) = management_help(program, args) {
@@ -593,6 +623,15 @@ explain when the host does not offer them.\n";
                     path: PathBuf::from(dir),
                 })?))
             }
+            Some("allow-host") => {
+                let host = args.get(1).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "perm allow-host needs a host: example.com, *.example.com for a \
+                         domain and everything under it, or * for any host"
+                    )
+                })?;
+                Ok(report(ask(&Request::AllowHost { host: host.clone() })?))
+            }
             Some("revoke") => {
                 let id = args
                     .get(1)
@@ -607,7 +646,8 @@ explain when the host does not offer them.\n";
                     println!(
                         "nothing is granted. Your home directory in here is this \
                          environment's, not yours; `perm trust-dir DIR` is how a real \
-                         directory appears."
+                         directory appears, and `perm allow-host HOST` how a host \
+                         becomes reachable."
                     );
                 }
                 for e in &entries {
@@ -615,7 +655,9 @@ explain when the host does not offer them.\n";
                 }
                 Ok(0)
             }
-            Some(other) => anyhow::bail!("unknown `perm {other}`; try trust-dir, list, revoke"),
+            Some(other) => {
+                anyhow::bail!("unknown `perm {other}`; try trust-dir, allow-host, list, revoke")
+            }
         }
     }
 
@@ -688,6 +730,9 @@ explain when the host does not offer them.\n";
                 );
                 if !status.readable_dirs.is_empty() {
                     println!("readable    : {}", status.readable_dirs.join(", "));
+                }
+                for line in ush::guard::network_report(&status.network) {
+                    println!("{line}");
                 }
                 println!("audit       : {} records", status.audit_records);
                 Ok(0)
@@ -763,19 +808,35 @@ explain when the host does not offer them.\n";
     /// Tear the guest down so the supervisor can build it again. There is no
     /// way to remount a namespace from inside it, so a restart is literally a
     /// new guest: the broker records the request, this ends the current one,
-    /// and the supervisor loops — signalling PID 1 (the sandbox's own init
-    /// inside the guest's pid namespace) takes every process in it with it.
+    /// and the supervisor loops. Every process in the guest's pid namespace
+    /// is ended — hung up first, so shells save their history, then killed —
+    /// and the sandbox's init (pid 1, which the kernel shields from signals
+    /// sent inside its own namespace) exits with its last child.
     pub fn restart() -> anyhow::Result<i32> {
+        use std::io::Write as _;
         ask(&Request::Restart)?;
         println!("restarting the guest…");
-        // SAFETY: plain `kill(2)`. Inside the guest's pid namespace pid 1 is
-        // the sandbox's own init; outside one this fails with EPERM and the
-        // fallback below applies.
-        if unsafe { libc::kill(1, libc::SIGTERM) } == 0 {
+        let _ = std::io::stdout().flush();
+        // Only ever inside a guest: there pid 1 is the sandbox's init. On a
+        // host `kill(-1)` would end the whole login session.
+        let in_guest =
+            std::fs::read_to_string("/proc/1/comm").is_ok_and(|comm| comm.trim() == "bwrap");
+        if !in_guest {
+            // SAFETY: `getppid` cannot fail; the parent is the shell that ran this.
+            unsafe { libc::kill(libc::getppid(), libc::SIGHUP) };
             return Ok(0);
         }
-        // SAFETY: `getppid` cannot fail; the parent is the shell that ran this.
-        unsafe { libc::kill(libc::getppid(), libc::SIGHUP) };
+        // SAFETY: plain signal(2)/kill(2) calls. This process ignores the
+        // hangup it sends so it is still here to send the kill; `-1` reaches
+        // every process this one may signal, which inside the guest's pid
+        // namespace is the guest and nothing else.
+        unsafe {
+            libc::signal(libc::SIGHUP, libc::SIG_IGN);
+            libc::kill(-1, libc::SIGHUP);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // SAFETY: as above.
+        unsafe { libc::kill(-1, libc::SIGKILL) };
         Ok(0)
     }
 

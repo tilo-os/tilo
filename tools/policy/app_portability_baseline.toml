@@ -50,10 +50,10 @@ D2 = 3
 
 [apps.containers]
 D1 = 2
-D2 = 4
+D2 = 3
 
 [apps.db-client]
-D2 = 2
+D2 = 1
 
 [apps.diffmerge]
 D2 = 2
@@ -83,9 +83,6 @@ D2 = 3
 D1 = 1
 D2 = 3
 
-[apps.hex-editor]
-D2 = 1
-
 [apps.imager]
 D1 = 6
 D2 = 9
@@ -107,7 +104,7 @@ D2 = 2
 
 [apps.monitor]
 D1 = 2
-D2 = 2
+D2 = 1
 
 [apps.music]
 D2 = 3
@@ -135,7 +132,7 @@ D2 = 8
 
 [apps.print-centre]
 D1 = 1
-D2 = 6
+D2 = 5
 
 [apps.publisher]
 D2 = 2
@@ -149,7 +146,7 @@ D1 = 4
 D2 = 19
 
 [apps.sheets]
-D2 = 4
+D2 = 3
 
 [apps.shortcuts]
 D2 = 2
@@ -168,7 +165,7 @@ D2 = 8
 [apps.terminal]
 D1 = 5
 D2 = 5
-R1 = 53
+R1 = 52
 R2 = 58
 R3 = 3
 
@@ -176,7 +173,7 @@ R3 = 3
 D2 = 2
 
 [apps.totp]
-D2 = 3
+D2 = 2
 
 [apps.tube]
 D1 = 2
@@ -210,7 +207,7 @@ D2 = 10
 W3 = 11
 
 [sdk.tilo-app]
-R1 = 27
+R1 = 25
 
 [sdk.tilo-app-state]
 R1 = 9
@@ -224,6 +221,6 @@ W3 = 11
 
 [sdk.tilo-ui]
 R1 = 321
-W1 = 21
+W1 = 19
 W2 = 2
 W3 = 80

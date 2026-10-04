@@ -8,6 +8,7 @@
 mod diff;
 mod driver;
 mod mode;
+mod own_device;
 mod scenario;
 
 use std::path::PathBuf;
@@ -443,6 +444,11 @@ Examples:\n\
 }
 
 fn main() -> Result<(), String> {
+    // Room documents are admitted in automerge isolation workers that
+    // re-enter this binary, as they re-enter the shell; serve them first.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        std::process::exit(i32::from(code));
+    }
     // Same env-var contract as `shell`: TILO_STARTUP_METRICS_PATH=/tmp/x.json
     // dumps JSON timings on exit; without it every `mark` is a no-op.
     // `shots` is the harness that measures the cold-start warmup win.

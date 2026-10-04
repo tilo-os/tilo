@@ -996,6 +996,9 @@ pub struct ForeignFrameStore {
     /// Which surfaces a capture must draw as a placeholder — see
     /// [`crate::shell::capture_protection`].
     capture_protection: Mutex<CaptureProtection>,
+    /// The size, in logical pixels, other devices of the person show each
+    /// streamed window at. A window not shown here is configured to it.
+    remote_extents: Mutex<HashMap<SurfaceId, (i32, i32)>>,
 }
 
 /// Capture-protection requests, kept beside the frames they withhold.
@@ -2016,6 +2019,23 @@ impl ForeignFrameStore {
         Some(snapshot)
     }
 
+    /// `rgba`, a `width`×`height` buffer `id` committed, cut to the window
+    /// its client declared (no shadow or resize border), as tiles show it.
+    /// Unchanged without a declared geometry.
+    pub fn crop_to_window(&self, id: SurfaceId, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+        let crop = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .and_then(|e| e.geometry)
+            .and_then(|geometry| geometry.crop(width, height));
+        match crop {
+            Some(content) => crop_rgba(&rgba, width, content),
+            None => rgba,
+        }
+    }
+
     /// Record the client's declared window geometry (`None` clears it), read
     /// from the state each commit applied.
     pub fn note_window_geometry(&self, id: SurfaceId, geometry: Option<WindowGeometry>) {
@@ -2249,6 +2269,44 @@ impl ForeignFrameStore {
             let logical = (
                 honour_size_limits(logical.0, e.min_size.0, e.max_size.0),
                 honour_size_limits(logical.1, e.min_size.1, e.max_size.1),
+            );
+            e.configured_extent = Some((f64::from(logical.0), f64::from(logical.1)));
+            if e.configured == Some(logical) {
+                return None;
+            }
+            e.configured = Some(logical);
+            Some(logical)
+        })
+    }
+
+    /// Replace the sizes the person's other devices show streamed windows at.
+    pub fn set_remote_extents(&self, extents: HashMap<SurfaceId, (i32, i32)>) {
+        *self
+            .remote_extents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = extents;
+    }
+
+    /// The size another device shows `id` at, if it is streamed to one.
+    pub fn remote_extent(&self, id: SurfaceId) -> Option<(i32, i32)> {
+        self.remote_extents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .copied()
+    }
+
+    /// [`Self::take_pending_configure`] for a window only other devices
+    /// show: the size they show it at, within the client's limits, iff it
+    /// differs from the last sent.
+    pub fn take_remote_configure(&self, id: SurfaceId, extent: (i32, i32)) -> Option<(i32, i32)> {
+        self.with_entry(id, |e| {
+            if extent.0 <= 0 || extent.1 <= 0 {
+                return None;
+            }
+            let logical = (
+                honour_size_limits(extent.0, e.min_size.0, e.max_size.0),
+                honour_size_limits(extent.1, e.min_size.1, e.max_size.1),
             );
             e.configured_extent = Some((f64::from(logical.0), f64::from(logical.1)));
             if e.configured == Some(logical) {
@@ -3206,6 +3264,18 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
         if fullscreen == Some(id) && toplevel.is_initial_configure_sent() {
             continue;
         }
+        // A window only the person's other devices show renders at the
+        // size they show it, not at its hidden tab's.
+        if toplevel.is_initial_configure_sent()
+            && let Some(extent) = store().remote_extent(id)
+            && !is_visible_tab(&state.workspace_tree.read(), id)
+        {
+            if let Some((w, h)) = store().take_remote_configure(id, extent) {
+                configure_to(&toplevel, w, h, tiled);
+                sent = sent.saturating_add(1);
+            }
+            continue;
+        }
         if let Some((w, h)) = store().take_pending_configure(id) {
             configure_to(&toplevel, w, h, tiled);
             sent = sent.saturating_add(1);
@@ -3435,7 +3505,8 @@ pub fn client_pump_epoch() -> u64 {
 }
 
 /// Callbacks fire only for the visible tab of each group, the on-screen
-/// keyboard, floating windows and windows asked to close.
+/// keyboard, floating windows, windows asked to close and windows streamed
+/// to a viewer.
 #[cfg(target_os = "linux")]
 fn frame_throttle_releases(
     state: &crate::compositor::state::State,
@@ -3446,10 +3517,13 @@ fn frame_throttle_releases(
         let tree = state.workspace_tree.read();
         is_visible_tab(&tree, store().sheet_root(id))
     };
+    // A window streamed to another device paints there, so it keeps its
+    // frame clock even while no tab here shows it.
     visible_tab
         || state.osk_surface == Some(id)
         || state.is_floating_toplevel(id)
         || state.is_closing_toplevel(id)
+        || state.active_sessions.contains_key(&id)
 }
 
 #[cfg(test)]
@@ -4195,7 +4269,15 @@ mod tests {
             }
         }
 
+        // A shared window's stream is cut the same way from the buffer it commits.
+        assert_eq!(
+            store().crop_to_window(id, rgba.clone(), w, h),
+            frame.rgba,
+            "the stream shows what the tile shows"
+        );
+
         store().note_window_geometry(id, None);
+        assert_eq!(store().crop_to_window(id, rgba.clone(), w, h), rgba);
         let whole = store().snapshot(id).expect("frame");
         assert_eq!(
             (whole.width, whole.height),
@@ -4317,6 +4399,35 @@ mod tests {
 
             store().note_placement(id, Rect::new(0.0, 0.0, 600.0, 400.0));
             assert_eq!(store().take_pending_configure(id), Some((600, 400)));
+            store().forget(id);
+        }
+
+        fn a_window_shown_only_elsewhere_takes_the_size_shown_there() {
+            let id = sid(5);
+            store().forget(id);
+            store().note_placement(id, Rect::new(0.0, 0.0, 600.0, 400.0));
+            assert_eq!(store().take_pending_configure(id), Some((600, 400)));
+
+            assert_eq!(
+                store().take_remote_configure(id, (1280, 720)),
+                Some((1280, 720))
+            );
+            assert_eq!(store().take_remote_configure(id, (1280, 720)), None);
+            store().note_size_limits(id, (0, 0), (1000, 0));
+            assert_eq!(
+                store().take_remote_configure(id, (1440, 900)),
+                Some((1000, 900)),
+                "the client's own limits still bound it"
+            );
+            // Shown here again, it goes back to its tab's size.
+            assert_eq!(store().take_pending_configure(id), Some((600, 400)));
+
+            let mut extents = HashMap::new();
+            extents.insert(id, (800, 600));
+            store().set_remote_extents(extents);
+            assert_eq!(store().remote_extent(id), Some((800, 600)));
+            store().set_remote_extents(HashMap::new());
+            assert_eq!(store().remote_extent(id), None);
             store().forget(id);
         }
 
@@ -4442,6 +4553,7 @@ mod tests {
         }
 
         pending_configure_fires_once_per_size_change();
+        a_window_shown_only_elsewhere_takes_the_size_shown_there();
         widget_asks_for_frames_until_it_has_drawn_then_only_for_a_pending_one();
         widget_fit_rect_letterboxes_preserving_aspect();
         painted_frame_origin_matches_the_origin_input_is_mapped_with();
@@ -5045,7 +5157,7 @@ mod tests {
                 .apply_changes(&bootstrap)
                 .expect("rendered tree accepts its shared baseline");
             rendered.persist_path = Some(state_path.clone());
-            rendered.flush_to_disk();
+            rendered.queue_save();
 
             // This is the durable close route used by both the close button and
             // Super+W after their event handlers resolve the exact tab.
@@ -5100,7 +5212,7 @@ mod tests {
             // A state round-trip may not revive the closed group; live Wayland
             // surfaces intentionally do not survive a compositor restart because
             // their surface ids belong to the old process.
-            rendered.flush_to_disk();
+            rendered.queue_save();
             let restarted = crate::shell::persist::load_tree_from(&state_path)
                 .expect("the post-revision layout restarts cleanly");
             assert!(
@@ -5331,7 +5443,7 @@ mod tests {
                 "closing an external client must not remove the hosted sibling"
             );
 
-            rendered.flush_to_disk();
+            rendered.queue_save();
             let restarted = crate::shell::persist::load_tree_from(&state_path)
                 .expect("interleaved layout remains restartable");
             assert_eq!(tabs_for_surface(&restarted, surface), 0);

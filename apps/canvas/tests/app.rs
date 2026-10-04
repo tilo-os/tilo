@@ -172,7 +172,7 @@ fn render_shows_the_whole_app_through_the_host_door() {
             .is_some_and(|revision| !revision.is_empty())
     );
     // The app's own content: the window less the framework's history bar.
-    let (width, height) = <App as ui::prelude::ResourceApp>::SHOT_VIEWPORT;
+    let (width, height) = <App as ui::prelude::ResourceApp>::shot_viewport(None);
     assert_eq!(value["width"].as_u64(), Some(width.into()));
     assert!(
         value["height"]

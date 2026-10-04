@@ -8,13 +8,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
-use automerge::AutoCommit;
-use tilo_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
+use tilo_actions::Resource;
 use ui::tilo_actions::ActionAddress;
+use ui::tilo_resource::Effect;
+use uuid::Uuid;
 
 use crate::app::catalog_resource_id;
-use crate::app::{DB_OPERATION_TYPE, DbClientOperation};
-use crate::doc::SavedQueriesDoc;
+use crate::resource::DbEffect;
 use crate::session::Session;
 
 const KIND: &str = "Database";
@@ -36,43 +36,14 @@ pub struct DbSearchIndex {
 }
 
 impl DbSearchIndex {
-    /// Refresh the retained catalogue for an app-independent caller.
+    /// Refresh the retained catalogue from the live session.
     ///
     /// # Errors
     ///
     /// Returns an error when the generated rows violate the canonical search
     /// catalogue contract. The previous valid snapshot remains available.
-    pub fn sync(&self, session: &Session, doc: &mut AutoCommit) -> Result<(), String> {
-        self.sync_with_connection_mutations(session, doc, true)
-    }
-
-    /// Refresh the live-app catalogue and report a rejected snapshot so the
-    /// visible status can remain truthful.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the generated rows violate the canonical search
-    /// catalogue contract. The previous valid snapshot remains available.
-    pub fn sync_for_app(
-        &self,
-        session: &Session,
-        doc: &mut AutoCommit,
-        include_connection_mutations: bool,
-    ) -> Result<(), String> {
-        self.sync_with_connection_mutations(session, doc, include_connection_mutations)
-    }
-
-    fn sync_with_connection_mutations(
-        &self,
-        session: &Session,
-        doc: &mut AutoCommit,
-        include_connection_mutations: bool,
-    ) -> Result<(), String> {
-        let mut revision = revision(session, doc);
-        push_revision_part(
-            &mut revision,
-            &format!("connection-mutations:{include_connection_mutations}"),
-        );
+    pub fn sync(&self, session: &Session) -> Result<(), String> {
+        let revision = revision(session);
         let state = self
             .state
             .read()
@@ -88,14 +59,7 @@ impl DbSearchIndex {
 
         let mut rows = Vec::new();
         let mut resources = HashMap::new();
-        index_connections(
-            session,
-            include_connection_mutations,
-            &mut rows,
-            &mut resources,
-        );
         index_active_catalog(session, &mut rows, &mut resources);
-        index_saved_queries(session, doc, &mut rows, &mut resources);
         apply_catalog_snapshot(&self.state, revision, catalog, rows, resources)
     }
 }
@@ -108,89 +72,78 @@ fn index_active_catalog(
     let Some(connection) = session.active_connection().filter(|_| session.connected) else {
         return;
     };
-    let connection_id = connection.id.to_string();
-    index_database_and_schema(session, connection, &connection_id, rows, resources);
-    index_current_result(session, &connection_id, rows, resources);
-    index_transactions(&connection_id, rows, resources);
-    index_query_history(session, connection, &connection_id, rows, resources);
+    index_database_and_schema(session, connection, rows, resources);
+    index_current_result(session, connection.id, rows, resources);
+    index_transactions(connection.id, rows, resources);
+    index_query_history(session, connection, rows, resources);
 }
 
 fn index_database_and_schema(
     session: &Session,
     connection: &crate::model::ConnectionProfile,
-    connection_id: &str,
     rows: &mut Vec<(String, String, SearchResult)>,
     resources: &mut HashMap<String, Resource>,
 ) {
+    let connection_id = &connection.id.to_string();
     let database_name = if connection.database.is_empty() {
         "Connected database".to_string()
     } else {
         connection.database.clone()
     };
     let database_id = catalog_resource_id("database", &[connection_id, &database_name]);
-    let mut database = Resource::new(&database_id, "database.database", &database_name);
-    if let Ok(action) = ActionSpec::operation(
-        "focus",
-        "Show database",
-        OperationKind::View,
-        DB_OPERATION_TYPE,
-        &DbClientOperation::FocusCatalog {
-            connection_id: connection_id.to_string(),
-            schema: None,
-        },
-    ) {
-        database.actions.push(action);
-    }
+    let focus = DbEffect::FocusDatabase {
+        connection: connection.id,
+    };
+    let database =
+        Resource::new(&database_id, "database.database", &database_name).with_action(focus.bound());
     index_resource(
         rows,
         resources,
         database,
-        "focus",
+        focus.id(),
         database_name.clone(),
         SearchResult::for_action(
             KIND,
             &database_name,
-            ActionAddress::new(&database_id, "focus"),
+            ActionAddress::new(&database_id, focus.id()),
         )
         .with_subtitle("Active database"),
     );
     for schema in &session.schema.schemas {
         let schema_id = catalog_resource_id("schema", &[connection_id, &schema.name]);
-        let mut schema_resource = Resource::new(&schema_id, "database.schema", &schema.name);
-        if let Ok(action) = ActionSpec::operation(
-            "focus",
-            "Show schema",
-            OperationKind::View,
-            DB_OPERATION_TYPE,
-            &DbClientOperation::FocusCatalog {
-                connection_id: connection_id.to_string(),
-                schema: Some(schema.name.clone()),
-            },
-        ) {
-            schema_resource.actions.push(action);
-        }
+        let focus = DbEffect::FocusSchema {
+            connection: connection.id,
+            schema: schema.name.clone(),
+        };
+        let schema_resource =
+            Resource::new(&schema_id, "database.schema", &schema.name).with_action(focus.bound());
         index_resource(
             rows,
             resources,
             schema_resource,
-            "focus",
+            focus.id(),
             schema.name.clone(),
-            SearchResult::for_action(KIND, &schema.name, ActionAddress::new(&schema_id, "focus"))
-                .with_subtitle(format!("Schema in {database_name}")),
+            SearchResult::for_action(
+                KIND,
+                &schema.name,
+                ActionAddress::new(&schema_id, focus.id()),
+            )
+            .with_subtitle(format!("Schema in {database_name}")),
         );
         for relation in &schema.tables {
-            index_relation(connection_id, schema, relation, rows, resources);
+            index_relation(connection.id, schema, relation, rows, resources);
         }
     }
 }
 
 fn index_relation(
-    connection_id: &str,
+    connection: Uuid,
     schema: &crate::model::SchemaInfo,
     relation: &crate::model::TableInfo,
     rows: &mut Vec<(String, String, SearchResult)>,
     resources: &mut HashMap<String, Resource>,
 ) {
+    let connection_id = &connection.to_string();
     let relation_id =
         catalog_resource_id("relation", &[connection_id, &schema.name, &relation.name]);
     let result = SearchResult::for_action(
@@ -199,29 +152,22 @@ fn index_relation(
         ActionAddress::new(&relation_id, "browse"),
     )
     .with_subtitle(format!("{}.{}", schema.name, relation.name));
-    let mut resource = Resource::new(
+    let resource = Resource::new(
         &relation_id,
         match relation.kind {
             crate::model::RelationKind::Table => "database.table",
             crate::model::RelationKind::View => "database.view",
         },
         &relation.name,
-    );
-    if let Ok(action) = ActionSpec::operation(
-        "browse",
-        "Browse rows",
-        OperationKind::Effect,
-        DB_OPERATION_TYPE,
-        &DbClientOperation::BrowseTable {
-            connection_id: connection_id.to_string(),
+    )
+    .with_action(
+        DbEffect::Browse {
+            connection,
             schema: schema.name.clone(),
             table: relation.name.clone(),
-        },
-    ) {
-        resource
-            .actions
-            .push(action.retry_policy(RetryPolicy::Idempotent));
-    }
+        }
+        .bound(),
+    );
     index_resource(
         rows,
         resources,
@@ -259,53 +205,42 @@ fn index_relation(
 
 fn index_current_result(
     session: &Session,
-    connection_id: &str,
+    connection: Uuid,
     rows: &mut Vec<(String, String, SearchResult)>,
     resources: &mut HashMap<String, Resource>,
 ) {
     let result_id = catalog_resource_id(
         "query-result",
-        &[connection_id, &session.query_gen.to_string()],
+        &[&connection.to_string(), &session.query_gen.to_string()],
     );
     if let Some(result) = &session.query_result {
+        let generation = session.query_gen;
+        let show = DbEffect::ShowResult {
+            connection,
+            generation,
+        };
         let mut result_resource =
-            Resource::new(&result_id, "database.query-result", result.message());
-        if let Ok(action) = ActionSpec::operation(
-            "show",
-            "Show query result",
-            OperationKind::View,
-            DB_OPERATION_TYPE,
-            &DbClientOperation::ShowResult {
-                connection_id: connection_id.to_string(),
-                result_generation: session.query_gen,
-            },
-        ) {
-            result_resource.actions.push(action);
-        }
-        if result.is_select
-            && let Ok(action) = ActionSpec::operation(
-                "export_csv",
-                "Export CSV",
-                OperationKind::Effect,
-                DB_OPERATION_TYPE,
-                &DbClientOperation::ExportCsv {
-                    connection_id: connection_id.to_string(),
-                    result_generation: session.query_gen,
-                },
-            )
-        {
-            result_resource.actions.push(action);
+            Resource::new(&result_id, "database.query-result", result.message())
+                .with_action(show.bound());
+        if result.is_select {
+            result_resource = result_resource.with_action(
+                DbEffect::ExportCsv {
+                    connection,
+                    generation,
+                }
+                .bound(),
+            );
         }
         index_resource(
             rows,
             resources,
             result_resource,
-            "show",
+            show.id(),
             format!("query result {}", result.message()),
             SearchResult::for_action(
                 KIND,
                 "Current query result",
-                ActionAddress::new(&result_id, "show"),
+                ActionAddress::new(&result_id, show.id()),
             )
             .with_subtitle(result.message()),
         );
@@ -313,44 +248,26 @@ fn index_current_result(
 }
 
 fn index_transactions(
-    connection_id: &str,
+    connection: Uuid,
     rows: &mut Vec<(String, String, SearchResult)>,
     resources: &mut HashMap<String, Resource>,
 ) {
-    let transaction_id = catalog_resource_id("transaction", &[connection_id]);
-    let mut transaction = Resource::new(&transaction_id, "database.transaction", "Transaction");
-    for (action_id, label, sql, destructive) in [
-        ("begin", "Begin transaction", "BEGIN", false),
-        ("commit", "Commit transaction", "COMMIT", true),
-        ("rollback", "Roll back transaction", "ROLLBACK", true),
-    ] {
-        if let Ok(action) = ActionSpec::operation(
-            action_id,
-            label,
-            OperationKind::Effect,
-            DB_OPERATION_TYPE,
-            &DbClientOperation::RunQuery {
-                connection_id: connection_id.to_string(),
-                sql: sql.to_string(),
-            },
-        ) {
-            transaction.actions.push(if destructive {
-                action.destructive()
-            } else {
-                action
-            });
-        }
-    }
+    let transaction_id = catalog_resource_id("transaction", &[&connection.to_string()]);
+    let begin = DbEffect::Begin { connection };
+    let transaction = Resource::new(&transaction_id, "database.transaction", "Transaction")
+        .with_action(begin.bound())
+        .with_action(DbEffect::Commit { connection }.bound())
+        .with_action(DbEffect::Rollback { connection }.bound());
     index_resource(
         rows,
         resources,
         transaction,
-        "begin",
+        begin.id(),
         "transaction begin commit rollback",
         SearchResult::for_action(
             KIND,
             "Transaction",
-            ActionAddress::new(&transaction_id, "begin"),
+            ActionAddress::new(&transaction_id, begin.id()),
         )
         .with_subtitle("Active database"),
     );
@@ -359,10 +276,10 @@ fn index_transactions(
 fn index_query_history(
     session: &Session,
     connection: &crate::model::ConnectionProfile,
-    connection_id: &str,
     rows: &mut Vec<(String, String, SearchResult)>,
     resources: &mut HashMap<String, Resource>,
 ) {
+    let connection_id = &connection.id.to_string();
     let history_id = catalog_resource_id("query-history", &[connection_id]);
     resources.insert(
         history_id.clone(),
@@ -378,67 +295,21 @@ fn index_query_history(
             &[connection_id, &entry.generation.to_string()],
         );
         let title = format!("Query {} · {}", entry.generation, entry.summary);
-        let mut history_entry = Resource::new(&entry_id, "database.query-history-entry", &title);
-        if let Ok(action) = ActionSpec::operation(
-            "run",
-            "Run historical query",
-            OperationKind::Effect,
-            DB_OPERATION_TYPE,
-            &DbClientOperation::RunHistory {
-                connection_id: connection_id.to_string(),
-                generation: entry.generation,
-            },
-        ) {
-            history_entry.actions.push(action.destructive());
-        }
+        let rerun = DbEffect::Rerun {
+            connection: connection.id,
+            generation: entry.generation,
+        };
+        let history_entry = Resource::new(&entry_id, "database.query-history-entry", &title)
+            .with_action(rerun.bound());
         index_resource(
             rows,
             resources,
             history_entry,
-            "run",
+            rerun.id(),
             format!("query {} {}", entry.generation, entry.summary),
-            SearchResult::for_action(KIND, &title, ActionAddress::new(&entry_id, "run"))
+            SearchResult::for_action(KIND, &title, ActionAddress::new(&entry_id, rerun.id()))
                 .with_subtitle("Local only — never shared with collaborators"),
         );
-    }
-}
-
-fn index_saved_queries(
-    session: &Session,
-    doc: &AutoCommit,
-    rows: &mut Vec<(String, String, SearchResult)>,
-    resources: &mut HashMap<String, Resource>,
-) {
-    for query in SavedQueriesDoc::read(doc) {
-        let id = format!("saved-query:{}", query.id);
-        let result = SearchResult::for_action(KIND, &query.name, ActionAddress::new(&id, "run"))
-            .with_subtitle("Collaborative saved query");
-        // Saved SQL can contain credentials or tokens. Search only the
-        // intentional shared name/metadata, never arbitrary SQL literals.
-        let mut resource = Resource::new(&id, "database.saved-query", &query.name);
-        if let Ok(action) = ActionSpec::operation(
-            "run",
-            "Run saved query",
-            OperationKind::Effect,
-            DB_OPERATION_TYPE,
-            &DbClientOperation::RunQuery {
-                connection_id: session
-                    .active_connection_id()
-                    .map_or_else(String::new, |id| id.to_string()),
-                sql: query.sql,
-            },
-        ) {
-            resource.actions.push(action.destructive());
-        }
-        if let Ok(action) = ActionSpec::immediate(
-            "remove",
-            "Remove saved query",
-            crate::actions::DB_ACTION_TYPE,
-            &crate::actions::remove_query_action(query.id),
-        ) {
-            resource.actions.push(action.destructive());
-        }
-        index_resource(rows, resources, resource, "run", query.name.clone(), result);
     }
 }
 
@@ -479,6 +350,30 @@ impl DbSearchIndex {
         }
     }
 
+    /// The bounded top of the live catalog: the open database and its
+    /// schemas, the current result, the transaction controls and the query
+    /// history. Tables, columns and history entries resolve by id.
+    pub fn rows(&self) -> Vec<Resource> {
+        const TOP: &[&str] = &[
+            "database.database",
+            "database.schema",
+            "database.query-result",
+            "database.transaction",
+            "database.query-history",
+        ];
+        let mut rows: Vec<Resource> = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .resources
+            .values()
+            .filter(|resource| TOP.contains(&resource.kind.as_str()))
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+        rows
+    }
+
     pub fn resource(&self, id: &str) -> Option<Resource> {
         self.state
             .read()
@@ -495,72 +390,6 @@ impl DbSearchIndex {
             .last_error
             .clone()
     }
-}
-
-fn index_connections(
-    session: &Session,
-    include_mutations: bool,
-    rows: &mut Vec<(String, String, SearchResult)>,
-    resources: &mut HashMap<String, Resource>,
-) {
-    for connection in &session.connections {
-        let id = format!("connection:{}", connection.id);
-        let result =
-            SearchResult::for_action(KIND, &connection.name, ActionAddress::new(&id, "connect"))
-                .with_subtitle(connection.subtitle());
-        let mut resource = Resource::new(&id, "database.connection", &connection.name);
-        if let Ok(action) = ActionSpec::operation(
-            "connect",
-            "Connect",
-            OperationKind::Effect,
-            DB_OPERATION_TYPE,
-            &DbClientOperation::Connect {
-                connection_id: connection.id.to_string(),
-            },
-        ) {
-            resource
-                .actions
-                .push(action.retry_policy(RetryPolicy::Idempotent));
-        }
-        if include_mutations {
-            append_connection_mutations(&mut resource, connection);
-        }
-        index_resource(
-            rows,
-            resources,
-            resource,
-            "connect",
-            format!("{} {}", connection.name, connection.subtitle()),
-            result,
-        );
-    }
-}
-
-fn append_connection_mutations(
-    resource: &mut Resource,
-    connection: &crate::model::ConnectionProfile,
-) {
-    if let Ok(action) = ActionSpec::immediate(
-        "remove",
-        "Remove saved connection",
-        crate::actions::DB_ACTION_TYPE,
-        &crate::actions::remove_connection_action(connection.id),
-    ) {
-        resource.actions.push(action.destructive());
-    }
-    let id = connection.id;
-    resource.actions.push(
-        ActionSpec::prompted(
-            "rename",
-            "Rename",
-            "Connection name",
-            &connection.name,
-            tilo_actions::ExecutionLocus::ClientLocal,
-            move |name| crate::actions::encode(&crate::actions::rename_connection_action(id, name)),
-        )
-        .reversible()
-        .retry_policy(RetryPolicy::Idempotent),
-    );
 }
 
 fn index_resource(
@@ -610,9 +439,8 @@ impl CatalogSearchProvider for DbSearchProvider {
     }
 }
 
-fn revision(session: &Session, doc: &mut AutoCommit) -> String {
+fn revision(session: &Session) -> String {
     let mut parts = String::new();
-    push_revision_part(&mut parts, &format!("heads:{:?}", doc.get_heads()));
     push_revision_part(
         &mut parts,
         &format!(
@@ -648,12 +476,6 @@ fn revision(session: &Session, doc: &mut AutoCommit) -> String {
             }
         }
     }
-    for query in SavedQueriesDoc::read(doc) {
-        push_revision_part(
-            &mut parts,
-            &format!("saved-query:{}:{}", query.id, query.name),
-        );
-    }
     if let Some(result) = &session.query_result {
         push_revision_part(
             &mut parts,
@@ -683,7 +505,6 @@ fn push_revision_part(parts: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::Action;
     use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
     use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider};
 
@@ -712,9 +533,8 @@ mod tests {
         // --- phase: live_relations_are_findable_through_bounded_catalog_pages ---
         {
             let session = Session::with_sample();
-            let mut doc = AutoCommit::new();
             let index = DbSearchIndex::default();
-            index.sync(&session, &mut doc).unwrap();
+            index.sync(&session).unwrap();
             let provider = index.provider();
             let page = provider.search_page("albums", None, 20, 20);
             assert!(page.inspected <= 20);
@@ -734,13 +554,15 @@ mod tests {
         // --- phase: provider_clamps_untrusted_result_limits ---
         {
             let mut session = Session::with_sample();
-            session.connections.extend((0..300).map(|number| {
-                let name = format!("Indexed connection {number}");
-                crate::model::ConnectionProfile::new(&name, crate::model::Engine::Sqlite)
-            }));
-            let mut doc = AutoCommit::new();
+            let template = session.schema.schemas[0].tables[0].clone();
+            session.schema.schemas[0]
+                .tables
+                .extend((0..300).map(|number| crate::model::TableInfo {
+                    name: format!("indexed_table_{number}"),
+                    ..template.clone()
+                }));
             let index = DbSearchIndex::default();
-            index.sync(&session, &mut doc).unwrap();
+            index.sync(&session).unwrap();
             let provider = index.provider();
 
             assert_eq!(
@@ -773,7 +595,7 @@ mod tests {
                             table
                         })
                         .collect();
-                    index.sync(&session, &mut AutoCommit::new()).unwrap();
+                    index.sync(&session).unwrap();
                     index.provider()
                 },
                 3_000,
@@ -796,7 +618,7 @@ mod tests {
                             column
                         })
                         .collect();
-                    index.sync(&session, &mut AutoCommit::new()).unwrap();
+                    index.sync(&session).unwrap();
                     index.provider()
                 },
                 3_000,
@@ -805,71 +627,24 @@ mod tests {
             assert_address_resolves(&index, &hit);
         }
 
-        // --- phase: saved_query_sql_is_not_indexed_but_its_action_remains_exact ---
-        {
-            let session = Session::with_sample();
-            let mut doc = AutoCommit::new();
-            crate::actions::save_query_action(
-                uuid::Uuid::new_v4(),
-                "Team report",
-                "SELECT 'credential-should-not-be-searchable'",
-            )
-            .apply(&mut doc)
-            .unwrap();
-            let index = DbSearchIndex::default();
-            index.sync(&session, &mut doc).unwrap();
-            let provider = index.provider();
-            assert!(
-                provider
-                    .search_limited("credential-should-not-be-searchable", 8)
-                    .is_empty()
-            );
-            let saved = provider.search_limited("Team report", 8);
-            assert_eq!(saved.len(), 1);
-            assert_address_resolves(&index, &saved[0]);
-            let resource = index
-                .resource(&saved[0].action_address().unwrap().resource)
-                .unwrap();
-            let run = resource
-                .actions
-                .iter()
-                .find(|action| action.id == "run")
-                .unwrap();
-            assert_eq!(run.contract.risk, tilo_actions::RiskLevel::Destructive);
-            assert_eq!(
-                run.contract.confirmation,
-                tilo_actions::ConfirmationPolicy::Confirm
-            );
-        }
-
         // --- phase: canonical_provider_resolution_retains_every_resource_action ---
         {
             let session = Session::with_sample();
-            let mut doc = AutoCommit::new();
-            crate::actions::save_query_action(uuid::Uuid::new_v4(), "Team report", "SELECT 1")
-                .apply(&mut doc)
-                .unwrap();
             let index = DbSearchIndex::default();
-            index.sync(&session, &mut doc).unwrap();
+            index.sync(&session).unwrap();
             let provider = index.provider();
 
             let cases = [
                 (
-                    "Sample · chinook",
-                    "Sample · chinook",
-                    &["connect", "rename", "remove"] as &[_],
-                ),
-                (
                     "query result",
                     "Current query result",
-                    &["show", "export_csv"] as &[_],
+                    &["show-result", "export-csv"] as &[_],
                 ),
                 (
                     "transaction",
                     "Transaction",
                     &["begin", "commit", "rollback"] as &[_],
                 ),
-                ("Team report", "Team report", &["run", "remove"] as &[_]),
             ];
             for (query, title, expected_actions) in cases {
                 let hit = provider
@@ -900,25 +675,23 @@ mod tests {
         // --- phase: changed_catalog_invalidates_old_search_cursors ---
         {
             let mut session = Session::with_sample();
-            let mut doc = AutoCommit::new();
             let index = DbSearchIndex::default();
-            index.sync(&session, &mut doc).unwrap();
+            index.sync(&session).unwrap();
             let provider = index.provider();
             let first = provider.search_page("", None, 1, 1);
             let cursor = first.next.expect("large catalog has a continuation");
             let mut relation = session.schema.schemas[0].tables[0].clone();
             relation.name = "cursor-change".into();
             session.schema.schemas[0].tables.push(relation);
-            index.sync(&session, &mut doc).unwrap();
+            index.sync(&session).unwrap();
             assert!(!provider.action_directory_cursor_is_current(&cursor));
         }
 
         // --- phase: renamed_catalog_fields_rebuild_the_retained_index ---
         {
             let mut session = Session::with_sample();
-            let mut doc = AutoCommit::new();
             let index = DbSearchIndex::default();
-            index.sync(&session, &mut doc).unwrap();
+            index.sync(&session).unwrap();
             let provider = index.provider();
             let cursor = provider
                 .search_page("", None, 1, 1)
@@ -926,26 +699,18 @@ mod tests {
                 .expect("sample catalog is pageable");
 
             session.schema.schemas[0].tables[0].columns[0].name = "renamed_column".into();
-            index.sync(&session, &mut doc).unwrap();
+            index.sync(&session).unwrap();
             assert!(!provider.action_directory_cursor_is_current(&cursor));
             let column = provider.search_limited("renamed_column", 4);
             assert_eq!(column.len(), 1);
             assert_address_resolves(&index, &column[0]);
-
-            session.connections[0].name = "Renamed sample".into();
-            index.sync(&session, &mut doc).unwrap();
-            let connection = provider.search_limited("Renamed sample", 4);
-            assert_eq!(connection.len(), 1);
-            assert_eq!(connection[0].title, "Renamed sample");
-            assert_address_resolves(&index, &connection[0]);
         }
 
         // --- phase: changing_active_connection_invalidates_catalog_addresses ---
         {
             let mut session = Session::with_sample();
-            let mut doc = AutoCommit::new();
             let index = DbSearchIndex::default();
-            index.sync(&session, &mut doc).unwrap();
+            index.sync(&session).unwrap();
             let provider = index.provider();
             let old_relation = provider.search_limited("albums", 4).remove(0);
             let cursor = provider
@@ -955,7 +720,7 @@ mod tests {
 
             session.active = 1;
             session.connected = false;
-            index.sync(&session, &mut doc).unwrap();
+            index.sync(&session).unwrap();
 
             assert!(!provider.action_directory_cursor_is_current(&cursor));
             assert!(
@@ -969,9 +734,8 @@ mod tests {
         // --- phase: rejected_snapshot_keeps_the_last_good_catalog_and_reports_the_failure ---
         {
             let session = Session::with_sample();
-            let mut doc = AutoCommit::new();
             let index = DbSearchIndex::default();
-            index.sync(&session, &mut doc).unwrap();
+            index.sync(&session).unwrap();
             let before = index.provider().search_limited("albums", 8);
             assert!(!before.is_empty());
 

@@ -5348,7 +5348,7 @@ impl RoomActivityPane {
                 }
                 Key::Named(NamedKey::Enter) => Some(self.create_task_from_draft(tree)),
                 Key::Named(NamedKey::Backspace) => {
-                    self.task_draft.pop();
+                    ui::delete_last_grapheme(&mut self.task_draft);
                     Some(handled_outcome())
                 }
                 Key::Character(text)

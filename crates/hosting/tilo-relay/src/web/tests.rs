@@ -184,7 +184,157 @@ fn start(cert: &DeviceCert, surface: u64) -> NeighbourMsg {
         hdr_static_metadata: None,
         bit_depth: 0,
         app_id: "org.chromium.Chromium".into(),
+        tab: 0,
     }
+}
+
+#[tokio::test]
+async fn live_observation_preserves_grants_issued_after_its_snapshot() {
+    use std::future::{Future as _, poll_fn};
+    use std::task::Poll;
+    use tilo_moq::live::{Admission, AuthorizationStatus, LiveAuthority as _};
+
+    let root = SigningKey::from_bytes(&[71; 32]);
+    let (host_key, host) = device(&root, 72, DeviceCapabilities::host());
+    let (key, cert) = device(&root, 73, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let (relay, sessions) = {
+        let relay = Relay::start_with_relay_mode(
+            RelayConfig {
+                state_root: state.path().into(),
+                ..Default::default()
+            },
+            crate::daemon::RelayIdentity {
+                user_public_key: host.user_public_key,
+                device_signing_key: host_key,
+                device_cert: host,
+                revocations: RevocationList::new(),
+            },
+            iroh::RelayMode::Disabled,
+        )
+        .await
+        .unwrap();
+        for id in [71, 72] {
+            relay
+                .set_workspace_membership(
+                    id,
+                    true,
+                    vec![cert.device_public_key],
+                    state.path().into(),
+                )
+                .await
+                .unwrap();
+        }
+        let sessions = Sessions::new(relay.web_context().clone());
+        (relay, sessions)
+    };
+    let challenge = sessions
+        .hello(&crate::auth::Hello {
+            cert: cert.clone(),
+            client_nonce: [74; 32],
+        })
+        .unwrap();
+    let session = sessions
+        .finish(
+            &challenge.handshake,
+            &crate::auth::HelloAck2 {
+                sig_over_server_nonce: key
+                    .sign(&crate::auth::challenge_digest(&challenge.ack.server_nonce))
+                    .to_bytes(),
+            },
+        )
+        .unwrap();
+    let grants = live::LiveGrants::new();
+    let authority = live::Authority(grants.clone());
+    let issue = |id| {
+        grants.issue(
+            &sessions,
+            session.token,
+            cert.device_public_key,
+            cert.user_public_key,
+            id,
+            None,
+        )
+    };
+    assert!(issue(73).await.is_none());
+    let first = issue(71).await.unwrap();
+    let first_live = authority.try_admit(&first.token).unwrap();
+    let (second, second_live) = {
+        let workspace = sessions.context().relay.workspaces.lock().await[&71].clone();
+        let held = workspace.lock().await;
+        let observation = grants.observe(&sessions);
+        tokio::pin!(observation);
+        // The only grant in the snapshot is now waiting for this workspace.
+        assert!(
+            poll_fn(|cx| Poll::Ready(observation.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        let second = issue(72).await.unwrap();
+        let second_live = authority.try_admit(&second.token).unwrap();
+        assert!(
+            matches!(second_live.status(), AuthorizationStatus::Current),
+            "second_live must remain Current"
+        );
+        drop(held);
+        drop(workspace);
+        observation.await;
+        (second, second_live)
+    };
+    assert!(
+        matches!(first_live.status(), AuthorizationStatus::Current),
+        "first_live must remain Current"
+    );
+    assert!(
+        matches!(second_live.status(), AuthorizationStatus::Current),
+        "second_live must remain Current"
+    );
+    assert!(authority.try_admit(&second.token).is_ok());
+
+    // A later observation must still replace a previously allowed decision.
+    relay
+        .set_workspace_membership(72, true, vec![], state.path().into())
+        .await
+        .unwrap();
+    grants.observe(&sessions).await;
+    assert!(
+        matches!(second_live.status(), AuthorizationStatus::Denied),
+        "second_live must remain Denied"
+    );
+    assert!(matches!(
+        authority.try_admit(&second.token),
+        Err(Admission::Denied)
+    ));
+    assert!(issue(72).await.is_none());
+    assert!(
+        matches!(first_live.status(), AuthorizationStatus::Current),
+        "first_live must remain Current"
+    );
+    let mut revoked = tilo_user_identity::RevocationEntry {
+        user_public_key: cert.user_public_key,
+        revoked_device_public_key: cert.device_public_key,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason: tilo_user_identity::RevocationReason::Lost,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
+    sessions
+        .context()
+        .relay
+        .revocations
+        .write()
+        .unwrap()
+        .insert(revoked)
+        .unwrap();
+    grants.observe(&sessions).await;
+    assert!(matches!(first_live.status(), AuthorizationStatus::Denied));
+    assert!(matches!(
+        authority.try_admit(&first.token),
+        Err(Admission::Denied)
+    ));
+    assert!(issue(71).await.is_none());
+    drop(sessions);
+    crate::daemon::Relay::shutdown(relay).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -287,6 +437,20 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
     let maintaining = tokio::spawn(maintain_legacy(legacy.clone(), relay.web_context().clone()));
     let token = browser(addr, &owner_key, &owner).await;
     let guest_token = browser(addr, &guest_key, &guest).await;
+    // A member learns the device of the session beside the node, once the
+    // relay names one.
+    let node = |token| async move {
+        let (code, body) = post(addr, "/node", Some(token), Vec::new()).await;
+        assert_eq!(code, 200);
+        postcard::from_bytes::<tilo_relay_protocol::web::NodeInfo>(&body).unwrap()
+    };
+    assert_eq!(node(token).await.session, None);
+    assert_eq!(post(addr, "/node", None, Vec::new()).await.0, 401);
+    relay.set_node_session(owner.device_public_key);
+    assert_eq!(
+        node(guest_token).await.session,
+        Some(owner.device_public_key)
+    );
     let owner_native = native(&relay, &owner_key, &owner, room.workspace_id).await;
     let guest_native = native(&relay, &guest_key, &guest, room.workspace_id).await;
     let grant = |surface| NeighbourMsg::PermissionGrant {
@@ -379,7 +543,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         )
         .await
         .0,
-        501
+        204
     );
     assert_eq!(
         post(
@@ -392,8 +556,9 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         .0,
         204
     );
-    tilo_test_env::within("directed native input", async {
-        loop {
+    let delivered = tilo_test_env::within("directed native input", async {
+        let mut delivered = Vec::new();
+        while delivered.len() < 2 {
             if let Some(Envelope::Presence { payload, .. }) = owner_native.recv().await {
                 let presence = crate::AttributedPresence::decode(&payload).unwrap();
                 if let Ok(NeighbourMsg::RemoteInput { surface, event, .. }) =
@@ -401,16 +566,20 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
                 {
                     assert_eq!(presence.author, host.device_public_key);
                     assert_eq!(surface, 7);
-                    assert_eq!(
-                        postcard::from_bytes::<wire::InputEvent>(&event).unwrap(),
-                        wire::InputEvent::PointerEnter { surface: 7 }
-                    );
-                    break;
+                    delivered.push(postcard::from_bytes::<wire::InputEvent>(&event).unwrap());
                 }
             }
         }
+        delivered
     })
     .await;
+    assert_eq!(
+        delivered,
+        [
+            wire::InputEvent::PointerAxis { dx: 0.0, dy: 1.0 },
+            wire::InputEvent::PointerEnter { surface: 7 }
+        ]
+    );
     // The other native member must never receive private keyboard/input payloads.
     while let Ok(Some(envelope)) =
         tokio::time::timeout(Duration::from_millis(50), guest_native.recv()).await

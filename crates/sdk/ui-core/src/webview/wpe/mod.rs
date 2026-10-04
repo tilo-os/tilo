@@ -1271,6 +1271,18 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                     result: Err(super::PageFailure::unavailable()),
                 });
             }
+            WebViewCommand::PaintCapture { request_id } => {
+                state.shared.push(WebViewEvent::PaintSnapshot {
+                    request_id,
+                    snapshot: None,
+                });
+            }
+            WebViewCommand::PaintResource { request_id, .. } => {
+                state.shared.push(WebViewEvent::PaintResource {
+                    request_id,
+                    bytes: None,
+                });
+            }
             WebViewCommand::ClearWebsiteData => {
                 let session = ffi::webkit_web_view_get_network_session(state.view);
                 if !session.is_null() {

@@ -38,6 +38,11 @@ mod device_certification;
 mod durable_host_restart;
 #[path = "end_to_end_sync.rs"]
 mod end_to_end_sync;
+#[cfg(target_os = "linux")]
+#[path = "environment_from_a_device.rs"]
+mod environment_from_a_device;
+#[path = "environment_sessions.rs"]
+mod environment_sessions;
 #[path = "federation_cross_user_reject.rs"]
 mod federation_cross_user_reject;
 #[path = "federation_echo_suppression.rs"]
@@ -56,6 +61,9 @@ mod governed_rooms;
 mod governed_workspace_access;
 #[path = "interactive_workspace_owner.rs"]
 mod interactive_workspace_owner;
+#[cfg(target_os = "linux")]
+#[path = "legacy_on_kvm.rs"]
+mod legacy_on_kvm;
 #[path = "live_plane.rs"]
 mod live_plane;
 #[path = "multi_host.rs"]

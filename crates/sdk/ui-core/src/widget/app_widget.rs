@@ -86,6 +86,13 @@ impl DocumentOpenReply {
     }
 }
 
+/// The person's answer to [`AppHostIntent::AllowHostShell`]: `None` until
+/// they choose, then whether the device's own shell was allowed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HostShellAllow {
+    pub answer: Option<bool>,
+}
+
 /// A typed, device-local request from app content to shell chrome. Keeping
 /// this on the common app contract lets both in-process tiles and future IPC
 /// adapters use one destination without an app reaching into compositor
@@ -107,6 +114,12 @@ pub enum AppHostIntent {
         capability: DocumentOpenCapability,
         token: u64,
         reply: Weak<RefCell<DocumentOpenReply>>,
+    },
+    /// Terminal asks for the device's own shell, which the person has not
+    /// allowed on this device yet. The shell raises its permission prompt
+    /// and records the answer where the shell runtime reads it.
+    AllowHostShell {
+        reply: Weak<RefCell<HostShellAllow>>,
     },
 }
 
@@ -148,6 +161,10 @@ impl PartialEq for AppHostIntent {
                     && left_token == right_token
                     && Weak::ptr_eq(left_reply, right_reply)
             }
+            (
+                Self::AllowHostShell { reply: left_reply },
+                Self::AllowHostShell { reply: right_reply },
+            ) => Weak::ptr_eq(left_reply, right_reply),
             _ => false,
         }
     }
@@ -621,7 +638,7 @@ mod component_adapter {
             };
             if request
                 .target
-                .is_none_or(|target| target.instance_id == binding.instance_id)
+                .is_none_or(|target| target.same_component(&binding))
             {
                 let target = request.target.unwrap_or(&binding);
                 if let Some((invocation, accepted)) = self

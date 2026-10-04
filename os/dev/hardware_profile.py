@@ -14,7 +14,7 @@ DEFINITION_PATH = Path("usr/lib/tilo/hardware-profile-definition.json")
 ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
 FIELDS_V2 = FIELDS | {"system_firmware"}
-OPTIONAL_V2 = {"boot_modules", "always_on"}
+OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args"}
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PROFILE_FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicetree_sha256", "target_update_ref"}
 DEFAULT_TARGET_IMGREF = "registry.tilo.so/tilo/tilo:latest"
@@ -268,6 +268,16 @@ def validate_definition(data):
         seen_modules.add(name)
     if type(data.get("always_on", False)) is not bool:
         raise ValueError("hardware definition always_on must be a boolean")
+    kernel_args = data.get("kernel_args", [])
+    if not isinstance(kernel_args, list) or len(kernel_args) > 16:
+        raise ValueError("hardware definition kernel arguments must be a bounded list")
+    for argument in kernel_args:
+        # One unquoted token each: the argument is sealed into the UKI command
+        # line verbatim, so whitespace or quotes would split or merge arguments.
+        if not isinstance(argument, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})?", argument):
+            raise ValueError("hardware definition kernel argument is invalid")
+    if len(set(kernel_args)) != len(kernel_args):
+        raise ValueError("hardware definition kernel arguments must be unique")
     return data
 
 

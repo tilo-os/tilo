@@ -252,6 +252,28 @@ close-retry = Retry
 close-keep-editing = Keep Editing
 close-broker-disconnected = The save service disconnected. Your document is still open.
 terminal-find-scrollback = Find in scrollback
+terminal-target-host = This device (unconfined)
+terminal-target-default = Default environment
+terminal-target-legacy = legacy VM
+terminal-target-manage = Manage environments…
+terminal-run-on = Run on:
+terminal-run-on-this-device = This device
+terminal-host-awaiting-allow = Waiting for you to allow this device's own shell
+terminal-host-denied = This device's own shell was not allowed
+terminal-env-title = Environments
+terminal-env-tools = Tools
+terminal-env-no-tools = No tools yet — run pkg install inside the environment
+terminal-env-grants = Folders
+terminal-env-no-grants = No folders granted yet — use Grant folder…, or run perm trust-dir inside the environment
+terminal-env-grant = Grant folder…
+terminal-env-grant-title = Choose a folder for this environment
+terminal-env-grant-accept = Grant
+terminal-env-read-only = read-only
+terminal-env-rename = Rename
+terminal-env-open = Open here
+terminal-env-create = Create
+terminal-env-name-placeholder = Name of a new environment
+terminal-env-unavailable = Environments are managed through Tilo's shell runtime, which is not running here.
 
 notes-image-edit = Edit image
 notes-image-done = Done
@@ -283,6 +305,10 @@ tree-move-up = Move up
 tree-move-down = Move down
 tree-move-indent = Move into the item above
 tree-move-outdent = Move out of the parent item
+
+# The show/hide control inside every password field.
+text-input-show-password = Show password
+text-input-hide-password = Hide password
 
 # Authentication surfaces share the system theme and catalog.
 greeter-welcome-back = Welcome back to Tilo
@@ -396,3 +422,10 @@ history-day-today = Today
 history-day-yesterday = Yesterday
 history-day-this-week = This week
 history-day-earlier = Earlier
+
+widget-block-duplicate = Duplicate block and children
+
+widget-block-duplicate-selection = Duplicate selected or focused blocks
+
+widget-block-move-selection-up = Move selected blocks up
+widget-block-move-selection-down = Move selected blocks down

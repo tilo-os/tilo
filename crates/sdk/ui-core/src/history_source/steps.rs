@@ -90,12 +90,98 @@ impl Scope {
         }
     }
 
-    fn subject(&self) -> &'static str {
+    /// Who has nothing to undo or redo, as a sentence starts: the caller's
+    /// own scope, or the agent run it named.
+    fn subject(&self, own: bool) -> String {
         match self {
-            Self::Run(_) => "This agent run has",
-            Self::Invoker(_) | Self::Actor(_) => "You have",
+            Self::Run(id) if own => format!("This agent run ({id:?}) has"),
+            Self::Run(id) => format!("Agent run {id:?} has"),
+            Self::Invoker(_) | Self::Actor(_) => "You have".into(),
         }
     }
+}
+
+/// How many of the most recent versions a refusal looks through for the
+/// agent runs whose steps are still in effect.
+const RUNS_LOOKED_AT: usize = 2000;
+/// How many such runs a refusal names.
+const RUNS_NAMED: usize = 3;
+/// The most steps a refusal counts of one run.
+const RUN_STEPS_COUNTED: usize = 50;
+
+/// An agent run whose steps are in effect, as a refusal names it.
+struct RunInEffect {
+    id: String,
+    label: String,
+    steps: usize,
+}
+
+/// The agent runs other than `scope` with steps still in effect, the most
+/// recently active first: what the caller may have meant to undo.
+fn runs_in_effect(doc: &mut AutoCommit, scope: &Scope) -> Vec<RunInEffect> {
+    let versions = tilo_resource::history::versions(doc);
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    for version in versions.iter().rev().take(RUNS_LOOKED_AT) {
+        let Some(group) = version
+            .context
+            .as_ref()
+            .and_then(|context| context.group.as_ref())
+            .filter(|group| group.kind == AGENT_RUN)
+        else {
+            continue;
+        };
+        if matches!(scope, Scope::Run(id) if id == &group.id)
+            || candidates.iter().any(|(id, _)| id == &group.id)
+        {
+            continue;
+        }
+        candidates.push((group.id.clone(), group.label.clone()));
+    }
+    candidates
+        .into_iter()
+        .filter_map(|(id, label)| {
+            let steps = undo_targets(doc, &Scope::Run(id.clone()), RUN_STEPS_COUNTED).len();
+            (steps > 0).then_some(RunInEffect { id, label, steps })
+        })
+        .take(RUNS_NAMED)
+        .collect()
+}
+
+/// Why `scope` has nothing to undo, and the undo that takes back each run
+/// whose steps are in effect: an agent whose earlier connection was a run of
+/// its own copies the call.
+fn nothing_to_undo(doc: &mut AutoCommit, scope: &Scope) -> String {
+    let own = *scope == Scope::invoking(doc);
+    let mut message = format!("{} nothing in effect to undo.", scope.subject(own));
+    if own && matches!(scope, Scope::Run(_)) {
+        message.push_str(
+            " An agent's earlier connection is a run of its own, unless it connected again naming that run.",
+        );
+    }
+    let runs = runs_in_effect(doc, scope);
+    if runs.is_empty() {
+        message.push_str(" history lists every step and its run_id.");
+        return message;
+    }
+    let named: Vec<String> = runs
+        .iter()
+        .map(|run| {
+            let more = if run.steps >= RUN_STEPS_COUNTED {
+                "+"
+            } else {
+                ""
+            };
+            let noun = if run.steps == 1 { "step" } else { "steps" };
+            format!(
+                "{:?} by {} ({}{more} {noun}): undo {{\"run\": {:?}, \"steps\": {}}}",
+                run.id, run.label, run.steps, run.id, run.steps
+            )
+        })
+        .collect();
+    format!(
+        "{message} Agent runs with steps in effect, most recent first: {}. history lists every step and its run_id.",
+        named.join("; ")
+    )
 }
 
 /// What one change was to the steps of its scope.
@@ -291,10 +377,7 @@ fn revert(doc: &mut AutoCommit, targets: &[Version], verb: &str) -> Result<(), S
 pub fn undo(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Result<Vec<Version>, String> {
     let targets = undo_targets(doc, scope, limit);
     if targets.is_empty() {
-        return Err(format!(
-            "{} nothing in effect to undo. history lists every step and its run; undo with run takes back another run's steps.",
-            scope.subject()
-        ));
+        return Err(nothing_to_undo(doc, scope));
     }
     revert(doc, &targets, "undo")?;
     for target in &targets {
@@ -316,7 +399,7 @@ pub fn redo(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Result<Vec<Ver
     if targets.is_empty() {
         return Err(format!(
             "{} nothing to redo: redo brings back an undo only while no newer step of the same author follows it.",
-            scope.subject()
+            scope.subject(*scope == Scope::invoking(doc))
         ));
     }
     revert(doc, &targets, "redo")?;

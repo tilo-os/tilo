@@ -11,6 +11,7 @@ use ui::LocalState;
 use ui::icons::Icon;
 use ui::vello::peniko::Color;
 
+use crate::brushes::{DYNAMICS, Dynamics, Preset};
 use crate::gesture::Ink;
 use crate::model::Artwork;
 use crate::render::Renderer;
@@ -37,11 +38,12 @@ pub enum Tool {
     Wand,
     /// Fills like colour touching a point.
     Bucket,
+    Eraser,
 }
 
 impl Tool {
     /// The tools in the rail's order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Select,
         Self::Marquee,
         Self::Oval,
@@ -49,6 +51,7 @@ impl Tool {
         Self::Wand,
         Self::Brush,
         Self::Bucket,
+        Self::Eraser,
         Self::Rect,
         Self::Ellipse,
         Self::Line,
@@ -78,6 +81,7 @@ impl Tool {
             Self::Lasso => "canvas-tool-lasso",
             Self::Wand => "canvas-tool-wand",
             Self::Bucket => "canvas-tool-bucket",
+            Self::Eraser => "canvas-tool-eraser",
         }
     }
 
@@ -96,6 +100,7 @@ impl Tool {
             Self::Lasso => Icon::Lasso,
             Self::Wand => Icon::WandSparkles,
             Self::Bucket => Icon::PaintBucket,
+            Self::Eraser => Icon::Eraser,
         }
     }
 
@@ -115,6 +120,7 @@ impl Tool {
             Self::Lasso => "q",
             Self::Wand => "w",
             Self::Bucket => "g",
+            Self::Eraser => "x",
         }
     }
 
@@ -154,11 +160,112 @@ pub struct Tools {
     pub view: LocalState<Option<ViewRequest>>,
     /// Whether the sidebar of inspector, layers and history is shown.
     pub sidebar: LocalState<bool>,
+    /// The canvas's width in logical pixels, in steps of [`ROOM_STEP`], as
+    /// it was last laid out: what the strip over it has room for.
+    pub room: LocalState<u32>,
     /// The stop of a gradient fill the swatches recolour.
     pub stop: LocalState<usize>,
+    /// The selected picture's handles crop it, and its turn handle
+    /// straightens it, instead of stretching and turning the mark.
+    pub crop: LocalState<bool>,
+    /// The inspector's controls being dragged, shown on the canvas before
+    /// they are let go and become an edit.
+    pub live: Rc<RefCell<Vec<Live>>>,
+    /// Whether the chosen layer's adjustments are shown, with nothing
+    /// selected.
+    pub layer_adjust: LocalState<bool>,
+    /// A picture being chosen to add, until the chooser answers.
+    pub picking: Rc<RefCell<Option<ui::portal::ContentsChannel>>>,
+    /// The preset the brush lays strokes with on a plain layer.
+    pub preset: LocalState<Preset>,
+    /// The brush's opacity, `0..=1`.
+    pub opacity: LocalState<f64>,
+    /// The brush's dynamics as the person set them, starting at its
+    /// preset's own.
+    pub flow: LocalState<f64>,
+    pub hardness: LocalState<f64>,
+    pub smoothing: LocalState<f64>,
+    pub taper: LocalState<f64>,
+    /// What the eraser takes: whole strokes, or the paint under it.
+    pub erasing: LocalState<Erasing>,
+    /// How crisp the eraser's edge is, `0..=1`.
+    pub eraser_hardness: LocalState<f64>,
+    /// How much paint the eraser takes off, `0..=1`.
+    pub eraser_strength: LocalState<f64>,
     /// Draws the artwork and keeps painted layers' simulations, shared by
     /// the canvas and the layer thumbnails so each layer is simulated once.
     pub renderer: Rc<RefCell<Renderer>>,
+    /// The dialog open over the window, if any.
+    pub sheet: LocalState<Option<Sheet>>,
+    /// What the person asked of Files, carried out by the file desk.
+    pub files: LocalState<Option<FileRequest>>,
+    /// The file this window's artwork was last opened from or saved to.
+    pub file: LocalState<Option<String>>,
+    /// What the last file request came to, said beside the title.
+    pub notice: LocalState<Option<String>>,
+    /// The artworks opened or saved lately, newest first.
+    pub recents: LocalState<Vec<crate::document::Recent>>,
+    /// The welcome over a blank artwork was put away.
+    pub welcomed: LocalState<bool>,
+    /// What was chosen from the artwork's menu, until it is carried out.
+    pub menu: LocalState<String>,
+    /// What the export dialog is set to.
+    pub export: crate::panels::export::Choices,
+    /// What the new-artwork dialog is set to.
+    pub new: crate::panels::start::Choices,
+    /// The part of the artwork the canvas shows, in artwork units.
+    pub visible: LocalState<Option<ui::vello::kurbo::Rect>>,
+}
+
+/// A dialog over the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sheet {
+    /// A size, a ground and a medium to start a new artwork on.
+    NewArtwork,
+    /// Exporting the artwork as a picture.
+    Export,
+    /// The keyboard shortcuts.
+    Shortcuts,
+}
+
+/// Something asked of Files.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FileRequest {
+    /// Choose an artwork or SVG to open in place of this one.
+    Open,
+    /// Open the artwork at this path.
+    OpenRecent(String),
+    /// Save to the file the artwork came from, or choose one.
+    Save,
+    /// Choose a file to save the artwork to, and keep working on it there.
+    SaveAs,
+    /// Save a copy to a file of its own and keep working on this one.
+    Duplicate,
+    /// Export a picture as set in the export dialog.
+    Export(crate::panels::export::Settings),
+}
+
+/// A control whose value the canvas shows while it is dragged.
+#[derive(Clone)]
+pub struct Live {
+    /// The control's value, as it moves.
+    pub state: LocalState<f64>,
+    /// The value the artwork has, followed as it changes.
+    pub committed: LocalState<f64>,
+    /// The value onto the artwork as shown.
+    pub apply: Onto,
+}
+
+/// How a control's value changes the artwork as shown.
+pub type Onto = Rc<dyn Fn(&mut Artwork, f64)>;
+
+impl Live {
+    /// The value while it differs from what the artwork has.
+    pub fn moved(&self) -> Option<f64> {
+        let value = self.state.with(|value| *value);
+        let committed = self.committed.with(|value| *value);
+        ((value - committed).abs() > 1e-9).then_some(value)
+    }
 }
 
 /// The brush's paint and the chosen layer, apart from the rest of the
@@ -202,8 +309,19 @@ pub enum ViewRequest {
     Actual,
 }
 
+/// What the eraser takes off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Erasing {
+    /// The paint under it, as an eraser mark of its own.
+    #[default]
+    Paint,
+    /// Every stroke it touches, whole.
+    Strokes,
+}
+
 impl Default for Tools {
     fn default() -> Self {
+        let round = Dynamics::of(Preset::Round, &BTreeMap::new());
         Self {
             tool: LocalState::new(Tool::Brush),
             // The brush starts loaded with ultramarine: a paint colour, not
@@ -218,11 +336,41 @@ impl Default for Tools {
             zoom: LocalState::new(1.0),
             view: LocalState::new(None),
             sidebar: LocalState::new(true),
+            room: LocalState::new(0),
             stop: LocalState::new(0),
-            renderer: Rc::default(),
+            crop: LocalState::new(false),
+            live: Rc::default(),
+            picking: Rc::default(),
+            layer_adjust: LocalState::new(false),
+            preset: LocalState::new(Preset::Round),
+            opacity: LocalState::new(1.0),
+            flow: LocalState::new(round.flow),
+            hardness: LocalState::new(round.hardness),
+            smoothing: LocalState::new(round.smoothing),
+            taper: LocalState::new(round.taper),
+            erasing: LocalState::new(Erasing::Paint),
+            eraser_hardness: LocalState::new(1.0),
+            eraser_strength: LocalState::new(1.0),
+            // The canvas and the thumbnails never wait for a picture to
+            // decode; a look or export asks the renderer to.
+            renderer: Rc::new(RefCell::new(Renderer::impatient())),
+            sheet: LocalState::new(None),
+            files: LocalState::new(None),
+            file: LocalState::new(None),
+            notice: LocalState::new(None),
+            recents: LocalState::new(Vec::new()),
+            welcomed: LocalState::new(false),
+            menu: LocalState::new(String::new()),
+            export: crate::panels::export::Choices::default(),
+            new: crate::panels::start::Choices::default(),
+            visible: LocalState::new(None),
         }
     }
 }
+
+/// How finely [`Tools::room`] follows the canvas's width: coarse enough
+/// that resizing the window rebuilds the strip over it only now and then.
+pub const ROOM_STEP: u32 = 24; // a granularity of a measured width, not spacing
 
 /// The ink a brush starts with: ultramarine, a paint colour rather than
 /// chrome, so it does not follow the theme.
@@ -297,9 +445,55 @@ impl Tools {
             .set(format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b));
     }
 
-    /// The medium parameters a stroke on `layer` carries: its load, when
-    /// the layer is painted and the load was set.
+    /// Load the brush with `preset`, its dynamics starting at the
+    /// preset's own.
+    pub fn choose_preset(&self, preset: Preset) {
+        let dynamics = Dynamics::of(preset, &BTreeMap::new());
+        self.preset.set(preset);
+        self.flow.set(dynamics.flow);
+        self.hardness.set(dynamics.hardness);
+        self.smoothing.set(dynamics.smoothing);
+        self.taper.set(dynamics.taper);
+    }
+
+    /// The preset name a stroke on `layer` is laid with: the brush's on a
+    /// plain layer; a painted layer's medium paints it.
+    pub fn brush_name(&self, art: &Artwork, layer: &str) -> Option<String> {
+        if art
+            .layer(layer)
+            .is_some_and(|layer| !layer.medium.is_empty())
+        {
+            return None;
+        }
+        crate::brushes::stored(self.preset.with(|preset| preset.name()))
+    }
+
+    /// The parameters a stroke on `layer` carries: on a painted layer its
+    /// load, when the load was set; on a plain layer the dynamics the
+    /// person moved away from the preset's.
     pub fn stroke_params(&self, art: &Artwork, layer: &str) -> Option<BTreeMap<String, f64>> {
+        let plain = art
+            .layer(layer)
+            .or_else(|| art.layers.last())
+            .is_some_and(|layer| layer.medium.is_empty());
+        if plain {
+            let preset = self.preset.with(|preset| *preset);
+            let defaults = Dynamics::of(preset, &BTreeMap::new());
+            let set = [
+                (self.flow.with(|value| *value), defaults.flow),
+                (self.hardness.with(|value| *value), defaults.hardness),
+                (defaults.spacing, defaults.spacing),
+                (self.smoothing.with(|value| *value), defaults.smoothing),
+                (self.taper.with(|value| *value), defaults.taper),
+            ];
+            let params: BTreeMap<String, f64> = DYNAMICS
+                .iter()
+                .zip(set)
+                .filter(|(_, (value, default))| (value - default).abs() > 0.005)
+                .map(|(name, (value, _))| ((*name).to_owned(), (value * 100.0).round() / 100.0))
+                .collect();
+            return (!params.is_empty()).then_some(params);
+        }
         let travel = self.load.with(|load| *load);
         let (min, max) = load_range(art, layer)?;
         Some(BTreeMap::from([(

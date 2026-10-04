@@ -75,6 +75,9 @@ ARG ENV_RUNTIME_REF=scratch
 # out is how you get an image to boot-test in minutes while the browser's own
 # build is being repaired.
 ARG TILO_WITH_BROWSER=1
+# The pinned builder bootc-builder compiles the image's bootc in, the one
+# os/Containerfile.bootc-helper uses.
+ARG BOOTC_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 FROM scratch AS public-trust
 COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /
 
@@ -157,6 +160,8 @@ FROM windows-provider-${TILO_WINDOWS_ARCH}-${TILO_WITH_WINDOWS} AS windows-provi
 # offline, digest-pinned build input.
 # tilo-rpm-snapshot-package: virtio-win
 FROM ${BASE_REF} AS virtio-win-media
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo,ro \
     /bin/bash -euo pipefail -c '\
       rpm_path=$(find /repo -maxdepth 1 -type f -name "virtio-win-*.rpm" -print -quit); \
@@ -235,6 +240,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Build/test FluxCast from its pinned Python source on the target architecture
 # instead of shipping the project's x86-64-only AppImage.
 FROM ${BASE_REF} AS fluxcast-builder
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     dnf install -y --setopt=reposdir=/repo python3 \
     && dnf clean all
@@ -256,6 +263,8 @@ RUN PYTHONPATH=/src/src python3 -m unittest discover -s /src/tests -p 'test_wfd.
 # its modules-load snippet moves from /etc to the immutable /usr/lib.
 # tilo-rpm-snapshot-package: libevdev-devel
 FROM ${BASE_REF} AS joycond-builder
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     dnf install -y --setopt=reposdir=/repo \
       cmake gcc-c++ make pkgconf-pkg-config libevdev-devel systemd-devel \
@@ -270,6 +279,47 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
       /out/usr/lib/modules-load.d/joycond.conf \
     && test -x /out/usr/bin/joycond \
     && test -f /out/usr/lib/systemd/system/joycond.service
+
+
+# ---- bootc ------------------------------------------------------------------
+# The base's own bootc release, rebuilt with os/external-assets/bootc-runtime/:
+# on a disk shared with another operating system, `bootc status`, `upgrade`
+# and `switch` use the ESP the boot loader started from. Upstream takes the
+# disk's first ESP, which on a laptop that came with Windows is Windows', and
+# every one of them then fails reading loader entries that ESP does not have.
+# The frozen snapshot carries no ostree-devel, so this builds in the pinned
+# builder image as os/Containerfile.bootc-helper does, with that image's own
+# Fedora repositories (BOOTC_BUILD_PACKAGES are no snapshot input). Nothing of
+# it ships but the binary: the rootfs checks it runs against the base's own
+# libraries and reports the base's bootc version.
+FROM ${BOOTC_BUILD_IMAGE} AS bootc-builder
+# v1.16.13, the base's bootc release.
+ARG BOOTC_VERSION=1.16.13
+ARG BOOTC_SOURCE=bootc-fa0d3f9.tar.gz
+ARG BOOTC_SHA256=e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019ac
+ARG BOOTC_BUILD_PACKAGES="ostree-devel patch"
+COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch /patches/
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    dnf install -y ${BOOTC_BUILD_PACKAGES} \
+    && dnf clean all \
+    && echo "${BOOTC_SHA256}  /tilo-assets/${BOOTC_SOURCE}" | sha256sum -c - \
+    && mkdir "/bootc-${BOOTC_VERSION}" \
+    && tar -xzf "/tilo-assets/${BOOTC_SOURCE}" --strip-components=1 -C "/bootc-${BOOTC_VERSION}" \
+    && cd "/bootc-${BOOTC_VERSION}" \
+    && for p in /patches/*.patch; do patch -p1 < "$p"; done \
+    && cargo test --locked -p bootc-internal-blockdev \
+    && CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=symbols \
+       cargo build --locked --release -p bootc \
+    && install -D -m 0755 target/release/bootc /out/usr/bin/bootc \
+    && install -D -m 0644 -t /out/usr/share/licenses/tilo-bootc/ \
+       LICENSE-APACHE LICENSE-MIT /patches/*.patch \
+    && printf '%s\n' \
+      'bootc - boot and upgrade via container images' \
+      'License: Apache-2.0 OR MIT (see LICENSE-APACHE, LICENSE-MIT)' \
+      "Source: https://github.com/bootc-dev/bootc/tree/fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60 (v${BOOTC_VERSION})" \
+      'Modified: /usr/bin/bootc is built from the source above with the patches here.' \
+      > /out/usr/share/licenses/tilo-bootc/NOTICE \
+    && rm -rf "/bootc-${BOOTC_VERSION}"
 
 
 # ---- Stage 1a: WPE WebKit (browser engine) ----------------------------------
@@ -319,6 +369,7 @@ COPY tools/ci/rustc-thin-app-wrapper.sh /build/tools/ci/rustc-thin-app-wrapper.s
 COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
 COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
+COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
 COPY \
     os/scripts/cargo-freshness.sh \
     os/scripts/build-thin-apps.sh \
@@ -341,6 +392,8 @@ COPY os/app-runtime /build/os/app-runtime
 # BASE_REF, re-run `snapshot-rpms`.
 FROM ${BASE_REF} AS builder-base
 
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
 # against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
 # toolchain a minimal bootc image lacks: cmake/perl/clang etc. that
@@ -619,7 +672,7 @@ ARG TILO_APP_COLLECTION_PUBLISHER=""
 # rebuilding each other's artifacts. The cargo home and sccache are shared.
 ARG TILO_BUILD_CACHE_KEY=default
 RUN --mount=type=cache,target=/build/.cargo-home \
-    --mount=type=cache,id=tilo-cargo-target-${TILO_BUILD_CACHE_KEY},target=/build/target \
+    --mount=type=cache,id=tilo-cargo-target-${TILO_BUILD_CACHE_KEY},target=/build/target,sharing=locked \
     --mount=type=cache,target=/build/.sccache \
     --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
@@ -671,9 +724,12 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          thin|off) ;; \
          *) printf '%s\n' 'TILO_RUST_LTO must be thin or off' >&2; exit 1 ;; \
        esac \
+    # A content record vouches only for the units its build compiles, so each
+    # set of prebuilt inputs keeps its own.
+    && built_sources="/build/target/.tilo-built-sources-apps${TILO_PREBUILT_APPS}-desktop${TILO_PREBUILT_DESKTOP}-browser${TILO_WITH_BROWSER}" \
     && case "$TILO_CARGO_FRESHNESS" in \
          clean) cargo clean --release && cargo clean --profile thin-app ;; \
-         content) sh os/scripts/cargo-freshness.sh /build /build/target/.tilo-content-hashes \
+         content) sh os/scripts/cargo-freshness.sh /build "$built_sources" \
                     || { cargo clean --release && cargo clean --profile thin-app; } ;; \
          *) printf '%s\n' 'TILO_CARGO_FRESHNESS must be clean or content' >&2; exit 1 ;; \
        esac \
@@ -838,6 +894,11 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
          && [ -n "${LIBSTD}" ] \
          && cp "${LIBSTD}" /out/; \
+       fi \
+    # Only now does the target directory hold this workspace's build in every
+    # profile; a build that stopped earlier left the changed sources marked.
+    && if [ "$TILO_CARGO_FRESHNESS" = content ]; then \
+         sh os/scripts/cargo-freshness.sh --built "$built_sources"; \
        fi \
     && build_phase rust-cleanup \
     # Every build product needed below now lives in /out. A clean build's
@@ -1024,6 +1085,8 @@ RUN --mount=type=secret,id=browser_app_identity \
             /build/os/scripts/pack-apps.sh \
             && rm -rf /tmp/browser-package-repo; }; }
 
+# Buildah leaves the env-runtime mount out of the layer cache key; this ARG keys it on ENV_RUNTIME_REF.
+ARG ENV_RUNTIME_REF
 # The env-runtime environment image joins the apps in the read-only store, so
 # the first environment opens offline. It takes the path every image takes on
 # a device (`tilo-install image add`); see os/scripts/install-env-runtime.sh.
@@ -1082,6 +1145,11 @@ COPY --from=fluxcast-builder /src/src /usr/libexec/tilo-fluxcast-src
 COPY --from=joycond-builder /out/usr/bin/joycond /usr/bin/joycond
 COPY --from=joycond-builder /out/usr/lib/systemd/system/joycond.service /usr/lib/systemd/system/joycond.service
 COPY --from=joycond-builder /out/usr/lib/modules-load.d/joycond.conf /usr/lib/modules-load.d/joycond.conf
+# bootc that finds this system's ESP on a disk it shares (bootc-builder). It
+# replaces the base's binary of the same release; the rootfs's final checks run
+# it against the base's libostree.
+COPY --from=bootc-builder /out/usr/bin/bootc /usr/bin/bootc
+COPY --from=bootc-builder /out/usr/share/licenses/tilo-bootc/ /usr/share/licenses/tilo-bootc/
 # tilo-session records each login through the flight recorder; the report
 # summarises those records. The host package installs the same two files.
 COPY dist/session/tilo-flight-recorder.py /usr/libexec/tilo-flight-recorder
@@ -1113,6 +1181,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-rollback-harden.timer \
     /usr/lib/systemd/system/
 COPY os/tests/rollback-boot-check.sh /usr/libexec/tilo-rollback-boot-check
+COPY os/tests/boot_units_gate.sh /usr/libexec/tilo/boot-units-gate.sh
 
 FROM scratch AS recovery-files
 COPY --from=component-files /image/recovery-files/ /
@@ -1168,11 +1237,14 @@ COPY --chmod=0755 os/tests/recovery-boot-check.sh /usr/libexec/tilo-recovery-boo
 # and Cisco's packages, from their own servers), verifies them and builds local
 # system extensions. Which extensions exist, which hosts their bytes may come
 # from and which key signs their manifests is decided by the image itself
-# (/usr/share/tilo/system-extensions/sysext.d, /usr/share/tilo/cosign.pub). The
+# (/usr/share/tilo/system-extensions/sysext.d, /usr/share/tilo/extensions.pub). The
 # image carries no extension payload. See
 # /usr/share/tilo/system-extensions/README.md.
 FROM scratch AS extension-files
 COPY --chmod=0755 os/usr/libexec/tilo-extension /usr/libexec/tilo-extension
+# The only key a manifest may be signed with (KMS alias/tilo-extension-manifests);
+# separate from cosign.pub, so the OS update key cannot authorize one.
+COPY keys/extensions.pub /usr/share/tilo/extensions.pub
 # Starts the deferred install the moment NetworkManager reports internet
 # connectivity, for an owner who opted in while offline.
 COPY --chmod=0755 os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension \
@@ -1287,6 +1359,8 @@ RUN test "$(command -v dnf)" = /usr/local/bin/dnf \
     && test "$(command -v rpm)" = /usr/local/bin/rpm
 ARG FINALIZE_RPMDB="/usr/libexec/tilo/finalize-rpmdb"
 
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 # Graphics stack. `at-spi2-core` supplies the D-Bus-activated org.a11y.Bus
 # service discovered by AccessKit providers at runtime. `harfbuzz-icu` and
 # `libatomic` own libharfbuzz-icu.so.0 and libatomic.so.1, which the copied
@@ -1305,7 +1379,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # Audio/Video
+# alsa-ucm: the per-machine ALSA profiles PipeWire opens DSP sound cards with
+# (Qualcomm X1E, Intel SOF). Without one such a card lists no sink or source
+# (os/tests/board_audio_contract.sh).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    alsa-ucm \
     pipewire \
     pipewire-pulseaudio \
     pipewire-utils \
@@ -1876,6 +1954,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     "$vm_firmware" \
     freerdp \
     xwayland-satellite \
+    waypipe \
+    virtiofsd \
+    vhost-device-vsock \
+    skopeo \
     virt-viewer \
     xorriso \
     genisoimage \
@@ -2019,13 +2101,18 @@ COPY \
 # source-pinned receiver simulator. No receiver hardware or live network is
 # involved, but an empty/control-plane-only session fails the stats assertions.
 COPY os/tests/airplay-encrypted-session.sh /usr/libexec/tilo/airplay-encrypted-session-test.sh
-COPY os/tests/projection-boot-check.sh /usr/libexec/tilo/projection-boot-check.sh
+# The session-context check proves a greetd login runs in the user's SELinux
+# domain and logind session scope, with each launched app in its own scope.
+COPY os/tests/projection-boot-check.sh os/tests/session-context-check.sh \
+     os/tests/input-hotplug-check.sh /usr/libexec/tilo/
 # Optional AirPlay media acceptance runs against the assembled image separately.
 # Its setup/probe timing is not an installation prerequisite. Keep the full
 # protocol/media/teardown test available; omitting it here does not claim success.
 # Native protocol tests and the GStreamer plugin checks above remain required.
 RUN chmod 0755 /usr/libexec/tilo/airplay-encrypted-session-test.sh \
-          /usr/libexec/tilo/projection-boot-check.sh
+          /usr/libexec/tilo/projection-boot-check.sh \
+          /usr/libexec/tilo/session-context-check.sh \
+          /usr/libexec/tilo/input-hotplug-check.sh
 
 # Put both stores' command shims on PATH, so a package that declares CLI
 # commands can be run by name — the only way a CLI package is meant to be run.
@@ -2323,6 +2410,7 @@ RUN chmod 0755 /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-conf
         /usr/lib/systemd/system-generators/tilo-root-generator \
         /usr/lib/dracut/modules.d/91tilo-rollback/module-setup.sh \
         /usr/libexec/tilo-rollback-harden /usr/libexec/tilo-rollback-boot-check \
+        /usr/libexec/tilo/boot-units-gate.sh \
  && install -d -m 0755 /usr/share/tilo/pcr-predictions
 
 # ---------------------------------------------------------------------------
@@ -2439,7 +2527,6 @@ RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-pr
 # 72-joycond.rules pulls it in when a Joy-Con appears, so it stays off the
 # boot path and off machines that never see one.
 RUN systemctl enable greetd.service && \
-    restorecon -v /usr/lib/systemd/user/tilo-graphical-session.target && \
     systemctl disable NetworkManager.service firewalld.service chronyd.service && \
     # Fedora's presets start these at boot, ordered before multi-user.target or
     # graphical.target. They start on demand instead: ModemManager and
@@ -2967,6 +3054,7 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
 # layer. Its current RUN may still mount DNS under /run; the next one will not.
 RUN rm -f /etc/resolv.conf && printf '# build-only resolver placeholder\n' > /etc/resolv.conf
 RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro \
+    --mount=type=bind,source=os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf,target=/usr/local/libexec/tilo-ldconfig-image-cache.conf,ro \
     --mount=type=bind,source=os/scripts/verify-boot-ordering.sh,target=/usr/local/libexec/tilo-verify-boot-ordering.sh,ro \
     --mount=type=bind,source=os/scripts/verify-rpm-files.sh,target=/usr/local/libexec/tilo-verify-rpm-files.sh,ro \
     --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/usr/local/libexec/tilo-pin-directory-times.py,ro \
@@ -3009,15 +3097,23 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
          if [ -d "$fonts" ]; then python3 -B /usr/local/libexec/tilo-pin-directory-times.py "$fonts" "$SOURCE_DATE_EPOCH"; fi; \
        done \
     && HOME=/root fc-cache -s -f \
-    # The linker cache is current as built. Recording /etc as updated for this
-    # /usr keeps first boot from running ldconfig.service (3.5 s on the login
-    # critical chain of a release VM) to regenerate it.
+    # The linker cache is current as built; ldconfig.service rebuilds it only
+    # if it goes missing (its drop-in). The hardware database lives in /usr
+    # with none in /etc, so systemd-hwdb-update.service has nothing to do on
+    # the first boot of a deployment either.
+    && install -D -m 0644 /usr/local/libexec/tilo-ldconfig-image-cache.conf \
+         /usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf \
     && ldconfig \
+    && systemd-hwdb update --usr \
+    && rm -f /etc/udev/hwdb.bin \
+    && test -s /usr/lib/udev/hwdb.bin \
+    && { [ ! -d /etc/udev/hwdb.d ] || [ -z "$(ls -A /etc/udev/hwdb.d)" ]; } \
     && /usr/lib/systemd/systemd-update-done --root=/ \
     && test -s /etc/.updated \
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
     && bash /usr/local/libexec/tilo-verify-boot-ordering.sh \
     && sh /usr/local/libexec/tilo-verify-rpm-files.sh \
+    && test "$(bootc --version)" = "bootc $(rpm -q --qf '%{VERSION}' bootc)" \
     && bootc container lint
 
 # COPY is a separate build operation, with no DNS mount in /run. Copy the
@@ -3054,6 +3150,8 @@ RUN test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf \
 # self-contained: its EFI stub comes from this stage's systemd-boot and does not
 # have to match the systemd in the rootfs.
 FROM ${BASE_REF} AS uki-tools
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-ukify \
         systemd-boot-unsigned \
@@ -3070,6 +3168,20 @@ COPY --from=uki-tools /usr/local/bin/uki.sh /uki-tools/
 COPY --from=doubletake-builder /out/ /doubletake/
 COPY --from=fluxcast-builder /src/src/ /fluxcast/
 COPY --from=joycond-builder /out/ /joycond/
+COPY --from=bootc-builder /out/ /bootc/
+
+# BuildKit keys a RUN by a content hash of every bind mount, read-only or not,
+# so mounting the whole split rootfs into the uki stage hashed every file of it,
+# about two minutes of every build. With a composefs digest given, uki.sh reads
+# only these files of the rootfs; this stage hands it just those.
+FROM split AS uki-input
+RUN mkdir /uki-input \
+    && cd / \
+    && for path in usr/lib/os-release usr/lib/bootc/kargs.d \
+                   usr/lib/tilo/hardware-profile.json usr/lib/tilo/hardware-profile-definition.json \
+                   usr/lib/modules/*/dtb; do \
+         if [ -e "$path" ] || [ -L "$path" ]; then cp -a --parents "$path" /uki-input/; fi; \
+       done
 
 FROM uki-tools AS uki
 # The first pass uses a deterministic all-zero placeholder. `bootc install`
@@ -3086,14 +3198,14 @@ ENV TILO_SEAL_GENERATION=${TILO_SEAL_GENERATION}
 # /tmp and /run are tmpfs because ukify needs ordinary build scratch but none of
 # it belongs in the image layer. The authoritative composefs digest comes from
 # the install gate, so this stage no longer needs a rootfs-sized /var/tmp cache.
-# The rootfs mounts are writable (writes are discarded): BuildKit keys a
-# read-only mount by a content hash of everything under it, which for the whole
-# rootfs took two minutes of every build before this step could start.
+# /target holds only uki-input's files, so bootc's own digest of it would be
+# wrong: the digest must be given.
 RUN --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/run \
-    --mount=type=bind,from=split,target=/target,rw \
+    --mount=type=bind,from=uki-input,source=/uki-input,target=/target,rw \
     --mount=type=bind,from=split,source=/kernel,target=/kernel,rw \
-    bash /usr/local/bin/uki.sh
+    { [ -n "$CFS_DIGEST" ] || { echo 'TILO_CFS_DIGEST is required (os/dev/build-image.sh passes a placeholder)' >&2; exit 1; }; } \
+    && bash /usr/local/bin/uki.sh
 
 # NOTHING MAY BE LAYERED ON THIS IMAGE. A derived image that adds a single file to
 # the rootfs has a different composefs digest from the one its inherited UKI seals,

@@ -22,6 +22,10 @@
 //!
 //! The guest runs as the real uid and gid — a single-id user namespace
 //! mapping — so a file written to a granted directory belongs to the user.
+//! It starts inside the session's own network namespace (see
+//! [`tilo_egress`]), whose resolver is the supervisor's DNS stub; `bwrap`'s
+//! user namespace nests inside the one that owns that network namespace, so
+//! nothing in the guest has any capability over its network.
 //! A path the guest was not granted is not missing a permission — it is not
 //! in the namespace.
 
@@ -120,8 +124,14 @@ pub struct GuestPlan {
     pub trusted_dirs: Vec<PathBuf>,
     /// Directories granted read but not write.
     pub readable_dirs: Vec<PathBuf>,
+    /// Where the granted directories' contents are, when not at their own
+    /// paths: a grant of `/a/b` binds `<grant_root>/a/b` at `/a/b`.
+    pub grant_root: Option<PathBuf>,
     /// The runtime binary, bound in so the guest's `pkg`/`perm`/… resolve.
     pub runtime_bin: PathBuf,
+    /// Installed legacy apps' commands: shims that ask the broker for a
+    /// `LegacyLaunch`.
+    pub legacy_commands: Vec<String>,
     pub broker_socket: PathBuf,
     /// The compiled seccomp blob.
     pub seccomp_blob: PathBuf,
@@ -132,9 +142,20 @@ pub struct GuestPlan {
     pub term: String,
     /// Extra environment, applied last.
     pub env: Vec<(String, String)>,
+    /// The guest's `/etc/resolv.conf`: the session's DNS stub. `None` copies
+    /// the machine's.
+    pub resolver: Option<String>,
 }
 
 impl GuestPlan {
+    /// Where a granted directory's contents are on this machine.
+    pub fn grant_source(&self, granted: &Path) -> PathBuf {
+        match &self.grant_root {
+            Some(root) => root.join(granted.strip_prefix("/").unwrap_or(granted)),
+            None => granted.to_path_buf(),
+        }
+    }
+
     /// The generated tree stacked on top of the images' `/etc`.
     pub fn etc_overlay(&self) -> PathBuf {
         self.session_dir.join("root")
@@ -143,7 +164,7 @@ impl GuestPlan {
     /// Create what the plan refers to: the home, the environment's `/var`
     /// state, and the session's own `/etc` entries — `passwd` and `group`
     /// naming the real user (the images know only their system accounts) and
-    /// the machine's resolver.
+    /// the resolver ([`Self::resolver`], else the machine's).
     ///
     /// # Errors
     ///
@@ -171,7 +192,11 @@ impl GuestPlan {
             etc.join("group"),
             group_with_user(&image_file("group"), &self.user),
         )?;
-        if let Some(resolver) = host_resolver(&self.host_root) {
+        if let Some(resolver) = self
+            .resolver
+            .clone()
+            .or_else(|| host_resolver(&self.host_root))
+        {
             std::fs::write(etc.join("resolv.conf"), resolver)?;
         }
         Ok(())
@@ -396,6 +421,11 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan) {
         a.push("tilo-ush".into());
         a.push(format!("{}/{cmd}", crate::GUEST_BIN_DIR).into());
     }
+    for cmd in &plan.legacy_commands {
+        a.push("--symlink".into());
+        a.push("tilo-ush".into());
+        a.push(format!("{}/{cmd}", crate::GUEST_BIN_DIR).into());
+    }
     a.push("--bind".into());
     a.push(plan.broker_socket.clone().into_os_string());
     a.push(crate::GUEST_BROKER_SOCK.into());
@@ -413,26 +443,39 @@ fn push_home_and_grants(a: &mut Vec<OsString>, plan: &GuestPlan) {
 
     for dir in &plan.readable_dirs {
         a.push("--ro-bind-try".into());
-        a.push(dir.clone().into_os_string());
+        a.push(plan.grant_source(dir).into_os_string());
         a.push(dir.clone().into_os_string());
     }
     for dir in &plan.trusted_dirs {
         a.push("--bind-try".into());
-        a.push(dir.clone().into_os_string());
+        a.push(plan.grant_source(dir).into_os_string());
         a.push(dir.clone().into_os_string());
     }
     // After the grants, so a grant of a directory that contains the store (the
     // whole home, say) still cannot reach the store: other environments' homes,
     // the audit log, and the records that decide what the next session sees.
     for masked in &plan.masked {
-        if plan
+        let covered: Vec<PathBuf> = plan
             .trusted_dirs
             .iter()
             .chain(&plan.readable_dirs)
-            .any(|granted| masked.starts_with(granted))
-        {
-            a.push("--tmpfs".into());
-            a.push(masked.clone().into_os_string());
+            .filter_map(|granted| {
+                let inside = masked.strip_prefix(plan.grant_source(granted)).ok()?;
+                Some(if inside.as_os_str().is_empty() {
+                    granted.clone()
+                } else {
+                    granted.join(inside)
+                })
+            })
+            .collect();
+        for guest_path in covered {
+            let already = a.windows(2).any(|w| {
+                matches!(w, [flag, covered] if flag == "--tmpfs" && covered == guest_path.as_os_str())
+            });
+            if !already {
+                a.push("--tmpfs".into());
+                a.push(guest_path.into_os_string());
+            }
         }
     }
 }
@@ -544,13 +587,17 @@ pub fn open_seccomp_fd(blob: &Path) -> std::io::Result<(std::fs::File, std::os::
     Ok((file, fd))
 }
 
-/// Spawn the guest as a child.
+/// Spawn the guest as a child, inside `netns` when given (`bwrap` then
+/// nests its user namespace in the one that owns it).
 ///
 /// # Errors
 ///
 /// Returns an error if the seccomp filter can't be opened, or the child
 /// process can't be spawned.
-pub fn spawn(plan: &GuestPlan) -> std::io::Result<std::process::Child> {
+pub fn spawn(
+    plan: &GuestPlan,
+    netns: Option<&tilo_egress::Netns>,
+) -> std::io::Result<std::process::Child> {
     let (_blob, fd) = open_seccomp_fd(&plan.seccomp_blob)?;
     let argv = build_argv(plan, Some(fd));
     // `build_argv` always pushes "bwrap" first, so this never actually
@@ -558,7 +605,12 @@ pub fn spawn(plan: &GuestPlan) -> std::io::Result<std::process::Child> {
     let Some((program, rest)) = argv.split_first() else {
         return Err(std::io::Error::other("build_argv produced an empty argv"));
     };
-    std::process::Command::new(program).args(rest).spawn()
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(rest);
+    if let Some(netns) = netns {
+        netns.enter(&mut cmd);
+    }
+    cmd.spawn()
 }
 
 #[cfg(test)]
@@ -593,13 +645,16 @@ mod tests {
             masked: vec![dir.join("store")],
             trusted_dirs: Vec::new(),
             readable_dirs: Vec::new(),
+            grant_root: None,
             runtime_bin: PathBuf::from("/usr/libexec/tilo-ush"),
+            legacy_commands: vec!["code".into()],
             broker_socket: dir.join("store/sessions/s1/broker.sock"),
             seccomp_blob: dir.join("store/sessions/s1/ush.bpf"),
             command: Vec::new(),
             shell: PathBuf::from("/usr/bin/bash"),
             term: "xterm-256color".into(),
             env: Vec::new(),
+            resolver: None,
         }
     }
 
@@ -615,6 +670,19 @@ mod tests {
 
     fn path(p: &Path) -> String {
         p.display().to_string()
+    }
+
+    #[test]
+    fn installed_legacy_apps_get_a_shim_on_the_guest_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = plan_in(dir.path());
+        let shims = windows(&build_argv(&p, Some(9)), 3);
+        assert!(
+            shims.iter().any(|w| w[0] == "--symlink"
+                && w[1] == "tilo-ush"
+                && w[2] == format!("{}/code", crate::GUEST_BIN_DIR)),
+            "an installed legacy app has no shim in the guest"
+        );
     }
 
     #[test]
@@ -779,6 +847,27 @@ mod tests {
     }
 
     #[test]
+    fn with_a_grant_root_a_grant_binds_its_contents_there_at_its_own_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = plan_in(dir.path());
+        let files = dir.path().join("member/files");
+        p.grant_root = Some(files.clone());
+        p.trusted_dirs = vec![PathBuf::from("/home/alice/src")];
+        // The member's store sits inside a granted source: it is covered at
+        // the path the guest sees it by.
+        p.masked = vec![files.join("home/alice/src/.store")];
+        let w3 = windows(&build_argv(&p, Some(9)), 3);
+        assert!(w3.iter().any(|w| w[0] == "--bind-try"
+            && w[1] == path(&files.join("home/alice/src"))
+            && w[2] == "/home/alice/src"));
+        let flat = strings(&build_argv(&p, Some(9)));
+        assert!(
+            flat.windows(2)
+                .any(|w| w[0] == "--tmpfs" && w[1] == "/home/alice/src/.store")
+        );
+    }
+
+    #[test]
     fn the_command_line_ends_with_seccomp_and_the_guest_argv() {
         let dir = tempfile::tempdir().unwrap();
         let mut p = plan_in(dir.path());
@@ -847,6 +936,19 @@ mod tests {
             std::fs::read_to_string(p.etc_overlay().join("etc/resolv.conf")).unwrap(),
             "nameserver 127.0.0.53\n"
         );
+    }
+
+    #[test]
+    fn the_sessions_resolver_replaces_the_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = plan_in(dir.path());
+        std::fs::create_dir_all(p.host_root.join("etc")).unwrap();
+        std::fs::write(p.host_root.join("etc/resolv.conf"), "nameserver 10.0.0.1\n").unwrap();
+        p.resolver = Some(tilo_egress::RESOLV_CONF.to_owned());
+        p.prepare().unwrap();
+        let written = std::fs::read_to_string(p.etc_overlay().join("etc/resolv.conf")).unwrap();
+        assert!(written.contains("nameserver 127.0.0.1"), "{written}");
+        assert!(!written.contains("10.0.0.1"), "{written}");
     }
 
     #[test]

@@ -89,6 +89,7 @@ test('decoding starts at a keyframe and skips a backlog until the next one', () 
 
 // --- minimal DOM and live layer --------------------------------------------------
 function fakeDocument() {
+  const doc = {createElement: element, activeElement: null};
   function element(tag) {
     return {
       tag, children: [], parent: null, dataset: {}, style: {}, width: 0, height: 0, drawn: 0,
@@ -96,13 +97,13 @@ function fakeDocument() {
       append(...nodes) { for (const child of nodes) { child.parent = this; this.children.push(child); } },
       addEventListener(type, handler) { (this.listeners[type] ??= []).push(handler); },
       dispatch(type, event = {}) { for (const handler of this.listeners[type] ?? []) handler({preventDefault() {}, ...event}); },
-      focus() {},
+      focus() { doc.activeElement = this; },
       getBoundingClientRect() { return {left: 10, top: 36, width: 400, height: 264}; },
       remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = null; },
       getContext() { const node = this; return {drawImage() { node.drawn++; }}; },
     };
   }
-  return {createElement: element};
+  return doc;
 }
 function fakeLive() {
   const watches = [];
@@ -119,7 +120,7 @@ function fakeLive() {
     },
   };
 }
-function mount({control = false, refuse = false} = {}) {
+function mount({control = false, refuse = false, dismissed = () => [], focusWindow, focusDesktop} = {}) {
   const doc = fakeDocument();
   const surface = doc.createElement('div');
   const live = fakeLive();
@@ -134,6 +135,7 @@ function mount({control = false, refuse = false} = {}) {
     surface, document: doc, live: () => live, ...codecs, now: () => clock.t, mac: false,
     windows: () => rects,
     setWindows: list => shown.push(list),
+    dismissed, focusWindow, focusDesktop,
     sendInput: async (publisher, stream, events) => {
       if (events.length) sent.push({publisher, stream, events});
       return events.length ? control && !refuse : control;
@@ -142,7 +144,7 @@ function mount({control = false, refuse = false} = {}) {
     setInterval: callback => { poll = callback; return 1; }, clearInterval: () => {},
   });
   return {
-    layer, live, codecs, shown, sent, clock, surface,
+    layer, live, codecs, shown, sent, clock, surface, doc,
     run: () => { for (const callback of frames.splice(0)) callback(); },
     place: next => { rects = next; },
     poll: () => poll(),
@@ -252,6 +254,47 @@ test('a member the host lets drive the window clicks, scrolls, types and pastes 
   ], 'the pasted text reaches the window before its paste key');
   assert.equal(m.layer.stats().inputSent, events.length);
   m.layer.close();
+});
+
+test('the window the desktop focuses takes the keyboard, and a click focuses its desktop window', async () => {
+  const focused = [];
+  let desktop = 0;
+  const m = await controlled({control: true, focusWindow: key => focused.push(key), focusDesktop: () => { desktop++; m.doc.activeElement = m.surface; }});
+  assert.notEqual(m.doc.activeElement, m.canvas, 'an unfocused window leaves the keyboard alone');
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  assert.equal(m.doc.activeElement, m.canvas, 'opening it, or choosing its tab, focuses it');
+  await tick();
+  assert.deepEqual(m.sent.flatMap(request => request.events)[0], {KeyboardFocus: {surface: 0, focused: true}});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: false}]);
+  m.run();
+  assert.equal(desktop, 1, 'the desktop focusing another window takes the keyboard back');
+  m.canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
+  assert.equal(m.doc.activeElement, m.canvas);
+  assert.deepEqual(focused, [KEY], 'a click into the window focuses its desktop window');
+  m.layer.close();
+  const watcher = await controlled({control: false});
+  watcher.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  watcher.run();
+  assert.notEqual(watcher.doc.activeElement, watcher.canvas, 'a watcher keeps typing on the desktop');
+  watcher.layer.close();
+});
+
+test('closing a window a member drives closes it at its source', async () => {
+  let closedKeys = [];
+  const options = {dismissed: () => { const keys = closedKeys; closedKeys = []; return keys; }};
+  const driver = await controlled({control: true, ...options});
+  closedKeys = [KEY, 'cd'.repeat(32) + ':0000000000000001'];
+  driver.run();
+  await tick();
+  assert.deepEqual(driver.sent.map(request => request.events), [['Close']]);
+  driver.layer.close();
+  const watcher = await controlled({control: false, ...options});
+  closedKeys = [KEY];
+  watcher.poll();
+  await tick();
+  assert.deepEqual(watcher.sent, [], 'a watcher only closes its own view');
+  watcher.layer.close();
 });
 
 test('a watching member sends nothing, and a refusal stops input', async () => {

@@ -16,8 +16,13 @@ pub struct TimeSyncStatus {
 /// Read timedated's authoritative state and, when systemd-timesyncd is the
 /// provider, its selected server. Missing providers remain `None`; Settings
 /// can distinguish unavailable from disabled.
-pub fn get_time_sync_status() -> TimeSyncStatus {
-    let mut status = run_capture(
+///
+/// # Errors
+///
+/// Returns an error message if `timedatectl` is not installed or timedated
+/// cannot be asked; a missing time-sync provider is not an error.
+pub fn get_time_sync_status() -> Result<TimeSyncStatus, String> {
+    let mut status = parse_time_status(&run_capture(
         "timedatectl",
         &[
             "show",
@@ -28,12 +33,11 @@ pub fn get_time_sync_status() -> TimeSyncStatus {
             "-p",
             "NTPSynchronized",
         ],
-    )
-    .map_or_else(|_| TimeSyncStatus::default(), |out| parse_time_status(&out));
+    )?);
     status.source = run_capture("timedatectl", &["timesync-status"])
         .ok()
         .and_then(|out| parse_time_source(&out));
-    status
+    Ok(status)
 }
 
 /// The IANA zones timedated accepts. This uses the system zoneinfo database,

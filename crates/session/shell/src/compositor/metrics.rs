@@ -61,6 +61,50 @@ pub struct FrameSample {
     /// buffer does not show up as compositor work. `None` where the platform
     /// has no per-thread CPU clock.
     pub cpu_us: Option<u32>,
+    /// The longest named step of the input phase and how long it took, so a
+    /// tick whose `input_us` stalls names what it stalled in. Empty when the
+    /// phase had no steps.
+    pub input_step: &'static str,
+    pub input_step_us: u32,
+}
+
+/// The slowest of a phase's consecutive named steps. Each [`Self::step`]
+/// closes the step that began at the previous one; two clock reads per step,
+/// cheap enough to run on every tick.
+#[derive(Clone, Copy, Debug)]
+pub struct SlowestStep {
+    last: Instant,
+    name: &'static str,
+    took: Duration,
+}
+
+impl SlowestStep {
+    pub fn starting_at(at: Instant) -> Self {
+        Self {
+            last: at,
+            name: "",
+            took: Duration::ZERO,
+        }
+    }
+
+    /// Close the step named `name`, which ran from the previous step (or the
+    /// start) until now.
+    pub fn step(&mut self, name: &'static str) {
+        self.step_at(name, Instant::now());
+    }
+
+    fn step_at(&mut self, name: &'static str, now: Instant) {
+        let took = now.saturating_duration_since(self.last);
+        if took > self.took || self.name.is_empty() {
+            self.name = name;
+            self.took = took;
+        }
+        self.last = now;
+    }
+
+    pub fn slowest(&self) -> (&'static str, Duration) {
+        (self.name, self.took)
+    }
 }
 
 /// [`FrameSample::wake`] for a park ended by a readable fd (input, a client, the control socket, a worker ping) rather than by a deadline.
@@ -78,7 +122,7 @@ impl FrameSample {
     fn write_csv_row(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.seq,
             self.start_us,
             self.period_us,
@@ -102,6 +146,8 @@ impl FrameSample {
             self.deadline_late_us,
             self.wake,
             self.cpu_us.map(|v| v.to_string()).unwrap_or_default(),
+            self.input_step,
+            self.input_step_us,
         )
     }
 }
@@ -109,7 +155,7 @@ impl FrameSample {
 /// Header line for the `TILO_FRAME_TRACE` CSV, kept next to `FrameSample::write_csv_row` so the two cannot drift.
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
-input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us";
+input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,input_step,input_step_us";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -512,6 +558,11 @@ impl FrameRecorder {
     /// Cumulative phase marks: each takes the duration *of that phase*, not a cumulative offset, so callers can compute them however is cheapest at the call site.
     pub fn mark_input(&mut self, d: Duration) {
         self.cur.input_us = us(d);
+    }
+    pub fn mark_input_step(&mut self, step: SlowestStep) {
+        let (name, took) = step.slowest();
+        self.cur.input_step = name;
+        self.cur.input_step_us = us(took);
     }
     pub fn mark_pump(&mut self, d: Duration) {
         self.cur.pump_us = us(d);
@@ -1104,6 +1155,26 @@ mod tests {
     }
 
     #[test]
+    fn the_input_phase_names_its_slowest_step() {
+        let base = Instant::now();
+        let mut step = SlowestStep::starting_at(base);
+        step.step_at("poll", base + Duration::from_millis(2));
+        step.step_at("persist", base + Duration::from_millis(90));
+        step.step_at("flush", base + Duration::from_millis(91));
+        assert_eq!(step.slowest(), ("persist", Duration::from_millis(88)));
+        let mut recorder = FrameRecorder::disabled();
+        recorder.enabled = true;
+        recorder.begin_tick(base);
+        recorder.mark_input_step(step);
+        recorder.end_tick();
+        let sample = recorder.samples()[0];
+        assert_eq!(
+            (sample.input_step, sample.input_step_us),
+            ("persist", 88_000)
+        );
+    }
+
+    #[test]
     fn metrics_cli_and_trace_output_are_well_formed() {
         // Phase `parse_run_seconds_accepts_positive_values_only`.
         assert_eq!(
@@ -1153,6 +1224,8 @@ mod tests {
                 deadline_late_us: 14,
                 wake: "cadence",
                 cpu_us: Some(15),
+                input_step: "events",
+                input_step_us: 16,
             }
             .write_csv_row(&mut buf)
             .expect("write csv row into a Vec");

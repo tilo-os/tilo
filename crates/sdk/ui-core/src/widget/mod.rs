@@ -2278,8 +2278,6 @@ pub mod marks;
 pub use marks::{Mark, MarkSpan};
 pub mod rich_text_line;
 pub use rich_text_line::{LineSignal, RichTextLine};
-pub mod rich_text_editor;
-pub use rich_text_editor::{RichBlockStyle, RichTextEditor};
 pub mod block_editor;
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
@@ -2318,7 +2316,7 @@ mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{
     AppCommand, AppHostIntent, AppWidget, DocumentOpenCapability, DocumentOpenOutcome,
-    DocumentOpenReply, IconDescriptor,
+    DocumentOpenReply, HostShellAllow, IconDescriptor,
 };
 pub mod command_palette;
 pub mod input_hint;
@@ -2484,7 +2482,7 @@ pub use virtual_list::{DuplicateListKey, ListModel, ListRowState, VecListModel, 
 pub mod action_row;
 pub use action_row::ActionRowFace;
 pub mod choice_card;
-pub use choice_card::ChoiceCardFace;
+pub use choice_card::{ChoiceCard, ChoiceCardFace};
 pub mod keyframe;
 pub use keyframe::{KeyframeFace, KeyframeState};
 pub mod disclosure_header;

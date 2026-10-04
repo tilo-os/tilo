@@ -82,10 +82,10 @@ use smithay::wayland::xdg_activation::{
 use smithay::{
     delegate_compositor, delegate_content_type, delegate_cursor_shape, delegate_data_control,
     delegate_data_device, delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale,
-    delegate_idle_inhibit, delegate_input_method_manager, delegate_keyboard_shortcuts_inhibit,
+    delegate_idle_inhibit, delegate_keyboard_shortcuts_inhibit,
     delegate_output, delegate_pointer_constraints, delegate_pointer_gestures,
     delegate_primary_selection, delegate_relative_pointer,
-    delegate_seat, delegate_session_lock, delegate_shm,
+    delegate_session_lock, delegate_shm,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
     delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
 };
@@ -488,6 +488,8 @@ pub struct State {
     /// Owns the four selection globals plus the compositor's clipboard
     /// mirror, letting in-process chrome paste without a Wayland round trip. See [`crate::compositor::selection`] for why the data-control globals are gated to privileged clients.
     pub selection: SelectionState,
+    /// Legacy windows remote viewers closed, for the compositor to close.
+    remote_closes: Vec<SurfaceId>,
     /// `wl_output` + xdg-output manager; concrete outputs are added separately.
     pub output_manager_state: OutputManagerState,
     /// Persisted workspace tree; foreign-client toplevels adopt into it as [`crate::shell::state::TileContent::Foreign`] tabs.
@@ -547,10 +549,24 @@ pub struct State {
     /// [`crate::collab::flatpak_share::SharedFlatpakSession`]'s `encode_next_frame` takes `&self`.
     pub active_sessions: HashMap<SurfaceId, Arc<SharedFlatpakSession>>,
     /// Non-blocking bridge from surface commits into the collaboration
-    /// transport. Installed by the native compositor when peer sync is on;
+    /// transport, given the topic of the room the window's tab is in when
+    /// known. Installed by the native compositor when peer sync is on;
     /// absent in isolated tests and offline sessions.
-    legacy_stream_publisher:
-        Option<Arc<dyn Fn(crate::network::NeighbourMsg) -> bool + Send + Sync>>,
+    legacy_stream_publisher: Option<LegacyStreamPublisher>,
+    /// The workspace topic each streamed window's traffic goes to: its tab's
+    /// room, which need not be the workspace this device shows.
+    legacy_stream_routes: HashMap<SurfaceId, u64>,
+    /// Windows streamed to the person's own other devices, by viewer: those
+    /// devices are the person, so their focus moves this seat's keyboard.
+    personal_stream_viewers: std::collections::HashSet<(MsgPeerId, SurfaceId)>,
+    /// A streamed window the person focused from another device. It holds
+    /// this seat's keyboard until they use this device's own input again.
+    personal_keyboard_focus: Option<SurfaceId>,
+    /// Another device of the person last moved this seat's pointer, to a
+    /// window it shows. That moves no cursor here: the host's cursor stays
+    /// where its own input left it and keeps its own image, and its next
+    /// input takes the pointer back.
+    personal_pointer_hold: bool,
     /// The themed placeholder colour a protected window is streamed as —
     /// see [`crate::shell::capture_protection`]. Kept current by the frame
     /// loop, which owns the theme.
@@ -697,6 +713,9 @@ pub struct State {
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
     /// tree and positioned by [`crate::compositor::frame::FrameBuilder`].
     pub osk_surface: Option<u64>,
+    /// Text commits the on-screen keyboard has made into focused fields this
+    /// session: what a person typed on it, counted but never kept.
+    pub osk_commits: u64,
     /// Toplevels the compositor has asked to close, each with the moment its
     /// frame callbacks stop going unthrottled. See
     /// [`Self::ask_toplevel_to_close`].
@@ -992,6 +1011,22 @@ impl State {
     /// Whether the focused client has committed an enabled text-input-v3
     /// session. This is the compositor's source of truth for OSK visibility;
     /// Wayland xdg-toplevels have no client-side visibility request.
+    /// Re-send `leave` and `enter` to the focused client's text inputs.
+    ///
+    /// Smithay activates the input method only when a field enables its text
+    /// input. The on-screen keyboard binds its input method shortly before
+    /// its surface appears; a field that was already enabled by then (the
+    /// tap that focused it is often the touch that started the keyboard)
+    /// would otherwise never reach it. A client re-enables an IME-allowed
+    /// field on `enter`, which activates the keyboard that is now there.
+    pub fn reannounce_text_input_focus(&self) {
+        let text_input = self.seat.text_input();
+        if text_input.focus().is_some() {
+            text_input.leave();
+            text_input.enter();
+        }
+    }
+
     pub fn text_input_active(&self) -> bool {
         let mut active = false;
         self.seat
@@ -1105,6 +1140,7 @@ impl State {
             input_method_manager_state,
             virtual_keyboard_manager_state,
             selection,
+            remote_closes: Vec::new(),
             output_manager_state,
             workspace_tree,
             share_registry: ShareRegistry::new(),
@@ -1123,6 +1159,10 @@ impl State {
             surface_handles: HashMap::new(),
             active_sessions: HashMap::new(),
             legacy_stream_publisher: None,
+            legacy_stream_routes: HashMap::new(),
+            personal_stream_viewers: std::collections::HashSet::new(),
+            personal_keyboard_focus: None,
+            personal_pointer_hold: false,
             capture_placeholder_fill: crate::shell::capture_protection::placeholder_fill_rgba8(
                 &ui::theme::Theme::default(),
             ),
@@ -1172,6 +1212,7 @@ impl State {
             text_fields: crate::compositor::text_commit::TextFields::default(),
             text_commit: crate::compositor::text_commit::TextCommit::default(),
             osk_surface: None,
+            osk_commits: 0,
             closing_toplevels: HashMap::new(),
             pending_floating_toplevels: Vec::new(),
             floating_toplevels: Vec::new(),
@@ -1238,6 +1279,7 @@ impl State {
                         Ok(feedback) => {
                             // Publish the decision for the import side: buffers clients hand us were allocated on this GPU, so it must read them back.
                             crate::compositor::render_node::set_advertised(node.path.clone());
+                            crate::compositor::gpu_health::record_dmabuf(Ok(&node.path));
                             tracing::info!(
                                 target: "shell::compositor::dmabuf",
                                 device = %node.path.display(),
@@ -1252,6 +1294,7 @@ impl State {
                             ))
                         }
                         Err(e) => {
+                            crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
                             // The format table lives in a sealed memfd; failing to create it means no correct feedback — the broken state this block avoids.
                             tracing::error!(
                                 target: "shell::compositor::dmabuf",
@@ -1264,6 +1307,9 @@ impl State {
                     }
                 }
                 Err(e) => {
+                    if !matches!(e, ProbeError::NoRenderNodes) {
+                        crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
+                    }
                     tracing::warn!(
                         target: "shell::compositor::dmabuf",
                         reason = %e,
@@ -1768,11 +1814,166 @@ impl State {
     }
 
     /// Install the non-blocking network bridge used by live legacy streams.
-    pub fn set_legacy_stream_publisher(
-        &mut self,
-        publisher: Arc<dyn Fn(crate::network::NeighbourMsg) -> bool + Send + Sync>,
-    ) {
+    pub fn set_legacy_stream_publisher(&mut self, publisher: LegacyStreamPublisher) {
         self.legacy_stream_publisher = Some(publisher);
+    }
+
+    /// Send one message of `surface`'s stream on its room's topic: to its
+    /// viewers alone when they are all the person's own devices.
+    fn publish_legacy(&self, surface: SurfaceId, message: crate::network::NeighbourMsg) -> bool {
+        let Some(publish) = self.legacy_stream_publisher.as_ref() else {
+            return false;
+        };
+        let viewers = self
+            .active_sessions
+            .get(&surface)
+            .map(|session| session.viewer_ids())
+            .unwrap_or_default();
+        let personal = viewers
+            .iter()
+            .all(|peer| self.personal_stream_viewers.contains(&(*peer, surface)));
+        publish(
+            LegacyStreamRoute {
+                topic: self.legacy_stream_routes.get(&surface).copied(),
+                only: (personal && !viewers.is_empty()).then_some(viewers),
+            },
+            message,
+        )
+    }
+
+    /// Point each streamed window's traffic at its tab's room topic. Routes
+    /// of windows no longer streamed are kept until their session is gone,
+    /// so the end of a stream reaches the room its start went to.
+    pub fn route_legacy_streams(&mut self, routes: impl IntoIterator<Item = (SurfaceId, u64)>) {
+        let sessions = &self.active_sessions;
+        self.legacy_stream_routes
+            .retain(|surface, _| sessions.contains_key(surface));
+        self.legacy_stream_routes.extend(routes);
+    }
+
+    /// Encode and send each streamed window's held-back frame that is due
+    /// now. Returns how many went out.
+    pub fn flush_share_sessions(&mut self) -> usize {
+        let now = std::time::Instant::now();
+        let mut sent = 0_usize;
+        let sessions = self.active_sessions.values().cloned().collect::<Vec<_>>();
+        for session in sessions {
+            if session.staged_due().is_some_and(|due| due <= now)
+                && let Some(frame) = session.encode_next_frame(now)
+            {
+                let _ = self.publish_legacy(session.surface_id, frame.into_neighbour_msg());
+                sent = sent.saturating_add(1);
+            }
+        }
+        sent
+    }
+
+    /// When the earliest held-back frame of a streamed window is due.
+    pub fn legacy_stream_deadline(&self) -> Option<std::time::Instant> {
+        self.active_sessions
+            .values()
+            .filter_map(|session| session.staged_due())
+            .min()
+    }
+
+    /// Which viewers of which windows are the person's own other devices.
+    pub fn set_personal_stream_viewers(
+        &mut self,
+        viewers: std::collections::HashSet<(MsgPeerId, SurfaceId)>,
+    ) {
+        self.personal_stream_viewers = viewers;
+        if let Some(focus) = self.personal_keyboard_focus
+            && !self.streams_to_own_device(focus)
+        {
+            self.personal_keyboard_focus = None;
+        }
+    }
+
+    fn streams_to_own_device(&self, surface: SurfaceId) -> bool {
+        self.personal_stream_viewers
+            .iter()
+            .any(|(_, streamed)| *streamed == surface)
+    }
+
+    /// The streamed window the person last focused from another device,
+    /// which takes this seat's keyboard ahead of the local tiles.
+    pub(crate) fn personal_keyboard_focus(&self) -> Option<SurfaceId> {
+        self.personal_keyboard_focus
+            .filter(|surface| self.client_input.surface(*surface).is_some())
+    }
+
+    /// The person is using this device's own keyboard or pointer again.
+    pub(crate) fn release_personal_keyboard_focus(&mut self) {
+        self.personal_keyboard_focus = None;
+    }
+
+    /// Whether another device of the person holds this seat's pointer, and
+    /// end that hold: local input is about to take it back.
+    pub(crate) fn take_personal_pointer_hold(&mut self) -> bool {
+        std::mem::take(&mut self.personal_pointer_hold)
+    }
+
+    /// Where input from the person's other devices lands on a streamed
+    /// window no tile here shows: a rect the size they show it at, beyond
+    /// every output, so nothing local covers it and the local pointer never
+    /// reaches it. `shown` are the tiles already on screen.
+    pub(crate) fn offscreen_stream_tiles(
+        &self,
+        shown: &[(SurfaceId, vello::kurbo::Rect)],
+    ) -> Vec<(SurfaceId, vello::kurbo::Rect)> {
+        /// Far beyond any output arrangement, in logical pixels.
+        const ORIGIN_X: f64 = 1_048_576.0;
+        let mut surfaces = self
+            .personal_stream_viewers
+            .iter()
+            .map(|(_, surface)| *surface)
+            .filter(|surface| {
+                !shown.iter().any(|(id, _)| id == surface)
+                    && self.client_input.surface(*surface).is_some()
+            })
+            .collect::<Vec<_>>();
+        surfaces.sort_unstable();
+        surfaces.dedup();
+        let mut x = ORIGIN_X;
+        surfaces
+            .into_iter()
+            .filter_map(|surface| {
+                let (width, height) = crate::compositor::foreign::store().remote_extent(surface)?;
+                let rect = vello::kurbo::Rect::new(
+                    x,
+                    0.0,
+                    x + f64::from(width.max(1)),
+                    f64::from(height.max(1)),
+                );
+                x = rect.x1 + 64.0;
+                Some((surface, rect))
+            })
+            .collect()
+    }
+
+    /// A stream carries the window at its buffer's size; the tile placing
+    /// it here may be laid out at another (a scaled output, or a size other
+    /// devices asked for). Move a viewer's pointer from the stream's pixels
+    /// to the tile's.
+    fn stream_point_to_tile(&self, surface: SurfaceId, event: InputEvent) -> InputEvent {
+        let InputEvent::PointerMotion { x, y } = event else {
+            return event;
+        };
+        let Some((width, height)) = self
+            .active_sessions
+            .get(&surface)
+            .map(|session| session.encoded_dimensions())
+            .filter(|(width, height)| *width > 0 && *height > 0)
+        else {
+            return event;
+        };
+        let Some(rect) = self.remote_input_firewall.view().rect(surface) else {
+            return event;
+        };
+        InputEvent::PointerMotion {
+            x: x * rect.width() / f64::from(width),
+            y: y * rect.height() / f64::from(height),
+        }
     }
 
     /// Register a share session so [`CompositorHandler::commit`] pumps
@@ -1783,8 +1984,8 @@ impl State {
         if self.active_sessions.contains_key(&surface) {
             self.unregister_share_session(surface);
         }
-        if let Some(publish) = &self.legacy_stream_publisher {
-            let _ = publish(session.stream_start_msg());
+        if self.legacy_stream_publisher.is_some() {
+            let _ = self.publish_legacy(surface, session.stream_start_msg());
         }
         self.sync_share_authority(&session);
         self.active_sessions.insert(surface, session);
@@ -1821,11 +2022,15 @@ impl State {
 
     /// Deregister a share session by surface id (no-op if unregistered) — called on share end or surface destroy.
     pub fn unregister_share_session(&mut self, surface: SurfaceId) {
+        // The end goes the way the stream went, so it is sent while the
+        // session still names its viewers.
+        if let Some(session) = self.active_sessions.get(&surface).cloned()
+            && self.legacy_stream_publisher.is_some()
+        {
+            let _ = self.publish_legacy(surface, session.stream_end_msg());
+        }
         if let Some(session) = self.active_sessions.remove(&surface) {
             let viewers = session.viewer_ids();
-            if let Some(publish) = &self.legacy_stream_publisher {
-                let _ = publish(session.stream_end_msg());
-            }
             for peer in viewers {
                 self.share_registry.remove(peer, surface);
                 self.release_remote_focus_for_surface(peer, surface);
@@ -1942,28 +2147,32 @@ impl State {
             .copied()
             .filter(|peer| session.viewer_share(*peer).is_none())
             .collect::<Vec<_>>();
-        if let Some(publish) = &self.legacy_stream_publisher {
+        if self.legacy_stream_publisher.is_some() {
             for peer in &removed {
-                let _ = publish(crate::network::NeighbourMsg::PermissionGrant {
-                    peer: *peer,
-                    capability: format!("workspace-control:{surface}:revoked"),
-                });
+                let _ = self.publish_legacy(
+                    surface,
+                    crate::network::NeighbourMsg::PermissionGrant {
+                        peer: *peer,
+                        capability: format!("workspace-control:{surface}:revoked"),
+                    },
+                );
             }
             for peer in &added {
-                let _ = publish(crate::network::NeighbourMsg::PermissionGrant {
-                    peer: *peer,
-                    capability: format!("workspace-control:{surface}:granted"),
-                });
+                let _ = self.publish_legacy(
+                    surface,
+                    crate::network::NeighbourMsg::PermissionGrant {
+                        peer: *peer,
+                        capability: format!("workspace-control:{surface}:granted"),
+                    },
+                );
             }
         }
         // A viewer joining or leaving (or re-advertising) can change which
         // codec everyone decodes; a switch is announced like a new stream so
         // receivers rebuild.
         let switched = session.renegotiate(receivers);
-        if (switched || !added.is_empty())
-            && let Some(publish) = &self.legacy_stream_publisher
-        {
-            let _ = publish(session.stream_start_msg());
+        if (switched || !added.is_empty()) && self.legacy_stream_publisher.is_some() {
+            let _ = self.publish_legacy(surface, session.stream_start_msg());
         }
         session.sync_viewers(recipients);
         self.sync_share_authority(session);
@@ -1976,14 +2185,16 @@ impl State {
         }
     }
 
-    /// Reconcile encoder lifetimes and viewer permissions with the active
-    /// workspace's replicated `shared_surfaces` map. A newly shared static
-    /// window is seeded from the compositor's already captured foreign frame,
-    /// so it does not have to damage itself again before the first packet.
+    /// Reconcile encoder lifetimes and viewer permissions with the windows
+    /// that have viewers: shares in the active workspace's replicated
+    /// `shared_surfaces` map, and windows the person's other devices show. A
+    /// newly shared static window is seeded from the compositor's already
+    /// captured foreign frame, so it does not have to damage itself again
+    /// before the first packet.
     pub fn reconcile_legacy_share_sessions(
         &mut self,
         host_peer: MsgPeerId,
-        desired: &HashMap<SurfaceId, (String, std::collections::HashSet<MsgPeerId>)>,
+        desired: &HashMap<SurfaceId, LegacyShare>,
         config: &crate::config::FlatpakShareConfig,
     ) {
         let stale = self
@@ -1996,7 +2207,13 @@ impl State {
             self.unregister_share_session(surface);
         }
 
-        for (&surface, (app_id, recipients)) in desired {
+        for (&surface, share) in desired {
+            let LegacyShare {
+                app_id,
+                tab,
+                viewers: recipients,
+                decode_limits,
+            } = share;
             let recipients = recipients
                 .iter()
                 .copied()
@@ -2014,10 +2231,19 @@ impl State {
             // advertised is treated as H.264-only.
             let receivers = recipients
                 .iter()
-                .map(|peer| crate::network::media_caps::capabilities(*peer))
+                .map(|peer| {
+                    let mut caps = crate::network::media_caps::capabilities(*peer);
+                    if let Some(limits) = decode_limits.get(peer) {
+                        caps.hardware_decode.extend(limits.keys().copied());
+                        caps.hardware_decode_max.clone_from(limits);
+                    }
+                    caps
+                })
                 .collect::<Vec<_>>();
             let reusable = self.active_sessions.get(&surface).is_some_and(|session| {
-                session.app_id == *app_id && session.dimensions() == (width, height)
+                session.app_id == *app_id
+                    && session.tab() == *tab
+                    && session.dimensions() == (width, height)
             });
             if reusable {
                 if let Some(session) = self.active_sessions.get(&surface).cloned() {
@@ -2039,14 +2265,17 @@ impl State {
                 );
                 continue;
             };
-            let session = Arc::new(session);
+            let session = Arc::new(session.with_tab(*tab));
             session.sync_viewers(&recipients);
-            if let Some(publish) = &self.legacy_stream_publisher {
+            if self.legacy_stream_publisher.is_some() {
                 for peer in &recipients {
-                    let _ = publish(crate::network::NeighbourMsg::PermissionGrant {
-                        peer: *peer,
-                        capability: format!("workspace-control:{surface}:granted"),
-                    });
+                    let _ = self.publish_legacy(
+                        surface,
+                        crate::network::NeighbourMsg::PermissionGrant {
+                            peer: *peer,
+                            capability: format!("workspace-control:{surface}:granted"),
+                        },
+                    );
                 }
             }
             self.register_share_session(Arc::clone(&session));
@@ -2065,9 +2294,9 @@ impl State {
         }) {
             session.deposit_captured_rgba(rgba);
             if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
-                && let Some(publish) = &self.legacy_stream_publisher
+                && self.legacy_stream_publisher.is_some()
             {
-                let _ = publish(frame.into_neighbour_msg());
+                let _ = self.publish_legacy(surface, frame.into_neighbour_msg());
             }
         }
     }
@@ -2220,9 +2449,9 @@ impl State {
             };
             session.deposit_captured_rgba(rgba);
             if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
-                && let Some(publish) = &self.legacy_stream_publisher
+                && self.legacy_stream_publisher.is_some()
             {
-                let _ = publish(frame.into_neighbour_msg());
+                let _ = self.publish_legacy(surface_id, frame.into_neighbour_msg());
             }
             return true;
         }
@@ -2233,8 +2462,8 @@ impl State {
             session.deposit_captured_dmabuf(dmabuf);
             let emitted = session.encode_next_frame(std::time::Instant::now());
             if let Some(frame) = emitted {
-                if let Some(publish) = &self.legacy_stream_publisher {
-                    let _ = publish(frame.into_neighbour_msg());
+                if self.legacy_stream_publisher.is_some() {
+                    let _ = self.publish_legacy(surface_id, frame.into_neighbour_msg());
                 }
                 // Encoder actually consumed the DMABUF. Only *now* do we bump
                 // the tracker's `dmabuf_direct_count` — the metric reflects
@@ -2249,11 +2478,20 @@ impl State {
         let Some(frame) = self.surface_tracker.peek_latest(surface_id) else {
             return false;
         };
-        session.deposit_captured_rgba(frame.rgba);
+        // The stream carries the window as its tab shows it, at the size its
+        // first frame (the tab's snapshot) set: without the shadow and resize
+        // border a client-side-decorating toolkit draws around it.
+        let rgba = crate::compositor::foreign::store().crop_to_window(
+            surface_id,
+            frame.rgba,
+            frame.width,
+            frame.height,
+        );
+        session.deposit_captured_rgba(rgba);
         if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
-            && let Some(publish) = &self.legacy_stream_publisher
+            && self.legacy_stream_publisher.is_some()
         {
-            let _ = publish(frame.into_neighbour_msg());
+            let _ = self.publish_legacy(surface_id, frame.into_neighbour_msg());
         }
         true
     }
@@ -2320,6 +2558,27 @@ impl State {
         if previously_controlled && !still_controls {
             self.release_remote_focus_for_surface(peer, surface);
         }
+        let event = if self.personal_stream_viewers.contains(&(peer, surface)) {
+            if matches!(
+                event,
+                InputEvent::PointerMotion { .. }
+                    | InputEvent::PointerButton { .. }
+                    | InputEvent::PointerAxis { .. }
+                    | InputEvent::PointerEnter { .. }
+            ) {
+                self.personal_pointer_hold = true;
+            }
+            if let InputEvent::KeyboardFocus { focused, .. } = event {
+                if focused {
+                    self.personal_keyboard_focus = Some(surface);
+                } else if self.personal_keyboard_focus == Some(surface) {
+                    self.personal_keyboard_focus = None;
+                }
+            }
+            self.stream_point_to_tile(surface, event)
+        } else {
+            event
+        };
         match self.review_remote_input(peer, surface, event) {
             Ok(()) => true,
             Err(denial) => {
@@ -2889,33 +3148,7 @@ impl RemoteInputSink for State {
                 // moved the shared seat since this peer's last motion, so
                 // restore this peer's accepted focus/location before its
                 // coordinate-less button edge is delivered.
-                if let Some((x, y)) = self.remote_input_firewall.peer_cursor_global(peer, surface)
-                    && let Some(pointer) = self.seat.get_pointer()
-                {
-                    let focus =
-                        self.surface_handles
-                            .get(&surface)
-                            .cloned()
-                            .and_then(|wl_surface| {
-                                self.remote_input_firewall.view().rect(surface).map(|rect| {
-                                    let origin = crate::compositor::foreign::store()
-                                        .surface_origin(surface, rect);
-                                    (wl_surface, origin.into())
-                                })
-                            });
-                    pointer.motion(
-                        self,
-                        focus,
-                        &MotionEvent {
-                            location: (x, y).into(),
-                            serial,
-                            time,
-                        },
-                    );
-                    if let Some(pointer) = self.seat.get_pointer() {
-                        pointer.frame(self);
-                    }
-                }
+                self.restore_remote_pointer(peer, surface, serial, time);
                 if self.remote_seats.button_transition(peer, button, pressed)
                     && let Some(pointer) = self.seat.get_pointer()
                 {
@@ -2966,6 +3199,21 @@ impl RemoteInputSink for State {
                 let _ = self.remote_seats.seat_mut(peer).leave();
                 self.release_remote_inputs_for_peer(peer);
             }
+            InputEvent::PointerAxis { dx, dy } => {
+                self.restore_remote_pointer(peer, surface, serial, time);
+                let _ = self.remote_pointer_axis(dx, dy, time);
+            }
+            InputEvent::ClipboardText { text } => {
+                let _ = crate::compositor::selection::set_mirror_text(
+                    &self.selection_store(),
+                    crate::compositor::selection::Target::Clipboard,
+                    &text,
+                );
+            }
+            InputEvent::Close => self.remote_closes.push(surface),
+            InputEvent::Text { text } => {
+                self.request_remote_text_commit(text, std::time::Instant::now());
+            }
             InputEvent::Key {
                 keysym,
                 pressed,
@@ -3003,7 +3251,83 @@ impl RemoteInputSink for State {
     }
 }
 
+/// Where one message of a legacy window's stream goes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LegacyStreamRoute {
+    /// The workspace topic of the room the window's tab is in; the active
+    /// workspace's when unknown.
+    pub topic: Option<u64>,
+    /// When every viewer of the window is one of the person's own devices:
+    /// exactly those, so the rest of the room receives nothing of it.
+    pub only: Option<Vec<MsgPeerId>>,
+}
+
+/// Sends one message of a legacy window's stream along its route.
+pub type LegacyStreamPublisher =
+    Arc<dyn Fn(LegacyStreamRoute, crate::network::NeighbourMsg) -> bool + Send + Sync>;
+
+/// One legacy window to stream: its app, the workspace tab holding it (`0`
+/// when the stream names none), and the peers watching it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LegacyShare {
+    pub app_id: String,
+    pub tab: u64,
+    pub viewers: std::collections::HashSet<MsgPeerId>,
+    /// The largest picture each viewer's hardware decoders take, by codec,
+    /// where the viewer said: the stream is encoded no larger.
+    pub decode_limits:
+        HashMap<MsgPeerId, std::collections::BTreeMap<media::StreamCodec, (u32, u32)>>,
+}
+
 impl State {
+    /// Put the shared pointer back where `peer`'s last accepted motion over
+    /// `surface` left it: a legacy client sees one `wl_pointer`, while the
+    /// firewall keeps one cursor per participant, and another peer may have
+    /// moved the seat since. Coordinate-less edges (a button, the wheel)
+    /// land there.
+    fn restore_remote_pointer(
+        &mut self,
+        peer: MsgPeerId,
+        surface: SurfaceId,
+        serial: Serial,
+        time: u32,
+    ) {
+        let Some((x, y)) = self.remote_input_firewall.peer_cursor_global(peer, surface) else {
+            return;
+        };
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let focus = self
+            .surface_handles
+            .get(&surface)
+            .cloned()
+            .and_then(|wl_surface| {
+                self.remote_input_firewall.view().rect(surface).map(|rect| {
+                    let origin = crate::compositor::foreign::store().surface_origin(surface, rect);
+                    (wl_surface, origin.into())
+                })
+            });
+        pointer.motion(
+            self,
+            focus,
+            &MotionEvent {
+                location: (x, y).into(),
+                serial,
+                time,
+            },
+        );
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.frame(self);
+        }
+    }
+
+    /// The legacy windows remote viewers closed since the last call; the
+    /// compositor closes their tabs as a person's close does.
+    pub fn take_remote_closes(&mut self) -> Vec<SurfaceId> {
+        std::mem::take(&mut self.remote_closes)
+    }
+
     fn refresh_foreign_subsurface_tree(&self, root: &WlSurface) {
         use smithay::wayland::compositor::{TraversalAction, with_surface_tree_upward};
 
@@ -3191,6 +3515,14 @@ pub struct ClientState {
     /// Used to recognise xwayland-satellite after its last toplevel dies
     /// while leftover X clients (Wine) still hold the X socket.
     pub pid: Option<u32>,
+    /// Set when the connection is a legacy VM's Wayland forwarder: every app
+    /// id it announces becomes `legacy.<guest>.<app id>`. Claiming this only
+    /// lowers what a window is trusted with, so it needs no proof.
+    pub legacy_guest: Option<legacy_agent_protocol::GuestOs>,
+    /// Whether the client asked the seat for a `wl_touch`. A touch sequence
+    /// sent to a surface of a client without one reaches nothing, so such a
+    /// client gets the pointer events touch is emulated as instead.
+    pub touch_bound: std::sync::atomic::AtomicBool,
 }
 
 /// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
@@ -3208,6 +3540,8 @@ impl Default for ClientState {
             enforce_package_id: false,
             executable: None,
             pid: None,
+            legacy_guest: None,
+            touch_bound: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -3329,6 +3663,19 @@ fn remember_surface_id(surface: &WlSurface) -> u64 {
     id
 }
 
+/// The Tilo package a toplevel's client was launched as, when the launcher
+/// started it confined as that package: the identity comes from the
+/// authenticated launch record, never from the app id the client announces.
+/// Every other client (a host app, an X11 client, a legacy guest, anything
+/// started outside the launcher) has none, and its windows are legacy.
+fn launched_package(client: Option<&ClientState>) -> Option<String> {
+    let client = client?;
+    if client.legacy_guest.is_some() || !client.enforce_package_id {
+        return None;
+    }
+    client.package_id.clone()
+}
+
 fn authenticated_toplevel_identity(
     client: Option<&ClientState>,
     announced_app_id: Option<String>,
@@ -3336,6 +3683,15 @@ fn authenticated_toplevel_identity(
     let Some(client) = client else {
         return Ok((announced_app_id, None));
     };
+    if let Some(guest) = client.legacy_guest {
+        return Ok((
+            Some(legacy_agent_protocol::window::host_app_id(
+                guest,
+                announced_app_id.as_deref(),
+            )),
+            None,
+        ));
+    }
     let Some(package_id) = client.package_id.as_deref() else {
         return Ok((announced_app_id, None));
     };
@@ -4312,24 +4668,27 @@ impl State {
                 .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
         });
         let client = surface.wl_surface().client();
-        let identity = authenticated_toplevel_identity(
-            client
-                .as_ref()
-                .and_then(|client| client.get_data::<ClientState>()),
-            announced,
-        );
+        let client_state = client
+            .as_ref()
+            .and_then(|client| client.get_data::<ClientState>());
+        let package = launched_package(client_state);
+        let identity = authenticated_toplevel_identity(client_state, announced);
         let Ok((app_id, room)) = identity else {
             surface.send_close();
             return;
         };
         let adopted = {
             let mut tree = self.workspace_tree.write();
-            if let Some(room) = room {
-                tab_binding::adopt_toplevel_in_room(&mut tree, id, app_id, room).is_some()
+            let tab = if let Some(room) = room {
+                tab_binding::adopt_toplevel_in_room(&mut tree, id, app_id, room)
             } else {
-                tab_binding::adopt_toplevel(&mut tree, id, app_id);
-                true
+                Some(tab_binding::adopt_toplevel(&mut tree, id, app_id))
+            };
+            if let (Some(tab), Some(package)) = (tab, package) {
+                tree.remember_package_launch(tab, package);
             }
+            drop(tree);
+            tab.is_some()
         };
         if !adopted {
             surface.send_close();
@@ -4462,10 +4821,17 @@ impl XdgShellHandler for State {
                 .get::<XdgToplevelSurfaceData>()
                 .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
         });
-        let identity = if let Some(client) = surface.wl_surface().client() {
-            authenticated_toplevel_identity(client.get_data::<ClientState>(), announced_app_id)
+        let (identity, package) = if let Some(client) = surface.wl_surface().client() {
+            let client_state = client.get_data::<ClientState>();
+            (
+                authenticated_toplevel_identity(client_state, announced_app_id),
+                launched_package(client_state),
+            )
         } else {
-            authenticated_toplevel_identity(None, announced_app_id)
+            (
+                authenticated_toplevel_identity(None, announced_app_id),
+                None,
+            )
         };
         let Ok((app_id, attributed_room)) = identity else {
             tracing::warn!(
@@ -4495,11 +4861,17 @@ impl XdgShellHandler for State {
         if trusted_osk_identity(surface.wl_surface(), app_id.as_deref()) {
             self.client_input.promote_to_overlay(surface_id);
             self.osk_surface = Some(surface_id);
+            self.reannounce_text_input_focus();
         } else if !floating && !presentation {
             if let Some(room) = attributed_room {
                 let adopted = {
                     let mut tree = self.workspace_tree.write();
-                    tab_binding::adopt_toplevel_in_room(&mut tree, surface_id, app_id, room)
+                    let tab =
+                        tab_binding::adopt_toplevel_in_room(&mut tree, surface_id, app_id, room);
+                    if let (Some(tab), Some(package)) = (tab, package) {
+                        tree.remember_package_launch(tab, package);
+                    }
+                    tab
                 };
                 if adopted.is_none() {
                     tracing::warn!(surface_id, %room, "rejected Wayland toplevel for a stale workspace");
@@ -4509,7 +4881,10 @@ impl XdgShellHandler for State {
                 }
             } else {
                 let mut tree = self.workspace_tree.write();
-                tab_binding::adopt_toplevel(&mut tree, surface_id, app_id);
+                let tab = tab_binding::adopt_toplevel(&mut tree, surface_id, app_id);
+                if let Some(package) = package {
+                    tree.remember_package_launch(tab, package);
+                }
             }
         }
 
@@ -4625,6 +5000,7 @@ impl XdgShellHandler for State {
                 };
                 self.client_input.promote_to_overlay(surface_id);
                 self.osk_surface = Some(surface_id);
+                self.reannounce_text_input_focus();
                 return;
             }
             if self.promote_floating_toplevel(surface_id, &app_id) {
@@ -4991,6 +5367,11 @@ impl SeatHandler for State {
         _seat: &Seat<Self>,
         image: smithay::input::pointer::CursorImageStatus,
     ) {
+        // A window another device of the person points at shapes that
+        // device's cursor, not this one's.
+        if self.personal_pointer_hold {
+            return;
+        }
         let scale = self.scale;
         self.client_cursor.set(image, scale);
     }
@@ -5089,10 +5470,130 @@ delegate_xdg_dialog!(State);
 delegate_xdg_decoration!(State);
 delegate_shm!(State);
 delegate_dmabuf!(State);
-delegate_seat!(State);
+// `wl_seat` is Smithay's, with one observation added: whether each client
+// asked for a `wl_touch` (see `ClientState::touch_bound`). The rest of the
+// seat (pointer, keyboard, touch objects) is delegated unchanged.
+smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
+    WlSeat: smithay::wayland::seat::SeatGlobalData<State>
+] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_server::protocol::wl_pointer::WlPointer: smithay::wayland::seat::PointerUserData<State>
+] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_server::protocol::wl_keyboard::WlKeyboard: smithay::wayland::seat::KeyboardUserData<State>
+] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_server::protocol::wl_touch::WlTouch: smithay::wayland::seat::TouchUserData<State>
+] => SeatState<State>);
+
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        WlSeat,
+        smithay::wayland::seat::SeatUserData<State>,
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &WlSeat,
+        request: smithay::reexports::wayland_server::protocol::wl_seat::Request,
+        data: &smithay::wayland::seat::SeatUserData<State>,
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        if matches!(
+            request,
+            smithay::reexports::wayland_server::protocol::wl_seat::Request::GetTouch { .. }
+        ) && let Some(client_state) = client.get_data::<ClientState>()
+        {
+            client_state
+                .touch_bound
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        <SeatState<State> as smithay::reexports::wayland_server::Dispatch<
+            WlSeat,
+            smithay::wayland::seat::SeatUserData<State>,
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &WlSeat,
+        data: &smithay::wayland::seat::SeatUserData<State>,
+    ) {
+        <SeatState<State> as smithay::reexports::wayland_server::Dispatch<
+            WlSeat,
+            smithay::wayland::seat::SeatUserData<State>,
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
 // Text input is dispatched in `compositor::text_commit`, which follows each
 // field's declared content type before handing the request to Smithay.
-delegate_input_method_manager!(State);
+// The input-method manager is Smithay's. `zwp_input_method_v2` is too, with
+// the on-screen keyboard's commits counted on the way (`State::osk_commits`).
+smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2:
+    smithay::wayland::input_method::InputMethodManagerGlobalData
+] => InputMethodManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2: ()
+] => InputMethodManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2:
+    smithay::wayland::input_method::InputMethodKeyboardUserData<State>
+] => InputMethodManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2:
+    smithay::wayland::input_method::InputMethodPopupSurfaceUserData
+] => InputMethodManagerState);
+
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+        smithay::wayland::input_method::InputMethodUserData<State>,
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+        request: smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::Request,
+        data: &smithay::wayland::input_method::InputMethodUserData<State>,
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        use smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::Request;
+        if matches!(request, Request::CommitString { .. })
+            && client.get_data::<ClientState>().is_some_and(|data| {
+                data.input_method
+                    == Some(crate::compositor::input_method::TrustedInputMethod::OnScreenKeyboard)
+            })
+        {
+            state.osk_commits = state.osk_commits.saturating_add(1);
+        }
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+            smithay::wayland::input_method::InputMethodUserData<State>,
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+        data: &smithay::wayland::input_method::InputMethodUserData<State>,
+    ) {
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+            smithay::wayland::input_method::InputMethodUserData<State>,
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
 delegate_virtual_keyboard_manager!(State);
 delegate_pointer_gestures!(State);
 delegate_cursor_shape!(State);
@@ -5425,6 +5926,39 @@ mod osk_identity_tests {
     use super::*;
 
     #[test]
+    fn only_a_confined_package_launch_names_a_windows_package() {
+        let room = crate::shell::state::RoomId::new();
+        let launched = |confined| {
+            ClientState::attributed_arc(
+                crate::shell::launcher::VerifiedLaunchIdentity {
+                    package_id: "so.tilo.files".into(),
+                    workspace_id: Some(room.to_string()),
+                    confined,
+                },
+                42,
+            )
+        };
+        assert_eq!(
+            launched_package(Some(&launched(true))).as_deref(),
+            Some("so.tilo.files")
+        );
+        // A host app the launcher started unconfined keeps its desktop id
+        // and is a legacy window, whatever the id says.
+        assert_eq!(launched_package(Some(&launched(false))), None);
+        // A client nobody launched, announcing a Tilo package's id.
+        assert_eq!(launched_package(Some(&ClientState::default())), None);
+        assert_eq!(launched_package(None), None);
+        let guest = ClientState {
+            package_id: Some("so.tilo.files".into()),
+            workspace_id: Some(room.to_string()),
+            enforce_package_id: true,
+            legacy_guest: Some(legacy_agent_protocol::GuestOs::Windows),
+            ..ClientState::default()
+        };
+        assert_eq!(launched_package(Some(&guest)), None);
+    }
+
+    #[test]
     fn osk_and_floating_identity_trust_only_exact_credentials() {
         // Phase `only_private_socket_plus_exact_app_id_is_trusted`.
         assert!(osk_identity_is_trusted(Some(OSK_APP_ID), true));
@@ -5480,6 +6014,19 @@ mod osk_identity_tests {
                     Some("org.example.HostApp".into())
                 ),
                 Ok((Some("org.example.HostApp".into()), None))
+            );
+            let legacy = ClientState {
+                legacy_guest: Some(legacy_agent_protocol::GuestOs::Linux),
+                ..ClientState::default()
+            };
+            assert_eq!(
+                authenticated_toplevel_identity(Some(&legacy), Some("org.gnome.Calculator".into())),
+                Ok((Some("legacy.linux.org.gnome.Calculator".into()), None)),
+                "a legacy VM's window is named after its guest"
+            );
+            assert_eq!(
+                authenticated_toplevel_identity(Some(&legacy), None),
+                Ok((Some("legacy.linux.window".into()), None))
             );
             let room = crate::shell::state::RoomId::new();
             let host = ClientState::attributed_arc(

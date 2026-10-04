@@ -199,6 +199,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "tab.new.terminal.here"
         | "window.new.terminal"
         | "tab.duplicate"
+        | "tab.open-beside"
         | "tab.split-right"
         | "tab.move-to-new-group"
         | "tab.close"
@@ -518,7 +519,7 @@ fn apply_permission_profile_action(
             ));
         }
     }
-    tree.flush_to_disk();
+    tree.queue_save();
     drop(tree);
     Ok(())
 }
@@ -790,6 +791,25 @@ const PEER_INVITE_NAMED_PARAMS: &[ActionParam] = &[
 ];
 
 /// Parameters of `window.focus-nth`.
+/// What `tab.open-beside` may be told: which app, and what it opens.
+const TAB_OPEN_BESIDE_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "app",
+        ParamType::Text,
+        "The installed app's package id, such as `so.tilo.browser`.",
+    ),
+    ActionParam::optional(
+        "target",
+        ParamType::Text,
+        "A URI the app declares, such as `https://example.org/`. Omit for an empty instance.",
+    ),
+    ActionParam::optional(
+        "background",
+        ParamType::Boolean,
+        "Open behind the focused tab instead of in front of it. Defaults to false.",
+    ),
+];
+
 const WINDOW_FOCUS_NTH_PARAMS: &[ActionParam] = &[ActionParam::required(
     "index",
     ParamType::Integer,
@@ -1550,6 +1570,32 @@ impl Action {
                 )
             },
         ),
+        // Another instance of an app as a tab right after the focused one:
+        // what an app's "open in new tab" asks for, open to every caller.
+        Action {
+            id: "tab.open-beside",
+            label: "search-action-tab-open-beside",
+            subtitle: "search-action-tab-open-beside-subtitle",
+            params: TAB_OPEN_BESIDE_PARAMS,
+            apply: |st, args| {
+                let app = args.text("app").unwrap_or_default().trim().to_owned();
+                if app.is_empty() {
+                    return Err(ActionError::Refused(
+                        "an app is required; nothing was opened".into(),
+                    ));
+                }
+                let target = args
+                    .text("target")
+                    .map(str::trim)
+                    .filter(|target| !target.is_empty())
+                    .map(str::to_owned);
+                let background = args.boolean("background").unwrap_or(false);
+                let anchor = crate::shell::window_actions::active_tab_id(st)
+                    .and_then(|tab| crate::shell::app_tabs::anchor_for_tab(&st.tree(), tab));
+                crate::shell::app_tabs::open_beside(st, &app, target.as_deref(), anchor, background)
+                    .map_err(|error| ActionError::Refused(error.to_string()))
+            },
+        },
         // The tab menu's three rows as actions, on the focused tab: a
         // capability reachable only by right-click is not finished. The
         // rows and these closures call the same `window_actions` functions.

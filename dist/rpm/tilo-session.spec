@@ -80,6 +80,10 @@ Requires:       pam
 # therefore invisible to RPM's ELF dependency generator. Existing host apps
 # deliberately keep their original confinement (or lack of it).
 Requires:       bubblewrap
+# A shell environment (`ush`) runs in a network namespace of its own; `pasta`
+# connects it to the host's network, unprivileged. An environment granted
+# hosts refuses to start without it rather than run unfiltered.
+Requires:       passt
 # Sandboxed Tilo applications reach file choosers and other desktop APIs only
 # through the portal frontend and a filtered proxy. Without either helper the
 # compositor starts, but ordinary app workflows are incomplete.
@@ -101,6 +105,11 @@ Requires:       upower
 # Rootless Xwayland maps legacy X11 windows into ordinary Wayland toplevels,
 # preserving applications the user installed before adding Tilo.
 Requires:       xwayland-satellite
+# Legacy VMs (tilo-legacy): each app's windows reach the compositor through a
+# waypipe client over vsock, and granted directories are shared into the VM by
+# an unprivileged virtiofsd.
+Requires:       waypipe
+Requires:       virtiofsd
 # Xwayland compiles an independent server-side XKB map. Settings changes use
 # the standard authenticated X11 utility to update that map in place, so
 # Electron/X11 windows keep working without logout or bridge restart.

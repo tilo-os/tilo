@@ -5509,15 +5509,11 @@ impl ui::undo::CommittedActions for MailApp {
     /// `record_committed_action` path a Ctrl+K dispatch takes). Rising-edge:
     /// cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // A body edit dispatches through the composer; everything else through
-        // Mail's own host. One event does one or the other.
+        // A standalone body start dispatches through the composer; everything
+        // else through Mail's own host. One event does one or the other.
         let body = self.compose.take_committed_action();
         let mail = self.shared.borrow_mut().take_committed_action();
         body.or(mail)
-    }
-    /// Typing a word in the draft body is one undo step.
-    fn keeps_undo_step_open(&self) -> bool {
-        self.compose.keeps_undo_step_open()
     }
 }
 

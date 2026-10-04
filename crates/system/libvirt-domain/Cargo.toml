@@ -1,0 +1,18 @@
+[package]
+name = "tilo-libvirt-domain"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "libvirt vocabulary shared by Tilo's virtual machines: connections, domain states and device XML."
+
+[lib]
+name = "libvirt_domain"
+path = "src/lib.rs"
+
+[dependencies]
+quick-xml.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

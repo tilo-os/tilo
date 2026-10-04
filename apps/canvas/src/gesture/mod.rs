@@ -6,6 +6,7 @@ pub mod area;
 pub mod brush;
 pub mod edit;
 pub mod outline;
+pub mod points;
 pub mod snap;
 pub mod text;
 
