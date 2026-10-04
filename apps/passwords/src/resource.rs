@@ -1,53 +1,24 @@
-//! Passwords as a [`tilo_resource::Resource`]: shared filter/search/selection
-//! prefs sync in the document; the encrypted vault catalogue stays local.
-//!
-//! Add / import / export are Effects with no document delta (published via
-//! [`Resource::local_operations`]). Per-item copy / reveal / edit / delete
-//! ride the live item extras — never a second hand-built vault root beside
-//! [`tilo_resource::publish`].
+//! Passwords as a framework app. The vault is this device's encrypted
+//! credential store, not a document: its items are published as live rows,
+//! and everything Passwords does with them is a [`PasswordsEffect`]. The
+//! resource's document holds nothing; filter, search and selection are this
+//! window's own view state.
 
-use serde::{Deserialize, Serialize};
-use ui::automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{
-    Action, ActionError, ActionParam, ActionRegistry, ActionSpec, EncodedAction, OperationKind,
-    ParamType, Resource as PublishedResource,
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
+    ViewCx,
 };
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
+use ui::tilo_resource::{Doc, ModelError, NoAction, Resource};
 use ui::widget::Element;
 
-use crate::actions::{self, VAULT_RESOURCE_ID};
-use crate::doc::ViewDoc;
-use crate::showcase::{PasswordsSurface, VaultFilter};
+use crate::actions::PasswordsEffect;
+use crate::showcase::{PasswordsSurface, demo_vault};
 
-/// Collaborative vault filter, search, and selection preferences.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PasswordsAction {
-    SetFilter { filter: String },
-    SetSearch { value: String },
-    SelectItem { id: String },
-}
-
-impl Action for PasswordsAction {
-    fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
-        match self {
-            Self::SetFilter { filter } => ViewDoc::set_filter(doc, filter),
-            Self::SetSearch { value } => ViewDoc::set_search(doc, value),
-            Self::SelectItem { id } => ViewDoc::set_selected_id(doc, Some(id.as_str())),
-        }
-        Ok(())
-    }
-}
-
-/// View projection stored in the shared document.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct VaultState {
-    pub(crate) filter: VaultFilter,
-    pub search: String,
-    pub selected_id: Option<String>,
-}
-
-/// The password vault resource.
+/// The password vault resource: the door the vault's rows and effects are
+/// published on.
 pub struct Passwords;
 
 impl Resource for Passwords {
@@ -55,92 +26,28 @@ impl Resource for Passwords {
     const LABEL: &'static str = "Password vault";
     const ACTION_TYPE: &'static str = "passwords.action";
 
-    type State = VaultState;
-    type Action = PasswordsAction;
+    type State = ();
+    type Action = NoAction;
 
-    fn register(registry: &mut ActionRegistry) {
-        registry.register::<PasswordsAction>(Self::ACTION_TYPE);
-    }
-
-    fn read(doc: &Doc) -> Result<VaultState, ModelError> {
-        Ok(VaultState {
-            filter: VaultFilter::parse(&ViewDoc::filter(doc)),
-            search: ViewDoc::search(doc),
-            selected_id: ViewDoc::selected_id(doc),
-        })
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
-            ActionDecl::new(
-                "set-filter",
-                "Filter vault",
-                vec![ActionParam::required(
-                    "filter",
-                    ParamType::Text,
-                    "all | favorites | login | api-key | note | wifi | other",
-                )],
-                |args, _| {
-                    let filter = args
-                        .text("filter")
-                        .ok_or_else(|| "missing filter".to_owned())?
-                        .to_owned();
-                    Ok(PasswordsAction::SetFilter { filter })
-                },
-            )
-            .describe("Set the shared vault sidebar filter."),
-            ActionDecl::new(
-                "set-search",
-                "Search vault",
-                vec![ActionParam::optional(
-                    "query",
-                    ParamType::Text,
-                    "Text to find in titles, usernames, origins, or tags",
-                )],
-                |args, _| {
-                    Ok(PasswordsAction::SetSearch {
-                        value: args.text("query").unwrap_or("").to_owned(),
-                    })
-                },
-            )
-            .describe("Set the shared vault search string."),
-            ActionDecl::new(
-                "select-item",
-                "Select item",
-                vec![ActionParam::required(
-                    "id",
-                    ParamType::Text,
-                    "Opaque local secret id",
-                )],
-                |args, _| {
-                    let id = args
-                        .text("id")
-                        .ok_or_else(|| "missing id".to_owned())?
-                        .to_owned();
-                    Ok(PasswordsAction::SelectItem { id })
-                },
-            )
-            .describe("Focus an opaque vault item in the shared selection."),
-        ]
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        // Effects / Views with no document delta. Per-item ops ride live extras
-        // (or the standalone overlay). Form save/cancel/generate are overlaid
-        // when the editor is open.
-        actions::vault_effect_specs()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
+    fn read(_doc: &Doc) -> Result<(), ModelError> {
+        Ok(())
     }
 }
 
-/// Hosted-only extras that are not document state: live vault item rows (and
-/// editor-session ops when drafting). The vault door stays on
-/// [`tilo_resource::publish`].
-pub(crate) fn live_extras(app: &PasswordsSurface) -> Vec<PublishedResource> {
-    app.live_item_extras()
-}
+/// Where a screenshot's demo vault lives, in place of the person's.
+pub struct DemoVault(pub PathBuf);
+
+/// The screenshot scenarios.
+pub const SCENARIOS: &[&str] = &[
+    "vault",
+    "editor",
+    "health",
+    "app-access",
+    "import",
+    "export",
+    "delete-confirm",
+    "long-list",
+];
 
 /// Framework app: the passwords surface over [`Passwords`].
 pub struct PasswordsShell;
@@ -150,242 +57,284 @@ impl ResourceApp for PasswordsShell {
     const ID: &'static str = "so.tilo.passwords";
     const TITLE: &'static str = "Passwords";
     const ICON: Option<&'static str> = Some("passwords");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1100, 720)
-    }
     // The window shows secrets: captures, recordings and remote viewers get
-    // a placeholder in every launch, not only in a standalone build.
+    // a placeholder in every launch.
     const BEHAVIOUR: ui::application::ComponentBehaviour = ui::application::ComponentBehaviour {
         capture_protected: true,
         ..ui::application::ComponentBehaviour::DEFAULT
     };
 
     fn view(cx: &mut ViewCx<Passwords>) -> Element {
-        cx.surface(PasswordsSurface::live())
-    }
-}
-
-impl ResourceSurface<Passwords> for PasswordsSurface {
-    fn present(&mut self, state: &std::rc::Rc<VaultState>) {
-        // Adopt collaborative view prefs only — never clear the local vault cache.
-        self.adopt_resource_state(state);
+        let model = match cx.fixture::<DemoVault>() {
+            Some(demo) => crate::PasswordsModel::open_in(&demo.0),
+            None => crate::PasswordsModel::open(),
+        };
+        cx.surface(PasswordsSurface::new(model))
     }
 
-    fn attach(&mut self, cx: SurfaceCx<Passwords>) {
-        self.attach_framework(cx.dispatcher());
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<Passwords>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Passwords>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1100, 720)
     }
 
-    pub(crate) fn dispatch(&mut self, doc: &mut AutoCommit, action: &PasswordsAction) {
-        let context =
-            ui::tilo_actions::ActionContext::for_action("so.tilo.passwords", "Passwords", action);
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = EncodedAction::encode(Passwords::ACTION_TYPE, action).ok();
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => self
-                .local
-                .dispatch_with_context(doc, Passwords::ACTION_TYPE, action, context),
-        }
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
+    /// A vault of synthetic items in the capture's scratch directory: a
+    /// screenshot never opens the person's vault.
+    fn fixture(fixture: &mut Fixture<Passwords>) {
+        let copies = if fixture.scenario() == Some("long-list") {
+            3
         } else {
-            self.local.last_dispatched()
+            0
+        };
+        let Ok(root) = fixture.directory().map(std::path::Path::to_path_buf) else {
+            return;
+        };
+        demo_vault(&root, copies);
+        fixture.provide(DemoVault(root));
+    }
+}
+
+impl ResourceSurface<Passwords, PasswordsEffect> for PasswordsSurface {
+    fn present(&mut self, _state: &Rc<()>) {}
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
+    }
+
+    fn effect(
+        &mut self,
+        effect: PasswordsEffect,
+        _cx: &mut EffectCx<Passwords, Self>,
+    ) -> EffectAnswer {
+        self.perform_effect(effect).map(|()| Effected::done())
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        if self.is_editing() {
+            return Vec::new();
         }
+        let reason = "Open an item in the editor first";
+        vec![
+            EffectStatus::unavailable(PasswordsEffect::SAVE, "not_editing", reason),
+            EffectStatus::unavailable(PasswordsEffect::CANCEL, "not_editing", reason),
+            EffectStatus::unavailable(PasswordsEffect::GENERATE, "not_editing", reason),
+        ]
     }
 
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.item_rows()
     }
-}
 
-/// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
-pub fn provide_resources(state: &VaultState) -> Vec<PublishedResource> {
-    vec![ui::tilo_resource::publish::<Passwords>(
-        VAULT_RESOURCE_ID,
-        "Password vault",
-        state,
-    )]
-}
-
-/// Live launch with capture protection for stored secrets.
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<PasswordsShell>()
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.item_row(id)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use accounts::SecretItem;
+    use ui::prelude::TestApp;
+    use ui::tilo_actions::{self, ConfirmationPolicy, OperationKind};
+
     use super::*;
-    use ui::widget::Widget;
+    use crate::actions::item_resource_id;
 
     #[test]
     fn every_launch_withholds_the_vault_window_from_captures() {
-        // The framework applies the declaration to every window hosting the
-        // component; mounting the live view here would open the user's vault.
         const { assert!(<PasswordsShell as ResourceApp>::BEHAVIOUR.capture_protected) };
     }
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
-    )]
-    fn resource_publish_owns_vault_door_and_hosted_keeps_only_live_extras() {
-        let mut doc = AutoCommit::new();
-        PasswordsAction::SetFilter {
-            filter: "favorites".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        PasswordsAction::SetSearch {
-            value: "bank".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        PasswordsAction::SelectItem {
-            id: "opaque-demo".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        doc.commit();
+    /// A private profile whose vault is the test's own: its key in an
+    /// in-process secret store, its file in a scratch home.
+    struct Profile {
+        _home: tempfile::TempDir,
+        _paths: tilo_paths::ProfileScope,
+        _secrets: ui::secrets::SecretsScope,
+    }
 
-        let state = Passwords::read(&doc).expect("seeded vault state");
-        let published =
-            ui::tilo_resource::publish::<Passwords>(VAULT_RESOURCE_ID, "Password vault", &state);
-        assert_eq!(published.kind, "passwords.vault");
-        for id in [
-            "set-filter",
-            "set-search",
-            "select-item",
-            "add",
-            "import",
-            "export",
-        ] {
+    fn profile() -> Profile {
+        let home = tempfile::tempdir().unwrap();
+        Profile {
+            _paths: tilo_paths::scope_profile(home.path()),
+            _secrets: ui::secrets::scope_thread(ui::secrets::memory_backend()),
+            _home: home,
+        }
+    }
+
+    /// A clipboard the test reads back.
+    #[derive(Default)]
+    struct Clipboard(std::sync::Mutex<Option<String>>);
+
+    impl ui::clipboard::ClipboardBackend for Clipboard {
+        fn set_text(&self, _target: ui::clipboard::ClipboardTarget, text: &str) -> bool {
+            *self.0.lock().unwrap() = Some(text.into());
+            true
+        }
+        fn text(&self, _target: ui::clipboard::ClipboardTarget) -> Option<String> {
+            self.0.lock().unwrap().clone()
+        }
+        fn name(&self) -> &'static str {
+            "passwords-test-clipboard"
+        }
+    }
+
+    /// Whether the window shows `name` selected.
+    fn selected(node: &ui::headless::InspectionNode, name: &str) -> bool {
+        fn find(node: &ui::a11y::AccessNode, name: &str) -> bool {
+            (node.name.as_deref() == Some(name) && node.state.selected)
+                || node.children.iter().any(|child| find(child, name))
+        }
+        node.semantics
+            .as_ref()
+            .is_some_and(|semantics| find(semantics, name))
+            || node.children.iter().any(|child| selected(child, name))
+    }
+
+    fn published(app: &mut TestApp<PasswordsShell>, id: &str) -> Option<tilo_actions::Resource> {
+        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+            resources.iter().find_map(|resource| {
+                if resource.id.as_str() == id {
+                    Some(resource.clone())
+                } else {
+                    find(&resource.children, id)
+                }
+            })
+        }
+        find(&app.harness().resources(), id)
+    }
+
+    #[test]
+    fn vault_items_are_live_rows_whose_effects_reach_the_vault() {
+        let _profile = profile();
+        let mut model = crate::PasswordsModel::open();
+        let mut item = SecretItem::login("Private bank", "ada@private.example", "not-public-7A");
+        item.add_origin("https://private.example").unwrap();
+        let id = model.save_item(&mut item).unwrap();
+        drop(model);
+
+        let clipboard = std::sync::Arc::new(Clipboard::default());
+        let _host = ui::host::enter(
+            &ui::host::HostServices::null().with_clipboard(std::sync::Arc::clone(&clipboard) as _),
+        );
+        let mut app = TestApp::<PasswordsShell>::new().unwrap();
+        let row_id = item_resource_id(&id.0);
+        let row = published(&mut app, &row_id).expect("the item is a live row");
+        assert_eq!(row.label, "Saved login");
+        for action in &row.actions {
+            assert_eq!(action.kind, OperationKind::Effect, "{}", action.id);
+        }
+        let vault = published(&mut app, Passwords::KIND).unwrap();
+        let published_text = serde_json::to_string(&app.agent_surface()).unwrap();
+        for private in ["Private bank", "ada@private.example", "not-public-7A"] {
+            assert!(!published_text.contains(private), "published {private:?}");
+        }
+        for id in ["add", "import", "export", "search", "filter", "select"] {
             assert!(
-                published.actions.iter().any(|action| action.id == id),
-                "{id} must be on the framework resource"
+                vault.actions.iter().any(|action| action.id == id),
+                "the vault offers {id}"
             );
         }
-        assert!(
-            published.children.is_empty(),
-            "shared projection must not carry live vault items"
-        );
-        assert_eq!(state.filter, VaultFilter::Favorites);
-        assert_eq!(state.search, "bank");
-        assert_eq!(state.selected_id.as_deref(), Some("opaque-demo"));
-
-        let mut app = PasswordsSurface::demo(crate::ShowcaseMode::Vault);
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &ui::automerge::ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "passwords.vault");
-        assert!(
-            standalone[0]
-                .children
-                .iter()
-                .any(|child| child.kind.starts_with("passwords.")),
-            "standalone publishes vault item children from the local cache"
-        );
-
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        assert!(ui::resources::resource(&app, &seeded, VAULT_RESOURCE_ID).is_none());
-        let item_id = standalone[0]
-            .children
+        let save = vault
+            .actions
             .iter()
-            .find(|child| child.kind.starts_with("passwords."))
-            .map(|child| child.id.as_str().to_owned())
-            .expect("standalone item");
+            .find(|action| action.id == "save")
+            .unwrap();
         assert!(
-            ui::resources::resource(&app, &seeded, &item_id).is_some(),
-            "a hosted vault item stays the published row"
-        );
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "passwords.vault"),
-            "hosted must not republish passwords.vault beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
-        assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "passwords.login"
-                    || resource.kind == "passwords.api-key"
-                    || resource.kind == "passwords.note"
-                    || resource.kind == "passwords.wifi"
-                    || resource.kind == "passwords.secret"),
-            "hosted still publishes live vault item rows: {:?}",
-            extras.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>()
+            matches!(
+                save.contract.availability,
+                ui::tilo_actions::Availability::Unavailable { .. }
+            ),
+            "nothing to save before an item is opened"
         );
 
-        let door = provide_resources(&state);
-        assert_eq!(door[0].kind, "passwords.vault");
-        assert!(door[0].children.is_empty());
-
-        let mut local = AutoCommit::new();
-        let mut standalone = PasswordsSurface::demo(crate::ShowcaseMode::Vault);
-        standalone.commit_view(
-            &mut local,
-            &PasswordsAction::SetSearch {
-                value: "privacy".into(),
-            },
-        );
-        assert!(
-            standalone.last_document_action().is_some(),
-            "ActionSink must record document actions on the local host"
-        );
-        assert_eq!(ViewDoc::search(&local), "privacy");
-
-        // Empty present must not wipe a local vault that has not been published.
-        let before = standalone.item_count();
-        assert!(before > 0, "demo vault starts with items");
-        standalone.adopt_resource_state(&VaultState::default());
+        // Copying hands out the secret, so it asks first.
+        let copy = row
+            .actions
+            .iter()
+            .find(|action| action.id == "copy")
+            .unwrap();
+        assert_eq!(copy.contract.confirmation, ConfirmationPolicy::Confirm);
+        app.effect_confirmed(&PasswordsEffect::Copy { item: id.0.clone() })
+            .unwrap();
         assert_eq!(
-            standalone.item_count(),
-            before,
-            "adopting empty view prefs must not clear the vault cache"
+            clipboard.0.lock().unwrap().as_deref(),
+            Some("not-public-7A")
+        );
+
+        // Searching and filtering are this window's own view: nothing in the
+        // document changes and no history is written.
+        let versions = app.versions().len();
+        app.effect(&PasswordsEffect::Search {
+            query: Some("bank".into()),
+        })
+        .unwrap();
+        app.effect(&PasswordsEffect::Filter {
+            filter: "favorites".into(),
+        })
+        .unwrap();
+        assert!(
+            app.effect(&PasswordsEffect::Filter {
+                filter: "everything".into()
+            })
+            .is_err()
+        );
+        assert_eq!(app.versions().len(), versions);
+
+        // Deleting asks first, then removes the item from the vault.
+        assert!(
+            app.effect(&PasswordsEffect::Delete { item: id.0.clone() })
+                .is_err(),
+            "deleting needs the caller's confirmation"
+        );
+        assert_eq!(crate::PasswordsModel::open().items().len(), 1);
+        app.effect_confirmed(&PasswordsEffect::Delete { item: id.0 })
+            .unwrap();
+        assert!(crate::PasswordsModel::open().items().is_empty());
+        assert!(published(&mut app, &row_id).is_none(), "its row is gone");
+    }
+
+    #[test]
+    fn an_item_saved_from_the_editor_lands_in_the_vault() {
+        let _profile = profile();
+        let mut app = TestApp::<PasswordsShell>::new().unwrap();
+        app.effect(&PasswordsEffect::Add).unwrap();
+        app.harness().type_text("Mail");
+        app.effect(&PasswordsEffect::Generate).unwrap();
+        app.effect(&PasswordsEffect::Save).unwrap();
+        let items = crate::PasswordsModel::open().items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Mail");
+        assert!(items[0].password.len() >= 20, "a generated password");
+        assert!(
+            app.effect(&PasswordsEffect::Save).is_err(),
+            "the editor closed with the save"
+        );
+    }
+
+    #[test]
+    fn captures_show_a_demo_vault_of_their_own() {
+        let _profile = profile();
+        for scenario in SCENARIOS {
+            let mut app = TestApp::<PasswordsShell>::capture(Some(scenario)).unwrap();
+            let root = app.harness().inspection().root;
+            let frame = app.harness().inspection_json().unwrap();
+            assert!(!frame.contains("never-rendered"), "{scenario}: {frame}");
+            let shows = |text: &str| frame.contains(text);
+            match *scenario {
+                "editor" => assert!(shows("Northstar Bank") && shows("Save"), "{frame}"),
+                "delete-confirm" => assert!(shows("Delete item?"), "{frame}"),
+                "import" => assert!(shows("Review import"), "{frame}"),
+                "export" => assert!(shows("Export as plaintext CSV"), "{frame}"),
+                "app-access" => assert!(shows("Apps with ongoing access"), "{frame}"),
+                "health" => assert!(selected(&root, "Password review"), "{frame}"),
+                _ => assert!(shows("Northstar Bank"), "{scenario}: {frame}"),
+            }
+        }
+        assert!(
+            crate::PasswordsModel::open().items().is_empty(),
+            "no capture wrote to the person's vault"
         );
     }
 }

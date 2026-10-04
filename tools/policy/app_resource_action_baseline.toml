@@ -48,7 +48,6 @@
 "apps/music/src/resource.rs" = 2
 "apps/notes/src/resource.rs" = 1
 "apps/osk/src/resource.rs" = 2
-"apps/passwords/src/resource.rs" = 2
 "apps/pdf-viewer/src/resource.rs" = 2
 "apps/photos/src/resource.rs" = 2
 "apps/print-centre/src/resource.rs" = 1
@@ -104,8 +103,6 @@
 "apps/monitor/src/main.rs" = 1
 "apps/music/src/lib.rs" = 2
 "apps/osk/src/main.rs" = 1
-"apps/passwords/src/lib.rs" = 2
-"apps/passwords/src/main.rs" = 2
 "apps/pdf-viewer/src/lib.rs" = 2
 "apps/pdf-viewer/src/main.rs" = 3
 "apps/photos/src/lib.rs" = 2
