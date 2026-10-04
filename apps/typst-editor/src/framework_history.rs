@@ -110,11 +110,15 @@ impl TypstPreview {
     }
 }
 impl HistoryPreview for TypstPreview {
-    fn layout(&mut self, bounds: Rect, tr: &mut TextRenderer, _: &Theme) -> Result<(), String> {
+    fn layout(&mut self, bounds: Rect, tr: &mut TextRenderer, theme: &Theme) -> Result<(), String> {
         self.bounds = bounds;
         self.editor.set_rect(bounds);
         self.pane.set_rect(bounds);
+        // The rows are measured in the theme before the panel is scrolled, so
+        // the saved offset is clamped against what is really on screen.
+        self.diagnostics.measure_rows(tr, theme);
         self.diagnostics.set_rect(bounds);
+        self.pane.apply_theme(theme);
         if self.view.page.as_deref() == Some("source") {
             self.editor.prepare_snapshot_layout(tr);
             self.editor.reset_cursor();
@@ -138,13 +142,15 @@ impl HistoryPreview for TypstPreview {
     }
     fn draw(&mut self, s: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         if self.source.is_none() {
-            tr.draw_text(
-                s,
-                "No source recorded in this version. Restore is unavailable.",
-                16.,
-                theme.text_dim,
-                t * Affine::translate((self.bounds.x0 + 16., self.bounds.y0 + 16.)),
-                Some(self.bounds.width() as f32 - 32.),
+            ui::widget::EmptyState::paint(
+                &mut ui::paint::PaintCtx::new(s, t, tr, theme),
+                self.bounds,
+                &ui::widget::EmptyStateContent {
+                    icon: Some(ui::icons::Icon::FileText),
+                    message: Some("Restore is unavailable for this version."),
+                    ..ui::widget::EmptyStateContent::new("No source recorded in this version")
+                },
+                vello::kurbo::Point::new(-1., -1.),
             );
         } else if self.view.page.as_deref() == Some("diagnostics") {
             self.diagnostics.draw(s, t, tr, theme);
@@ -261,8 +267,7 @@ mod tests {
                 .origin(),
             "diagnostics" => vello::kurbo::Point::new(
                 0.,
-                p.diagnostics
-                    .history_test_row_top(p.diagnostics.diags().len() - 3),
+                p.diagnostics.row_rect(p.diagnostics.diags().len() - 3).y0,
             ),
             _ => p.pane.history_test_point(2, 495.),
         }
@@ -316,17 +321,16 @@ mod tests {
             );
             assert!((p.view.scroll.1 - (origin.y - reversed.y)).abs() < 0.02);
             if page == "diagnostics" {
+                let row_h = p
+                    .diagnostics
+                    .row_rect(p.diagnostics.diags().len() - 3)
+                    .height();
                 for (scene, row) in [(end_scene, end.y), (reversed_scene, reversed.y)] {
                     assert!(
-                        scene
-                            .encoding()
-                            .resources
-                            .glyph_runs
-                            .iter()
-                            .any(
-                                |run| (f64::from(run.transform.translation[1]) - row - 6.).abs()
-                                    < 0.02
-                            ),
+                        scene.encoding().resources.glyph_runs.iter().any(|run| {
+                            let y = f64::from(run.transform.translation[1]);
+                            y >= row && y <= row + row_h
+                        }),
                         "the diagnostic row's text moves with its viewport geometry"
                     );
                 }
