@@ -2219,10 +2219,11 @@ pub use sidebar::{
     SidebarSide,
 };
 mod nav_shell;
-pub(crate) mod window_header;
+pub mod window_header;
 pub use nav_shell::{
     InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, SidebarPlacement,
 };
+pub use window_header::{HISTORY_CONTROL_ID, HistoryControl, HistoryOpener, WindowHeader};
 mod nav_list;
 pub use nav_list::{NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSection};
 mod document_viewport;

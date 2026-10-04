@@ -442,6 +442,17 @@ impl Button {
         }
     }
 
+    /// Whether [`Self::set_compact_toolbar_presentation`] leaves a glyph:
+    /// a labelled button with an icon (or one already shown icon-only).
+    pub(crate) fn compacts_to_icon(&self) -> bool {
+        self.icon.is_some() && (!self.label.is_empty() || self.compact_presentation.is_some())
+    }
+
+    /// Whether the button is shown icon-only by a responsive toolbar.
+    pub(crate) fn is_compact_presentation(&self) -> bool {
+        self.compact_presentation.is_some()
+    }
+
     /// The counterpart to `TextInput::apply_layout_external` for an app
     /// that hand-positions a shared control over its own painted chrome;
     /// the button still owns its focus / a11y / activation contract, only
@@ -1509,6 +1520,16 @@ impl Widget for Button {
 
     fn name(&self) -> &'static str {
         "Button"
+    }
+
+    /// A host that lays buttons out (a header row) reaches their
+    /// presentation through this.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn test_id(&self) -> Option<&str> {

@@ -64,8 +64,6 @@ pub(crate) struct Chrome {
     pub composer_max_h: f64,
     /// Space around the composer field.
     pub composer_pad: f64,
-    /// Width of the workspace rail inside the navigation drawer.
-    pub rail_w: f64,
     /// The body text style the composer measures its draft with.
     pub body: TextStyle,
     /// The floating call window around its video: the title bar above it,
@@ -98,7 +96,6 @@ impl Chrome {
             composer_min_h,
             composer_max_h: composer_min_h + 6.0 * body_line,
             composer_pad: f64::from(sp.s4),
-            rail_w: f64::from(metrics.rail_width),
             body,
             call_title_h: f64::from(theme.text(TextRole::Label).line_height_px())
                 + 2.0 * f64::from(sp.s3),

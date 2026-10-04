@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use taffy::style_helpers::{auto, length, percent, zero};
+use taffy::style_helpers::{auto, length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -27,7 +27,7 @@ use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::widget::{
     AppModel, AvatarFace, Column, ControlSize, Dropdown, EmptyState, EmptyStateContent,
-    Interaction, ListRowFace, ModelPath, Row, RowLeading, ScrollMetrics, Scrollbar, TaffyTreeExt,
+    Interaction, ListRowFace, ModelPath, RowLeading, ScrollMetrics, Scrollbar, TaffyTreeExt,
     Widget,
 };
 
@@ -710,70 +710,6 @@ impl ui::widget::Decorator for Compact {
             layout.size.width = length(width.ceil());
             layout.flex_shrink = 0.0;
             let _ = taffy.set_style(node, layout);
-        }
-        node
-    }
-}
-
-/// The overview column: the controls above the list (its order), inset
-/// like the column's title so their edges line up with it and with the
-/// rows' content, then the list running to the bottom.
-pub(crate) struct Overview {
-    column: Column,
-}
-
-impl Overview {
-    pub(crate) fn new(controls: Row, list: ContactList) -> Self {
-        Self {
-            column: Column::new()
-                .with_no_padding()
-                .push(Box::new(controls))
-                .push(Box::new(list)),
-        }
-    }
-}
-
-impl ui::widget::Decorator for Overview {
-    type Inner = Column;
-
-    fn inner(&self) -> &Column {
-        &self.column
-    }
-
-    fn inner_mut(&mut self) -> &mut Column {
-        &mut self.column
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = Widget::build_layout(&mut self.column, taffy, theme, node_map);
-        if let Ok(style) = taffy.style(node) {
-            let mut style = style.clone();
-            style.gap.height = zero();
-            let _ = taffy.set_style(node, style);
-        }
-        let controls = taffy
-            .children(node)
-            .ok()
-            .and_then(|nodes| nodes.first().copied());
-        if let Some(controls) = controls
-            && let Ok(style) = taffy.style(controls)
-        {
-            let mut style = style.clone();
-            // The shell's column inset (`s3`): the column's content edge, where
-            // the rows' text starts too.
-            let inset = length(theme.tokens.spacing.s3);
-            let step = length(theme.tokens.spacing.s2);
-            style.padding.left = inset;
-            style.padding.right = inset;
-            style.padding.top = step;
-            style.padding.bottom = step;
-            style.flex_shrink = 0.0;
-            let _ = taffy.set_style(controls, style);
         }
         node
     }
