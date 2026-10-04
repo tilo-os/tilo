@@ -1085,6 +1085,11 @@ suite = "os/tests/recovery-boot-check.sh"
 reason = "runs inside a booted guest, as root"
 
 [[unrequired]]
+suite = "os/tests/shared_disk_esp.sh"
+reason = "runs inside a booted guest, as root, and repartitions its disk"
+workflow = "dev-disk-boot-diagnostic.yml"
+
+[[unrequired]]
 suite = "os/tests/release_tools_image.sh"
 reason = "needs the built release-tools image"
 workflow = "build-release-tools.yml"

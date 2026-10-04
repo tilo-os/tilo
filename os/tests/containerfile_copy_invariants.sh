@@ -76,6 +76,8 @@ containerfile="$repo/os/Containerfile"
 # The user-tmpfiles.d snippets live in /usr/share, the only system path
 # systemd-tmpfiles --user reads.
 # The native runtime host at /usr/bin/tilo-runtime-mcp is a deliberate addition.
+# /usr/bin/bootc from bootc-builder, the base's release patched to find this
+# system's ESP on a disk it shares, and its licence notice are deliberate.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
@@ -87,7 +89,7 @@ containerfile="$repo/os/Containerfile"
 # definitions or upstream keys ship, only the generic helper and its units.
 # The build-only Cisco OpenH264 gate is a deliberate addition (removed after it runs).
 # The extension-manifest public key ships beside the helper.
-expected_contract=6eb69e284555227a46dcc65a3eb0c144e4303db619d3e2df99e18358d0fb7482
+expected_contract=0ca4912c4d0f3cf0f908a882a7a7d90b7ff7d12f6cc548c3dfe57b37fc084349
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
