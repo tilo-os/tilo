@@ -33,10 +33,14 @@ use tilo_actions::{
 };
 use tilo_resource::{ActionRef, Effect, Invoke, Resource};
 use ui_core::WakeHandle;
+use ui_core::portal::{ContentsOutcome, PickRequest, PickedContents, SaveOutcome};
 use ui_core::widget::{ResourceOperation, ResourceOperationStart};
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
+
+/// Why a file chooser answered nothing.
+const CHOOSER_GONE: &str = "the file chooser closed without answering";
 
 /// What an effect handler (or a job's completion) answers.
 #[derive(Debug)]
@@ -148,12 +152,17 @@ impl std::fmt::Debug for EffectReply {
 
 type Then<R, H> = Box<dyn FnOnce(&mut H, Box<dyn Any + Send>, &mut EffectCx<R, H>) -> EffectAnswer>;
 
+/// An answer a job waits for without a worker: polled on the UI thread each
+/// time the job is, `Some` once it arrived.
+type Source = Box<dyn FnMut() -> Option<Box<dyn Any + Send>>>;
+
 /// A job a handler or a completion started, not yet tracked.
 struct Started<R: Resource, H> {
     events: Receiver<JobEvent>,
     then: Option<Then<R, H>>,
     cancelled: Arc<AtomicBool>,
     task: Option<ui_core::rt::JoinHandle<()>>,
+    source: Option<Source>,
 }
 
 impl<R: Resource, H> Started<R, H> {
@@ -247,6 +256,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             then,
             cancelled: Arc::clone(&cancelled),
             task: None,
+            source: None,
         }) {
             tracing::warn!("an effect started a second job; the first one is stopped");
             previous.stop();
@@ -314,6 +324,68 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     pub fn reply(&mut self) -> EffectReply {
         let (progress, _) = self.track(None);
         EffectReply { progress }
+    }
+
+    /// Run `then` on the UI thread with what `receiver` delivers, `None`
+    /// when its sender went away unanswered. Nothing waits on a thread (a
+    /// browser page has none to spare): the job looks each time the app
+    /// wakes, so the sender must wake it, as the host's services do.
+    fn wait_for<T: Send + 'static>(
+        &mut self,
+        receiver: Receiver<T>,
+        then: impl FnOnce(&mut H, Option<T>, &mut Self) -> EffectAnswer + 'static,
+    ) -> Effected {
+        let (progress, _) = self.track(Some(Self::then(then)));
+        if let Some(started) = self.started.as_mut() {
+            started.source = Some(Box::new(move || {
+                // The job's own channel stays open while it waits here.
+                let _waiting = &progress;
+                match receiver.try_recv() {
+                    Ok(value) => Some(Box::new(Some(value)) as Box<dyn Any + Send>),
+                    Err(TryRecvError::Empty) => None,
+                    Err(TryRecvError::Disconnected) => Some(Box::new(None::<T>)),
+                }
+            }));
+        }
+        Effected::Pending
+    }
+
+    /// Ask the person to choose a file with the host's chooser (`request`
+    /// is an Open request), then run `then` on the UI thread with its name
+    /// and contents, or `None` when they cancelled. Works where files have
+    /// no paths, such as a browser page. The effect must be declared `job`.
+    pub fn choose_file(
+        &mut self,
+        request: PickRequest,
+        then: impl FnOnce(&mut H, Option<PickedContents>, &mut Self) -> EffectAnswer + 'static,
+    ) -> Effected {
+        let chosen = request.send_contents();
+        self.wait_for(chosen, move |host, outcome, cx| match outcome {
+            Some(ContentsOutcome::Picked(files)) => then(host, files.into_iter().next(), cx),
+            Some(ContentsOutcome::Cancelled) => then(host, None, cx),
+            Some(ContentsOutcome::Failed(reason)) => Err(reason),
+            None => Err(CHOOSER_GONE.into()),
+        })
+    }
+
+    /// Ask the person where to save `bytes` with the host's chooser
+    /// (`request` is a Save request suggesting a file name; a browser page
+    /// downloads them under it), then run `then` on the UI thread with
+    /// whether they were saved: `false` when the person cancelled. The
+    /// effect must be declared `job`.
+    pub fn save_file(
+        &mut self,
+        request: PickRequest,
+        bytes: Vec<u8>,
+        then: impl FnOnce(&mut H, bool, &mut Self) -> EffectAnswer + 'static,
+    ) -> Effected {
+        let saved = request.send_save_contents(bytes);
+        self.wait_for(saved, move |host, outcome, cx| match outcome {
+            Some(SaveOutcome::Saved) => then(host, true, cx),
+            Some(SaveOutcome::Cancelled) => then(host, false, cx),
+            Some(SaveOutcome::Failed(reason)) => Err(reason),
+            None => Err(CHOOSER_GONE.into()),
+        })
     }
 }
 
@@ -391,6 +463,7 @@ struct Job<R: Resource, H> {
     then: Option<Then<R, H>>,
     cancelled: Arc<AtomicBool>,
     task: Option<ui_core::rt::JoinHandle<()>>,
+    source: Option<Source>,
     sequence: u64,
 }
 
@@ -401,6 +474,7 @@ impl<R: Resource, H> From<Started<R, H>> for Job<R, H> {
             then: started.then,
             cancelled: started.cancelled,
             task: started.task,
+            source: started.source,
             sequence: 0,
         }
     }
@@ -470,7 +544,11 @@ impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Jobs<R, H, K> {
         invocation: Option<InvocationId>,
     ) -> Option<Polled> {
         let job = self.running.get_mut(key)?;
-        let event = match job.events.try_recv() {
+        let answered = job.source.as_mut().and_then(|source| source());
+        let event = match answered.map_or_else(
+            || job.events.try_recv(),
+            |value| Ok(JobEvent::Finished(value)),
+        ) {
             Ok(event) => event,
             Err(TryRecvError::Empty) => return None,
             Err(TryRecvError::Disconnected) => {
