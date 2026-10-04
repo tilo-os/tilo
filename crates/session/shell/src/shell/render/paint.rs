@@ -502,12 +502,37 @@ fn pipeline_seed_to_publish(gpu: &ui::gpu::DeviceHandle) -> Option<wgpu::Pipelin
     ui::pipeline_seed::empty(gpu)
 }
 
+/// Replace the seed for `gpu` under `dir` atomically, readable by every app and writable by the
+/// session only. `Ok(false)` when the backend has no cache data to share.
+fn write_pipeline_seed(
+    gpu: &ui::gpu::DeviceHandle,
+    cache: &wgpu::PipelineCache,
+    dir: &std::path::Path,
+) -> std::io::Result<bool> {
+    let Some(file) = ui::pipeline_seed::seed_file(dir, &gpu.adapter.get_info()) else {
+        return Ok(false);
+    };
+    let Some(data) = cache.get_data() else {
+        return Ok(false);
+    };
+    std::fs::create_dir_all(dir)?;
+    let staging = file.with_extension("tmp");
+    std::fs::write(&staging, &data)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o644))?;
+    }
+    std::fs::rename(&staging, &file)?;
+    Ok(true)
+}
+
 /// Write the session's pipelines where the launcher binds them, read-only, into every app.
 fn publish_pipeline_seed(gpu: &ui::gpu::DeviceHandle, cache: &wgpu::PipelineCache) {
     let dir = crate::shell::launcher::runtime_dir()
         .join("tilo")
         .join(launcher::gpu::PIPELINE_SEED_DIR_NAME);
-    match ui::pipeline_seed::publish(gpu, cache, &dir) {
+    match write_pipeline_seed(gpu, cache, &dir) {
         Ok(true) => tracing::info!(
             target: "shell::render",
             dir = %dir.display(),
