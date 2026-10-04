@@ -16,15 +16,14 @@ use ui::framework::{
     ResourceSurface, SurfaceCx, ViewCx,
 };
 use ui::storage::{Scope, SettingsSchema};
-use ui::tilo_actions::{Action, ActionError, ActionParam, ActionRegistry, ActionSpec, ParamType};
+use ui::tilo_actions::{Action, ActionError, ActionParam, ActionRegistry, ParamType};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::doc::PlacesDoc;
 use crate::effects::FilesEffect;
 use crate::files_app::{
-    FileExplorerWidget, folder_palette_operations, published_place_resources,
-    published_template_resources,
+    FileExplorerWidget, Ran, published_place_resources, published_template_resources,
 };
 
 /// A change to the bookmarked places. A place is stored as
@@ -115,12 +114,6 @@ impl Resource for FileExplorer {
 
     fn declarations() -> Vec<ActionDecl<Self>> {
         bookmark_declarations()
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        // Path-independent folder Views/Effects. Live listing rows and remote
-        // accounts stay on the surface; places/templates are children below.
-        folder_palette_operations()
     }
 
     fn children(state: &FilesState) -> Vec<tilo_actions::Resource> {
@@ -286,11 +279,15 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
     fn effect(
         &mut self,
         effect: FilesEffect,
-        _cx: &mut EffectCx<FileExplorer, Self>,
+        cx: &mut EffectCx<FileExplorer, Self>,
     ) -> EffectAnswer {
         Ok(match self.run_effect(effect)? {
-            Some(answer) => Effected::value(answer),
-            None => Effected::done(),
+            Ran::Done(Some(answer)) => Effected::value(answer),
+            Ran::Done(None) => Effected::done(),
+            Ran::Pending => {
+                self.await_effect(cx.reply());
+                Effected::Pending
+            }
         })
     }
 
@@ -354,17 +351,26 @@ mod tests {
         let published = ui::tilo_resource::publish::<FileExplorer>("files", "Folder", &state);
         assert_eq!(published.kind, "files.folder");
         let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+        for expected in ["add-bookmark", "remove-bookmark", "move-bookmark"] {
+            assert!(ids.contains(&expected), "missing `{expected}`: {ids:?}");
+        }
+        let effects: Vec<String> = <FilesEffect as ui::tilo_resource::Effect>::specs()
+            .into_iter()
+            .map(|spec| spec.id)
+            .collect();
         for expected in [
             "refresh",
             "paste",
             "go-to",
+            "open",
             "list",
             "grid",
-            "add-bookmark",
-            "remove-bookmark",
-            "move-bookmark",
+            "sort-name",
         ] {
-            assert!(ids.contains(&expected), "missing `{expected}`: {ids:?}");
+            assert!(
+                effects.iter().any(|id| id == expected),
+                "the window's `{expected}` is an effect: {effects:?}"
+            );
         }
         for gone in [
             "set-view",
@@ -442,6 +448,7 @@ mod tests {
         })
         .unwrap();
         app.settle();
+
         let place = folder.path().display().to_string();
         assert!(app.state().bookmarks.contains(&place), "{:?}", app.state());
         assert!(app.undo());
@@ -548,6 +555,18 @@ mod tests {
             folder.path().join("Projects/final.txt").exists(),
             "{moved:?}"
         );
+        // A row's effect, bound to it, as the palette offers it on the row.
+        std::fs::write(folder.path().join("notes.txt"), b"n").unwrap();
+        app.effect(&FilesEffect::Refresh).unwrap();
+        let row = crate::search_provider::entry_resource_id(&folder.path().join("notes.txt"));
+        app.effect_on(&row, &FilesEffect::Copy { entry: row.clone() })
+            .unwrap();
+        app.effect(&FilesEffect::GoTo {
+            path: folder.path().join("Projects").display().to_string(),
+        })
+        .unwrap();
+        app.effect(&FilesEffect::Paste).unwrap();
+        assert!(folder.path().join("Projects/notes.txt").exists());
         assert!(
             app.effect(&FilesEffect::EmptyTrash).is_err(),
             "Trash is emptied from the Trash folder only"
@@ -567,7 +586,8 @@ mod tests {
             )
             .unwrap();
         app.settle();
-        let place = folder.path().display().to_string();
+        // The folder shown is Projects, where the paste went.
+        let place = folder.path().join("Projects").display().to_string();
         assert!(app.state().bookmarks.contains(&place), "{:?}", app.state());
     }
 }

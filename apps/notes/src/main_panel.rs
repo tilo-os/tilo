@@ -711,6 +711,11 @@ impl MainPanel {
         self.editor.editor_mut().set_transclusion_previews(previews);
     }
 
+    /// The store the editor draws images from.
+    pub(crate) fn image_store(&self) -> Option<&ui::ImageStore> {
+        self.image_store.as_ref()
+    }
+
     pub fn set_image_store(&mut self, store: Option<ui::ImageStore>) {
         self.image_store.clone_from(&store);
         self.editor.editor_mut().set_image_store(store);

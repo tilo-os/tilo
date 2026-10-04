@@ -94,8 +94,10 @@ pub struct SettingsApp {
     /// field. When non-empty the sidebar shows a filtered results list instead
     /// of the sectioned category list.
     search_query: String,
-    /// Process-local navigation request written by a sidebar row. This keeps
-    /// current-pane selection out of collaboration, persistence and undo.
+    /// The pane asked for, taken in at the next sync: the open effect (and,
+    /// outside a host, a sidebar row) writes it, so the shell is rebuilt
+    /// between frames, never under an event being dispatched. Selection
+    /// stays out of collaboration, persistence and undo.
     sidebar_selection: ui::LocalState<Option<Category>>,
     /// Each pane's scroll offset. The content scroller is rebuilt whenever the
     /// pane's structure changes (a control applied, a category opened), so the
@@ -240,6 +242,11 @@ impl SettingsApp {
 
     pub fn selected(&self) -> Category {
         self.selected
+    }
+
+    /// Ask for `category`'s pane; it opens at the next sync.
+    pub(crate) fn request_pane(&self, category: Category) {
+        self.sidebar_selection.set(Some(category));
     }
 
     /// Switch the active category. Flags `structure_dirty`, swaps the shell's
@@ -656,7 +663,12 @@ impl SettingsApp {
     /// search and the seeded shot state, for `shell_text_scale` (see
     /// [`Self::shell_scale`]).
     fn build_shell(&self) -> AppShell {
-        let nav = sidebar::build(self.selected, &self.search_query, &self.sidebar_selection);
+        let nav = sidebar::build(
+            &self.cx,
+            self.selected,
+            &self.search_query,
+            &self.sidebar_selection,
+        );
         let content = self.build_content();
         // A narrow (phone) layout keeps the selected category's CONTENT on
         // screen — the category list is one back-tap away, never the default a
@@ -681,7 +693,12 @@ impl SettingsApp {
     /// query. No-op before the shell exists (the first `build_layout` will
     /// build them fresh).
     fn refresh_shell_children(&mut self) {
-        let nav = sidebar::build(self.selected, &self.search_query, &self.sidebar_selection);
+        let nav = sidebar::build(
+            &self.cx,
+            self.selected,
+            &self.search_query,
+            &self.sidebar_selection,
+        );
         let content = self.build_content();
         if let Some(shell) = &mut self.shell {
             shell.set_nav(nav);
@@ -784,10 +801,9 @@ impl Widget for SettingsApp {
         self.accounts.poll();
         self.displays.poll();
         self.network.poll();
-        // Sidebar selection and search are local presentation state. They do
-        // not create CRDT click flags, draft text, collaboration traffic or
-        // undo entries. A pane's row offers the same `select` to search and
-        // agents through its open effect.
+        // A sidebar row opens its pane through the pane row's open effect;
+        // only a bare app outside a host selects here. Search is local
+        // presentation state: no CRDT text, collaboration traffic or undo.
         if let Some(category) = self.sidebar_selection.with(|request| *request) {
             self.sidebar_selection.set(None);
             self.select(category);
@@ -799,7 +815,12 @@ impl Widget for SettingsApp {
             // Filtering changes only navigation. Reconstructing the active
             // pane here would discard its transient state and reseed its
             // document bindings on every search character.
-            let nav = sidebar::build(self.selected, &self.search_query, &self.sidebar_selection);
+            let nav = sidebar::build(
+                &self.cx,
+                self.selected,
+                &self.search_query,
+                &self.sidebar_selection,
+            );
             if let Some(shell) = &mut self.shell {
                 shell.set_nav(nav);
             }
