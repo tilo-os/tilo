@@ -346,6 +346,8 @@ def compositor_health(st: dict, pid: str) -> list[str]:
     problems = []
     if st.get("compositor_pid") != pid:
         problems.append(f"compositor pid {pid} is gone (now: {st.get('compositor_pid') or 'none'})")
+    if st.get("crash_message"):
+        problems.append(f"crash: {st['crash_message']}")
     for key, what in (("crash_logs", "crash log(s) in ~/.cache/tilo/crashes"),
                       ("coredumps", "tilo-shell core dump(s)"),
                       ("unexpected_exit", "'compositor exited without a logout request' in the journal"),
@@ -439,11 +441,13 @@ def run_test(args) -> int:
             time.sleep(1.5)
             vm.qmp.screendump(shots / f"{n:02d}-{app_id}-search.png")
             vm.qmp.keys("ret")
-            started = None
+            title = f"{name} opens and the compositor survives {args.dwell} s"
+            # The launch shows in the session log as the app's own output.
+            started, st = None, {}
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
                 st = vm.status([app_id])
-                if st.get(f"app.{app_id}"):
+                if int(st.get(f"app.{app_id}") or 0):
                     started = time.monotonic()
                     break
                 if compositor_health(st, pid):
@@ -452,24 +456,30 @@ def run_test(args) -> int:
             if started is None:
                 problems = compositor_health(st, pid)
                 vm.qmp.screendump(shots / f"{n:02d}-{app_id}-missing.png")
-                report.add(cid, f"{name} opens and the compositor survives {args.dwell} s", False,
+                report.add(cid, title, False,
                            "; ".join(problems) if problems else f"{name} ({app_id}) did not start within 60 s")
                 if problems:
                     return 1
                 continue
             # The app's first frame, its broker connection and its presence
             # publication all happen in this window.
-            survived = 0.0
+            survived, problems = 0.0, []
             while time.monotonic() - started < args.dwell:
                 time.sleep(2)
-                problems = compositor_health(vm.status([]), pid)
+                st = vm.status([app_id])
+                problems = compositor_health(st, pid)
                 if problems:
                     break
                 survived = time.monotonic() - started
             vm.qmp.screendump(shots / f"{n:02d}-{app_id}.png")
-            report.add(cid, f"{name} opens and the compositor survives {args.dwell} s", not problems,
-                       "; ".join(problems), app_id=app_id, survived_s=round(survived, 1))
-            if problems:
+            if int(st.get(f"app_stopped.{app_id}") or 0):
+                # Not what this test guards, but an app that never shows a
+                # window cannot be said to have opened.
+                problems.append(f"{name} stopped before presenting a window: "
+                                f"{st.get(f'app_error.{app_id}') or 'no error line'}")
+            report.add(cid, title, not problems, "; ".join(problems), app_id=app_id,
+                       survived_s=round(survived, 1))
+            if st.get("compositor_pid") != pid:
                 return 1
         return 0
     except (Fail, subprocess.SubprocessError, OSError) as error:

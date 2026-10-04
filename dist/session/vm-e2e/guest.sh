@@ -143,9 +143,18 @@ step_status() {
         | grep -c 'compositor exited without a logout request' || true)"
     echo "panics=$( { journalctl -b --no-pager -o cat 2>/dev/null; cat "$log" 2>/dev/null; } \
         | grep -c -E "thread '[^']*' panicked|panicked at " || true)"
+    local crash
+    crash=$(find "$home/.cache/tilo/crashes" -type f 2>/dev/null | sort | tail -n 1)
+    [[ -z $crash ]] || echo "crash_message=$(sed -n 's/^message: *//p' "$crash" | head -n 1)"
+    # An app's launch shows in the session log as its own output lines; the
+    # compositor logs an app that exits before its first window.
     local app
     for app in "$@"; do
-        echo "app.$app=$(pgrep -u "$user" -f -- "--app-id $app" | head -n 1 || true)"
+        echo "app.$app=$(grep -c "^\[app $app " "$log" 2>/dev/null || true)"
+        echo "app_stopped.$app=$(grep 'application stopped before presenting a window' "$log" 2>/dev/null \
+            | grep -c -F "$app" || true)"
+        echo "app_error.$app=$(grep "^\[app $app stderr\] error: " "$log" 2>/dev/null | tail -n 1 \
+            | sed "s/^\[app $app stderr\] //" || true)"
     done
 }
 
