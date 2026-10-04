@@ -1738,7 +1738,7 @@ fn the_sidebar_toggle_leads_the_sidebar_when_docked_and_the_tab_strip_otherwise(
     let _frame = render(&mut app, (1280, 800));
     let sidebar = app.drawer.sidebar_rect();
     assert!(sidebar.width() > 0.0);
-    assert!(sidebar.contains(app.toggle_rect.center()));
+    assert!(sidebar.contains(app.drawer.toggle_rect().center()));
     assert!(app.tabs.get_rect().x0 >= sidebar.x1);
 
     // Hidden: the toggle moves to the leading edge of the tab strip, and the
@@ -1747,15 +1747,15 @@ fn the_sidebar_toggle_leads_the_sidebar_when_docked_and_the_tab_strip_otherwise(
     app.drawer.snap(false);
     let _frame = render(&mut app, (1280, 800));
     assert!(app.toggle_in_tab_strip());
-    assert!(app.toggle_rect.width() > 0.0);
+    assert!(app.drawer.toggle_rect().width() > 0.0);
     assert!(
         app.tabs
             .tab_rects()
             .first()
-            .is_some_and(|tab| tab.x0 > app.toggle_rect.x1),
+            .is_some_and(|tab| tab.x0 > app.drawer.toggle_rect().x1),
         "the first tab clears the toggle: {:?} vs {:?}",
         app.tabs.tab_rects().first(),
-        app.toggle_rect
+        app.drawer.toggle_rect()
     );
 
     // A narrow window starts with the sidebar as a closed drawer.

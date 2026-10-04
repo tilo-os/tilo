@@ -422,8 +422,6 @@ pub struct CodeApp {
     last_width: f64,
     /// Where the sidebar toggle is drawn (the sidebar's header or the tab
     /// strip's leading edge), and whether the pointer is over it.
-    toggle_rect: Rect,
-    toggle_hovered: bool,
     /// The sidebar's no-project state, with its one "Open folder" action.
     sidebar_empty: EmptyState,
     /// The header row's height and the width the tab strip gives up to the
@@ -828,8 +826,6 @@ impl CodeApp {
             // 1280px) docks the sidebar; corrected from the real width once
             // `apply_layout` measures the window.
             last_width: f64::MAX,
-            toggle_rect: Rect::ZERO,
-            toggle_hovered: false,
             sidebar_empty: EmptyState::new("No folder open")
                 .with_icon(ui::icons::Icon::FolderOpen)
                 .with_action("Open folder"),
@@ -975,15 +971,6 @@ impl CodeApp {
         )
     }
 
-    /// The square the sidebar toggle fills in `header`: a pointer target in an
-    /// `s3` inset, the same place `NavShell` puts it.
-    fn toggle_rect_in(header: Rect, theme: &Theme) -> Rect {
-        let inset = f64::from(theme.tokens.spacing.s3);
-        let side = f64::from(theme.tokens.metrics.min_pointer_target);
-        let top = header.y0 + (header.height() - side) / 2.0;
-        Rect::new(header.x0 + inset, top, header.x0 + inset + side, top + side)
-    }
-
     /// The width the tab strip gives up to the sidebar toggle when the toggle
     /// sits at the strip's leading edge: the toggle and a gap.
     fn toggle_slot_width(theme: &Theme) -> f64 {
@@ -993,9 +980,21 @@ impl CodeApp {
     }
 
     /// Whether the toggle sits in the tab strip: whenever the sidebar panel
-    /// is not itself showing a header to hold it.
+    /// is not itself a docked column with a header to hold it.
     fn toggle_in_tab_strip(&self) -> bool {
-        self.drawer.reveal() <= 0.5
+        self.sidebar_layout() == SplitLayout::Overlay || self.drawer.reveal() <= 0.5
+    }
+
+    /// The window's header row, across the top of the editor: the drawer
+    /// lays its toggle out at the leading corner.
+    fn window_header_row(&mut self, theme: &Theme) -> Rect {
+        let area = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + self.header_h,
+        );
+        self.drawer.header(area, theme).toggle
     }
 
     /// The embedded terminal's document map. Missing panels are created by
@@ -2578,53 +2577,21 @@ impl CodeApp {
     fn track_pointer(&mut self, event: &WindowEvent, scale_factor: f64) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-            let over =
-                self.toggle_rect.width() > 0.0 && self.toggle_rect.contains(self.last_cursor);
-            self.toggle_hovered = over;
         }
     }
 
-    /// Escape dismisses an open drawer; a click on the sidebar toggle flips
-    /// it; a click on the scrim (outside the open drawer) dismisses it.
-    /// Returns `true` when the event was consumed.
+    /// The drawer's own parts: its toggle, the show/hide shortcut, Escape
+    /// and a press on the scrim of an open floating drawer. Returns `true`
+    /// when the drawer took the event.
     fn handle_sidebar_chrome(
         &mut self,
         event: &WindowEvent,
-        overlay: bool,
-        handled: &mut bool,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        if overlay
-            && self.sidebar_open()
-            && let WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Named(winit::keyboard::NamedKey::Escape),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            self.drawer.close();
-            *handled = true;
+        self.drawer.resolve(self.rect);
+        if self.drawer.handle_event(event, ctx) {
+            *ctx.handled = true;
             return true;
-        }
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-        {
-            if self.toggle_rect.width() > 0.0 && self.toggle_rect.contains(self.last_cursor) {
-                self.toggle_sidebar();
-                *handled = true;
-                return true;
-            }
-            // A click on the scrim (outside the open drawer) dismisses it.
-            if overlay && self.drawer.press_dismisses(self.last_cursor) {
-                *handled = true;
-                return true;
-            }
         }
         false
     }
@@ -2659,17 +2626,6 @@ impl CodeApp {
         }
         let shift = mods.shift_key();
         let alt = mods.alt_key();
-        // The one shortcut that shows or hides the sidebar in every app.
-        if ui::platform::HostShortcut::resolve(
-            ui::platform::PlatformConventions::default(),
-            c,
-            shift,
-        ) == Some(ui::platform::HostShortcut::Sidebar)
-        {
-            self.toggle_sidebar();
-            *handled = true;
-            return true;
-        }
         let command = match c.to_lowercase().as_str() {
             "p" => {
                 // Files and commands are platform search rows: both shortcuts
@@ -3273,7 +3229,7 @@ impl Widget for CodeApp {
         self.drawer.resolve(self.rect);
         self.drawer.tick(theme);
         let layout = self.sidebar_layout();
-        self.toggle_rect = Rect::ZERO;
+        self.window_header_row(theme);
 
         if layout == SplitLayout::Docked && self.sidebar_visible() {
             self.draw_sidebar(scene, transform, text_renderer, theme, presence);
@@ -3285,22 +3241,10 @@ impl Widget for CodeApp {
             self.draw_sidebar(scene, transform, text_renderer, theme, presence);
         }
         if self.toggle_in_tab_strip() {
-            // With no sidebar panel on screen the toggle leads the tab strip.
-            let header = Rect::new(
-                self.tabs.get_rect().x0 - self.toggle_slot_w,
-                self.rect.y0,
-                self.tabs.get_rect().x0,
-                self.rect.y0 + self.header_h,
-            );
-            self.toggle_rect = Self::toggle_rect_in(header, theme);
-            self.drawer.draw_toggle(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                self.toggle_rect,
-                self.toggle_hovered,
-            );
+            // With no docked sidebar column to hold it the toggle leads the
+            // tab strip.
+            self.drawer
+                .paint_toggle(scene, transform, text_renderer, theme);
         }
 
         // The embedded terminal renders its live grid over the panel's content
@@ -3353,9 +3297,7 @@ impl Widget for CodeApp {
             return;
         }
 
-        let overlay = self.sidebar_layout() == SplitLayout::Overlay;
-
-        if self.handle_sidebar_chrome(event, overlay, ctx.handled) {
+        if self.handle_sidebar_chrome(event, ctx) {
             return;
         }
 
@@ -3413,6 +3355,7 @@ impl Widget for CodeApp {
         }
 
         // Route to child widgets.
+        let overlay = self.sidebar_layout() == SplitLayout::Overlay;
         self.route_to_children(event, ctx, overlay);
 
         // If the editor asked for a language-server action (Ctrl+Space, F1,
@@ -3489,19 +3432,7 @@ impl Widget for CodeApp {
             );
         }
         // The sidebar toggle is painted by the toolkit, so it is published here.
-        if self.toggle_rect.width() > 0.0 {
-            children.push(
-                AccessNode::new(Role::Button)
-                    .with_name(if self.sidebar_open() {
-                        "Hide sidebar"
-                    } else {
-                        "Show sidebar"
-                    })
-                    .with_bounds(self.toggle_rect)
-                    .with_action_target("sidebar-toggle")
-                    .with_state(AccessState::new().focusable(true)),
-            );
-        }
+        children.extend(self.drawer.toggle_accessibility());
         let analysis = self.lsp_status.label();
         if !analysis.is_empty() {
             children.push(
