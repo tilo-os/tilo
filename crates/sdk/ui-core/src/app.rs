@@ -879,7 +879,7 @@ impl App {
                 "component assembly no longer owns its component".to_owned(),
             ));
         };
-        let mut root = Box::new(crate::widget::BoundAppWidget { component });
+        let mut root = Box::new(crate::widget::BoundAppWidget::new(component));
         let mut root_custody = retirement_assembly::AppAssemblyCustody {
             retirement: assembly.retirement.take(),
             root: None,
@@ -3576,9 +3576,7 @@ pub(crate) mod ordinary_confirmation_tests {
             instance.mount(|_| {}).unwrap();
             let binding = instance.callback_binding();
             (
-                Box::new(crate::widget::BoundAppWidget {
-                    component: instance,
-                }),
+                Box::new(crate::widget::BoundAppWidget::new(instance)),
                 OwnerGuard::Component(binding, host),
             )
         } else {

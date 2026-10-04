@@ -52,7 +52,7 @@ fn managed_components_bind_shared_history_to_their_real_owner() {
                 )
             })
             .unwrap();
-        let root = Box::new(BoundAppWidget { component });
+        let root = Box::new(BoundAppWidget::new(component));
         let source =
             HistorySourceRegistration::owned("document", APP, root.history_owner().unwrap())
                 .unwrap();

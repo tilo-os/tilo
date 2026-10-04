@@ -12,6 +12,8 @@
 
 #[path = "click_link_navigates.rs"]
 mod click_link_navigates;
+#[path = "complete_capture.rs"]
+mod complete_capture;
 #[path = "e2e_smoke.rs"]
 mod e2e_smoke;
 #[path = "effects.rs"]
