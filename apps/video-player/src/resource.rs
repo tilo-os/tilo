@@ -61,11 +61,13 @@ impl Resource for VideoPlayer {
             anchor: Some(playlist_resource_id(&playlist.id)),
             title: playlist.name.clone(),
             text: "Playlist".to_owned(),
+            action: None,
         });
         let annotations = state.annotations.iter().map(|annotation| SearchEntry {
             anchor: Some(annotation_resource_id(&annotation.id)),
             title: annotation.text.clone(),
             text: format!("{} ms", annotation.time_ms),
+            action: None,
         });
         playlists.chain(annotations).collect()
     }
@@ -79,7 +81,9 @@ impl ResourceApp for VideoPlayerShell {
     const ID: &'static str = "so.tilo.video-player";
     const TITLE: &'static str = "Video Player";
     const ICON: Option<&'static str> = Some("video-player");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<VideoPlayer>) -> Element {
         cx.surface(PlayerApp::new().with_collab())

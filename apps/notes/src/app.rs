@@ -1000,6 +1000,7 @@ impl NotesApp {
             prepared_local_focus: None,
             pending_responsive_view: None,
         };
+        app.main.use_local_actions(app.actions.local());
         app.refresh_link_pages();
         app.main.set_tags(app.selected_tag_chips());
         app.refresh_status();
@@ -1998,10 +1999,24 @@ impl NotesApp {
     }
 
     /// Present the framework's workspace projection.
+    ///
+    /// Which note is open is this person's, not the document's: it stays
+    /// open, and its editor stays bound, while the note exists. Rebinding on
+    /// every edit would put the caret back at the start after each keystroke.
     pub(crate) fn adopt_resource_state(&mut self, state: &std::rc::Rc<Workspace>) {
+        let selected = self
+            .workspace
+            .selected()
+            .filter(|page| state.get(*page).is_some());
         self.workspace = (**state).clone();
+        self.workspace.set_selected(selected);
+        if self.bound_page != selected {
+            self.bound_page = None;
+        }
         self.sidebar.sync_from_workspace(&self.workspace);
-        self.bound_page = self.workspace.selected();
+        if let Some(page) = selected.and_then(|id| self.workspace.get(id)) {
+            self.main.set_title(Some(page.title.clone()));
+        }
         self.refresh_link_pages();
         self.self_dirty = true;
     }
@@ -2011,6 +2026,7 @@ impl NotesApp {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Notebook>,
     ) {
+        self.main.attach_notebook(dispatcher.clone());
         self.actions.attach(dispatcher);
         self.seeded = true;
         self.adopted = true;
@@ -3794,7 +3810,7 @@ impl NotesApp {
     /// [`Self::perform_action`], so a test can compare it to a palette spec.
     #[doc(hidden)]
     #[allow(dead_code, reason = "framework migration test helper")]
-    pub fn last_dispatched_for_test(&self) -> Option<&tilo_actions::EncodedAction> {
+    pub fn last_dispatched_for_test(&self) -> Option<tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -5072,19 +5088,16 @@ impl ui::widget::controls::ActionControls for NotesApp {
 }
 
 impl ui::undo::CommittedActions for NotesApp {
-    /// Hand the host the heads captured before a sidebar affordance dispatched
-    /// its page-tree action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
+    /// Hand the host the heads captured before an affordance or the body
+    /// editor dispatched through the local action host, so it records one
+    /// undo boundary for it; typing a word stays one step. Rising-edge:
+    /// cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // A body edit dispatches through the page's editor; everything else
-        // through the app's own host. One event does one or the other.
-        let body = ui::undo::CommittedActions::take_committed_action(self.main.body_editor_mut());
-        let notes = self.actions.take_committed();
-        body.or(notes)
+        self.actions.take_committed()
     }
     /// Typing a word in a note is one undo step.
     fn keeps_undo_step_open(&self) -> bool {
-        self.main.keeps_undo_step_open()
+        self.actions.keeps_step_open()
     }
 }
 
@@ -6426,8 +6439,7 @@ mod tests {
             app.dispatch_event_for_test(&mut state.doc, OutEvent::Delete(welcome));
             let from_button = app
                 .last_dispatched_for_test()
-                .expect("the sidebar delete dispatched an action")
-                .clone();
+                .expect("the sidebar delete dispatched an action");
 
             assert_eq!(from_palette.type_id, from_button.type_id);
             assert_eq!(

@@ -104,9 +104,9 @@ impl RichTextSurface {
     }
 }
 
-impl<A: ui::tilo_actions::Action + serde::Serialize> RichTextSurface<RichTextField<A>> {
+impl RichTextSurface<RichTextField> {
     /// An editor over rich text stored in a field of another resource.
-    pub fn field(field: RichTextField<A>) -> Self {
+    pub fn field(field: RichTextField) -> Self {
         Self::over(field)
     }
 }
@@ -664,44 +664,61 @@ impl<S: RichTextSource + 'static> ui::undo::UndoPoints for RichTextSurface<S> {
     }
 }
 
+// Every edit is a dispatcher's, whose undo boundaries the app's root
+// reports; the editor itself never brackets a step.
 impl<S: RichTextSource + 'static> ui::undo::CommittedActions for RichTextSurface<S> {
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.source.take_committed()
-    }
-    fn keeps_undo_step_open(&self) -> bool {
-        self.source.keeps_step_open()
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_document::RICH_TEXT_ACTION_TYPE;
     use ui::automerge::ROOT;
-    use ui::headless::FrameHarness;
-    use ui::tilo_actions::Action;
+    use ui::framework::testing::TestApp;
+    use ui::framework::{ResourceApp, ViewCx};
+    use ui::tilo_resource::Invoke;
+
+    /// A document edited as a field: the rich text at its root, through a
+    /// child dispatcher of the document itself.
+    struct FieldApp;
+
+    impl ResourceApp for FieldApp {
+        type Resource = RichText;
+        const ID: &'static str = "so.tilo.rich-text-field-work";
+        const TITLE: &'static str = "Field";
+
+        fn view(cx: &mut ViewCx<RichText>) -> ui::widget::Element {
+            let body = cx.child::<RichText>("tilo.rich-text/body", |edit| edit);
+            Box::new(RichTextSurface::field(RichTextField::new(body, |_| {
+                Some(ROOT)
+            })))
+        }
+    }
 
     /// Blocks compared and paragraphs presented while typing `typed` into
     /// the first of `paragraphs` paragraphs.
     fn typing_work(paragraphs: usize, typed: &str) -> (usize, usize) {
-        let mut state = ui::State::new();
-        RichText::initialize_under(&mut state.doc, &ROOT).unwrap();
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = TestApp::<FieldApp>::new().unwrap();
         let mut markdown = String::new();
         for index in 0..paragraphs {
             use std::fmt::Write as _;
             let _ = write!(markdown, "Paragraph {index} of a long note.\n\n");
         }
-        RichTextAction::ReplaceBody { markdown }
-            .apply(&mut state.doc)
+        app.invoke(Invoke::<RichText>::apply(&RichTextAction::ReplaceBody { markdown }).unwrap())
             .unwrap();
-        state.doc.commit();
-        let field = RichTextField::new(RICH_TEXT_ACTION_TYPE, |_| Some(ROOT), |edit| edit);
-        let surface = RichTextSurface::field(field);
-        let mut harness = FrameHarness::new(state, Box::new(surface), (800, 600));
-        harness.click_at(40.0, 10.0);
-        harness.type_text("warm ");
+        let rect = app
+            .harness()
+            .targets()
+            .get("block_editor")
+            .copied()
+            .unwrap();
+        app.harness().click_at(rect.x0 + 40.0, rect.y0 + 10.0);
+        app.harness().type_text("warm ");
         WORK.with(|work| work.set((0, 0)));
-        harness.type_text(typed);
+        app.harness().type_text(typed);
         WORK.with(std::cell::Cell::get)
     }
 

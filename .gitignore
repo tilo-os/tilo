@@ -1,6 +1,7 @@
 .env
 os/output/
 os/external-assets/cache/
+os/legacy-guest/agent/
 os/external-assets/cosign-cache/
 os/external-assets/kernel-cache/
 # OEM firmware is staged locally for an explicit hardware image, never committed.
@@ -76,6 +77,9 @@ vendor/*/Cargo.lock
 
 # Local agent captures, logs, source snapshots and review scratch.
 /.superpowers/
+
+# Finder metadata lists a developer's local directory contents.
+.DS_Store
 
 # Python bytecode is regenerated from source.
 __pycache__/

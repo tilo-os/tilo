@@ -53,9 +53,6 @@ fn fixture() -> (DeviceFabricView, DeviceId) {
             revertible_calibrations: Vec::new(),
             tethering: Vec::new(),
             remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView::default(),
-            display_mirror_consents: Vec::new(),
-            display_mirrors: Vec::new(),
-            display_mirror_available: false,
         },
         remote,
     )
@@ -752,7 +749,7 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn device_pane_tethering_capture_and_mirror_require_explicit_consent() {
+fn device_pane_tethering_and_capture_require_explicit_consent() {
     fn device_pane_requests_tethering_from_the_exact_certified_phone() {
         let (mut view, remote) = fixture();
         view.local_media.clear();
@@ -873,66 +870,9 @@ fn device_pane_tethering_capture_and_mirror_require_explicit_consent() {
         );
     }
 
-    fn device_pane_mirror_requires_consent_and_stops_exact_session() {
-        let (mut view, remote) = fixture();
-        view.local_media.clear();
-        view.local_outputs.clear();
-        view.display_mirror_available = true;
-        view.display_mirror_consents = vec![
-            crate::shell::device_fabric_runtime::DisplayMirrorConsentView {
-                session_id: [21; 16],
-                source_label: "Desk computer".into(),
-            },
-        ];
-        view.display_mirrors = vec![
-            crate::shell::device_fabric_runtime::DisplayMirrorStatusView {
-                session_id: [22; 16],
-                peer: remote.clone(),
-                peer_label: "Travel laptop".into(),
-                outbound: true,
-                phase: crate::shell::device_fabric_runtime::DisplayMirrorPhase::Streaming,
-            },
-        ];
-        let actions = Rc::new(RefCell::new(Vec::new()));
-        let recorded = Rc::clone(&actions);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
-        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        host.set_device_fabric_bridge(Rc::new(move |action| {
-            recorded.borrow_mut().push(action);
-            Ok(view.clone())
-        }));
-
-        let (allow, decline) =
-            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
-        host.handle_qs_device_fabric_click(allow.center());
-        host.handle_qs_device_fabric_click(decline.center());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(3).center());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(2).center());
-
-        let actions = actions.borrow();
-        assert!(
-            actions.contains(&DeviceFabricUiAction::ResolveDisplayMirror {
-                session_id: [21; 16],
-                approved: true,
-            })
-        );
-        assert!(
-            actions.contains(&DeviceFabricUiAction::ResolveDisplayMirror {
-                session_id: [21; 16],
-                approved: false,
-            })
-        );
-        assert!(actions.contains(&DeviceFabricUiAction::RequestDisplayMirror { target: remote }));
-        assert!(actions.contains(&DeviceFabricUiAction::StopDisplayMirror {
-            session_id: [22; 16],
-        }));
-    }
-
     device_pane_requests_tethering_from_the_exact_certified_phone();
     device_pane_requires_explicit_tethering_consent_and_exposes_disconnect();
     device_pane_routes_remote_capture_and_requires_explicit_source_consent();
-    device_pane_mirror_requires_consent_and_stops_exact_session();
 }
 
 #[test]

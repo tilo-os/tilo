@@ -421,6 +421,9 @@ mod tests {
                 vec![
                     "send",
                     "run",
+                    "open-in",
+                    "create-environment",
+                    "rename-environment",
                     "interrupt",
                     "clear",
                     "paste",
@@ -710,6 +713,14 @@ mod tests {
                             .actions
                             .iter()
                             .filter(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
+                            // Moving the session elsewhere is what an ended
+                            // session is for; only its process input closes.
+                            .filter(|action| {
+                                !matches!(
+                                    action.id.as_str(),
+                                    "open-in" | "create-environment" | "rename-environment"
+                                )
+                            })
                             .all(|action| {
                                 matches!(
                                     action.contract.availability,
