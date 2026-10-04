@@ -578,6 +578,9 @@ pub struct FrameHarness {
     /// What each job started with [`FrameHarness::start_bound_job`] reported
     /// so far, in order.
     job_updates: HashMap<tilo_actions::InvocationId, Vec<tilo_actions::InvocationUpdate>>,
+    /// The invoker each job started for someone else runs for, while it
+    /// runs ([`FrameHarness::start_bound_job_for`]).
+    acting_for: HashMap<tilo_actions::InvocationId, crate::invocation_scope::Continuation>,
     /// Per-pass frame profiler, installed by the perf harness via
     /// [`Driver::begin_profiling`]. `None` on a normal (persistence) run, so
     /// [`Driver::relayout`] and [`Driver::send`] pay nothing. When set, each
@@ -1451,6 +1454,7 @@ impl FrameHarness {
             control_failures: Vec::new(),
             bound_invocations: HashMap::new(),
             job_updates: HashMap::new(),
+            acting_for: HashMap::new(),
             profiler: None,
             last_send_skipped_relayout: false,
             pointer_redraw_diagnostics: false,
@@ -5267,15 +5271,106 @@ impl FrameHarness {
         ),
         tilo_actions::DoorError,
     > {
+        self.start_bound_job_for(None, address, arguments, confirmed)
+    }
+
+    /// [`Self::start_bound_job`] for `invoker` rather than the person at
+    /// this device, as the host runs an invocation an agent or a
+    /// collaborator was admitted for: the operation and every edit it
+    /// submits are theirs, and an edit needing more than the operation they
+    /// were admitted for is refused, failing the operation.
+    ///
+    /// # Errors
+    /// As [`Self::invoke_bound_action`]; the operation's failure when it
+    /// answered at once.
+    pub fn start_bound_job_for(
+        &mut self,
+        invoker: Option<tilo_actions::ActionInvoker>,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<
+        (
+            tilo_actions::InvocationId,
+            crate::widget::ResourceOperationStart,
+        ),
+        tilo_actions::DoorError,
+    > {
         self.pump_component_wakes();
         let invocation = tilo_actions::InvocationId::new();
-        let started = self
-            .invoke_bound_action_as(address, arguments, confirmed, None, invocation)
-            .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+        let delivered = invoker.map(|invoker| {
+            let context = tilo_actions::ActionContext::default().with_invoker(invoker.clone());
+            crate::invocation_scope::Continuation {
+                admitted: self.admitted_requirement(address, arguments),
+                invoker,
+                context: Some(context),
+                refused: None,
+            }
+        });
+        let started = match &delivered {
+            Some(continuation) => {
+                self.acting_for.insert(invocation, continuation.clone());
+                let _invoker =
+                    crate::invocation_scope::InvokerScope::enter(continuation.invoker.clone());
+                self.invoke_bound_action_for(
+                    address,
+                    arguments,
+                    confirmed,
+                    continuation.context.as_ref(),
+                    invocation,
+                    &continuation.invoker.actor,
+                )
+            }
+            None => self.invoke_bound_action_as(address, arguments, confirmed, None, invocation),
+        };
+        let started = started.map_err(crate::bound_dispatch::BoundActionError::into_door);
+        if !matches!(started, Ok(crate::widget::ResourceOperationStart::Accepted)) {
+            // What it submitted is applied for its invoker before it answers.
+            self.dispatch_control_invocations();
+            if let Some(continuation) = self.acting_for.remove(&invocation)
+                && let Some(refused) = continuation.refused
+                && started.is_ok()
+            {
+                return Err(tilo_actions::DoorError::Unavailable {
+                    code: refused.code,
+                    reason: refused.message,
+                });
+            }
+        }
+        let started = started?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
             self.job_updates.insert(invocation, Vec::new());
         }
         Ok((invocation, started))
+    }
+
+    /// What an invoker of `address` with `arguments` is admitted for: the
+    /// operation's own requirement. Nothing when it does not resolve.
+    fn admitted_requirement(
+        &self,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> tilo_actions::PermissionRequirement {
+        let address = match self.bound_publication.target(&address.address) {
+            Ok(Some(target)) => target.address,
+            _ => address.clone(),
+        };
+        crate::bound_dispatch::discover_bound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            Some(&address.address),
+        )
+        .ok()
+        .and_then(|snapshots| {
+            snapshots
+                .iter()
+                .filter(|snapshot| snapshot.binding.instance_id == address.instance_id)
+                .find_map(|snapshot| {
+                    tilo_actions::door::resolve(&snapshot.resources, &address.address)
+                        .map(|spec| spec.permission_for_json(arguments))
+                })
+        })
+        .unwrap_or(tilo_actions::PermissionRequirement::None)
     }
 
     /// Every update the job `invocation` reported so far, oldest first.
@@ -5391,6 +5486,20 @@ impl FrameHarness {
         invocation: tilo_actions::InvocationId,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
     {
+        let author = self.author.0.clone();
+        self.invoke_bound_action_for(address, arguments, confirmed, ambient, invocation, &author)
+    }
+
+    fn invoke_bound_action_for(
+        &mut self,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+        ambient: Option<&tilo_actions::ActionContext>,
+        invocation: tilo_actions::InvocationId,
+        actor: &str,
+    ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
+    {
         let translated = self.bound_publication.target(&address.address)?;
         if translated
             .as_ref()
@@ -5423,7 +5532,7 @@ impl FrameHarness {
             crate::bound_dispatch::ResourceActionRequest {
                 argument: None,
                 arguments: Some(arguments),
-                actor: &self.author.0,
+                actor,
                 confirmed,
                 broker_admitted: false,
                 invocation,
@@ -5588,8 +5697,19 @@ impl FrameHarness {
         &mut self,
         target: crate::bound_dispatch::BoundActionTarget,
         intent: &tilo_actions::ControlInvocation,
+        on_behalf_of: Option<tilo_actions::InvocationId>,
     ) {
         let invocation = tilo_actions::InvocationId::new();
+        // An edit a job started for someone else submitted is theirs, as far
+        // as they were admitted.
+        let acting = on_behalf_of.and_then(|id| self.acting_for.get(&id).cloned());
+        let actor = acting.as_ref().map_or_else(
+            || self.author.0.clone(),
+            |acting| acting.invoker.actor.clone(),
+        );
+        let scopes = acting
+            .as_ref()
+            .map(crate::invocation_scope::Continuation::enter);
         let result = crate::bound_dispatch::invoke_resource_action(
             self.root.as_mut(),
             &mut self.state.doc,
@@ -5598,15 +5718,17 @@ impl FrameHarness {
             crate::bound_dispatch::ResourceActionRequest {
                 argument: None,
                 arguments: Some(&intent.arguments),
-                actor: &self.author.0,
+                actor: &actor,
                 confirmed: false,
                 broker_admitted: false,
                 invocation,
-                ambient: None,
+                ambient: acting.as_ref().and_then(|acting| acting.context.as_ref()),
                 scope: None,
             },
         )
         .map_err(crate::bound_dispatch::BoundActionError::into_door);
+        drop(scopes);
+        self.note_continuation(on_behalf_of, &result);
         if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
             self.root.as_mut(),
             &target,
@@ -5619,7 +5741,9 @@ impl FrameHarness {
                 self.bound_invocations.insert(invocation, target);
             }
             Ok(crate::widget::ResourceOperationStart::Completed(_)) => {}
-            Err(tilo_actions::DoorError::ConfirmationRequired) => {
+            // Nobody here asked for it: the person at the device is never
+            // prompted to confirm another invoker's edit.
+            Err(tilo_actions::DoorError::ConfirmationRequired) if acting.is_none() => {
                 self.open_ordinary_confirmation(
                     crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(target),
                     intent,
@@ -5629,6 +5753,23 @@ impl FrameHarness {
                 tracing::warn!(code = error.code(), %error, "headless: bound control refused");
                 self.control_failures.push(error.to_string());
             }
+        }
+    }
+
+    /// Keep why an edit the job `on_behalf_of` submitted was refused: the
+    /// job then fails.
+    fn note_continuation(
+        &mut self,
+        on_behalf_of: Option<tilo_actions::InvocationId>,
+        result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        let Err(error) = result else {
+            return;
+        };
+        if let Some(continuation) = on_behalf_of.and_then(|id| self.acting_for.get_mut(&id))
+            && continuation.refused.is_none()
+        {
+            continuation.refused = Some(crate::invocation_scope::Continuation::failure(error));
         }
     }
 
@@ -6040,6 +6181,13 @@ impl FrameHarness {
                 {
                     return Err(crate::bound_dispatch::denied(spec));
                 }
+                crate::invocation_scope::check_continuation(
+                    spec,
+                    match arguments.as_ref() {
+                        Some(arguments) => spec.permission_for_json(arguments),
+                        None => spec.permission_for_argument(argument),
+                    },
+                )?;
                 let encoded = crate::bound_dispatch::encode_resource_action(
                     &resources,
                     address,
@@ -6094,8 +6242,13 @@ impl FrameHarness {
                 "headless: control traversal incomplete; delivering already drained intents"
             );
         }
-        for (target, intent) in registered.components.into_iter().chain(bound.pending) {
-            self.dispatch_bound_control(target, &intent);
+        for (target, intent, on_behalf_of) in registered
+            .components
+            .into_iter()
+            .map(|(target, intent)| (target, intent, None))
+            .chain(bound.pending)
+        {
+            self.dispatch_bound_control(target, &intent, on_behalf_of);
         }
 
         let batch =
@@ -6106,11 +6259,22 @@ impl FrameHarness {
         for (target, intent) in registered.legacy.into_iter().chain(batch.controls) {
             self.dispatch_legacy_control(&target, &intent);
         }
-        while let Some(intent) = registered
+        while let Some((intent, on_behalf_of)) = registered
             .outer
             .pop_front()
-            .or_else(|| crate::widget::controls::take_control_invocation(self.root.as_mut()))
+            .map(|intent| (intent, None))
+            .or_else(|| {
+                crate::widget::controls::take_attributed_control_invocation(self.root.as_mut())
+            })
         {
+            let acting = on_behalf_of.and_then(|id| self.acting_for.get(&id).cloned());
+            let author = acting.as_ref().map_or_else(
+                || self.author.clone(),
+                |acting| crate::permissions::UserId(acting.invoker.actor.clone()),
+            );
+            let scopes = acting
+                .as_ref()
+                .map(crate::invocation_scope::Continuation::enter);
             // The remaining controls originated in the outer document. Never
             // reselect a matching component or legacy owner from their address.
             let mut resources = Vec::new();
@@ -6147,6 +6311,10 @@ impl FrameHarness {
                 ) {
                     return Err(tilo_actions::DoorError::Unknown(intent.address.clone()));
                 }
+                crate::invocation_scope::check_continuation(
+                    spec,
+                    spec.permission_for_json(&intent.arguments),
+                )?;
                 let encoded = crate::bound_dispatch::encode_resource_action(
                     &resources,
                     &intent.address,
@@ -6166,11 +6334,11 @@ impl FrameHarness {
                         resource,
                         spec,
                         encoded,
-                        actor: &self.author.0,
+                        actor: &author.0,
                         local_author: &self.author.0,
                         broker_admitted: false,
                         invocation,
-                        ambient: None,
+                        ambient: acting.as_ref().and_then(|acting| acting.context.as_ref()),
                         scope: None,
                     },
                 )?;
@@ -6179,11 +6347,13 @@ impl FrameHarness {
                         before,
                         None,
                         None,
-                        Some(self.author.clone()),
+                        Some(author.clone()),
                     );
                 }
                 Ok::<_, tilo_actions::DoorError>(started)
             })();
+            drop(scopes);
+            self.note_continuation(on_behalf_of, &result);
             crate::widget::controls::on_control_invocation_result(
                 self.root.as_mut(),
                 &intent.address,
@@ -6194,7 +6364,7 @@ impl FrameHarness {
                     self.pending_control_invocations.insert(invocation);
                 }
                 Ok(crate::widget::ResourceOperationStart::Completed(_)) => {}
-                Err(tilo_actions::DoorError::ConfirmationRequired) => self
+                Err(tilo_actions::DoorError::ConfirmationRequired) if acting.is_none() => self
                     .open_ordinary_confirmation(
                         crate::bound_dispatch::legacy_document::LocalResourceTarget::Outer,
                         &intent,
@@ -6304,6 +6474,18 @@ impl FrameHarness {
                 invocation,
                 false,
             );
+            let update = match update {
+                Ok(Some(update)) if update.is_terminal() => {
+                    // What the job's completion submitted is applied for
+                    // its invoker before it answers.
+                    self.dispatch_control_invocations();
+                    Ok(Some(match self.acting_for.remove(&invocation) {
+                        Some(continuation) => continuation.settle(update),
+                        None => update,
+                    }))
+                }
+                update => update,
+            };
             match &update {
                 Ok(Some(update)) => {
                     self.record_control_failure(update);
@@ -6322,6 +6504,7 @@ impl FrameHarness {
                     .is_some_and(tilo_actions::InvocationUpdate::is_terminal)
             {
                 self.bound_invocations.remove(&invocation);
+                self.acting_for.remove(&invocation);
             }
         }
 

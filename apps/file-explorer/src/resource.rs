@@ -16,18 +16,22 @@ use ui::framework::{
     ResourceSurface, SurfaceCx, ViewCx,
 };
 use ui::storage::{Scope, SettingsSchema};
-use ui::tilo_actions::{Action, ActionError, ActionParam, ActionRegistry, ParamType};
+use ui::tilo_actions::{
+    Action, ActionError, ActionParam, ActionRegistry, EncodedAction, ParamType,
+};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
 use ui::widget::Element;
 
-use crate::doc::PlacesDoc;
+use crate::doc::{OpsDoc, PlacesDoc};
 use crate::effects::FilesEffect;
+use crate::file_ops::{FileOp, Outcome, QueuedOp};
 use crate::files_app::{
     FileExplorerWidget, Ran, published_place_resources, published_template_resources,
 };
 
-/// A change to the bookmarked places. A place is stored as
-/// [`crate::places`] names it, so it means the same folder on every device.
+/// A change to the Files document: the bookmarked places (stored as
+/// [`crate::places`] names them, so they mean the same folder on every
+/// device) and the filesystem operations queued from Files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilesDocAction {
     /// Bookmark `place` at position `at` (the end when `None`).
@@ -36,6 +40,15 @@ pub enum FilesDocAction {
     RemoveBookmark { place: String },
     /// Move `place` to position `to`.
     MoveBookmark { place: String, to: usize },
+    /// Queue the filesystem change `op` for `device` to carry out. Undoing
+    /// it queues the revert of the operation.
+    QueueFileOp {
+        id: String,
+        device: String,
+        op: FileOp,
+    },
+    /// The device carried out the operation `id`: record what it changed.
+    SettleFileOp { id: String, outcome: Outcome },
 }
 
 impl Action for FilesDocAction {
@@ -44,15 +57,70 @@ impl Action for FilesDocAction {
             Self::AddBookmark { place, at } => PlacesDoc::add(doc, place, *at)?,
             Self::RemoveBookmark { place } => PlacesDoc::remove(doc, place)?,
             Self::MoveBookmark { place, to } => PlacesDoc::move_to(doc, place, *to)?,
+            Self::QueueFileOp { id, device, op } => OpsDoc::queue(doc, id, device, op)?,
+            Self::SettleFileOp { id, outcome } => OpsDoc::settle(doc, id, outcome)?,
         }
         Ok(())
     }
+
+    /// Undoing a queued filesystem change takes it back on the filesystem:
+    /// the revert of the operation this action queues, queued the same way.
+    fn inverse_before(&self, doc: &ui::tilo_actions::Doc) -> Option<Self> {
+        let Self::QueueFileOp { id, device, .. } = self else {
+            return None;
+        };
+        let queued = OpsDoc::fresh_id(doc, id);
+        Some(Self::QueueFileOp {
+            id: format!("{queued}-undo"),
+            device: device.clone(),
+            op: FileOp::Revert { op: queued },
+        })
+    }
+
+    fn inverse_encoded(&self, doc: &ui::tilo_actions::Doc) -> Option<EncodedAction> {
+        EncodedAction::encode(FileExplorer::ACTION_TYPE, &self.inverse_before(doc)?).ok()
+    }
+
+    /// What a device reports it did is content from outside: it syncs, but
+    /// no undo takes it back (undoing the operation does).
+    fn change_kind(&self) -> ui::tilo_actions::ChangeKind {
+        match self {
+            Self::SettleFileOp { .. } => ui::tilo_actions::ChangeKind::External,
+            _ => ui::tilo_actions::ChangeKind::Content,
+        }
+    }
 }
 
-/// The Files document's state: the bookmarked places, in order.
+/// The Files document's state: the bookmarked places, in order, and the
+/// filesystem operations queued from Files.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FilesState {
     pub bookmarks: Vec<String>,
+    pub ops: Vec<QueuedOp>,
+}
+
+impl FilesState {
+    /// The operations `device` still has to carry out, each with the outcome
+    /// of the operation it reverts (a revert waits until that one is
+    /// carried out).
+    pub fn pending_for(&self, device: &str) -> Vec<(String, (QueuedOp, Option<Outcome>))> {
+        self.ops
+            .iter()
+            .filter(|op| op.device == device && op.outcome.is_none())
+            .filter_map(|op| {
+                let reverting = match &op.op {
+                    FileOp::Revert { op: target } => {
+                        match self.ops.iter().find(|queued| queued.id == *target) {
+                            Some(queued) => Some(queued.outcome.clone()?),
+                            None => None,
+                        }
+                    }
+                    _ => None,
+                };
+                Some((op.id.clone(), (op.clone(), reverting)))
+            })
+            .collect()
+    }
 }
 
 /// How the person likes folders shown, on every device they use.
@@ -109,6 +177,7 @@ impl Resource for FileExplorer {
     fn read(doc: &Doc) -> Result<FilesState, ModelError> {
         Ok(FilesState {
             bookmarks: PlacesDoc::places(doc),
+            ops: OpsDoc::ops(doc),
         })
     }
 
@@ -254,6 +323,7 @@ impl ResourceApp for FileExplorerShell {
 impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
     fn present(&mut self, state: &Rc<FilesState>) {
         self.present_places(&state.bookmarks);
+        self.follow_ops(&state.ops);
     }
 
     fn attach(&mut self, cx: SurfaceCx<FileExplorer>) {
@@ -269,7 +339,28 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                 Err(error) => self.set_external_status(error),
             }
         }
-        self.attach_framework(cx.dispatcher(), cx.settings::<FilesPreferences>());
+        // Each device carries out the filesystem changes queued for it, and
+        // records what it changed.
+        let ops = cx.device().map(|device| {
+            let device = device.to_owned();
+            cx.drain(
+                move |state: &FilesState| state.pending_for(&device),
+                |(queued, reverting): (QueuedOp, Option<Outcome>), cx| {
+                    let outcome = crate::file_ops::execute(&queued.op, reverting.as_ref());
+                    cx.apply(&FilesDocAction::SettleFileOp {
+                        id: queued.id,
+                        outcome,
+                    });
+                    Ok(Effected::done())
+                },
+            )
+        });
+        self.attach_framework(
+            cx.dispatcher(),
+            cx.settings::<FilesPreferences>(),
+            cx.device().map(str::to_owned),
+            ops,
+        );
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -298,7 +389,7 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
     /// Pin the folder shown to the Favourites, or unpin it.
     fn bound_declarations(&self) -> Vec<ActionDecl<FileExplorer>> {
         let Some(place) = self.current_place() else {
-            return Vec::new();
+            return self.file_op_declarations();
         };
         let pinned = self.current_is_favourite();
         let id = if pinned {
@@ -311,7 +402,7 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         } else {
             "Add this folder to Favourites"
         };
-        vec![ActionDecl::new(id, label, Vec::new(), move |_, _| {
+        let mut declarations = vec![ActionDecl::new(id, label, Vec::new(), move |_, _| {
             Ok(if pinned {
                 FilesDocAction::RemoveBookmark {
                     place: place.clone(),
@@ -322,7 +413,9 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
                     at: None,
                 }
             })
-        })]
+        })];
+        declarations.extend(self.file_op_declarations());
+        declarations
     }
 
     /// The places, the mount's collaborative records and the remote file
@@ -524,40 +617,91 @@ mod tests {
         assert!(frame.contains("launched.txt"), "{frame}");
     }
 
-    /// Filesystem work reaches the window's handler through the door, as the
-    /// palette or an agent invokes it; pinning the folder shown is the
-    /// resource's action, bound to that folder.
+    /// Invoke the resource's action `id` with `args` through the door, as
+    /// an agent does, and let the device carry out what it queued.
+    fn act(app: &mut TestApp<FileExplorerShell>, id: &str, args: &serde_json::Value) {
+        let instance = app.harness().component_instance_id().unwrap();
+        app.harness()
+            .invoke_bound_action(
+                &ui::bound_dispatch::BoundActionAddress {
+                    instance_id: instance,
+                    address: ui::tilo_actions::ActionAddress::new(FileExplorer::KIND, id),
+                },
+                args.as_object().unwrap(),
+            )
+            .unwrap();
+        app.settle();
+    }
+
+    /// Creating, renaming and moving files are document actions: queued in
+    /// the Files document, carried out by this device's drain, settled with
+    /// what they changed, and undone by queueing their revert.
     #[test]
-    fn filesystem_work_is_the_windows_effects() {
+    fn filesystem_changes_are_undoable_document_actions() {
         let folder = tempfile::tempdir().unwrap();
         std::fs::write(folder.path().join("draft.txt"), b"x").unwrap();
         let mut app =
             TestApp::<FileExplorerShell>::launched(&[folder.path().to_str().unwrap()]).unwrap();
-        app.effect(&FilesEffect::NewFolder {
-            name: "Projects".into(),
-        })
-        .unwrap();
-        assert!(folder.path().join("Projects").is_dir());
-        app.effect(&FilesEffect::Rename {
-            entry: "draft.txt".into(),
-            name: "final.txt".into(),
-        })
-        .unwrap();
-        assert!(folder.path().join("final.txt").exists());
-        let moved = app
-            .effect(&FilesEffect::Move {
-                entries: vec!["final.txt".into()],
-                folder: folder.path().join("Projects").display().to_string(),
-                create: None,
-            })
-            .unwrap();
-        assert!(
-            folder.path().join("Projects/final.txt").exists(),
-            "{moved:?}"
+        act(
+            &mut app,
+            "new-folder",
+            &serde_json::json!({"name": "Projects"}),
         );
-        // A row's effect, bound to it, as the palette offers it on the row.
+        assert!(folder.path().join("Projects").is_dir());
+        act(
+            &mut app,
+            "rename",
+            &serde_json::json!({"entry": "draft.txt", "name": "final.txt"}),
+        );
+        assert!(folder.path().join("final.txt").exists());
+        let projects = folder.path().join("Projects").display().to_string();
+        act(
+            &mut app,
+            "move",
+            &serde_json::json!({"entries": ["final.txt"], "folder": projects}),
+        );
+        assert!(folder.path().join("Projects/final.txt").exists());
+        let ops = app.state().ops;
+        assert_eq!(ops.len(), 3, "{ops:?}");
+        assert!(
+            ops.iter()
+                .all(|op| op.outcome.as_ref().is_some_and(|o| o.error().is_none()))
+        );
+
+        // Undo takes the move back on the filesystem, then the rename.
+        assert!(app.undo());
+        app.settle();
+        assert!(folder.path().join("final.txt").exists(), "moved back");
+        assert!(app.undo());
+        app.settle();
+        assert!(folder.path().join("draft.txt").exists(), "named back");
+        assert!(app.redo());
+        app.settle();
+        assert!(folder.path().join("final.txt").exists(), "renamed again");
+
+        let instance = app.harness().component_instance_id().unwrap();
+        let refused = app.harness().invoke_bound_action(
+            &ui::bound_dispatch::BoundActionAddress {
+                instance_id: instance,
+                address: ui::tilo_actions::ActionAddress::new(FileExplorer::KIND, "trash"),
+            },
+            serde_json::json!({"entries": ["missing.txt"]})
+                .as_object()
+                .unwrap(),
+        );
+        assert!(refused.is_err(), "a misspelt entry changes nothing");
+    }
+
+    /// The window's other work is its effects: copying a row, pasting,
+    /// showing a folder, pinning the folder shown.
+    #[test]
+    fn the_windows_work_is_its_effects() {
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::create_dir(folder.path().join("Projects")).unwrap();
         std::fs::write(folder.path().join("notes.txt"), b"n").unwrap();
-        app.effect(&FilesEffect::Refresh).unwrap();
+        let mut app =
+            TestApp::<FileExplorerShell>::launched(&[folder.path().to_str().unwrap()]).unwrap();
+        // A row's effect, bound to it, as the palette offers it on the row.
         let row = crate::search_provider::entry_resource_id(&folder.path().join("notes.txt"));
         app.effect_on(&row, &FilesEffect::Copy { entry: row.clone() })
             .unwrap();
@@ -571,22 +715,7 @@ mod tests {
             app.effect(&FilesEffect::EmptyTrash).is_err(),
             "Trash is emptied from the Trash folder only"
         );
-
-        let instance = app.harness().component_instance_id().unwrap();
-        app.harness()
-            .invoke_bound_action(
-                &ui::bound_dispatch::BoundActionAddress {
-                    instance_id: instance,
-                    address: ui::tilo_actions::ActionAddress::new(
-                        FileExplorer::KIND,
-                        "add-current-bookmark",
-                    ),
-                },
-                &serde_json::Map::new(),
-            )
-            .unwrap();
-        app.settle();
-        // The folder shown is Projects, where the paste went.
+        act(&mut app, "add-current-bookmark", &serde_json::json!({}));
         let place = folder.path().join("Projects").display().to_string();
         assert!(app.state().bookmarks.contains(&place), "{:?}", app.state());
     }

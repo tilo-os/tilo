@@ -1,4 +1,19 @@
 use super::*;
+use crate::doc::PhotosDoc;
+
+/// Present `doc`'s library to `app` as the framework does after a change,
+/// then sync it.
+fn sync(app: &mut PhotosApp, doc: &mut AutoCommit) {
+    present(app, doc);
+    Widget::sync(app, doc, &ROOT);
+}
+
+/// Present `doc`'s library to `app`, as the framework does after a change.
+fn present(app: &mut PhotosApp, doc: &AutoCommit) {
+    let state = <crate::resource::Photos as ui::tilo_resource::Resource>::read(doc)
+        .expect("the library reads");
+    app.adopt_resource_state(&Rc::new(state));
+}
 use crate::actions::{PhotosEffect, PhotosResources};
 use crate::model::{Album, LibraryPhoto};
 use crate::shots_pattern;
@@ -130,7 +145,7 @@ fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
         let waiting =
             OpenImage::from_path("/not-present/yet.png", 1200, 800).with_content("0".repeat(64));
         app.show_photo(&PhotosDoc::put_image(&mut doc, &waiting));
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         assert_eq!(app.canvas_state, CanvasState::Loading);
         assert!(!app.has_image());
         assert_eq!(app.empty_state_text().0, tr("photos-loading-title"));
@@ -146,7 +161,7 @@ fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
         std::fs::write(&path, b"not image data").unwrap();
         let bad = OpenImage::from_path(&path.to_string_lossy(), 1200, 800);
         app.show_photo(&PhotosDoc::put_image(&mut doc, &bad));
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         assert_eq!(app.canvas_state, CanvasState::Error);
         assert_eq!(app.empty_state_text().0, tr("photos-error-title"));
     }
@@ -403,7 +418,7 @@ fn library_masthead_rows_never_overlap_at_200_percent() {
             },
         );
         app.show_library();
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
         let theme = Theme::dark();
@@ -591,6 +606,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
                 },
             })
             .unwrap();
+        present(&mut app, &doc);
         app.drain_analysis_results(&mut doc);
         assert!(app.take_settled(cancelled).is_none());
 
@@ -609,6 +625,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
                 },
             })
             .unwrap();
+        present(&mut app, &doc);
         app.drain_analysis_results(&mut doc);
         assert!(matches!(
             app.take_settled(stale),
@@ -688,6 +705,8 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
             })
             .unwrap();
 
+        present(&mut app, &doc);
+
         app.drain_analysis_results(&mut doc);
         let analysis = PhotosDoc::photo(&doc, &id).unwrap().analysis.unwrap();
         assert_eq!(analysis.ocr_text, "receipt forty two");
@@ -727,6 +746,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
             Some(id.as_str())
         );
         app.active_analysis.insert(invocation);
+        present(&mut app, &doc);
         app.drain_library_analysis_result(
             AnalysisResult {
                 invocation,
@@ -846,7 +866,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         app.show_library();
         app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 800.0);
         app.timeline_density = 1;
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
         app.draw_library(
@@ -903,7 +923,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         app.show_library();
         app.large_text_toolbar = true;
         app.canvas_rect = Rect::new(0.0, 48.0, 390.0, 796.0);
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
 
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
@@ -1076,7 +1096,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
 
         app.view_metadata_filter(&PhotosDoc::library(&doc), Some("Travel".into()), None, None)
             .expect("existing folder enters a view");
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         assert!(app.library_mode);
         assert_eq!(app.library_total, 1);
         assert_eq!(app.active_folder.as_deref(), Some("Travel"));
@@ -1084,7 +1104,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
 
         app.view_metadata_filter(&PhotosDoc::library(&doc), None, Some("Élodie".into()), None)
             .expect("existing person enters a view");
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         assert_eq!(app.library_total, 1);
         assert_eq!(app.active_person.as_deref(), Some("Élodie"));
         assert!(app.active_folder.is_none());
@@ -1095,7 +1115,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
             Some("golden-hour".into()),
         )
         .expect("existing tag enters a view");
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         assert_eq!(app.library_total, 1);
         assert_eq!(app.active_tag.as_deref(), Some("golden-hour"));
         assert!(app.active_folder.is_none());
@@ -1137,7 +1157,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
             });
         }
         PhotosDoc::set_library(&mut doc, &library);
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
 
         assert_eq!(app.library_people.len(), 29);
         assert_eq!(app.places_items.len(), 29);
@@ -1201,6 +1221,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
             "range selects visible cards"
         );
         app.set_selected_favorite(&mut doc, true);
+        present(&mut app, &doc);
         assert!(
             PhotosDoc::library(&doc)
                 .photos
@@ -1328,6 +1349,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
                 albums: albums.clone(),
             },
         );
+        present(&mut app, &doc);
         app.library_albums = albums
             .iter()
             .map(|album| (album.id.clone(), album.name.clone(), 0))
@@ -1362,6 +1384,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
                 albums: Vec::new(),
             },
         );
+        present(&mut app, &doc);
         assert!(!app.perform_library_semantic_action(
             "photos:selection:destination:photos.album:destination-7",
             &AccessAction::Activate,
@@ -1489,7 +1512,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
             },
         );
         app.show_albums();
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         assert_eq!(app.library_destination, LibraryDestination::Albums);
         assert_eq!(
             app.library_album_covers.get(&album_id),
@@ -1574,7 +1597,7 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
             },
         );
         app.show_library();
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         let target = format!("photos:library-remove:{id}");
         assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &mut doc));
         assert!(PhotosDoc::library(&doc).photo(&id).is_some());
@@ -1591,7 +1614,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
     {
         let mut app = test_app();
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
 
         let empty = app.accessibility_tree();
         assert_eq!(empty.role, Role::Group);
@@ -1631,8 +1654,9 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         app.show_photo(&PhotosDoc::put_image(&mut doc, &image));
         app.original = Some(("/tmp/accessible.png".into(), shots_pattern(100, 50)));
         app.original_identity = Some(decode_key(&image));
-        app.refresh(&doc);
-        app.sync(&mut doc, &ROOT);
+        present(&mut app, &doc);
+        app.refresh();
+        sync(&mut app, &mut doc);
         assert!(Widget::perform_semantic_action(
             &mut app,
             "photos:toolbar:photos-rotate-right",
@@ -1645,7 +1669,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
             1
         );
 
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         let opened = app.accessibility_tree();
         assert_eq!(
             opened.children[1].name.as_deref(),
@@ -1668,7 +1692,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         app.original = Some(("/tmp/compact.png".into(), shots_pattern(100, 50)));
         app.original_identity = Some(decode_key(&image));
         app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         app.compact_more_open = true;
 
         // Crop and Reset start disabled, so Down must land on Copy rather
@@ -1745,7 +1769,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
                 }
                 let mut taffy: TaffyTree<()> = TaffyTree::new();
                 let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-                app.sync(&mut doc, &automerge::ROOT);
+                sync(&mut app, &mut doc);
                 let child = app.build_layout(&mut taffy, &theme, &mut node_map);
                 let root = taffy
                     .new_with_children(
@@ -1848,7 +1872,8 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         PhotosDoc::set_library(&mut doc, &library);
         let before = PhotosDoc::library(&doc);
         app.original = Some((image.path.clone(), shots_pattern(1_200, 800)));
-        app.refresh(&doc);
+        present(&mut app, &doc);
+        app.refresh();
 
         let canvas = app.accessibility_tree().children[1].clone();
         let description = canvas
@@ -1884,9 +1909,9 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
         let mut doc = AutoCommit::new();
         let image = OpenImage::from_path("/pictures/München-夏.png", 800, 400);
         app.show_photo(&PhotosDoc::put_image(&mut doc, &image));
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         let before = app.library_index.stats();
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         assert_eq!(
             app.library_index.stats(),
             before,
@@ -1929,7 +1954,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
             },
         );
         let mut app = test_app();
-        app.library_index.sync(&doc).unwrap();
+        app.library_index.sync(&PhotosDoc::library(&doc)).unwrap();
         app.library_query = "needle".into();
 
         app.advance_library_query();
@@ -1959,7 +1984,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
                 albums: Vec::new(),
             },
         );
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         assert!(app.library_index.resource(&first_id).is_some());
 
         let mut library = PhotosDoc::library(&doc);
@@ -1968,7 +1993,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
         library.photos.push(second);
         PhotosDoc::set_library(&mut doc, &library);
         app.force_search_refresh_error = true;
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
 
         assert!(app.library_index.resource(&first_id).is_some());
         assert!(app.library_index.resource(&second_id).is_none());
@@ -2006,7 +2031,7 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
                 )));
         }
         PhotosDoc::set_library(&mut doc, &library);
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
 
         assert_eq!(app.thumbnail_visible_ids.len(), 24);
         assert!(app.thumbnail_queued.len() <= THUMBNAIL_QUEUE_LIMIT);
@@ -2139,7 +2164,7 @@ fn controls_contain_their_text_share_insets_and_keep_44px_targets() {
         for _ in 0..2 {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            sync(&mut app, &mut doc);
             let child = app.build_layout(&mut taffy, &theme, &mut node_map);
             let root = taffy
                 .new_with_children(
@@ -2204,7 +2229,7 @@ fn controls_contain_their_text_share_insets_and_keep_44px_targets() {
             photo_ids: vec![photo.id],
         });
         PhotosDoc::set_library(&mut doc, &library);
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         app.show_library();
         app.active_album = Some("photos.album:trip".into());
         // Album management lives in the desktop masthead. Compact layouts
@@ -2229,7 +2254,7 @@ fn controls_contain_their_text_share_insets_and_keep_44px_targets() {
                 .all(|(_, rect)| rect.height() >= 44.0)
         );
 
-        app.begin_edit_album(&doc);
+        app.begin_edit_album();
         app.draw_album_editor(
             &mut scene,
             Affine::IDENTITY,
@@ -2263,7 +2288,6 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
     eprintln!("phase visible_analysis_pause_uses_the_published_operation_envelope");
     {
         let mut app = test_app();
-        let doc = AutoCommit::new();
         app.library_analysis.begin(
             tilo_actions::InvocationId::new(),
             ["photos.photo:one".to_owned()],
@@ -2271,7 +2295,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
             "Verified model".to_owned(),
             "r1".to_owned(),
         );
-        assert!(app.activate_library_analysis(LibraryAnalysisHit::Pause, &doc));
+        assert!(app.activate_library_analysis(LibraryAnalysisHit::Pause));
         assert_eq!(
             app.library_analysis.phase,
             crate::library_analysis::LibraryAnalysisPhase::Paused
@@ -2334,7 +2358,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
             &PhotosDoc::library(&doc),
         )
         .expect("the stop effect is answered");
-        app.sync(&mut doc, &ROOT);
+        sync(&mut app, &mut doc);
         let job = app
             .directory_import
             .as_ref()

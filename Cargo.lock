@@ -142,6 +142,7 @@ dependencies = [
  "tilo-clock",
  "tilo-files",
  "tilo-paths",
+ "tilo-resource",
  "tilo-secret-vault",
  "tilo-xdg-paths",
  "tracing",

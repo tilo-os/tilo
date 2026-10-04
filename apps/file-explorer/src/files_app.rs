@@ -8,7 +8,6 @@
 //! tree structurally dirty so the App rebuilds the composition on the next
 //! frame. See [`crate::command`].
 
-use std::fmt::Write as _;
 use ui::tilo_resource::Effect as _;
 
 use crate::command::{CommandSink, FileCommand, new_sink};
@@ -69,18 +68,54 @@ const MAX_MOVE_ENTRIES: usize = 256;
 /// The most entry names showing a folder answers with.
 const MAX_ANSWERED_ENTRIES: usize = 64;
 
+/// What a window shows when an operation it queued settles.
+enum OpFollowUp {
+    /// Select the new folder and start naming it.
+    NewFolder,
+    /// Close the rename editor (or keep it open on a failure).
+    Rename,
+    /// Offer to undo the move of `count` entries to Trash.
+    Trash { count: usize },
+    /// Say how many moved into `destination`.
+    Move { destination: String },
+    /// Say what came back from Trash.
+    RestoreTrash,
+}
+
+/// The paths of the `wanted` entries in `listing` (row id, name, path),
+/// each named by its row id, its name or its absolute path; refused whole
+/// when one is not there, so a misspelt name changes nothing.
+fn named_entries(
+    listing: &[(String, String, PathBuf)],
+    wanted: &[String],
+) -> Result<Vec<String>, String> {
+    let mut paths = Vec::with_capacity(wanted.len());
+    let mut unknown = Vec::new();
+    for name in wanted {
+        match listing.iter().find(|(id, entry, path)| {
+            id == name || entry == name || path.as_path() == Path::new(name)
+        }) {
+            Some((_, _, path)) => paths.push(path.display().to_string()),
+            None => unknown.push(name.as_str()),
+        }
+    }
+    if unknown.is_empty() {
+        return Ok(paths);
+    }
+    let names: Vec<&str> = listing.iter().map(|(_, name, _)| name.as_str()).collect();
+    Err(format!(
+        "not in the folder shown: {}; nothing changed. Its entries: {}",
+        unknown.join(", "),
+        names.join(", ")
+    ))
+}
+
 /// What doing an effect came to: its answer now, or a job that answers later.
 pub(crate) enum Ran {
     Done(Option<serde_json::Value>),
     Pending,
 }
 
-/// A `move` of several of the current folder's entries into `folder`.
-struct MoveRequest {
-    entries: Vec<String>,
-    folder: String,
-    create: bool,
-}
 type MergePreflightResult = Arc<
     std::sync::Mutex<
         Option<(
@@ -487,11 +522,21 @@ pub struct FileExplorerWidget {
     /// Clipboard for cut/copy → paste. `true` = cut (move on paste).
     clipboard: Vec<PathBuf>,
     clipboard_cut: bool,
-    /// The exact Trash entries created by the last local delete, captured only
-    /// when the host exposed an unambiguous before/after snapshot. It is
-    /// process-local because a filesystem mutation cannot be honestly replayed
-    /// through collaborative history.
-    last_trash_undo: Option<Vec<PathBuf>>,
+    /// The queued operation that moved the last selection to Trash from this
+    /// window, while its revert can still put everything back.
+    last_trash_undo: Option<String>,
+    /// The device this window changes the filesystem of, which carries out
+    /// the operations it queues; `None` outside a framework host.
+    device: Option<String>,
+    /// Carries out the operations queued for this device.
+    ops_drain: Option<ui::framework::Projection>,
+    /// Operations this window queued, and what it shows when they settle.
+    awaiting_ops: HashMap<String, OpFollowUp>,
+    /// Operations already seen carried out, so each settles once here.
+    settled_ops: std::collections::HashSet<String>,
+    /// What operations came to when this window carried them out itself
+    /// (no framework hosts it), for their reverts.
+    local_outcomes: HashMap<String, crate::file_ops::Outcome>,
     /// Transient status line (operation results), shown in the footer.
     status: Option<String>,
     /// Filesystem/xattr changes have no winit event of their own. The widget
@@ -751,10 +796,315 @@ impl FileExplorerWidget {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::FileExplorer>,
         preferences: ui::framework::Setting<crate::resource::FilesPreferences>,
+        device: Option<String>,
+        ops_drain: Option<ui::framework::Projection>,
     ) {
         self.dispatcher = Some(dispatcher);
         self.preferences = Some(preferences);
+        self.device = device;
+        self.ops_drain = ops_drain;
         self.adopt_preferences();
+    }
+
+    /// Change the filesystem: queue `op` in the Files document, where it is
+    /// in history and undoable, for this device to carry out; `follow` is
+    /// what the window shows when it settles. A window no framework hosts
+    /// carries it out at once.
+    fn queue(&mut self, op: crate::file_ops::FileOp, follow: OpFollowUp) {
+        let id = uuid::Uuid::new_v4().to_string();
+        if let (Some(dispatcher), Some(device)) = (&self.dispatcher, &self.device) {
+            dispatcher.apply(&crate::resource::FilesDocAction::QueueFileOp {
+                id: id.clone(),
+                device: device.clone(),
+                op,
+            });
+            self.awaiting_ops.insert(id, follow);
+            return;
+        }
+        let reverting = match &op {
+            crate::file_ops::FileOp::Revert { op } => self.local_outcomes.get(op),
+            _ => None,
+        };
+        let outcome = crate::file_ops::execute(&op, reverting);
+        self.local_outcomes.insert(id.clone(), outcome.clone());
+        self.settle_op(&id, follow, &outcome);
+    }
+
+    /// Show what the operations carried out since the last presentation
+    /// came to: the ones this window queued as it asked, any other (an
+    /// agent's, another window's, an undo) as a refreshed listing.
+    pub(crate) fn follow_ops(&mut self, ops: &[crate::file_ops::QueuedOp]) {
+        let first = self.settled_ops.is_empty();
+        let mut changed = false;
+        for queued in ops {
+            let Some(outcome) = &queued.outcome else {
+                continue;
+            };
+            if !self.settled_ops.insert(queued.id.clone()) || first {
+                continue;
+            }
+            match self.awaiting_ops.remove(&queued.id) {
+                Some(follow) => self.settle_op(&queued.id, follow, outcome),
+                None => changed = true,
+            }
+        }
+        if changed {
+            self.refresh();
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Show what the operation `id` came to.
+    fn settle_op(&mut self, id: &str, follow: OpFollowUp, outcome: &crate::file_ops::Outcome) {
+        use crate::file_ops::Change;
+        self.refresh();
+        self.structure_dirty = true;
+        let error = outcome.error().map(str::to_owned);
+        match follow {
+            OpFollowUp::NewFolder => match error {
+                None => {
+                    let created = outcome.changes().iter().find_map(|change| match change {
+                        Change::Created { path } => Some(PathBuf::from(path)),
+                        _ => None,
+                    });
+                    if let Some(i) = created.and_then(|path| {
+                        self.displayed_entries().iter().position(|e| e.path == path)
+                    }) {
+                        self.selection.select_only(i);
+                        self.begin_rename();
+                    }
+                    self.status = Some(t("files-created-folder"));
+                }
+                Some(error) => {
+                    self.status = Some(t_args("files-new-folder-failed", &[arg("error", error)]));
+                }
+            },
+            OpFollowUp::Rename => match error {
+                None => {
+                    for change in outcome.changes() {
+                        if let Change::Moved { from, to } = change {
+                            self.recent_moved(Path::new(from), Path::new(to));
+                        }
+                    }
+                    if self.renaming.is_some() {
+                        self.end_rename_editor();
+                    }
+                    self.status = Some(t("files-renamed"));
+                }
+                // The editor stays open so the name can be fixed.
+                Some(error) => {
+                    self.status = Some(t_args("files-rename-failed", &[arg("error", error)]));
+                }
+            },
+            OpFollowUp::Trash { count } => match error {
+                None => {
+                    let undoable = outcome
+                        .changes()
+                        .iter()
+                        .all(|change| matches!(change, Change::Trashed { entry: Some(_), .. }));
+                    self.last_trash_undo = undoable.then(|| id.to_owned());
+                    self.status = Some(t_args(
+                        "files-moved-to-trash",
+                        &[arg("count", fluent_count(count))],
+                    ));
+                }
+                Some(error) => {
+                    self.status = Some(t_args("files-delete-failed", &[arg("error", error)]));
+                }
+            },
+            OpFollowUp::Move { destination } => {
+                let moved = outcome
+                    .changes()
+                    .iter()
+                    .filter(|change| matches!(change, Change::Moved { .. }))
+                    .count();
+                self.status = Some(match error {
+                    None => t_args(
+                        "files-moved-to-folder",
+                        &[
+                            arg("count", fluent_count(moved)),
+                            arg("destination", destination),
+                        ],
+                    ),
+                    Some(_) => t_args(
+                        "files-moved-with-failures",
+                        &[
+                            arg("moved", fluent_count(moved)),
+                            arg("destination", destination),
+                            arg("failed", fluent_count(1)),
+                        ],
+                    ),
+                });
+            }
+            OpFollowUp::RestoreTrash => {
+                self.status = Some(match error {
+                    None => t_args(
+                        "files-undo-trash-restored",
+                        &[arg("count", fluent_count(outcome.changes().len()))],
+                    ),
+                    Some(error) => t_args("files-undo-trash-failed", &[arg("error", error)]),
+                });
+            }
+        }
+    }
+
+    /// Filesystem changes an agent or a script asks for, bound to the folder
+    /// shown: document actions, queued for this device and undoable like a
+    /// change made in the window.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the four filesystem declarations share one captured listing and device"
+    )]
+    pub(crate) fn file_op_declarations(
+        &self,
+    ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::FileExplorer>> {
+        use crate::file_ops::FileOp;
+        use crate::resource::FilesDocAction;
+        use ui::tilo_actions::{ActionParam, ParamType};
+        use ui::tilo_resource::ActionDecl;
+        let Some(device) = self.device.clone() else {
+            return Vec::new();
+        };
+        if self.is_trash_view() || !self.current_path.is_dir() {
+            return Vec::new();
+        }
+        let folder = self.current_path.clone();
+        let listing: Vec<(String, String, PathBuf)> = self
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    Self::entry_resource_id(entry),
+                    entry.name.clone(),
+                    entry.path.clone(),
+                )
+            })
+            .collect();
+        let listing = std::sync::Arc::new(listing);
+        let queue = {
+            move |op: FileOp| FilesDocAction::QueueFileOp {
+                id: uuid::Uuid::new_v4().to_string(),
+                device: device.clone(),
+                op,
+            }
+        };
+        let entry_param = |name: &'static str, what: &'static str| {
+            ActionParam::required(name, ParamType::Text, what)
+        };
+        let new_folder = {
+            let queue = queue.clone();
+            ActionDecl::new(
+                "new-folder",
+                "New folder",
+                vec![entry_param("name", "Name of the new folder")],
+                move |args, _| {
+                    let name = args.text("name").filter(|name| !name.trim().is_empty());
+                    let name = name.ok_or_else(|| "missing folder name".to_owned())?;
+                    Ok(queue(FileOp::NewFolder {
+                        parent: folder.display().to_string(),
+                        name: name.to_owned(),
+                    }))
+                },
+            )
+            .describe("Create a folder in the folder shown.")
+        };
+        let rename = {
+            let queue = queue.clone();
+            let listing = std::sync::Arc::clone(&listing);
+            ActionDecl::new(
+                "rename",
+                "Rename",
+                vec![
+                    entry_param(
+                        "entry",
+                        "The entry: its row id or its name in the folder shown",
+                    ),
+                    entry_param("name", "The new name"),
+                ],
+                move |args, _| {
+                    let entry = args.text("entry").unwrap_or_default();
+                    let path = named_entries(&listing, &[entry.to_owned()])?
+                        .pop()
+                        .ok_or_else(|| "missing entry".to_owned())?;
+                    let name = args.text("name").filter(|name| !name.trim().is_empty());
+                    Ok(queue(FileOp::Rename {
+                        path,
+                        name: name
+                            .ok_or_else(|| "missing new name".to_owned())?
+                            .to_owned(),
+                    }))
+                },
+            )
+            .describe("Rename an entry of the folder shown.")
+        };
+        let entries_param = || {
+            ActionParam::required(
+                "entries",
+                ParamType::Array,
+                "Entries of the folder shown: names, row ids or absolute paths",
+            )
+        };
+        let entries_of = |args: &ui::tilo_actions::ActionArgs| -> Vec<String> {
+            args.array("entries")
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect()
+        };
+        let trash = {
+            let queue = queue.clone();
+            let listing = std::sync::Arc::clone(&listing);
+            ActionDecl::new(
+                "trash",
+                "Move to Trash",
+                vec![entries_param()],
+                move |args, _| {
+                    let paths = named_entries(&listing, &entries_of(args))?;
+                    if paths.is_empty() {
+                        return Err("name at least one entry".into());
+                    }
+                    Ok(queue(FileOp::Trash { paths }))
+                },
+            )
+            .describe("Move entries of the folder shown to Trash; undo puts them back.")
+        };
+        let moving = {
+            let listing = std::sync::Arc::clone(&listing);
+            ActionDecl::new(
+                "move",
+                "Move entries to folder",
+                vec![
+                    entries_param(),
+                    ActionParam::required(
+                        "folder",
+                        ParamType::Text,
+                        "Absolute path of the destination folder; names are kept",
+                    ),
+                    ActionParam::optional(
+                        "create",
+                        ParamType::Boolean,
+                        "Create the destination folder when it does not exist (the default)",
+                    ),
+                ],
+                move |args, _| {
+                    let paths = named_entries(&listing, &entries_of(args))?;
+                    if paths.is_empty() || paths.len() > MAX_MOVE_ENTRIES {
+                        return Err(format!("move takes 1 to {MAX_MOVE_ENTRIES} entries"));
+                    }
+                    let folder = args.text("folder").unwrap_or_default();
+                    if !Path::new(folder).is_absolute() {
+                        return Err(format!("{folder} is not an absolute path"));
+                    }
+                    Ok(queue(FileOp::Move {
+                        paths,
+                        folder: folder.to_owned(),
+                        create: args.boolean("create").unwrap_or(true),
+                    }))
+                },
+            )
+            .describe("Move entries of the folder shown into another folder in one step.")
+        };
+        vec![new_folder, rename, trash, moving]
     }
 
     /// Show the bookmarked `places`, resolved on this device.
@@ -1052,6 +1402,11 @@ impl FileExplorerWidget {
             clipboard: Vec::new(),
             clipboard_cut: false,
             last_trash_undo: None,
+            device: None,
+            ops_drain: None,
+            awaiting_ops: HashMap::new(),
+            settled_ops: std::collections::HashSet::new(),
+            local_outcomes: HashMap::new(),
             status: None,
             next_metadata_refresh: ui::time::now() + metadata_refresh::LIVE_INTERVAL,
             renaming: None,
@@ -1280,19 +1635,7 @@ impl FileExplorerWidget {
             .map(|entry| entry.path.clone())
     }
 
-    /// The entry of the folder shown that `entry` names: its published row
-    /// id, else its name.
-    fn entry_named(&self, entry: &str) -> Option<PathBuf> {
-        self.visible_entry_path(entry).or_else(|| {
-            self.entries
-                .iter()
-                .find(|candidate| candidate.name == entry)
-                .map(|candidate| candidate.path.clone())
-        })
-    }
-
-    /// Do `effect`: show a folder, change the filesystem, open or share a
-    /// file. A job (sending to a nearby device, creating a share link)
+    /// Do `effect`: show a folder, copy or paste, open or share a file. A job (sending to a nearby device, creating a share link)
     /// answers later through the reply [`Self::await_effect`] keeps.
     ///
     /// # Errors
@@ -1395,32 +1738,6 @@ impl FileExplorerWidget {
                     .map_err(|e| format!("could not open terminal: {e}"))?;
                 None
             }
-            FilesEffect::NewFolder { name } => {
-                fileops::new_folder(&self.current_path, &name)?;
-                self.refresh();
-                None
-            }
-            FilesEffect::Rename { entry, name } => {
-                if self.is_trash_view() {
-                    return Err("Restore an item from Trash before renaming it".into());
-                }
-                let target = self
-                    .entry_named(&entry)
-                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
-                self.rename_entry(&target, &name)?;
-                None
-            }
-            FilesEffect::Trash { entry } => {
-                if self.is_trash_view() {
-                    return Err("Use the separately confirmed permanent-delete action for items already in Trash".into());
-                }
-                let target = self
-                    .entry_named(&entry)
-                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
-                self.select_entry(&target)?;
-                self.apply_delete();
-                None
-            }
             FilesEffect::UndoTrash => {
                 if self.last_trash_undo.is_none() {
                     return Err("nothing was moved to Trash from this window".into());
@@ -1435,40 +1752,6 @@ impl FileExplorerWidget {
                 // The effect is confirmed by its contract; no second sheet.
                 self.perform_empty_trash();
                 None
-            }
-            FilesEffect::Move {
-                entries,
-                folder,
-                create,
-            } => {
-                if entries.is_empty() || entries.len() > MAX_MOVE_ENTRIES {
-                    return Err(format!("move takes 1 to {MAX_MOVE_ENTRIES} entries"));
-                }
-                let destination = Path::new(&folder).file_name().map_or_else(
-                    || folder.clone(),
-                    |name| name.to_string_lossy().into_owned(),
-                );
-                let count = entries.len();
-                match self.move_entries(&MoveRequest {
-                    entries,
-                    folder,
-                    create: create.unwrap_or(true),
-                }) {
-                    Ok(summary) => {
-                        self.status = Some(t_args(
-                            "files-moved-to-folder",
-                            &[
-                                arg("count", fluent_count(count)),
-                                arg("destination", destination),
-                            ],
-                        ));
-                        Some(summary.into())
-                    }
-                    Err(error) => {
-                        self.status = Some(error.clone());
-                        return Err(error);
-                    }
-                }
             }
             FilesEffect::OpenItem { item } => {
                 // Resolved only against what the window shows now, so a
@@ -1499,12 +1782,8 @@ impl FileExplorerWidget {
                 self.invoke_open_with(&entry, &app, always.unwrap_or(false))?;
                 None
             }
-            FilesEffect::MoveTo { entry, folder } => {
-                self.transfer(&entry, &folder, true)?;
-                None
-            }
             FilesEffect::CopyTo { entry, folder } => {
-                self.transfer(&entry, &folder, false)?;
+                self.copy_into_folder(&entry, &folder)?;
                 None
             }
             FilesEffect::Copy { entry } => {
@@ -1726,33 +2005,16 @@ impl FileExplorerWidget {
             .ok_or_else(|| "remote account is no longer available".to_string())
     }
 
-    /// Put the entry `entry` names into `folder`, moving or copying it.
-    fn transfer(&mut self, entry: &str, folder: &str, moving: bool) -> Result<(), String> {
+    /// Copy the entry `entry` names into `folder`, keeping its name.
+    fn copy_into_folder(&mut self, entry: &str, folder: &str) -> Result<(), String> {
         let source = self
             .visible_entry_path(entry)
             .ok_or_else(|| "file entry is no longer visible".to_string())?;
         let folder = PathBuf::from(folder);
         if !folder.is_absolute() || !folder.is_dir() {
-            let name = source
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let mut error = format!("{} is not an existing folder.", folder.display());
-            if moving {
-                let _ = write!(
-                    error,
-                    r#" To create it and move there, call move on the folder with {{"entries":[{}],"folder":{},"create":true}}"#,
-                    serde_json::Value::from(name),
-                    serde_json::Value::from(folder.to_string_lossy().into_owned())
-                );
-            }
-            return Err(error);
+            return Err(format!("{} is not an existing folder.", folder.display()));
         }
-        if moving {
-            fileops::move_into(&source, &folder)?;
-        } else {
-            fileops::copy_into(&source, &folder)?;
-        }
+        fileops::copy_into(&source, &folder)?;
         self.refresh();
         Ok(())
     }
@@ -3843,17 +4105,13 @@ impl FileExplorerWidget {
     /// `FileCommand::NewFolder` — create, refresh, then drop into
     /// inline-rename so the user names it right away.
     fn apply_new_folder(&mut self) -> bool {
-        match fileops::new_folder(&self.current_path, &t("files-new-folder-default-name")) {
-            Ok(path) => {
-                self.refresh();
-                if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
-                    self.selection.select_only(i);
-                    self.begin_rename();
-                }
-                self.status = Some(t("files-created-folder"));
-            }
-            Err(e) => self.status = Some(t_args("files-new-folder-failed", &[arg("error", e)])),
-        }
+        self.queue(
+            crate::file_ops::FileOp::NewFolder {
+                parent: self.current_path.display().to_string(),
+                name: t("files-new-folder-default-name"),
+            },
+            OpFollowUp::NewFolder,
+        );
         true
     }
 
@@ -3880,31 +4138,16 @@ impl FileExplorerWidget {
                     action: Some(CollabPanelAction::PermanentDelete(paths)),
                 });
             } else {
-                // Trash implementations may choose a mount-local store or
-                // rename on collision. Snapshot the concrete entries before
-                // and after so Undo is offered only for an exact set Files can
-                // still revalidate; never guess a path from the source name.
-                let before = fileops::trash_entries_snapshot();
-                match fileops::delete_to_trash(&paths) {
-                    Ok(()) => {
-                        self.last_trash_undo = before.and_then(|before| {
-                            let after = fileops::trash_entries_snapshot()?;
-                            let created: Vec<_> = after
-                                .into_iter()
-                                .filter(|entry| !before.contains(entry))
-                                .collect();
-                            (created.len() == paths.len()).then_some(created)
-                        });
-                        self.refresh();
-                        self.status = Some(t_args(
-                            "files-moved-to-trash",
-                            &[arg("count", fluent_count(paths.len()))],
-                        ));
-                    }
-                    Err(e) => {
-                        self.status = Some(t_args("files-delete-failed", &[arg("error", e)]));
-                    }
-                }
+                let count = paths.len();
+                self.queue(
+                    crate::file_ops::FileOp::Trash {
+                        paths: paths
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect(),
+                    },
+                    OpFollowUp::Trash { count },
+                );
             }
         }
         true
@@ -3915,34 +4158,14 @@ impl FileExplorerWidget {
     /// another process may have emptied Trash or changed an entry since Files
     /// offered the affordance.
     fn apply_undo_last_trash(&mut self) -> bool {
-        let Some(entries) = self.last_trash_undo.clone() else {
+        let Some(op) = self.last_trash_undo.take() else {
             self.status = Some(t("files-undo-trash-unavailable"));
             return true;
         };
-        let still_present = fileops::trash_entries_snapshot()
-            .is_some_and(|current| entries.iter().all(|entry| current.contains(entry)));
-        if !still_present {
-            self.last_trash_undo = None;
-            self.status = Some(t("files-undo-trash-unavailable"));
-            return true;
-        }
-        match fileops::restore_entries(&entries) {
-            Ok(restored) if restored == entries.len() => {
-                self.last_trash_undo = None;
-                self.refresh();
-                self.status = Some(t_args(
-                    "files-undo-trash-restored",
-                    &[arg("count", fluent_count(restored))],
-                ));
-            }
-            Ok(_) => {
-                self.last_trash_undo = None;
-                self.status = Some(t("files-undo-trash-unavailable"));
-            }
-            Err(error) => {
-                self.status = Some(t_args("files-undo-trash-failed", &[arg("error", error)]));
-            }
-        }
+        self.queue(
+            crate::file_ops::FileOp::Revert { op },
+            OpFollowUp::RestoreTrash,
+        );
         true
     }
 
@@ -4441,7 +4664,7 @@ impl FileExplorerWidget {
     /// mutates a user's Trash.
     #[doc(hidden)]
     pub fn debug_arm_trash_undo(&mut self) {
-        self.last_trash_undo = Some(vec![PathBuf::from("/shot-only-trash-entry")]);
+        self.last_trash_undo = Some("shot-only-trash-operation".into());
     }
 
     /// Open the context menu *and* its "New File" flyout (headless shots demo).
@@ -4698,13 +4921,6 @@ impl FileExplorerWidget {
                 "Empty Trash from the Trash folder",
             ));
         }
-        if self.is_trash_view() || !self.current_path.is_dir() {
-            statuses.push(ui::framework::EffectStatus::unavailable(
-                FilesEffect::NEW_FOLDER,
-                "location_unavailable",
-                "The current location cannot contain a new folder",
-            ));
-        }
         statuses
     }
 
@@ -4855,11 +5071,18 @@ impl FileExplorerWidget {
             self.status = Some(t("files-nothing-to-move"));
             return;
         }
-        self.perform(crate::effects::FilesEffect::Move {
-            entries,
-            folder: dir.display().to_string(),
-            create: Some(false),
-        });
+        let destination = dir.file_name().map_or_else(
+            || dir.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        self.queue(
+            crate::file_ops::FileOp::Move {
+                paths: entries,
+                folder: dir.display().to_string(),
+                create: false,
+            },
+            OpFollowUp::Move { destination },
+        );
     }
 
     /// Copy (or, after Cut, move) the clipboard into the folder shown.
@@ -5541,35 +5764,14 @@ impl FileExplorerWidget {
             self.end_rename_editor();
             return false;
         }
-        self.perform(crate::effects::FilesEffect::Rename {
-            entry: Self::entry_resource_id(entry),
-            name: new_name,
-        });
+        self.queue(
+            crate::file_ops::FileOp::Rename {
+                path: path.display().to_string(),
+                name: new_name,
+            },
+            OpFollowUp::Rename,
+        );
         true
-    }
-
-    /// Rename `path` to `name`: what the rename editor, the palette and an
-    /// agent all do. The editor closes on success and stays open on a
-    /// failure, so the name can be fixed.
-    fn rename_entry(&mut self, path: &Path, name: &str) -> Result<(), String> {
-        match fileops::rename(path, name) {
-            Ok(renamed) => {
-                self.recent_moved(path, &renamed);
-                if self.renaming.is_some() {
-                    self.end_rename_editor();
-                }
-                self.refresh();
-                self.status = Some(t("files-renamed"));
-                Ok(())
-            }
-            Err(error) => {
-                self.status = Some(t_args(
-                    "files-rename-failed",
-                    &[arg("error", error.clone())],
-                ));
-                Err(error)
-            }
-        }
     }
 }
 
@@ -7593,79 +7795,6 @@ impl FileExplorerWidget {
         answer
     }
 
-    /// Carry out a [`MoveRequest`]: every entry is found before anything
-    /// moves, so a misspelt name moves nothing.
-    fn move_entries(&mut self, request: &MoveRequest) -> Result<String, String> {
-        let folder = PathBuf::from(&request.folder);
-        if !folder.is_absolute() {
-            return Err(format!(
-                "{} is not an absolute path; pass the full destination, e.g. {}",
-                folder.display(),
-                self.current_path.join(&folder).display()
-            ));
-        }
-        let mut sources = Vec::with_capacity(request.entries.len());
-        let mut unknown = Vec::new();
-        for name in &request.entries {
-            let wanted = Path::new(name);
-            match self.entries.iter().find(|entry| {
-                entry.path == wanted || (entry.name == *name && !wanted.is_absolute())
-            }) {
-                Some(entry) => sources.push((entry.name.clone(), entry.path.clone())),
-                None => unknown.push(name.as_str()),
-            }
-        }
-        if !unknown.is_empty() {
-            let names: Vec<&str> = self
-                .entries
-                .iter()
-                .map(|entry| entry.name.as_str())
-                .collect();
-            return Err(format!(
-                "not in {}: {}; nothing moved. Its entries: {}",
-                self.current_path.display(),
-                unknown.join(", "),
-                names.join(", ")
-            ));
-        }
-        let created = !folder.exists();
-        if created {
-            if !request.create {
-                return Err(format!(
-                    "{} does not exist; nothing moved. Call move again with create:true to make it",
-                    folder.display()
-                ));
-            }
-            std::fs::create_dir_all(&folder)
-                .map_err(|error| format!("cannot create {}: {error}", folder.display()))?;
-        } else if !folder.is_dir() {
-            return Err(format!(
-                "{} is a file, not a folder; nothing moved",
-                folder.display()
-            ));
-        }
-        let mut moved = Vec::new();
-        let mut failed = Vec::new();
-        for (name, source) in sources {
-            match fileops::move_into(&source, &folder) {
-                Ok(_) => moved.push(name),
-                Err(error) => failed.push(format!("{name}: {error}")),
-            }
-        }
-        self.refresh();
-        let into = format!(
-            "{}{}",
-            folder.display(),
-            if created { " (created)" } else { "" }
-        );
-        let summary = format!("moved {} into {into}: {}", moved.len(), moved.join(", "));
-        if failed.is_empty() {
-            Ok(summary)
-        } else {
-            Err(format!("{summary}; not moved: {}", failed.join("; ")))
-        }
-    }
-
     fn append_nearby_receiver_resources(&self, folder: &mut Resource) {
         for transfer in self.nearby_send.transfers() {
             if let Some(resource) = self.nearby_receiver_resource(transfer) {
@@ -7800,33 +7929,13 @@ impl FileExplorerWidget {
         ));
         self.append_open_with_actions(entry, &resource_id, &mut resource);
         if !self.is_trash_view() {
-            let mut rename = FilesEffect::Rename {
+            let mut copy_to = FilesEffect::CopyTo {
                 entry: id(),
-                name: entry.name.clone(),
+                folder: String::new(),
             }
-            .bound_asking(&["name"]);
-            rename.label = t("files-menu-rename");
-            resource.actions.push(rename);
-            for (effect, label) in [
-                (
-                    FilesEffect::MoveTo {
-                        entry: id(),
-                        folder: String::new(),
-                    },
-                    "Move to folder…",
-                ),
-                (
-                    FilesEffect::CopyTo {
-                        entry: id(),
-                        folder: String::new(),
-                    },
-                    "Copy to folder…",
-                ),
-            ] {
-                let mut spec = effect.bound_asking(&["folder"]);
-                spec.label = label.into();
-                resource.actions.push(spec);
-            }
+            .bound_asking(&["folder"]);
+            copy_to.label = "Copy to folder…".into();
+            resource.actions.push(copy_to);
             resource.actions.push(row_action(
                 &FilesEffect::SendNearby { entry: id() },
                 "send-nearby",
@@ -7877,11 +7986,6 @@ impl FileExplorerWidget {
                     t("files-menu-copy"),
                 ),
                 (FilesEffect::Cut { entry: id() }, "cut", t("files-menu-cut")),
-                (
-                    FilesEffect::Trash { entry: id() },
-                    "trash",
-                    t("files-menu-move-trash"),
-                ),
                 (
                     FilesEffect::Properties { entry: id() },
                     "properties",

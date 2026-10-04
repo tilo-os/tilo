@@ -5,7 +5,7 @@
 //! or collaboration from the retained widget tree.
 
 use super::{
-    ActingInvoker, ActionDirectoryCursor, DirectedInvocation, FrameTick, LocalResourceCache,
+    ActionDirectoryCursor, DirectedInvocation, FrameTick, LocalResourceCache,
     OpenResourceSearchCache, PresenceBroadcastSink, ResourceCache, ResourceCacheKey,
 };
 use crate::collaboration::CollaborationManager;
@@ -145,7 +145,10 @@ pub(super) struct ActionRuntime {
         std::collections::HashMap<tilo_actions::InvocationId, DirectedInvocation>,
     /// The invoker of each delivered invocation still running, for the
     /// edits its effect submits.
-    pub(super) acting_for: std::collections::HashMap<tilo_actions::InvocationId, ActingInvoker>,
+    pub(super) acting_for: std::collections::HashMap<
+        tilo_actions::InvocationId,
+        crate::invocation_scope::Continuation,
+    >,
     /// Operations started from this window rather than by the broker.
     pub(super) local_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,

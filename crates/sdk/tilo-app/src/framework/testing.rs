@@ -177,6 +177,17 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
+    /// The person's record of `P` that the app `owner` keeps, as the app's
+    /// views open it.
+    pub fn person_of<P: Resource>(
+        &mut self,
+        owner: &'static str,
+    ) -> Option<super::PersonRecord<P>> {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.person_of::<P>(owner))
+            .flatten()
+    }
+
     /// The frame `--shots --scenario` writes for `scenario` (`None` for a
     /// plain `--shots`): the app built for a capture on a fresh profile,
     /// from the scenario's fixture, with its actions applied and its view
@@ -664,6 +675,28 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
+    /// [`Self::effect`] invoked by `actor` — an agent or a collaborator the
+    /// host admitted for the effect — rather than the person at this
+    /// device: what the effect submits is applied as theirs, and only as
+    /// far as the effect they were admitted for allows.
+    ///
+    /// # Errors
+    /// As [`Self::effect`]; the refusal of an edit the effect submitted
+    /// fails it.
+    pub fn effect_by<E: Effect>(
+        &mut self,
+        actor: &str,
+        effect: &E,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        self.effect_invoked(
+            Some(tilo_actions::ActionInvoker::actor(actor)),
+            <A::Resource as Resource>::KIND,
+            effect.id(),
+            &effect.arguments(),
+            false,
+        )
+    }
+
     /// [`Self::effect`] after the caller confirmed it, as the host's
     /// confirmation prompt does for a destructive effect.
     ///
@@ -723,13 +756,24 @@ impl<A: ResourceApp> HeadlessApp<A> {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
     ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        self.effect_invoked(None, resource, id, arguments, confirmed)
+    }
+
+    fn effect_invoked(
+        &mut self,
+        invoker: Option<tilo_actions::ActionInvoker>,
+        resource: &str,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
         let address = BoundActionAddress {
             instance_id: self.instance,
             address: tilo_actions::ActionAddress::new(resource, id),
         };
         let (invocation, started) = self
             .harness()
-            .start_bound_job(&address, arguments, confirmed)?;
+            .start_bound_job_for(invoker, &address, arguments, confirmed)?;
         self.last_effect = Some(invocation);
         let harness = self.harness();
         if let Some(output) = started.completed() {

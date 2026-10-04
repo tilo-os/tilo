@@ -158,15 +158,28 @@ pub(crate) fn refresh_bound_controls(
     })
 }
 
+/// A component's control intent, with the effect invocation it continues
+/// when the component's effect handler or completion queued it.
+pub(crate) type PendingComponentControl = (
+    BoundActionTarget,
+    tilo_actions::ControlInvocation,
+    Option<tilo_actions::InvocationId>,
+);
+
 pub(crate) struct DrainedControlInvocations {
-    pub(crate) pending: Vec<(BoundActionTarget, tilo_actions::ControlInvocation)>,
+    pub(crate) pending: Vec<PendingComponentControl>,
     pub(crate) error: Option<BoundDispatchError>,
 }
 
 pub(crate) fn drain_control_invocations(root: &mut dyn Widget) -> DrainedControlInvocations {
     let batch = capture_control_invocations(root);
     DrainedControlInvocations {
-        pending: batch.controls,
+        pending: batch
+            .controls
+            .into_iter()
+            .zip(batch.continuing)
+            .map(|((target, intent), on_behalf_of)| (target, intent, on_behalf_of))
+            .collect(),
         error: batch.failures.into_iter().next(),
     }
 }
@@ -175,6 +188,8 @@ pub(crate) fn drain_control_invocations(root: &mut dyn Widget) -> DrainedControl
 pub(crate) struct BoundControlBatch {
     pub(crate) visited: Vec<CallbackBinding>,
     pub(crate) controls: Vec<(BoundActionTarget, tilo_actions::ControlInvocation)>,
+    /// For each of `controls`, in order, the effect invocation it continues.
+    pub(crate) continuing: Vec<Option<tilo_actions::InvocationId>>,
     pub(crate) failures: Vec<BoundDispatchError>,
 }
 
@@ -235,6 +250,7 @@ pub(crate) fn snapshot_control_queues(root: &dyn Widget) -> ControlQueueSnapshot
 
 fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch {
     let mut invocations = Vec::new();
+    let mut continuing = Vec::new();
     let mut visited = Vec::new();
     let mut visit = |binding: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
@@ -249,6 +265,7 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
             .drain(..)
             .collect::<Vec<_>>();
         for intent in queued {
+            continuing.push(None);
             invocations.push((
                 BoundActionTarget {
                     binding: binding.clone(),
@@ -260,7 +277,10 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
                 intent,
             ));
         }
-        while let Some(intent) = crate::widget::controls::take_control_invocation(widget) {
+        while let Some((intent, on_behalf_of)) =
+            crate::widget::controls::take_attributed_control_invocation(widget)
+        {
+            continuing.push(on_behalf_of);
             invocations.push((
                 BoundActionTarget {
                     binding: binding.clone(),
@@ -284,6 +304,7 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
     BoundControlBatch {
         visited,
         controls: invocations,
+        continuing,
         failures: failure.into_iter().collect(),
     }
 }
@@ -1980,6 +2001,13 @@ pub(crate) fn invoke_resource_action(
                     if !permits_invocation(binding, spec, arguments.as_ref(), argument) {
                         return Err(denied(spec).into());
                     }
+                    crate::invocation_scope::check_continuation(
+                        spec,
+                        match arguments.as_ref() {
+                            Some(arguments) => spec.permission_for_json(arguments),
+                            None => spec.permission_for_argument(argument),
+                        },
+                    )?;
                     // A refused private View must not invoke a Deferred encoder.
                     // The execution guard below remains an independent boundary.
                     if spec.kind == tilo_actions::OperationKind::View

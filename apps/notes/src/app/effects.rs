@@ -297,7 +297,12 @@ impl NotesApp {
 
     /// The action adding image `bytes` to `page`, after the block the
     /// caret is in when the note is the one shown, else at its end.
-    fn image_insertion(&self, page: PageId, alt: &str, bytes: Vec<u8>) -> actions::NotesAction {
+    pub(super) fn image_insertion(
+        &self,
+        page: PageId,
+        alt: &str,
+        bytes: Vec<u8>,
+    ) -> actions::NotesAction {
         let digest = blake3::hash(&bytes).to_hex().to_string();
         let after = (self.main.page_id() == Some(page))
             .then(|| {

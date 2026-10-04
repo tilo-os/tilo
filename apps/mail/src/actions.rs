@@ -43,11 +43,11 @@
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use tilo_document::RichTextAction;
+use ui::tilo_resource::{self, Effect};
 
 use tilo_actions::{
-    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
-    Resource, ResultSpec, RetryPolicy,
+    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ParamType, Resource,
 };
 
 use crate::attachment_store;
@@ -56,7 +56,6 @@ use crate::model::{Draft, DraftAttachment, Folder};
 
 /// Registry `type_id` for every Mail action.
 pub const MAIL_ACTION_TYPE: &str = "mail.action";
-pub const MAIL_OPERATION_TYPE: &str = "mail.operation";
 
 /// Bounds applied at the replicated-action boundary.  The UI normally keeps
 /// values much smaller; these limits make a malformed, remote, or replayed
@@ -99,83 +98,94 @@ fn bounded_ids(ids: &[String]) -> Vec<&str> {
     result
 }
 
+/// What a Mail view effect opens.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MailOperation {
-    /// Start a new local composition.  The body is intentionally not part of
-    /// this view operation: until it is saved as a draft or sent, a compose
-    /// buffer is private presentation state rather than shared mailbox data.
-    ComposeNew,
-    RefreshCurrentFolder,
-    /// Reveal a system folder without changing the collaborative document.
-    RevealFolder {
-        folder: String,
-    },
-    RevealAccount {
-        /// Account ids come from the device-local account store, so an action
-        /// address keeps pointing at the same account when another account is
-        /// added, removed, or reordered.
-        id: String,
-    },
-    /// Reveal an already-loaded message. The admitted Open operation
-    /// synchronously dispatches the canonical document `SetRead` action before
-    /// it completes, so history, sync, notifications, and unread counters all
-    /// observe the same state transition. This is the operation behind the
-    /// plainly named **Open message** action.
-    RevealMessage {
-        id: String,
-    },
-    /// Inspect an already-loaded message without changing its read flag.
-    ///
-    /// This deliberately has a different operation and a deliberately explicit
-    /// label in the resource tree: an agent (or a person checking a message)
-    /// must never get a surprising read receipt merely by asking to inspect it.
-    /// Normal list activation and **Open message** still use [`Self::RevealMessage`]
-    /// and therefore mark an unread message as read.
-    InspectMessage {
-        id: String,
-    },
-    /// Start a reply to one loaded message.  This is a view operation because
-    /// it only opens a local, unsaved compose buffer; saving that buffer uses
-    /// the canonical `SaveDraft` document action.
-    Reply {
-        id: String,
-    },
-    /// Start a reply-all composition for one loaded message.
-    ReplyAll {
-        id: String,
-    },
-    /// Start a forward composition for one loaded message.
-    Forward {
-        id: String,
-    },
-    RevealDraft,
-    SaveAttachment {
-        message_id: String,
-        index: usize,
-    },
-    /// Validate bounded RFC 5545 invitation content, save it inline in a
-    /// durable draft through `MailAction`, and reveal it. No host path is
-    /// accepted or inferred.
-    PrepareCalendarInvitation {
-        to: String,
-        subject: String,
-        body: String,
-        calendar_ics: String,
-    },
+pub enum MailTarget {
+    /// A system folder, by key.
+    Folder(String),
+    /// An account, by its id in this device's account store, so the address
+    /// keeps naming the same account when another is added or removed.
+    Account(String),
+    /// A loaded message: opening it is the read boundary, so it records the
+    /// message read through the same `SetRead` action as every control.
+    Message(String),
+    /// The saved draft, back in the composer.
+    Draft,
 }
 
-/// Decode a Mail effect operation when `type_id` addresses this application.
-///
-/// # Errors
-///
-/// Returns the JSON decoding error when a Mail operation payload is malformed.
-pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<MailOperation>, String> {
-    if type_id != MAIL_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|e| e.to_string())
+/// What Mail does that changes no document: what the window shows, the
+/// composer it opens, fetching from the server, saving an attachment on this
+/// device, and preparing an invitation as the draft. Effects on one item
+/// ride that item; the ones a caller gives arguments to are offered on the
+/// mailbox.
+#[derive(Debug, Clone, PartialEq, Effect)]
+#[effect(operation = "mail.effects")]
+pub enum MailEffect {
+    /// Compose message
+    ///
+    /// Opens a new local composition; until it is saved as a draft or sent
+    /// it is this window's own.
+    #[effect(view)]
+    Compose,
+    /// Refresh current folder
+    #[effect(job, idempotent)]
+    Refresh,
+    /// Prepare calendar invitation
+    ///
+    /// Saves a bounded METHOD:REQUEST invitation as the draft and opens it
+    /// for review; nothing is sent.
+    #[effect(permission = "invite", idempotent)]
+    PrepareCalendarInvitation {
+        #[param("Invitation recipient")]
+        to: String,
+        #[param("Invitation subject")]
+        subject: String,
+        #[param("Plain-text invitation message")]
+        body: String,
+        #[param("Bounded text/calendar METHOD:REQUEST payload")]
+        calendar_ics: String,
+    },
+    /// Open
+    #[effect(view, row)]
+    Open { target: MailTarget },
+    /// Preview without marking read
+    ///
+    /// Shows a loaded message without changing its read state: asking to
+    /// inspect a message never sends a read receipt.
+    #[effect(view, row)]
+    Inspect { message: String },
+    /// Reply
+    #[effect(view, row)]
+    Reply { message: String },
+    /// Reply all
+    #[effect(view, row)]
+    ReplyAll { message: String },
+    /// Forward
+    #[effect(view, row)]
+    Forward { message: String },
+    /// Save attachment
+    ///
+    /// Saves a downloaded attachment where the person chooses on this
+    /// device.
+    #[effect(row, job, cancellable)]
+    Save { message: String, index: usize },
+}
+
+/// What invoking `effect` where it is bound sends its handler.
+#[cfg(test)]
+pub(crate) fn effect_payload(effect: &MailEffect) -> Vec<u8> {
+    effect
+        .bound()
+        .build_json(&serde_json::Map::new())
+        .map(|encoded| encoded.payload)
+        .unwrap_or_default()
+}
+
+/// `effect` bound to the item it acts on, under that item's own `label`.
+fn bound(effect: &MailEffect, label: &str) -> ActionSpec {
+    let mut spec = effect.bound();
+    label.clone_into(&mut spec.label);
+    spec
 }
 
 /// The persisted scalar fields of the in-progress draft, in exactly the shape
@@ -837,27 +847,6 @@ pub fn discard_draft_action() -> MailAction {
     MailAction::DiscardDraft
 }
 
-pub fn prepare_calendar_invitation_operation(
-    to: &str,
-    subject: &str,
-    body: &str,
-    calendar_ics: &str,
-) -> EncodedAction {
-    EncodedAction::encode_operation(
-        MAIL_OPERATION_TYPE,
-        &MailOperation::PrepareCalendarInvitation {
-            to: to.to_string(),
-            subject: subject.to_string(),
-            body: body.to_string(),
-            calendar_ics: calendar_ics.to_string(),
-        },
-    )
-    .unwrap_or_else(|_| EncodedAction {
-        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-        payload: b"Mail invitation handoff could not be encoded".to_vec(),
-    })
-}
-
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -937,7 +926,6 @@ pub struct MailResourceCtx {
     pub custom_folders: Vec<(String, String)>,
     /// Whether a persisted draft exists (so "Discard draft" is offered).
     pub has_draft: bool,
-    pub can_sync: bool,
 }
 
 /// # Panics
@@ -1001,37 +989,6 @@ fn bulk_spec(
     if reversible { spec.reversible() } else { spec }
 }
 
-#[allow(
-    clippy::expect_used,
-    reason = "MailOperation is a derived-Serialize enum; an unencodable operation is a programmer invariant violation"
-)]
-fn view_spec(id: &str, label: &str, operation: &MailOperation) -> ActionSpec {
-    ActionSpec::operation(
-        id,
-        label,
-        OperationKind::View,
-        MAIL_OPERATION_TYPE,
-        operation,
-    )
-    .expect("encode mail view operation")
-    .retry_policy(RetryPolicy::Idempotent)
-}
-
-#[allow(
-    clippy::expect_used,
-    reason = "MailOperation is a derived-Serialize enum; an unencodable operation is a programmer invariant violation"
-)]
-fn effect_spec(id: &str, label: &str, operation: &MailOperation) -> ActionSpec {
-    ActionSpec::operation(
-        id,
-        label,
-        OperationKind::Effect,
-        MAIL_OPERATION_TYPE,
-        operation,
-    )
-    .expect("encode mail effect operation")
-}
-
 fn message_label(m: &MessageRow) -> String {
     let s = m.subject.trim();
     let base = if s.is_empty() { "(no subject)" } else { s };
@@ -1048,45 +1005,7 @@ pub(crate) fn message_resource(message: &MessageRow) -> Resource {
         "mail.message",
         message_label(message),
     );
-    resource = resource.with_action(view_spec(
-        "open",
-        "Open message",
-        &MailOperation::RevealMessage {
-            id: message.id.clone(),
-        },
-    ));
-    resource = resource.with_action(view_spec(
-        "inspect",
-        "Preview without marking read",
-        &MailOperation::InspectMessage {
-            id: message.id.clone(),
-        },
-    ));
-    // Composition is a first-class resource capability, rather than an
-    // on-screen-only context-menu convenience.  Each operation opens exactly
-    // the same local composer boundary as the reader buttons and shortcuts;
-    // no unsaved recipient/body data enters the shared mailbox document.
-    resource = resource.with_action(view_spec(
-        "reply",
-        "Reply",
-        &MailOperation::Reply {
-            id: message.id.clone(),
-        },
-    ));
-    resource = resource.with_action(view_spec(
-        "reply-all",
-        "Reply all",
-        &MailOperation::ReplyAll {
-            id: message.id.clone(),
-        },
-    ));
-    resource = resource.with_action(view_spec(
-        "forward",
-        "Forward",
-        &MailOperation::Forward {
-            id: message.id.clone(),
-        },
-    ));
+    resource = with_message_views(resource, &message.id);
     resource = resource.with_action(immediate_spec(
         "read",
         if message.read {
@@ -1144,25 +1063,11 @@ pub(crate) fn message_resource(message: &MessageRow) -> Resource {
 }
 
 fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRow) -> Resource {
-    let save = effect_spec(
-        "save",
-        "Save attachment",
-        &MailOperation::SaveAttachment {
-            message_id: message_id.to_string(),
-            index,
-        },
-    )
-    .with_contract(ActionContract {
-        // A chosen destination can overwrite a user file. Retrying after a
-        // lost terminal acknowledgement must not silently repeat that effect.
-        retry: RetryPolicy::AtMostOnce,
-        execution: ExecutionMode::Background { cancellable: true },
-        result: ResultSpec::Resource {
-            resource_kind: "mail.attachment".into(),
-        },
-        tags: vec!["mail".into(), "attachment".into(), "file-save".into()],
-        ..ActionContract::default()
-    });
+    let save = MailEffect::Save {
+        message: message_id.to_owned(),
+        index,
+    }
+    .bound();
     Resource::new(
         format!("mail.attachment:{message_id}:{index}"),
         "mail.attachment",
@@ -1179,95 +1084,45 @@ fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRo
     })
 }
 
-/// Compose, refresh, and calendar invitation. [`tilo_resource::publish`] keeps
-/// these Views and Effects. Account availability is overlaid afterwards.
-pub(crate) fn mailbox_local_operations() -> Vec<ActionSpec> {
-    let mut specs = vec![view_spec(
-        "compose",
-        "Compose message",
-        &MailOperation::ComposeNew,
-    )];
-    if let Ok(refresh) = ActionSpec::operation(
-        "refresh",
-        "Refresh current folder",
-        OperationKind::Effect,
-        MAIL_OPERATION_TYPE,
-        &MailOperation::RefreshCurrentFolder,
-    ) {
-        specs.push(refresh.with_contract(ActionContract {
-            retry: RetryPolicy::Idempotent,
-            execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Job,
-            tags: vec!["network".into(), "mail".into(), "refresh".into()],
-            ..ActionContract::default()
-        }));
-    }
-    specs.push(
-        ActionSpec::typed_operation(
-            "prepare-calendar-invitation",
-            "Prepare calendar invitation",
-            "recipient, subject and calendar payload",
-            OperationKind::Effect,
-            MAIL_OPERATION_TYPE,
-            vec![
-                ActionParam::required("to", ParamType::Text, "Invitation recipient"),
-                ActionParam::required("subject", ParamType::Text, "Invitation subject"),
-                ActionParam::required("body", ParamType::Text, "Plain-text invitation message"),
-                ActionParam::required(
-                    "calendar_ics",
-                    ParamType::Text,
-                    "Bounded text/calendar METHOD:REQUEST payload",
-                ),
-            ],
-            |args| {
-                prepare_calendar_invitation_operation(
-                    args.text("to").unwrap_or_default(),
-                    args.text("subject").unwrap_or_default(),
-                    args.text("body").unwrap_or_default(),
-                    args.text("calendar_ics").unwrap_or_default(),
-                )
+/// Open, preview, reply, reply all and forward, bound to the message
+/// `id`: what can be done with a message that changes no document.
+fn with_message_views(resource: Resource, id: &str) -> Resource {
+    let message = || id.to_owned();
+    resource
+        .with_action(bound(
+            &MailEffect::Open {
+                target: MailTarget::Message(message()),
             },
-        )
-        .with_contract(ActionContract {
-            permission: PermissionRequirement::Invite,
-            retry: RetryPolicy::Idempotent,
-            result: ResultSpec::Resource {
-                resource_kind: "mail.draft".into(),
-            },
-            tags: vec![
-                "mail".into(),
-                "calendar".into(),
-                "invitation".into(),
-                "device-local-sensitive".into(),
-            ],
-            ..ActionContract::default()
-        }),
-    );
-    specs
+            "Open message",
+        ))
+        .with_action(MailEffect::Inspect { message: message() }.bound())
+        .with_action(MailEffect::Reply { message: message() }.bound())
+        .with_action(MailEffect::ReplyAll { message: message() }.bound())
+        .with_action(MailEffect::Forward { message: message() }.bound())
 }
 
-fn overlay_account_availability(root: &mut Resource, can_sync: bool) {
-    if can_sync {
-        return;
-    }
-    for (id, reason) in [
-        ("refresh", "No connected mail account is available"),
-        (
-            "prepare-calendar-invitation",
-            "Connect a Mail account before preparing an invitation",
-        ),
-    ] {
-        if let Some(index) = root.actions.iter().position(|action| action.id == id) {
-            let spec = root.actions.remove(index);
-            root.actions
-                .insert(index, spec.unavailable("account_offline", reason));
-        }
-    }
+fn open_folder(folder: Folder) -> ActionSpec {
+    bound(
+        &MailEffect::Open {
+            target: MailTarget::Folder(folder.as_key().to_owned()),
+        },
+        "Open folder",
+    )
 }
 
-fn accounts_collection(ctx: &MailResourceCtx) -> Resource {
+fn open_draft() -> ActionSpec {
+    bound(
+        &MailEffect::Open {
+            target: MailTarget::Draft,
+        },
+        "Continue editing",
+    )
+}
+
+/// This device's accounts `(id, label, active)`, each opening its inbox.
+pub(crate) fn accounts_collection(accounts: &[(String, String, bool)]) -> Resource {
     Resource::new("mail.accounts", "mail.account.collection", "Accounts").with_children(
-        ctx.accounts.iter().map(|(id, label, active)| {
+        accounts.iter().map(|(id, label, active)| {
             Resource::new(
                 format!("mail.account:{id}"),
                 "mail.account",
@@ -1277,10 +1132,11 @@ fn accounts_collection(ctx: &MailResourceCtx) -> Resource {
                     label.clone()
                 },
             )
-            .with_action(view_spec(
-                "open",
+            .with_action(bound(
+                &MailEffect::Open {
+                    target: MailTarget::Account(id.clone()),
+                },
                 "Open account",
-                &MailOperation::RevealAccount { id: id.clone() },
             ))
         }),
     )
@@ -1368,13 +1224,7 @@ fn system_folder_key(id: &str) -> Option<Folder> {
 /// already emitted. The open folder's children become the live thread page.
 fn overlay_published_folder(folder_node: &mut Resource, folder: Folder, ctx: &MailResourceCtx) {
     if !folder_node.actions.iter().any(|action| action.id == "open") {
-        folder_node.actions.push(view_spec(
-            "open",
-            "Open folder",
-            &MailOperation::RevealFolder {
-                folder: folder.as_key().to_string(),
-            },
-        ));
+        folder_node.actions.push(open_folder(folder));
     }
     if folder == Folder::Drafts && ctx.has_draft {
         if !folder_node
@@ -1394,11 +1244,7 @@ fn overlay_published_folder(folder_node: &mut Resource, folder: Folder, ctx: &Ma
         {
             folder_node.children.push(
                 Resource::new("mail.draft:current", "mail.draft", "Current draft")
-                    .with_action(view_spec(
-                        "open",
-                        "Continue editing",
-                        &MailOperation::RevealDraft,
-                    ))
+                    .with_action(open_draft())
                     .with_action(
                         immediate_spec("discard", "Discard draft", &discard_draft_action())
                             .destructive(),
@@ -1433,14 +1279,15 @@ pub fn provide_resources(ctx: &MailResourceCtx, doc: &AutoCommit) -> Vec<Resourc
         &ctx.mailbox_label,
         &state,
     );
-    overlay_account_availability(&mut root, ctx.can_sync);
+    // The window's effects ride the mailbox beside its actions.
+    root.actions.extend(MailEffect::specs());
     // Accounts are the signed-in session, not mailbox document rows.
     if !root
         .children
         .iter()
         .any(|child| child.id.as_str() == "mail.accounts")
     {
-        root.children.insert(0, accounts_collection(ctx));
+        root.children.insert(0, accounts_collection(&ctx.accounts));
     }
     for child in &mut root.children {
         if let Some(folder) = system_folder_key(child.id.as_str()) {
@@ -1463,8 +1310,7 @@ pub fn provide_resources(ctx: &MailResourceCtx, doc: &AutoCommit) -> Vec<Resourc
 }
 
 /// Mailbox-level Document ops for [`tilo_resource::publish`] — bulk triage and
-/// new-folder. Compose, refresh, and the invitation are Views and Effects on
-/// [`mailbox_local_operations`].
+/// new-folder. Compose, refresh, and the invitation are [`MailEffect`]s.
 pub(crate) fn mailbox_bound_document_actions() -> Vec<ActionSpec> {
     vec![
         bulk_spec(
@@ -1522,18 +1368,14 @@ pub(crate) fn mailbox_bound_document_actions() -> Vec<ActionSpec> {
 /// delete / labels — and the `open` view a search hit on the message takes.
 /// Reply / forward / save-attachment stay Views/Effects of the window.
 pub(crate) fn publish_message_document(message: &MessageRow) -> Resource {
-    let mut resource = Resource::new(
-        format!("mail.message:{}", message.id),
-        "mail.message",
-        message_label(message),
-    )
-    .with_action(view_spec(
-        "open",
-        "Open message",
-        &MailOperation::RevealMessage {
-            id: message.id.clone(),
-        },
-    ));
+    let mut resource = with_message_views(
+        Resource::new(
+            format!("mail.message:{}", message.id),
+            "mail.message",
+            message_label(message),
+        ),
+        &message.id,
+    );
     resource = resource.with_action(immediate_spec(
         "read",
         if message.read {
@@ -1592,15 +1434,19 @@ fn publish_system_folder_document(folder: Folder, has_draft: bool) -> Resource {
         format!("mail.folder:{}", folder.as_key()),
         "mail.folder",
         folder.title().to_string(),
-    );
+    )
+    .with_action(open_folder(folder));
     if folder == Folder::Drafts && has_draft {
         folder_node = folder_node.with_action(
             immediate_spec("discard-draft", "Discard draft", &discard_draft_action()).destructive(),
         );
         folder_node = folder_node.with_child(
-            Resource::new("mail.draft:current", "mail.draft", "Current draft").with_action(
-                immediate_spec("discard", "Discard draft", &discard_draft_action()).destructive(),
-            ),
+            Resource::new("mail.draft:current", "mail.draft", "Current draft")
+                .with_action(open_draft())
+                .with_action(
+                    immediate_spec("discard", "Discard draft", &discard_draft_action())
+                        .destructive(),
+                ),
         );
     }
     folder_node
@@ -1861,19 +1707,20 @@ mod tests {
                     "message resource exports {id} as a canonical compose action"
                 );
             }
-            let ActionInput::Immediate(open_payload) = &open.input else {
-                panic!("open is an immediate view operation");
-            };
-            let ActionInput::Immediate(preview_payload) = &preview.input else {
-                panic!("preview is an immediate view operation");
+            let payload = |spec: &ActionSpec| {
+                spec.build_json(&serde_json::Map::new())
+                    .expect("a bound view takes no arguments")
+                    .payload
             };
             assert!(matches!(
-                decode_operation(&open_payload.type_id, &open_payload.payload).unwrap(),
-                Some(MailOperation::RevealMessage { .. })
+                MailEffect::from_payload(&payload(open)).unwrap(),
+                MailEffect::Open {
+                    target: MailTarget::Message(_)
+                }
             ));
             assert!(matches!(
-                decode_operation(&preview_payload.type_id, &preview_payload.payload).unwrap(),
-                Some(MailOperation::InspectMessage { .. })
+                MailEffect::from_payload(&payload(preview)).unwrap(),
+                MailEffect::Inspect { .. }
             ));
         }
 
@@ -1884,11 +1731,8 @@ mod tests {
         {
             let (app, state) = seeded_app();
             let resources = app.publish_resources(&state.doc);
-            let handlers: std::collections::HashSet<String> = app
-                .local_resource_operation_handlers()
-                .iter()
-                .map(|handler| (*handler).to_string())
-                .collect();
+            let handlers: std::collections::HashSet<String> =
+                std::collections::HashSet::from([MailEffect::OPERATION.to_string()]);
             let violations = tilo_actions::validate_surface(&resources, &registry(), &handlers);
             assert!(violations.is_empty(), "{violations:?}");
             assert_eq!(resources.len(), 1, "one mailbox root");
@@ -1973,7 +1817,6 @@ mod tests {
                 messages: Vec::new(),
                 custom_folders: Vec::new(),
                 has_draft: false,
-                can_sync: false,
             };
             ctx.messages.extend((0..10_000).map(|id| MessageRow {
                 id: id.to_string(),
@@ -2034,7 +1877,6 @@ mod tests {
                 ],
                 custom_folders: Vec::new(),
                 has_draft: false,
-                can_sync: false,
             };
             let resources = provide_resources(&ctx, &AutoCommit::new());
             let inbox = resources[0]
@@ -2068,17 +1910,16 @@ mod tests {
                 messages: Vec::new(),
                 custom_folders: Vec::new(),
                 has_draft: false,
-                can_sync: false,
             };
             let resources = provide_resources(&ctx, &AutoCommit::new());
             let address = tilo_actions::ActionAddress::new("mail.account:work-99", "open");
             let encoded = tilo_actions::door::encode(&resources, &address, None)
                 .expect("the stable account address resolves through the mailbox tree");
             assert_eq!(
-                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-                Some(MailOperation::RevealAccount {
-                    id: "work-99".into()
-                })
+                MailEffect::from_payload(&encoded.payload).unwrap(),
+                MailEffect::Open {
+                    target: MailTarget::Account("work-99".into())
+                }
             );
         }
 

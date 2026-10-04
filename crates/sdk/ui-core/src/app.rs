@@ -374,15 +374,6 @@ fn word_at(s: &str, byte: usize) -> Option<String> {
 #[cfg(feature = "native")]
 pub(crate) const POINTER_BROADCAST_MIN_GAP_MS: u64 = 33;
 
-/// Who a delivered effect invocation runs for, kept while it runs: what its
-/// handler and completion submit is applied for the same invoker, in the
-/// same context.
-#[derive(Clone, Debug)]
-struct ActingInvoker {
-    invoker: tilo_actions::ActionInvoker,
-    context: Option<tilo_actions::ActionContext>,
-}
-
 #[derive(Clone, Debug)]
 struct DirectedInvocation {
     wire_id: u64,
