@@ -351,6 +351,131 @@ pub fn application_open_target(room: &str, app_id: &str) -> RemoteActionTarget {
     }
 }
 
+/// Opening another installed app into the workspace, optionally with
+/// verified content it opens read-only: Photos with a captured picture, a
+/// player with a recorded clip. An app offers it as an action on its own
+/// resources ([`ApplicationLaunch::spec`]); the host routes the admitted
+/// invocation through the workspace broker, which stages the bytes and owns
+/// the launched process. The source app never hands over a local path.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ApplicationLaunch {
+    /// The installed app to open, by its id (`so.tilo.photos`).
+    pub app_id: String,
+    /// The content address hash of what it opens; the app opens empty
+    /// without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+}
+
+impl ApplicationLaunch {
+    /// The operation type the host routes to the broker.
+    pub const TYPE: &'static str = "tilo.application.launch";
+
+    /// Open `app_id` empty.
+    #[must_use]
+    pub fn app(app_id: impl Into<String>) -> Self {
+        Self {
+            app_id: app_id.into(),
+            content_hash: None,
+        }
+    }
+
+    /// Open `app_id` with the content whose hash is `content_hash`.
+    #[must_use]
+    pub fn with_content(app_id: impl Into<String>, content_hash: impl Into<String>) -> Self {
+        Self {
+            app_id: app_id.into(),
+            content_hash: Some(content_hash.into()),
+        }
+    }
+
+    /// An app id of letters, digits, dots and dashes, and a content hash
+    /// (when given) of 64 lowercase hex digits.
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        !self.app_id.is_empty()
+            && self.app_id.len() <= 128
+            && self
+                .app_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+            && self.content_hash.as_ref().is_none_or(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+    }
+
+    /// The argument the broker's application `open` takes: the content
+    /// hash as its text, or nothing.
+    #[must_use]
+    pub fn argument(&self) -> InvokeArgument {
+        self.content_hash
+            .clone()
+            .map_or(InvokeArgument::None, InvokeArgument::Text)
+    }
+
+    /// Opening `app_id` with content the caller names as the action's
+    /// `content_hash` argument: a control that hands over whatever it
+    /// shows now.
+    #[must_use]
+    pub fn content_spec(
+        app_id: &str,
+        id: &str,
+        label: &str,
+        description: &str,
+    ) -> crate::ActionSpec {
+        let app_id = app_id.to_owned();
+        crate::ActionSpec::typed_operation(
+            id,
+            label,
+            description,
+            crate::OperationKind::Effect,
+            Self::TYPE,
+            vec![crate::ActionParam::required(
+                "content_hash",
+                crate::ParamType::Text,
+                "Content address hash of what the app opens",
+            )],
+            move |args| {
+                let launch = Self::with_content(
+                    app_id.clone(),
+                    args.text("content_hash").unwrap_or_default(),
+                );
+                crate::EncodedAction::encode_operation(Self::TYPE, &launch).unwrap_or_else(|_| {
+                    crate::EncodedAction {
+                        type_id: Self::TYPE.to_owned(),
+                        payload: Vec::new(),
+                    }
+                })
+            },
+        )
+    }
+
+    /// This launch as the action `id` an app offers on a resource of its
+    /// own, taking no arguments.
+    #[must_use]
+    pub fn spec(&self, id: &str, label: &str, description: &str) -> crate::ActionSpec {
+        let encoded =
+            crate::EncodedAction::encode_operation(Self::TYPE, self).unwrap_or_else(|_| {
+                crate::EncodedAction {
+                    type_id: Self::TYPE.to_owned(),
+                    payload: Vec::new(),
+                }
+            });
+        crate::ActionSpec::typed_operation(
+            id,
+            label,
+            description,
+            crate::OperationKind::Effect,
+            Self::TYPE,
+            Vec::new(),
+            move |_| encoded.clone(),
+        )
+    }
+}
+
 /// Prefix of the provider token naming an application in a workspace
 /// whether or not it is running; see [`application_action_target`].
 pub const APPLICATION_PROVIDER: &str = "application";

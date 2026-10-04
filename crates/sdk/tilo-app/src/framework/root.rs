@@ -868,6 +868,9 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         }
         handlers.insert(super::history::VIEW_TYPE.to_owned());
         handlers.insert(super::person::HISTORY_TYPE.to_owned());
+        // Opening another app is routed by the host to the workspace
+        // broker, whichever resource offers it.
+        handlers.insert(tilo_actions::remote::ApplicationLaunch::TYPE.to_owned());
         handlers.extend(self.effects.operations().into_iter().map(str::to_owned));
         for spec in R::local_operations()
             .into_iter()
