@@ -323,6 +323,33 @@ impl OriginalRoom {
         expires_at_ns: Option<u64>,
         persist_path: Option<std::path::PathBuf>,
     ) -> Self {
+        Self::hosting(capabilities, expires_at_ns, persist_path, None)
+    }
+
+    /// The room on a host that keeps record content through `content`:
+    /// `room` when it is the same room another host holds.
+    pub fn with_record_content(
+        content: Arc<crate::record_content::RouteContent>,
+        room: Option<tilo_desktop_model::RoomId>,
+    ) -> Self {
+        Self::hosting(
+            DeviceCapabilities::host(),
+            None,
+            None,
+            Some((content, room)),
+        )
+    }
+
+    fn hosting(
+        capabilities: DeviceCapabilities,
+        expires_at_ns: Option<u64>,
+        persist_path: Option<std::path::PathBuf>,
+        record_content: Option<(
+            Arc<crate::record_content::RouteContent>,
+            Option<tilo_desktop_model::RoomId>,
+        )>,
+    ) -> Self {
+        let (record_content, room) = record_content.unzip();
         let root = SigningKey::from_bytes(&[83; 32]);
         let key = SigningKey::from_bytes(&[84; 32]);
         let cert = signed_device(&root, &key, "original worker", capabilities, expires_at_ns);
@@ -332,6 +359,9 @@ impl OriginalRoom {
             crate::test_support::WorkspaceId(83),
             "Original room",
         );
+        if let Some(room) = room.flatten() {
+            workspace.room = room;
+        }
         workspace.set_owner(principal_id_for_root(cert.user_public_key));
         workspace.owner = None;
         workspace.capabilities = workspace
@@ -353,12 +383,16 @@ impl OriginalRoom {
             crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
         let publisher =
             PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
-        let (state, _) = CapnpBrokerState::new(
+        let mut services = membership.services();
+        services.record_content = record_content;
+        let (state, _) = CapnpBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             publisher,
-            Some(membership.clone()),
+            Some(membership.authority()),
             None,
+            None,
+            services,
         );
         let authority = CurrentHost::new(&route, &cert, Some(origin.capture().unwrap()));
         assert!(state.certificate_authority.set(authority.clone()).is_ok());
