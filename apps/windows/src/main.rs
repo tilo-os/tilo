@@ -12,25 +12,9 @@ use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 #[allow(
     clippy::unnecessary_wraps,
-    reason = "ShotFactory requires this exact result type"
-)]
-fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(windows::app_root_scenario(
-        args.scenario.as_deref().unwrap_or("wide"),
-    ))
-}
-fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
-    match args.scenario.as_deref().unwrap_or("wide") {
-        "detail" | "error-compact" | "vm-detail" | "confirm-delete" => (480, 800),
-        "running" | "error" => (1000, 760),
-        _ => (1280, 800),
-    }
-}
-#[allow(
-    clippy::unnecessary_wraps,
     reason = "signature is fixed by ui::launch's argument-aware root factory"
 )]
-fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+fn installer_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(args
         .positionals()
         .first()
@@ -39,16 +23,31 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         }))
 }
 
-fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
-    let mut args = args;
+/// Opening an installer handed over on the command line needs the root that
+/// takes the path; every other launch, captures included, is the framework
+/// app.
+fn opens_installer(args: impl Iterator<Item = String>) -> bool {
+    let args: Vec<String> = args.collect();
+    let capture = args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--shots"
+                | "--responsive-matrix"
+                | "--native-audit"
+                | "--headless"
+                | "--headless-drive"
+        )
+    });
+    if capture {
+        return false;
+    }
+    let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--data-dir" => {
                 let _ = args.next();
             }
-            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return true,
             flag if flag.starts_with('-') => {}
-            // A positional installer path still uses the legacy root factory.
             _ => return true,
         }
     }
@@ -56,25 +55,14 @@ fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
 }
 
 pub fn main() {
-    if !wants_standalone(std::env::args().skip(1)) {
+    if !opens_installer(std::env::args().skip(1)) {
         ui::framework::run::<windows::WindowsShell>();
         return;
     }
 
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("so.tilo.windows", live_root)
+        &LaunchSpec::new_with_args("so.tilo.windows", installer_root)
             .max_positionals(1)
-            .shot_root(shot_root)
-            .scenarios(&[
-                "wide",
-                "detail",
-                "vm-detail",
-                "running",
-                "error",
-                "error-compact",
-                "confirm-delete",
-            ])
-            .shot_viewport(shot_viewport)
             .configure_app(configure_app),
     );
 }
