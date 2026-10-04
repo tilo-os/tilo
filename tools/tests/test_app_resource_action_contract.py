@@ -266,6 +266,19 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertFalse(any("not reachable" in item.reason for item in violations))
+        with self.subTest(phase='framework surface answering typed effects passes'):
+            root = self.fixture(
+                "#[derive(Model, Default)] pub struct Note { pub body: String }\n"
+                "#[resource(kind = \"sample.note\", label = \"Note\")]\n"
+                "impl Note { #[action] pub fn edit(&mut self, text: String) { self.body = text; } }\n"
+                "struct Sample;\n"
+                "impl ResourceApp for Sample { type Resource = Note; }\n"
+                "impl ResourceSurface<Note, Show> for View {\n"
+                " fn effect(&mut self, effect: Show, cx: &mut EffectCx<Note, Self>) -> EffectAnswer { todo() } }\n"
+                "fn check(spec: &ActionSpec) -> bool { spec.kind == OperationKind::View }\n"
+            )
+            violations, _ = contract.audit(root)
+            self.assertEqual(violations, [])
 
     def test_agent_uses_generic_broker_catalogue_and_receipts(self):
         with self.subTest(phase='agent must use generic broker catalogue and receipts'):

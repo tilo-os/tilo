@@ -52,7 +52,12 @@ TOOLKIT_RESOURCE_VALUE = re.compile(
 FRAMEWORK_APP = re.compile(r"\bimpl\s+(?:[\w:]+::)?ResourceApp\s+for\b")
 # The framework's launch installs the resource's replay decoder
 # (`Resource::register`) into the component registry itself.
-FRAMEWORK_LAUNCH = re.compile(r"\bframework\s*::\s*(?:run|launch_spec)\s*::\s*<")
+FRAMEWORK_LAUNCH = re.compile(
+    r"\bframework\s*::\s*(?:run|launch_spec)\s*::\s*<|\bmain\s*!\s*\("
+)
+# A framework app answers its effect and view operations as a typed
+# vocabulary: a surface's `ResourceSurface::effect`, a view's `cx.effects(..)`.
+TYPED_EFFECT_HANDLER = re.compile(r"\bfn\s+effect\s*\(|\.\s*effects\s*\(\s*(?:move\s*)?\|")
 FRAMEWORK_RESOURCE = re.compile(
     r"#\[\s*resource\s*\(|\bimpl\s+(?:[\w:]+::)?Resource\s+for\b"
 )
@@ -819,8 +824,10 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         "app builds no runtime Resource value (an empty provider is not a protocol)",
                     )
                 )
+            typed_effects = framework_host and TYPED_EFFECT_HANDLER.search(combined) is not None
             if (
                 not toolkit_host
+                and not typed_effects
                 and OPERATION_KIND.search(combined)
                 and not OPERATION_HANDLER.search(combined)
             ):
@@ -833,6 +840,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                 )
             if (
                 not toolkit_host
+                and not typed_effects
                 and OPERATION_KIND.search(combined)
                 and not OPERATION_HANDLER_REGISTRY.search(combined)
             ):

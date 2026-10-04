@@ -47,6 +47,7 @@ struct VariantOptions {
     cancellable: bool,
     returns: bool,
     destructive: bool,
+    view: bool,
     permission: Option<String>,
 }
 
@@ -66,9 +67,11 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.returns = true;
             } else if meta.path.is_ident("destructive") {
                 options.destructive = true;
+            } else if meta.path.is_ident("view") {
+                options.view = true;
             } else {
                 return Err(meta.error(
-                    "expected `label`, `job`, `cancellable`, `returns`, `destructive` or `permission`",
+                    "expected `label`, `job`, `cancellable`, `returns`, `destructive`, `view` or `permission`",
                 ));
             }
             Ok(())
@@ -130,7 +133,14 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             .cloned()
             .collect::<Vec<_>>()
             .join(" ");
+        if options.view && options.destructive {
+            return Err(syn::Error::new(
+                variant.span(),
+                "a view changes only what the window shows; it cannot be `destructive`",
+            ));
+        }
         let permission = match options.permission.as_deref() {
+            None if options.view => quote!(Read),
             None | Some("write") => quote!(Write),
             Some("none") => quote!(None),
             Some("read") => quote!(Read),
@@ -191,6 +201,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             quote!(#krate::effect::Answers::Nothing)
         };
         let destructive = options.destructive;
+        let view = options.view;
         decls.push(quote! {
             #krate::effect::EffectDecl {
                 id: #id,
@@ -199,6 +210,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 params: ::std::vec![#(#params),*],
                 answers: #answers,
                 destructive: #destructive,
+                view: #view,
                 permission: #krate::__private::PermissionRequirement::#permission,
             }
         });
