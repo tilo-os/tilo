@@ -1557,6 +1557,54 @@ file.history().versions();                                                      
 - This replaces the process-local qdoc store and its `set_store(FsBlobStore…)`
   calls (`apps/photos/src/main.rs:90-97`, `apps/chat/src/main.rs:78-83`).
 
+**What is built today: a record's content travels on the record's route.**
+A record holds a reference to its binaries — a picture's BLAKE3 hash — never
+the bytes. The bytes travel beside the record, on the same route
+`(app, room, record)` its changes take, through three verbs of the
+collaboration channel (`runtime-collab`):
+
+| Verb | Meaning |
+|---|---|
+| `offerBlob(hash, bytes)` | An app stored this content for the record: keep it where the record's readers are served from. |
+| `wantBlob(hash)` | The record references this content and the app lacks it: hand it over from this device, or ask the route's other devices. |
+| `subscribeBlobs` | A stream of `(hash, bytes)` for the record's scope — answers to `wantBlob`, and what another local app offered. |
+
+- *App side.* The framework wraps the content store the host lends a window
+  (`ui_core::collaboration::record_content::RecordContent`): `put` also offers
+  the bytes on the window's route, a read of a missing hash asks for it and
+  reads as `ContentState::Pending` until it is here, and arriving bytes are
+  verified and kept. Apps reach it as `cx.content()`; a store an app opens
+  itself (`ContentStore::for_app()`) bypasses the route.
+- *Host side.* Every host that runs the broker implements the verbs with one
+  service, `tilo_action_broker::record_content::RouteContent`, over two
+  things the host supplies: its *shelf* — the device content store, read and
+  written through the record's scope `(room, app)`, the same partition the
+  app's own capability uses — and its *peers* — the record's route on the
+  network. The desktop session's shelf is the filesystem daemon's store
+  (`shell/record_content.rs`); the standalone runtime's is its profile's
+  store (`standalone/joined_content.rs`).
+- *Network.* A device asks the room's topic (`NeighbourMsg::RecordContentWant`,
+  which the room's hosts fan out with presence); a device of the room keeping
+  the content answers that device alone in pieces of at most 192 KiB
+  (`NeighbourMsg::RecordContentPiece`): over the direct plane when it is a
+  live peer, else through the room's relay (`Envelope::RecordContent`, routed
+  to the addressed device's connection only — never stored, never fanned out,
+  dropped when it cannot be delivered), else on the topic.
+- *The rules.* Possessing a hash never grants access: a device answers only a
+  peer the room admits to read, and only from content kept under that
+  record's scope. Bytes are verified, never trusted: the assembled content
+  must hash to what was asked before it is kept or handed to an app. Nothing
+  arrives unasked: pieces for content this device did not ask for on that
+  route are dropped. Each message names its sender, bound to the
+  authenticated transport before it is accepted.
+- *Limits.* A request that collects no answer is asked again after a minute.
+  One reference names at most 64 MiB; bigger content belongs in a file
+  record. Content is kept per room and app, not per record, until the
+  reverse index from content to referencing records (§14) replaces the
+  per-room reachability tags; the filesystem daemon's own room-scoped peer
+  fetch (`tilo-fs-media/0`) still serves apps that read a store they opened
+  themselves, and goes once every app reads through `cx.content()`.
+
 ### 13.5 Files and format-aware files
 
 - `ctx.open_file(id)` gives a `RecordHandle<FileBody>` for a file record in the
@@ -1770,6 +1818,17 @@ device hands it to its host sessions on the person's continuity topic — a
 workspace whose only member on the host is the person — and never to gossip;
 a device that comes online when none of the others is gets what the host
 kept, and takes it in only from a device the same root certified.
+
+**A person record's content follows the record.** What a person record
+references — the poster of something they watched — lives under the person's
+room, whichever room the window that stored it shows. The record names its
+own content store (`PersonRecord::content`), kept by the host under the
+scope `(person room, app)` and holding the bytes in the app only while it
+runs; the window sends its requests on the person record's route, never its
+own. Between devices the request and its pieces travel on the personal
+fabric (`PersonalFabricPayload::RecordContentWant` / `RecordContentPiece`)
+to the person's other devices on their authenticated same-root routes: never
+on a room topic, never through a workspace host.
 
 **Known limits.**
 
