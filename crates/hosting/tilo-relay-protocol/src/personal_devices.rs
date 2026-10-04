@@ -757,7 +757,7 @@ mod tests {
         forged.signature[0] ^= 1;
         assert!(record_revocation(dir.path(), &forged).is_err());
         std::fs::write(
-            peers_dir(dir.path())
+            dir.path()
                 .join(REVOCATIONS_DIR)
                 .join(format!("{}.json", revocation_stem(&forged))),
             serde_json::to_vec(&forged).unwrap(),
