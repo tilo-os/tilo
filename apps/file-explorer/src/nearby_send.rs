@@ -315,7 +315,7 @@ impl NearbySendState {
                     .saturating_mul(100)
                     .checked_div(transfer.total_bytes)
                     .unwrap_or(0);
-                Some(format!("Sending {} · {percent}%", transfer.name))
+                Some(format!("Sending {} ({percent}%)", transfer.name))
             }
             NearbyTransferPhase::Completed => {
                 Some(format!("Nearby Send completed: {}", transfer.name))
@@ -323,7 +323,7 @@ impl NearbySendState {
             NearbyTransferPhase::Failed => {
                 effects.push(NearbyUiEffect::Failed(transfer.clone()));
                 Some(format!(
-                    "Nearby Send failed: {} · retry available",
+                    "Nearby Send failed: {}. Retry is available",
                     transfer.name
                 ))
             }
