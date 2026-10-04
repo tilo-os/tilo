@@ -906,10 +906,12 @@ impl MouseKeyboardPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
+        // The keyboard layout comes first: it is what most people open this
+        // pane to change.
         let mut cards = vec![
+            self.input_sources_card(),
             self.keyboard_card(),
             self.spell_checker_card(),
-            self.input_sources_card(),
         ];
         if self.sections.touchpad {
             cards.push(self.touchpad_card());
