@@ -12,9 +12,9 @@ headroom = 0.01
 # (`build.sh --profile release` optimizes less and comes out about 2 MB
 # larger.)
 [bundles.desktop]
-bytes = 82509824
+bytes = 83427328
 
 [bundles.desktop.rebaseline]
-run = 59235
-measured = 81651199
-reason = "feature growth: the canvas's tool rail, layers, inspector and history panels (#2217)"
+run = 61426
+measured = 82577716
+reason = "feature growth: weather's typed effects, live place rows and framework-staged captures (#2423)"
