@@ -1146,9 +1146,15 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
 
 impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.dispatch
-            .take()
-            .or_else(|| ui_core::widget::controls::take_control_invocation(self.content.as_mut()))
+        self.take_attributed_control_invocation()
+            .map(|(invocation, _)| invocation)
+    }
+    fn take_attributed_control_invocation(
+        &mut self,
+    ) -> Option<ui_core::widget::controls::AttributedControlInvocation> {
+        self.dispatch.take_attributed().or_else(|| {
+            ui_core::widget::controls::take_attributed_control_invocation(self.content.as_mut())
+        })
     }
     /// An edit this resource's dispatcher submitted was refused, or is held
     /// for the user's confirmation. Nothing changed in the document, so a
