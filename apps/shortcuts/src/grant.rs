@@ -18,7 +18,7 @@ pub struct Permission {
     pub app_id: String,
     pub action: String,
     pub verb: Verb,
-    /// How the catalogue names it: "Inbox · List notes".
+    /// How the catalogue names it: "List notes in Inbox".
     pub label: String,
 }
 
@@ -100,11 +100,11 @@ fn add(
         });
     let verb = required_verb(requirement);
     let label = row.and_then(|row| row.action.as_ref()).map_or_else(
-        || format!("{app_id} · {action}"),
+        || format!("{action} in {}", crate::editor::app_label(app_id)),
         |descriptor| {
             format!(
-                "{} · {}",
-                descriptor.resource_label, descriptor.action_label
+                "{} in {}",
+                descriptor.action_label, descriptor.resource_label
             )
         },
     );

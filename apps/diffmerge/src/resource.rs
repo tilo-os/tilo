@@ -7,13 +7,14 @@ use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx}
 use ui::tilo_actions::EncodedAction;
 use ui::tilo_actions::{ActionSpec, OperationKind, Resource as PublishedResource};
 use ui::tilo_resource::{Doc, ModelError, Resource};
-use ui::widget::Element;
+use ui::widget::{Element, NavShell};
 
 use crate::actions::{
     DIFFMERGE_ACTION_TYPE, DiffmergeAction, document_bound_actions, document_children,
     local_comparison_resource, register, root_local_operations,
 };
 use crate::app::DiffMergeApp;
+use crate::chrome::Chrome;
 use crate::doc::MergeState;
 
 /// The diff/merge workspace resource.
@@ -79,7 +80,7 @@ impl ResourceApp for DiffmergeShell {
     const ID: &'static str = "so.tilo.diffmerge";
     const TITLE: &'static str = "Diff & Merge";
     const ICON: Option<&'static str> = Some("diffmerge");
-    const SHOT_VIEWPORT: (u32, u32) = (1200, 800);
+    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn label(state: &MergeState) -> String {
         if state.title.is_empty() {
@@ -90,7 +91,20 @@ impl ResourceApp for DiffmergeShell {
     }
 
     fn view(cx: &mut ViewCx<Diffmerge>) -> Element {
-        cx.surface(DiffMergeApp::new())
+        let chrome = Chrome::new();
+        let mut comparison = DiffMergeApp::new();
+        comparison.attach_chrome(chrome.clone());
+        // One column: the shell draws the header row that holds the
+        // comparison's controls.
+        Box::new(
+            NavShell::new()
+                .content(cx.surface(comparison))
+                .content_header("", chrome.actions()),
+        )
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        &["empty", "diff", "merge", "error"]
     }
 }
 
@@ -101,6 +115,10 @@ impl ResourceSurface<Diffmerge> for DiffMergeApp {
 
     fn attach(&mut self, cx: SurfaceCx<Diffmerge>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 }
 
@@ -287,5 +305,49 @@ mod tests {
             &seeded,
         );
         assert_eq!(door[0].kind, "diffmerge.workspace");
+    }
+
+    /// The header's controls are the shared widgets, reached the way a person
+    /// reaches them: the shell's header holds the mode switch, change
+    /// navigation and file actions, and pressing the mode switch changes
+    /// what the comparison shows.
+    #[test]
+    fn the_header_controls_drive_the_comparison_through_the_shell() {
+        use ui::framework::testing::HeadlessApp;
+        use ui::headless::{Control, ControlInput};
+
+        let mut app = HeadlessApp::<DiffmergeShell>::new().expect("the app opens");
+        app.stage(Some("diff")).expect("the diff stages");
+        let find = |app: &mut HeadlessApp<DiffmergeShell>, name: &str| -> Option<Control> {
+            app.harness()
+                .controls()
+                .into_iter()
+                .find(|control| control.name.as_deref().is_some_and(|n| n.starts_with(name)))
+        };
+        for name in [
+            "Diff",
+            "3-way merge",
+            "Previous change",
+            "Next change",
+            "Load sample",
+            "Open files",
+        ] {
+            assert!(find(&mut app, name).is_some(), "the header offers {name}");
+        }
+        assert!(
+            find(&mut app, "Take ours for change").is_none(),
+            "the diff is showing, not the merge"
+        );
+
+        let merge = find(&mut app, "3-way merge").expect("the mode switch");
+        app.harness()
+            .operate_control(&merge.id, &ControlInput::Press)
+            .expect("the mode switch answers a press");
+        app.harness().relayout();
+        assert!(
+            find(&mut app, "Take ours for change").is_some(),
+            "choosing the 3-way merge shows its resolutions"
+        );
+        assert!(find(&mut app, "Diff between").is_none());
     }
 }
