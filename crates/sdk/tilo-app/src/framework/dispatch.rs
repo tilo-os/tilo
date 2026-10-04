@@ -143,6 +143,17 @@ impl<R: Resource> Dispatcher<R> {
         }
     }
 
+    /// A dispatcher outside any app window, for a custom surface's own unit
+    /// tests: [`apply_now`](Self::apply_now) and
+    /// [`apply_now_with`](Self::apply_now_with) apply to the document the
+    /// test hands the surface exactly as in a window; nothing answers queued
+    /// invocations.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn detached(app_id: &'static str) -> Self {
+        Self::new(app_id, R::KIND, false, None)
+    }
+
     /// Who edits through this dispatcher: the participant this view is
     /// for, the same id an action they invoke reads as its author
     /// ([`ActionCx::author`](tilo_resource::ActionCx::author)). `None` in a
