@@ -1321,7 +1321,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # Audio/Video
+# alsa-ucm: the per-machine ALSA profiles PipeWire opens DSP sound cards with
+# (Qualcomm X1E, Intel SOF). Without one such a card lists no sink or source
+# (os/tests/board_audio_contract.sh).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    alsa-ucm \
     pipewire \
     pipewire-pulseaudio \
     pipewire-utils \
