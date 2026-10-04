@@ -2,13 +2,12 @@
 use crate::actions;
 use crate::appliance_owner::{ApplianceOwnerClient, EgressPurpose, LifecycleAction};
 use crate::model::{Catalogue, Route};
-use crate::provider::{CompatibilityProvider, EmptyProvider, LiveProvider, SampleProvider};
+use crate::provider::{CompatibilityProvider, EmptyProvider, LiveProvider};
 use crate::strings;
 use automerge::{AutoCommit, ObjId};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs::File;
-use std::path::Path;
 use std::rc::Rc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Politeness, Role};
@@ -99,10 +98,22 @@ enum Hit {
     Back,
 }
 
+/// The compatibility service as the surface and its route projection share
+/// it.
+pub(crate) type SharedProvider = Rc<RefCell<Box<dyn CompatibilityProvider>>>;
+
+impl Default for WindowsApp {
+    fn default() -> Self {
+        Self::disconnected()
+    }
+}
+
 pub struct WindowsApp {
-    provider: Box<dyn CompatibilityProvider>,
+    provider: SharedProvider,
     pub(crate) catalogue: Catalogue,
-    actions: crate::resource::ActionSink,
+    /// Where route edits go: the resource's dispatcher. `None` only for a
+    /// widget no resource hosts.
+    dispatcher: Option<ui::framework::Dispatcher<crate::resource::Windows>>,
     selected: usize,
     /// Compact windows use a list → detail flow rather than squeezing the
     /// desktop split until both panes become unreadable.
@@ -177,7 +188,14 @@ pub struct WindowsApp {
     resource_waits_for_appliance: bool,
     resource_result: Option<tilo_actions::InvocationUpdate>,
     pending_control_invocation: Option<tilo_actions::ControlInvocation>,
-    projected_route_policy: HashMap<String, Option<Route>>,
+    /// The routes the service reports, which the route projection compares
+    /// the shared overrides against.
+    pub(crate) reported_routes: crate::resource::ReportedRoutes,
+    /// The route projection, told when the service reports new routes.
+    route_projection: ui::framework::Projection,
+    /// Why the route projection could not reach the service, until the
+    /// notice line shows it.
+    pub(crate) route_notice: Rc<RefCell<Option<String>>>,
     /// Immediate-mode modal geometry from the latest frame. It is the single
     /// pointer-capture boundary while destructive deletion is awaiting an
     /// explicit confirm or cancel.
@@ -190,45 +208,68 @@ impl WindowsApp {
         self.sidebar_scroll = self.sidebar_scroll.clamp(0.0, max);
     }
 
-    pub fn new_live() -> Self {
+    /// The surface before it knows what it runs for: connected to nothing,
+    /// so building it (for a past version too) reaches no service.
+    pub fn new() -> Self {
+        Self::default()
+    }
+    fn disconnected() -> Self {
+        Self::with_provider(Box::new(EmptyProvider::with_detail(
+            "The Tilo compatibility service is not connected.",
+        )))
+    }
+    /// The service of a window someone uses: the session's compatibility
+    /// service, or an honest empty state saying why it is unreachable.
+    pub(crate) fn live_provider() -> Box<dyn CompatibilityProvider> {
         match LiveProvider::connect() {
-            Ok(provider) => Self::with_provider(Box::new(provider)),
-            Err(detail) => Self::with_provider(Box::new(EmptyProvider::with_detail(detail))),
+            Ok(provider) => Box::new(provider),
+            Err(detail) => Box::new(EmptyProvider::with_detail(detail)),
         }
     }
-    pub fn new_live_open(path: &Path) -> Self {
-        let mut app = Self::new_live();
-        app.queue_import_path(path);
-        app
+    /// The bare widget over the sample catalogue, for tests of its layout
+    /// and input.
+    #[cfg(test)]
+    pub(crate) fn new_offline() -> Self {
+        Self::with_provider(Box::new(crate::provider::SampleProvider::new()))
     }
-    pub fn new_offline() -> Self {
-        Self::with_provider(Box::new(SampleProvider::new()))
+    /// Talk to `provider` from now on.
+    pub(crate) fn use_provider(&mut self, provider: Box<dyn CompatibilityProvider>) {
+        *self.provider.borrow_mut() = provider;
+        self.refresh();
     }
-    /// Deterministic visual states for responsive review and release evidence.
-    /// These never connect to the compatibility service.
-    pub fn new_offline_scenario(scenario: &str) -> Self {
-        let mut provider = SampleProvider::new();
-        if matches!(scenario, "error" | "error-compact") {
-            provider.seed_setup_failure();
-        }
-        let mut app = Self::with_provider(Box::new(provider));
+    /// The service, shared with the route projection.
+    pub(crate) fn provider(&self) -> SharedProvider {
+        Rc::clone(&self.provider)
+    }
+    /// Take part in the resource: route edits go through `dispatcher`, and
+    /// `projection` is told when the service reports new routes.
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Windows>,
+        projection: ui::framework::Projection,
+    ) {
+        self.dispatcher = Some(dispatcher);
+        self.route_projection = projection;
+    }
+    /// Deterministic visual states for responsive review and release
+    /// evidence, staged over the sample catalogue.
+    pub(crate) fn stage_scenario(&mut self, scenario: &str) {
         match scenario {
-            "detail" | "error-compact" => app.compact_detail = true,
-            "running" => app.selected = 1,
+            "detail" | "error-compact" => self.compact_detail = true,
+            "running" => self.selected = 1,
             "vm-detail" => {
-                app.selected = 2;
-                app.compact_detail = true;
+                self.selected = 2;
+                self.compact_detail = true;
             }
             "confirm-delete" => {
-                app.compact_detail = true;
-                if let Some(first) = app.catalogue.apps.first() {
-                    app.confirm_delete_data = Some(first.capsule.clone());
-                    app.notice = Some(strings::t("windows-confirm-delete"));
+                self.compact_detail = true;
+                if let Some(first) = self.catalogue.apps.first() {
+                    self.confirm_delete_data = Some(first.capsule.clone());
+                    self.notice = Some(strings::t("windows-confirm-delete"));
                 }
             }
             _ => {}
         }
-        app
     }
     #[allow(
         clippy::too_many_lines,
@@ -299,15 +340,10 @@ impl WindowsApp {
         let connect_windows = Rc::clone(&connect_windows_signal);
         let update_windows = Rc::clone(&update_windows_signal);
         let revoke_windows_connection = Rc::clone(&revoke_windows_connection_signal);
-        let projected_route_policy = catalogue
-            .apps
-            .iter()
-            .map(|app| (app.id.clone(), None))
-            .collect();
         Self {
-            provider,
+            provider: Rc::new(RefCell::new(provider)),
             catalogue,
-            actions: crate::resource::ActionSink::default(),
+            dispatcher: None,
             selected: 0,
             compact_detail: false,
             area: Rect::ZERO,
@@ -525,13 +561,15 @@ impl WindowsApp {
             resource_waits_for_appliance: false,
             resource_result: None,
             pending_control_invocation: None,
-            projected_route_policy,
+            reported_routes: crate::resource::ReportedRoutes::default(),
+            route_projection: ui::framework::Projection::default(),
+            route_notice: Rc::default(),
             delete_confirmation_layout: None,
         }
     }
 
     fn queue_live_control(&mut self, resource: impl Into<String>, action: &str) -> bool {
-        if !self.provider.action_native_controls() {
+        if !self.provider.borrow_mut().action_native_controls() {
             return false;
         }
         self.pending_control_invocation = Some(tilo_actions::ControlInvocation {
@@ -547,7 +585,7 @@ impl WindowsApp {
     /// fresh tree, applies permission/confirmation policy, records Effects in
     /// history, and only then calls `start_operation`.
     fn queue_live_control_signal(&mut self) -> bool {
-        if !self.provider.action_native_controls() {
+        if !self.provider.borrow_mut().action_native_controls() {
             return false;
         }
         let appliance_action = [
@@ -580,15 +618,6 @@ impl WindowsApp {
             return false;
         };
         let resource = format!("windows.app:{}", app.id);
-        if let Some(route) = self.route_signal.take() {
-            return self.queue_live_control(
-                resource,
-                &format!("route-{}", route.short().to_ascii_lowercase()),
-            );
-        }
-        if self.reset_signal.replace(false) {
-            return self.queue_live_control(resource, "reset-route");
-        }
         let app_action = [
             (&self.open_file_signal, "open-file"),
             (&self.launch_signal, "launch"),
@@ -607,117 +636,17 @@ impl WindowsApp {
         }
         false
     }
-    fn selected_app(&self) -> Option<&crate::model::WindowsApp> {
+    pub(crate) fn selected_app(&self) -> Option<&crate::model::WindowsApp> {
         self.catalogue.apps.get(self.selected)
     }
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Windows>,
-    ) {
-        self.actions.attach(dispatcher);
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    /// Test-only: mark the surface hosted without a real framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
-    }
-
-    /// Adopt collaborative route overrides; never clear the local catalogue.
-    ///
-    /// An empty [`crate::resource::WindowsState`] means "no published
-    /// overrides yet" — keep whatever the provider already projected so a
-    /// local set-route that has not reached the document is not wiped.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::WindowsState) {
-        if state.routes.is_empty() {
-            return;
-        }
-        for (app_id, route) in &state.routes {
-            let desired = Some(*route);
-            if self.projected_route_policy.get(app_id) == Some(&desired) {
-                continue;
-            }
-            match self.provider.set_route_override(app_id, *route) {
-                Ok(()) => {
-                    self.projected_route_policy.insert(app_id.clone(), desired);
-                }
-                Err(error) => self.notice = Some(error),
-            }
-        }
-        self.refresh();
-    }
-
-    pub(crate) fn commit_route(&mut self, doc: &mut AutoCommit, action: &actions::WindowsAction) {
-        self.actions.dispatch(doc, action);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn last_document_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
-    }
-
-    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`]
-    /// with live catalogue children overlaid.
-    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        use ui::tilo_resource::Resource as _;
-        let state = crate::resource::Windows::read(doc).unwrap_or_default();
-        let mut root = ui::tilo_resource::publish::<crate::resource::Windows>(
-            actions::MANAGER_RESOURCE_ID,
-            "Windows manager",
-            &state,
-        );
-        // Live catalogue rows carry launch and maintenance. Document route
-        // overrides stay on the published children and are merged onto the
-        // matching app so a shared route is not dropped.
-        let published = std::mem::take(&mut root.children);
-        let mut children = actions::live_catalogue_extras(&self.catalogue);
-        for document in published {
-            if document.id.as_str() == "windows.appliance" {
-                continue;
-            }
-            if let Some(existing) = children.iter_mut().find(|child| child.id == document.id) {
-                for action in document.actions {
-                    if existing.actions.iter().any(|have| have.id == action.id) {
-                        continue;
-                    }
-                    existing.actions.push(action);
-                }
-            } else {
-                children.push(document);
-            }
-        }
-        root.children = children;
-        vec![root]
-    }
-
-    pub(crate) fn project_shared_route_policy(&mut self, state: &AutoCommit) {
-        let ids = self
-            .catalogue
-            .apps
-            .iter()
-            .map(|app| app.id.clone())
-            .collect::<Vec<_>>();
-        for id in ids {
-            let desired = actions::route_override(state, &id);
-            if self.projected_route_policy.get(&id) == Some(&desired) {
-                continue;
-            }
-            let result = match desired {
-                Some(route) => self.provider.set_route_override(&id, route),
-                None => self.provider.reset_route_override(&id),
-            };
-            match result {
-                Ok(()) => {
-                    self.projected_route_policy.insert(id, desired);
-                }
-                Err(error) => self.notice = Some(error),
-            }
+    /// Submit a route edit through the resource's dispatcher; the route
+    /// projection then carries it to the service on every device.
+    fn dispatch(&self, action: &actions::WindowsAction) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.apply(action);
         }
     }
+
     fn finish_resource_operation(&mut self, result: Result<(), String>) {
         let Some(invocation) = self.resource_invocation.take() else {
             return;
@@ -758,7 +687,7 @@ impl WindowsApp {
         let Some(capsule) = self.confirm_delete_data.take() else {
             return;
         };
-        self.notice = self.provider.delete_data(&capsule).err();
+        self.notice = self.provider.borrow_mut().delete_data(&capsule).err();
         if self.notice.is_none() {
             self.notice = Some(strings::t("windows-data-deleted"));
         }
@@ -815,26 +744,6 @@ impl WindowsApp {
         self.update_windows_signal.set(false);
         self.revoke_windows_connection_signal.set(false);
     }
-    fn queue_import_path(&mut self, path: &Path) {
-        let source_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        if source_name.is_empty() {
-            self.notice = Some(strings::t("windows-invalid-installer-name"));
-            return;
-        }
-        match File::open(path) {
-            Ok(source) => match self.provider.install(source, source_name) {
-                Ok(()) => self.notice = Some(strings::t("windows-installing")),
-                Err(error) => self.notice = Some(error),
-            },
-            Err(error) => {
-                self.notice = Some(format!("Could not open the selected installer: {error}"));
-            }
-        }
-        self.refresh();
-    }
     /// Queue an installer from the descriptor the portal worker opened. The
     /// portal path is intentionally not available here, so this UI cannot
     /// reopen a name after the user has approved it.
@@ -843,7 +752,7 @@ impl WindowsApp {
             self.notice = Some(strings::t("windows-invalid-installer-name"));
             return;
         }
-        match self.provider.install(source, source_name) {
+        match self.provider.borrow_mut().install(source, source_name) {
             Ok(()) => self.notice = Some(strings::t("windows-installing")),
             Err(error) => self.notice = Some(error),
         }
@@ -920,6 +829,7 @@ impl WindowsApp {
                     .ok_or_else(|| "The Windows application selection expired.".to_string())
                     .and_then(|entry_id| {
                         self.provider
+                            .borrow_mut()
                             .launch_vm_with_file(&entry_id, source.into_file())
                     })
                     .err();
@@ -958,14 +868,20 @@ impl WindowsApp {
             self.finish_resource_operation(result.map(|_| ()));
         }
         self.deactivate_selection_controls();
-        self.catalogue = self.provider.catalogue();
-        if let Some(notice) = self.provider.take_notice() {
+        self.catalogue = self.provider.borrow_mut().catalogue();
+        if self.reported_routes.report(&self.catalogue) {
+            self.route_projection.outside_changed();
+        }
+        if let Some(notice) = self.route_notice.borrow_mut().take() {
             self.notice = Some(notice);
         }
-        if self.resource_invocation.is_some()
-            && !self.resource_waits_for_appliance
-            && let Some(result) = self.provider.take_operation_result()
-        {
+        if let Some(notice) = self.provider.borrow_mut().take_notice() {
+            self.notice = Some(notice);
+        }
+        let result = (self.resource_invocation.is_some() && !self.resource_waits_for_appliance)
+            .then(|| self.provider.borrow_mut().take_operation_result())
+            .flatten();
+        if let Some(result) = result {
             self.finish_resource_operation(result.map(|_| ()));
         }
         if self.selected >= self.catalogue.apps.len() {
@@ -992,7 +908,7 @@ impl WindowsApp {
         clippy::too_many_lines,
         reason = "one ordered dispatcher drains the retained controls before mutating the selected model"
     )]
-    fn apply_control_signals(&mut self, doc: &mut AutoCommit) {
+    fn apply_control_signals(&mut self) {
         if self.queue_live_control_signal() {
             return;
         }
@@ -1065,7 +981,7 @@ impl WindowsApp {
         if self.confirm_capsule_signal.replace(false)
             && self.catalogue.vm_install_confirmation.is_some()
         {
-            self.notice = self.provider.confirm_capsule_install().err();
+            self.notice = self.provider.borrow_mut().confirm_capsule_install().err();
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-capsule-setup-started"));
             }
@@ -1074,7 +990,7 @@ impl WindowsApp {
         if self.confirm_vm_install_signal.replace(false)
             && self.catalogue.vm_install_confirmation.is_some()
         {
-            self.notice = self.provider.confirm_vm_install().err();
+            self.notice = self.provider.borrow_mut().confirm_vm_install().err();
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-vm-setup-started"));
             }
@@ -1100,12 +1016,8 @@ impl WindowsApp {
             && (route != Route::Vm || app.launch_available)
         {
             let id = app.id.clone();
-            self.commit_route(doc, &actions::WindowsAction::SetRoute { app_id: id, route });
-            self.project_shared_route_policy(doc);
-            self.refresh();
-            if self.notice.is_none() {
-                self.notice = Some(strings::t("windows-route-set"));
-            }
+            self.dispatch(&actions::WindowsAction::SetRoute { app_id: id, route });
+            self.notice = Some(strings::t("windows-route-set"));
         }
         if self.reset_signal.replace(false)
             && let Some(app) = self.selected_app()
@@ -1113,12 +1025,8 @@ impl WindowsApp {
             && app.uses_override()
         {
             let id = app.id.clone();
-            self.commit_route(doc, &actions::WindowsAction::ResetRoute { app_id: id });
-            self.project_shared_route_policy(doc);
-            self.refresh();
-            if self.notice.is_none() {
-                self.notice = Some(strings::t("windows-route-reset"));
-            }
+            self.dispatch(&actions::WindowsAction::ResetRoute { app_id: id });
+            self.notice = Some(strings::t("windows-route-reset"));
         }
         if self.launch_signal.replace(false)
             && let Some(app) = self.selected_app()
@@ -1127,9 +1035,9 @@ impl WindowsApp {
             let id = app.id.clone();
             let uses_vm = app.route == Route::Vm;
             self.notice = if uses_vm {
-                self.provider.launch_vm_fallback(&id).err()
+                self.provider.borrow_mut().launch_vm_fallback(&id).err()
             } else {
-                self.provider.launch(&id).err()
+                self.provider.borrow_mut().launch(&id).err()
             };
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-launch-queued"));
@@ -1141,7 +1049,7 @@ impl WindowsApp {
             && app.vm_fallback_available
         {
             let id = app.id.clone();
-            self.notice = self.provider.launch_vm_fallback(&id).err();
+            self.notice = self.provider.borrow_mut().launch_vm_fallback(&id).err();
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-vm-launch-queued"));
             }
@@ -1151,7 +1059,7 @@ impl WindowsApp {
             && app.can_publish_vm_candidate
         {
             let id = app.id.clone();
-            self.notice = self.provider.publish_vm_candidate(&id).err();
+            self.notice = self.provider.borrow_mut().publish_vm_candidate(&id).err();
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-vm-candidate-publishing"));
             }
@@ -1162,7 +1070,7 @@ impl WindowsApp {
             && app.can_retry_install
         {
             let capsule = app.capsule.clone();
-            self.notice = self.provider.retry_install(&capsule).err();
+            self.notice = self.provider.borrow_mut().retry_install(&capsule).err();
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-retrying"));
             }
@@ -1174,7 +1082,11 @@ impl WindowsApp {
             let capsule = app.capsule.clone();
             if self.confirm_escalate_to_vm.as_deref() == Some(capsule.as_str()) {
                 self.confirm_escalate_to_vm = None;
-                self.notice = self.provider.escalate_install_to_vm(&capsule).err();
+                self.notice = self
+                    .provider
+                    .borrow_mut()
+                    .escalate_install_to_vm(&capsule)
+                    .err();
                 if self.notice.is_none() {
                     self.notice = Some(strings::t("windows-escalation-started"));
                 }
@@ -1191,7 +1103,7 @@ impl WindowsApp {
             && app.can_remove_launcher
         {
             let id = app.id.clone();
-            self.notice = self.provider.remove_launcher(&id).err();
+            self.notice = self.provider.borrow_mut().remove_launcher(&id).err();
             if self.notice.is_none() {
                 self.notice = Some(strings::t("windows-launcher-removed"));
             }
@@ -1209,9 +1121,15 @@ impl WindowsApp {
             if self.confirm_vendor_uninstall.as_deref() == Some(management_id.as_str()) {
                 self.confirm_vendor_uninstall = None;
                 self.notice = if vm_application {
-                    self.provider.vendor_uninstall_vm(&management_id).err()
+                    self.provider
+                        .borrow_mut()
+                        .vendor_uninstall_vm(&management_id)
+                        .err()
                 } else {
-                    self.provider.vendor_uninstall(&management_id).err()
+                    self.provider
+                        .borrow_mut()
+                        .vendor_uninstall(&management_id)
+                        .err()
                 };
                 if self.notice.is_none() {
                     self.notice = Some(strings::t(if vm_application {
@@ -1338,7 +1256,7 @@ impl WindowsApp {
                         .ok_or_else(|| "installer path has no valid file name".to_string())?;
                     let source = File::open(&path)
                         .map_err(|error| format!("could not open {}: {error}", path.display()))?;
-                    self.provider.install(source, source_name)?;
+                    self.provider.borrow_mut().install(source, source_name)?;
                 }
             }
             "windows.import-iso" => {
@@ -1355,8 +1273,10 @@ impl WindowsApp {
                     self.appliance_owner.import_iso(source)?;
                 }
             }
-            "windows.confirm-capsule-install" => self.provider.confirm_capsule_install()?,
-            "windows.confirm-vm-install" => self.provider.confirm_vm_install()?,
+            "windows.confirm-capsule-install" => {
+                self.provider.borrow_mut().confirm_capsule_install()?;
+            }
+            "windows.confirm-vm-install" => self.provider.borrow_mut().confirm_vm_install()?,
             "windows.open-file" => {
                 let args: Vec<String> =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -1374,7 +1294,9 @@ impl WindowsApp {
                 } else {
                     let source = File::open(file_path)
                         .map_err(|error| format!("could not open {file_path}: {error}"))?;
-                    self.provider.launch_vm_with_file(app_id, source)?;
+                    self.provider
+                        .borrow_mut()
+                        .launch_vm_with_file(app_id, source)?;
                 }
             }
             _ => return Ok(false),
@@ -1436,35 +1358,37 @@ impl WindowsApp {
         match type_id {
             "windows.launch" if app.launch_available => {
                 if app.route == Route::Vm {
-                    self.provider.launch_vm_fallback(&app.id)?;
+                    self.provider.borrow_mut().launch_vm_fallback(&app.id)?;
                 } else {
-                    self.provider.launch(&app.id)?;
+                    self.provider.borrow_mut().launch(&app.id)?;
                 }
             }
             "windows.launch-vm-fallback" if app.vm_fallback_available => {
-                self.provider.launch_vm_fallback(&app.id)?;
+                self.provider.borrow_mut().launch_vm_fallback(&app.id)?;
             }
             "windows.publish" if app.can_publish_vm_candidate => {
-                self.provider.publish_vm_candidate(&app.id)?;
+                self.provider.borrow_mut().publish_vm_candidate(&app.id)?;
             }
             "windows.retry-install" if app.can_retry_install => {
-                self.provider.retry_install(&app.capsule)?;
+                self.provider.borrow_mut().retry_install(&app.capsule)?;
             }
             "windows.escalate-install" if app.can_escalate_install_to_vm => {
-                self.provider.escalate_install_to_vm(&app.capsule)?;
+                self.provider
+                    .borrow_mut()
+                    .escalate_install_to_vm(&app.capsule)?;
             }
             "windows.remove-launcher" if app.can_remove_launcher => {
-                self.provider.remove_launcher(&app.id)?;
+                self.provider.borrow_mut().remove_launcher(&app.id)?;
             }
             "windows.uninstall" if app.can_vendor_uninstall => {
                 if app.route == Route::Vm {
-                    self.provider.vendor_uninstall_vm(&app.id)?;
+                    self.provider.borrow_mut().vendor_uninstall_vm(&app.id)?;
                 } else {
-                    self.provider.vendor_uninstall(&app.capsule)?;
+                    self.provider.borrow_mut().vendor_uninstall(&app.capsule)?;
                 }
             }
             "windows.delete-data" if app.can_delete_data => {
-                self.provider.delete_data(&app.capsule)?;
+                self.provider.borrow_mut().delete_data(&app.capsule)?;
             }
             _ => return Err("Windows operation is no longer available".into()),
         }
@@ -1483,10 +1407,7 @@ impl WindowsApp {
 }
 
 impl Widget for WindowsApp {
-    ui::provides!(
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
-    );
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -1515,9 +1436,7 @@ impl Widget for WindowsApp {
         ]
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
-        self.project_shared_route_policy(state);
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.drain_portal();
         self.drain_document_portal();
         self.drain_iso_portal();
@@ -2692,8 +2611,7 @@ impl Widget for WindowsApp {
         forward_button_event!(self.connect_windows_button);
         forward_button_event!(self.update_windows_button);
         forward_button_event!(self.revoke_windows_connection_button);
-        let (doc, _) = ui::doc::document(ctx.state, ctx.path);
-        self.apply_control_signals(doc);
+        self.apply_control_signals();
         match event {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
@@ -3162,31 +3080,6 @@ impl Widget for WindowsApp {
     }
 }
 
-impl ui::resources::PublishesResources for WindowsApp {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// the manager door — keep only live catalogue extras.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.is_hosted() {
-            return crate::resource::live_extras(self);
-        }
-        self.publish_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.is_hosted() && id == actions::MANAGER_RESOURCE_ID {
-            return None;
-        }
-        find_resource(&self.publish_resources(doc), id).or_else(|| {
-            self.is_hosted().then(|| {
-                crate::resource::live_extras(self)
-                    .into_iter()
-                    .find(|resource| resource.id.as_str() == id)
-            })?
-        })
-    }
-}
-
 impl ui::widget::controls::ActionControls for WindowsApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.pending_control_invocation.take()
@@ -3230,7 +3123,7 @@ impl WindowsApp {
             || self.document_portal_rx.is_some()
             || self.iso_portal_rx.is_some()
             || self.appliance_owner.busy()
-            || !self.provider.operations_complete_on_return();
+            || !self.provider.borrow_mut().operations_complete_on_return();
         if deferred {
             self.resource_invocation = Some(invocation);
             self.resource_waits_for_appliance = matches!(
@@ -3255,21 +3148,10 @@ impl WindowsApp {
     }
 }
 
-fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::SampleProvider;
     use std::io::Read;
     use std::sync::{Arc, Mutex};
 
@@ -3383,8 +3265,7 @@ mod tests {
                 "display-name.msi",
             )));
             app.install_signal.set(true);
-            let mut doc = AutoCommit::new();
-            ui::host::scoped(&services, || app.apply_control_signals(&mut doc));
+            ui::host::scoped(&services, || app.apply_control_signals());
             assert_eq!(
                 recorder.pick_requests()[0].title(),
                 "Add a Windows application"
@@ -3476,23 +3357,20 @@ mod tests {
 
     #[test]
     fn manager_state_is_honest_and_routes_are_stable() {
-        // Case `override_updates_runner_without_changing_capsule_identity`.
+        // Case `route_edits_reach_the_shared_document`.
         {
-            let mut app = WindowsApp::new_offline();
-            let capsule = app.catalogue.apps[0].capsule.clone();
-            let mut doc = AutoCommit::new();
-            app.route_signal.set(Some(Route::Vm));
-            app.apply_control_signals(&mut doc);
-            assert_eq!(app.catalogue.apps[0].route, Route::Vm);
-            assert_eq!(app.catalogue.apps[0].capsule, capsule);
-            assert!(
-                actions::route_override(&doc, &app.catalogue.apps[0].id).is_some(),
-                "route clicks must write the shared document"
-            );
+            let mut app =
+                ui::prelude::TestApp::<crate::resource::WindowsShell>::capture(Some("wide"))
+                    .unwrap();
+            let first = crate::provider::SampleProvider::new().catalogue().apps[0]
+                .id
+                .clone();
+            app.call("use-vm-route", serde_json::json!({})).unwrap();
+            assert_eq!(app.state().route(&first), Some(Route::Vm));
         }
-        // Case `live_manager_does_not_claim_fixture_apps_are_installed`.
+        // Case `an_unconnected_manager_does_not_claim_fixture_apps_are_installed`.
         {
-            assert!(WindowsApp::new_live().catalogue.apps.is_empty());
+            assert!(WindowsApp::new().catalogue.apps.is_empty());
         }
         // Case `shared_route_controls_have_stable_automation_ids`.
         {
@@ -3535,23 +3413,6 @@ mod tests {
                 ]
             );
         }
-        // Case `shared_route_document_is_projected_into_the_compatibility_provider`.
-        {
-            let mut app = WindowsApp::new_offline();
-            let app_id = app.catalogue.apps[0].id.clone();
-            let mut doc = AutoCommit::new();
-            tilo_actions::Action::apply(
-                &actions::WindowsAction::SetRoute {
-                    app_id: app_id.clone(),
-                    route: Route::Proton,
-                },
-                &mut doc,
-            )
-            .unwrap();
-            app.project_shared_route_policy(&doc);
-            app.refresh();
-            assert_eq!(app.catalogue.app(&app_id).unwrap().route, Route::Proton);
-        }
     }
 
     #[test]
@@ -3564,9 +3425,8 @@ mod tests {
         {
             let mut app = WindowsApp::new_offline();
             let capsule = app.catalogue.apps[0].capsule.clone();
-            let mut doc = AutoCommit::new();
             app.delete_data_signal.set(true);
-            app.apply_control_signals(&mut doc);
+            app.apply_control_signals();
             assert!(
                 app.catalogue
                     .apps
@@ -3578,7 +3438,7 @@ mod tests {
             // A click on the original management action cannot confirm itself;
             // only the dedicated destructive control inside the modal can.
             app.delete_data_signal.set(true);
-            app.apply_control_signals(&mut doc);
+            app.apply_control_signals();
             assert_eq!(app.confirm_delete_data.as_deref(), Some(capsule.as_str()));
             app.confirm_delete_data();
             app.refresh();
@@ -3591,7 +3451,8 @@ mod tests {
         }
         // Case `delete_confirmation_is_an_accessible_modal_with_cancel_and_delete`.
         {
-            let app = WindowsApp::new_offline_scenario("confirm-delete");
+            let mut app = WindowsApp::new_offline();
+            app.stage_scenario("confirm-delete");
             let semantics = app.accessibility().expect("semantic root");
             let dialog = semantics
                 .children
@@ -3613,10 +3474,9 @@ mod tests {
             let mut app = WindowsApp::new_offline();
             let capsule = app.catalogue.apps[0].capsule.clone();
             app.catalogue.apps[0].can_escalate_install_to_vm = true;
-            let mut doc = AutoCommit::new();
 
             app.escalate_to_vm_signal.set(true);
-            app.apply_control_signals(&mut doc);
+            app.apply_control_signals();
             assert_eq!(
                 app.confirm_escalate_to_vm.as_deref(),
                 Some(capsule.as_str())
@@ -3624,7 +3484,7 @@ mod tests {
             assert_eq!(app.catalogue.apps[0].status, crate::model::AppStatus::Ready);
 
             app.escalate_to_vm_signal.set(true);
-            app.apply_control_signals(&mut doc);
+            app.apply_control_signals();
             assert_eq!(
                 app.catalogue.apps[0].status,
                 crate::model::AppStatus::Installing

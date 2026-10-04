@@ -1,32 +1,49 @@
 //! Windows Apps as a [`tilo_resource::Resource`]: route overrides sync in the
 //! shared document; the live catalogue, appliance readiness, and pending
-//! installs stay host projections.
+//! installs are what the compatibility service reports.
 //!
-//! Install and appliance lifecycle are Effects with no document delta
-//! (published via [`Resource::local_operations`] / the appliance child).
-//! Per-app launch / repair Effects ride live catalogue extras — never a
-//! second hand-built `windows.manager` root beside [`tilo_resource::publish`].
+//! A route change is a [`WindowsAction`] through the framework dispatcher.
+//! After every change, each device running the app carries the overrides to
+//! its own compatibility service (a projection drain), comparing them with
+//! the routes the service reports back. Install and appliance lifecycle are
+//! effects with no document delta (published on the root and on the live
+//! rows the surface reports).
 
-use ui::automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use ui::framework::{
+    Effected, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface, RunMode, SurfaceCx,
+    ViewCx,
+};
 use ui::tilo_actions::{
-    ActionParam, ActionRegistry, ActionSpec, EncodedAction, OperationKind, ParamType,
+    ActionParam, ActionRegistry, ActionSpec, OperationKind, ParamType,
     Resource as PublishedResource,
 };
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
+use ui::tilo_resource::{ActionDecl, ActionRef, Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
-    self, MANAGER_RESOURCE_ID, WINDOWS_ACTION_TYPE, WindowsAction, appliance_publish_child,
-    live_catalogue_extras, manager_effect_specs, override_app_resource, register,
+    self, WINDOWS_ACTION_TYPE, WindowsAction, manager_effect_specs, override_app_resource, register,
 };
-use crate::app::WindowsApp;
-use crate::model::Route;
+use crate::app::{SharedProvider, WindowsApp};
+use crate::model::{Catalogue, Route};
+use crate::provider::SampleProvider;
 
 /// Collaborative route overrides keyed by app id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WindowsState {
     pub routes: Vec<(String, Route)>,
+}
+
+impl WindowsState {
+    /// The override stored for `app_id`, if any.
+    pub fn route(&self, app_id: &str) -> Option<Route> {
+        self.routes
+            .iter()
+            .find(|(id, _)| id == app_id)
+            .map(|(_, route)| *route)
+    }
 }
 
 /// The Windows compatibility manager resource.
@@ -107,11 +124,11 @@ impl Resource for Windows {
     }
 
     fn children(state: &WindowsState) -> Vec<PublishedResource> {
-        let mut children = vec![appliance_publish_child()];
-        for (app_id, route) in &state.routes {
-            children.push(override_app_resource(app_id, *route));
-        }
-        children
+        state
+            .routes
+            .iter()
+            .map(|(app_id, route)| override_app_resource(app_id, *route))
+            .collect()
     }
 
     fn local_operations() -> Vec<ActionSpec> {
@@ -135,289 +152,388 @@ impl Resource for Windows {
     }
 }
 
-/// Hosted-only extras that are not document state: pending install confirmation
-/// and live catalogue app rows (launch / repair Effects only). Route Document
-/// ops and appliance Effects stay on [`tilo_resource::publish`] — never a
-/// second manager root.
-pub(crate) fn live_extras(app: &WindowsApp) -> Vec<PublishedResource> {
-    live_catalogue_extras(&app.catalogue)
-        .into_iter()
-        .filter(|resource| resource.kind != "windows.appliance")
-        .map(strip_document_actions)
-        .collect()
+/// One application's route as the service reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReportedRoute {
+    app_id: String,
+    route: Route,
+    recommended: Route,
+    /// Whether the service accepts an override for it at all.
+    overridable: bool,
 }
 
-fn strip_document_actions(mut resource: PublishedResource) -> PublishedResource {
-    resource
-        .actions
-        .retain(|action| action.kind != OperationKind::Document);
-    resource.children = resource
-        .children
-        .into_iter()
-        .map(strip_document_actions)
-        .collect();
-    resource
+/// The routes the service last reported, shared by the surface (which
+/// refreshes them) and the route projection (which compares the document's
+/// overrides with them).
+#[derive(Clone, Debug, Default)]
+pub struct ReportedRoutes(Rc<RefCell<Vec<ReportedRoute>>>);
+
+impl ReportedRoutes {
+    /// Take in what `catalogue` reports; whether that changed anything.
+    pub(crate) fn report(&self, catalogue: &Catalogue) -> bool {
+        let reported: Vec<ReportedRoute> = catalogue
+            .apps
+            .iter()
+            .map(|app| ReportedRoute {
+                app_id: app.id.clone(),
+                route: app.route,
+                recommended: app.recommended_route,
+                overridable: app.route_override_available,
+            })
+            .collect();
+        if *self.0.borrow() == reported {
+            return false;
+        }
+        *self.0.borrow_mut() = reported;
+        true
+    }
+
+    /// The route changes the service still needs for `state`: an override
+    /// for each application whose reported route differs from the stored one,
+    /// a reset for each that still runs an override the document no longer
+    /// holds. Keyed by application and desired override.
+    pub(crate) fn pending(&self, state: &WindowsState) -> Vec<(RouteChange, RouteChange)> {
+        self.0
+            .borrow()
+            .iter()
+            .filter(|reported| reported.overridable)
+            .filter_map(|reported| {
+                let desired = state.route(&reported.app_id);
+                (desired.unwrap_or(reported.recommended) != reported.route).then(|| {
+                    let change = RouteChange {
+                        app_id: reported.app_id.clone(),
+                        route: desired,
+                    };
+                    (change.clone(), change)
+                })
+            })
+            .collect()
+    }
+}
+
+/// One route change carried to the service: an override, or back to the
+/// catalogue recommendation (`None`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct RouteChange {
+    app_id: String,
+    route: Option<Route>,
+}
+
+/// Carry `change` to the service.
+fn carry(provider: &SharedProvider, change: &RouteChange) -> Result<(), String> {
+    let mut provider = provider.borrow_mut();
+    match change.route {
+        Some(route) => provider.set_route_override(&change.app_id, route),
+        None => provider.reset_route_override(&change.app_id),
+    }
 }
 
 /// Framework app.
 pub struct WindowsShell;
+
+/// Every screenshot scenario, over the sample catalogue.
+const SCENARIOS: &[&str] = &[
+    "wide",
+    "detail",
+    "vm-detail",
+    "running",
+    "error",
+    "error-compact",
+    "confirm-delete",
+];
+
+/// The installer a launch names is installed through the same effect the
+/// palette and the install button reach.
+const INSTALL: ActionRef<Windows, String> = ActionRef::new("install", &["path"]);
 
 impl ResourceApp for WindowsShell {
     type Resource = Windows;
     const ID: &'static str = "so.tilo.windows";
     const TITLE: &'static str = "Windows Apps";
     const ICON: Option<&'static str> = Some("windows");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
+    /// An installer to add (`windows setup.exe`).
+    const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Windows>) -> Element {
-        cx.surface(WindowsApp::new_live())
+        cx.surface(WindowsApp::new())
+    }
+
+    /// Opening an installer with Windows Apps installs it.
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Windows>> {
+        input
+            .argument()
+            .map(|path| INSTALL.with(path.to_owned()))
+            .into_iter()
+            .collect()
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
+    }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        match scenario.unwrap_or("wide") {
+            "detail" | "error-compact" | "vm-detail" | "confirm-delete" => (480, 800),
+            "running" | "error" => (1000, 760),
+            _ => (1280, 800),
+        }
+    }
+
+    /// The sample catalogue stands in for the compatibility service; the
+    /// error scenarios show its first application's setup failed.
+    fn fixture(fixture: &mut Fixture<Windows>) {
+        let mut sample = SampleProvider::new();
+        if matches!(fixture.scenario(), Some("error" | "error-compact")) {
+            sample.seed_setup_failure();
+        }
+        fixture.provide(sample);
     }
 }
 
 impl ResourceSurface<Windows> for WindowsApp {
-    fn present(&mut self, state: &std::rc::Rc<WindowsState>) {
-        // Adopt collaborative route overrides only — never clear a local
-        // catalogue / provider projection that has not been published yet.
-        self.adopt_resource_state(state);
-    }
+    /// The routes the window shows are the ones the service reports; the
+    /// stored overrides reach the service through the route projection.
+    fn present(&mut self, _state: &Rc<WindowsState>) {}
 
     fn attach(&mut self, cx: SurfaceCx<Windows>) {
-        self.attach_framework(cx.dispatcher());
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<Windows>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Windows>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    pub(crate) fn dispatch(&mut self, doc: &mut AutoCommit, action: &WindowsAction) {
-        let context =
-            ui::tilo_actions::ActionContext::for_action("so.tilo.windows", "Windows Apps", action);
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = EncodedAction::encode(Windows::ACTION_TYPE, action).ok();
-                let _ = dispatcher.apply_now_with(doc, action, context);
+        match cx.mode() {
+            RunMode::Live => self.use_provider(WindowsApp::live_provider()),
+            RunMode::Capture => {
+                if let Some(sample) = cx.fixture::<SampleProvider>() {
+                    self.use_provider(Box::new((*sample).clone()));
+                }
             }
-            None => self
-                .local
-                .dispatch_with_context(doc, Windows::ACTION_TYPE, action, context),
+            // A past version reaches no service.
+            RunMode::Past => {}
         }
+        let reported = self.reported_routes.clone();
+        let provider = self.provider();
+        let notice = Rc::clone(&self.route_notice);
+        let projection = cx.drain(
+            move |state: &WindowsState| reported.pending(state),
+            move |change: RouteChange, _| {
+                if let Err(error) = carry(&provider, &change) {
+                    *notice.borrow_mut() = Some(error.clone());
+                    return Err(error);
+                }
+                Ok(Effected::done())
+            },
+        );
+        self.attach_framework(cx.dispatcher(), projection);
     }
 
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario.unwrap_or("wide"));
     }
 
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+    /// Route edits for the application the window shows, beside the
+    /// `set-route` declaration that names one by id.
+    fn bound_declarations(&self) -> Vec<ActionDecl<Windows>> {
+        let Some(app) = self
+            .selected_app()
+            .filter(|app| app.route_override_available)
+        else {
+            return Vec::new();
+        };
+        let mut decls: Vec<ActionDecl<Windows>> = Route::ALL
+            .into_iter()
+            .map(|route| {
+                let app_id = app.id.clone();
+                ActionDecl::new(
+                    route_decl_id(route),
+                    format!("Use {} for {}", route.label(), app.name),
+                    Vec::new(),
+                    move |_, _| {
+                        Ok(WindowsAction::SetRoute {
+                            app_id: app_id.clone(),
+                            route,
+                        })
+                    },
+                )
+            })
+            .collect();
+        if app.uses_override() {
+            let app_id = app.id.clone();
+            decls.push(ActionDecl::new(
+                "use-recommended-route",
+                format!("Use catalogue recommendation for {}", app.name),
+                Vec::new(),
+                move |_, _| {
+                    Ok(WindowsAction::ResetRoute {
+                        app_id: app_id.clone(),
+                    })
+                },
+            ));
+        }
+        decls
+    }
+
+    /// The service's catalogue, appliance and pending install, merged by id
+    /// with the overrides the document holds.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        actions::live_rows(&self.catalogue)
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        actions::live_rows(&self.catalogue)
+            .into_iter()
+            .find(|row| row.id() == id)
     }
 }
 
-/// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
-pub fn provide_resources(state: &WindowsState) -> Vec<PublishedResource> {
-    vec![ui::tilo_resource::publish::<Windows>(
-        MANAGER_RESOURCE_ID,
-        "Windows manager",
-        state,
-    )]
+/// The id of the bound edit that routes the shown application to `route`.
+fn route_decl_id(route: Route) -> &'static str {
+    match route {
+        Route::Wine => "use-wine-route",
+        Route::Proton => "use-proton-route",
+        Route::Vm => "use-vm-route",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::CompatibilityProvider;
+    use ui::prelude::TestApp;
     use ui::tilo_actions::Action;
-    use ui::widget::Widget;
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one publish/hosted extras check covers manager door and live overlay"
-    )]
+    fn reported(app_id: &str, route: Route, recommended: Route) -> Catalogue {
+        let mut catalogue = SampleProvider::new().catalogue();
+        catalogue.apps.retain(|app| app.id == app_id);
+        let app = &mut catalogue.apps[0];
+        app.route = route;
+        app.recommended_route = recommended;
+        app.route_override_available = true;
+        catalogue
+    }
+
+    /// A stored override the service does not run yet is pending, and so is
+    /// an override the service still runs after the document cleared it —
+    /// the reset of the last override reaches the service too.
     #[test]
-    fn resource_publish_owns_manager_door_and_hosted_keeps_only_live_extras() {
-        let mut doc = AutoCommit::new();
+    fn the_route_projection_carries_overrides_and_resets_to_the_service() {
+        let routes = ReportedRoutes::default();
+        assert!(routes.report(&reported("adobe-reader", Route::Wine, Route::Wine)));
+        assert!(
+            !routes.report(&reported("adobe-reader", Route::Wine, Route::Wine)),
+            "the same report changes nothing"
+        );
+        let overridden = WindowsState {
+            routes: vec![("adobe-reader".into(), Route::Proton)],
+        };
+        let pending = routes.pending(&overridden);
+        assert_eq!(
+            pending
+                .iter()
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>(),
+            [RouteChange {
+                app_id: "adobe-reader".into(),
+                route: Some(Route::Proton),
+            }]
+        );
+        assert!(routes.pending(&WindowsState::default()).is_empty());
+
+        routes.report(&reported("adobe-reader", Route::Proton, Route::Wine));
+        assert!(
+            routes.pending(&overridden).is_empty(),
+            "the service runs it"
+        );
+        let reset = routes.pending(&WindowsState::default());
+        assert_eq!(
+            reset.iter().map(|(key, _)| key.clone()).collect::<Vec<_>>(),
+            [RouteChange {
+                app_id: "adobe-reader".into(),
+                route: None,
+            }]
+        );
+
+        let provider: SharedProvider = Rc::new(RefCell::new(Box::new(SampleProvider::new())));
+        carry(&provider, &reset[0].1).unwrap();
+        let catalogue = provider.borrow_mut().catalogue();
+        let reader = catalogue.app("adobe-reader").unwrap();
+        assert_eq!(reader.route, reader.recommended_route);
+    }
+
+    /// The published tree carries the stored overrides as rows with their
+    /// route edits, the root offers install and the route declarations, and
+    /// nothing else publishes a document edit.
+    #[test]
+    fn the_resource_publishes_overrides_and_the_install_door() {
+        let mut doc = ui::automerge::AutoCommit::new();
         WindowsAction::SetRoute {
             app_id: "adobe-reader".into(),
             route: Route::Proton,
         }
         .apply(&mut doc)
         .unwrap();
-        doc.commit();
-
-        let state = Windows::read(&doc).expect("seeded windows state");
+        let state = Windows::read(&doc).unwrap();
+        assert_eq!(state.routes, vec![("adobe-reader".into(), Route::Proton)]);
         let published =
-            ui::tilo_resource::publish::<Windows>(MANAGER_RESOURCE_ID, "Windows manager", &state);
-        assert_eq!(published.kind, "windows.manager");
+            ui::tilo_resource::publish::<Windows>("windows.manager", "Windows manager", &state);
         for id in ["set-route", "reset-route", "install"] {
             assert!(
                 published.actions.iter().any(|action| action.id == id),
                 "{id} must be on the framework resource"
             );
         }
+        let reader = published
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == "windows.app:adobe-reader")
+            .expect("the override row");
         assert!(
-            published
-                .children
+            reader
+                .actions
                 .iter()
-                .any(|child| child.id.as_str() == "windows.appliance"
-                    && child.actions.iter().any(|action| action.id == "start")),
-            "appliance child keeps Start Windows on the published door"
+                .any(|action| action.id == "route-proton")
         );
         assert!(
-            published.children.iter().any(|child| {
-                child.id.as_str() == "windows.app:adobe-reader"
-                    && child
-                        .actions
-                        .iter()
-                        .any(|action| action.id == "route-proton")
-                    && child
-                        .actions
-                        .iter()
-                        .any(|action| action.id == "reset-route")
-            }),
-            "override children keep bound route shortcuts"
+            reader
+                .actions
+                .iter()
+                .any(|action| action.id == "reset-route")
         );
-        assert_eq!(state.routes, vec![("adobe-reader".into(), Route::Proton)]);
+    }
 
-        let mut app = WindowsApp::new_offline();
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &ui::automerge::ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "windows.manager");
-        assert!(
-            standalone[0]
-                .children
-                .iter()
-                .any(|child| child.kind == "windows.compat-app"),
-            "standalone overlays live catalogue apps"
-        );
-        assert!(
-            standalone[0].children.iter().any(|child| {
-                child.id.as_str() == "windows.app:adobe-reader"
-                    && child
-                        .actions
-                        .iter()
-                        .any(|action| action.id == "reset-route")
-            }),
-            "standalone keeps the document route override on the catalogue app"
-        );
-        assert!(
-            standalone[0]
-                .children
-                .iter()
-                .any(|child| child.id.as_str() == "windows.appliance"),
-            "standalone overlays the live appliance child"
-        );
+    /// Opening an installer with the app installs it through the install
+    /// effect; a plain start takes no action.
+    #[test]
+    fn a_launch_naming_an_installer_invokes_install() {
+        let arguments = ["/home/you/Downloads/setup.exe".to_owned()];
+        let launch = WindowsShell::launch(&LaunchInput::new(&arguments, None), false);
+        assert_eq!(launch.len(), 1);
+        assert_eq!(launch[0].id, "install");
+        assert_eq!(launch[0].arguments["path"], "/home/you/Downloads/setup.exe");
+        assert!(WindowsShell::launch(&LaunchInput::new(&[], None), false).is_empty());
+    }
 
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        assert!(ui::resources::resource(&app, &seeded, actions::MANAGER_RESOURCE_ID).is_none());
-        assert!(
-            ui::resources::resource(&app, &seeded, "windows.app:adobe-reader").is_some(),
-            "a hosted route override stays the published row"
-        );
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "windows.manager"),
-            "hosted must not republish windows.manager beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
-        assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "windows.compat-app"),
-            "hosted still publishes live catalogue apps: {:?}",
-            extras.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>()
-        );
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "windows.appliance"),
-            "hosted must not duplicate the published appliance child: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
+    /// Every screenshot is the sample catalogue with its scenario's view
+    /// state, at the scenario's viewport; the live rows the window shows
+    /// carry effects, merged under the manager with the stored overrides.
+    #[test]
+    fn captures_show_the_sample_catalogue_and_publish_its_rows() {
+        let mut detail = TestApp::<WindowsShell>::capture(Some("confirm-delete")).unwrap();
+        assert_eq!(detail.harness().inspection().viewport, [480, 800]);
+        let frame = detail.harness().inspection_json().unwrap();
+        assert!(frame.contains("windows.delete-confirm"), "{frame}");
 
-        let door = provide_resources(&state);
-        assert_eq!(door[0].kind, "windows.manager");
+        let mut wide = TestApp::<WindowsShell>::capture(Some("wide")).unwrap();
+        assert_eq!(wide.harness().inspection().viewport, [1280, 800]);
+        let surface = wide.agent_surface();
+        let rows = surface.as_array().unwrap();
+        assert!(rows.iter().any(|row| {
+            row["resource"] == "windows.app:adobe-reader" && row["action"] == "launch"
+        }));
         assert!(
-            door[0]
-                .children
-                .iter()
-                .any(|child| child.id.as_str() == "windows.appliance")
-        );
-
-        let mut local = AutoCommit::new();
-        let mut standalone = WindowsApp::new_offline();
-        standalone.commit_route(
-            &mut local,
-            &WindowsAction::SetRoute {
-                app_id: "cyberpunk-2077".into(),
-                route: Route::Wine,
-            },
+            rows.iter()
+                .any(|row| { row["resource"] == "windows.appliance" && row["action"] == "start" })
         );
         assert!(
-            standalone.last_document_action().is_some(),
-            "ActionSink must record document actions on the local host"
-        );
-        assert_eq!(
-            actions::route_override(&local, "cyberpunk-2077"),
-            Some(Route::Wine)
-        );
-
-        // Empty present must not wipe a local override that has not been published.
-        standalone.project_shared_route_policy(&local);
-        standalone.refresh();
-        let before = standalone
-            .catalogue
-            .app("cyberpunk-2077")
-            .map(|app| app.route);
-        assert_eq!(before, Some(Route::Wine));
-        standalone.adopt_resource_state(&WindowsState::default());
-        assert_eq!(
-            standalone
-                .catalogue
-                .app("cyberpunk-2077")
-                .map(|app| app.route),
-            before,
-            "adopting empty view prefs must not clear unpublished local overrides"
+            rows.iter()
+                .any(|row| row["resource"] == "windows.manager"
+                    && row["action"] == "use-proton-route"),
+            "the shown application's route edits are bound on the manager"
         );
     }
 }

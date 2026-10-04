@@ -40,7 +40,6 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
@@ -49,7 +48,7 @@ jobs:
           set -euo pipefail
           cargo build --locked --release -p legacy-agent --bin tilo-legacy-agent
           install -D -m 0755 target/release/tilo-legacy-agent out/tilo-legacy-agent
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: legacy-agent-x86_64
           path: out/tilo-legacy-agent
@@ -60,7 +59,7 @@ jobs:
   # a branch run builds and boots the guest but publishes nothing.
   signing-preflight:
     if: github.ref == 'refs/heads/main'
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
@@ -133,7 +132,7 @@ jobs:
           cache-architecture: x86_64
       - name: Load the mirrored Fedora base
         run: grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: legacy-agent-x86_64
           path: os/legacy-guest/agent
@@ -199,7 +198,7 @@ jobs:
       - name: Verify the signature and record the immutable reference
         if: github.ref == 'refs/heads/main'
         run: os/dev/legacy-guest-snapshot.sh record "$LEGACY_GUEST_REF"
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: github.ref == 'refs/heads/main'
         with:
           name: legacy-guest-x86_64
@@ -226,7 +225,7 @@ jobs:
         uses: ./.forgejo/actions/install-cosign
         with:
           cache-architecture: x86_64
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: legacy-guest-x86_64
           path: refs/x86_64

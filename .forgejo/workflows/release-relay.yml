@@ -45,6 +45,7 @@ on:
       - "crates/platform/tilo-paths/**"
       - "crates/platform/tilo-rt/**"
       - "crates/platform/tilo-secrets/**"
+      - "crates/runtime/egress/**"
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-identity/**"
       - "crates/runtime/runtime-portal/**"
@@ -76,6 +77,17 @@ on:
       - "crates/system/wire-frame/**"
       - "crates/system/xdg-paths/**"
       - "crates/workspace-hack/**"
+      - "crates/packaging/oci-images/**"
+      - "crates/runtime/cli/**"
+      - "crates/runtime/egress/**"
+      - "crates/runtime/env-tools/**"
+      - "crates/runtime/environment/**"
+      - "crates/runtime/legacy-agent-protocol/**"
+      - "crates/runtime/legacy-vm/**"
+      - "crates/system/libvirt-domain/**"
+      - "crates/runtime/ush/**"
+      - "crates/system/app-state/**"
+      - "crates/system/durable-store/**"
       - "keys/cosign.pub"
       - "os/base-snapshot.env"
       - "os/containers/tilo-relay/**"
@@ -128,6 +140,7 @@ on:
       - "crates/platform/tilo-paths/**"
       - "crates/platform/tilo-rt/**"
       - "crates/platform/tilo-secrets/**"
+      - "crates/runtime/egress/**"
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-identity/**"
       - "crates/runtime/runtime-portal/**"
@@ -159,6 +172,17 @@ on:
       - "crates/system/wire-frame/**"
       - "crates/system/xdg-paths/**"
       - "crates/workspace-hack/**"
+      - "crates/packaging/oci-images/**"
+      - "crates/runtime/cli/**"
+      - "crates/runtime/egress/**"
+      - "crates/runtime/env-tools/**"
+      - "crates/runtime/environment/**"
+      - "crates/runtime/legacy-agent-protocol/**"
+      - "crates/runtime/legacy-vm/**"
+      - "crates/system/libvirt-domain/**"
+      - "crates/runtime/ush/**"
+      - "crates/system/app-state/**"
+      - "crates/system/durable-store/**"
       - "keys/cosign.pub"
       - "os/base-snapshot.env"
       - "os/containers/tilo-relay/**"
@@ -187,7 +211,7 @@ concurrency:
 jobs:
   signing-preflight:
     if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
@@ -263,7 +287,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.REGISTRY_TOKEN }}
           persist-credentials: false
 
       - name: Verify the relay-only Compose contract

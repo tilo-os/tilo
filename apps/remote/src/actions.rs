@@ -1,5 +1,5 @@
-//! The Remote app's exported **actions** and the **resource tree** it publishes
-//! to Ctrl+K.
+//! The Remote app's exported **actions**, and the operations it publishes
+//! beside them.
 //!
 //! ## The split
 //!
@@ -19,31 +19,29 @@
 //!   inside [`Action::apply`]) and the **absolute** target value, so `apply` is a
 //!   pure function of `(payload, document)` and replays identically on every
 //!   replica. A stray action against a missing connection is a **no-op**, never
-//!   an error, so a bad replay can't wedge a peer.
+//!   an error, so a bad replay can't wedge a peer. Opening a session records
+//!   when the machine was last used ([`RemoteAction::MarkUsed`]), which follows
+//!   the person to their other devices but is nobody's undo step.
 //!
 //! - **External operations.** Opening a live session is exported as an explicit
 //!   effect on its connection resource. The framebuffer, input stream, and
-//!   credential auth remain app-owned one-off I/O and touch no CRDT. And
-//!   presentation — which screen is showing, the selected
-//!   row, the in-progress add/edit draft, scale / fullscreen, the nav rail — is
-//!   per-peer view state. None of it is an action.
-//!
-//! The resource tree mirrors that: a stable connection-list root exposes the
-//! open/new views and owns one child per saved connection. Each child exposes
-//! open/edit, connect, rename, favourite, and delete. This hierarchy remains
-//! discoverable even for an empty first-run list, so search and agents can open
-//! the creation UI instead of needing a mouse-only bootstrap.
+//!   credential auth remain app-owned one-off I/O and touch no CRDT; a
+//!   connection's password or key passphrase lives in this device's secret
+//!   store. And presentation — which screen is showing, the selected row, the
+//!   in-progress add/edit draft, scale / fullscreen, the nav rail — is per-peer
+//!   view state, as is whether a machine answered. None of it is an action.
 
-use automerge::AutoCommit;
-
+use automerge::transaction::Transactable;
+use automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
-    ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind,
-    ParamType, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
+    ChangeKind, ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, ExecutionMode,
+    OperationKind, ParamType, PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
 };
+use ui::framework::LiveRow;
 
-use crate::doc::RemoteDoc;
-use crate::model::{AuthMethod, Connection, ConnectionId, ConnectionKind, Presence};
+use crate::doc::CONNECTIONS;
+use crate::model::{AuthMethod, Connection, ConnectionId, ConnectionKind};
 
 /// Registry `type_id` for every Remote action.
 pub const REMOTE_ACTION_TYPE: &str = "remote.action";
@@ -132,7 +130,18 @@ fn operation_spec(
     })
 }
 
-fn connect_spec(connection: &Connection) -> ActionSpec {
+/// Open a connection's settings.
+pub(crate) fn open_spec(id: ConnectionId) -> ActionSpec {
+    operation_spec(
+        "open",
+        "Open connection settings",
+        OperationKind::View,
+        &RemoteOperation::EditConnection { connection_id: id },
+    )
+}
+
+/// Open a live session to a connection, when it can start one.
+pub(crate) fn connect_spec(connection: &Connection) -> ActionSpec {
     let spec = operation_spec(
         "connect",
         "Connect",
@@ -176,11 +185,11 @@ fn connect_spec(connection: &Connection) -> ActionSpec {
     clippy::too_many_lines,
     reason = "the session resource intentionally keeps its lifecycle and trust affordances together"
 )]
-pub fn session_resource(
+pub fn session_row(
     connection: &Connection,
     can_send_text: bool,
     host_key_issue: Option<&crate::ssh::HostKeyIssue>,
-) -> Resource {
+) -> LiveRow {
     let id = connection.id;
     let disconnect = ActionSpec::operation(
         "disconnect",
@@ -233,13 +242,13 @@ pub fn session_resource(
         tags: vec!["remote-input".into(), "session".into()],
         ..ActionContract::default()
     });
-    let mut resource = Resource::new(
+    let mut row = LiveRow::new(
         format!("remote.session:{id}"),
         "remote.session",
         format!("{} session", connection.name),
     )
-    .with_action(disconnect)
-    .with_action(if can_send_text {
+    .operation(disconnect)
+    .operation(if can_send_text {
         input
     } else {
         input.unavailable(
@@ -253,7 +262,7 @@ pub fn session_resource(
                 connection_id: id,
                 observed: observed.clone(),
             };
-            resource = resource.with_action(
+            row = row.operation(
                 operation_spec(
                     "trust-host-key",
                     "Trust SSH host key",
@@ -278,7 +287,7 @@ pub fn session_resource(
         }
         Some(crate::ssh::HostKeyIssue::Changed { .. }) => {
             let operation = RemoteOperation::ForgetSshHostKey { connection_id: id };
-            resource = resource.with_action(
+            row = row.operation(
                 operation_spec("forget-host-key", "Forget SSH host key", OperationKind::Effect, &operation)
                     .with_description("Remove this device's stale SSH host-key pin; reconnect to inspect a replacement key.")
                     .with_contract(ActionContract {
@@ -295,7 +304,7 @@ pub fn session_resource(
         }
         _ => {}
     }
-    resource
+    row
 }
 
 /// Every collaborative operation Remote exports on the shared document. Each
@@ -306,9 +315,8 @@ pub fn session_resource(
 pub enum RemoteAction {
     /// Add a new saved connection, or overwrite the editable fields of an
     /// existing one (the add/edit form's Save). `id` is minted at authoring
-    /// time. The favourite flag, presence, and last-used descriptor are *not*
-    /// carried here — they're preserved across an edit (or seeded for a new
-    /// connection) by reading the current document, so editing a host never
+    /// time. The favourite flag and when it was last used are *not* carried
+    /// here — an edit leaves them as they are, so editing a host never
     /// clobbers a collaborator's favourite.
     UpsertConnection {
         id: ConnectionId,
@@ -327,6 +335,37 @@ pub enum RemoteAction {
     SetFavorite { id: ConnectionId, favorite: bool },
     /// Delete a saved connection from the store.
     DeleteConnection { id: ConnectionId },
+    /// Record that a session to the connection was opened at `at_ms`
+    /// (milliseconds since the Unix epoch). The later of two concurrent
+    /// records wins on every replica.
+    MarkUsed { id: ConnectionId, at_ms: i64 },
+}
+
+/// The connection map, created on first write.
+fn connections_map(doc: &mut Doc) -> Result<ObjId, ActionError> {
+    match doc.get(&ROOT, CONNECTIONS)? {
+        Some((Value::Object(ObjType::Map), id)) => Ok(id),
+        _ => Ok(doc.put_object(&ROOT, CONNECTIONS, ObjType::Map)?),
+    }
+}
+
+/// The map of an existing connection.
+fn connection(doc: &mut Doc, id: ConnectionId) -> Result<Option<ObjId>, ActionError> {
+    let conns = connections_map(doc)?;
+    Ok(match doc.get(&conns, id.to_string().as_str())? {
+        Some((Value::Object(ObjType::Map), conn)) => Some(conn),
+        _ => None,
+    })
+}
+
+/// Splice `name` into the connection's collaborative name text.
+fn put_name(doc: &mut Doc, conn: &ObjId, name: &str) -> Result<(), ActionError> {
+    let text = match doc.get(conn, "name")? {
+        Some((Value::Object(ObjType::Text), text)) => text,
+        _ => doc.put_object(conn, "name", ObjType::Text)?,
+    };
+    ui::doc::splice_text_diffed(doc, &text, name);
+    Ok(())
 }
 
 impl Action for RemoteAction {
@@ -342,41 +381,59 @@ impl Action for RemoteAction {
                 auth,
                 group,
             } => {
-                // Preserve the collaboratively-owned fields across an edit; seed
-                // them for a brand-new connection. This is a deterministic read
-                // of the current document (same on every replica), never a clock
-                // or RNG — so replay stays byte-identical.
-                let existing = RemoteDoc::list(doc).into_iter().find(|c| &c.id == id);
-                let (favorite, presence, last_used) = match existing {
-                    Some(e) => (e.favorite, e.presence, e.last_used),
-                    None => (false, Presence::Unknown, "Never".to_string()),
+                // An edit leaves the favourite and last-used fields alone; a
+                // new connection starts unfavourited.
+                let conn = if let Some(conn) = connection(doc, *id)? {
+                    conn
+                } else {
+                    let conns = connections_map(doc)?;
+                    let conn = doc.put_object(&conns, id.to_string().as_str(), ObjType::Map)?;
+                    doc.put(&conn, "favorite", false)?;
+                    conn
                 };
-                let conn = Connection {
-                    id: *id,
-                    name: name.clone(),
-                    host: host.clone(),
-                    port: *port,
-                    user: user.clone(),
-                    kind: *kind,
-                    auth: *auth,
-                    last_used,
-                    presence,
-                    group: group.clone(),
-                    favorite,
-                };
-                RemoteDoc::upsert(doc, &conn);
+                put_name(doc, &conn, name)?;
+                ui::doc::put_if_changed(doc, &conn, "host", host.as_str());
+                ui::doc::put_if_changed(doc, &conn, "port", i64::from(*port));
+                ui::doc::put_if_changed(doc, &conn, "user", user.as_str());
+                ui::doc::put_if_changed(doc, &conn, "kind", kind.tag());
+                ui::doc::put_if_changed(doc, &conn, "auth", auth.label());
+                ui::doc::put_if_changed(doc, &conn, "group", group.as_str());
             }
             RemoteAction::RenameConnection { id, name } => {
-                RemoteDoc::rename(doc, *id, name);
+                if let Some(conn) = connection(doc, *id)? {
+                    put_name(doc, &conn, name)?;
+                }
             }
             RemoteAction::SetFavorite { id, favorite } => {
-                RemoteDoc::set_favorite(doc, *id, *favorite);
+                if let Some(conn) = connection(doc, *id)? {
+                    ui::doc::put_if_changed(doc, &conn, "favorite", *favorite);
+                }
             }
             RemoteAction::DeleteConnection { id } => {
-                RemoteDoc::remove(doc, *id);
+                let conns = connections_map(doc)?;
+                if connection(doc, *id)?.is_some() {
+                    doc.delete(&conns, id.to_string().as_str())?;
+                }
+            }
+            RemoteAction::MarkUsed { id, at_ms } => {
+                if let Some(conn) = connection(doc, *id)? {
+                    let last = ui::doc::read_i64_coerced(doc, &conn, "last_used_ms");
+                    if last.is_none_or(|last| last < *at_ms) {
+                        doc.put(&conn, "last_used_ms", *at_ms)?;
+                    }
+                }
             }
         }
         Ok(())
+    }
+
+    fn change_kind(&self) -> ChangeKind {
+        match self {
+            // When a machine was last used is a marker, not an edit anyone
+            // takes back.
+            RemoteAction::MarkUsed { .. } => ChangeKind::Housekeeping,
+            _ => ChangeKind::Content,
+        }
     }
 
     fn locus(&self) -> ExecutionLocus {
@@ -447,76 +504,9 @@ pub fn rename_action(id: ConnectionId, name: &str) -> RemoteAction {
     }
 }
 
-// ===========================================================================
-// Resource tree
-// ===========================================================================
-
-/// Build an immediate [`ActionSpec`] wrapping a [`RemoteAction`] — the resource
-/// tree's per-connection buttons (favourite, delete) both go through this so the
-/// encode-can't-fail invariant lives in one place rather than at each call site.
-#[allow(
-    clippy::expect_used,
-    reason = "wraps ActionSpec::immediate, which cannot fail for RemoteAction \
-              — see encode()'s doc comment"
-)]
-fn immediate_spec(id: &str, label: &str, action: &RemoteAction) -> ActionSpec {
-    ActionSpec::immediate(id, label, REMOTE_ACTION_TYPE, action).expect("encode remote action")
-}
-
-/// Saved connections as children of the published list. Labels and the
-/// favourite target track the live record.
-pub(crate) fn connection_resources(connections: &[crate::model::Connection]) -> Vec<Resource> {
-    connections
-        .iter()
-        .map(|c| {
-            let id = c.id;
-            let label = if c.name.trim().is_empty() {
-                c.host.clone()
-            } else {
-                c.name.clone()
-            };
-            Resource::new(
-                format!("remote.connection:{id}"),
-                "remote.connection",
-                label,
-            )
-            .with_action(operation_spec(
-                "open",
-                "Open connection settings",
-                OperationKind::View,
-                &RemoteOperation::EditConnection { connection_id: id },
-            ))
-            .with_action(connect_spec(c))
-            .with_action(
-                ActionSpec::prompted(
-                    "rename",
-                    "Rename connection",
-                    "New name",
-                    "connection name",
-                    ExecutionLocus::ClientLocal,
-                    move |text| encode(&rename_action(id, text)),
-                )
-                .reversible(),
-            )
-            .with_action(
-                immediate_spec(
-                    "favorite",
-                    if c.favorite {
-                        "Remove from favourites"
-                    } else {
-                        "Add to favourites"
-                    },
-                    &set_favorite_action(id, !c.favorite),
-                )
-                .reversible(),
-            )
-            .with_action(
-                immediate_spec("delete", "Delete connection", &delete_action(id))
-                    .destructive()
-                    .reversible(),
-            )
-        })
-        .collect()
+/// Build the "a session to this connection was opened now" action.
+pub fn mark_used_action(id: ConnectionId, at_ms: i64) -> RemoteAction {
+    RemoteAction::MarkUsed { id, at_ms }
 }
 
 /// List-level Views on the published connection list.
@@ -537,37 +527,14 @@ pub(crate) fn list_view_specs() -> Vec<ActionSpec> {
     ]
 }
 
-/// The published connection list and every saved child.
-pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    let connections = RemoteDoc::list(doc);
-    vec![ui::tilo_resource::publish::<crate::resource::Remote>(
-        "remote.connections",
-        "Remote connections",
-        &connections,
-    )]
-}
-
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::RemoteApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let state =
-            <crate::resource::Remote as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
-        let mut root = ui::tilo_resource::publish::<crate::resource::Remote>(
-            "remote.connections",
-            "Remote connections",
-            &state,
-        );
-        if let Some(session) = self.live_session_resources().pop() {
-            root.children.push(session);
-        }
-        vec![root]
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::LocalTransport;
+    use crate::doc::RemoteDoc;
+    use crate::resource::{Remote, connection_resource_id};
+    use automerge::AutoCommit;
+    use tilo_actions::{LocalTransport, Resource};
+    use ui::tilo_resource::Resource as _;
     use uuid::Uuid;
 
     fn registry() -> ActionRegistry {
@@ -586,23 +553,36 @@ mod tests {
         tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
+    /// What the framework publishes for `doc`'s saved connections.
+    fn published(doc: &AutoCommit) -> Vec<Resource> {
+        vec![ui::tilo_resource::publish::<Remote>(
+            Remote::KIND,
+            Remote::LABEL,
+            &Remote::read(doc).unwrap(),
+        )]
+    }
+
     const BUILD_BOX: ConnectionId = Uuid::from_u128(0xb01d);
     const FAVOURITE_BOX: ConnectionId = Uuid::from_u128(0xfa5);
 
-    fn connection_address(id: ConnectionId) -> String {
-        format!("remote.connection:{id}")
+    /// `connection`, saved through its actions.
+    fn save(doc: &mut AutoCommit, connection: &Connection) {
+        dispatch(doc, &upsert_action(connection));
+        if connection.favorite {
+            dispatch(doc, &set_favorite_action(connection.id, true));
+        }
     }
 
-    /// Two saved connections, one favourited, written through the document
-    /// store the app persists connections with.
+    /// Two saved connections, one favourited.
     fn seeded_connections() -> AutoCommit {
         let mut doc = AutoCommit::new();
-        RemoteDoc::upsert(&mut doc, &sample(BUILD_BOX, "Build Box"));
+        save(&mut doc, &sample(BUILD_BOX, "Build Box"));
         let mut favourite = sample(FAVOURITE_BOX, "Media Server");
         favourite.favorite = true;
         favourite.kind = ConnectionKind::Vnc;
+        favourite.auth = AuthMethod::Password;
         favourite.port = 5900;
-        RemoteDoc::upsert(&mut doc, &favourite);
+        save(&mut doc, &favourite);
         doc.commit();
         doc
     }
@@ -610,12 +590,11 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded_connections(),
         registry: registry(),
-        resources: |doc| crate::app::RemoteApp::new().publish_resources(doc),
+        resources: |doc| published(doc),
         palette: [
             "Rename connection",
             "Open connection settings",
-            "Add to favourites",
-            "Remove from favourites",
+            "Set favourite",
             "Delete connection",
         ],
         replay: [
@@ -625,22 +604,17 @@ mod tests {
                 edited.host = "10.0.0.42".into();
                 encode(&upsert_action(&edited))
             },
+            mark_used => |_| encode(&mark_used_action(BUILD_BOX, 1_700_000_000_000)),
         ],
         undo: [
             favourite => |_| encode(&set_favorite_action(BUILD_BOX, true)),
             add_connection => |_| encode(&upsert_action(&sample(Uuid::from_u128(0xadd), "New Box"))),
         ],
         encodes: [
-            favourite => (&connection_address(BUILD_BOX), "favorite", |_, _| {
-                encode(&set_favorite_action(BUILD_BOX, true))
-            }),
-            unfavourite => (&connection_address(FAVOURITE_BOX), "favorite", |_, _| {
-                encode(&set_favorite_action(FAVOURITE_BOX, false))
-            }),
-            delete => (&connection_address(BUILD_BOX), "delete", |_, _| {
+            delete => (&connection_resource_id(BUILD_BOX), "delete-connection", |_, _| {
                 encode(&delete_action(BUILD_BOX))
             }),
-            rename => (&connection_address(BUILD_BOX), "rename", arg: "Lab Box", |_, _| {
+            rename => (&connection_resource_id(BUILD_BOX), "rename-connection", arg: "Lab Box", |_, _| {
                 encode(&rename_action(BUILD_BOX, "Lab Box"))
             }),
         ],
@@ -655,8 +629,7 @@ mod tests {
             user: "admin".into(),
             kind: ConnectionKind::Ssh,
             auth: AuthMethod::PublicKey,
-            last_used: "2h ago".into(),
-            presence: Presence::Online,
+            last_used_ms: None,
             group: "lab".into(),
             favorite: false,
         }
@@ -664,34 +637,28 @@ mod tests {
 
     #[test]
     fn upsert_and_rename_actions_write_only_their_fields() {
-        eprintln!("phase upsert_action_writes_a_connection");
+        eprintln!("phase upsert_action_round_trips_every_field");
         {
-            let mut doc = AutoCommit::new();
-            let id = Uuid::new_v4();
-            dispatch(&mut doc, &upsert_action(&sample(id, "Build Box")));
-            let back = RemoteDoc::list(&doc);
-            assert_eq!(back.len(), 1);
-            assert_eq!(back[0].id, id);
-            assert_eq!(back[0].name, "Build Box");
-            assert_eq!(back[0].host, "10.0.0.9");
-            assert_eq!(
-                back[0].last_used, "Never",
-                "a fresh connection seeds last-used"
-            );
+            for kind in ConnectionKind::all() {
+                let mut doc = AutoCommit::new();
+                let mut c = sample(Uuid::new_v4(), "Build Box");
+                c.kind = kind;
+                dispatch(&mut doc, &upsert_action(&c));
+                assert_eq!(RemoteDoc::list(&doc), vec![c], "{kind:?} round-trips");
+            }
         }
 
-        eprintln!("phase upsert_edit_preserves_favourite_and_presence");
+        eprintln!("phase upsert_edit_preserves_favourite_and_last_used");
         {
             let mut doc = AutoCommit::new();
             let id = Uuid::new_v4();
-            let mut c = sample(id, "Box");
-            c.favorite = true;
-            c.presence = Presence::Online;
-            c.last_used = "5m ago".into();
-            RemoteDoc::upsert(&mut doc, &c);
+            let c = sample(id, "Box");
+            save(&mut doc, &c);
+            dispatch(&mut doc, &set_favorite_action(id, true));
+            dispatch(&mut doc, &mark_used_action(id, 5_000));
 
-            // The form edits only the editable fields; favourite/presence/last_used
-            // are collaboratively owned and must survive the edit.
+            // The form edits only the editable fields; favourite and last
+            // used must survive the edit.
             let mut edited = c.clone();
             edited.name = "Box (renamed)".into();
             edited.host = "10.0.0.10".into();
@@ -701,8 +668,7 @@ mod tests {
             assert_eq!(back.name, "Box (renamed)");
             assert_eq!(back.host, "10.0.0.10");
             assert!(back.favorite, "edit preserved the favourite flag");
-            assert_eq!(back.presence, Presence::Online, "edit preserved presence");
-            assert_eq!(back.last_used, "5m ago", "edit preserved last-used");
+            assert_eq!(back.last_used_ms, Some(5_000), "edit preserved last used");
         }
 
         eprintln!("phase rename_action_changes_only_the_name");
@@ -710,21 +676,54 @@ mod tests {
             let mut doc = AutoCommit::new();
             let id = Uuid::new_v4();
             let c = sample(id, "Before");
-            RemoteDoc::upsert(&mut doc, &c);
+            save(&mut doc, &c);
             dispatch(&mut doc, &rename_action(id, "After"));
             let back = &RemoteDoc::list(&doc)[0];
             assert_eq!(back.name, "After");
             assert_eq!(back.host, c.host, "rename leaves the address intact");
         }
+
+        eprintln!("phase appending_one_char_to_the_name_is_bounded");
+        {
+            // The name is a collaborative Text; renaming by one character
+            // splices only that character.
+            let mut doc = AutoCommit::new();
+            let mut c = sample(Uuid::new_v4(), "x");
+            c.name = "n".repeat(300);
+            save(&mut doc, &c);
+            let before = doc.save().len();
+            c.name.push('!');
+            dispatch(&mut doc, &upsert_action(&c));
+            let grew = doc.save().len() - before;
+            assert_eq!(RemoteDoc::list(&doc)[0].name, c.name);
+            assert!(
+                grew < 200,
+                "one more character grew the doc by {grew} bytes"
+            );
+        }
+
+        eprintln!("phase concurrent_saves_merge");
+        {
+            use tilo_automerge::ApplyIncoming;
+            let mut a = AutoCommit::new();
+            save(&mut a, &sample(Uuid::new_v4(), "A"));
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            save(&mut b, &sample(Uuid::new_v4(), "B"));
+            let mut b = AutoCommit::load(&b.save()).unwrap();
+            a.merge_incoming(&mut b).unwrap();
+            let mut names: Vec<_> = RemoteDoc::list(&a).into_iter().map(|c| c.name).collect();
+            names.sort();
+            assert_eq!(names, ["A", "B"]);
+        }
     }
 
     #[test]
-    fn favourite_and_delete_actions_are_absolute_and_ignore_missing_connections() {
+    fn favourite_delete_and_last_used_are_absolute_and_ignore_missing_connections() {
         eprintln!("phase favourite_action_sets_the_absolute_value");
         {
             let mut doc = AutoCommit::new();
             let id = Uuid::new_v4();
-            RemoteDoc::upsert(&mut doc, &sample(id, "Box"));
+            save(&mut doc, &sample(id, "Box"));
             dispatch(&mut doc, &set_favorite_action(id, true));
             assert!(RemoteDoc::list(&doc)[0].favorite);
             dispatch(&mut doc, &set_favorite_action(id, false));
@@ -735,16 +734,32 @@ mod tests {
         {
             let mut doc = AutoCommit::new();
             let id = Uuid::new_v4();
-            RemoteDoc::upsert(&mut doc, &sample(id, "Box"));
+            save(&mut doc, &sample(id, "Box"));
             dispatch(&mut doc, &delete_action(id));
             assert!(RemoteDoc::list(&doc).is_empty());
         }
 
+        eprintln!("phase the_latest_use_wins_and_is_no_undo_step");
+        {
+            let mut doc = AutoCommit::new();
+            let id = Uuid::new_v4();
+            save(&mut doc, &sample(id, "Box"));
+            dispatch(&mut doc, &mark_used_action(id, 2_000));
+            dispatch(&mut doc, &mark_used_action(id, 1_000));
+            assert_eq!(
+                RemoteDoc::list(&doc)[0].last_used_ms,
+                Some(2_000),
+                "a late, older record does not move last used back"
+            );
+            assert_eq!(
+                mark_used_action(id, 1).change_kind(),
+                ChangeKind::Housekeeping
+            );
+        }
+
         // A stray action against a connection that isn't in the document is a
         // no-op, not an error — a bad replay can't wedge a peer, touch a real
-        // record, or conjure a phantom machine. Each action is dispatched once
-        // against a store that holds a real connection but targets a *different*,
-        // absent id — the production shape (one action per user event).
+        // record, or conjure a phantom machine.
         eprintln!("phase actions_against_a_missing_connection_are_noops");
         {
             let ghost = Uuid::new_v4();
@@ -752,94 +767,61 @@ mod tests {
                 rename_action(ghost, "Ghost"),
                 set_favorite_action(ghost, false),
                 delete_action(ghost),
+                mark_used_action(ghost, 1),
             ] {
                 let mut doc = AutoCommit::new();
                 let real = Uuid::new_v4();
                 let mut c = sample(real, "Real Box");
                 c.favorite = true;
-                RemoteDoc::upsert(&mut doc, &c);
+                save(&mut doc, &c);
 
                 dispatch(&mut doc, &action);
 
                 let back = RemoteDoc::list(&doc);
-                assert_eq!(back.len(), 1, "{action:?} must not add a connection");
-                assert_eq!(back[0].id, real);
-                assert_eq!(
-                    back[0].name, "Real Box",
-                    "{action:?} left the real record intact"
-                );
-                assert!(
-                    back[0].favorite,
-                    "{action:?} left the real favourite flag intact"
-                );
+                assert_eq!(back, vec![c], "{action:?} left the real record intact");
             }
-        }
-
-        // The palette's favourite action tracks the live document: with a favourited
-        // connection seeded, the exported action targets the opposite (unfavourite).
-        eprintln!("phase palette_favourite_targets_the_opposite_of_current");
-        {
-            let mut doc = AutoCommit::new();
-            let id = Uuid::new_v4();
-            let mut c = sample(id, "Box");
-            c.favorite = true;
-            RemoteDoc::upsert(&mut doc, &c);
-
-            let resources = provide_resources(&doc);
-            let spec = resources[0].children[0]
-                .actions
-                .iter()
-                .find(|a| a.id == "favorite")
-                .unwrap();
-            assert_eq!(spec.label, "Remove from favourites");
-            assert_eq!(
-                ui::testing::action_contract::spec_encoding(spec, None),
-                encode(&set_favorite_action(id, false)),
-                "favourited → the row flips it back off",
-            );
         }
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn palette_resources_offer_only_connectable_profiles() {
-        // Ctrl+K publishes one resource per saved connection, each exporting the
-        // connect / rename / favourite / delete operations, and the one palette lists them.
-        // Drives the real resource-builder and the real [`ui::ActionPalette`].
-        eprintln!("phase ctrl_k_publishes_a_resource_per_connection");
+    fn published_connections_offer_only_connectable_profiles() {
+        eprintln!("phase every_connection_is_an_item_with_its_actions");
         {
             let mut doc = AutoCommit::new();
             let id = Uuid::new_v4();
-            RemoteDoc::upsert(&mut doc, &sample(id, "Build Box"));
+            save(&mut doc, &sample(id, "Build Box"));
 
-            let resources = provide_resources(&doc);
-            assert_eq!(resources.len(), 1, "one connection-list root");
-            assert_eq!(resources[0].id.as_str(), "remote.connections");
-            let actions: Vec<_> = resources[0]
+            let resources = published(&doc);
+            let root = &resources[0];
+            let actions: Vec<_> = root
                 .actions
                 .iter()
                 .map(|action| (action.id.as_str(), action.kind))
                 .collect();
-            assert!(
-                actions.contains(&("open", OperationKind::View)),
-                "{actions:?}"
-            );
-            assert!(
-                actions.contains(&("new", OperationKind::View)),
-                "{actions:?}"
-            );
-            assert_eq!(resources[0].children.len(), 1, "one saved connection child");
-            let r = &resources[0].children[0];
-            assert_eq!(r.kind, "remote.connection");
+            for expected in [
+                ("open", OperationKind::View),
+                ("new", OperationKind::View),
+                ("add-connection", OperationKind::Document),
+            ] {
+                assert!(actions.contains(&expected), "{actions:?}");
+            }
+            assert_eq!(root.children.len(), 1, "one saved connection child");
+            let r = &root.children[0];
             assert_eq!(r.label, "Build Box");
-            assert_eq!(r.id.as_str(), &format!("remote.connection:{id}"));
+            assert_eq!(r.id.as_str(), connection_resource_id(id));
             let ids: Vec<&str> = r.actions.iter().map(|a| a.id.as_str()).collect();
-            assert_eq!(ids, vec!["open", "connect", "rename", "favorite", "delete"]);
-            let connect = r
-                .actions
-                .iter()
-                .find(|action| action.id == "connect")
-                .unwrap();
+            assert_eq!(
+                ids,
+                [
+                    "open",
+                    "connect",
+                    "rename-connection",
+                    "set-favorite",
+                    "delete-connection"
+                ]
+            );
+            let connect = &r.actions[1];
             assert_eq!(connect.kind, OperationKind::Effect);
             assert_eq!(
                 connect.contract.execution,
@@ -847,13 +829,9 @@ mod tests {
             );
             assert_eq!(connect.contract.result, tilo_actions::ResultSpec::Job);
             assert_ne!(
-                r.actions
-                    .iter()
-                    .find(|a| a.id == "delete")
-                    .unwrap()
-                    .contract
-                    .confirmation,
-                tilo_actions::ConfirmationPolicy::None
+                r.actions[4].contract.confirmation,
+                tilo_actions::ConfirmationPolicy::None,
+                "deleting asks first"
             );
             let encoded = ui::testing::action_contract::spec_encoding(connect, None);
             assert_eq!(encoded.type_id, REMOTE_OPERATION_TYPE);
@@ -872,14 +850,41 @@ mod tests {
             );
         }
 
+        eprintln!("phase add_connection_validates_and_mints_an_id");
+        {
+            let add = Remote::declarations()
+                .into_iter()
+                .find(|decl| decl.id == "add-connection")
+                .unwrap();
+            let args = |json: serde_json::Value| {
+                tilo_actions::ActionArgs::bind_json(&add.params, json.as_object().unwrap()).unwrap()
+            };
+            let built = (add.build)(
+                &args(serde_json::json!({"name": "Lab", "host": "lab.local", "kind": "ssh"})),
+                0,
+            )
+            .unwrap();
+            assert!(matches!(
+                built,
+                RemoteAction::UpsertConnection { port: 22, kind: ConnectionKind::Ssh, ref name, .. }
+                    if name == "Lab"
+            ));
+            assert!(
+                (add.build)(
+                    &args(serde_json::json!({"name": "Lab", "host": "friendly", "kind": "tilo"})),
+                    0,
+                )
+                .is_err(),
+                "a Tilo connection needs an exact endpoint id"
+            );
+        }
+
         eprintln!("phase tilo_connect_action_is_available_without_the_ssh_vnc_dev_gate");
         {
-            let id = Uuid::new_v4();
-            let mut connection = sample(id, "Tilo device");
+            let mut connection = sample(Uuid::new_v4(), "Tilo device");
             connection.kind = ConnectionKind::Tilo;
             connection.auth = AuthMethod::DeviceIdentity;
             connection.host = iroh_base::SecretKey::generate().public().to_string();
-            connection.presence = Presence::Online;
             assert!(
                 connect_spec(&connection)
                     .contract
@@ -888,10 +893,9 @@ mod tests {
             );
         }
 
-        eprintln!("phase malformed_q_os_profile_is_not_offered_as_a_connectable_resource");
+        eprintln!("phase malformed_tilo_profile_is_not_offered_as_connectable");
         {
-            let id = Uuid::new_v4();
-            let mut connection = sample(id, "Tilo device");
+            let mut connection = sample(Uuid::new_v4(), "Tilo device");
             connection.kind = ConnectionKind::Tilo;
             connection.auth = AuthMethod::DeviceIdentity;
             connection.host = "friendly-name".into();
@@ -906,16 +910,12 @@ mod tests {
 
         eprintln!("phase legacy_rdp_resource_names_the_missing_backend_instead_of_a_generic_gate");
         {
-            let id = Uuid::new_v4();
-            let mut connection = sample(id, "Old Windows host");
+            let mut connection = sample(Uuid::new_v4(), "Old Windows host");
             connection.kind = ConnectionKind::Rdp;
-            let resources = {
-                let mut doc = AutoCommit::new();
-                RemoteDoc::upsert(&mut doc, &connection);
-                provide_resources(&doc)
-            };
-            let resource = &resources[0].children[0];
-            let connect = resource
+            let mut doc = AutoCommit::new();
+            save(&mut doc, &connection);
+            let resources = published(&doc);
+            let connect = resources[0].children[0]
                 .actions
                 .iter()
                 .find(|action| action.id == "connect")
@@ -936,12 +936,20 @@ mod tests {
         }
     }
 
+    fn session_actions(
+        connection: &Connection,
+        can_send_text: bool,
+        issue: Option<&crate::ssh::HostKeyIssue>,
+    ) -> (String, Vec<ActionSpec>) {
+        let row = session_row(connection, can_send_text, issue).into_resource();
+        (row.id.as_str().to_owned(), row.actions)
+    }
+
     #[test]
     fn session_effects_declare_permissions_lifecycle_and_trust() {
         eprintln!("phase remote_effects_declare_confirmation_permissions_and_non_repeatability");
         {
-            let id = Uuid::new_v4();
-            let mut connection = sample(id, "Tilo device");
+            let mut connection = sample(Uuid::new_v4(), "Tilo device");
             connection.kind = ConnectionKind::Tilo;
             connection.auth = AuthMethod::DeviceIdentity;
             connection.host = iroh_base::SecretKey::generate().public().to_string();
@@ -952,8 +960,8 @@ mod tests {
             assert_eq!(connect.contract.retry, RetryPolicy::AtMostOnce);
             assert_eq!(connect.contract.result, ResultSpec::Job);
 
-            let input = session_resource(&connection, true, None)
-                .actions
+            let input = session_actions(&connection, true, None)
+                .1
                 .into_iter()
                 .find(|action| action.id == "send-text")
                 .expect("typed input action");
@@ -967,34 +975,25 @@ mod tests {
         eprintln!("phase active_session_exports_lifecycle_and_typed_input");
         {
             let id = Uuid::new_v4();
-            let session = session_resource(&sample(id, "Build Box"), false, None);
-            assert_eq!(session.id.as_str(), format!("remote.session:{id}"));
-            let disconnect = session
-                .actions
-                .iter()
-                .find(|a| a.id == "disconnect")
-                .unwrap();
+            let (row, actions) = session_actions(&sample(id, "Build Box"), false, None);
+            assert_eq!(row, format!("remote.session:{id}"));
+            let disconnect = actions.iter().find(|a| a.id == "disconnect").unwrap();
             assert_eq!(disconnect.contract.retry, RetryPolicy::Idempotent);
-            let input = session
-                .actions
-                .iter()
-                .find(|a| a.id == "send-text")
-                .unwrap();
+            let input = actions.iter().find(|a| a.id == "send-text").unwrap();
             assert_eq!(input.params()[0].ty, ParamType::Text);
             assert!(!input.contract.availability.is_available());
         }
 
         eprintln!("phase first_contact_exports_an_explicit_device_private_trust_action");
         {
-            let id = Uuid::new_v4();
             let issue = crate::ssh::HostKeyIssue::FirstContact {
                 observed: crate::ssh::HostKeyIdentity {
                     algorithm: "ssh-ed25519".into(),
                     fingerprint: "SHA256:example".into(),
                 },
             };
-            let trust = session_resource(&sample(id, "Build Box"), false, Some(&issue))
-                .actions
+            let trust = session_actions(&sample(Uuid::new_v4(), "Build Box"), false, Some(&issue))
+                .1
                 .into_iter()
                 .find(|action| action.id == "trust-host-key")
                 .expect("first contact publishes a trust action");
