@@ -1361,26 +1361,28 @@ impl<'a> ListRowFace<'a> {
         if let Some(checked) = checked {
             state = state.checked(checked);
         }
+        let target: String = action_target.into();
         let mut node = AccessNode::new(Role::ListItem)
             .with_name(self.spoken_name())
-            .with_action_target(action_target)
+            .with_action_target(target.clone())
             .with_bounds(rect)
             .with_state(state);
         if !value.is_empty() {
             node = node.with_value(value.join(", "));
         }
         if !self.actions.is_empty() {
+            // Each action is a button of its own, addressed as
+            // `<row>/action/<index>`; the keyboard reaches them through the
+            // row (the arrow keys), so they are not tab stops.
             node = node.with_children(
                 self.actions
                     .iter()
-                    .map(|action| {
+                    .enumerate()
+                    .map(|(index, action)| {
                         AccessNode::new(Role::Button)
                             .with_name(action.label)
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .disabled(self.interaction.disabled),
-                            )
+                            .with_action_target(format!("{target}/action/{index}"))
+                            .with_state(AccessState::new().disabled(self.interaction.disabled))
                     })
                     .collect(),
             );
@@ -2499,10 +2501,13 @@ impl Widget for ListRow {
         _node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
-        let Some(theme) = self.theme.clone() else {
+        if self.trailing.is_none() {
+            return false;
+        }
+        let Some(theme) = &self.theme else {
             return false;
         };
-        let height = self.with_face(|face| face.height(text, &theme));
+        let height = self.with_face(|face| face.height(text, theme));
         let Some(trailing) = &mut self.trailing else {
             return false;
         };
@@ -2528,10 +2533,10 @@ impl Widget for ListRow {
         available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let Some(theme) = self.theme.clone() else {
+        let Some(theme) = &self.theme else {
             return taffy::Size::ZERO;
         };
-        let height = self.with_face(|face| face.height(text_renderer, &theme));
+        let height = self.with_face(|face| face.height(text_renderer, theme));
         let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(w) => w,
             _ => 0.0,
@@ -2879,12 +2884,49 @@ impl Widget for ListRow {
         let id = self.activation.id().to_owned();
         let outer = self.outer();
         let mut node = self
-            .with_face(|face| face.accessibility(outer, id))
+            .with_face(|face| face.accessibility(outer, id.clone()))
             .with_semantic_key(self.activation.id());
         if let Some(tooltip) = &self.badge_tooltip {
             node.description = Some(tooltip.clone());
         }
+        // The face numbers the actions it shows; address each by its place
+        // among all the row's actions, as its binding is.
+        for (child, index) in node.children.iter_mut().zip(self.shown_actions()) {
+            child.action_target = Some(format!("{id}/action/{index}"));
+        }
         Some(node)
+    }
+
+    /// Run the action a button child of the row's node was addressed by.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut crate::widget::AppModel,
+        path: &crate::widget::ModelPath,
+    ) -> bool {
+        let id = self.activation.id().to_owned();
+        if target == id {
+            return self.perform_action(action, state, path);
+        }
+        let Some(index) = target
+            .strip_prefix(id.as_str())
+            .and_then(|rest| rest.strip_prefix("/action/"))
+            .and_then(|index| index.parse::<usize>().ok())
+        else {
+            return false;
+        };
+        if !matches!(action, crate::a11y::Action::Activate) {
+            return false;
+        }
+        let control = id;
+        match self.actions.get_mut(index) {
+            Some(row_action) if row_action.is_available() => {
+                row_action.run(&control);
+                true
+            }
+            _ => false,
+        }
     }
 }
 

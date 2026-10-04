@@ -881,7 +881,13 @@ impl Widget for Chip {
             .footprint
             .map_or_else(taffy::Dimension::auto, |size| length(size.width));
         let node = taffy.leaf_node(Style {
-            flex_shrink: 0.0,
+            // A pill wider than its line gives way and elides its label rather
+            // than running past the edge.
+            flex_shrink: 1.0,
+            min_size: taffy::Size {
+                width: length(self.metrics.height as f32),
+                height: taffy::Dimension::auto(),
+            },
             size: taffy::Size {
                 width,
                 height: length(self.metrics.height as f32),

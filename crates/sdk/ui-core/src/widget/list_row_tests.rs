@@ -602,7 +602,7 @@ fn a_view_row_is_a_certified_action_a_click_and_an_agent_both_reach() {
             && resource.actions.iter().any(|action| action.id == "invoke")
     }));
     driver
-        .perform_named("Ada Lovelace", &crate::a11y::Action::Activate)
+        .perform_named("contact-ada", &crate::a11y::Action::Activate)
         .expect("the row enters through its action");
     assert_eq!(calls.get(), 1);
     let [x, y, w, h] = find(&driver.inspection().root, "ListRow").unwrap().rect;

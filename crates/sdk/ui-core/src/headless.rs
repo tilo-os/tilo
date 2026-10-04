@@ -7182,13 +7182,24 @@ fn audit_inspection_node(node: &InspectionNode, issues: &mut Vec<AccessibilityIs
     }
 }
 
+/// Every semantic control a binding may stand behind: the effect-capable
+/// roles, and a focusable list item, which is pressed as a whole (a list
+/// row bound through `ListRow::on_view`).
 fn effect_control_ids(node: &InspectionNode) -> HashSet<String> {
-    effect_control_ids_where(node, &|_| true)
+    effect_control_ids_of(node, &|_| true, true)
 }
 
 fn effect_control_ids_where(
     node: &InspectionNode,
     include: &dyn Fn(&AccessNode) -> bool,
+) -> HashSet<String> {
+    effect_control_ids_of(node, include, false)
+}
+
+fn effect_control_ids_of(
+    node: &InspectionNode,
+    include: &dyn Fn(&AccessNode) -> bool,
+    pressable_items: bool,
 ) -> HashSet<String> {
     let mut controls = HashSet::new();
     if let Some(semantics) = &node.semantics {
@@ -7196,14 +7207,24 @@ fn effect_control_ids_where(
             semantics,
             node.test_id.as_deref(),
             &node.path,
-            include,
+            &EffectFilter {
+                include,
+                pressable_items,
+            },
             &mut controls,
         );
     }
     for child in &node.children {
-        controls.extend(effect_control_ids_where(child, include));
+        controls.extend(effect_control_ids_of(child, include, pressable_items));
     }
     controls
+}
+
+/// Which semantic nodes count as controls.
+struct EffectFilter<'a> {
+    include: &'a dyn Fn(&AccessNode) -> bool,
+    /// Count a focusable list item too.
+    pressable_items: bool,
 }
 
 fn inspection_has_semantics(node: &InspectionNode) -> bool {
@@ -7214,11 +7235,11 @@ fn collect_effect_access_nodes(
     node: &AccessNode,
     retained_id: Option<&str>,
     path: &str,
-    include: &dyn Fn(&AccessNode) -> bool,
+    filter: &EffectFilter<'_>,
     controls: &mut HashSet<String>,
 ) {
-    let effect = include(node)
-        && matches!(
+    let effect = (filter.include)(node)
+        && (matches!(
             node.role,
             Role::Button
                 | Role::ToggleButton
@@ -7230,7 +7251,7 @@ fn collect_effect_access_nodes(
                 | Role::SpinButton
                 | Role::TextInput
                 | Role::MultilineTextInput
-        );
+        ) || (filter.pressable_items && node.role == Role::ListItem && node.state.focusable));
     if effect {
         let identity = node
             .action_target
@@ -7245,7 +7266,7 @@ fn collect_effect_access_nodes(
             child,
             None,
             &format!("{path}/semantic[{index}]"),
-            include,
+            filter,
             controls,
         );
     }

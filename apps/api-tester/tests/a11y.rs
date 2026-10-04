@@ -111,7 +111,7 @@ fn every_control_is_a_focusable_accessible_node() {
     // A saved request is an addressable, labelled row that reports selection.
     let row = nodes
         .iter()
-        .find(|n| n.role == Role::ListItem && n.name.as_deref() == Some("List users"))
+        .find(|n| n.role == Role::ListItem && n.name.as_deref() == Some("GET List users"))
         .expect("a saved request is a focusable, labelled row");
     assert!(row.state.selected, "the open request is selected");
     // The parameters are an editable table of named cells.
@@ -258,7 +258,7 @@ fn tab_traverses_every_control_in_order() {
     assert!(
         stops
             .iter()
-            .any(|(r, n)| *r == Role::ListItem && n.as_deref() == Some("List users")),
+            .any(|(r, n)| *r == Role::ListItem && n.as_deref() == Some("GET List users")),
         "Tab reaches the saved-request rows"
     );
     assert!(
@@ -280,7 +280,7 @@ fn tab_traverses_every_control_in_order() {
 /// Case of `keyboard_focus_traverses_activates_and_dismisses_through_real_handlers`.
 fn enter_activates_a_focused_row_through_the_real_handler() {
     let mut d = driver();
-    let target = "Create user";
+    let target = "POST Create user";
 
     let mut reached = false;
     for _ in 0..=d.focus_order().len() {
