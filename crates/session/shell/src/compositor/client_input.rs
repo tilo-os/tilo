@@ -311,6 +311,16 @@ fn record_activation_serial(state: &mut State, serial: Serial, surface_id: u64) 
     }
 }
 
+/// The xdg `app_id` a toplevel declared, for naming it in latency records.
+fn toplevel_app_id(surface: &WlSurface) -> Option<String> {
+    smithay::wayland::compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+            .and_then(|data| data.lock().ok()?.app_id.clone())
+    })
+}
+
 /// Milliseconds since compositor start — the timestamp base every input event on this seat shares.
 fn event_time(state: &State) -> u32 {
     // `as_millis()` is `u128`; keep the low 32 bits exactly as `as u32` would (wrapping after ~49.7 days of uptime), just without the lint-flagged cast. `millis` is always in range, so `try_from` never actually falls back.
@@ -454,6 +464,20 @@ impl State {
         let delivered = forward && has_focus && intercepted.is_none();
         if delivered && let Some(surface_id) = self.client_input.keyboard_focus {
             record_activation_serial(self, serial, surface_id);
+            if pressed {
+                let app = self
+                    .client_input
+                    .surfaces
+                    .get(&surface_id)
+                    .and_then(toplevel_app_id)
+                    .unwrap_or_default();
+                crate::compositor::key_latency::tracker().key_delivered(
+                    surface_id,
+                    &app,
+                    keycode,
+                    Instant::now(),
+                );
+            }
         }
         delivered
     }

@@ -1898,8 +1898,17 @@ mod retained_damage_tests {
         let scene = marching_ants();
         let corner = [Rect::new(0.0, 0.0, 24.0, 24.0)];
 
+        // Software rasterization sums a tile's segments in GPU scheduling
+        // order, and this dense scene's dashes then differ by more than
+        // anti-aliasing between two complete renders. Both renderers sum in a
+        // fixed order, so the comparison sees only missing geometry.
+        let renderer_for = || {
+            let mut renderer = Renderer::new(device, options()).unwrap();
+            renderer.enable_canonical_segment_order(device).unwrap();
+            renderer
+        };
         // What a renderer that already knows this scene presents.
-        let mut oracle = Renderer::new(device, options()).unwrap();
+        let mut oracle = renderer_for();
         let (oracle_texture, oracle_view) = target(device);
         let mut oracle_cache = DamageCache::default();
         let mut fitted = false;
@@ -1923,7 +1932,7 @@ mod retained_damage_tests {
         assert!(fitted, "the oracle must converge to a complete frame");
         let expected = read(device, queue, &oracle_texture);
 
-        let mut renderer = Renderer::new(device, options()).unwrap();
+        let mut renderer = renderer_for();
         let (retained_texture, retained_view) = target(device);
         let retained = RetainedTarget {
             texture: &retained_texture,

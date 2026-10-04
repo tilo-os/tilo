@@ -354,7 +354,7 @@ if grep -Fq 'tilo-rollback "${rollback_args[@]}" enroll --device "$dev"' "$encry
    && grep -Fq -- '--require-tpm-prediction' "$encryptor" \
    && grep -Fq 'install -d -m 0755 /usr/share/tilo/pcr-predictions' "$production_containerfile" \
    && grep -Fq 'bash /run/tilo-build-initramfs.sh "$kver"' "$production_containerfile" \
-   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback"' "$repo_root/os/scripts/build-initramfs.sh" \
+   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock"' "$repo_root/os/scripts/build-initramfs.sh" \
    && grep -Fq 'tilo-rollback-initrd-unlock' "$production_containerfile" \
    && grep -Fq 'tilo-root-discover' "$production_containerfile" \
    && grep -Fq 'tilo-root-generator' "$production_containerfile" \
