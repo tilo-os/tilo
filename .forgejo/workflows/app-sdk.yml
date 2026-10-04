@@ -269,7 +269,9 @@ jobs:
   # Web: the desktop bundle built from the app manifests and every registered
   # app mounted in headless Chromium on WebGPU.
   web:
-    needs: [builder]
+    # The release assets come from web-size in this same workflow run.
+    # A failed release build also skips the dependent dev mount/qualification lane.
+    needs: [builder, web-size]
     if: needs.builder.outputs.affected == 'true'
     # wasm-bindgen over the whole desktop bundle exceeds the quality lane's
     # 5 GiB.
@@ -334,6 +336,31 @@ jobs:
           mkdir -p "$RUNNER_TEMP/web-shots"
           SHOTS_DIR="$RUNNER_TEMP/web-shots" node crates/browser/tilo-web-desktop/scripts/smoke.mjs \
             http://127.0.0.1:7878 "${apps[@]}" desktop
+      - name: Download exact release private image worker
+        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: app-sdk-release-compute
+          path: ${{ runner.temp }}/release-compute
+      - name: Qualify exact release private image worker
+        run: |
+          python3 - "$RUNNER_TEMP/release-compute" <<'PY'
+          import hashlib, json, pathlib, sys
+          product = pathlib.Path(sys.argv[1])
+          names = {'compute-worker.mjs', 'compute-domains.mjs', 'compute-protocol.mjs',
+                   'pkg/compute/tilo_browser_compute.js', 'pkg/compute/tilo_browser_compute_bg.wasm'}
+          hashes = json.loads((product / 'sha256.json').read_text())
+          assert set(hashes) == names, 'incomplete release worker manifest'
+          for name in names:
+              assert hashlib.sha256((product / name).read_bytes()).hexdigest() == hashes[name], name
+          PY
+          node crates/browser/tilo-browser-compute/scripts/qualify-packaged.mjs \
+            "$RUNNER_TEMP/release-compute" "$RUNNER_TEMP/compute-qualification" --no-sandbox
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always()
+        with:
+          name: app-sdk-compute-qualification
+          path: ${{ runner.temp }}/compute-qualification/qualification.json
+          if-no-files-found: error
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: always()
         with:
@@ -378,6 +405,30 @@ jobs:
         run: |
           target/debug/tilo-app build --target web --bundle desktop --release apps/calculator
           python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle
+      - name: Stage exact release private image worker
+        run: |
+          python3 - "$RUNNER_TEMP/release-compute" <<'PY'
+          import hashlib, json, pathlib, sys
+          product = pathlib.Path('target/tilo-app/web/calculator/bundle')
+          output = pathlib.Path(sys.argv[1])
+          output.mkdir()
+          hashes = {}
+          for name in ('compute-worker.mjs', 'compute-domains.mjs', 'compute-protocol.mjs',
+                       'pkg/compute/tilo_browser_compute.js', 'pkg/compute/tilo_browser_compute_bg.wasm'):
+              data = (product / name).read_bytes()
+              destination = output / name
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              destination.write_bytes(data)
+              hashes[name] = hashlib.sha256(data).hexdigest()
+              assert hashlib.sha256(destination.read_bytes()).hexdigest() == hashes[name], name
+          (output / 'sha256.json').write_text(json.dumps(hashes, sort_keys=True) + '\n')
+          PY
+      - name: Upload exact release private image worker
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: app-sdk-release-compute
+          path: ${{ runner.temp }}/release-compute
+          if-no-files-found: error
       - name: Report compiler cache
         if: always()
         run: bash tools/ci/sccache.sh report || true

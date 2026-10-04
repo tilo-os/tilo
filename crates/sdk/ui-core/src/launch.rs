@@ -487,6 +487,11 @@ impl LaunchSpec {
         self.runtime_attachment = policy;
         self
     }
+
+    /// Whether a native launch with `args` attaches to the session runtime.
+    pub fn attaches_runtime(&self, args: &LaunchArgs) -> bool {
+        (self.runtime_attachment)(args)
+    }
     /// Adapt one common application definition. A runner must install an explicit host.
     pub fn from_definition(definition: &'static crate::application::ApplicationDefinition) -> Self {
         let mut spec = Self::new_with_args(definition.app_id, |_| {

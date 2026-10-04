@@ -492,7 +492,9 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
             // memory pressure on exactly the low-end devices we target.
             antialiasing_support: vello::AaSupport::area_only(),
             num_init_threads: Some(shader_threads),
-            pipeline_cache: None,
+            // The session's compiled pipelines, so an app's first launch
+            // does not compile vello again for its own empty shader cache.
+            pipeline_cache: crate::pipeline_seed::seeded(device_handle),
         },
     )
     .map_err(|e| format!("could not create the renderer: {e}"))?;
@@ -1672,7 +1674,9 @@ impl AppHandler {
         if app.apply_accessibility_request() {
             floating_content_changed = true;
         }
-        if crate::component_lifecycle::take_window_close_intent(app.root_widget.as_mut()) {
+        if crate::component_lifecycle::take_window_close_intent(app.root_widget.as_mut())
+            || app.take_close_window_request()
+        {
             if app.admit_native_close_request() {
                 event_loop.exit();
                 return;
@@ -2470,6 +2474,10 @@ impl AppHandler {
         // If no widget consumed Enter/Space (text inputs do), activate
         // the focused control the same way a mouse click would.
         app.handle_unconsumed_activation_key(&event, &mut handled);
+
+        // Ctrl+T / Ctrl+W / Ctrl+Shift+T nobody consumed are the desktop's
+        // tab chords.
+        app.handle_unconsumed_tab_chord(&event, &mut handled);
 
         // A focused range control consumes Left/Right; Up/Down and Tab
         // still move focus. Modifiers scale the step:

@@ -75,13 +75,35 @@ hashes, actual WASM memory/import inspection, native pixel-oracle comparisons fo
 PNG/JPEG/WebP, >1 second of real repeated decode, page heartbeat overlap with
 worker CPU intervals, real cancellation, malformed/oversized rejection,
 deliberate trap/hang termination, and runtime memory growth refusal. The separate
-compute WASM gate is 1 MiB; the desktop main-module budget is unchanged.
+release compute WASM gate is an initial 1 MiB limit; dev modules have no byte
+budget. Both profiles check final memory and allow only bindgen string/error
+imports; dev additionally permits bindgen’s own externref-table initializer. The desktop main-module budget is unchanged.
 
 ## Integration gates
 
-P5b must package top-level `compute-*.mjs` and `pkg/compute/` in **both** canonical
-builders (shell and SDK CLI), including existing immutable asset/build manifests
-and normal size gates, before host enablement. P6 must use canonical scheduler
+Both canonical builders (runtime/desktop shell script and app/desktop SDK CLI)
+package lazy top-level `compute-*.mjs` and `pkg/compute/`. This only assembles
+assets; it does not enable the image route or initialize workers. SDK compute
+builds use the canonical SDK workspace's manifest, lock and profile, even when
+the app runtime builds in a generated workspace. Its cache binds raw WASM,
+profile, bindgen/optimizer versions and flags, worker sources and all five
+required emitted files; missing or changed JS/WASM rebuilds. `build.json` keeps
+separate compute byte/hash/tool/memory evidence. Immutable versions include worker
+assets in the existing digest and registry archive and refuse partial bundles.
+
+To qualify a canonical release output, use a fresh directory outside the product:
+
+```sh
+node crates/browser/tilo-browser-compute/scripts/qualify-packaged.mjs \
+  target/tilo-app/web/calculator/bundle /tmp/compute-qualification
+```
+
+This copies exact worker bytes, verifies their hashes, generates the native pixel
+oracle in staging and runs real Chrome there. It verifies every product file is
+unchanged and records canonical hashes in the qualification receipt. Never run
+`qualify.mjs` in-place on a product bundle: it writes fixture modules and replaces
+`index.html`. The existing app-sdk Chrome lane qualifies actual release output
+and uploads its receipt. P6 must use canonical scheduler
 policy/owner custody and Rust completion tickets and prove foreground plus 100
 actually mounted apps. Standalone page heartbeats do not prove those integration
 gates, OS RSS bounds, 120 Hz performance or Notes end-to-end behavior. Same-origin

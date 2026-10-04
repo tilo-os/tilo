@@ -62,10 +62,19 @@ fn install_crash_log_hook() {
             || "<unknown location>".to_string(),
             |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
         );
+        let thread = std::thread::current();
+        let thread = thread.name().unwrap_or("<unnamed>");
+        let contained = if tilo_rt::panic_boundary::is_isolated() {
+            "yes: the failing helper restarts and the session continues"
+        } else {
+            "no: the session ends"
+        };
         let body = format!(
             "tilo shell panic\n\
              ===============\n\
              timestamp: {ts}\n\
+             thread:    {thread}\n\
+             contained: {contained}\n\
              location:  {loc}\n\
              message:   {payload}\n\n\
              backtrace:\n{backtrace}\n"
@@ -86,6 +95,10 @@ fn install_crash_log_hook() {
         }
         default_hook(info);
     }));
+    // After the crash log: a panic outside a helper's panic boundary still
+    // ends the compositor, in every build. Inside one (the collaboration
+    // broker's thread) it unwinds to the helper's owner, which restarts it.
+    tilo_rt::panic_boundary::abort_outside_boundaries();
 }
 
 /// The in-sandbox Landlock shim token. Only `tilo-launcher` implements it;
