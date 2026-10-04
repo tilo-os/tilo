@@ -361,7 +361,9 @@ workspace = true
 pipewire = "0.10.1"
 smithay-client-toolkit = "0.20.0"
 wayland-client.workspace = true
-wayland-protocols = "0.32.12"
+# The stand-in text input that lets the input method reach the shell's own
+# fields (`compositor::shell_text_input`).
+wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 # The compositor's own input method connection, which commits text the
 # shell inserts (a picked emoji) while no trusted input method owns the seat.
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
