@@ -1,19 +1,20 @@
-//! Disk Usage as a [`tilo_resource::Resource`]: scan jobs are Effects; recent
-//! directories are the shared projection. A finished scan submits
-//! [`DiskUsageAction::Remember`] through the framework dispatcher, or through
-//! the local action host in unit tests of the bare widget.
+//! Disk Usage as a [`tilo_resource::Resource`]: scans and navigation are the
+//! surface's [`DiskUsageEffect`]s; recent directories are the shared
+//! document. A finished scan remembers its folder with
+//! [`DiskUsageAction::Remember`] through the framework dispatcher.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use ui::framework::{
-    Dispatcher, Fixture, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
+    Effect, EffectAnswer, EffectCx, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
+    RunMode, SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{Action, ActionError, ActionRegistry, ActionSpec, OperationKind};
-use ui::tilo_resource::{Doc, Invoke, ModelError, Resource};
+use ui::tilo_actions::{Action, ActionError, ActionRegistry, ChangeKind};
+use ui::tilo_resource::{self, Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
-use crate::app::{DiskUsageApp, DiskUsageOperation, operation_action};
+use crate::app::DiskUsageApp;
 use crate::doc::DiskUsageDoc;
 use crate::scan::ScanResult;
 
@@ -29,6 +30,40 @@ impl Action for DiskUsageAction {
         DiskUsageDoc::remember(doc, std::path::Path::new(path));
         Ok(())
     }
+
+    /// A folder is remembered because a scan of it finished, not because
+    /// anyone edited the list: no undo step forgets it.
+    fn change_kind(&self) -> ChangeKind {
+        ChangeKind::Housekeeping
+    }
+}
+
+/// What the analyzer does that changes no document: scanning a folder and
+/// moving between the views.
+#[derive(Clone, Debug, PartialEq, ui::framework::Effect)]
+#[effect(operation = "disk-usage.effects")]
+pub enum DiskUsageEffect {
+    /// Analyze a folder.
+    ///
+    /// Scans it and shows what takes up its space.
+    #[effect(job)]
+    Analyze {
+        #[param("The folder to analyze")]
+        path: String,
+    },
+    /// Choose folder.
+    ///
+    /// Asks for a folder, then analyzes it.
+    #[effect(job)]
+    Choose,
+    /// Go back.
+    ///
+    /// Returns to the folder analyzed before this one, or to the locations.
+    #[effect(view, job)]
+    Back,
+    /// Show locations.
+    #[effect(view)]
+    Home,
 }
 
 /// Recent directories remembered in the shared document.
@@ -62,37 +97,45 @@ impl Resource for DiskUsage {
         state
             .recent
             .iter()
-            .filter_map(|path| {
-                let name = path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |name| name.to_string_lossy().into_owned(),
-                );
+            .map(|path| {
+                let name = folder_name(path);
                 let mut resource = ui::tilo_actions::Resource::new(
                     format!("disk-usage.recent:{}", path.display()),
                     "disk-usage.recent",
                     &name,
                 );
-                resource.actions.push(operation_action(
-                    &format!("analyze:{}", path.display()),
-                    &format!("Analyze {name}"),
-                    &DiskUsageOperation::Analyze { path: path.clone() },
-                )?);
-                Some(resource)
+                resource
+                    .actions
+                    .push(analyze(path).operation(format!("Analyze {name}")));
+                resource
             })
             .collect()
     }
+}
 
-    fn local_operations() -> Vec<ActionSpec> {
-        [
-            ("choose", "Choose folder", DiskUsageOperation::Choose),
-            ("home", "Show locations", DiskUsageOperation::Home),
-            ("back", "Go back", DiskUsageOperation::Back),
-        ]
-        .into_iter()
-        .filter_map(|(id, label, op)| operation_action(id, label, &op))
-        .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-        .collect()
+/// The analyze effect for `path`.
+pub(crate) fn analyze(path: &std::path::Path) -> DiskUsageEffect {
+    DiskUsageEffect::Analyze {
+        path: path.to_string_lossy().into_owned(),
     }
+}
+
+/// A folder's name as rows and cards show it.
+pub(crate) fn folder_name(path: &std::path::Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+/// One folder a live row offers to analyze.
+pub(crate) fn folder_row(label: &str, path: &std::path::Path) -> LiveRow {
+    LiveRow::new(
+        format!("disk-usage.folder:{}", path.display()),
+        "disk-usage.folder",
+        label,
+    )
+    .operation(analyze(path).operation(format!("Analyze {label}")))
 }
 
 /// Framework app.
@@ -158,69 +201,15 @@ impl ResourceApp for DiskUsageShell {
     }
 }
 
-/// Framework dispatcher when hosted; the local action host for unit tests of
-/// the bare widget.
-#[derive(Default)]
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<DiskUsage>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    hosted: bool,
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<DiskUsage>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
+impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
+    /// The remembered folders. A scan on screen is this machine's and stays.
+    fn present(&mut self, state: &std::rc::Rc<DiskUsageState>) {
+        self.recent.clone_from(&state.recent);
     }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted || self.framework.is_some()
-    }
-
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut ui::automerge::AutoCommit,
-        type_id: &str,
-        action: &DiskUsageAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => self
-                .local
-                .dispatch_with_context(doc, type_id, action, context),
-        }
-    }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<ui::automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&ui::tilo_actions::EncodedAction> {
-        self.local.last_dispatched()
-    }
-
-    /// Test-only: mark hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
-}
-
-impl ResourceSurface<DiskUsage> for DiskUsageApp {
-    /// A scan in progress is this machine's. An empty recent list must not
-    /// clear it.
-    fn present(&mut self, _state: &std::rc::Rc<DiskUsageState>) {}
 
     fn attach(&mut self, cx: SurfaceCx<DiskUsage>) {
-        self.actions.attach(cx.dispatcher());
-        self.mark_framework_hosted();
         self.immediate = cx.mode() == RunMode::Capture;
+        self.dispatcher = Some(cx.dispatcher());
         if let Some(scan) = cx.fixture::<ScanResult>() {
             self.set_result((*scan).clone());
         }
@@ -231,118 +220,136 @@ impl ResourceSurface<DiskUsage> for DiskUsageApp {
             self.inspect("/home/you/projects");
         }
     }
+
+    fn effect(
+        &mut self,
+        effect: DiskUsageEffect,
+        cx: &mut EffectCx<DiskUsage, Self>,
+    ) -> EffectAnswer {
+        match effect {
+            DiskUsageEffect::Analyze { path } => {
+                let push_history = self.in_analysis();
+                Ok(self.scan(PathBuf::from(path), push_history, cx))
+            }
+            DiskUsageEffect::Choose => Ok(Self::choose_folder(cx)),
+            DiskUsageEffect::Back => Ok(self.go_back(cx)),
+            DiskUsageEffect::Home => {
+                self.go_home();
+                Ok(Effected::done())
+            }
+        }
+    }
+
+    /// The common places, and the folders of the scan on screen.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.folder_rows()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use ui::resources::PublishesResources;
+    use ui::prelude::TestApp;
 
-    #[test]
-    fn publish_owns_navigation_and_hosted_keeps_folder_rows() {
-        let recent = DiskUsageState {
-            recent: vec![PathBuf::from("/tmp/kept")],
-        };
-        let published =
-            ui::tilo_resource::publish::<DiskUsage>("disk-usage", "Disk Usage Analyzer", &recent);
-        let ids: Vec<&str> = published
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        for expected in ["choose", "home", "back"] {
-            assert!(
-                ids.contains(&expected),
-                "palette `{expected}` must ride publish: {ids:?}"
-            );
-        }
-        assert!(
-            published
-                .children
-                .iter()
-                .any(|child| child.kind == "disk-usage.recent"),
-            "recent directories ride publish children"
-        );
-
-        let mut home = DiskUsageApp::new();
-        assert!(!home.is_framework_hosted());
-        let standalone = home.resources(&ui::automerge::AutoCommit::new());
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, DiskUsage::KIND);
-
-        home.mark_hosted_for_test();
-        let places = home.resources(&ui::automerge::AutoCommit::new());
-        assert!(
-            places
-                .iter()
-                .all(|resource| resource.kind != DiskUsage::KIND),
-            "hosted must not republish disk-usage"
-        );
-        assert!(
-            places
-                .iter()
-                .any(|resource| resource.kind == "disk-usage.folder")
-        );
-
-        let mut analysis = crate::app::analysed();
-        assert!(analysis.in_analysis());
-        ResourceSurface::<DiskUsage>::present(
-            &mut analysis,
-            &std::rc::Rc::new(DiskUsageState::default()),
-        );
-        assert!(
-            analysis.in_analysis(),
-            "empty present must not wipe a local scan"
-        );
-        analysis.mark_hosted_for_test();
-        let folders = analysis.resources(&ui::automerge::AutoCommit::new());
-        assert!(folders.len() > places.len());
-        assert!(
-            folders
-                .iter()
-                .all(|resource| resource.kind == "disk-usage.folder")
-        );
+    /// A folder of its own under the system temp directory, holding one file.
+    fn scratch_folder(name: &str) -> PathBuf {
+        let folder = std::env::temp_dir().join(format!(
+            "disk-usage-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(folder.join("photos")).unwrap();
+        std::fs::write(folder.join("photos").join("beach.raw"), vec![7_u8; 4096]).unwrap();
+        folder
     }
 
-    #[test]
-    fn hosted_remember_is_recorded_without_republishing_root() {
-        let mut app = DiskUsageApp::new();
-        assert!(!app.is_framework_hosted());
-        assert!(!app.sink_is_hosted());
-        let mut doc = ui::automerge::AutoCommit::new();
-        let standalone = app.resources(&doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, DiskUsage::KIND);
+    /// Run frames until the scan a row started has shown and remembered
+    /// `folder`.
+    fn settle_until_recent(app: &mut TestApp<DiskUsageShell>, folder: &std::path::Path) {
+        for _ in 0..600 {
+            app.settle();
+            if app.state().recent.first().map(PathBuf::as_path) == Some(folder) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("{} was never remembered", folder.display());
+    }
 
-        app.mark_hosted_for_test();
-        assert!(app.is_framework_hosted());
-        assert!(app.sink_is_hosted());
-        let path = PathBuf::from("/tmp/kept");
-        app.remember_scanned(&mut doc, &path);
-        let recorded = app
-            .last_dispatched()
-            .expect("hosted remember is recorded on the action sink");
-        assert_eq!(recorded.type_id.as_str(), DiskUsage::ACTION_TYPE);
-        assert_eq!(DiskUsageDoc::recent(&doc), vec![path]);
-        let extras = app.resources(&doc);
+    /// Navigation, the folders on screen and the remembered folders are one
+    /// published tree: the effects on the resource, the places as live rows,
+    /// the recents as its children, each analyzing through the same handler.
+    #[test]
+    fn analyzing_a_folder_shows_it_and_remembers_it_without_an_undo_step() {
+        let folder = scratch_folder("analyze");
+        let mut app = TestApp::<DiskUsageShell>::new().unwrap();
+        let surface = serde_json::to_string(&app.agent_surface()).unwrap();
+        for published in [
+            "\"choose\"",
+            "\"home\"",
+            "\"back\"",
+            "\"analyze\"",
+            "disk-usage.folder",
+        ] {
+            assert!(surface.contains(published), "{published}: {surface}");
+        }
+
+        let answer = app.effect(&analyze(&folder)).unwrap();
+        let answer = answer.value.unwrap();
+        assert_eq!(answer["path"], folder.to_string_lossy().as_ref());
+        assert!(answer["bytes"].as_u64().unwrap() >= 4096, "{answer}");
+        app.settle();
+        assert_eq!(app.state().recent, std::slice::from_ref(&folder));
+        assert!(!app.undo(), "a remembered folder is no undo step");
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains("photos"), "{frame}");
+
+        // The scanned folder's entries are live rows; the recent folder is a
+        // child of the resource. Both analyze through the same handler.
+        let photos = folder.join("photos");
+        let row = format!("disk-usage.folder:{}", photos.display());
+        assert!(app.call_on(&row, "analyze", serde_json::json!({})).is_ok());
+        settle_until_recent(&mut app, &photos);
+        let recent = format!("disk-usage.recent:{}", folder.display());
         assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != DiskUsage::KIND
-                    && resource.id.as_str() != "disk-usage:root"),
-            "hosted must not republish disk-usage beside ResourceRoot: {:?}",
-            extras
-                .iter()
-                .map(|resource| resource.id.as_str())
-                .collect::<Vec<_>>()
+            app.call_on(&recent, "analyze", serde_json::json!({}))
+                .is_ok()
         );
-        assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "disk-usage.folder"),
-            "places stay on the widget"
+        settle_until_recent(&mut app, &folder);
+
+        // Home leaves the analysis; back with nothing analyzed before stays
+        // on the locations.
+        app.effect(&DiskUsageEffect::Home).unwrap();
+        app.effect(&DiskUsageEffect::Back).unwrap();
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains("Choose folder"), "{frame}");
+
+        let missing = folder.join("not-there");
+        assert!(app.effect(&analyze(&missing)).is_err());
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    /// Choosing a folder asks the portal for a directory and analyzes what
+    /// it answers.
+    #[test]
+    fn a_chosen_folder_is_analyzed() {
+        let folder = scratch_folder("choose");
+        let mut app = TestApp::<DiskUsageShell>::new().unwrap();
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(folder.clone()));
+        let answer = ui::host::scoped(&services, || app.effect(&DiskUsageEffect::Choose)).unwrap();
+        let picks = recorder.pick_requests();
+        assert_eq!(picks.len(), 1);
+        assert!(picks[0].is_directory());
+        assert_eq!(
+            answer.value.unwrap()["path"],
+            folder.to_string_lossy().as_ref()
         );
+        app.settle();
+        assert_eq!(app.state().recent, std::slice::from_ref(&folder));
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     /// Every screenshot is the framework's capture: the home view lists the
