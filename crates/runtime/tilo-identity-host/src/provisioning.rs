@@ -13,7 +13,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
 use tilo_user_identity::persist::DeviceKeyCustody;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, RootOnly, persist};
 use ui::widget::identity_flow::IdentityRecord;
 
 /// Where a newly provisioned personal identity's private share is kept.
@@ -509,10 +509,17 @@ pub fn enroll_from_local_identity(
             )
         })?;
     let identity = runtime_identity::load_from_path(path).map_err(identity_load_error)?;
-    if !identity.is_single_device() {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "threshold identity requires the multi-device certificate ceremony",
+    if !crate::device_fleet::holds_root(&identity) {
+        let labels = crate::device_fleet::DeviceFleetStore::at(
+            layout.local_identity_dir,
+            layout.local_system.clone(),
+        )
+        .load(&hex::encode(identity.group_public_key()))
+        .map(|fleet| fleet.root_holder_labels(now_ns))
+        .unwrap_or_default();
+        return Err(crate::device_fleet::root_refusal(
+            RootOnly::AdmitDevice,
+            &labels,
         ));
     }
     let user_public_key = identity.group_public_key();
@@ -803,6 +810,15 @@ fn ensure_collaboration_identity_in_context(
         };
 
     let signer = runtime_identity::load_from_path(selected_path).map_err(identity_load_error)?;
+    if signer.threshold() == 1
+        && signer.total_shares() == 1
+        && !crate::device_fleet::holds_root(&signer)
+    {
+        // The identity's public record only: this device was enrolled by
+        // another one and never issues certificates itself.
+        return certified_without_root(identity_dir, paths, signer.group_public_key())
+            .map(|()| outcome);
+    }
     if !signer.is_single_device() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -877,6 +893,61 @@ fn ensure_collaboration_identity_in_context(
     }
 
     Ok(outcome)
+}
+
+/// A device that holds only `user_public_key`'s public record is usable when
+/// its device key carries a current certificate of that identity — the
+/// identity-keyed one, else the system-facing one — that its fleet has not
+/// revoked. Otherwise it needs a device holding the root to certify it.
+fn certified_without_root(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    user_public_key: [u8; 32],
+) -> io::Result<()> {
+    let identity_id = hex::encode(user_public_key);
+    let fleets = crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone());
+    let fleet = fleets
+        .load(&identity_id)
+        .unwrap_or_else(|_| crate::device_fleet::DeviceFleet::new(identity_id.clone()));
+    let now = crate::device_fleet::now_ns();
+    let refusal = || {
+        crate::device_fleet::root_refusal(RootOnly::CertifyDevice, &fleet.root_holder_labels(now))
+    };
+    let Ok(device) = persist::load_device_key(paths) else {
+        return Err(refusal());
+    };
+    let cert = [
+        paths.device_cert_for_user(&user_public_key),
+        paths.device_cert.clone(),
+    ]
+    .iter()
+    .filter_map(|path| persist::read_device_cert(path).ok())
+    .find(|cert| {
+        cert.user_public_key == user_public_key
+            && cert.device_public_key == device.verifying_key().to_bytes()
+    })
+    .ok_or_else(refusal)?;
+    let revocations = fleet.revocation_list();
+    tilo_user_identity::verify_chain(
+        &cert,
+        &tilo_user_identity::ChainPolicy {
+            user_public_key: &user_public_key,
+            authority: tilo_user_identity::Authority::Person,
+            revocations: &revocations,
+            now_ns: now,
+        },
+    )
+    .map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("this device's certificate no longer lets it act for the identity: {error}"),
+        )
+    })?;
+    let registry = crate::registry::IdentityRegistryStore::at(identity_dir).load_reconciled()?;
+    if registry.identities.contains_key(&identity_id) {
+        fleets.remember_certificate(&identity_id, cert)?;
+    }
+    Ok(())
 }
 
 /// Atomically elect the legacy system-facing identity owner.
@@ -1035,6 +1106,12 @@ fn issue_device_certificate(
     device_label: &str,
     class: DeviceClass,
 ) -> Result<DeviceCert, io::Error> {
+    if !crate::device_fleet::holds_root(identity) {
+        return Err(crate::device_fleet::root_refusal(
+            RootOnly::CertifyDevice,
+            &[],
+        ));
+    }
     let mut cert = DeviceCert {
         user_public_key: identity.group_public_key(),
         device_public_key,
@@ -1236,6 +1313,56 @@ mod tests {
         assert!(!identity_dir.join(PRIMARY_IDENTITY_FILE).exists());
         assert!(!paths.user_privkey.exists());
         assert!(persist::joined_device_is_ready(&paths, now_ns_u64()).unwrap());
+    }
+
+    /// A device holding only the identity's public record never falls into
+    /// issuing itself a certificate: with a current certificate of that
+    /// identity it starts as it is, otherwise it is told to be certified from
+    /// a device that holds the root.
+    #[cfg(unix)]
+    #[test]
+    fn a_public_record_never_issues_certificates() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let user = root.verifying_key().to_bytes();
+        let dir = tempfile::tempdir().unwrap();
+        let identity_dir = dir.path().join("identity");
+        let paths = IdentityPaths::under(dir.path().join("system"));
+        prepare_identity_directory(&identity_dir).unwrap();
+        let record = identity_dir.join("identity-joined.json");
+        fs::write(
+            &record,
+            runtime_identity::public_member_record("Member", [1, 2, 3], user).unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
+        let active = identity_dir.join("active");
+        fs::write(&active, "identity-joined").unwrap();
+        fs::set_permissions(&active, fs::Permissions::from_mode(0o600)).unwrap();
+
+        // No certificate yet: a clear refusal, and nothing was issued.
+        let refusal = ensure_collaboration_identity(&identity_dir, &paths).unwrap_err();
+        assert_eq!(refusal.kind(), io::ErrorKind::PermissionDenied);
+        assert!(refusal.to_string().contains("root key"), "{refusal}");
+        assert!(!paths.device_cert_for_user(&user).exists());
+
+        // A certificate that may admit devices is not one joined_device_is_ready
+        // accepts, but it still lets this device start without the root.
+        let (device, _) = persist::load_or_create_device_key(&paths).unwrap();
+        let mut cert = DeviceCert {
+            user_public_key: user,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Board B".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1_000,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        persist::write_device_cert(&paths.device_cert_for_user(&user), &cert).unwrap();
+        assert_eq!(
+            ensure_collaboration_identity(&identity_dir, &paths).unwrap(),
+            ProvisionOutcome::Existing
+        );
     }
 
     /// A device approved from a nearby device: a public-only record selected

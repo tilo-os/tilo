@@ -17,7 +17,6 @@ use collab_types::{
     ArtifactKind, Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id,
     role_permits,
 };
-use ed25519_dalek::Signer;
 use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Handshake, Request, Response};
 use tilo_clock::unix_now;
 use wire_frame::FrameError;
@@ -223,11 +222,11 @@ fn metadata(room: &RoomId) -> Response {
     if record.group_public_key != profile.user_public_key {
         return Response::Denied("identity record no longer matches the selected principal".into());
     }
-    let (device, cert) = match require_trusted_current_device(&profile) {
-        Ok(material) => material,
+    let signer = match require_trusted_current_device(&profile) {
+        Ok(signer) => signer,
         Err(error) => return Response::Denied(error.to_string()),
     };
-    let device_certificate = match serde_json::to_vec(&cert) {
+    let device_certificate = match serde_json::to_vec(signer.cert()) {
         Ok(bytes) => bytes,
         Err(error) => return Response::Error(error.to_string()),
     };
@@ -235,7 +234,7 @@ fn metadata(room: &RoomId) -> Response {
         display_name: record.display_name,
         avatar_color: record.avatar_color,
         group_public_key: record.group_public_key,
-        signing_public_key: device.verifying_key().to_bytes(),
+        signing_public_key: signer.cert().device_public_key,
         device_certificate: Some(device_certificate),
         threshold: record.threshold,
         total_shares: record.total_shares,
@@ -277,7 +276,7 @@ fn sign(
         Err(error) => return Response::Error(error.to_string()),
     };
     match require_trusted_current_device(&profile) {
-        Ok((device, _)) => Response::Signature(device.sign(message).to_bytes().to_vec()),
+        Ok(signer) => Response::Signature(signer.sign_raw(message).to_vec()),
         Err(error) => Response::Denied(error.to_string()),
     }
 }
@@ -292,12 +291,11 @@ fn sign_collaboration_join(bound_room: &RoomId, workspace_id: &str) -> Response 
         Err(error) => return Response::Error(error.to_string()),
     };
     match require_trusted_current_device(&profile) {
-        Ok((device, _)) => Response::Signature(
-            device
-                .sign(&runtime_identity::collaboration_join_signing_bytes(
+        Ok(signer) => Response::Signature(
+            signer
+                .sign_raw(&runtime_identity::collaboration_join_signing_bytes(
                     workspace_id,
                 ))
-                .to_bytes()
                 .to_vec(),
         ),
         Err(error) => Response::Denied(error.to_string()),
@@ -328,8 +326,8 @@ fn sign_collaboration_op(
         Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
         Err(error) => return Response::Error(error.to_string()),
     };
-    let (device, _) = match require_trusted_current_device(&profile) {
-        Ok(material) => material,
+    let signer = match require_trusted_current_device(&profile) {
+        Ok(signer) => signer,
         Err(error) => return Response::Denied(error.to_string()),
     };
     let op: SignedOp = match postcard::from_bytes(unsigned_op) {
@@ -340,7 +338,7 @@ fn sign_collaboration_op(
             ));
         }
     };
-    let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
+    let author = Ed25519PublicKey::from_bytes(signer.cert().device_public_key);
     let expected_artifact = document_artifact_id(app_id, workspace_id, record_id);
     let expected_attestation = document_attestation_id(app_id, workspace_id, record_id);
     let now = std::time::SystemTime::now();
@@ -398,7 +396,7 @@ fn sign_collaboration_op(
         Ok(bytes) => bytes,
         Err(error) => return Response::Error(error.to_string()),
     };
-    Response::Signature(device.sign(&signing_bytes).to_bytes().to_vec())
+    Response::Signature(signer.sign_raw(&signing_bytes).to_vec())
 }
 
 /// The route a [`Request::ChannelKeys`] names, with the launch binding it
@@ -475,7 +473,8 @@ pub fn trusted_current_device(
 ) -> io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
     let profile = crate::registry::selected_identity_profile(room)?
         .ok_or_else(|| io::Error::other("no identity is selected for this workspace"))?;
-    require_trusted_current_device(&profile)
+    let signer = require_trusted_current_device(&profile)?;
+    Ok((signer.device_key().clone(), signer.cert().clone()))
 }
 
 /// Root-key operations are available only while this machine is covered by
@@ -483,40 +482,68 @@ pub fn trusted_current_device(
 /// either key; this check makes revocation effective at the local broker too.
 fn require_trusted_current_device(
     profile: &crate::registry::IdentityProfile,
-) -> io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
+) -> io::Result<tilo_user_identity::DeviceSigner> {
     let paths = crate::provisioning::collaboration_identity_paths();
     let device = tilo_user_identity::persist::load_device_key(&paths)
         .map_err(|error| io::Error::other(error.to_string()))?;
-    let device_key = device.verifying_key().to_bytes();
     let cert_path = paths.device_cert_for_user(&profile.user_public_key);
     let cert = tilo_user_identity::persist::read_device_cert(&cert_path)
         .map_err(|error| io::Error::other(error.to_string()))?;
-    tilo_user_identity::verify_device_cert(&cert)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    if cert.user_public_key != profile.user_public_key || cert.device_public_key != device_key {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "this device certificate does not belong to the selected identity and device",
-        ));
-    }
     let fleet = crate::device_fleet::DeviceFleetStore::from_env()?.load(&profile.id)?;
-    if fleet.is_revoked(&device_key) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "this device has been revoked for the selected identity",
-        ));
-    }
+    trusted_device_signer(
+        device,
+        cert,
+        &profile.user_public_key,
+        &fleet,
+        crate::device_fleet::now_ns(),
+    )
+}
+
+/// Pair this machine's device key with its certificate for `user_public_key`
+/// while the certificate lets the device act for that person at `now_ns`:
+/// root-signed, inside its validity window, not revoked by that root, granting
+/// [`tilo_user_identity::Authority::Person`], and enrolled in `fleet`.
+///
+/// # Errors
+///
+/// Returns `PermissionDenied` naming the first failing link.
+pub(crate) fn trusted_device_signer(
+    device: ed25519_dalek::SigningKey,
+    cert: tilo_user_identity::DeviceCert,
+    user_public_key: &[u8; 32],
+    fleet: &crate::device_fleet::DeviceFleet,
+    now_ns: u64,
+) -> io::Result<tilo_user_identity::DeviceSigner> {
+    let denied = |message: String| io::Error::new(io::ErrorKind::PermissionDenied, message);
+    let signer = tilo_user_identity::DeviceSigner::new(device, cert).map_err(|error| {
+        denied(format!(
+            "this device certificate does not belong to this device: {error}"
+        ))
+    })?;
+    let revocations = fleet.revocation_list();
+    signer
+        .check(&tilo_user_identity::ChainPolicy {
+            user_public_key,
+            authority: tilo_user_identity::Authority::Person,
+            revocations: &revocations,
+            now_ns,
+        })
+        .map_err(|error| {
+            denied(format!(
+                "this device may not act for the selected identity: {error}"
+            ))
+        })?;
+    let device_key = signer.cert().device_public_key;
     if !fleet
         .certificates
         .iter()
         .any(|known| known.device_public_key == device_key)
     {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "this device is not enrolled for the selected identity",
+        return Err(denied(
+            "this device is not enrolled for the selected identity".into(),
         ));
     }
-    Ok((device, cert))
+    Ok(signer)
 }
 
 /// The public half of the identity and certified device this machine
@@ -547,12 +574,12 @@ pub fn trusted_current_device_public(room: &str) -> io::Result<LocalDeviceIdenti
                 "no identity selected for this workspace",
             )
         })?;
-    let (device, _cert) = require_trusted_current_device(&profile)?;
+    let signer = require_trusted_current_device(&profile)?;
     Ok(LocalDeviceIdentity {
         profile_id: profile.id.clone(),
         principal_id: profile.principal_id(),
         user_root_public_key: profile.user_public_key,
-        device_public_key: device.verifying_key().to_bytes(),
+        device_public_key: signer.cert().device_public_key,
     })
 }
 
@@ -1114,5 +1141,48 @@ mod tests {
             started.elapsed()
         );
         assert!(!socket.exists(), "the socket is removed with the broker");
+    }
+
+    #[test]
+    fn the_broker_lends_the_device_key_only_through_a_current_chain() {
+        use crate::certificates::tests::{NOW, certify, revoke};
+        use tilo_user_identity::{DeviceCapabilities, UserIdentity};
+
+        let (root, user) = UserIdentity::generate("Ada", 1);
+        let (other_root, _) = UserIdentity::generate("Mallory", 1);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let mut fleet = crate::device_fleet::DeviceFleet::new(hex::encode(user.public_key));
+        let joined = certify(&root, &device, DeviceCapabilities::joined(), None);
+        let attempt = |cert: &tilo_user_identity::DeviceCert,
+                       fleet: &crate::device_fleet::DeviceFleet| {
+            trusted_device_signer(device.clone(), cert.clone(), &user.public_key, fleet, NOW)
+        };
+
+        assert!(
+            attempt(&joined, &fleet)
+                .unwrap_err()
+                .to_string()
+                .contains("not enrolled")
+        );
+        fleet.certificates.push(joined.clone());
+        let signer = attempt(&joined, &fleet).unwrap();
+        assert_eq!(signer.cert(), &joined);
+
+        let expired = certify(&root, &device, DeviceCapabilities::joined(), Some(NOW));
+        assert!(attempt(&expired, &fleet).is_err());
+        let host = certify(&root, &device, DeviceCapabilities::host(), None);
+        assert!(attempt(&host, &fleet).is_err());
+        let other = certify(&other_root, &device, DeviceCapabilities::joined(), None);
+        assert!(attempt(&other, &fleet).is_err());
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+        let not_mine = certify(&root, &stranger, DeviceCapabilities::joined(), None);
+        assert!(attempt(&not_mine, &fleet).is_err());
+
+        fleet
+            .revocations
+            .push(revoke(&root, joined.device_public_key));
+        let refusal = attempt(&joined, &fleet).unwrap_err();
+        assert_eq!(refusal.kind(), io::ErrorKind::PermissionDenied);
+        assert!(refusal.to_string().contains("revoked"), "{refusal}");
     }
 }

@@ -9,12 +9,19 @@ use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, EnrollmentToken, IdentityPaths, RevocationEntry,
-    RevocationReason, decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
-    revocation_signing_digest, verify_device_cert, verify_device_cert_at, verify_enrollment_token,
-    verify_revocation_entry,
+    RevocationReason, RootOnly, decode_enrollment_token, encode_enrollment_token,
+    mint_enrollment_token, revocation_signing_digest, verify_device_cert, verify_device_cert_at,
+    verify_enrollment_token, verify_revocation_entry,
 };
 
 const FLEET_SCHEMA_VERSION: u32 = 1;
+
+/// The wall clock in nanoseconds since the Unix epoch. A clock before the
+/// epoch reads as the far future, so certificates fail closed as expired.
+#[must_use]
+pub fn now_ns() -> u64 {
+    tilo_clock::try_unix_now_ns().unwrap_or(u64::MAX)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,6 +54,27 @@ impl DeviceFleet {
             revocations: Vec::new(),
             consumed_enrollments: Vec::new(),
         }
+    }
+
+    /// The fleet's revocations as a verified list. Entries that do not verify
+    /// were refused when the fleet loaded, so none are dropped here.
+    #[must_use]
+    pub fn revocation_list(&self) -> tilo_user_identity::RevocationList {
+        let mut list = tilo_user_identity::RevocationList::new();
+        for entry in &self.revocations {
+            let _ = list.insert(entry.clone());
+        }
+        list
+    }
+
+    /// Labels of the enrolled devices that hold the identity's root (they
+    /// may admit others) and are neither revoked nor expired at `now_ns`.
+    #[must_use]
+    pub fn root_holder_labels(&self, now_ns: u64) -> Vec<String> {
+        tilo_user_identity::root_holder_labels(&self.certificates, &self.revocation_list(), now_ns)
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
     }
 
     pub fn is_revoked(&self, device_public_key: &[u8; 32]) -> bool {
@@ -160,7 +188,7 @@ impl DeviceFleetStore {
     /// Returns an error if the identity can't be loaded, if this device's
     /// certificate can't be read, or if persisting the updated fleet fails.
     pub fn register_current_device(&self, identity_id: &str) -> io::Result<DeviceFleet> {
-        let (_, profile) = self.identity(identity_id)?;
+        let profile = self.profile(identity_id)?;
         let cert_path = self
             .identity_paths
             .device_cert_for_user(&profile.user_public_key);
@@ -183,7 +211,7 @@ impl DeviceFleetStore {
         issued_at_ns: u64,
         expires_at_ns: u64,
     ) -> io::Result<String> {
-        let (_, profile) = self.identity(identity_id)?;
+        let profile = self.profile(identity_id)?;
         let device = tilo_user_identity::persist::load_device_key(&self.identity_paths)
             .map_err(|error| io::Error::other(error.to_string()))?;
         let cert_path = self
@@ -235,7 +263,7 @@ impl DeviceFleetStore {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
         verify_enrollment_token(&token, now_ns)
             .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error.to_string()))?;
-        let (root, profile) = self.identity(identity_id)?;
+        let (root, profile) = self.root_identity(identity_id, RootOnly::AdmitDevice, now_ns)?;
         // Serialize nonce consumption with certificate publication. Atomic file
         // replacement alone prevents torn JSON, but without this directory
         // lock two concurrent redeemers could both load the nonce as unused.
@@ -294,7 +322,8 @@ impl DeviceFleetStore {
         reason: RevocationReason,
         revoked_at_ns: u64,
     ) -> io::Result<RevocationEntry> {
-        let (root, profile) = self.identity(identity_id)?;
+        let (root, profile) =
+            self.root_identity(identity_id, RootOnly::RevokeDevice, revoked_at_ns)?;
         let _fleet_lock = self.lock_fleets()?;
         let mut fleet = self.load(identity_id)?;
         if !fleet
@@ -427,13 +456,9 @@ impl DeviceFleetStore {
         Ok(fleet)
     }
 
-    fn identity(
-        &self,
-        identity_id: &str,
-    ) -> io::Result<(
-        runtime_identity::SigningIdentity,
-        crate::registry::IdentityProfile,
-    )> {
+    /// The registered profile of `identity_id`, checked against its record's
+    /// public fields. Never unlocks the root secret.
+    fn profile(&self, identity_id: &str) -> io::Result<crate::registry::IdentityProfile> {
         let store = crate::registry::IdentityRegistryStore::at(&self.identity_dir);
         let registry = store.load_reconciled()?;
         let profile = registry
@@ -441,6 +466,30 @@ impl DeviceFleetStore {
             .get(identity_id)
             .cloned()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "identity is not registered"))?;
+        let metadata = runtime_identity::load_metadata_from_path(&profile.record_path)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        if metadata.group_public_key != profile.user_public_key {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "identity record does not match its registry profile",
+            ));
+        }
+        Ok(profile)
+    }
+
+    /// The identity's root signer for `operation`. A device that holds only
+    /// the identity's public record refuses with a message naming the
+    /// devices that hold the root.
+    fn root_identity(
+        &self,
+        identity_id: &str,
+        operation: RootOnly,
+        now_ns: u64,
+    ) -> io::Result<(
+        runtime_identity::SigningIdentity,
+        crate::registry::IdentityProfile,
+    )> {
+        let profile = self.profile(identity_id)?;
         let identity = runtime_identity::load_from_path(profile.record_path.clone())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
         if identity.group_public_key() != profile.user_public_key {
@@ -448,6 +497,13 @@ impl DeviceFleetStore {
                 io::ErrorKind::InvalidData,
                 "identity record does not match its registry profile",
             ));
+        }
+        if !holds_root(&identity) {
+            let labels = self
+                .load(identity_id)
+                .map(|fleet| fleet.root_holder_labels(now_ns))
+                .unwrap_or_default();
+            return Err(root_refusal(operation, &labels));
         }
         Ok((identity, profile))
     }
@@ -470,6 +526,23 @@ impl DeviceFleetStore {
             .join("fleets")
             .join(format!("{identity_id}.json"))
     }
+}
+
+/// Whether `identity` can sign with the identity's root key on this device.
+/// A device enrolled by another one holds only the public record.
+#[must_use]
+pub fn holds_root(identity: &runtime_identity::SigningIdentity) -> bool {
+    identity.is_single_device()
+}
+
+/// The refusal for a root-only `operation` on a device without the root,
+/// naming the devices that hold it.
+#[must_use]
+pub fn root_refusal(operation: RootOnly, root_holders: &[String]) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        operation.refusal(root_holders.iter().map(String::as_str)),
+    )
 }
 
 fn decode_hex_32(value: &str) -> io::Result<[u8; 32]> {
@@ -585,7 +658,9 @@ mod tests {
                     issued_at_ns + 5_000,
                 )
                 .expect("second token");
-            let (root_signer, _) = store.identity(&identity_id).expect("root signer");
+            let (root_signer, _) = store
+                .root_identity(&identity_id, RootOnly::RevokeDevice, issued_at_ns)
+                .expect("root signer");
             let mut fleet = store.load(&identity_id).expect("fleet");
             let issuer = fleet
                 .certificates
