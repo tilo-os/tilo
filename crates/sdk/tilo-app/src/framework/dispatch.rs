@@ -143,6 +143,17 @@ impl<R: Resource> Dispatcher<R> {
         }
     }
 
+    /// A dispatcher for a surface a test builds outside any host, editing as
+    /// `me`: what the surface applies now ([`Self::apply_now`]) goes into the
+    /// document the test hands it, as under a host. Queued edits
+    /// ([`Self::apply`], [`Self::invoke`]) wait for a host that never takes
+    /// them; a test that needs those runs the app
+    /// ([`TestApp`](super::testing::HeadlessApp)).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn detached(app_id: &'static str, me: &str) -> Self {
+        Self::new(app_id, R::KIND, false, Some(me))
+    }
+
     /// Who edits through this dispatcher: the participant this view is
     /// for, the same id an action they invoke reads as its author
     /// ([`ActionCx::author`](tilo_resource::ActionCx::author)). `None` in a
