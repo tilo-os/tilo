@@ -278,7 +278,7 @@ fn adopt_portable_markdown_assets(
     Ok(output)
 }
 
-fn adopt_canonical_markdown_assets(
+pub(crate) fn adopt_canonical_markdown_assets(
     markdown_path: &std::path::Path,
     markdown: &str,
     scope: Option<&ResourceEffectScope>,
@@ -599,7 +599,6 @@ pub struct NotesApp {
     legacy_read_blocked: Option<PageId>,
     /// Last framework-owned durability projection; querying it never touches the record.
     record_save_status: ui::record::RecordSaveStatus,
-    pub(crate) workspace_lock: Option<advisory_lock::FileLock>,
     /// A host-portal file choice in flight. File access never escapes the
     /// workspace sandbox without an explicit portal grant.
     markdown_transfer: Option<(MarkdownTransfer, ui::portal::PortalChannel)>,
@@ -734,6 +733,10 @@ pub struct NotesApp {
     prepared_local_focus: Option<crate::local_view::PreparedFocus>,
     // The first measured width resolves the saved drawer and Sidebar intent once.
     pending_responsive_view: Option<(bool, bool)>,
+    /// Whether the record's changes are on disk, as the framework reports it.
+    save_status: Option<ui::LocalState<ui::record::RecordSaveStatus>>,
+    /// A note to open once the notebook holds it.
+    open_when_present: Option<PageId>,
 }
 
 /// Compatibility storage for the old standalone entry point and disk fixtures.
@@ -884,20 +887,6 @@ impl NotesApp {
         Ok(app)
     }
 
-    /// Configure local attachments without creating a legacy document writer.
-    pub(crate) fn configure_workspace_assets(
-        &mut self,
-        root: &std::path::Path,
-    ) -> Result<(), String> {
-        storage::ensure_layout(root).map_err(|error| error.to_string())?;
-        self.main.set_image_store(Some(canonical_image_store(
-            &self.canonical_assets,
-            Some(root),
-        )));
-        self.workspace_asset_root = Some(root.to_path_buf());
-        Ok(())
-    }
-
     fn project_workspace(doc: &AutoCommit, selected: Option<PageId>) -> Result<Workspace, String> {
         let mut workspace = crate::notebook::project(doc, selected)?;
         if workspace.selected().is_none() {
@@ -949,7 +938,6 @@ impl NotesApp {
             workspace_asset_root,
             legacy_read_blocked: None,
             record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
-            workspace_lock: None,
             markdown_transfer: None,
             markdown_job: ui::LatestRequest::new(),
             markdown_invocation: None,
@@ -999,6 +987,8 @@ impl NotesApp {
             motion_reduced: false,
             prepared_local_focus: None,
             pending_responsive_view: None,
+            save_status: None,
+            open_when_present: None,
         };
         app.main.use_local_actions(app.actions.local());
         app.refresh_link_pages();
@@ -1401,7 +1391,11 @@ impl NotesApp {
         target: PageId,
     ) -> Vec<actions::NoteBacklinkResource> {
         if self.legacy_fixture_storage.is_none() {
-            return actions::canonical_backlinks(doc, self.workspace.pages(), target);
+            return actions::canonical_backlinks(
+                &actions::read_bodies(doc, self.workspace.pages()),
+                self.workspace.pages(),
+                target,
+            );
         }
         let title_ids = self
             .workspace
@@ -1571,46 +1565,6 @@ impl NotesApp {
     pub fn spawn_default() -> Result<Self, String> {
         let root = storage::default_root()?.unwrap_or_else(|| PathBuf::from("./notes"));
         Self::spawn(root)
-    }
-
-    /// Import an explicitly supplied local Markdown launch target as a new
-    /// notebook page. Like the file-picker import, this never edits the source.
-    ///
-    /// # Errors
-    /// Rejects a second pending target, non-local URLs, unreadable files, and
-    /// input exceeding the same UTF-8/size/block limits as picker imports.
-    pub fn queue_launch_markdown(&mut self, target: &str) -> Result<(), String> {
-        if self.pending_markdown_source.is_some()
-            || self.markdown_transfer.is_some()
-            || self.markdown_invocation.is_some()
-        {
-            return Err("A file transfer is already pending".into());
-        }
-        let path = if target.to_ascii_lowercase().starts_with("file:") {
-            let url =
-                url::Url::parse(target).map_err(|error| format!("Invalid file URL: {error}"))?;
-            ui::portal::to_local_path(&url).ok_or_else(|| {
-                match tilo_files::availability(tilo_files::Feature::NativePaths) {
-                    tilo_files::Availability::Unsupported(reason) => {
-                        format!("Markdown launch does not support local file URLs here: {reason}")
-                    }
-                    _ => "Markdown launch requires a local file URL".to_string(),
-                }
-            })?
-        } else if target.contains("://") {
-            return Err("Markdown launch requires a local file".into());
-        } else {
-            PathBuf::from(target)
-        };
-        let body = read_bounded_markdown(&path)?;
-        self.stage_pending_import(PendingMarkdownImport {
-            path,
-            body,
-            assets: None,
-        })?;
-        self.import_control_emitted = false;
-        self.self_dirty = true;
-        Ok(())
     }
 
     /// Reconcile our in-memory page tree with the shared Automerge
@@ -1987,7 +1941,10 @@ impl NotesApp {
 
     /// Empty surface for the framework host; [`Self::adopt_resource_state`]
     /// installs the live workspace before the first frame.
-    pub(crate) fn empty_surface(author: &ui::permissions::UserId) -> Self {
+    pub(crate) fn empty_surface(
+        author: &ui::permissions::UserId,
+        save_status: ui::LocalState<ui::record::RecordSaveStatus>,
+    ) -> Self {
         let mut sidebar = PageSidebar::new();
         sidebar.sync_from_workspace(&Workspace::default());
         let mut main = MainPanel::new();
@@ -1995,7 +1952,49 @@ impl NotesApp {
         let mut app = Self::build_widget(Workspace::default(), sidebar, main, None);
         app.seeded = true;
         app.adopted = true;
+        app.follow_save_status(save_status);
         app
+    }
+
+    /// Show whether the record's changes are on disk as `status` reports it:
+    /// the framework's view of the record writer.
+    pub fn follow_save_status(&mut self, status: ui::LocalState<ui::record::RecordSaveStatus>) {
+        self.save_status = Some(status);
+    }
+
+    /// Open `page` as soon as the notebook holds it: the note a launch
+    /// imports, whose action applies after the window is built.
+    pub(crate) fn open_when_present(&mut self, page: PageId) {
+        self.open_when_present = Some(page);
+    }
+
+    /// Stage a screenshot scenario: open the note it shows, with the notes
+    /// above it expanded, and the save state it shows.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        let shown = crate::scenario::shown_note(scenario).and_then(|title| {
+            self.workspace
+                .pages()
+                .iter()
+                .find(|page| page.title == title)
+                .map(|page| page.id)
+        });
+        if let Some(page) = shown {
+            let mut ancestors = Vec::new();
+            let mut current = page;
+            while let Some(parent) = self.workspace.get(current).and_then(|meta| meta.parent) {
+                ancestors.push(parent);
+                current = parent;
+            }
+            self.sidebar
+                .restore_expanded_pages(&ancestors, &self.workspace);
+            self.navigate_to(page);
+        }
+        match scenario {
+            Some("status") => self.set_save_status_for_shots(SaveStatus::Saved),
+            Some("saving") => self.set_save_status_for_shots(SaveStatus::Saving),
+            Some("save_error") => self.set_save_status_for_shots(SaveStatus::Failed),
+            _ => {}
+        }
     }
 
     /// Present the framework's workspace projection.
@@ -2012,6 +2011,12 @@ impl NotesApp {
         self.workspace.set_selected(selected);
         if self.bound_page != selected {
             self.bound_page = None;
+        }
+        if let Some(page) = self.open_when_present
+            && self.workspace.get(page).is_some()
+        {
+            self.open_when_present = None;
+            self.navigate_to(page);
         }
         self.sidebar.sync_from_workspace(&self.workspace);
         if let Some(page) = selected.and_then(|id| self.workspace.get(id)) {
@@ -2185,88 +2190,12 @@ impl NotesApp {
         Ok(())
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one flat dispatch over every canonical Notes event kind"
-    )]
     fn apply_canonical_event(
         &mut self,
         doc: &mut AutoCommit,
         event: OutEvent,
     ) -> Result<(), String> {
         self.reconcile_canonical(doc)?;
-        // Direct title/create affordances use the current published contract,
-        // just like named actions. Check before any optimistic metadata edit.
-        let resource_action = match &event {
-            OutEvent::Rename { id, .. } => Some((actions::page_resource_id(*id), "rename")),
-            OutEvent::CreateChild { parent: Some(id) } => {
-                Some((actions::page_resource_id(*id), "new-child"))
-            }
-            OutEvent::CreateChild { parent: None } => Some(("notes.notebook".into(), "new-page")),
-            OutEvent::Delete(id) => Some((actions::page_resource_id(*id), "delete")),
-            OutEvent::Duplicate(id) => Some((actions::page_resource_id(*id), "duplicate")),
-            OutEvent::Reparent {
-                id,
-                new_parent,
-                before,
-            } => {
-                let published_action = (|| {
-                    let current = self.workspace.get(*id)?;
-                    if current.parent != *new_parent {
-                        let siblings = self.workspace.children_of(current.parent);
-                        let index = siblings.iter().position(|page| page.id == *id)?;
-                        if index
-                            .checked_sub(1)
-                            .and_then(|previous| siblings.get(previous))
-                            .is_some_and(|page| Some(page.id) == *new_parent)
-                            && before.is_none()
-                        {
-                            return Some("indent");
-                        }
-                        let parent = self.workspace.get(current.parent?)?;
-                        let parent_siblings = self.workspace.children_of(parent.parent);
-                        let expected_before = parent_siblings
-                            .iter()
-                            .skip_while(|page| page.id != parent.id)
-                            .nth(1)
-                            .map(|page| page.id);
-                        if *new_parent == parent.parent && *before == expected_before {
-                            return Some("outdent");
-                        }
-                        return None;
-                    }
-
-                    let siblings = self.workspace.children_of(current.parent);
-                    let old_index = siblings.iter().position(|page| page.id == *id)?;
-                    let without_current = siblings
-                        .into_iter()
-                        .filter(|page| page.id != *id)
-                        .collect::<Vec<_>>();
-                    let target_index = before
-                        .and_then(|before| {
-                            without_current.iter().position(|page| page.id == before)
-                        })
-                        .unwrap_or(without_current.len());
-                    if target_index.checked_add(1) == Some(old_index) {
-                        Some("move-up")
-                    } else if target_index == old_index.saturating_add(1) {
-                        Some("move-down")
-                    } else {
-                        None
-                    }
-                })()
-                // Arbitrary drag reparenting has no published named contract.
-                // Unbound legacy hosts allow it; bound custody fails closed.
-                .unwrap_or("direct-reparent");
-                Some((actions::page_resource_id(*id), published_action))
-            }
-            _ => None,
-        };
-        if let Some((resource_id, action_id)) = resource_action {
-            let resource = ui::resources::resource(self, doc, &resource_id)
-                .ok_or("page action resource no longer exists")?;
-            ui::ActionHost::authorize_resource_action(doc, &resource, action_id)?;
-        }
         let before = self.meta_map();
         let tree_move = matches!(event, OutEvent::Reparent { .. });
         match event {
@@ -3195,36 +3124,15 @@ impl NotesApp {
         } else {
             adopt_canonical_markdown_assets(path, body, effect.as_ref())?
         };
-        let mut workspace = if self.legacy_fixture_storage.is_some() {
-            let mut workspace = self.workspace.clone();
-            workspace.data.pages = NotesDoc::list_pages(doc);
-            workspace
-        } else {
-            Self::project_workspace(doc, self.workspace.selected())?
-        };
-        let page = workspace.create_page(None);
+        let page = PageId::new_v4();
         let title = path
             .file_stem()
             .and_then(|stem| stem.to_str())
             .filter(|title| !title.trim().is_empty())
             .unwrap_or("Imported note");
-        workspace.rename(page, title);
-        workspace.set_selected(Some(page));
-        let meta = workspace.get(page).ok_or("Imported page is unavailable")?;
-        let blocks = MainPanel::seed_blocks(&body, |title| {
-            workspace
-                .pages()
-                .iter()
-                .find(|page| page.title == title)
-                .map(|page| page.id)
-        });
-        let action = NotesAction::ImportPage {
-            page: actions::PageData::from_meta(meta),
-            blocks: blocks.iter().map(actions::PageBlock::of).collect(),
-            assets,
-        };
+        let action = actions::import_markdown_action(page, title, &body, assets);
         self.dispatch_transfer_action(doc, &action, scope)?;
-        self.workspace = workspace;
+        self.workspace = self.workspace_with_import(doc, page)?;
         self.sidebar.sync_from_workspace(&self.workspace);
         if let Some(legacy) = &self.legacy_fixture_storage {
             legacy.page_saver.request(page, body);
@@ -3252,25 +3160,10 @@ impl NotesApp {
             title
         };
         let body = crate::markdown::strip_matching_title_heading(body, title);
-        let mut workspace = Self::project_workspace(doc, self.workspace.selected())?;
-        let page = workspace.create_page(None);
-        workspace.rename(page, title);
-        workspace.set_selected(Some(page));
-        let meta = workspace.get(page).ok_or("Imported page is unavailable")?;
-        let blocks = MainPanel::seed_blocks(&body, |target| {
-            workspace
-                .pages()
-                .iter()
-                .find(|candidate| candidate.title == target)
-                .map(|candidate| candidate.id)
-        });
-        let action = NotesAction::ImportPage {
-            page: actions::PageData::from_meta(meta),
-            blocks: blocks.iter().map(actions::PageBlock::of).collect(),
-            assets: Vec::new(),
-        };
+        let page = PageId::new_v4();
+        let action = actions::import_markdown_action(page, title, &body, Vec::new());
         self.dispatch_canonical_action(doc, &action)?;
-        self.workspace = workspace;
+        self.workspace = self.workspace_with_import(doc, page)?;
         self.sidebar.sync_from_workspace(&self.workspace);
         self.bound_page = None;
         self.self_dirty = true;
@@ -3279,6 +3172,17 @@ impl NotesApp {
             ui::widget::toast::ToastKind::Success,
         );
         Ok(page)
+    }
+
+    /// The notebook after an import added `page`, which is opened.
+    fn workspace_with_import(&self, doc: &AutoCommit, page: PageId) -> Result<Workspace, String> {
+        if self.legacy_fixture_storage.is_none() {
+            return Self::project_workspace(doc, Some(page));
+        }
+        let mut workspace = self.workspace.clone();
+        workspace.data.pages = NotesDoc::list_pages(doc);
+        workspace.set_selected(Some(page));
+        Ok(workspace)
     }
 
     fn stage_pending_import(&mut self, pending: PendingMarkdownImport) -> Result<(), String> {
@@ -4039,7 +3943,7 @@ fn seed_welcome(root: &std::path::Path, workspace: &mut Workspace) {
     }
 }
 
-impl ui::widget::AppWidget for NotesApp {
+impl ui::application_view::ApplicationViewState for NotesApp {
     fn capture_application_view(
         &self,
     ) -> Result<Option<ui::application_view::ApplicationLocalView>, ui::view::ThawError> {
@@ -4184,23 +4088,6 @@ impl ui::widget::AppWidget for NotesApp {
         }
         Ok(())
     }
-
-    fn app_kind(&self) -> ui::widget::AppKind {
-        ui::widget::AppKind::Editor
-    }
-    fn app_title(&self) -> &'static str {
-        "Notes"
-    }
-    fn app_icon(&self) -> ui::widget::IconDescriptor {
-        ui::widget::IconDescriptor::Named("notes".into())
-    }
-    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-        None
-    }
-    fn record_save_status(&mut self, status: ui::record::RecordSaveStatus) {
-        self.record_save_status = status;
-        self.refresh_status();
-    }
 }
 
 impl NotesApp {
@@ -4286,7 +4173,8 @@ impl Widget for NotesApp {
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource,
         dyn ui::presence::capability::PublishesPresence,
-        dyn ui::component_lifecycle::ComponentLifecycle
+        dyn ui::component_lifecycle::ComponentLifecycle,
+        dyn ui::application_view::ApplicationViewState
     );
 
     fn start_operation(
@@ -4410,6 +4298,12 @@ impl Widget for NotesApp {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
+        if let Some(saved) = self.save_status.as_ref().map(ui::LocalState::get)
+            && saved != self.record_save_status
+        {
+            self.record_save_status = saved;
+            self.refresh_status();
+        }
         self.refresh_canonical_assets(state);
         if self.legacy_fixture_storage.is_none() {
             self.offer_inline_asset_move(state);
@@ -5026,8 +4920,8 @@ impl ui::resources::PublishesResources for NotesApp {
         if id == "notes.pending-import" {
             return self.pending_import_resource();
         }
-        // The framework root already owns the notebook door.
-        if self.actions.is_hosted() && id == "notes.notebook" {
+        // The framework root publishes the notebook and resolves its children.
+        if self.actions.is_hosted() {
             return None;
         }
         self.publish_resource(doc, id)
@@ -5794,214 +5688,6 @@ mod tests {
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn launch_markdown_adopts_valid_sources_once_with_host_admission() {
-        eprintln!("phase launch_markdown_preserves_existing_notebook_source_and_restart");
-        {
-            for as_url in [false, true] {
-                let tmp = TempDir::new().unwrap();
-                let workspace_root = tmp.path().join("notebook");
-                let mut workspace = Workspace::default();
-                let existing = workspace.create_page(None);
-                workspace.rename(existing, "Existing note");
-                workspace.set_selected(Some(existing));
-                storage::save_workspace(&workspace_root, &workspace).unwrap();
-                storage::write_page_body(&workspace_root, existing, "Existing body").unwrap();
-                let source = tmp.path().join("Überblick notes.markdown");
-                let original = "# Imported heading\n\n**Keep these bytes.**\n";
-                std::fs::write(&source, original).unwrap();
-                let target = if as_url {
-                    url::Url::from_file_path(&source).unwrap().to_string()
-                } else {
-                    source.to_str().unwrap().to_owned()
-                };
-                let mut app = NotesApp::spawn(workspace_root.clone()).unwrap();
-                app.queue_launch_markdown(&target).unwrap();
-                assert!(app.needs_animation_frame());
-                let mut state = ui::State::new();
-                app.sync(&mut state.doc, &state.root);
-                assert_eq!(app.workspace.pages().len(), 1, "wait for normal seed/adopt");
-                assert!(app.pending_markdown_source.is_some());
-                app.bypass_seed_grace_for_test();
-                app.sync(&mut state.doc, &state.root);
-                admit_pending_import(&mut app, &mut state);
-                assert_eq!(app.workspace.pages().len(), 2);
-                assert_eq!(
-                    NotesDoc::page_block_snapshots(&state.doc, existing)[0].1,
-                    "Existing body"
-                );
-                let imported = app.workspace.selected().unwrap();
-                assert_ne!(imported, existing);
-                assert_eq!(
-                    app.workspace.get(imported).unwrap().title,
-                    "Überblick notes"
-                );
-                assert_eq!(
-                    NotesDoc::page_block_snapshots(&state.doc, imported)[0].1,
-                    "Imported heading"
-                );
-                assert!(
-                    ui::undo::take_committed_action(&mut app).is_some(),
-                    "import uses canonical action/history path"
-                );
-                app.flush_saves();
-                drop(app);
-                let restored = NotesApp::spawn(workspace_root.clone()).unwrap();
-                assert_eq!(restored.workspace.pages().len(), 2);
-                assert_eq!(restored.workspace.selected(), Some(imported));
-                assert!(
-                    restored
-                        .editor_text_for_test()
-                        .contains("Keep these bytes.")
-                );
-                assert_eq!(
-                    storage::read_page_body(&workspace_root, existing).unwrap(),
-                    "Existing body"
-                );
-                assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
-            }
-        }
-
-        eprintln!("phase launch_markdown_rejects_invalid_sources_without_changing_notebook");
-        {
-            let tmp = TempDir::new().unwrap();
-            let mut app = NotesApp::spawn(tmp.path().join("notebook")).unwrap();
-            let source = tmp.path().join("invalid.md");
-            std::fs::write(&source, [0xff]).unwrap();
-            for target in [
-                "https://example.com/note.md",
-                "file:///%ZZ",
-                source.to_str().unwrap(),
-            ] {
-                assert!(app.queue_launch_markdown(target).is_err());
-                assert!(app.pending_markdown_source.is_none());
-                assert!(app.workspace.pages().is_empty());
-            }
-            std::fs::write(&source, "Valid").unwrap();
-            app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
-            assert!(app.queue_launch_markdown(source.to_str().unwrap()).is_err());
-        }
-
-        eprintln!("phase launch_markdown_host_admission_refuses_readonly_and_revoked_write");
-        {
-            for initially_writable in [false, true] {
-                let (mut app, mut state, tmp, existing) = app_seeded_into_doc();
-                let source = tmp.path().join("Private source.md");
-                let original = "Do not publish without Write";
-                std::fs::write(&source, original).unwrap();
-                app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
-                state.doc.commit();
-                let before = state.doc.get_heads();
-                let mut harness = ui::headless::FrameHarness::new(state, Box::new(app), (800, 600));
-                if initially_writable {
-                    assert!(
-                        harness
-                            .resources()
-                            .iter()
-                            .any(|resource| resource.id.0 == "notes.pending-import")
-                    );
-                }
-                harness.set_permission_ctx(PermissionContext::from_capabilities(
-                    ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), "reader"),
-                    vec![],
-                ));
-                harness.send(&WindowEvent::RedrawRequested);
-                assert_eq!(harness.state_mut().doc.get_heads(), before);
-                assert_eq!(
-                    NotesDoc::list_pages(&harness.state_mut().doc)
-                        .iter()
-                        .map(|page| page.id)
-                        .collect::<Vec<_>>(),
-                    vec![existing]
-                );
-                assert!(
-                    !harness
-                        .resources()
-                        .iter()
-                        .any(|resource| resource.id.0 == "notes.pending-import"),
-                    "refused intent clears pending import instead of retrying forever"
-                );
-                harness.set_permission_ctx(PermissionContext::permissive());
-                harness.send(&WindowEvent::RedrawRequested);
-                assert_eq!(
-                    harness.state_mut().doc.get_heads(),
-                    before,
-                    "restoring Write must not silently retry a refused import"
-                );
-                assert_eq!(std::fs::read_to_string(&source).unwrap(), original);
-            }
-        }
-
-        eprintln!("phase launch_markdown_host_admission_commits_complete_page_once");
-        {
-            let (mut app, mut state, tmp, _) = app_seeded_into_doc();
-            let source = tmp.path().join("Allowed import.md");
-            std::fs::write(&source, "# Complete page\n\nBody").unwrap();
-            app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
-            state.doc.commit();
-            let mut harness = ui::headless::FrameHarness::new(state, Box::new(app), (800, 600));
-            harness.send(&WindowEvent::RedrawRequested);
-            let pages = NotesDoc::list_pages(&harness.state_mut().doc);
-            assert_eq!(pages.len(), 2);
-            let imported = pages
-                .iter()
-                .find(|page| page.title == "Allowed import")
-                .unwrap();
-            assert_eq!(
-                NotesDoc::page_block_snapshots(&harness.state_mut().doc, imported.id)
-                    .iter()
-                    .map(|(_, text)| text.as_str())
-                    .collect::<Vec<_>>(),
-                vec!["Complete page", "Body"]
-            );
-            harness.send(&WindowEvent::RedrawRequested);
-            assert_eq!(NotesDoc::list_pages(&harness.state_mut().doc).len(), 2);
-        }
-
-        eprintln!("phase launch_markdown_waits_for_peer_adoption_before_adding_its_page");
-        {
-            let tmp = TempDir::new().unwrap();
-            let mut app = NotesApp::spawn_with_starter_page(tmp.path().join("notebook")).unwrap();
-            let local_page = app.workspace.selected().unwrap();
-            let source = tmp.path().join("Launch.md");
-            std::fs::write(&source, "Explicit import").unwrap();
-            app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
-            let mut state = ui::State::new();
-            app.sync(&mut state.doc, &state.root);
-            assert!(NotesDoc::list_pages(&state.doc).is_empty());
-
-            let mut peer = Workspace::default();
-            let peer_page = peer.create_page(None);
-            peer.rename(peer_page, "Peer note");
-            NotesDoc::upsert_page_meta(&mut state.doc, peer.get(peer_page).unwrap());
-            NotesDoc::fill_page_body(
-                &mut state.doc,
-                peer_page,
-                &MainPanel::seed_blocks("Peer contents", |_| None),
-            )
-            .unwrap();
-            app.sync(&mut state.doc, &state.root);
-            admit_pending_import(&mut app, &mut state);
-            assert_eq!(NotesDoc::list_pages(&state.doc).len(), 2);
-            assert!(
-                app.workspace.get(local_page).is_none(),
-                "never publish pre-adoption local pages"
-            );
-            assert_eq!(
-                NotesDoc::page_block_snapshots(&state.doc, peer_page)[0].1,
-                "Peer contents"
-            );
-            let imported = app.workspace.selected().unwrap();
-            assert_ne!(imported, peer_page);
-            assert_eq!(
-                NotesDoc::page_block_snapshots(&state.doc, imported)[0].1,
-                "Explicit import"
-            );
-            assert!(app.pending_markdown_source.is_none());
-        }
-    }
-
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-    #[test]
     fn unreadable_notes_refuse_replacement_until_repaired() {
         eprintln!("phase unreadable_note_refuses_startup_without_replacing_original_bytes");
         {
@@ -6158,7 +5844,12 @@ mod tests {
             crate::notebook::initialize_empty(&mut doc).unwrap();
             let author = ui::permissions::UserId("canonical-assets-test".into());
             let mut app = NotesApp::from_document(&doc, &author).unwrap();
-            app.configure_workspace_assets(workspace.path()).unwrap();
+            storage::ensure_layout(workspace.path()).unwrap();
+            app.main.set_image_store(Some(canonical_image_store(
+                &app.canonical_assets,
+                Some(workspace.path()),
+            )));
+            app.workspace_asset_root = Some(workspace.path().to_path_buf());
             let legacy_reference = import_image_asset(workspace.path(), &image).unwrap();
             let legacy_path = workspace
                 .path()
@@ -7292,39 +6983,6 @@ mod tests {
                 "Receipt body"
             );
             assert_eq!(std::fs::read_to_string(source).unwrap(), "# Receipt body");
-        }
-
-        eprintln!("phase markdown_receipt_launch_and_picker_cannot_overlap");
-        {
-            let (mut app, mut state, temp, page) = app_seeded_into_doc();
-            let source = temp.path().join("Launch.md");
-            std::fs::write(&source, "Launch body").unwrap();
-            app.queue_launch_markdown(source.to_str().unwrap()).unwrap();
-            // A recording host keeps any accidental chooser start hermetic.
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
-            assert!(app.request_markdown_export(&state.doc, page).is_err());
-            assert!(app.request_image_insert(page).is_err());
-            assert!(recorder.pick_requests().is_empty());
-            assert!(app.markdown_invocation.is_none());
-            assert!(app.markdown_transfer.is_none());
-            admit_pending_import(&mut app, &mut state);
-            assert!(
-                app.markdown_results.is_empty(),
-                "CLI import must not complete a different invocation"
-            );
-            let invocation = start_markdown_receipt(
-                &mut app,
-                &mut state,
-                Some(page),
-                ui::portal::PortalOutcome::Cancelled,
-            );
-            assert!(app.queue_launch_markdown(source.to_str().unwrap()).is_err());
-            app.sync(&mut state.doc, &state.root);
-            assert!(matches!(
-                take_markdown_receipt(&mut app, &state, invocation),
-                tilo_actions::InvocationUpdate::Cancelled { .. }
-            ));
         }
 
         eprintln!("phase markdown_receipt_export_reports_actual_write_result");

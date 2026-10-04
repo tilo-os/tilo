@@ -67,6 +67,8 @@ pub struct WorkspaceData {
 #[derive(Clone, Debug, Default)]
 pub struct Workspace {
     pub data: WorkspaceData,
+    /// What every note says, when the workspace was read from a notebook.
+    pub bodies: std::sync::Arc<crate::actions::Bodies>,
 }
 
 impl Workspace {
