@@ -79,12 +79,41 @@ impl ResourceApp for ImageEditorShell {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        crate::SHOT_SCENARIOS
+        SCENARIOS
+    }
+
+    /// Narrow scenarios are a phone-sized window.
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        name.starts_with("narrow").then_some((420, 820))
+    }
+
+    /// Every scenario but `empty` opens the bundled sample through the same
+    /// actions an agent would use; the editor stages the view state
+    /// ([`ResourceSurface::stage`]).
+    fn scenario(name: Option<&str>) -> Vec<ui::tilo_resource::Invoke<ImageEditor>> {
+        let mut actions = match name {
+            Some("empty") => Vec::new(),
+            _ => sample_actions(),
+        };
+        if name == Some("long-stack") {
+            actions.extend(long_stack_actions());
+        }
+        if name == Some("rotate") {
+            actions.push(ImageEditorAction::Add(crate::actions::AddAdjustment {
+                id: "rotate-sample".into(),
+                title: crate::i18n::t("image-editor-rotate"),
+                operation: crate::model::Operation::Rotate { quarter_turns: 1 },
+            }));
+        }
+        actions
+            .iter()
+            .filter_map(|action| ui::tilo_resource::Invoke::apply(action).ok())
+            .collect()
     }
 
     fn label(state: &Project) -> String {
         if state.name.is_empty() {
-            "Image Editor".into()
+            crate::i18n::t("image-editor-untitled")
         } else {
             state.name.clone()
         }
@@ -98,6 +127,10 @@ impl ResourceSurface<ImageEditor> for ImageEditorApp {
 
     fn attach(&mut self, cx: SurfaceCx<ImageEditor>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario.unwrap_or("editor"));
     }
 }
 
@@ -186,25 +219,133 @@ pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<ImageEditorShell>()
 }
 
-pub fn standalone_launch() -> bool {
+/// Whether the command line names an image to open: `--open PATH` or an
+/// existing file given as a positional argument.
+pub fn opens_a_file() -> bool {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--data-dir" => {
+            "--open" => return true,
+            flag if flag.starts_with("--open=") => return true,
+            "--data-dir" | "--shots" | "--scenario" | "--viewport" | "--theme" | "--text-scale" => {
                 let _ = args.next();
             }
-            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return true,
-            "--open" | "--size" => {
-                let _ = args.next();
-                return true;
-            }
-            flag if flag.starts_with("--shots=") || flag.starts_with("--open=") => return true,
-            file if !file.starts_with('-') => return true,
+            flag if flag.starts_with('-') => {}
+            file if std::path::Path::new(file).exists() => return true,
             _ => {}
         }
     }
     false
 }
+
+/// The editor opened on one image file, named by `--open` or as the only
+/// positional argument.
+pub fn file_launch_spec() -> ui::launch::LaunchSpec {
+    ui::launch::LaunchSpec::new("so.tilo.image-editor", crate::app_root)
+        .open_state_with_args(open_file_state)
+        .max_positionals(1)
+        .allowed_live_options(&["--open"])
+        .configure_app(|app| register(app.action_registry_mut()))
+}
+
+fn open_file_state(
+    id: &'static str,
+    args: &ui::launch::LaunchArgs,
+) -> (ui::State, ui::persist::DocWriter) {
+    let (mut state, save) = ui::persist::open(id);
+    ProjectDoc::seed(&mut state.doc);
+    if let Some(path) = args
+        .value("--open")
+        .or_else(|| args.positionals().first().map(String::as_str))
+    {
+        let name = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map_or_else(|| crate::i18n::t("image-editor-untitled"), str::to_owned);
+        ProjectDoc::set_source(&mut state.doc, path, &name);
+    }
+    (state, save)
+}
+
+/// The project every populated screenshot opens: the bundled harbour photo
+/// with an exposure lift, a little more colour and a tighter crop.
+fn sample_actions() -> Vec<ImageEditorAction> {
+    use crate::actions::{AddAdjustment, SetSource};
+    use crate::model::Operation;
+    let add = |id: &str, title: &str, operation: Operation| {
+        ImageEditorAction::Add(AddAdjustment {
+            id: id.into(),
+            title: crate::i18n::t(title),
+            operation,
+        })
+    };
+    vec![
+        ImageEditorAction::SetSource(SetSource {
+            path: crate::engine::SAMPLE_SOURCE.into(),
+            name: "Harbour light".into(),
+        }),
+        add(
+            "exposure-sample",
+            "image-editor-exposure",
+            Operation::Exposure { stops: 0.4 },
+        ),
+        add(
+            "colour-sample",
+            "image-editor-colour",
+            Operation::Saturation { amount: 1.25 },
+        ),
+        add(
+            "crop-sample",
+            "image-editor-crop",
+            Operation::Crop {
+                x: 0.04,
+                y: 0.06,
+                width: 0.9,
+                height: 0.86,
+            },
+        ),
+    ]
+}
+
+/// A longer edit history: small alternating contrast and colour touches.
+fn long_stack_actions() -> Vec<ImageEditorAction> {
+    use crate::actions::AddAdjustment;
+    use crate::model::Operation;
+    (0..8)
+        .map(|index| {
+            let (title, operation) = if index % 2 == 0 {
+                (
+                    "image-editor-contrast",
+                    Operation::Contrast { amount: 0.03 },
+                )
+            } else {
+                (
+                    "image-editor-colour",
+                    Operation::Saturation { amount: 1.02 },
+                )
+            };
+            ImageEditorAction::Add(AddAdjustment {
+                id: format!("touch-{index}"),
+                title: crate::i18n::t(title),
+                operation,
+            })
+        })
+        .collect()
+}
+
+/// The named screenshot scenarios.
+pub const SCENARIOS: &[&str] = &[
+    "editor",
+    "empty",
+    "crop",
+    "compare",
+    "graph",
+    "long-stack",
+    "rotate",
+    "narrow",
+    "narrow-more",
+    "narrow-graph",
+];
 
 #[cfg(test)]
 mod tests {

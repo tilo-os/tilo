@@ -17,12 +17,118 @@ pub enum EvalError {
 /// by contents, where files have no path (a browser page).
 pub const OPENED_SOURCE: &str = "opened:";
 
+/// The bundled sample photograph, a harbour at dusk. It needs no file, so a
+/// first look at the editor and its screenshots open the same picture.
+pub const SAMPLE_SOURCE: &str = "sample:harbour-light.png";
+
 /// Decode the source at `path`, or the kept image an [`OPENED_SOURCE`] names.
 pub fn open_source(path: &str) -> Result<RgbaImage, EvalError> {
     open_bounded(path)
 }
 
+/// The name a person knows the source by: its file name, without the
+/// scheme of a kept or bundled image.
+pub fn source_file_name(path: &str) -> &str {
+    let path = path
+        .strip_prefix(OPENED_SOURCE)
+        .or_else(|| path.strip_prefix("sample:"))
+        .unwrap_or(path);
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+}
+
+/// The bundled sample: a harbour at dusk with a lighthouse on the
+/// breakwater and the low sun on the water.
+pub fn sample_image() -> RgbaImage {
+    const WIDTH: u32 = 1200;
+    const HEIGHT: u32 = 800;
+    let mix = |a: [f32; 3], b: [f32; 3], t: f32| -> [f32; 3] {
+        let t = t.clamp(0.0, 1.0);
+        [
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+        ]
+    };
+    let horizon = 0.6_f32;
+    let sun = (0.66_f32, 0.47_f32);
+    let mut image = RgbaImage::new(WIDTH, HEIGHT);
+    for (y, row) in image.rows_mut().enumerate() {
+        let fy = y as f32 / HEIGHT as f32;
+        for (x, p) in row.enumerate() {
+            let fx = x as f32 / WIDTH as f32;
+            let dx = (fx - sun.0) * 1.5;
+            let sun_distance = (dx * dx + (fy - sun.1) * (fy - sun.1)).sqrt();
+            let glow = (1.0 - sun_distance / 0.35).max(0.0).powi(2);
+            let mut colour = if fy < horizon {
+                // Sky: deep blue overhead to a warm band at the horizon.
+                let t = fy / horizon;
+                let sky = mix([38.0, 52.0, 102.0], [214.0, 128.0, 112.0], t.powf(1.6));
+                let sky = mix(sky, [252.0, 196.0, 140.0], (t - 0.75).max(0.0) * 3.0);
+                mix(sky, [255.0, 214.0, 160.0], glow * 0.8)
+            } else {
+                // Water: darker with depth, the sun's path glittering on it.
+                let t = (fy - horizon) / (1.0 - horizon);
+                let water = mix([96.0, 84.0, 112.0], [22.0, 34.0, 58.0], t.powf(0.7));
+                let ripple = ((fy * 900.0).sin() * (fx * 37.0 + fy * 11.0).cos()).max(0.0);
+                let path = (1.0 - ((fx - sun.0).abs() / (0.05 + t * 0.12))).max(0.0);
+                mix(
+                    water,
+                    [255.0, 206.0, 150.0],
+                    path * (0.35 + 0.65 * ripple) * 0.9,
+                )
+            };
+            if sun_distance < 0.045 && fy < horizon {
+                colour = [255.0, 236.0, 196.0];
+            }
+            // Hills behind the harbour on the left.
+            let hill = horizon - 0.09 * (1.0 - fx / 0.5).max(0.0) * (1.0 + (fx * 9.0).sin() * 0.15);
+            if fy < horizon && fy > hill {
+                colour = mix([62.0, 48.0, 74.0], colour, 0.25);
+            }
+            // The breakwater and its lighthouse: a tapering tower with a
+            // gallery, a lit lantern and a dark cap.
+            let (tower_x, tower_h) = (0.22_f32, 0.2_f32);
+            let top = horizon - tower_h;
+            let rise = ((horizon - fy) / tower_h).clamp(0.0, 1.0);
+            let half = 0.016 - 0.005 * rise;
+            let from_axis = (fx - tower_x).abs();
+            let wall = fx < 0.42 && fy > horizon - 0.012 && fy < horizon + 0.03;
+            let tower = from_axis < half && fy > top && fy < horizon;
+            let gallery = from_axis < 0.019 && fy > top - 0.007 && fy <= top;
+            let cap = from_axis < 0.012 && fy > top - 0.05 && fy < top - 0.04;
+            let lantern = from_axis < 0.009 && fy >= top - 0.04 && fy <= top - 0.007;
+            let across = (fx - tower_x) * 1.5;
+            let below = fy - (top - 0.024);
+            let lamp_glow = (1.0 - (across * across + below * below).sqrt() / 0.07)
+                .max(0.0)
+                .powi(2);
+            if fy < horizon {
+                colour = mix(colour, [255.0, 226.0, 160.0], lamp_glow * 0.55);
+            }
+            if wall || tower || gallery || cap {
+                colour = [30.0, 26.0, 40.0];
+            }
+            if lantern {
+                colour = [255.0, 232.0, 168.0];
+            }
+            *p = image::Rgba([
+                colour[0].clamp(0.0, 255.0) as u8,
+                colour[1].clamp(0.0, 255.0) as u8,
+                colour[2].clamp(0.0, 255.0) as u8,
+                255,
+            ]);
+        }
+    }
+    image
+}
+
 fn open_bounded(path: &str) -> Result<RgbaImage, EvalError> {
+    if path == SAMPLE_SOURCE {
+        return Ok(sample_image());
+    }
     if let Some(name) = path.strip_prefix(OPENED_SOURCE) {
         let file = crate::web_file::recall()
             .filter(|file| file.name == name)
