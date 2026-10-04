@@ -1331,6 +1331,7 @@ Apply the first row that matches each call.
 | A main column and an inspector-like aside laid out by hand, or a `Row` that never stacks | `Columns::new(main).aside(aside)`: the aside keeps `metrics.inspector_width` beside the main column and goes under it below the themed breakpoint |
 | A dashboard of cards in a centred `with_centered_max_width(1120.0)` | `Page::new().full_width()`: the page's gutter, reflowing across the column |
 | A footer of a status and actions pinned under a form by hand (a second `Scrollable` sharing the gutter) | `FormPage::with_pinned(element)` / `Page::with_pinned(element)` (`with_pinned_actions` for `Actions` alone) |
+| A block document (a note) whose editor starts `gutter - text_inset` in, so its drag handles share the page gutter and touch the sidebar | Place the editor's rect on the page gutter and line the title and metadata up at `gutter + BlockEditor::handle_gutter(theme)`: the handles hang in their own gutter outside the text column, a full page gutter clear of the sidebar |
 | A `Page` or `FormPage` rebuilt every frame | `.with_semantic_key(key)`, `.with_cursor(point)` and `.with_persisted_offset(cell)` as on the `Scrollable` |
 | A `Following` decorator that rebuilds a `ResizableSplit` when its divider moves, or forwards `update` to its panes | Delete it: the split relays out its panes and forwards `update` itself. `.with_content_sized_first()` for a first pane at its content size until moved; `left()` / `right()` (and `_mut`) reach the panes |
 

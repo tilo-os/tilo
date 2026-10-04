@@ -91,19 +91,15 @@ fn the_header_is_one_group_on_the_content_gutter_and_clears_the_body() {
         settle(&mut m, width);
         let first_tag_id = format!("notes.tag-chip:{}", m.tags[0]);
         let (panel, _) = Framed::split(&mut m.panel);
-        let gutter = f64::from(
-            Theme::dark()
-                .with_text_scale(scale)
-                .tokens
-                .spacing
-                .rhythm
-                .group,
-        );
+        let theme = Theme::dark().with_text_scale(scale);
+        let gutter = f64::from(theme.tokens.spacing.rhythm.group);
+        let handles = panel.editor().handle_gutter(&theme);
+        assert!(handles > 0.0, "a note's blocks have a handle gutter");
         let title = panel.title_rect_for_test();
         let edge = title.x0;
         assert!(
-            (edge - gutter).abs() < 1e-6,
-            "title on the gutter at {width}x{scale}"
+            (edge - (gutter + handles)).abs() < 1e-6,
+            "title on the text edge, outside the handle gutter, at {width}x{scale}"
         );
         let widgets = panel.header_rects_for_test();
         assert!(

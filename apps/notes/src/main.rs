@@ -53,6 +53,7 @@ const SHOT_SCENARIOS: &[&str] = &[
     "drawer",
     "drag",
     "block_drag",
+    "block_handle_hover",
     "block_type_menu",
     "menu",
     "sidebar_hover",

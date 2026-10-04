@@ -67,11 +67,15 @@ use crate::num;
 /// theme token or a measured line, never a pixel size.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Metrics {
-    /// The content gutter: the one left edge of title, metadata and body.
+    /// The page's content gutter, between the panel's edges and its content.
     gutter: f64,
-    /// Where the body editor starts inside the panel: the gutter less the
-    /// padding its text lines add inside their own rect, so a paragraph's
-    /// first letter stands on the gutter with the title above it.
+    /// The text column's leading edge: the gutter plus the editor's handle
+    /// gutter, so title, metadata and body text share one edge and the drag
+    /// handles hang outside it, a full gutter clear of the sidebar.
+    text_edge: f64,
+    /// Where the body editor starts inside the panel: the text edge less the
+    /// editor's own text inset, so a paragraph's first letter stands on the
+    /// text edge with the title above it.
     body_inset: f64,
     /// The gap between the title band and the header under it.
     header_gap: f64,
@@ -90,6 +94,7 @@ impl Metrics {
         let line = |role: TextRole| f64::from(theme.text(role).line_height_px());
         Self {
             gutter: f64::from(spacing.rhythm.group),
+            text_edge: f64::from(spacing.rhythm.group),
             body_inset: (f64::from(spacing.rhythm.group) - f64::from(theme.padding_standard))
                 .max(0.0),
             header_gap: f64::from(spacing.rhythm.related),
@@ -105,10 +110,10 @@ impl Metrics {
     }
 }
 
-/// Place a child of the panel at `top`, as wide as the panel less a gutter on
-/// either side and as tall as its own content. The panel positions these by
+/// Place a child of the panel at `top`, from the text edge to the trailing
+/// gutter and as tall as its own content. The panel positions these by
 /// hand: they are absolute, so their height never sizes the panel.
-fn pin_under_gutter(taffy: &mut TaffyTree<()>, node: NodeId, gutter: f64, top: f64) {
+fn pin_under_gutter(taffy: &mut TaffyTree<()>, node: NodeId, metrics: &Metrics, top: f64) {
     let Ok(existing) = taffy.style(node).cloned() else {
         return;
     };
@@ -121,8 +126,8 @@ fn pin_under_gutter(taffy: &mut TaffyTree<()>, node: NodeId, gutter: f64, top: f
                 height: Dimension::auto(),
             },
             inset: taffy::Rect {
-                left: length(num::f32_of_f64(gutter)),
-                right: length(num::f32_of_f64(gutter)),
+                left: length(num::f32_of_f64(metrics.text_edge)),
+                right: length(num::f32_of_f64(metrics.gutter)),
                 top: length(num::f32_of_f64(top)),
                 bottom: taffy::LengthPercentageAuto::auto(),
             },
@@ -1242,11 +1247,14 @@ impl Widget for MainPanel {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.metrics = Metrics::of(theme);
-        // Every block starts its content at the editor's text inset (its
-        // handle column and the lines' own inset): the body starts that much
-        // short of the gutter, so text, tables, code and embeds stand on it.
-        let inset = self.editor.editor().text_inset(theme);
-        self.metrics.body_inset = (self.metrics.gutter - inset).max(0.0);
+        // A note is a block document: its drag handles hang in the editor's
+        // handle gutter, outside the text column and inside the page gutter.
+        // Every block starts its content at the editor's text inset, so the
+        // body starts that much short of the text edge and text, tables,
+        // code and embeds stand on it with the title.
+        let editor = self.editor.editor();
+        self.metrics.text_edge = self.metrics.gutter + editor.handle_gutter(theme);
+        self.metrics.body_inset = (self.metrics.text_edge - editor.text_inset(theme)).max(0.0);
         self.layout_theme = theme.clone();
         // The panel is a **leaf** in the parent's flex tree — we do
         // all internal positioning by hand in `apply_layout`. Using a
@@ -1308,23 +1316,27 @@ impl Widget for MainPanel {
         self.title_node = Some(title_node);
         // The header is laid out by the toolkit like any column; only its
         // place in the scrolling document is the panel's: under the pinned
-        // title, on the content gutter.
+        // title, on the text edge.
         let top_inset = self.scroll_top_inset();
-        let gutter = self.metrics.gutter;
-        let banner_top = gutter + self.title_height();
+        let banner_top = self.metrics.gutter + self.title_height();
         self.banner_node = self
             .save_failure
             .as_mut()
             .map(|banner| banner.build_layout(taffy, theme, node_map));
         if let Some(node) = self.banner_node {
-            pin_under_gutter(taffy, node, gutter, banner_top);
+            pin_under_gutter(taffy, node, &self.metrics, banner_top);
         }
         self.header_node = self
             .header
             .column(theme)
             .map(|header| header.build_layout(taffy, theme, node_map));
         if let Some(node) = self.header_node {
-            pin_under_gutter(taffy, node, gutter, top_inset + self.metrics.header_gap);
+            pin_under_gutter(
+                taffy,
+                node,
+                &self.metrics,
+                top_inset + self.metrics.header_gap,
+            );
         }
         let children = if self.page_id.is_some() {
             let mut nodes = vec![title_node];
@@ -1393,7 +1405,8 @@ impl Widget for MainPanel {
         // eliding, so a phone at 200% text still reads the whole name. This
         // is responsive type, not cancellation of the text scale.
         let gutter = self.metrics.gutter;
-        let line_width = (self.rect.width() - 2.0 * gutter).max(0.0);
+        let text_edge = self.metrics.text_edge;
+        let line_width = (self.rect.width() - text_edge - gutter).max(0.0);
         let fits = ui::text_render::with_layout_renderer(self.layout_theme.text_scale, |text| {
             let style = self.layout_theme.text(TextRole::LargeTitle);
             f64::from(text.measure_style(self.title_label.value(), None, &style).0) <= line_width
@@ -1405,9 +1418,9 @@ impl Widget for MainPanel {
         });
         // Title band pinned to the top of the panel, above the scrolled body.
         self.title_rect = Rect::new(
-            self.rect.x0 + gutter,
+            self.rect.x0 + text_edge,
             self.rect.y0 + gutter,
-            (self.rect.x1 - gutter).max(self.rect.x0 + gutter),
+            (self.rect.x1 - gutter).max(self.rect.x0 + text_edge),
             self.rect.y0 + gutter + self.title_height(),
         );
         self.title_label.apply_layout_external(self.title_rect);

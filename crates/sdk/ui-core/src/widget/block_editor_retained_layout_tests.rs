@@ -391,3 +391,35 @@ fn keystroke_work_does_not_grow_with_the_document() {
         "measured lines, painted blocks and layout nodes per keystroke: {work:?}"
     );
 }
+
+/// A block document's drag handles hang in the editor's own handle gutter,
+/// outside the text column and inside the editor's rect: a host that puts
+/// the rect on its page gutter keeps the handles a gutter clear of the
+/// sidebar, and the text starts exactly one handle gutter in.
+#[test]
+fn handles_hang_in_their_own_gutter_outside_the_text_column() {
+    for scale in [1.0, 2.0] {
+        let fixture = RetainedEditor::new(480.0, scale, false);
+        let editor = &fixture.editor;
+        let gutter = editor.handle_gutter(&fixture.theme);
+        assert!(gutter > 0.0, "an editable document has a handle gutter");
+        assert_eq!(editor.text_inset(&fixture.theme), gutter);
+        let line = editor.blocks[1].line.get_rect();
+        let text_edge = line.x0 + editor.blocks[1].line.text_inset(&fixture.theme);
+        assert!(
+            (text_edge - (editor.get_rect().x0 + gutter)).abs() < 1e-6,
+            "text starts one handle gutter in at {scale}x: {text_edge}"
+        );
+        let handle = editor.block_drag_handle_rect(1).unwrap();
+        assert!(
+            handle.x0 >= editor.get_rect().x0 - 1e-6,
+            "the handle stays inside the editor at {scale}x: {handle:?}"
+        );
+        assert!(
+            handle.x1 < text_edge,
+            "the handle hangs outside the text column at {scale}x: {handle:?}"
+        );
+    }
+    let read_only = BlockEditor::new().with_read_only(true);
+    assert_eq!(read_only.handle_gutter(&Theme::dark()), 0.0);
+}

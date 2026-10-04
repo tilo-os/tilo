@@ -1239,22 +1239,35 @@ impl BlockEditor {
         self
     }
 
+    /// The handle gutter of a block document: the lane its drag handles
+    /// hang in, outside the text column, as wide as a handle and the gap to
+    /// the text. Zero when the editor shows no handles.
+    ///
+    /// A page that holds the editor keeps its one content gutter outside
+    /// this lane: it places the editor's rect on its gutter and lines its
+    /// title and metadata up with the text ([`Self::text_inset`] in from the
+    /// rect), so a hovered handle stands a full gutter clear of the sidebar
+    /// or window edge beside the page.
+    pub fn handle_gutter(&self, theme: &Theme) -> f64 {
+        if self.block_handles && !self.read_only {
+            let handle = HandleMetrics::from_tokens(&theme.tokens.spacing, &theme.tokens.metrics);
+            handle.width + handle.gap
+        } else {
+            0.0
+        }
+    }
+
     /// How far a paragraph's text starts inside the editor's rect: the
-    /// drag-handle column (when shown) plus the lines' own text inset. Every
-    /// block kind starts at this edge, so a host lines a title, a caption or
-    /// a composer's controls up with it instead of measuring a laid-out
-    /// caret.
+    /// handle gutter (when shown) or the lines' own text inset, whichever
+    /// is wider. Every block kind starts at this edge, so a host lines a
+    /// title, a caption or a composer's controls up with it instead of
+    /// measuring a laid-out caret.
     pub fn text_inset(&self, theme: &Theme) -> f64 {
         let line = self.blocks.first().map_or_else(
             || RichTextLine::new().text_inset(theme),
             |b| b.line.text_inset(theme),
         );
-        let handles = if self.block_handles && !self.read_only {
-            (self.handle.width + self.handle.gap - line).max(0.0)
-        } else {
-            0.0
-        };
-        handles + line
+        line.max(self.handle_gutter(theme))
     }
 
     /// Size the text by the document alone: body and heading sizes as
@@ -2781,17 +2794,10 @@ impl BlockEditor {
         })
     }
 
-    /// Reserved target just left of an editable block, inside the gutter the
-    /// host leaves there (Notes: 32 px), so it never narrows text or steals
-    /// list/checkbox clicks. Geometry from [`HandleMetrics`]: a `width`
-    /// column ending `gap` before the block's leading edge, `height` tall at
-    /// 1× and growing with the text scale like the line beside it. The rect
-    /// is also the hit target, so it grows to the pointer minimum where the
-    /// block itself is that tall — never taller than the block, or two
-    /// single-line paragraphs would share one handle.
-    /// The editor's own leading column for the drag handles: enough that a
-    /// handle standing `gap` before the content edge stays inside the
-    /// editor. None when handles are hidden.
+    /// The padding the editor adds before its lines for the handle gutter:
+    /// the gutter less the lines' own text inset, so the text starts
+    /// [`Self::handle_gutter`] in from the editor's rect. Zero when handles
+    /// are hidden.
     fn handle_column(&self) -> f64 {
         if self.block_handles && !self.read_only {
             (self.handle.width + self.handle.gap - self.text_pad).max(0.0)
@@ -2800,6 +2806,14 @@ impl BlockEditor {
         }
     }
 
+    /// Reserved target in the handle gutter just left of an editable block,
+    /// so it never narrows text or steals list/checkbox clicks. Geometry
+    /// from [`HandleMetrics`]: a `width` column ending `gap` before the
+    /// block's leading edge, `height` tall at 1× and growing with the text
+    /// scale like the line beside it. The rect is also the hit target, so it
+    /// grows to the pointer minimum where the block itself is that tall —
+    /// never taller than the block, or two single-line paragraphs would
+    /// share one handle.
     fn block_drag_handle_rect(&self, index: usize) -> Option<Rect> {
         if !self.block_handles || self.read_only {
             return None;
@@ -4099,9 +4113,9 @@ pub(crate) const CHECKBOX_SIZE_PX: f64 = 16.0;
 /// Geometry of the block drag handle, resolved from `theme.tokens` in
 /// `build_layout` (the `Metrics::BASE` / `Spacing::BASE` values until then).
 ///
-/// The handle lives in the gutter the host leaves left of the text (Notes
-/// reserves 32 px), so its **width** and the gap to the text are `ui_scale`
-/// metrics that stay inside that gutter; its **height** and the dot cluster
+/// The handle lives in the editor's handle gutter, left of the text column,
+/// so its **width** and the gap to the text are `ui_scale` metrics that make
+/// up that gutter; its **height** and the dot cluster
 /// follow the accessibility text scale like the line beside it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct HandleMetrics {
