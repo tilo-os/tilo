@@ -1776,6 +1776,70 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     }
 }
 
+/// File inside [`SESSION_RUNTIME_SUBDIR`] naming the room of the workspace in
+/// front: the room a command started now (an app run from a terminal, or by
+/// `tilo-app dev`) joins, as an app the shell starts joins the room it names
+/// with the launcher's `--workspace-id`.
+pub const WORKSPACE_ID_FILE: &str = "workspace-id";
+
+/// [`WORKSPACE_ID_FILE`], kept naming the active workspace's room.
+struct PublishedRoom {
+    path: PathBuf,
+    room: Option<String>,
+}
+
+impl PublishedRoom {
+    /// Beside the published Wayland display; `None` where that has no place.
+    fn new() -> Option<Self> {
+        let display = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
+        Some(Self {
+            path: display.with_file_name(WORKSPACE_ID_FILE),
+            room: None,
+        })
+    }
+
+    /// Write the active workspace's room when it changed; remove the file
+    /// while no workspace is active.
+    fn follow(&mut self, frame_builder: &FrameBuilder) {
+        let room = frame_builder
+            .chrome()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room.to_string());
+        if room == self.room {
+            return;
+        }
+        let written = match &room {
+            Some(room) => {
+                tilo_files::native::atomic::write_with_mode(&self.path, room.as_bytes(), 0o600)
+                    .map_err(|error| error.to_string())
+            }
+            None => match std::fs::remove_file(&self.path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.to_string()),
+            },
+        };
+        match written {
+            Ok(()) => self.room = room,
+            Err(error) => {
+                tracing::warn!(%error, path = %self.path.display(), "session room not published");
+                // Not retried every frame: the next workspace change tries again.
+                self.room = room;
+            }
+        }
+    }
+}
+
+impl Drop for PublishedRoom {
+    fn drop(&mut self) {
+        if self.room.is_some() {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 /// Env var naming the compositor's privileged Wayland socket, exported to
 /// trusted session services outside app sandboxes. Clipboard managers and
 /// the session-lock integration connect here instead of `WAYLAND_DISPLAY`.
@@ -7511,6 +7575,7 @@ pub fn run() {
         net.set_wake(Arc::clone(&session_wake));
     }
     let chooser_attended = Arc::new(AtomicBool::new(false));
+    let mut published_room = PublishedRoom::new();
     let chooser_service = start_chooser_service(
         portal_backend.as_ref(),
         Arc::clone(&chooser_attended),
@@ -8834,6 +8899,9 @@ pub fn run() {
         session_changed |= launch_queued_host_apps(&mut state, &mut frame_builder);
         session_changed |= post_codec_pack_notices(&mut frame_builder);
         run_autostart_once(&frame_builder);
+        if let Some(published) = published_room.as_mut() {
+            published.follow(&frame_builder);
+        }
 
         // Keyboard releases are latency-sensitive protocol traffic: an Xwayland
         // client starts auto-repeat after a press and only stops once it sees the
