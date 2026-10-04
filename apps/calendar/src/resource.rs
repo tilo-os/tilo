@@ -8,7 +8,7 @@ use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, RetryPolicy};
 use tilo_document::{RichText, RichTextAction};
 use ui::framework::{
-    Dispatcher, Fixture, LaunchInput, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
+    Dispatcher, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
 };
 use ui::tilo_resource::{
     ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry, child_resource_id, publish_child,
@@ -18,12 +18,20 @@ use uuid::Uuid;
 
 use crate::actions::{
     CALENDAR_ACTION_TYPE, CALENDAR_OPERATION_TYPE, CalendarAction, CalendarOperation, EventData,
-    NoteOwner, ProjectData, TaskData, delete_event_action, delete_task_action, encode,
-    set_task_done_action,
+    NoteOwner, ProjectData, TaskData, encode,
 };
 use crate::app::CalendarApp;
 use crate::doc::CalDoc;
 use crate::model::{Model, Palette, Priority};
+
+/// The start of the next whole hour, where a new event lands unless it names
+/// its own time.
+fn next_hour() -> chrono::NaiveDateTime {
+    use chrono::Timelike as _;
+    let now = chrono::Local::now().naive_local();
+    let hour = now.date().and_hms_opt(now.hour(), 0, 0).unwrap_or(now);
+    hour + chrono::Duration::hours(1)
+}
 
 fn default_local_event() -> EventData {
     EventData {
@@ -93,14 +101,40 @@ fn publish_notes(state: &Model) -> impl Iterator<Item = tilo_actions::Resource> 
         };
         (owner, task.title.as_str())
     });
-    events.chain(tasks).map(|(owner, of)| {
-        publish_child::<RichText, Calendar>(
-            &notes_resource_id(&owner),
-            &format!("Notes of {of}"),
-            None,
-            notes_edit(owner),
-        )
-    })
+    events
+        .chain(tasks)
+        .map(|(owner, of)| notes_resource(owner, of))
+}
+
+fn notes_resource(owner: NoteOwner, of: &str) -> tilo_actions::Resource {
+    publish_child::<RichText, Calendar>(
+        &notes_resource_id(&owner),
+        &format!("Notes of {of}"),
+        None,
+        notes_edit(owner),
+    )
+}
+
+/// The notes published at `id`, when their event or task is still there.
+fn notes_child(state: &Model, id: &str) -> Option<tilo_actions::Resource> {
+    let name = id
+        .strip_prefix(Calendar::KIND)?
+        .strip_prefix('/')?
+        .strip_suffix("/notes")?;
+    let (kind, raw) = name.split_once(':')?;
+    let item = raw.parse::<crate::model::Id>().ok()?;
+    let (owner, of) = match kind {
+        "event" => (
+            NoteOwner::Event { id: raw.to_owned() },
+            state.event(item)?.display_title(),
+        ),
+        "task" => (
+            NoteOwner::Task { id: raw.to_owned() },
+            state.task(item)?.title.as_str(),
+        ),
+        _ => return None,
+    };
+    Some(notes_resource(owner, of))
 }
 
 /// Framework app: the calendar widget is the surface over [`Calendar`].
@@ -137,20 +171,43 @@ impl Resource for Calendar {
             ActionDecl::new(
                 "new-event",
                 "New event",
-                vec![ActionParam::required(
-                    tilo_actions::PROMPTED_PARAM,
-                    ParamType::Text,
-                    "Title",
-                )],
+                vec![
+                    ActionParam::required(tilo_actions::PROMPTED_PARAM, ParamType::Text, "Title"),
+                    ActionParam::optional(
+                        "start",
+                        ParamType::Text,
+                        "Local start date and time in YYYY-MM-DDTHH:MM (default: the next hour)",
+                    ),
+                    ActionParam::optional(
+                        "end",
+                        ParamType::Text,
+                        "Local end date and time in YYYY-MM-DDTHH:MM (default: an hour after the start)",
+                    ),
+                ],
                 |args, _| {
                     let title = args
                         .text(tilo_actions::PROMPTED_PARAM)
                         .unwrap_or_default()
                         .trim()
                         .to_owned();
+                    let parse = |field: &str| {
+                        args.text(field)
+                            .map(|value| {
+                                chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M")
+                                    .map_err(|_| format!("{field} must be YYYY-MM-DDTHH:MM"))
+                            })
+                            .transpose()
+                    };
+                    let start = parse("start")?.unwrap_or_else(next_hour);
+                    let end = parse("end")?.unwrap_or(start + chrono::Duration::hours(1));
+                    if end < start {
+                        return Err("end must not be before start".into());
+                    }
                     let mut data = default_local_event();
                     data.id = Uuid::new_v4().to_string();
                     data.title = title;
+                    data.start = start.format("%Y-%m-%dT%H:%M").to_string();
+                    data.end = end.format("%Y-%m-%dT%H:%M").to_string();
                     Ok(CalendarAction::UpsertEvent(data))
                 },
             )
@@ -272,122 +329,41 @@ impl Resource for Calendar {
         ops
     }
 
+    /// A page of the calendar's projects, events and tasks with every edit
+    /// they offer, and the notes of those events and tasks.
     fn children(state: &Model) -> Vec<tilo_actions::Resource> {
-        let mut children = Vec::new();
-        for event in &state.events {
-            let id = event.id.to_string();
-            children.push(
-                tilo_actions::Resource::new(
-                    format!("calendar.event:{id}"),
-                    "calendar.event",
-                    event.display_title().to_owned(),
-                )
-                .with_action(
-                    ActionSpec::operation(
-                        "open",
-                        "Open event",
-                        OperationKind::View,
-                        CALENDAR_OPERATION_TYPE,
-                        &CalendarOperation::OpenEvent { id: id.clone() },
-                    )
-                    .expect("encodes")
-                    .retry_policy(RetryPolicy::Idempotent),
-                )
-                .with_action(
-                    ActionSpec::immediate(
-                        "delete",
-                        "Delete event",
-                        CALENDAR_ACTION_TYPE,
-                        &delete_event_action(&id, None),
-                    )
-                    .expect("encodes")
-                    .reversible()
-                    .destructive(),
-                ),
-            );
-        }
-        for task in &state.tasks {
-            let id = task.id.to_string();
-            let done = task.done;
-            children.push(
-                tilo_actions::Resource::new(
-                    format!("calendar.task:{id}"),
-                    "calendar.task",
-                    task.title.clone(),
-                )
-                .with_action(
-                    ActionSpec::operation(
-                        "open",
-                        "Open task",
-                        OperationKind::View,
-                        CALENDAR_OPERATION_TYPE,
-                        &CalendarOperation::OpenTask { id: id.clone() },
-                    )
-                    .expect("encodes")
-                    .retry_policy(RetryPolicy::Idempotent),
-                )
-                .with_action(
-                    ActionSpec::immediate(
-                        "toggle-done",
-                        if done { "Mark not done" } else { "Mark done" },
-                        CALENDAR_ACTION_TYPE,
-                        &set_task_done_action(&id, !done),
-                    )
-                    .expect("encodes")
-                    .reversible(),
-                )
-                .with_action(
-                    ActionSpec::immediate(
-                        "delete",
-                        "Delete task",
-                        CALENDAR_ACTION_TYPE,
-                        &delete_task_action(&id, Vec::new()),
-                    )
-                    .expect("encodes")
-                    .reversible()
-                    .destructive(),
-                ),
-            );
-        }
-        children.extend(publish_notes(state));
-        for project in &state.projects {
-            let id = project.id.to_string();
-            children.push(
-                tilo_actions::Resource::new(
-                    format!("calendar.project:{id}"),
-                    "calendar.project",
-                    project.name.clone(),
-                )
-                .with_action(
-                    ActionSpec::operation(
-                        "open",
-                        "Open project tasks",
-                        OperationKind::View,
-                        CALENDAR_OPERATION_TYPE,
-                        &CalendarOperation::OpenProject { id },
-                    )
-                    .expect("encodes")
-                    .retry_policy(RetryPolicy::Idempotent),
-                ),
-            );
-        }
+        let mut children = crate::tree::children(state);
+        children.extend(publish_notes(state).take(crate::tree::PAGE));
         children
     }
 
+    fn child(state: &Model, id: &str) -> Option<tilo_actions::Resource> {
+        crate::tree::child(state, id).or_else(|| notes_child(state, id))
+    }
+
+    /// Every event, task and project, found by its title, place or notes;
+    /// choosing one opens it.
     fn search(state: &Model) -> Vec<SearchEntry> {
+        let notes = |id| state.notes.get(&id).cloned().unwrap_or_default();
         let events = state.events.iter().map(|event| SearchEntry {
-            anchor: Some(format!("calendar.event:{}", event.id)),
+            anchor: Some(crate::actions::event_resource_id(event.id)),
             title: event.display_title().to_owned(),
-            text: event.location.clone(),
-            action: None,
+            text: format!("{} {}", event.location, notes(event.id)),
+            action: Some(crate::actions::open_event_address(event.id)),
         });
         let tasks = state.tasks.iter().map(|task| SearchEntry {
-            anchor: Some(format!("calendar.task:{}", task.id)),
+            anchor: Some(crate::actions::task_resource_id(task.id)),
             title: task.title.clone(),
-            text: String::new(),
-            action: None,
+            text: notes(task.id),
+            action: Some(crate::actions::open_task_address(task.id)),
         });
-        events.chain(tasks).collect()
+        let projects = state.projects.iter().map(|project| SearchEntry {
+            anchor: Some(crate::actions::project_resource_id(project.id)),
+            title: project.name.clone(),
+            text: String::new(),
+            action: Some(crate::actions::open_project_address(project.id)),
+        });
+        events.chain(tasks).chain(projects).collect()
     }
 }
 
@@ -583,9 +559,6 @@ pub(crate) struct ActionSink {
     local: ui::ActionHost,
     framework: Option<Dispatcher<Calendar>>,
     last: Option<EncodedAction>,
-    /// Test-only: hosted lookup without a framework dispatcher.
-    #[cfg(test)]
-    hosted: bool,
 }
 
 impl ActionSink {
@@ -596,20 +569,6 @@ impl ActionSink {
     /// The framework's dispatcher, once the calendar is hosted.
     pub(crate) fn framework(&self) -> Option<&Dispatcher<Calendar>> {
         self.framework.as_ref()
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        #[cfg(test)]
-        if self.hosted {
-            return true;
-        }
-        self.framework.is_some()
-    }
-
-    /// Test-only: mark hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
     }
 
     pub(crate) fn dispatch(&mut self, doc: &mut AutoCommit, action: &CalendarAction) {
@@ -685,6 +644,12 @@ impl ResourceSurface<Calendar> for CalendarApp {
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
+    }
+
+    /// The calendars of the accounts on this device, which can be opened,
+    /// shown and hidden.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.collection_rows()
     }
 }
 
@@ -906,5 +871,48 @@ mod host_undo_tests {
         let notes = notes_of(&app, review);
         assert!(notes.contains("Agenda"), "{notes}");
         assert!(notes.contains("Confirm the launch timeline."), "{notes}");
+    }
+
+    /// Every edit the calendar offers on its items, and its calendars, reach
+    /// the palette and agents through the one published tree, and invoking
+    /// one edits the calendar.
+    #[test]
+    fn agents_reach_every_item_edit_and_the_calendars() {
+        let mut app = TestApp::<CalendarShell>::capture(Some("month")).expect("capture");
+        let surface = app.agent_surface().to_string();
+        for needle in [
+            "new-event",
+            "new-task",
+            "new-project",
+            "set-start",
+            "set-repeat",
+            "set-reminder",
+            "set-timezone",
+            "invite",
+            "move-to-calendar",
+            "set-exception",
+            "set-minutes-before",
+            "respond",
+            "make-organizer",
+            "prepare-in-mail",
+            "exclude",
+            "set-due",
+            "set-priority",
+            "toggle",
+            "set-color",
+            "calendar.collection",
+            "set-visibility",
+            "show-week",
+        ] {
+            assert!(surface.contains(needle), "missing {needle} in {surface}");
+        }
+        let event = app.state().events[0].id;
+        app.call_on(
+            &crate::actions::event_resource_id(event),
+            "set-location",
+            serde_json::json!({ "location": "Room 4" }),
+        )
+        .expect("set location");
+        assert_eq!(app.state().event(event).expect("event").location, "Room 4");
     }
 }

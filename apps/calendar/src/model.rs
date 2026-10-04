@@ -551,6 +551,9 @@ pub struct Model {
     pub projects: Vec<Project>,
     pub events: Vec<Event>,
     pub tasks: Vec<Task>,
+    /// The plain text of each event's and task's notes that hold any, for
+    /// search.
+    pub notes: std::collections::BTreeMap<Id, String>,
 }
 
 impl Model {
@@ -656,6 +659,7 @@ pub fn seed_demo(today: NaiveDate) -> Model {
         projects: seed_demo_projects(pid_work, pid_personal, pid_health),
         events: seed_demo_events(today, pid_work, pid_personal, pid_health),
         tasks: seed_demo_tasks(today, pid_personal, pid_health, pid_work),
+        ..Model::default()
     }
 }
 
