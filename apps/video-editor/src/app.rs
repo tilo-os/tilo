@@ -96,8 +96,6 @@ const HELP_TWO_COLUMN_MIN_W: f64 = 780.0;
 const GOTO_CARD_W: f64 = 260.0;
 
 // ---- layout constants ----------------------------------------------------
-/// Widest the export progress / outcome chip in the header row grows.
-const EXPORT_CHIP_W: f64 = 176.0;
 const TIMELINE_H: f64 = 320.0;
 const BIN_W: f64 = 268.0;
 const INSPECTOR_W: f64 = 300.0;
@@ -253,7 +251,7 @@ const INSPECTOR_EMPTY_HINT: &str = "Click a clip in the timeline to edit it";
 /// Unlike the bin, an open inspector paints **no scrim**: its whole purpose
 /// is to change the picture, so dimming the picture while you drag a slider
 /// would hide the thing you are adjusting.
-const INSPECTOR_BREAKPOINT: f64 = 760.0;
+const INSPECTOR_BREAKPOINT: f64 = 960.0;
 
 struct BinPaintCtx<'a> {
     scene: &'a mut Scene,
@@ -5995,7 +5993,7 @@ const TITLE_COLORS: [[f64; 4]; 8] = [
     [0.40, 0.78, 0.98, 1.0],
     [0.44, 0.85, 0.55, 1.0],
     [0.79, 0.55, 0.96, 1.0],
-    [1.0, 1.0, 1.0, 0.55],
+    [0.60, 0.62, 0.66, 1.0],
 ];
 
 /// Rate presets offered as a segmented row beside the rate slider.
@@ -6335,6 +6333,11 @@ impl Widget for VideoEditorApp {
             self.project = VideoDoc::load_project(state);
             self.clip_edit_bases.clear();
             self.project_sync.reload_pending = false;
+            // A timeline with nothing on it has no time to be part-way
+            // through: the playhead waits at the start.
+            if self.project.clips.is_empty() {
+                self.playhead = 0.0;
+            }
         }
         // Bring in any pending / portal-picked media as real clips (this pushes
         // straight into `self.project.media` and the CRDT).
@@ -7778,7 +7781,8 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
         "Project",
         &[
             ("Ctrl+O", "Open a project"),
-            ("Ctrl+S", "Save (Shift: save as…)"),
+            ("Ctrl+S", "Save"),
+            ("Ctrl+Shift+S", "Save as…"),
             ("Ctrl+Shift+O", "Import media"),
             ("Ctrl+E", "Export video"),
         ],
@@ -7803,7 +7807,8 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
             ("S", "Split at playhead"),
             ("M", "Add marker"),
             ("T", "Add title"),
-            ("Delete", "Delete (Shift: ripple)"),
+            ("Delete", "Delete clip"),
+            ("Shift+Delete", "Ripple delete"),
             ("Arrows", "Nudge, or step playhead"),
         ],
     ),
@@ -7816,14 +7821,15 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
             ("Ctrl+Z", "Undo"),
             // Both spellings work and neither was written down, so the sheet
             // claimed the editor had undo and no redo.
-            ("Ctrl+Shift+Z", "Redo (or Ctrl+Y)"),
+            ("Ctrl+Shift+Z", "Redo"),
+            ("Ctrl+Y", "Redo"),
         ],
     ),
     (
         "View",
         &[
-            ("Tab", "Next pane (Shift+Tab: previous)"),
-            ("Page Up / Down", "Scroll timeline (when it has focus)"),
+            ("Tab / Shift+Tab", "Next / previous pane"),
+            ("Page Up / Down", "Scroll the timeline"),
             ("Z", "Zoom to fit"),
             ("+ / -", "Zoom in / out"),
             ("B", "Toggle media bin"),
@@ -8660,8 +8666,31 @@ impl VideoEditorApp {
                 "Exported {}",
                 display_name(Path::new(path))
             ))),
-            ExportStatus::Failed { reason } => Some(Notice::failed(reason.clone())),
+            // The reason is the dialog's to give in full (the chip opens it, and
+            // its hover and its accessible value carry the reason too); the
+            // header row only has room to say that it happened.
+            ExportStatus::Failed { .. } => Some(Notice::failed("Export failed".to_string())),
         }
+    }
+
+    /// How wide the export chip wants to be: as wide as its words. A render in
+    /// flight is measured at its widest reading, so the chip does not jitter
+    /// as the percentage counts up.
+    pub(super) fn export_chip_width(&self) -> f64 {
+        let Some(notice) = self.export_chip_notice() else {
+            return 0.0;
+        };
+        self.with_dialog_layout(|app, tr, theme| match app.export_status {
+            ExportStatus::Failed { .. } => {
+                ui::widget::BadgeFace::intrinsic_width(&notice.text, tr, theme)
+            }
+            ExportStatus::Rendering { .. } => ButtonFace::new(Rect::ZERO, "Exporting… 100%")
+                .control_size(ControlSize::Small)
+                .intrinsic_width(tr, theme),
+            _ => ButtonFace::new(Rect::ZERO, &notice.text)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(tr, theme),
+        })
     }
 
     /// The chip's words and severity, formatted and elided only when they
@@ -8688,11 +8717,19 @@ impl VideoEditorApp {
             // behind this branch, so a steady render costs neither.
             let notice = self.export_chip_notice()?;
             let style = theme.text(TextRole::Caption).numeric();
+            // The chip is sized to its words; they are elided only when the
+            // header row could not give it that much room.
+            let fits = self.export_chip_width() <= chip.width() + 0.5;
+            let shown = if fits {
+                notice.text.clone()
+            } else {
+                elide_at(&notice.text, (chip.width() - S4) as f32, &style, tr)
+            };
             self.export_chip_text = Some(ExportChipText {
                 from: self.export_status.clone(),
                 width: chip.width(),
                 level: notice.level,
-                shown: elide_at(&notice.text, (chip.width() - S4) as f32, &style, tr),
+                shown,
             });
         }
         self.export_chip_text.as_ref()
@@ -8899,28 +8936,39 @@ impl VideoEditorApp {
             tf,
             &rows_clip,
         );
-        text(
-            scene,
-            tr,
-            tf,
-            "Esc or ? to close",
-            &ty.sm,
-            dim,
-            body.x0,
-            l.hint_top,
-        );
-        for ((group, rows), g) in SHORTCUTS.iter().zip(&l.groups) {
+        // A scrolled body shows whole lines only: a line the clip would cut
+        // through is left out until it scrolls fully into view, so no row is
+        // ever read as half of itself at the body's edges.
+        let whole = |top: f64, h: f64| top >= rows_clip.y0 - 0.5 && top + h <= rows_clip.y1 + 0.5;
+        if whole(l.hint_top, line_height(tr, &ty.sm)) {
             text(
                 scene,
                 tr,
                 tf,
-                group,
-                &ty.xs.clone().strong(),
-                ink,
-                g.heading.x0,
-                g.heading.y0,
+                "Esc or ? to close",
+                &ty.sm,
+                dim,
+                body.x0,
+                l.hint_top,
             );
+        }
+        for ((group, rows), g) in SHORTCUTS.iter().zip(&l.groups) {
+            if whole(g.heading.y0, g.heading.height()) {
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    group,
+                    &ty.xs.clone().strong(),
+                    ink,
+                    g.heading.x0,
+                    g.heading.y0,
+                );
+            }
             for ((combo, what), row) in rows.iter().zip(&g.rows) {
+                if !whole(row.y0, row.height()) {
+                    continue;
+                }
                 text(
                     scene,
                     tr,

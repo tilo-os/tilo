@@ -417,9 +417,10 @@ impl VideoEditorApp {
             tf,
             &clip_shape,
         );
-        // The scroll body gets its own clip, below the fixed header, so a row
-        // scrolled up is cut at the header's foot rather than drawn under it.
-        let body_view = self.inspector_viewport(r);
+        // The scroll body gets its own clip, below the fixed header and pulled
+        // in to whole rows, so a row scrolled part-way out is left out rather
+        // than drawn sliced under the header or at the panel's foot.
+        let body_view = self.inspector_shown_body(r, &self.inspector_layout(r));
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -890,25 +891,13 @@ impl VideoEditorApp {
             );
         }
         // Three segmented rows make the 3×3 grid, so each row is a real
-        // shared toggle group rather than nine hand-drawn cells.
+        // shared toggle group rather than nine hand-drawn cells. Each cell
+        // carries a miniature frame with a dot where the anchor sits, as the
+        // picture-in-picture presets carry theirs: the picture of what the
+        // choice does, rather than an arrow standing in for it.
         for band in l.anchor.chunks(3) {
             let rects: Vec<Rect> = band.iter().map(|(_, r)| *r).collect();
-            let labels: Vec<&str> = band
-                .iter()
-                .map(|(a, _)| {
-                    #[expect(
-                        clippy::float_cmp,
-                        reason = "the anchor cells are laid out from `ANCHOR_STOPS` itself, so equality is the lookup"
-                    )]
-                    let col = ANCHOR_STOPS.iter().position(|s| *s == a.0).unwrap_or(1);
-                    #[expect(
-                        clippy::float_cmp,
-                        reason = "the anchor cells are laid out from `ANCHOR_STOPS` itself, so equality is the lookup"
-                    )]
-                    let row = ANCHOR_STOPS.iter().position(|s| *s == a.1).unwrap_or(1);
-                    ANCHOR_GLYPHS[row * 3 + col]
-                })
-                .collect();
+            let labels = ["", "", ""];
             let sel = band
                 .iter()
                 .position(|(a, _)| {
@@ -916,7 +905,33 @@ impl VideoEditorApp {
                         && (clip.transform.anchor_y - a.1).abs() < 1e-6
                 })
                 .unwrap_or(usize::MAX);
-            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+            draw_segmented(
+                scene,
+                tf,
+                tr,
+                theme,
+                &rects,
+                &labels[..rects.len().min(3)],
+                sel,
+                self.last_mouse,
+            );
+            for (i, (a, rect)) in band.iter().enumerate() {
+                let ink = if i == sel { c.text_primary } else { c.text_dim };
+                let frame = Rect::from_center_size(rect.center(), (18.0, 12.0));
+                stroke_round(scene, tf, frame, 2.0, ink, 1.0);
+                let dot = Point::new(
+                    frame.x0 + 2.5 + a.0 * (frame.width() - 5.0),
+                    frame.y0 + 2.5 + a.1 * (frame.height() - 5.0),
+                );
+                // A dot: the detail radius rounds the 4px square fully.
+                fill_round(
+                    scene,
+                    tf,
+                    Rect::from_center_size(dot, (4.0, 4.0)),
+                    f64::from(theme.tokens.radii.detail),
+                    ink,
+                );
+            }
         }
         if let Some(rect) = l.reset_transform {
             let plain = clip.transform.is_identity();
