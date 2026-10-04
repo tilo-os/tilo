@@ -178,6 +178,15 @@ def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
         vm.run(*args, timeout=300, slot=False)
 
 
+def whole_json(text: str) -> dict:
+    """`tilo-vm --json`'s one object, which it may print across lines; {} if there is none."""
+    start = text.find("{")
+    try:
+        return json.JSONDecoder().raw_decode(text[start:])[0] if start >= 0 else {}
+    except ValueError:
+        return {}
+
+
 def component_scopes(source: Path) -> dict[str, str]:
     manifest = tomllib.loads((source / "os/components.toml").read_text())
     return {c["name"]: c.get("scope", "session") for c in manifest.get("component", [])}
@@ -198,7 +207,7 @@ def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path) -
             out = vm.run("--json", "swap", component, "--slot", slot, "--builder", "host",
                          timeout=5400, slot=False, cwd=source)
             entry["seconds"] = round(time.monotonic() - started)
-            entry["result"] = first_json(out)
+            entry["result"] = whole_json(out)
             slots.add(slot)
         except VmError as exc:
             entry["error"] = exc.reason()
@@ -208,7 +217,7 @@ def swap_components(vm: TiloVm, components: list[str], ref: str, source: Path) -
     layers = {}
     for slot in sorted(slots):
         try:
-            shown = first_json(vm.run("--json", "slot", "show", slot, timeout=120, slot=False))
+            shown = whole_json(vm.run("--json", "slot", "show", slot, timeout=120, slot=False))
             layers[slot] = (shown.get("slot") or {}).get("components") or {}
         except VmError as exc:
             layers[slot] = {"error": exc.reason()}
