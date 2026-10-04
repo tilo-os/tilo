@@ -1,153 +1,166 @@
-//! Headless `--shots` mode — renders one offscreen frame of the
-//! `SettingsApp` to a PNG and exits. Mirrors the sibling native apps so the
-//! snapshot harness stays consistent.
+//! `--shots` scenarios.
 //!
-//! Scenarios are derived from the output filename so a single binary produces
-//! every required shot:
-//! - `settings.png` — the wide two-pane layout, opened on a rich panel
-//!   (Appearance), so the selected sidebar row and a populated content
-//!   pane are both visible.
-//! - `settings-narrow.png` — the narrow collapse default: the selected panel
-//!   full-screen with a back-arrow affordance (a collapse keeps the content,
-//!   never the category list).
-//! - `settings-narrow-list.png` — the narrow list screen: the full-screen
-//!   category list with the search field on top (the back-tap-away state).
-//! - `settings-narrow-content.png` — the narrow content screen: the selected
-//!   panel full-screen with the back-arrow affordance.
+//! The framework captures the live window; this module names what the
+//! Settings capture scenarios show and builds the deterministic fixtures
+//! they stage. A scenario never reads the host: hardware panes render
+//! fixture data so a capture is the same on every machine.
+//!
+//! - no scenario: the Appearance pane, wide, so the selected sidebar row and
+//!   a populated content pane are both visible;
+//! - a category slug (`network`, `sound`, `region_formats`, ...): that pane,
+//!   with the hardware panes showing fixture data;
+//! - `<slug>-narrow`: that pane's content screen in a phone-sized window;
+//! - `nav-narrow`: the narrow category list, the screen a collapse returns
+//!   to;
+//! - `network-wifi`, `sound-apps`, `accounts-populated`, `accounts-form`,
+//!   `speakers-layout`: a populated Wi-Fi scan, per-application audio routing,
+//!   the external accounts inventory with and without its add form, and the
+//!   room layout step of setting up speakers.
 
-use std::collections::HashMap;
-use std::path::Path;
-
-use taffy::prelude::*;
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
-use crate::SettingsApp;
 use crate::categories::Category;
-use crate::settings_app::NAV_BREAKPOINT;
 
-/// Default (wide) offscreen viewport. Matches the sibling apps' aspect.
-pub const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 760);
-
-/// Narrow viewport used for the responsive single-pane shot — phone-ish.
+/// The viewport of a `-narrow` scenario: phone-sized.
 pub const NARROW_SHOTS_VIEWPORT: (u32, u32) = (440, 820);
 
-/// The screenshot scenarios, derived from the output filename.
+/// Every scenario name, for `--shots --scenario NAME`.
+pub const SCENARIOS: &[&str] = &[
+    "network",
+    "bluetooth",
+    "devices_sync",
+    "sound",
+    "speakers",
+    "displays",
+    "mouse_keyboard",
+    "keyboard_shortcuts",
+    "time_date",
+    "users",
+    "printers",
+    "power",
+    "appearance",
+    "accessibility",
+    "notifications",
+    "default-apps",
+    "storage",
+    "external_accounts",
+    "agent_models",
+    "region_formats",
+    "permissions",
+    "updates",
+    "about",
+    "network-narrow",
+    "appearance-narrow",
+    "region_formats-narrow",
+    "external_accounts-narrow",
+    "power-narrow",
+    "nav-narrow",
+    "network-wifi",
+    "sound-apps",
+    "accounts-populated",
+    "accounts-form",
+    "speakers-layout",
+];
+
+/// A fixture a scenario puts in place of the live pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Scenario {
-    /// Wide two-pane, opened on Appearance.
-    Wide,
-    /// Narrow single-pane collapse default — the content screen for Region &
-    /// Formats, full-screen with the back arrow (never the category list).
-    Narrow,
+pub enum Demo {
+    /// A Wi-Fi scan with one network's password prompt open.
+    NetworkWifi,
+    /// Two output devices and per-application routing.
+    SoundApps,
+    /// The accounts inventory, populated.
+    AccountsPopulated,
+    /// The accounts inventory with the add form open.
+    AccountsForm,
+    /// Placing the speakers of a new set around the room.
+    SpeakersLayout,
+}
+
+/// What a named scenario asks the app to show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Scenario {
+    /// The selected category.
+    pub category: Category,
+    /// A narrow window shows the pane full screen.
+    pub narrow_content: bool,
+    /// A narrow window shows the category list.
+    pub narrow_list: bool,
+    /// A fixture to show instead of the live pane.
+    pub demo: Option<Demo>,
 }
 
 impl Scenario {
-    /// Derive the scenario from the `--shots` output path: any filename
-    /// containing `narrow` selects the narrow scenario.
-    pub fn from_shots_path(path: &Path) -> Scenario {
-        let name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if name.contains("narrow") {
-            Scenario::Narrow
-        } else {
-            Scenario::Wide
+    /// The scenario named `name` (`None`: a plain `--shots`). A `-narrow`
+    /// name is its base scenario in a phone-sized window.
+    pub fn parse(name: Option<&str>) -> Self {
+        let plain = Self {
+            category: Category::Appearance,
+            narrow_content: false,
+            narrow_list: false,
+            demo: None,
+        };
+        let Some(name) = name else {
+            return plain;
+        };
+        if name == "nav-narrow" {
+            return Self {
+                category: Category::RegionFormats,
+                narrow_list: true,
+                ..plain
+            };
         }
-    }
-
-    /// The viewport for this scenario.
-    pub fn viewport(self) -> (u32, u32) {
-        match self {
-            Scenario::Wide => DEFAULT_SHOTS_VIEWPORT,
-            Scenario::Narrow => NARROW_SHOTS_VIEWPORT,
+        if let Some(base) = name.strip_suffix("-narrow") {
+            return Self {
+                narrow_content: true,
+                ..Self::parse(Some(base))
+            };
         }
-    }
-
-    /// The app pre-configured for this scenario.
-    pub fn app(self) -> SettingsApp {
-        match self {
-            // Wide: docked sidebar with a rich, visible category active so the
-            // still proves selection drives the pane without placing the
-            // selected row below the initial sidebar viewport.
-            Scenario::Wide => SettingsApp::with_selected(Category::Appearance)
-                .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32)
-                .with_deterministic_hardware_for_shot(),
-            // Narrow: the collapse default — Region & Formats' content
-            // full-screen with a back arrow to the list. A collapse keeps the
-            // content, never the category list.
-            Scenario::Narrow => SettingsApp::with_selected(Category::RegionFormats)
-                .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
-                .with_deterministic_hardware_for_shot(),
+        match name {
+            "network" | "network-wifi" => Self {
+                category: Category::Network,
+                demo: Some(Demo::NetworkWifi),
+                ..plain
+            },
+            "sound" | "sound-apps" => Self {
+                category: Category::Sound,
+                demo: Some(Demo::SoundApps),
+                ..plain
+            },
+            "external_accounts" | "accounts-populated" => Self {
+                category: Category::ExternalAccounts,
+                demo: Some(Demo::AccountsPopulated),
+                ..plain
+            },
+            "speakers-layout" => Self {
+                category: Category::Speakers,
+                demo: Some(Demo::SpeakersLayout),
+                ..plain
+            },
+            "accounts-form" => Self {
+                category: Category::ExternalAccounts,
+                demo: Some(Demo::AccountsForm),
+                ..plain
+            },
+            slug => Self {
+                category: Category::from_slug(slug).unwrap_or(plain.category),
+                ..plain
+            },
         }
     }
 }
 
-/// Map a category slug to its [`Category`], for the per-panel capture
-/// driven by the `TILO_SHOTS_PANEL` env var.
-fn category_from_slug(slug: &str) -> Option<Category> {
-    Category::ALL.iter().copied().find(|c| c.slug() == slug)
+/// The viewport a scenario is captured at, when it is not the default.
+pub fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+    name.ends_with("-narrow").then_some(NARROW_SHOTS_VIEWPORT)
 }
 
-/// A `NetworkPane` populated with a deterministic scan list, a connected
-/// wired link, and a secure network's password prompt pre-expanded — the
-/// state the connect flow reaches after clicking "Connect" on a locked
-/// network. Used by the `netdemo` capture.
-fn network_demo_pane() -> Box<dyn Widget> {
-    use os_actions::{WifiNetworkInfo, WiredInfo};
-    let nets = vec![
-        WifiNetworkInfo {
-            ssid: "Home_Network".into(),
-            signal: 4,
-            secure: true,
-            security: os_actions::WifiSecurity::Wpa3,
-            connected: true,
-        },
-        WifiNetworkInfo {
-            ssid: "Cafe_Guest".into(),
-            signal: 3,
-            secure: false,
-            security: os_actions::WifiSecurity::Open,
-            connected: false,
-        },
-        WifiNetworkInfo {
-            ssid: "Office_5G".into(),
-            signal: 2,
-            secure: true,
-            security: os_actions::WifiSecurity::Wpa2,
-            connected: false,
-        },
-    ];
-    let pane = crate::panes::network::NetworkPane::new_demo(nets)
-        .with_wired(WiredInfo {
-            connected: true,
-            device: Some("enp3s0".into()),
-            speed: Some("1000 Mb/s".into()),
-            ipv4: Some("192.168.1.42".into()),
-        })
-        .with_expanded("Office_5G");
-    Box::new(pane)
-}
-
-/// An `AudioPane` seeded with a deterministic `PipeWire` graph: two output
-/// devices (Speakers + Headphones), and per-application streams — the music app
-/// routed to the Headphones while the browser stays on the Speakers, plus a
-/// meeting app on the microphone — so the still proves the per-application
-/// routing surface (a picker, volume, and mute per app). Sample data lives only
-/// behind `--shots`; the live pane enumerates the real graph.
-fn audio_demo_pane() -> Box<dyn Widget> {
-    use crate::panes::audio::{AudioDevice, AudioDevices, AudioPane, RealDevice, RealInput};
-    use media::audio::{AudioDevice as GDevice, AudioGraph, AudioStream, NoopGraphControl};
-    use std::sync::Arc;
+/// The `PipeWire` graph of the capture machine: two output devices, the
+/// music app routed to the headphones while the browser follows the
+/// speakers, and a meeting app on the microphone. The sound pane and the
+/// published resources both read it.
+pub(crate) fn audio_graph() -> media::audio::AudioGraph {
+    use media::audio::{AudioDevice as GDevice, AudioGraph, AudioStream};
 
     let sink = |id, serial, name: &str, def| GDevice {
         id,
@@ -170,7 +183,7 @@ fn audio_demo_pane() -> Box<dyn Widget> {
         volume: Some(vol),
         muted: Some(mute),
     };
-    let graph = AudioGraph {
+    AudioGraph {
         sinks: vec![
             sink(51, 51, "Speakers", true),
             sink(91, 269, "Headphones", false),
@@ -193,7 +206,177 @@ fn audio_demo_pane() -> Box<dyn Widget> {
             false,
         )],
         hardware: vec![],
+    }
+}
+
+/// The outputs the compositor publishes on the capture machine: the laptop's
+/// own panel and a monitor on a `DisplayPort` connector, side by side.
+pub(crate) fn display_snapshot() -> settings_store::hardware::DisplayHardwareSnapshot {
+    use settings_store::hardware::{
+        DisplayHardwareSnapshot, DisplayOutputSnapshot, LiveOutputPlacement, MonitorIdentity,
+        OutputDescriptor, OutputMode,
     };
+
+    let mode = |width, height, refresh_mhz| OutputMode {
+        width,
+        height,
+        refresh_mhz,
+    };
+    let output = |connector: &str,
+                  builtin: bool,
+                  modes: Vec<OutputMode>,
+                  monitor: Option<MonitorIdentity>| DisplayOutputSnapshot {
+        descriptor: OutputDescriptor {
+            connector: connector.into(),
+            connector_label: connector.into(),
+            modes: modes.clone(),
+            hdr: false,
+            vrr: false,
+            color_profiles: Vec::new(),
+            monitor,
+        },
+        current_mode: modes
+            .first()
+            .copied()
+            .unwrap_or_else(|| mode(1920, 1080, 60_000)),
+        scale: 1.0,
+        builtin,
+        sink_hdr: false,
+        hdr_unavailable_reason: None,
+        sink_vrr: false,
+        vrr_unavailable_reason: None,
+        color_profile_labels: std::collections::BTreeMap::new(),
+    };
+    DisplayHardwareSnapshot {
+        generated_unix_ms: 0,
+        backend: "capture".into(),
+        publisher_pid: 0,
+        publisher_start_ticks: 0,
+        outputs: vec![
+            output(
+                "eDP-1",
+                true,
+                vec![
+                    mode(1920, 1080, 60_000),
+                    mode(1600, 900, 60_000),
+                    mode(1280, 720, 60_000),
+                ],
+                None,
+            ),
+            output(
+                "DP-2",
+                false,
+                vec![
+                    mode(2560, 1440, 59_950),
+                    mode(1920, 1080, 60_000),
+                    mode(1680, 1050, 59_950),
+                ],
+                Some(MonitorIdentity {
+                    make: "Dell".into(),
+                    model: "DELL U2720Q".into(),
+                    serial: "7XKQ3H2".into(),
+                    physical_size_mm: Some((597, 336)),
+                }),
+            ),
+        ],
+        layout: vec![
+            LiveOutputPlacement {
+                connector: "eDP-1".into(),
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+            LiveOutputPlacement {
+                connector: "DP-2".into(),
+                x: 1920,
+                y: 0,
+                width: 2560,
+                height: 1440,
+            },
+        ],
+    }
+}
+
+/// The battery's charge-limit control on the capture machine.
+pub(crate) fn charge_capability() -> os_actions::ChargeCapCapability {
+    os_actions::ChargeCapCapability {
+        backend: os_actions::ChargeCapBackend::PowerSupply,
+        current: 80,
+        choices: vec![60, 70, 80, 90, 100],
+        supports_start_threshold: false,
+    }
+}
+
+/// The accounts of `directory`, as the shared store holds them, for the
+/// resources published beside the pane that lists them.
+pub(crate) fn account_inventory(
+    directory: &crate::accounts::AccountDirectory,
+) -> Vec<accounts::Account> {
+    crate::accounts::AccountKind::ALL
+        .into_iter()
+        .flat_map(|kind| directory.views_of(kind))
+        .map(|view| {
+            let mut account =
+                accounts::Account::new(accounts::AccountId::from(view.id), view.kind.type_id());
+            account.display_name = view.label;
+            account
+        })
+        .collect()
+}
+
+/// A `NetworkPane` populated with a deterministic scan list, a connected
+/// wired link, and a secure network's password prompt pre-expanded — the
+/// state the connect flow reaches after clicking "Connect" on a locked
+/// network. Used by the `netdemo` capture.
+pub(crate) fn network_demo_pane() -> Box<dyn Widget> {
+    use os_actions::{WifiNetworkInfo, WiredInfo};
+    let nets = vec![
+        WifiNetworkInfo {
+            ssid: "Home".into(),
+            signal: 4,
+            secure: true,
+            security: os_actions::WifiSecurity::Wpa3,
+            connected: true,
+        },
+        WifiNetworkInfo {
+            ssid: "Cafe Guest".into(),
+            signal: 3,
+            secure: false,
+            security: os_actions::WifiSecurity::Open,
+            connected: false,
+        },
+        WifiNetworkInfo {
+            ssid: "Office 5G".into(),
+            signal: 2,
+            secure: true,
+            security: os_actions::WifiSecurity::Wpa2,
+            connected: false,
+        },
+    ];
+    let pane = crate::panes::network::NetworkPane::new_demo(nets)
+        .with_wired(WiredInfo {
+            connected: true,
+            device: Some("enp3s0".into()),
+            speed: Some("1000 Mb/s".into()),
+            ipv4: Some("192.168.1.42".into()),
+        })
+        .with_expanded("Office 5G");
+    Box::new(pane)
+}
+
+/// An `AudioPane` seeded with a deterministic `PipeWire` graph: two output
+/// devices (Speakers + Headphones), and per-application streams — the music app
+/// routed to the Headphones while the browser stays on the Speakers, plus a
+/// meeting app on the microphone — so the still proves the per-application
+/// routing surface (a picker, volume, and mute per app). Sample data lives only
+/// behind `--shots`; the live pane enumerates the real graph.
+pub(crate) fn audio_demo_pane() -> Box<dyn Widget> {
+    use crate::panes::audio::{AudioDevice, AudioDevices, AudioPane, RealDevice, RealInput};
+    use media::audio::NoopGraphControl;
+    use std::sync::Arc;
+
+    let graph = audio_graph();
     // The device pickers read the local device view; give it the same two sinks
     // so the output-device chooser is shown alongside the per-app rows.
     let devices = AudioDevices {
@@ -222,401 +405,34 @@ fn audio_demo_pane() -> Box<dyn Widget> {
     Box::new(pane)
 }
 
-/// Render the scenario selected by `out`'s filename into a PNG at `out`.
-///
-/// When the `TILO_SHOTS_PANEL` env var is set to a category slug, the wide
-/// two-pane layout is rendered with that category selected instead of the
-/// default scenario — this is how the verification harness captures every
-/// panel from one binary.
-///
-/// # Errors
-///
-/// The `Result` return type matches the `--shots` binary's `main` signature;
-/// every path through this function currently always returns `Ok(())`.
-pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    render_for_path_with_text_scale(out, None)
-}
-
-/// Render a named acceptance scenario with an optional accessibility text
-/// scale. Settings has an app-specific shot pipeline, so it must explicitly
-/// carry the standard launcher's `--text-scale` through rather than silently
-/// dropping it as the old custom renderer did.
-///
-/// # Errors
-///
-/// Propagates an offscreen renderer or PNG-write failure.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the filename-routed acceptance scenarios remain auditable as one exhaustive dispatch table"
-)]
-pub fn render_for_path_with_text_scale(
-    out: &Path,
-    text_scale: Option<f32>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let fname = out
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-
-    // `…narrow-list.png` proves the narrow list screen: the full-screen
-    // category list (the back-tap-away state a collapse no longer defaults to).
-    if fname.contains("narrow") && fname.contains("list") {
-        let app = SettingsApp::with_selected(Category::RegionFormats)
-            .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
-            .with_deterministic_hardware_for_shot()
-            .with_narrow_list_shot();
-        return render_to_path_with_text_scale(
-            Box::new(app),
-            NARROW_SHOTS_VIEWPORT,
-            out,
-            text_scale,
-        );
-    }
-
-    // `…narrow-content.png` proves the narrow content screen: the selected
-    // panel full-screen with the back-arrow affordance in the top-left.
-    if fname.contains("narrow") && fname.contains("content") {
-        let app = SettingsApp::with_selected(Category::RegionFormats)
-            .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
-            .with_deterministic_hardware_for_shot()
-            .with_narrow_content_shot();
-        return render_to_path_with_text_scale(
-            Box::new(app),
-            NARROW_SHOTS_VIEWPORT,
-            out,
-            text_scale,
-        );
-    }
-
-    // `…search.png` proves the sidebar search filters the category list to the
-    // matching panes. Seeded with a query that spans two categories.
-    if fname.contains("search") {
-        // Keep this visual acceptance path independent from a live display
-        // connector snapshot. Display hardware is intentionally discovered
-        // at runtime and may include a transient compositor hand-off while a
-        // headless renderer is starting; Appearance still gives this capture
-        // a rich, deterministic content pane while the sidebar proves the
-        // filtered navigation state.
-        let app = SettingsApp::with_selected(Category::Appearance)
-            .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32)
-            .with_deterministic_hardware_for_shot()
-            .with_search_shot("light");
-        return render_to_path_with_text_scale(
-            Box::new(app),
-            DEFAULT_SHOTS_VIEWPORT,
-            out,
-            text_scale,
-        );
-    }
-
-    // `…netdemo.png` renders the Network pane with a populated scan list and
-    // an open inline password prompt, proving the connect flow's surface.
-    if fname.contains("netdemo") {
-        return render_to_path_with_text_scale(
-            network_demo_pane(),
-            DEFAULT_SHOTS_VIEWPORT,
-            out,
-            text_scale,
-        );
-    }
-
-    // `…audiodemo.png` renders the Sound pane with two output devices and
-    // per-application streams — the music app routed to headphones while the
-    // browser stays on speakers — proving the per-app routing surface.
-    if fname.contains("audiodemo") {
-        return render_to_path_with_text_scale(
-            audio_demo_pane(),
-            DEFAULT_SHOTS_VIEWPORT,
-            out,
-            text_scale,
-        );
-    }
-
-    // A populated External Accounts acceptance surface. Unlike the live pane,
-    // which must honestly show an empty inventory on a fresh install, this
-    // deterministic capture exercises row hierarchy, status, and maintenance
-    // actions at both responsive widths without touching the user's stores.
-    if fname.contains("accountdemo") || fname.contains("accountform") {
-        let viewport = if fname.contains("narrow") {
-            NARROW_SHOTS_VIEWPORT
-        } else {
-            DEFAULT_SHOTS_VIEWPORT
-        };
-        let mut app = SettingsApp::with_selected(Category::ExternalAccounts)
-            .with_width_hint(viewport.0 as f32)
-            .with_deterministic_hardware_for_shot()
-            .with_account_directory_for_shot(crate::accounts::sample_directory());
-        if fname.contains("accountform") {
-            app = app.with_account_form_for_shot(crate::accounts::AccountKind::Nextcloud);
-        }
-        if fname.contains("narrow") {
-            app = app.with_narrow_content_shot();
-        }
-        return render_to_path_with_text_scale(Box::new(app), viewport, out, text_scale);
-    }
-
-    // Per-panel capture: a `…panel-<slug>.png` filename (or the
-    // `TILO_SHOTS_PANEL` env var) renders the wide layout on that category.
-    let panel_slug = std::env::var("TILO_SHOTS_PANEL").ok().or_else(|| {
-        let name = out.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        name.rsplit_once("panel-")
-            .map(|(_, rest)| rest.trim_end_matches(".png").to_string())
-    });
-    if let Some(slug) = panel_slug {
-        // A `narrow` token in the filename captures the panel in the narrow
-        // content screen (the pane full-screen with the back arrow); otherwise
-        // the wide two-pane layout.
-        let slug = slug.trim().trim_end_matches("-narrow");
-        if let Some(cat) = category_from_slug(slug) {
-            if fname.contains("narrow") {
-                let app = SettingsApp::with_selected(cat)
-                    .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
-                    .with_deterministic_hardware_for_shot()
-                    .with_narrow_content_shot();
-                return render_to_path_with_text_scale(
-                    Box::new(app),
-                    NARROW_SHOTS_VIEWPORT,
-                    out,
-                    text_scale,
-                );
-            }
-            let app = SettingsApp::with_selected(cat)
-                .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32)
-                .with_deterministic_hardware_for_shot();
-            return render_to_path_with_text_scale(
-                Box::new(app),
-                DEFAULT_SHOTS_VIEWPORT,
-                out,
-                text_scale,
-            );
-        }
-    }
-    let scenario = Scenario::from_shots_path(out);
-    render_to_path_with_text_scale(
-        Box::new(scenario.app()),
-        scenario.viewport(),
-        out,
-        text_scale,
-    )
-}
-
-/// Render the ordinary Settings root at an explicitly requested acceptance
-/// viewport. Unlike named documentation scenarios, responsive-matrix captures
-/// must preserve the caller's exact dimensions and let the real shell
-/// breakpoint select docked versus drill-in navigation.
-///
-/// # Errors
-///
-/// Returns the offscreen renderer or PNG write error.
-pub fn render_responsive_to_path(
-    viewport: (u32, u32),
-    out: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    render_responsive_to_path_with_text_scale(viewport, out, None)
-}
-
-/// Render an exact responsive viewport while preserving the requested text
-/// scale, just as the normal launcher path does.
-///
-/// # Errors
-///
-/// Propagates an offscreen renderer or PNG-write failure.
-pub fn render_responsive_to_path_with_text_scale(
-    viewport: (u32, u32),
-    out: &Path,
-    text_scale: Option<f32>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let app = responsive_app(viewport, text_scale.unwrap_or(1.0));
-    render_to_path_with_text_scale(Box::new(app), viewport, out, text_scale)
-}
-
-/// The scenario a responsive capture documents at `viewport` under
-/// `text_scale`: the narrow Region formats screen below the shell's
-/// breakpoint, the docked External Accounts page at or above it. The
-/// breakpoint grows with the text scale exactly as the shell's does, so the
-/// scenario and the layout class the shell resolves always agree.
-fn responsive_app(viewport: (u32, u32), text_scale: f32) -> SettingsApp {
-    if f64::from(viewport.0) < NAV_BREAKPOINT * f64::from(text_scale.max(1.0)) {
-        SettingsApp::with_selected(Category::RegionFormats)
-            .with_width_hint(viewport.0 as f32)
-            .with_deterministic_hardware_for_shot()
-            .with_narrow_content_shot()
-    } else {
-        SettingsApp::with_selected(Category::Appearance)
-            .with_width_hint(viewport.0 as f32)
-            .with_deterministic_hardware_for_shot()
-    }
-}
-
-/// Build the `Scene` for `widget` at `viewport` size. Mirrors the
-/// `sync → build_layout → compute_layout → apply_layout → draw` cycle
-/// `ui::App` runs for a single redraw, but stops at the CPU-side `Scene` so a
-/// caller can rasterise many scenes through **one** reused
-/// [`OffscreenRenderer`] (which amortises the expensive vello shader
-/// compilation over every pane instead of paying it per process).
-pub fn build_widget_scene(widget: Box<dyn Widget>, viewport: (u32, u32)) -> Scene {
-    build_widget_scene_with_text_scale(widget, viewport, None)
-}
-
-/// Build a scene with an optional accessibility type multiplier. Kept separate
-/// from the viewport so responsive acceptance captures can prove both layout
-/// mode and large-text behaviour at their exact requested dimensions.
-pub fn build_widget_scene_with_text_scale(
-    mut widget: Box<dyn Widget>,
-    viewport: (u32, u32),
-    text_scale: Option<f32>,
-) -> Scene {
-    let (w, h) = viewport;
-    // `TILO_SHOTS_THEME=<name>` renders under any named theme (e.g. `dracula`,
-    // `gruvbox`, `catppuccin-mocha`, `light`, `high-contrast`); defaults to dark.
-    let theme = std::env::var("TILO_SHOTS_THEME")
-        .ok()
-        .and_then(|n| Theme::named(&n))
-        .unwrap_or_else(Theme::dark)
-        .with_text_scale(text_scale.unwrap_or(1.0))
-        .with_reduce_motion(matches!(
-            std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
-            Some("1" | "true" | "yes" | "on")
-        ));
-    widget.set_motion_reduced(theme.reduce_motion);
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    // The live host (`ui::App`), the shared launcher and the headless
-    // harness all hand the theme's text scale to the renderer, so text the
-    // app paints itself through the renderer grows with the preference. A
-    // capture that left the renderer at 1× would under-report every
-    // custom-drawn label (the sidebar rows, for one) at 200 %.
-    text_renderer.set_text_scale(theme.text_scale);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    widget.sync(&mut state.doc, &state.root);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap_or(child);
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        // Ignore the (never-hit-in-practice) error: leaving the layout cache
-        // stale is safe, since every reader below tolerates a missing entry.
-        let _ = taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        );
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-    widget.sync(&mut state.doc, &state.root);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-    scene
-}
-
-/// Render `widget` at `viewport` size into a PNG at `out`. Mirrors the
-/// `sync → build_layout → compute_layout → apply_layout → draw` cycle
-/// `ui::App` runs for a single redraw.
-///
-/// # Errors
-///
-/// The `Result` return type matches the `--shots` binary's `main` signature;
-/// every path through this function currently always returns `Ok(())`.
-pub fn render_to_path(
-    widget: Box<dyn Widget>,
-    viewport: (u32, u32),
-    out: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    render_to_path_with_text_scale(widget, viewport, out, None)
-}
-
-/// Render a widget with an optional accessibility text multiplier.
-///
-/// # Errors
-///
-/// Propagates an offscreen renderer or PNG-write failure.
-pub fn render_to_path_with_text_scale(
-    widget: Box<dyn Widget>,
-    viewport: (u32, u32),
-    out: &Path,
-    text_scale: Option<f32>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    let scene = build_widget_scene_with_text_scale(widget, viewport, text_scale);
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
-    println!("settings: wrote shot to {}", out.display());
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Shot scenarios derive from the file name, and each scenario (and each
-    /// exact capture width) opens the navigation mode and pane it shows.
     #[test]
-    fn shot_scenarios_select_their_layout_and_pane() {
-        for (path, want) in [
-            ("/x/settings-narrow.png", Scenario::Narrow),
-            ("/x/settings.png", Scenario::Wide),
-        ] {
-            assert_eq!(Scenario::from_shots_path(Path::new(path)), want, "{path}");
+    fn every_scenario_name_resolves_to_its_pane() {
+        assert_eq!(Scenario::parse(None).category, Category::Appearance);
+        for name in SCENARIOS {
+            let scenario = Scenario::parse(Some(name));
+            let slug = name.strip_suffix("-narrow").unwrap_or(name);
+            if let Some(category) = Category::from_slug(slug) {
+                assert_eq!(scenario.category, category, "{name}");
+            }
+            assert_eq!(
+                scenario_viewport(name).is_some(),
+                name.ends_with("-narrow"),
+                "{name}"
+            );
         }
+        let list = Scenario::parse(Some("nav-narrow"));
+        assert!(list.narrow_list && !list.narrow_content);
+        assert!(Scenario::parse(Some("region_formats-narrow")).narrow_content);
+    }
 
-        // The width hint + shot flag are applied; the resolved narrow/overlay
-        // layout is asserted in the layout-driven tests once a frame is laid
-        // out (see settings_app tests). Each case gets its own config dir.
-        for (scenario, want) in [
-            (Scenario::Narrow, Category::RegionFormats),
-            (Scenario::Wide, Category::Appearance),
-        ] {
-            let _config = crate::prefs::test_env::ConfigGuard::new();
-            assert_eq!(scenario.app().selected(), want, "{scenario:?}");
-        }
-
-        // (capture size, narrow, selected pane)
-        for (size, narrow, want) in [
-            ((390, 844), true, Category::RegionFormats),
-            ((1920, 1080), false, Category::Appearance),
-        ] {
-            let _config = crate::prefs::test_env::ConfigGuard::new();
-            let app = responsive_app(size, 1.0);
-            assert_eq!(app.is_narrow(), narrow, "{size:?}");
-            assert_eq!(app.selected(), want, "{size:?}");
+    #[test]
+    fn every_category_has_a_scenario() {
+        for category in Category::ALL {
+            assert!(SCENARIOS.contains(&category.slug()), "{category:?}");
         }
     }
 }

@@ -12,10 +12,9 @@
 //!
 //! ## Live vs. sample
 //!
-//! - **Current time / date** are read from the real wall clock via
-//!   `os_actions::time::{now_clock, now_date}` at build time, so the panel
-//!   shows the actual time (formatted per the 24-hour toggle), not a frozen
-//!   string.
+//! - **Current time / date** are read through the toolkit clock
+//!   (`ui::clock`) at build time, so the panel shows the actual time
+//!   (formatted per the 24-hour toggle) and a capture its pinned one.
 //! - **Time zone** is read from timedated, falling back to `/etc/timezone`
 //!   (or the `/etc/localtime` symlink target) only when the service does not
 //!   report it. Choices come from `timedatectl list-timezones`; map coordinates
@@ -97,14 +96,29 @@ impl TimeZonePoint {
 /// has no embedded city/coordinate database. Aliases absent from the tzdata
 /// coordinate table remain available in the searchable selector.
 pub fn timezone_map(zones: &[String]) -> Vec<TimeZonePoint> {
-    const TABLES: &[&str] = &[
-        "/usr/share/zoneinfo/zone1970.tab",
-        "/usr/share/zoneinfo/zone.tab",
-    ];
-    TABLES
+    installed_zone_table().map_or_else(Vec::new, |table| timezone_map_from_tab(zones, &table))
+}
+
+const ZONE_TABLES: &[&str] = &[
+    "/usr/share/zoneinfo/zone1970.tab",
+    "/usr/share/zoneinfo/zone.tab",
+];
+
+/// The installed tzdata coordinate table, when this machine has one.
+fn installed_zone_table() -> Option<String> {
+    ZONE_TABLES
         .iter()
         .find_map(|path| fs::read_to_string(path).ok())
-        .map_or_else(Vec::new, |table| timezone_map_from_tab(zones, &table))
+}
+
+/// Every zone id the table publishes, in table order.
+fn zone_ids_in_table(table: &str) -> Vec<String> {
+    table
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .filter_map(|line| line.split('\t').nth(2))
+        .map(str::to_string)
+        .collect()
 }
 
 fn timezone_map_from_tab(zones: &[String], table: &str) -> Vec<TimeZonePoint> {
@@ -126,7 +140,7 @@ fn timezone_map_from_tab(zones: &[String], table: &str) -> Vec<TimeZonePoint> {
             Some(TimeZonePoint {
                 id: id.to_string(),
                 region: region.replace('_', " "),
-                city: city.replace('_', " ").replace('/', " · "),
+                city: city.replace('_', " ").replace('/', ", "),
                 latitude_e6,
                 longitude_e6,
             })
@@ -179,8 +193,9 @@ fn parse_coordinate_part(value: &str, latitude: bool) -> Option<f64> {
     (coordinate <= limit).then_some(sign * coordinate)
 }
 
-const MAP_HEIGHT: f32 = 176.0;
-const MAP_HIT_RADIUS: f64 = 11.0;
+/// The map's width over its height: equirectangular world maps are about
+/// two and a half times wider than tall once the caption band is added.
+const MAP_ASPECT: f32 = 2.4;
 
 /// Compact equirectangular picker over coordinates published by installed
 /// tzdata. It complements rather than replaces the searchable selector: the
@@ -195,6 +210,12 @@ struct TimeZoneMap {
     needs_commit: bool,
     action: Option<ui::widget::ActionEmitter<String>>,
     rect: Rect,
+    /// Inset of the plot from the well's edge (the `s2` step).
+    pad: f64,
+    /// Height of the caption band under the plot.
+    band: f64,
+    /// How close a pointer must come to a city to pick it.
+    hit_radius: f64,
 }
 
 impl TimeZoneMap {
@@ -211,6 +232,9 @@ impl TimeZoneMap {
             needs_commit: false,
             action: None,
             rect: Rect::ZERO,
+            pad: f64::from(ui::tokens::Spacing::BASE.s2),
+            band: f64::from(ui::tokens::Spacing::BASE.s6),
+            hit_radius: f64::from(ui::tokens::Metrics::BASE.min_pointer_target) / 2.0,
         }
     }
 
@@ -221,10 +245,10 @@ impl TimeZoneMap {
 
     fn plot_rect(&self) -> Rect {
         Rect::new(
-            self.rect.x0 + 10.0,
-            self.rect.y0 + 10.0,
-            (self.rect.x1 - 10.0).max(self.rect.x0 + 11.0),
-            (self.rect.y1 - 34.0).max(self.rect.y0 + 11.0),
+            self.rect.x0 + self.pad,
+            self.rect.y0 + self.pad,
+            (self.rect.x1 - self.pad).max(self.rect.x0 + self.pad),
+            (self.rect.y1 - self.pad - self.band).max(self.rect.y0 + self.pad),
         )
     }
 
@@ -249,7 +273,7 @@ impl TimeZoneMap {
             .filter_map(|(index, _)| {
                 let projected = self.projected(index);
                 let distance = (projected.x - position.x).hypot(projected.y - position.y);
-                (distance <= MAP_HIT_RADIUS).then_some((index, distance))
+                (distance <= self.hit_radius).then_some((index, distance))
             })
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(index, _)| index)
@@ -313,16 +337,24 @@ impl TimeZoneMap {
         }
     }
 
+    /// The caption under the plot: the city under the pointer or keyboard
+    /// cursor, else the chosen one.
     fn active_label(&self) -> String {
-        let active = self.hover.or_else(|| self.cursor.filter(|_| self.focused));
+        let active = self
+            .hover
+            .or_else(|| self.cursor.filter(|_| self.focused))
+            .or_else(|| self.selected_index());
         active.and_then(|index| self.points.get(index)).map_or_else(
-            || {
+            || self.selected.clone(),
+            |point| {
                 t_args(
-                    "time-map-selected",
-                    &[("zone", ArgValue::from(self.selected.as_str()))],
+                    "time-map-place",
+                    &[
+                        ("city", ArgValue::from(point.city.as_str())),
+                        ("region", ArgValue::from(point.region.as_str())),
+                    ],
                 )
             },
-            |point| format!("{} — {}", point.city, point.region),
         )
     }
 }
@@ -349,9 +381,13 @@ impl Widget for TimeZoneMap {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.pad = f64::from(theme.tokens.spacing.s2);
+        self.band = f64::from(theme.tokens.spacing.s2) * 2.0
+            + f64::from(theme.tokens.typography.size(ui::TextRole::Caption));
+        self.hit_radius = f64::from(theme.tokens.metrics.min_pointer_target) / 2.0;
         #[allow(
             clippy::unwrap_used,
             reason = "taffy 0.10's new_leaf always inserts and returns Ok; see ui::widget::TaffyTreeExt's doc comment"
@@ -360,8 +396,9 @@ impl Widget for TimeZoneMap {
             .new_leaf(Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(MAP_HEIGHT),
+                    height: Dimension::auto(),
                 },
+                aspect_ratio: Some(MAP_ASPECT),
                 flex_shrink: 0.0,
                 ..Default::default()
             })
@@ -388,17 +425,16 @@ impl Widget for TimeZoneMap {
         theme: &Theme,
         _presence: &ui::presence::PresenceCtx,
     ) {
-        // The map is a base-surface well inside its raised card: the fill is
-        // the contrast step, and the rest edge derives from that fill
-        // (`ui::surface::card`, HIG §9.5) so it registers on the dark preset
-        // where a declared `border_standard` stroke did not. Focus replaces
-        // the hairline with the 2 px focus ring.
-        let radius = f64::from(theme.tokens.radii.md);
-        let well = theme.tokens.colors.surfaces.base;
+        // The map is a well on the content ground: the raised surface is the
+        // contrast step, and the rest edge derives from that fill
+        // (`ui::surface::card`, HIG §9.5). Focus replaces the hairline with
+        // the focus ring.
+        let radius = f64::from(theme.tokens.radii.control);
+        let well = theme.tokens.colors.surfaces.raised;
         ui::surface::card(scene, transform, self.rect, radius, well);
         if self.focused {
             scene.stroke(
-                &Stroke::new(2.0),
+                &Stroke::new(f64::from(theme.tokens.spacing.s1) / 2.0),
                 transform,
                 theme.border_focus,
                 None,
@@ -432,13 +468,13 @@ impl Widget for TimeZoneMap {
         }
 
         if self.points.is_empty() {
-            text_renderer.draw_text(
-                scene,
+            let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+            ctx.text_role(
                 &t("time-map-unavailable"),
-                11.0,
+                ui::TextRole::Caption,
                 theme.text_dim,
-                transform * Affine::translate((plot.x0 + 8.0, plot.center().y - 6.0)),
-                Some((plot.width() - 16.0).max(1.0) as f32),
+                Point::new(plot.x0 + self.pad, plot.center().y),
+                Some((plot.width() - 2.0 * self.pad) as f32),
             );
             return;
         }
@@ -449,36 +485,43 @@ impl Widget for TimeZoneMap {
             let is_selected = selected == Some(index);
             let is_active =
                 self.hover == Some(index) || (self.focused && self.cursor == Some(index));
-            let radius = if is_selected { 4.5 } else { 2.2 };
+            let unit = f64::from(theme.tokens.spacing.s1);
+            let radius = if is_selected { unit } else { unit / 2.0 };
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
                 if is_selected {
-                    theme.accent_primary
+                    theme.text_primary
                 } else {
-                    theme.text_dim.multiply_alpha(170.0 / 255.0)
+                    theme.text_dim
                 },
                 None,
                 &Circle::new(centre, radius),
             );
             if is_active {
                 scene.stroke(
-                    &Stroke::new(2.0),
+                    &Stroke::new(unit / 2.0),
                     transform,
                     theme.border_focus,
                     None,
-                    &Circle::new(centre, radius + 4.0),
+                    &Circle::new(centre, radius + unit),
                 );
             }
         }
 
-        text_renderer.draw_text(
-            scene,
+        let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+        ctx.text_role_in_band(
             &self.active_label(),
-            11.0,
+            ui::TextRole::Caption,
             theme.text_primary,
-            transform * Affine::translate((self.rect.x0 + 10.0, self.rect.y1 - 23.0)),
-            Some((self.rect.width() - 20.0).max(1.0) as f32),
+            self.rect.x0 + self.pad,
+            Rect::new(
+                self.rect.x0,
+                self.rect.y1 - self.band,
+                self.rect.x1,
+                self.rect.y1,
+            ),
+            Some((self.rect.width() - 2.0 * self.pad) as f32),
         );
     }
 
@@ -817,14 +860,13 @@ impl TimeDatePane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let now = os_actions::now_clock(self.h24).unwrap_or_else(|_| "—".to_string());
-        let today = os_actions::now_date().unwrap_or_else(|_| "—".to_string());
+        // Read through the toolkit clock so a capture shows its pinned time.
+        let local = ui::clock::local_now();
+        let now = local
+            .format(if self.h24 { "%H:%M" } else { "%I:%M %p" })
+            .to_string();
+        let today = local.format("%A, %-d %B %Y").to_string();
 
-        let clock_format = if self.h24 {
-            t("time-clock-24h")
-        } else {
-            t("time-clock-12h")
-        };
         let sync = match self.sync_status.synchronized {
             Some(true) => t("time-sync-ok"),
             Some(false) if self.initial_auto => t("time-sync-waiting"),
@@ -836,19 +878,6 @@ impl TimeDatePane {
             .source
             .clone()
             .unwrap_or_else(|| t("time-source-unknown"));
-        let mapped = self.timezone_points.len();
-        let map_note = if mapped == 0 {
-            t("time-map-empty")
-        } else {
-            t_args(
-                "time-map-count",
-                &[(
-                    "mapped",
-                    ArgValue::from(i64::try_from(mapped).unwrap_or(i64::MAX)),
-                )],
-            )
-        };
-
         let clock = card(
             &t("time-clock-title"),
             rows(vec![
@@ -885,35 +914,29 @@ impl TimeDatePane {
             ]),
         );
 
-        let formats = card(
-            &t("time-display-title"),
-            rows(vec![
-                value_row(&t("time-clock-format"), &clock_format),
-                caption(&t("time-display-caption")),
-            ]),
-        );
-
-        let map = card(
-            &t("time-map-title"),
-            rows(vec![
-                Box::new(
+        // Without coordinates there is nothing to draw: the selector above
+        // is the whole control.
+        let map = (!self.timezone_points.is_empty()).then(|| {
+            card(
+                &t("time-map-title"),
+                rows(vec![Box::new(
                     TimeZoneMap::new(self.timezone_points.clone(), self.timezone.clone())
                         .on_action(time_text_action("timezone")),
-                ),
-                caption(&map_note),
-            ]),
-        );
+                )]),
+            )
+        });
 
         let source = card(
             &t("time-source-title"),
             rows(vec![
                 value_row(&t("time-sync"), &sync),
                 value_row(&t("time-source"), &source_name),
-                caption(&t("time-source-caption")),
             ]),
         );
 
-        let mut cards = vec![clock, map, source, formats];
+        let mut cards = vec![clock];
+        cards.extend(map);
+        cards.push(source);
         if let Some(notice) = &self.notice {
             cards.insert(
                 0,
@@ -1043,6 +1066,85 @@ impl ui::undo::UndoPoints for TimeDatePane {
         )
     }
 }
+/// Fixture data for captures: Berlin on a map of cities.
+#[cfg(not(feature = "thin"))]
+mod fixture {
+    use super::{Arc, NtpControl, TimeDatePane, TimeZonePoint};
+
+    struct Bench;
+
+    impl NtpControl for Bench {
+        fn set_ntp(&self, _enabled: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_timezone(&self, _timezone: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// `(zone, region, city, latitude, longitude)` in degrees.
+    const CITIES: [(&str, &str, &str, f64, f64); 14] = [
+        (
+            "America/Los_Angeles",
+            "America",
+            "Los Angeles",
+            34.05,
+            -118.24,
+        ),
+        ("America/Denver", "America", "Denver", 39.74, -104.99),
+        ("America/New_York", "America", "New York", 40.71, -74.01),
+        ("America/Sao_Paulo", "America", "Sao Paulo", -23.55, -46.63),
+        ("Europe/London", "Europe", "London", 51.51, -0.13),
+        ("Europe/Berlin", "Europe", "Berlin", 52.52, 13.41),
+        ("Europe/Athens", "Europe", "Athens", 37.98, 23.73),
+        ("Africa/Cairo", "Africa", "Cairo", 30.04, 31.24),
+        ("Asia/Dubai", "Asia", "Dubai", 25.20, 55.27),
+        ("Asia/Kolkata", "Asia", "Kolkata", 22.57, 88.36),
+        ("Asia/Shanghai", "Asia", "Shanghai", 31.23, 121.47),
+        ("Asia/Tokyo", "Asia", "Tokyo", 35.68, 139.69),
+        ("Australia/Sydney", "Australia", "Sydney", -33.87, 151.21),
+        ("Pacific/Auckland", "Pacific", "Auckland", -36.85, 174.76),
+    ];
+
+    impl TimeDatePane {
+        /// The pane set to Berlin with a fixed list of zones: what a capture
+        /// shows, the same on every machine.
+        pub(crate) fn for_shot() -> Self {
+            let mut pane = Self::with_ntp(Arc::new(Bench), true);
+            let zone = "Europe/Berlin".to_string();
+            pane.timezones = CITIES.iter().map(|city| city.0.to_string()).collect();
+            pane.timezone_points = CITIES
+                .iter()
+                .map(|(id, region, city, latitude, longitude)| TimeZonePoint {
+                    id: (*id).to_string(),
+                    region: (*region).to_string(),
+                    city: (*city).to_string(),
+                    latitude_e6: (latitude * 1e6) as i32,
+                    longitude_e6: (longitude * 1e6) as i32,
+                })
+                .collect();
+            // The same published zone table the live pane reads, when this
+            // machine has it: the whole world rather than fourteen cities.
+            if let Some(table) = super::installed_zone_table() {
+                let zones = super::zone_ids_in_table(&table);
+                let points = super::timezone_map_from_tab(&zones, &table);
+                if points.iter().any(|point| point.id == zone) {
+                    pane.timezones = zones;
+                    pane.timezone_points = points;
+                }
+            }
+            pane.timezone.clone_from(&zone);
+            pane.last_timezone.clone_from(&zone);
+            pane.sync_status = os_actions::TimeSyncStatus {
+                timezone: Some(zone),
+                ntp_enabled: Some(true),
+                synchronized: Some(true),
+                source: Some("time.cloudflare.com".into()),
+            };
+            pane
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1135,7 +1237,7 @@ mod tests {
                 map.apply_layout(&taffy, node, Point::ZERO);
 
                 assert!((map.rect.width() - f64::from(width)).abs() < 0.1);
-                assert!((map.rect.height() - f64::from(MAP_HEIGHT)).abs() < 0.1);
+                assert!((map.rect.height() - f64::from(width / MAP_ASPECT)).abs() < 0.5);
                 for index in 0..map.points.len() {
                     assert!(map.plot_rect().contains(map.projected(index)));
                 }
