@@ -72,6 +72,7 @@ pub mod floating;
 pub mod foreign;
 pub mod frame;
 pub mod fs_authority;
+pub mod gpu_frames;
 pub mod hdr_display;
 pub mod hdr_surface;
 pub mod hdr_tonemap;
