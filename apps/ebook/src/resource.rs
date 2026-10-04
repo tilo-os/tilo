@@ -3,12 +3,10 @@
 //!
 //! Document mutations (library prefs, remove-from-library, annotations,
 //! reading settings / fonts / schemes) live on this resource via
-//! [`Resource::bound_actions`] / [`Resource::children`]. Open-book is an Effect
-//! in [`Resource::local_operations`]. Hosted [`PublishesResources::resources`]
-//! returns only the peer's live reading selection (`ebook.selection`) — never a
-//! second hand-built `ebook.library` / `ebook.settings` root beside
-//! [`tilo_resource::publish`]. Selection-bound highlight / note / bookmark and
-//! page-chrome Views need the open book and stay on that live extra.
+//! [`Resource::bound_actions`] / [`Resource::children`]; edits bound to where
+//! the reader is are the reader's bound declarations. Opening a book is the
+//! reader's [`BooksEffect`]. The reader publishes only where it is in the
+//! open book (`ebook.selection`), which changes no document.
 
 use std::rc::Rc;
 
@@ -24,8 +22,8 @@ use ui::tilo_resource::{
 use ui::widget::Element;
 
 use crate::actions::{
-    EBOOK_ACTION_TYPE, EbookAction, bound_library_document_actions, library_effect_specs,
-    publish_document_children, register,
+    EBOOK_ACTION_TYPE, EbookAction, bound_library_document_actions, publish_document_children,
+    register,
 };
 use crate::app::BooksApp;
 use crate::component::EPUB_MEDIA_TYPE;
@@ -87,13 +85,6 @@ impl Resource for Ebook {
             &state.fonts,
             &state.schemes,
         )
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        library_effect_specs()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
     }
 
     fn search(state: &EbookState) -> Vec<SearchEntry> {
@@ -211,6 +202,11 @@ pub(crate) fn launch_file(input: &LaunchInput<'_>) -> Option<Invoke<Ebook>> {
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "ebook.effect", device_only)]
 pub enum BooksEffect {
+    /// Open book
+    ///
+    /// Choose an EPUB through the system picker and open it.
+    #[effect(job, cancellable)]
+    OpenBook,
     /// Open a book the content store holds, putting it on the shelf.
     #[effect(job)]
     OpenStored {
@@ -236,6 +232,7 @@ impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
 
     fn effect(&mut self, effect: BooksEffect, cx: &mut EffectCx<Ebook, Self>) -> EffectAnswer {
         match effect {
+            BooksEffect::OpenBook => Ok(Self::choose_book(cx)),
             BooksEffect::OpenStored { content, name } => self.open_stored(content, name, cx),
         }
     }
@@ -283,7 +280,6 @@ mod tests {
         let published = ui::tilo_resource::publish::<Ebook>(LIBRARY_RESOURCE_ID, "Books", &state);
         assert_eq!(published.kind, "ebook.library");
         for id in [
-            "open-book",
             "toggle-hide-read",
             "sort-title",
             "sort-author",

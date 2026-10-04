@@ -326,7 +326,7 @@ fn resource_operations_refuse_wrong_or_stale_targets() {
         );
         assert_eq!(std::mem::discriminant(&app.view), view_before);
 
-        let open = serde_json::to_vec(&crate::actions::EbookOperation::OpenBook).unwrap();
+        let open = serde_json::to_vec(&serde_json::json!({"ShareBook": {"book_id": ""}})).unwrap();
         assert!(
             Widget::start_operation(
                 &mut app,
@@ -3271,57 +3271,43 @@ fn library_shelf_layout_filtering_and_keyboard() {
     reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
 )]
 #[test]
+#[serial]
 fn importing_and_removing_books_keeps_one_identity() {
-    // --- phase: a_picked_book_is_imported_and_opened_via_the_frame_drain ---
-    // A book chosen through the host file picker loads through the per-frame
-    // portal drain (a recording host answers it — no real dialog).
+    // --- phase: a_picked_book_is_imported_and_opened_through_the_open_book_effect ---
+    // A book chosen through the host's file chooser (a recording host answers
+    // it — no real dialog) joins the library and opens in the reader.
     {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("picked.epub");
         std::fs::write(&path, crate::content::SAMPLE_EPUB).unwrap();
-
-        let mut app =
-            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
-        frame(&mut app, &mut doc, 1000.0, 720.0);
-        assert!(app.library.is_empty(), "starts empty");
+        let workspace = tempfile::NamedTempFile::new().unwrap();
+        let _workspace = workspace_env(workspace.path());
 
         let (services, recorder) = ui::host::HostServices::recording();
         let _host = ui::host::enter(&services);
-        recorder.respond_to_pick(PortalOutcome::Opened(path));
-        app.request_open_via_portal();
+        let mut app = ui::framework::testing::TestApp::<crate::EbookShell>::new().unwrap();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
+        app.effect(&crate::resource::BooksEffect::OpenBook).unwrap();
+        app.settle();
         assert_eq!(recorder.pick_requests()[0].title(), "Open a book");
-        app.sync(&mut doc, &automerge::ROOT);
-        wait_for_import(&mut app, &mut doc);
 
-        assert_eq!(app.library.len(), 1, "the picked book joined the library");
-        assert_eq!(app.view, View::Reader, "and opened in the reader");
-        assert!(
-            app.portal_rx.is_none(),
-            "the portal channel clears after delivering"
+        let shelf = app.state().entries;
+        assert_eq!(shelf.len(), 1, "the picked book joined the library");
+        assert_eq!(
+            shelf[0].content.as_deref(),
+            Some(tilo_content::hash_bytes(crate::content::SAMPLE_EPUB).as_str()),
+            "without a workspace its bytes are kept in the content store"
         );
-    }
-
-    // --- phase: disconnected_picker_settles_the_pending_resource_invocation ---
-    {
-        let mut app =
-            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
-        let mut doc = AutoCommit::new();
-        let invocation = tilo_actions::InvocationId::new();
-        let (sender, receiver) = std::sync::mpsc::channel::<PortalOutcome>();
-        drop(sender);
-        app.resource_invocation = Some(invocation);
-        app.portal_rx = Some(receiver);
-
-        app.sync(&mut doc, &automerge::ROOT);
-
-        assert!(app.portal_rx.is_none());
-        assert!(app.resource_invocation.is_none());
-        assert!(matches!(
-            app.completed_resource_invocation,
-            Some(tilo_actions::InvocationUpdate::Failed { invocation: got, ref error })
-                if got == invocation && error.code == "ebook.portal_disconnected"
-        ));
+        let chapter = crate::content::bundled_sample().unwrap().chapters[0]
+            .title
+            .clone();
+        assert!(
+            app.harness()
+                .wait_until(Duration::from_secs(10), |harness| harness
+                    .a11y_node_named(&chapter)
+                    .is_some()),
+            "and opened in the reader"
+        );
     }
 
     // --- phase: watch_scan_cannot_replace_an_explicit_open ---
