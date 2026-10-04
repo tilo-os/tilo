@@ -1,4 +1,4 @@
-"""ci-filesystem.yml builds with check.yml's Cargo environment."""
+"""Contract of .forgejo/workflows/ci-filesystem.yml."""
 
 from __future__ import annotations
 
@@ -39,6 +39,20 @@ class FilesystemWorkflowCargoEnv(unittest.TestCase):
         self.assertEqual(cargo_env(env_block(filesystem, 0), 2), expected)
         jobs_section = filesystem.split("\njobs:\n", 1)[1]
         self.assertNotRegex(jobs_section, r"(?m)^\s+CARGO_[A-Z0-9_]+:")
+
+
+class FilesystemWorkflowTriggers(unittest.TestCase):
+    def test_pushes_to_main_run_the_pull_request_selection(self) -> None:
+        source = (WORKFLOWS / "ci-filesystem.yml").read_text()
+        triggers = source.split("\non:\n", 1)[1].split("\nconcurrency:", 1)[0]
+
+        def paths(event: str) -> list[str]:
+            body = re.search(rf"^  {event}:\n((?:    .*\n|      .*\n)*)", triggers, re.M)
+            self.assertIsNotNone(body, event)
+            return re.findall(r'^      - "(.+)"$', body.group(1), re.M)
+
+        self.assertIn("crates/system/fs/**", paths("push"))
+        self.assertEqual(paths("push"), paths("pull_request"))
 
 
 if __name__ == "__main__":

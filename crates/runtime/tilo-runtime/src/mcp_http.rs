@@ -35,6 +35,7 @@ use tilo_actions::remote::ActionHost;
 
 pub const ADDRESS_ENV: &str = "TILO_RUNTIME_MCP_HTTP";
 pub const TOKEN_FILE_ENV: &str = "TILO_RUNTIME_MCP_HTTP_TOKEN_FILE";
+pub const ROOM_ENV: &str = "TILO_RUNTIME_MCP_ROOM";
 const SESSION_HEADER: &str = "mcp-session-id";
 const MAX_BODY_BYTES: usize = crate::mcp_process::MAX_REQUEST_BYTES;
 const MAX_SESSIONS: usize = 256;
@@ -47,6 +48,9 @@ const VIEWER_PREFIX: &str = "/viewer/invitations";
 pub struct Config {
     pub address: SocketAddr,
     pub token: Option<String>,
+    /// Explicit host-selected audience; validated against current admission
+    /// by `RuntimeServices` before the endpoint is created.
+    pub room: Option<String>,
 }
 
 impl Config {
@@ -56,7 +60,7 @@ impl Config {
     /// # Errors
     ///
     /// Rejects an unparsable address, an unreadable or empty token file, and a
-    /// non-loopback address without a token.
+    /// non-loopback address without a token, or a malformed room UUID.
     pub fn from_env() -> io::Result<Option<Self>> {
         let Some(address) = std::env::var_os(ADDRESS_ENV) else {
             return Ok(None);
@@ -68,15 +72,34 @@ impl Config {
         let token = std::env::var_os(TOKEN_FILE_ENV)
             .map(|path| read_token(Path::new(&path)))
             .transpose()?;
-        let config = Self { address, token };
+        let room = std::env::var_os(ROOM_ENV)
+            .map(|value| {
+                value
+                    .into_string()
+                    .map_err(|_| invalid(format!("{ROOM_ENV} must be a room UUID")))
+            })
+            .transpose()?;
+        let config = Self {
+            address,
+            token,
+            room,
+        };
         config.validate()?;
         Ok(Some(config))
     }
 
     /// # Errors
     ///
-    /// Rejects exposing the endpoint beyond loopback without a token.
+    /// Rejects exposing the endpoint beyond loopback without a token or a
+    /// non-canonical selected room UUID.
     pub fn validate(&self) -> io::Result<()> {
+        if self.room.as_deref().is_some_and(|room| {
+            uuid::Uuid::parse_str(room).map_or(true, |id| id.is_nil() || id.to_string() != room)
+        }) {
+            return Err(invalid(format!(
+                "{ROOM_ENV} must be a canonical non-nil room UUID"
+            )));
+        }
         if !self.address.ip().is_loopback() && self.token.is_none() {
             return Err(invalid(format!(
                 "{ADDRESS_ENV} beyond loopback requires {TOKEN_FILE_ENV}"
