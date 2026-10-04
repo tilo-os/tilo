@@ -67,6 +67,25 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < sizeof(digest); i++)
         snprintf(location + 2 * i, 3, "%02x", digest[i]);
     join(cache, raw, location); directory(cache);
+#ifdef TILO_MEDIA_DATA
+    /* Restrict subtitle configuration/data to this signed bundle. System font
+     * files are read in place; caches stay outside the sealed bundle. */
+    variable("XDG_CACHE_HOME", cache);
+    join(raw, executable, "Resources/fontconfig");
+    variable("FONTCONFIG_PATH", raw);
+    join(raw, executable, "Resources/fontconfig/fonts.conf");
+    if (access(raw, R_OK)) fail();
+    variable("FONTCONFIG_FILE", raw);
+    unsetenv("FONTCONFIG_SYSROOT");
+    variable("PANGOCAIRO_BACKEND", "fontconfig");
+    join(raw, executable, "Resources/libthai/thbrk.tri");
+    if (access(raw, R_OK)) fail();
+    join(raw, executable, "Resources/libthai");
+    variable("LIBTHAI_DICTDIR", raw);
+    /* reqwest's native certificate loader uses macOS system trust. */
+    unsetenv("SSL_CERT_FILE");
+    unsetenv("SSL_CERT_DIR");
+#endif
     join(raw, cache, "registry-arm64.bin");
     variable("GST_PLUGIN_SYSTEM_PATH_1_0", plugins);
     variable("GST_PLUGIN_SYSTEM_PATH", plugins);
