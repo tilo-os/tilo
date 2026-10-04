@@ -79,6 +79,21 @@ pub fn paint_entry(
     colour: Color,
     label: &str,
 ) {
+    paint_entry_emphasised(scene, transform, text, theme, rect, colour, label, false);
+}
+
+/// [`paint_entry`] for a legend people point at: an `emphasised` entry (the
+/// hovered or chosen series) reads in primary ink.
+pub fn paint_entry_emphasised(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    colour: Color,
+    label: &str,
+    emphasised: bool,
+) {
     let style = theme.text(TextRole::Caption);
     let (dot, gap) = swatch(theme);
     let cy = rect.center().y;
@@ -95,7 +110,11 @@ pub fn paint_entry(
     text.draw_style(
         scene,
         &label,
-        theme.text_dim,
+        if emphasised {
+            theme.text_primary
+        } else {
+            theme.text_dim
+        },
         transform * Affine::translate((rect.x0 + dot + gap, cy - h / 2.0)),
         None,
         &style,
