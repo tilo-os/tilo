@@ -789,8 +789,31 @@ impl NotesApp {
     /// Keep each image pasted into the open note with the notebook and put it
     /// after the caret, as a chosen image is.
     fn drain_pasted_images(&mut self, doc: &mut AutoCommit) {
-        for image in self.main.take_pasted_images() {
-            self.insert_image_bytes(doc, "Pasted image", image.bytes);
+        for request in self.main.take_pasted_images() {
+            let Some(page) = self.main.page_id() else {
+                continue;
+            };
+            let result = fit_image_asset(request.image.bytes).and_then(|bytes| {
+                let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
+                // Replaces the selection the paste was made over, or goes
+                // after the block the caret was in, as one action.
+                let edit = self
+                    .main
+                    .body_editor_mut()
+                    .image_paste_action(doc, &request.target, format!("![Pasted image]({source})"))
+                    .map_err(|error| error.to_string())?;
+                self.dispatch(doc, &actions::add_image_asset_action(page, bytes, edit))
+            });
+            match result {
+                Ok(()) => {
+                    self.bound_page = None;
+                    self.self_dirty = true;
+                }
+                Err(error) => self.transfer_toasts.push(
+                    format!("Image paste failed: {error}"),
+                    ui::widget::toast::ToastKind::Error,
+                ),
+            }
         }
     }
 
