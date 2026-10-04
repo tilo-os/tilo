@@ -1,20 +1,22 @@
-//! The approver's access to what lives in the person's home: the device fleet
-//! in their identity directory and the room list their session exports.
+//! Access to what lives in the person's home: the identity directory (device
+//! fleet, joined identity record, identity registry), the room list their
+//! session exports, and a first-use pairing status file.
 //!
-//! An approval backed by a seed under `/var/lib/tilo` runs as root, but the
-//! person (and anything that can write to their home) controls every path in
-//! it. Root therefore never opens those paths. Each access runs in a fresh
-//! exec of this binary that has dropped to the person's uid and primary group
-//! before exec, so a link planted in the home resolves with the person's own
-//! permissions and reaches nothing they could not already change.
+//! Approving a device with a seed under `/var/lib/tilo`, and a headless join
+//! (`sudo tilo-enroll pair-device`), run as root, but the person (and anything
+//! that can write to their home) controls every path in it. Root therefore
+//! never opens those paths. Each access runs in a fresh exec of this binary
+//! that has dropped to the person's uid and primary group before exec, so a
+//! link planted in the home resolves with the person's own permissions and
+//! reaches nothing they could not already change.
 //!
-//! The accessing process, whether that child or an approval already running
-//! as the person, also opens every component it touches without following a
-//! final symbolic link. Files are reached through directory descriptors
-//! opened with `O_NOFOLLOW | O_DIRECTORY` whose owner must be the accessing
-//! uid, and replacements are renamed into place inside the descriptor that
-//! was checked, so swapping a directory for a link mid-way cannot redirect
-//! the write.
+//! The accessing process, whether that child or a run already going as the
+//! person, also opens every component it touches without following a final
+//! symbolic link. Files are reached through directory descriptors opened with
+//! `O_NOFOLLOW | O_DIRECTORY` whose owner must be the accessing uid, and
+//! replacements are renamed into place inside the descriptor that was
+//! checked, so swapping a directory for a link mid-way cannot redirect the
+//! write. Nothing is chowned: what the person's uid writes is theirs.
 
 use std::ffi::{CStr, CString, OsString};
 use std::io::{Read as _, Write as _};
@@ -25,11 +27,12 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 
-/// Largest device fleet an approval reads or writes.
-pub const MAX_FLEET_BYTES: usize = 1024 * 1024;
+/// Largest file read from or written to the person's home.
+pub const MAX_FILE_BYTES: usize = 1024 * 1024;
 /// Largest exported room list an approval reads.
 pub const MAX_ROOMS_BYTES: usize = 64 * 1024;
-const FLEETS_DIR: &str = "fleets";
+/// The identity directory's subdirectory holding device fleets.
+pub const FLEETS_DIR: &str = "fleets";
 const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Where the person's own files are read and written from.
@@ -48,9 +51,38 @@ pub struct Person {
     pub gid: libc::gid_t,
 }
 
+/// One file under a directory of the person's: `name`, optionally inside a
+/// single subdirectory of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HomeFile<'a> {
+    pub subdir: Option<&'a str>,
+    pub name: &'a str,
+}
+
+impl<'a> HomeFile<'a> {
+    pub const fn at(name: &'a str) -> Self {
+        Self { subdir: None, name }
+    }
+}
+
+fn fleet_name(user: [u8; 32]) -> String {
+    format!("{}.json", hex::encode(user))
+}
+
+/// `path` split into its directory and file name.
+fn split(path: &Path) -> anyhow::Result<(&Path, &str)> {
+    match (
+        path.parent(),
+        path.file_name().and_then(|name| name.to_str()),
+    ) {
+        (Some(parent), Some(name)) => Ok((parent, name)),
+        _ => bail!("{} has no directory and file name", path.display()),
+    }
+}
+
 impl PersonHome {
     /// How this process, running with effective uid `euid`, reaches the home
-    /// of `person_uid`, the account the caller approves for.
+    /// of `person_uid`, the account the caller acts for.
     ///
     /// Root told whose home it is touches it only as that account. Root
     /// acting for itself reaches only directories and files root owns, never
@@ -70,16 +102,78 @@ impl PersonHome {
                 },
             }),
             (euid, Some(uid)) if uid != euid => bail!(
-                "--person-uid {uid} is not the account this runs as; run the approval as that \
-                 account"
+                "--person-uid {uid} is not the account this runs as; run this as that account"
             ),
             (_, _) => Ok(Self::Direct),
         }
     }
 
+    /// The home of the account this process runs as.
+    pub fn for_this_process(person_uid: Option<libc::uid_t>) -> anyhow::Result<Self> {
+        Self::for_process(local::own_uid(), person_uid, primary_gid)
+    }
+
     /// Whether every access runs in a child as the person.
     pub const fn is_delegated(&self) -> bool {
         matches!(self, Self::Delegated { .. })
+    }
+
+    /// The bytes of `file` under `dir`, or `None` when it or `dir` does not
+    /// exist.
+    pub fn read_file(
+        &self,
+        dir: &Path,
+        file: HomeFile<'_>,
+        limit: usize,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        let limit = limit.min(MAX_FILE_BYTES);
+        match self {
+            Self::Direct => Ok(local::read_file(dir, file, local::own_uid(), limit)?),
+            Self::Delegated { program, person } => {
+                let output = run_child(
+                    program,
+                    *person,
+                    &child_args(&ChildRequest::read(dir, file, limit)),
+                    None,
+                )?;
+                decode_read(&output, limit)
+            }
+        }
+    }
+
+    /// Replace `file` under `dir` with `bytes`, mode `mode`. With `create_dir`
+    /// the directory (and its missing parents) is created first, private to
+    /// the person.
+    pub fn write_file(
+        &self,
+        dir: &Path,
+        file: HomeFile<'_>,
+        bytes: &[u8],
+        mode: libc::mode_t,
+        create_dir: bool,
+    ) -> anyhow::Result<()> {
+        if bytes.len() > MAX_FILE_BYTES {
+            bail!("{} exceeds 1 MiB", file.name);
+        }
+        match self {
+            Self::Direct => Ok(local::write_file(
+                dir,
+                file,
+                bytes,
+                local::own_uid(),
+                mode,
+                create_dir,
+            )?),
+            Self::Delegated { program, person } => {
+                run_child(
+                    program,
+                    *person,
+                    &child_args(&ChildRequest::write(dir, file, mode, create_dir)),
+                    Some(bytes),
+                )?;
+                Ok(())
+            }
+        }
     }
 
     /// The identity's device fleet in `identity_dir`, or `None` when there is
@@ -89,18 +183,15 @@ impl PersonHome {
         identity_dir: &Path,
         user: [u8; 32],
     ) -> anyhow::Result<Option<Vec<u8>>> {
-        match self {
-            Self::Direct => Ok(local::read_fleet(identity_dir, user, local::own_uid())?),
-            Self::Delegated { program, person } => {
-                let output = run_child(
-                    program,
-                    *person,
-                    &child_args(ChildOperation::ReadFleet, identity_dir, Some(user)),
-                    None,
-                )?;
-                decode_read(&output, MAX_FLEET_BYTES)
-            }
-        }
+        let name = fleet_name(user);
+        self.read_file(
+            identity_dir,
+            HomeFile {
+                subdir: Some(FLEETS_DIR),
+                name: &name,
+            },
+            MAX_FILE_BYTES,
+        )
     }
 
     /// Replace the identity's device fleet in `identity_dir` with `bytes`.
@@ -110,41 +201,73 @@ impl PersonHome {
         user: [u8; 32],
         bytes: &[u8],
     ) -> anyhow::Result<()> {
-        if bytes.len() > MAX_FLEET_BYTES {
-            bail!("device fleet exceeds 1 MiB");
-        }
-        match self {
-            Self::Direct => Ok(local::write_fleet(
-                identity_dir,
-                user,
-                bytes,
-                local::own_uid(),
-            )?),
-            Self::Delegated { program, person } => {
-                run_child(
-                    program,
-                    *person,
-                    &child_args(ChildOperation::WriteFleet, identity_dir, Some(user)),
-                    Some(bytes),
-                )?;
-                Ok(())
-            }
-        }
+        let name = fleet_name(user);
+        self.write_file(
+            identity_dir,
+            HomeFile {
+                subdir: Some(FLEETS_DIR),
+                name: &name,
+            },
+            bytes,
+            0o644,
+            false,
+        )
     }
 
     /// The exported room list at `path`, or `None` when there is none.
     pub fn read_rooms(&self, path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
-        match self {
-            Self::Direct => Ok(local::read_rooms(path, local::own_uid())?),
-            Self::Delegated { program, person } => {
-                let output = run_child(
-                    program,
-                    *person,
-                    &child_args(ChildOperation::ReadRooms, path, None),
-                    None,
-                )?;
-                decode_read(&output, MAX_ROOMS_BYTES)
-            }
+        let (dir, name) = split(path)?;
+        self.read_file(dir, HomeFile::at(name), MAX_ROOMS_BYTES)
+    }
+
+    /// Replace the file at `path`, whose directory must already exist.
+    pub fn write_path(&self, path: &Path, bytes: &[u8], mode: libc::mode_t) -> anyhow::Result<()> {
+        let (dir, name) = split(path)?;
+        self.write_file(dir, HomeFile::at(name), bytes, mode, false)
+    }
+}
+
+/// What the delegated child is asked to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildRequest {
+    pub operation: ChildOperation,
+    pub path: PathBuf,
+    pub subdir: Option<String>,
+    pub name: String,
+    pub mode: libc::mode_t,
+    pub create_dir: bool,
+    pub limit: usize,
+}
+
+impl ChildRequest {
+    fn read(dir: &Path, file: HomeFile<'_>, limit: usize) -> Self {
+        Self {
+            operation: ChildOperation::Read,
+            path: dir.to_path_buf(),
+            subdir: file.subdir.map(str::to_owned),
+            name: file.name.to_owned(),
+            mode: 0,
+            create_dir: false,
+            limit,
+        }
+    }
+
+    fn write(dir: &Path, file: HomeFile<'_>, mode: libc::mode_t, create_dir: bool) -> Self {
+        Self {
+            operation: ChildOperation::Write,
+            path: dir.to_path_buf(),
+            subdir: file.subdir.map(str::to_owned),
+            name: file.name.to_owned(),
+            mode,
+            create_dir,
+            limit: MAX_FILE_BYTES,
+        }
+    }
+
+    fn file(&self) -> HomeFile<'_> {
+        HomeFile {
+            subdir: self.subdir.as_deref(),
+            name: &self.name,
         }
     }
 }
@@ -152,29 +275,36 @@ impl PersonHome {
 /// An access the delegated child performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum ChildOperation {
-    ReadFleet,
-    WriteFleet,
-    ReadRooms,
+    Read,
+    Write,
 }
 
 /// The name of the hidden subcommand the delegated child runs.
 pub const CHILD_COMMAND: &str = "person-home";
 
-fn child_args(operation: ChildOperation, path: &Path, user: Option<[u8; 32]>) -> Vec<OsString> {
-    let operation = match operation {
-        ChildOperation::ReadFleet => "read-fleet",
-        ChildOperation::WriteFleet => "write-fleet",
-        ChildOperation::ReadRooms => "read-rooms",
+fn child_args(request: &ChildRequest) -> Vec<OsString> {
+    let operation = match request.operation {
+        ChildOperation::Read => "read",
+        ChildOperation::Write => "write",
     };
     let mut args: Vec<OsString> = vec![
         CHILD_COMMAND.into(),
         operation.into(),
         "--path".into(),
-        path.into(),
+        request.path.clone().into(),
+        "--name".into(),
+        request.name.clone().into(),
+        "--mode".into(),
+        format!("{:o}", request.mode).into(),
+        "--limit".into(),
+        request.limit.to_string().into(),
     ];
-    if let Some(user) = user {
-        args.push("--user".into());
-        args.push(hex::encode(user).into());
+    if let Some(subdir) = &request.subdir {
+        args.push("--subdir".into());
+        args.push(subdir.clone().into());
+    }
+    if request.create_dir {
+        args.push("--create-dir".into());
     }
     args
 }
@@ -255,12 +385,12 @@ fn run_child(
     let output = bounded_command::run_prepared_with_input_limit(
         command,
         input,
-        MAX_FLEET_BYTES,
-        MAX_FLEET_BYTES + 1,
+        MAX_FILE_BYTES,
+        MAX_FILE_BYTES + 1,
         16 * 1024,
         CHILD_TIMEOUT,
     )
-    .context("read the person's identity files as the person")?;
+    .context("reach the person's files as the person")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("{}", stderr.trim());
@@ -291,13 +421,9 @@ fn encode_read(bytes: Option<&[u8]>) -> Vec<u8> {
     )
 }
 
-/// The delegated child: perform `operation` as this process's own uid and
+/// The delegated child: perform `request` as this process's own uid and
 /// answer on stdout.
-pub fn serve_child(
-    operation: ChildOperation,
-    path: &Path,
-    user: Option<&str>,
-) -> anyhow::Result<()> {
+pub fn serve_child(request: &ChildRequest) -> anyhow::Result<()> {
     // The parent blocked every signal across the credential change.
     // SAFETY: an empty set is a valid mask and the call has no other inputs.
     unsafe {
@@ -306,32 +432,30 @@ pub fn serve_child(
         libc::sigprocmask(libc::SIG_SETMASK, &raw const none, std::ptr::null_mut());
     }
     let uid = local::own_uid();
-    let user = || -> anyhow::Result<[u8; 32]> {
-        hex::decode(user.context("--user is required")?)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .context("--user must be a 32-byte hex identity")
-    };
+    let limit = request.limit.min(MAX_FILE_BYTES);
     let mut stdout = std::io::stdout().lock();
-    match operation {
-        ChildOperation::ReadFleet => {
-            let bytes = local::read_fleet(path, user()?, uid)?;
+    match request.operation {
+        ChildOperation::Read => {
+            let bytes = local::read_file(&request.path, request.file(), uid, limit)?;
             stdout.write_all(&encode_read(bytes.as_deref()))?;
         }
-        ChildOperation::ReadRooms => {
-            let bytes = local::read_rooms(path, uid)?;
-            stdout.write_all(&encode_read(bytes.as_deref()))?;
-        }
-        ChildOperation::WriteFleet => {
+        ChildOperation::Write => {
             let mut bytes = Vec::new();
             std::io::stdin()
                 .lock()
-                .take((MAX_FLEET_BYTES as u64).saturating_add(1))
+                .take((MAX_FILE_BYTES as u64).saturating_add(1))
                 .read_to_end(&mut bytes)?;
-            if bytes.len() > MAX_FLEET_BYTES {
-                bail!("device fleet exceeds 1 MiB");
+            if bytes.len() > MAX_FILE_BYTES {
+                bail!("{} exceeds 1 MiB", request.name);
             }
-            local::write_fleet(path, user()?, &bytes, uid)?;
+            local::write_file(
+                &request.path,
+                request.file(),
+                &bytes,
+                uid,
+                request.mode & 0o777,
+                request.create_dir,
+            )?;
         }
     }
     stdout.flush()?;
@@ -362,7 +486,9 @@ pub fn primary_gid(uid: libc::uid_t) -> anyhow::Result<libc::gid_t> {
 
 /// No-follow, owner-checked file access for the uid this process runs as.
 pub mod local {
-    use super::{CStr, CString, FLEETS_DIR, MAX_FLEET_BYTES, MAX_ROOMS_BYTES, OwnedFd, Path};
+    use super::{CStr, CString, HomeFile, OwnedFd, Path};
+    #[cfg(test)]
+    use super::{FLEETS_DIR, MAX_FILE_BYTES, MAX_ROOMS_BYTES};
     use std::io::{self, Read as _, Write as _};
     use std::os::fd::{AsRawFd as _, FromRawFd as _};
     use std::os::unix::ffi::OsStrExt as _;
@@ -446,13 +572,28 @@ pub mod local {
         checked(fd, libc::S_IFDIR, owner, &path.display().to_string())
     }
 
-    /// Open `name` inside `dir` as a directory without following a link;
-    /// `None` when it does not exist and `create` is false.
+    /// Open the directory at `path` without following a final link, whoever
+    /// owns it: a shared parent such as a group-writable staging area, whose
+    /// entries are then each checked.
+    pub fn open_dir(path: &Path) -> io::Result<OwnedFd> {
+        let c = c_path(path)?;
+        // SAFETY: `c` is NUL-terminated.
+        let fd = from_raw(unsafe { libc::open(c.as_ptr(), DIR_FLAGS) })?;
+        let stat = fstat(&fd)?;
+        if stat.st_mode & libc::S_IFMT != libc::S_IFDIR {
+            return Err(invalid(format!("{} is not a directory", path.display())));
+        }
+        Ok(fd)
+    }
+
+    /// Open `name` inside `dir` as a directory without following a link; it
+    /// must belong to `owner`. When it does not exist it is created with
+    /// `create`'s mode, or `None` is returned without one.
     pub fn open_owned_subdir(
         dir: &OwnedFd,
         name: &str,
         owner: libc::uid_t,
-        create: bool,
+        create: Option<libc::mode_t>,
     ) -> io::Result<Option<OwnedFd>> {
         let c = c_name(name)?;
         loop {
@@ -460,9 +601,10 @@ pub mod local {
             let fd = unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), DIR_FLAGS) };
             match from_raw(fd) {
                 Ok(fd) => return checked(fd, libc::S_IFDIR, owner, name).map(Some),
-                Err(error) if error.kind() == io::ErrorKind::NotFound && create => {
+                Err(error) if error.kind() == io::ErrorKind::NotFound && create.is_some() => {
+                    let mode = create.unwrap_or(0o700);
                     // SAFETY: `dir` is open and `c` is NUL-terminated.
-                    if unsafe { libc::mkdirat(dir.as_raw_fd(), c.as_ptr(), 0o755) } != 0 {
+                    if unsafe { libc::mkdirat(dir.as_raw_fd(), c.as_ptr(), mode) } != 0 {
                         let error = io::Error::last_os_error();
                         if error.kind() != io::ErrorKind::AlreadyExists {
                             return Err(error);
@@ -525,15 +667,17 @@ pub mod local {
         }
     }
 
-    /// Atomically replace `name` inside `dir` with `bytes`. An existing entry
-    /// must be a regular file belonging to `owner`; its permission bits and
-    /// group carry over. The new file is created exclusively inside `dir` and
-    /// renamed over `name` there, so neither step resolves a link.
+    /// Atomically replace `name` inside `dir` with `bytes`, mode `mode`. An
+    /// existing entry must be a regular file belonging to `owner`, and its
+    /// group carries over where this account may use it. The new file is
+    /// created exclusively inside `dir` and renamed over `name` there, so
+    /// neither step resolves a link.
     pub fn replace_owned_file(
         dir: &OwnedFd,
         name: &str,
         bytes: &[u8],
         owner: libc::uid_t,
+        mode: libc::mode_t,
     ) -> io::Result<()> {
         let target = c_name(name)?;
         let existing = stat_at(dir, &target)?;
@@ -544,7 +688,7 @@ pub mod local {
                 "{name} is not a regular file belonging to uid {owner}"
             )));
         }
-        let mode = existing.map_or(0o644, |stat| stat.st_mode & 0o777);
+        let mode = mode & 0o777;
         let mut random = [0_u8; 8];
         getrandom::rand_core::Rng::fill_bytes(
             &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
@@ -566,10 +710,11 @@ pub mod local {
                 // default; the replacement never depends on it.
                 // SAFETY: `fd` is open.
                 let _ = unsafe { libc::fchown(fd.as_raw_fd(), u32::MAX, stat.st_gid) };
-                // SAFETY: `fd` is open.
-                if unsafe { libc::fchmod(fd.as_raw_fd(), mode) } != 0 {
-                    return Err(io::Error::last_os_error());
-                }
+            }
+            // The exact mode, whatever the umask.
+            // SAFETY: `fd` is open.
+            if unsafe { libc::fchmod(fd.as_raw_fd(), mode) } != 0 {
+                return Err(io::Error::last_os_error());
             }
             let mut file = std::fs::File::from(fd);
             file.write_all(bytes)?;
@@ -597,32 +742,115 @@ pub mod local {
         result
     }
 
-    fn fleet_name(user: [u8; 32]) -> String {
-        format!("{}.json", hex::encode(user))
+    /// `dir`, opened and owned by `owner`; `None` when it does not exist.
+    fn existing_owned_dir(dir: &Path, owner: libc::uid_t) -> io::Result<Option<OwnedFd>> {
+        match open_owned_dir(dir, owner) {
+            Ok(fd) => Ok(Some(fd)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
+    /// The bytes of `file` under `dir`, read as `owner`; `None` when the file
+    /// or a directory on the way does not exist.
+    pub fn read_file(
+        dir: &Path,
+        file: HomeFile<'_>,
+        owner: libc::uid_t,
+        limit: usize,
+    ) -> io::Result<Option<Vec<u8>>> {
+        let Some(dir) = existing_owned_dir(dir, owner)? else {
+            return Ok(None);
+        };
+        read_file_at(&dir, file, owner, limit)
+    }
+
+    /// The bytes of `file` under the already-checked directory `dir`.
+    pub fn read_file_at(
+        dir: &OwnedFd,
+        file: HomeFile<'_>,
+        owner: libc::uid_t,
+        limit: usize,
+    ) -> io::Result<Option<Vec<u8>>> {
+        match file.subdir {
+            None => read_owned_file(dir, file.name, owner, limit),
+            Some(subdir) => match open_owned_subdir(dir, subdir, owner, None)? {
+                Some(sub) => read_owned_file(&sub, file.name, owner, limit),
+                None => Ok(None),
+            },
+        }
+    }
+
+    /// Replace `file` under `dir` as `owner`. With `create_dir`, `dir` and
+    /// its missing parents are created first, private to `owner`.
+    pub fn write_file(
+        dir: &Path,
+        file: HomeFile<'_>,
+        bytes: &[u8],
+        owner: libc::uid_t,
+        mode: libc::mode_t,
+        create_dir: bool,
+    ) -> io::Result<()> {
+        if create_dir {
+            use std::os::unix::fs::DirBuilderExt as _;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)?;
+        }
+        let dir = open_owned_dir(dir, owner)?;
+        write_file_at(&dir, file, bytes, owner, mode)
+    }
+
+    /// Replace `file` under the already-checked directory `dir`.
+    pub fn write_file_at(
+        dir: &OwnedFd,
+        file: HomeFile<'_>,
+        bytes: &[u8],
+        owner: libc::uid_t,
+        mode: libc::mode_t,
+    ) -> io::Result<()> {
+        match file.subdir {
+            None => replace_owned_file(dir, file.name, bytes, owner, mode),
+            Some(subdir) => {
+                let sub = open_owned_subdir(dir, subdir, owner, Some(0o755))?
+                    .ok_or_else(|| invalid(format!("{subdir} could not be created")))?;
+                replace_owned_file(&sub, file.name, bytes, owner, mode)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn fleet(name: &str) -> HomeFile<'_> {
+        HomeFile {
+            subdir: Some(FLEETS_DIR),
+            name,
+        }
+    }
+
+    #[cfg(test)]
     /// The fleet of `user` in `identity_dir`, read as `owner`.
     pub fn read_fleet(
         identity_dir: &Path,
         user: [u8; 32],
         owner: libc::uid_t,
     ) -> io::Result<Option<Vec<u8>>> {
-        let dir = open_owned_dir(identity_dir, owner)?;
-        read_fleet_at(&dir, user, owner)
+        let name = super::fleet_name(user);
+        read_file(identity_dir, fleet(&name), owner, MAX_FILE_BYTES)
     }
 
+    #[cfg(test)]
     /// The fleet of `user` in the already-checked identity directory `dir`.
     pub fn read_fleet_at(
         dir: &OwnedFd,
         user: [u8; 32],
         owner: libc::uid_t,
     ) -> io::Result<Option<Vec<u8>>> {
-        let Some(fleets) = open_owned_subdir(dir, FLEETS_DIR, owner, false)? else {
-            return Ok(None);
-        };
-        read_owned_file(&fleets, &fleet_name(user), owner, MAX_FLEET_BYTES)
+        let name = super::fleet_name(user);
+        read_file_at(dir, fleet(&name), owner, MAX_FILE_BYTES)
     }
 
+    #[cfg(test)]
     /// Replace the fleet of `user` in `identity_dir`, as `owner`.
     pub fn write_fleet(
         identity_dir: &Path,
@@ -630,10 +858,11 @@ pub mod local {
         bytes: &[u8],
         owner: libc::uid_t,
     ) -> io::Result<()> {
-        let dir = open_owned_dir(identity_dir, owner)?;
-        write_fleet_at(&dir, user, bytes, owner)
+        let name = super::fleet_name(user);
+        write_file(identity_dir, fleet(&name), bytes, owner, 0o644, false)
     }
 
+    #[cfg(test)]
     /// Replace the fleet of `user` in the already-checked identity directory.
     pub fn write_fleet_at(
         dir: &OwnedFd,
@@ -641,11 +870,11 @@ pub mod local {
         bytes: &[u8],
         owner: libc::uid_t,
     ) -> io::Result<()> {
-        let fleets = open_owned_subdir(dir, FLEETS_DIR, owner, true)?
-            .ok_or_else(|| invalid("fleet directory could not be created"))?;
-        replace_owned_file(&fleets, &fleet_name(user), bytes, owner)
+        let name = super::fleet_name(user);
+        write_file_at(dir, fleet(&name), bytes, owner, 0o644)
     }
 
+    #[cfg(test)]
     /// The exported room list at `path`, read as `owner`: its directory and
     /// the file both belong to `owner` and neither is a link.
     pub fn read_rooms(path: &Path, owner: libc::uid_t) -> io::Result<Option<Vec<u8>>> {
@@ -653,12 +882,7 @@ pub mod local {
         else {
             return Err(invalid("room list path has no directory and file name"));
         };
-        let dir = match open_owned_dir(parent, owner) {
-            Ok(dir) => dir,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        read_owned_file(&dir, name, owner, MAX_ROOMS_BYTES)
+        read_file(parent, HomeFile::at(name), owner, MAX_ROOMS_BYTES)
     }
 }
 
@@ -716,11 +940,16 @@ mod tests {
 
     #[test]
     fn the_child_runs_this_binary_with_only_its_operation() {
-        let args = child_args(
-            ChildOperation::WriteFleet,
+        let name = fleet_name(USER);
+        let args = child_args(&ChildRequest::write(
             Path::new("/home/p/.local/share/tilo/identities"),
-            Some(USER),
-        );
+            HomeFile {
+                subdir: Some(FLEETS_DIR),
+                name: &name,
+            },
+            0o644,
+            false,
+        ));
         let command = child_command(
             Path::new("/proc/self/exe"),
             Person {
@@ -735,11 +964,17 @@ mod tests {
             shown,
             [
                 CHILD_COMMAND,
-                "write-fleet",
+                "write",
                 "--path",
                 "/home/p/.local/share/tilo/identities",
-                "--user",
-                &hex::encode(USER),
+                "--name",
+                &name,
+                "--mode",
+                "644",
+                "--limit",
+                &MAX_FILE_BYTES.to_string(),
+                "--subdir",
+                FLEETS_DIR,
             ]
         );
         assert_eq!(command.get_current_dir(), Some(Path::new("/")));
@@ -919,7 +1154,7 @@ mod tests {
         home.write_fleet(scope.path(), USER, b"[]").unwrap();
         assert_eq!(home.read_fleet(scope.path(), USER).unwrap().unwrap(), b"[]");
         assert!(
-            home.write_fleet(scope.path(), USER, &vec![0; MAX_FLEET_BYTES + 1])
+            home.write_fleet(scope.path(), USER, &vec![0; MAX_FILE_BYTES + 1])
                 .is_err()
         );
     }

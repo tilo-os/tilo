@@ -612,7 +612,7 @@ wait "$approval"
         assert_eq!(status["state"], "complete");
         let cert =
             tilo_user_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
-        assert_eq!(cert.capabilities, DeviceCapabilities::member());
+        assert_eq!(cert.capabilities, DeviceCapabilities::joined());
         assert!(!recipient_paths.user_privkey.exists());
         let transferred: Vec<HomePeerRegistration> = serde_json::from_slice(
             &std::fs::read(tilo_relay::home_peer_registry_path(&recipient_root)).unwrap(),
@@ -748,8 +748,12 @@ fn the_person_home_child_refuses_planted_links() {
             op.into(),
             "--path".into(),
             dir.into(),
-            "--user".into(),
-            user.clone().into(),
+            "--subdir".into(),
+            "fleets".into(),
+            "--name".into(),
+            format!("{user}.json").into(),
+            "--mode".into(),
+            "644".into(),
         ]
     };
     let scope = tempfile::tempdir().unwrap();
@@ -757,11 +761,11 @@ fn the_person_home_child_refuses_planted_links() {
     // The person's own directory round-trips.
     let identities = scope.path().join("identities");
     std::fs::create_dir(&identities).unwrap();
-    let read = fleet_args("read-fleet", &identities);
+    let read = fleet_args("read", &identities);
     let output = child(&read, None);
     assert!(output.status.success());
     assert_eq!(output.stdout, b"0");
-    let write = fleet_args("write-fleet", &identities);
+    let write = fleet_args("write", &identities);
     assert!(child(&write, Some(b"{\"fleet\":1}")).status.success());
     let output = child(&read, None);
     assert_eq!(output.stdout, b"1{\"fleet\":1}");
@@ -771,13 +775,13 @@ fn the_person_home_child_refuses_planted_links() {
     std::fs::create_dir(&elsewhere).unwrap();
     let linked = scope.path().join("linked-identities");
     std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
-    for op in ["read-fleet", "write-fleet"] {
+    for op in ["read", "write"] {
         assert!(!child(&fleet_args(op, &linked), Some(b"x")).status.success());
     }
     let swapped = scope.path().join("swapped");
     std::fs::create_dir(&swapped).unwrap();
     std::os::unix::fs::symlink(&elsewhere, swapped.join("fleets")).unwrap();
-    for op in ["read-fleet", "write-fleet"] {
+    for op in ["read", "write"] {
         assert!(
             !child(&fleet_args(op, &swapped), Some(b"x"))
                 .status
@@ -793,8 +797,13 @@ fn the_person_home_child_refuses_planted_links() {
     std::fs::write(&secret, b"[]").unwrap();
     let rooms = state.join("personal-rooms.json");
     std::os::unix::fs::symlink(&secret, &rooms).unwrap();
-    let rooms_args: Vec<std::ffi::OsString> =
-        vec!["read-rooms".into(), "--path".into(), rooms.into()];
+    let rooms_args: Vec<std::ffi::OsString> = vec![
+        "read".into(),
+        "--path".into(),
+        state.into(),
+        "--name".into(),
+        "personal-rooms.json".into(),
+    ];
     let output = child(&rooms_args, None);
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
@@ -893,4 +902,133 @@ fn a_root_run_approval_reads_the_persons_fleet_only_as_the_person() {
     let output = approve();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("verify approving device fleet"), "{stderr}");
+}
+
+/// Run as root, a headless join for another account (`tilo-identity pair`
+/// runs `sudo tilo-enroll pair-device`) publishes under the root-owned
+/// identity root itself and writes the person's identity directory and
+/// status file only as the person, so everything there is theirs.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeps both processes of the root-run join and its ownership assertions in one trace"
+)]
+fn a_root_run_headless_join_writes_the_persons_files_only_as_the_person() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    const PERSON: u32 = 65_534;
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } != 0
+        || !std::fs::read_to_string("/etc/passwd")
+            .unwrap_or_default()
+            .lines()
+            .any(|line| line.split(':').nth(2) == Some("65534"))
+    {
+        eprintln!("skipped: needs root and an account with uid 65534");
+        return;
+    }
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(workspace.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let approver_root = workspace.path().join("approver-tilo");
+    let approver_identities = workspace.path().join("approver-identities");
+    let recipient_root = workspace.path().join("recipient-tilo");
+    let recipient_identities = workspace.path().join("recipient-identities");
+    std::fs::create_dir_all(&recipient_identities).unwrap();
+    let chown = Command::new("chown")
+        .arg(format!("{PERSON}:{PERSON}"))
+        .arg(&recipient_identities)
+        .status()
+        .unwrap();
+    assert!(chown.success());
+
+    let approver_paths = IdentityPaths::under(&approver_root);
+    tilo_identity_host::provisioning::ensure_collaboration_identity(
+        &approver_identities,
+        &approver_paths,
+        tilo_identity_host::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
+    let user = tilo_user_identity::persist::read_device_cert(&approver_paths.device_cert)
+        .unwrap()
+        .user_public_key;
+    let recipient = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let recipient_paths = IdentityPaths::under(&recipient_root);
+    recipient_paths.ensure_directories().unwrap();
+    tilo_user_identity::persist::write_device_key(&recipient_paths.device_privkey, &recipient)
+        .unwrap();
+    let recipient_id = hex::encode(recipient.verifying_key().to_bytes());
+    let recipient_service = hex::encode(tilo_relay::daemon::relay_service_node_id(&recipient));
+
+    let enroll = std::path::PathBuf::from(env!("CARGO_BIN_EXE_tilo-enroll"));
+    let status_file = recipient_identities.join("pairing-status.json");
+    let recipient_process = Command::new(&enroll)
+        .args(["pair-device", "--headless", "--identity-root"])
+        .arg(&recipient_root)
+        .arg("--identity-dir")
+        .arg(&recipient_identities)
+        .args([
+            "--label",
+            "Headless board",
+            "--timeout",
+            "60",
+            "--status-file",
+        ])
+        .arg(&status_file)
+        .args(["--person-uid", &PERSON.to_string()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for_file(&status_file, "recipient pairing status");
+    let approval = Command::new(&enroll)
+        .args(["approve-device", "--identity-root"])
+        .arg(&approver_root)
+        .arg("--identity-dir")
+        .arg(&approver_identities)
+        .args([
+            "--expected-device",
+            &recipient_id,
+            "--expected-service",
+            &recipient_service,
+            "--timeout",
+            "60",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let recipient_output = recipient_process.wait_with_output().unwrap();
+    assert!(
+        recipient_output.status.success(),
+        "recipient enrollment failed: {}",
+        String::from_utf8_lossy(&recipient_output.stderr)
+    );
+    let approval_output = approval.wait_with_output().unwrap();
+    assert!(
+        approval_output.status.success(),
+        "approval failed: {}",
+        String::from_utf8_lossy(&approval_output.stderr)
+    );
+
+    let member_cert =
+        tilo_user_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
+    assert_eq!(member_cert.user_public_key, user);
+    assert_eq!(member_cert.capabilities, DeviceCapabilities::joined());
+    for path in [
+        status_file,
+        recipient_identities.join("registry.json"),
+        recipient_identities.join("fleets"),
+        recipient_identities
+            .join("fleets")
+            .join(format!("{}.json", hex::encode(user))),
+    ] {
+        let metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(metadata.uid(), PERSON, "{} uid", path.display());
+    }
+    // What lands under the identity root stays root's.
+    assert_eq!(
+        std::fs::metadata(&recipient_paths.device_cert)
+            .unwrap()
+            .uid(),
+        0
+    );
 }

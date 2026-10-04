@@ -147,8 +147,11 @@ What revocation reaches, and when:
 - `create` calls `provisioning::ensure_collaboration_identity`, the function
   onboarding uses, and `runtime_identity::export_portable_backup`, the
   function onboarding's backup step uses.
-- `pair` runs `sudo tilo-enroll pair-device --headless`, then makes the joined
-  identity your account's active one. `approve` runs `tilo-enroll
+- `pair` runs `sudo tilo-enroll pair-device --headless --person-uid <you>`,
+  then makes the joined identity your account's active one. The join writes
+  under `/var/lib/tilo` as root, but writes your identity directory only as
+  you, through a child that has dropped to your account; it never follows a
+  link planted there. `approve` runs `tilo-enroll
   discover-device`, then the polkit/sudo helper `tilo-home-peer-control
   approve-device`, the same path Settings uses. The helper runs `tilo-enroll
   approve-device` as you (it signs with your identity), which records the new
