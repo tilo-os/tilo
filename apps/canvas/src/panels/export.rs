@@ -2,6 +2,9 @@
 //! how large, how much of it, and whether the ground comes along. The
 //! picture is written where the person chooses in Files.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use ui::LocalState;
 use ui::TextRenderer;
 use ui::prelude::*;
@@ -193,6 +196,46 @@ pub fn encode(
     }
 }
 
+/// About how many bytes the export of `region` of `art` comes to, without
+/// making all of it: pictures up to [`SAMPLED`] pixels on a side are made
+/// whole; a larger one is made at two small sizes, and the way its bytes
+/// grew between them carries on to its own size (flat vector art grows
+/// with its edges, a painting or photo with its area).
+///
+/// # Errors
+/// Says why the picture could not be drawn or encoded.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "byte counts of pictures are far inside f64's exact range"
+)]
+pub fn estimate(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    region: Rect,
+    settings: Settings,
+) -> Result<u64, String> {
+    let longest = region.width().max(region.height());
+    if !settings.format.raster() || longest * settings.scale <= SAMPLED {
+        return encode(renderer, text, art, region, settings).map(|bytes| bytes.len() as u64);
+    }
+    let large = SAMPLED / longest;
+    let small = large / 2.0;
+    let at = |scale: f64, renderer: &mut Renderer, text: &mut TextRenderer| {
+        encode(renderer, text, art, region, Settings { scale, ..settings })
+            .map(|bytes| (bytes.len() as f64).max(1.0))
+    };
+    let small_bytes = at(small, renderer, text)?;
+    let large_bytes = at(large, renderer, text)?;
+    let growth = (large_bytes / small_bytes).log2().clamp(0.8, 2.2);
+    Ok((large_bytes * (settings.scale / large).powf(growth)) as u64)
+}
+
+/// The longest side, in pixels, of a picture [`estimate`] makes whole.
+const SAMPLED: f64 = 512.0; // a sampling budget in pixels, not on-screen spacing
+
 /// `art` as SVG markup: plain layers as vector art, painted layers as
 /// pictures; with its ground when `ground`, every text as outlines when
 /// `outline_all` (text set along a path always is).
@@ -281,14 +324,24 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
     )
     .with_flexible_width()
     .with_id("canvas-export-scale");
+    // Exporting the selection needs one.
+    let picked = !tools.selection.with(Vec::is_empty);
+    if !picked && choices.area.get() == Area::Selection {
+        choices.area.set(Area::Whole);
+    }
     let area = ui::widget::ToggleGroup::from_state(
         [
-            (Area::Whole, "canvas-export-whole"),
-            (Area::View, "canvas-export-view"),
-            (Area::Selection, "canvas-export-selection"),
+            (Area::Whole, "canvas-export-whole", true),
+            (Area::View, "canvas-export-view", true),
+            (Area::Selection, "canvas-export-selection", picked),
         ]
         .into_iter()
-        .map(|(area, id)| (area, ui::widget::toggle_group::Segment::new(lookup(id))))
+        .map(|(area, id, enabled)| {
+            (
+                area,
+                ui::widget::toggle_group::Segment::new(lookup(id)).with_enabled(enabled),
+            )
+        })
         .collect(),
         &choices.area,
     )
@@ -308,62 +361,191 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
                 .push(control),
         )
     };
+    // The picture as it will be, and what it comes to, beside the choices
+    // that make it.
+    let shown = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(10.0)
+        .push(preview(cx, tools))
+        .push(Box::new(summary));
+    let settings = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(14.0)
+        .push(field("canvas-export-format-label", Box::new(format)))
+        .push(field("canvas-export-size-label", Box::new(scale)))
+        .push(field("canvas-export-area-label", Box::new(area)))
+        .push(Box::new(transparent));
     Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(14.0)
-            .push(field("canvas-export-format-label", Box::new(format)))
-            .push(field("canvas-export-size-label", Box::new(scale)))
-            .push(field("canvas-export-area-label", Box::new(area)))
-            .push(Box::new(transparent))
-            .push(Box::new(summary)),
+        Row::new()
+            .no_wrap()
+            .with_gap(20.0)
+            .with_align_items(ui::taffy::AlignItems::Start)
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_width(PREVIEW.0)
+                    .with_child(Box::new(shown)),
+            ))
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_flex_grow()
+                    .with_min_width(0.0)
+                    .with_child(Box::new(settings)),
+            )),
     )
 }
 
-/// What the export comes to: its size and format, or why there is none.
+/// The picture the export makes, as it is set now: the whole artwork,
+/// the part in view or the selection, on its ground or on the squares
+/// that say it has none.
+fn preview(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Element {
+    let choices = tools.export.clone();
+    let reads = tools.clone();
+    let cut: Rc<RefCell<Option<CutKey>>> = Rc::default();
+    let framing: crate::thumb::Framing = Rc::new(move |art: &Rc<Artwork>| {
+        let settings = choices.settings();
+        let bare = settings.transparent && settings.format.transparent();
+        let view = reads.visible.get();
+        if settings.area != Area::Selection {
+            let region = match settings.area {
+                Area::View => view?.intersect(art.bounds()),
+                _ => art.bounds(),
+            };
+            return (region.width() >= 1.0 && region.height() >= 1.0)
+                .then(|| (Rc::clone(art), region, bare));
+        }
+        // The selection is cut out of the artwork once for each artwork
+        // and selection, not on every frame.
+        let selection = reads.selection.get();
+        let mut cut = cut.borrow_mut();
+        let fresh = cut
+            .as_ref()
+            .is_none_or(|known| !Rc::ptr_eq(&known.art, art) || known.selection != selection);
+        if fresh {
+            let (made, region) = part(art, Area::Selection, view, &selection).ok()?;
+            *cut = Some(CutKey {
+                art: Rc::clone(art),
+                selection,
+                part: Rc::new(made),
+                region,
+            });
+        }
+        cut.as_ref()
+            .map(|known| (Rc::clone(&known.part), known.region, bare))
+    });
+    let thumb = crate::thumb::Thumb::new(tools.renderer.clone(), None, PREVIEW.0, PREVIEW.1)
+        .framed(framing);
+    cx.surface(thumb)
+}
+
+/// The export preview's box.
+const PREVIEW: (f32, f32) = (260.0, 200.0); // a picture's size, not spacing
+
+/// What [`summary`] said last, and for what.
+#[derive(Default)]
+struct Sizes {
+    key: Option<SizesKey>,
+    said: String,
+    text: Option<TextRenderer>,
+}
+
+/// What the summary depends on: the artwork as it is, and the settings.
+#[derive(PartialEq)]
+struct SizesKey {
+    art: usize,
+    settings: Settings,
+    selection: Vec<String>,
+    view: Option<Rect>,
+}
+
+/// The summary for `key`: the picture's size and format and about how
+/// many bytes it comes to, or why there is no picture.
+fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRenderer>) -> String {
+    let settings = key.settings;
+    let (part, region) = match part(art, settings.area, key.view, &key.selection) {
+        Err(why) => return why,
+        Ok(found) => found,
+    };
+    let mut said = if settings.format.raster() {
+        if region.width().max(region.height()) * settings.scale > MAX_PIXELS {
+            return ui::i18n::I18nManager::format(
+                "canvas-export-too-large",
+                &[("pixels", MAX_PIXELS.to_string().into())],
+            );
+        }
+        let (width, height) = pixels(region, settings.scale);
+        ui::i18n::I18nManager::format(
+            "canvas-export-summary",
+            &[
+                ("width", width.into()),
+                ("height", height.into()),
+                ("format", settings.format.label().into()),
+            ],
+        )
+    } else {
+        let (width, height) = pixels(region, 1.0);
+        ui::i18n::I18nManager::format(
+            "canvas-export-svg-summary",
+            &[("width", width.into()), ("height", height.into())],
+        )
+    };
+    let text = text.get_or_insert_with(TextRenderer::new);
+    let bytes = tools
+        .renderer
+        .try_borrow_mut()
+        .ok()
+        .and_then(|mut renderer| estimate(&mut renderer, text, &part, region, settings).ok());
+    if let Some(bytes) = bytes {
+        said.push_str(" · ");
+        said.push_str(&ui::i18n::I18nManager::format(
+            "canvas-export-bytes",
+            &[("size", ui::format::bytes_si(bytes).into())],
+        ));
+    }
+    if settings.transparent && !settings.format.transparent() {
+        said.push_str(" · ");
+        said.push_str(&ui::i18n::I18nManager::lookup_plain(
+            "canvas-export-jpeg-opaque",
+        ));
+    }
+    said
+}
+
+/// The selection cut out of one artwork, kept while both stay the same.
+struct CutKey {
+    art: Rc<Artwork>,
+    selection: Vec<String>,
+    part: Rc<Artwork>,
+    region: Rect,
+}
+
+/// What the export comes to: its size and format, about how many bytes,
+/// or why there is none.
 fn summary(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Text {
     let tools = tools.clone();
     let live = cx.live().clone();
+    let sizes = RefCell::new(Sizes::default());
     Text::dynamic(move || {
         let settings = tools.export.settings();
         let art = live.get();
         let selection = tools.selection.get();
         let view = tools.visible.get();
-        match part(&art, settings.area, view, &selection) {
-            Err(why) => why,
-            Ok((_, region)) if !settings.format.raster() => {
-                let (width, height) = pixels(region, 1.0);
-                ui::i18n::I18nManager::format(
-                    "canvas-export-svg-summary",
-                    &[("width", width.into()), ("height", height.into())],
-                )
-            }
-            Ok((_, region)) => {
-                if region.width().max(region.height()) * settings.scale > MAX_PIXELS {
-                    return ui::i18n::I18nManager::format(
-                        "canvas-export-too-large",
-                        &[("pixels", MAX_PIXELS.to_string().into())],
-                    );
-                }
-                let (width, height) = pixels(region, settings.scale);
-                let mut said = ui::i18n::I18nManager::format(
-                    "canvas-export-summary",
-                    &[
-                        ("width", width.into()),
-                        ("height", height.into()),
-                        ("format", settings.format.label().into()),
-                    ],
-                );
-                if settings.transparent && !settings.format.transparent() {
-                    said.push_str(" · ");
-                    said.push_str(&ui::i18n::I18nManager::lookup_plain(
-                        "canvas-export-jpeg-opaque",
-                    ));
-                }
-                said
-            }
+        let key = SizesKey {
+            art: Rc::as_ptr(&art).addr(),
+            settings,
+            selection,
+            view,
+        };
+        let mut sizes = sizes.borrow_mut();
+        if sizes.key.as_ref() != Some(&key) {
+            let said = say(&tools, &art, &key, &mut sizes.text);
+            sizes.key = Some(key);
+            sizes.said = said;
         }
+        sizes.said.clone()
     })
     .with_role(TextRole::Label)
 }
