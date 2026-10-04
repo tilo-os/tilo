@@ -585,3 +585,106 @@ fn an_effect_imports_and_exports_through_the_hosts_file_chooser() {
         "a cancelled import changes nothing"
     );
 }
+
+/// A surface that fetches on its own as soon as it is attached.
+#[derive(Default)]
+struct Fetcher {
+    tally: Tally,
+    fetches: u32,
+}
+
+impl Widget for Fetcher {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.tally.build_layout(taffy, theme, nodes)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.tally.apply_layout(taffy, node, origin);
+    }
+
+    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
+    }
+
+    fn name(&self) -> &'static str {
+        "Fetcher"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.tally.get_rect()
+    }
+}
+
+impl ResourceSurface<Mailbox> for Fetcher {
+    fn present(&mut self, _: &std::rc::Rc<Mailbox>) {}
+
+    fn attach(&mut self, cx: SurfaceCx<Mailbox>) {
+        let jobs = cx.jobs();
+        // Two requests under one key: the later one wins.
+        for text in ["stale", "fresh"] {
+            jobs.start::<Self>("fetch", move |cx| {
+                Ok(cx.thread(
+                    move |_| format!("{text} by the surface"),
+                    |fetcher: &mut Self, text, cx| {
+                        fetcher.fetches = fetcher.fetches.saturating_add(1);
+                        cx.invoke(Mailbox::FETCHED.with(format!("{text} ({})", fetcher.fetches)));
+                        Ok(Effected::done())
+                    },
+                ))
+            });
+        }
+        assert!(jobs.is_running("fetch") || cx.mode() != RunMode::Live);
+    }
+}
+
+struct FetcherApp;
+
+impl ResourceApp for FetcherApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-fetcher";
+    const TITLE: &'static str = "Fetcher";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        cx.jobs().start::<()>("outbox", |cx| {
+            Ok(cx.thread(
+                |_| "queued by the view".to_owned(),
+                |(), text, cx| {
+                    cx.invoke(Mailbox::SEND.with(text));
+                    Ok(Effected::done())
+                },
+            ))
+        });
+        cx.surface(Fetcher::default())
+    }
+}
+
+#[test]
+fn a_view_and_a_surface_start_jobs_nobody_invoked_and_the_latest_wins() {
+    let mut app = TestApp::<FetcherApp>::new().unwrap();
+    for _ in 0..500 {
+        app.settle();
+        let state = app.state();
+        if !state.fetched.is_empty() && !state.outbox.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let state = app.state();
+    assert_eq!(
+        state.fetched, "fresh by the surface (1)",
+        "the stale fetch was stopped"
+    );
+    assert_eq!(
+        state.outbox.values().cloned().collect::<Vec<_>>(),
+        ["queued by the view"]
+    );
+
+    // A capture starts no job: what it shows is its fixture.
+    let capture = TestApp::<FetcherApp>::capture(None).unwrap();
+    assert_eq!(capture.state().fetched, "");
+    assert!(capture.state().outbox.is_empty());
+}
