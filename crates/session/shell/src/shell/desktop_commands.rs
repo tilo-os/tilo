@@ -39,7 +39,7 @@ impl DesktopCommandSink for ShellCommands<'_> {
         apply_local_view(&mut tree.desktop, intent);
         // View state survives a restart: persist it in the boundary that
         // accepted the gesture.
-        tree.flush_to_disk();
+        tree.queue_save();
     }
 
     fn submit(&mut self, command: BoundCommand) -> Result<(), String> {

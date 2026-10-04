@@ -285,7 +285,7 @@ fn a_reference_picture_can_be_sent_inline() {
         )
         .unwrap_err()
         .to_string();
-    assert!(refused.contains("not a PNG or JPEG"), "{refused}");
+    assert!(refused.contains("not a PNG, JPEG or WebP"), "{refused}");
 }
 
 /// Tracking follows every letter, the last too; a centred line still

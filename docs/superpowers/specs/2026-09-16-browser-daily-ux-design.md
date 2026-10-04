@@ -28,4 +28,4 @@ Repeatable isolated-profile runs on English Wikipedia main page, Hacker News fro
 
 ## Constraints
 
-Preserve unrelated concurrent changes, existing built-in blocking, reviewed bounded IPC, and prior UX commit adc78a4be. No GPU-sharing rewrite in this goal. No pushes/merges. Test changes and obtain scoped review before claiming completion.
+Preserve unrelated concurrent changes, existing built-in blocking, reviewed bounded IPC, and prior UX commit adc78a4be. No GPU-sharing rewrite in this goal. Test changes and obtain scoped review before claiming completion.

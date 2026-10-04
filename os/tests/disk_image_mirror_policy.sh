@@ -9,7 +9,7 @@ export TILO_TEST_REAL_PYTHON="$(command -v python3)"
 
 digest="sha256:$(printf 'a%.0s' {1..64})"
 authoritative="registry.tilo.so/tilo/tilo-development@$digest"
-mirror_repository="172.25.116.162:5000/tilo/tilo-development"
+mirror_repository="198.51.100.7:5000/tilo/tilo-development"
 
 cat >"$work/bin/skopeo" <<EOF
 #!/bin/sh
