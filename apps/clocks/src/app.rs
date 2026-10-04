@@ -357,7 +357,7 @@ fn city_row(state: &ui::LocalState<ClockState>, clock: &WorldClock) -> Element {
     Box::new(
         ListRow::new(format!("clocks.world.{id}"), &clock.city)
             .secondary(relation)
-            .meta(time)
+            .title_value(time)
             .action(Icon::Trash2, format!("Remove {}", clock.city), move || {
                 remove.update(|s| s.world_clocks.retain(|c| c.id != id));
             }),
@@ -1082,7 +1082,7 @@ fn stopwatch_controls(controls: &ui::LocalState<ClockState>, s: &ClockState) -> 
 
 /// The laps, newest first, each with how long it lasted: the heading and the
 /// list, as two parts that share one text edge.
-fn lap_list(s: &ClockState) -> Column {
+fn lap_list(s: &ClockState) -> Section {
     // Each lap is stored as the time on the clock when it was taken; the
     // list shows how long each one lasted.
     let mut previous = 0;
@@ -1099,26 +1099,8 @@ fn lap_list(s: &ClockState) -> Column {
         })
         .collect();
     laps.reverse();
-    Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_gap(Spacing::BASE.s2)
-        .push(text_edge(Box::new(Section::new(Vec::new()).with_header(
-            SectionHeader::heading("Laps").count(s.stopwatch.laps_ms.len()),
-        ))))
-        .push(Box::new(PropertyList::new(laps)))
-}
-
-/// `item` set in from the page edge by the inset a list keeps around its
-/// text, so text outside a list lines up with the text in it.
-fn text_edge(item: Element) -> Element {
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_horizontal_padding(Spacing::BASE.s2, Spacing::BASE.s2)
-            .push(item),
-    )
+    Section::new(vec![Box::new(PropertyList::new(laps))])
+        .with_header(SectionHeader::heading("Laps").count(s.stopwatch.laps_ms.len()))
 }
 
 fn stopwatch_screen(state: &ui::LocalState<ClockState>) -> Element {
@@ -1130,18 +1112,12 @@ fn stopwatch_screen(state: &ui::LocalState<ClockState>) -> Element {
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(group_gap())
-            .push(text_edge(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(group_gap())
-                    .push(Box::new(
-                        Text::dynamic(move || readout.with(|s| duration(stopwatch_elapsed_ms(s))))
-                            .with_role(TextRole::Display)
-                            .numeric(),
-                    ))
-                    .push(Box::new(stopwatch_controls(&controls, s))),
-            )));
+            .push(Box::new(
+                Text::dynamic(move || readout.with(|s| duration(stopwatch_elapsed_ms(s))))
+                    .with_role(TextRole::Display)
+                    .numeric(),
+            ))
+            .push(Box::new(stopwatch_controls(&controls, s)));
         if !s.stopwatch.laps_ms.is_empty() {
             page = page.push(Box::new(lap_list(s)));
         }
@@ -1248,24 +1224,19 @@ fn surface(
     // The banner sits above the open screen while a notice is showing, so the
     // screen is built again when either changes; the scroll area stays.
     let pages = ModelView::from_state(view, move |(selected, notice)| {
-        // The window header's title starts `s3` in; list rows keep `s2` around
-        // their text, so a page sits `s1` in and sets its text in by `s2`.
+        // A page's text starts where the window header's title does, `s3`
+        // in; list rows put their text on that edge and bleed their lift
+        // into the gutter.
         let mut column = Column::new()
             .with_intrinsic_height()
-            .with_horizontal_padding(Spacing::BASE.s1, Spacing::BASE.s1);
+            .with_horizontal_padding(Spacing::BASE.s3, Spacing::BASE.s3);
         if let Some(notice) = notice {
             column = column
-                .push(text_edge(notice_banner(notice, &notice_state)))
+                .push(notice_banner(notice, &notice_state))
                 .with_gap(group_gap());
         }
         let screen = screen_of(selected.as_deref());
-        let body = page(screen, &pages_state);
-        // The stopwatch sets its own text in: its laps are a list.
-        Box::new(column.push(if screen == Screen::Stopwatch {
-            body
-        } else {
-            text_edge(body)
-        }))
+        Box::new(column.push(page(screen, &pages_state)))
     });
     let body = Column::new().with_no_padding().push(Box::new(
         Scrollable::new_vertical()

@@ -212,14 +212,28 @@ pub fn selection_tier_on(theme: &Theme, state: SelectionState, ground: Color) ->
     }
 }
 
+/// How far a row's hover and selection lift, and a zebra stripe, bleed past
+/// the column's content edge on each side (`s2`).
+///
+/// One edge rule holds for every content list: a row's text, a section's
+/// title, a property list's labels and a table's first column all start on
+/// the column's content edge, and the lift stands `row_bleed` outside it, so
+/// text never moves when its row is selected and a list lines up with the
+/// headings around it. A face takes the row's outer rect (the content edge
+/// grown by the bleed); a retained row grows its own layout box by it.
+pub fn row_bleed(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.s2)
+}
+
 /// Paint the selection of one row of a list: the hover or active lift of
 /// `ground` ([`selection_tier_on`]) on `rect` with the item radius
 /// (`radii.item`), and nothing for an idle row. A row is a lift with
 /// primary ink and nothing else: no hue, no border, no leading bar.
 ///
-/// The caller passes the row already inset from the list's edges (the
-/// list's `s2` inset); `NavList`, `TreeView` and [`super::paint_nav_row`]
-/// all paint through here, and a painted app's own rows do too.
+/// `rect` is the row's outer rect: the column's content edge grown by
+/// [`row_bleed`]. `NavList`, `TreeView`, [`super::paint_nav_row`], `ListRow`,
+/// `VirtualList` and `DataTable` all paint through here, and a painted app's
+/// own rows do too.
 pub fn paint_row_selection(
     scene: &mut Scene,
     transform: Affine,
@@ -228,17 +242,59 @@ pub fn paint_row_selection(
     ground: Color,
     theme: &Theme,
 ) {
+    paint_row_selection_joined(scene, transform, rect, state, ground, theme, RowJoin::NONE);
+}
+
+/// Which neighbours of a selected row are selected too. A run of selected
+/// rows reads as one lift: the corners where two lifted rows meet are
+/// square, so the run has no notch between its rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RowJoin {
+    /// The row above is lifted too.
+    pub above: bool,
+    /// The row below is lifted too.
+    pub below: bool,
+}
+
+impl RowJoin {
+    pub const NONE: Self = Self {
+        above: false,
+        below: false,
+    };
+
+    pub fn new(above: bool, below: bool) -> Self {
+        Self { above, below }
+    }
+}
+
+/// [`paint_row_selection`] for a row inside a run of selected rows: the
+/// corners shared with a lifted neighbour are square, so adjacent selected
+/// rows join into one lift (a multi-selection in a mail list).
+pub fn paint_row_selection_joined(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    state: SelectionState,
+    ground: Color,
+    theme: &Theme,
+    join: RowJoin,
+) {
     if !(state.active || state.pressed || state.hover) || rect.width() <= 0.0 {
         return;
     }
     let fill = selection_tier_on(theme, state, ground).fill;
     let radius = f64::from(theme.tokens.radii.item).min(rect.height() / 2.0);
+    let top = if join.above { 0.0 } else { radius };
+    let bottom = if join.below { 0.0 } else { radius };
     scene.fill(
         Fill::NonZero,
         transform,
         fill,
         None,
-        &RoundedRect::from_rect(rect, radius),
+        &RoundedRect::from_rect(
+            rect,
+            vello::kurbo::RoundedRectRadii::new(top, top, bottom, bottom),
+        ),
     );
 }
 

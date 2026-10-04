@@ -3,6 +3,8 @@ use crate::headless::FrameHarness;
 use crate::state::State;
 use std::rc::Rc as SharedRc;
 
+mod capabilities;
+
 /// A pane that fills what it is given and counts the input it receives.
 struct Probe {
     id: &'static str,
@@ -69,6 +71,14 @@ impl Widget for Probe {
 
     fn name(&self) -> &'static str {
         "Probe"
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn test_id(&self) -> Option<&str> {

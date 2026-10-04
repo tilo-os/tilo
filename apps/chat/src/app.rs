@@ -2382,9 +2382,10 @@ impl ChatApp {
         let s = ui::tokens::Spacing::BASE;
         let docked = m.rail_width + m.sidebar_width;
         let avatar_column = s.s6 + m.min_pointer_target + s.s3;
+        // One drawer holds the rail (icon-sized, following the UI scale) and
+        // the channel list (text-sized) beside it.
         SidebarDrawer::new()
-            .docked_width(f64::from(docked))
-            .overlay_width(f64::from(m.rail_width + m.drawer_width))
+            .with_rail()
             .breakpoint(f64::from(docked + avatar_column + m.content_min_width))
     }
 
@@ -2423,25 +2424,15 @@ impl ChatApp {
     }
     /// The workspace rail: the drawer's leading column under the header row.
     pub(crate) fn rail_rect(&self) -> Rect {
-        let nav = self.nav_rect();
-        let y0 = (nav.y0 + self.chrome.header_h).min(nav.y1);
-        Rect::new(
-            nav.x0,
-            y0,
-            (nav.x0 + self.chrome.rail_w).min(nav.x1),
-            nav.y1,
-        )
+        let rail = self.left_flap.rail_rect();
+        let y0 = (rail.y0 + self.chrome.header_h).min(rail.y1);
+        Rect::new(rail.x0, y0, rail.x1, rail.y1)
     }
     /// The channel list beside the rail, under the header row.
     pub(crate) fn sidebar_rect(&self) -> Rect {
-        let nav = self.nav_rect();
-        let y0 = (nav.y0 + self.chrome.header_h).min(nav.y1);
-        Rect::new(
-            (nav.x0 + self.chrome.rail_w).min(nav.x1),
-            y0,
-            nav.x1,
-            nav.y1,
-        )
+        let list = self.left_flap.list_rect();
+        let y0 = (list.y0 + self.chrome.header_h).min(list.y1);
+        Rect::new(list.x0, y0, list.x1, list.y1)
     }
     /// The conversation column: what the docked drawers leave.
     pub(crate) fn content_rect(&self) -> Rect {

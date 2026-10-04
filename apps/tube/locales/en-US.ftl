@@ -14,7 +14,6 @@ tube-nav-name = Tube
 ## Header row and navigation
 tube-connecting = Connecting
 tube-clear-history = Clear history
-tube-back = Back
 
 ## Counts and facts
 tube-views = { $count ->

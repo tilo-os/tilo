@@ -439,10 +439,6 @@ fn managed_driver_with_root(doc: AutoCommit, root: Box<dyn Widget>) -> ui::headl
     .unwrap()
 }
 
-fn node_named(driver: &ui::headless::Driver, name: &str) -> ui::accesskit::Node {
-    a11y_node_labelled(driver, name, None)
-}
-
 /// The text field labelled `name` (its visible label is a separate node).
 fn input_id(driver: &ui::headless::Driver, name: &str) -> ui::accesskit::NodeId {
     driver
@@ -714,7 +710,13 @@ fn managed_history_retains_public_modal_input_selection_and_focus() {
     driver
         .perform_a11y_action(cancel, &ui::a11y::Action::Activate)
         .unwrap();
-    let images = node_named(&driver, "Images");
+    // The destination, not the content's header that names it.
+    let images = driver
+        .a11y_nodes()
+        .into_iter()
+        .map(|(_, node)| node)
+        .find(|node| node.label() == Some("Images") && node.role() != ui::accesskit::Role::Heading)
+        .expect("the Images destination");
     assert_eq!(images.is_selected(), Some(true));
     let bounds = images
         .bounds()

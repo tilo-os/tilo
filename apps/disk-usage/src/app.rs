@@ -10,7 +10,7 @@ use ui::automerge::{AutoCommit, ObjId};
 use ui::framework::Actions;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextKind, TextRenderer};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::{
     ActionBinding, ActionContract, ActionOutput, ActionSpec, DiscoveryScope, OperationKind,
@@ -21,8 +21,8 @@ use ui::tokens::TextRole;
 use ui::vello::Scene;
 use ui::vello::kurbo::Affine;
 use ui::widget::{
-    Button, Column, Container, Element, EmptyState, ListRow, PieChart, PieSlice, Row, Scrollable,
-    Section, SectionHeader, Text, Widget,
+    Button, Column, Container, Element, EmptyState, ListRow, NavShell, PieChart, PieSlice,
+    Scrollable, Section, SectionHeader, Text, Widget,
 };
 
 use crate::doc::DiskUsageDoc;
@@ -73,15 +73,21 @@ enum View {
 /// The navigation operations the resource publishes, which the view's
 /// buttons invoke.
 const CHOOSE: ActionRef<crate::resource::DiskUsage, ()> = ActionRef::new("choose", &[]);
-const BACK: ActionRef<crate::resource::DiskUsage, ()> = ActionRef::new("back", &[]);
 
 /// What a control in the current view asks for. Controls run inside the
 /// widget tree; the app applies their requests on its next update.
 enum Request {
     Analyze(PathBuf),
+    /// The shell's Back: the folder this one was opened from, or home.
+    Back,
 }
 
 type Inbox = Rc<RefCell<Vec<Request>>>;
+
+/// A folder as the header row names it; nothing before one is chosen.
+fn folder_title(folder: &std::path::Path) -> String {
+    folder.to_string_lossy().into_owned()
+}
 
 /// `12842` as `12,842`.
 fn count_text(n: u64) -> String {
@@ -289,7 +295,11 @@ impl ui::widget::Decorator for SliceChart {
 
 pub struct DiskUsageApp {
     view: View,
-    content: Element,
+    /// The window: the current view as its content, the folder as the
+    /// header's title, and the shell's Back while there is a way back.
+    content: NavShell,
+    /// Whether Back leads anywhere: any view but home.
+    can_go_back: Rc<std::cell::Cell<bool>>,
     structure_dirty: bool,
     inspected: Option<String>,
     history: Vec<PathBuf>,
@@ -328,15 +338,26 @@ impl DiskUsageApp {
                 path: PathBuf::from("/"),
             },
         ];
+        let inbox: Inbox = Rc::default();
+        let can_go_back = Rc::new(std::cell::Cell::new(false));
+        let content = {
+            let can = Rc::clone(&can_go_back);
+            let inbox = Rc::clone(&inbox);
+            NavShell::new().with_id("disk-usage.shell").on_back(
+                move || can.get(),
+                move || inbox.borrow_mut().push(Request::Back),
+            )
+        };
         let mut app = Self {
             view: View::Home,
-            content: Box::new(Column::new()),
+            content,
+            can_go_back,
             structure_dirty: false,
             inspected: None,
             history: Vec::new(),
             recent: Vec::new(),
             places,
-            inbox: Rc::default(),
+            inbox,
             scan_rx: None,
             scan_cancellation: None,
             picker_rx: None,
@@ -517,6 +538,7 @@ impl DiskUsageApp {
                 let push = matches!(self.view, View::Analysis(_));
                 self.start_scan(path, push);
             }
+            Request::Back => self.go_back(),
         }
     }
 
@@ -541,12 +563,17 @@ impl DiskUsageApp {
     }
 
     fn rebuild(&mut self) {
-        self.content = match &self.view {
-            View::Home => self.home_view(),
-            View::Loading(path) => self.loading_view(path),
-            View::Analysis(result) => self.analysis_view(result),
-            View::Error(path, message) => self.error_view(path, message),
+        let (title, view) = match &self.view {
+            View::Home => (String::new(), self.home_view()),
+            View::Loading(path) => (folder_title(path), Self::loading_view()),
+            View::Analysis(result) => (folder_title(&result.path), self.analysis_view(result)),
+            View::Error(path, message) => (folder_title(path), self.error_view(path, message)),
         };
+        let back = !matches!(self.view, View::Home);
+        self.can_go_back.set(back);
+        self.content.set_can_go_back(back);
+        self.content.set_content(view);
+        self.content.set_content_title(title);
         self.structure_dirty = true;
     }
 
@@ -576,13 +603,6 @@ impl DiskUsageApp {
             Some(binding) => button.on_action(binding),
             None => button.with_enabled(false),
         }
-    }
-
-    fn back_button(&self) -> Button {
-        self.bind(
-            Button::icon_only("disk-usage.back", Icon::ChevronLeft, "Back"),
-            &BACK,
-        )
     }
 
     fn place_row(&self, place: &Place) -> Element {
@@ -626,28 +646,9 @@ impl DiskUsageApp {
         Box::new(Scrollable::new_vertical().with_child(Box::new(page)))
     }
 
-    /// The header every view but the home view opens with: Back, then the
-    /// folder the view is about. One structure, so Back never moves.
-    fn header(&self, folder: &std::path::Path) -> Row {
-        let mut header = Row::new().no_wrap().push(Box::new(self.back_button()));
-        if !folder.as_os_str().is_empty() {
-            header = header.push(Box::new(
-                Text::new(&folder.to_string_lossy())
-                    .with_role(TextRole::Title)
-                    .with_kind(TextKind::Identifier),
-            ));
-        }
-        header
-    }
-
-    fn loading_view(&self, path: &std::path::Path) -> Element {
+    fn loading_view() -> Element {
         // The empty state's own spinner keeps itself moving.
-        let busy = EmptyState::new("Calculating folder sizes").busy();
-        Box::new(
-            Column::new()
-                .push(Box::new(self.header(path)))
-                .push(Box::new(busy)),
-        )
+        Box::new(EmptyState::new("Calculating folder sizes").busy())
     }
 
     fn error_view(&self, path: &std::path::Path, message: &str) -> Element {
@@ -663,11 +664,7 @@ impl DiskUsageApp {
         if let Some(binding) = self.binding(&CHOOSE) {
             recover = recover.on_action(binding);
         }
-        Box::new(
-            Column::new()
-                .push(Box::new(self.header(path)))
-                .push(Box::new(recover)),
-        )
+        Box::new(recover)
     }
 
     fn folder_row(&self, row: &SliceRow) -> Element {
@@ -702,7 +699,6 @@ impl DiskUsageApp {
         let lane = Theme::default().tokens.metrics.panel_width_sheet;
         let mut page = Column::new()
             .with_intrinsic_height()
-            .push(Box::new(self.header(&result.path)))
             .push(Box::new(
                 Container::new()
                     .with_no_padding()
@@ -762,14 +758,14 @@ impl DiskUsageApp {
 }
 
 impl ui::widget::Decorator for DiskUsageApp {
-    type Inner = dyn Widget;
+    type Inner = NavShell;
 
-    fn inner(&self) -> &(dyn Widget + 'static) {
-        self.content.as_ref()
+    fn inner(&self) -> &NavShell {
+        &self.content
     }
 
-    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
-        self.content.as_mut()
+    fn inner_mut(&mut self) -> &mut NavShell {
+        &mut self.content
     }
 
     ui::provides!(

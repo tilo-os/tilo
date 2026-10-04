@@ -31,7 +31,7 @@ use vello::peniko::{BlendMode, Fill};
 
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
+use tilo_ui::text_render::{TextKind, TextRenderer};
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
@@ -47,40 +47,13 @@ fn columns() -> Vec<ColumnDef<Proc>> {
     vec![
         ColumnDef::new("name", "Process", ColumnWidth::Flex(1.0))
             .sortable(true)
-            .with_text_render(Box::new(|r: &Proc, scene, tr, rect, theme, _sel| {
-                tr.draw_text(
-                    scene,
-                    &r.name,
-                    14.0,
-                    theme.text_primary,
-                    Affine::translate((rect.x0 + 8.0, rect.y0 + 4.0)),
-                    None,
-                );
-            })),
-        ColumnDef::new("cpu", "CPU%", ColumnWidth::Fixed(90.0)).with_text_render(Box::new(
-            |r: &Proc, scene, tr, rect, theme, _sel| {
-                tr.draw_text(
-                    scene,
-                    &r.cpu,
-                    14.0,
-                    theme.text_dim,
-                    Affine::translate((rect.x0 + 8.0, rect.y0 + 4.0)),
-                    None,
-                );
-            },
-        )),
-        ColumnDef::new("mem", "Mem", ColumnWidth::Fixed(90.0)).with_text_render(Box::new(
-            |r: &Proc, scene, tr, rect, theme, _sel| {
-                tr.draw_text(
-                    scene,
-                    &r.mem,
-                    14.0,
-                    theme.text_dim,
-                    Affine::translate((rect.x0 + 8.0, rect.y0 + 4.0)),
-                    None,
-                );
-            },
-        )),
+            .with_text(|r: &Proc| r.name.clone()),
+        ColumnDef::new("cpu", "CPU%", ColumnWidth::Fixed(90.0))
+            .with_kind(TextKind::Numeric)
+            .with_text(|r: &Proc| r.cpu.clone()),
+        ColumnDef::new("mem", "Mem", ColumnWidth::Fixed(90.0))
+            .with_kind(TextKind::Numeric)
+            .with_text(|r: &Proc| r.mem.clone()),
     ]
 }
 
