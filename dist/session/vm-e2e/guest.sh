@@ -20,6 +20,7 @@
 set -euo pipefail
 
 user=tilo-e2e
+password=tilo-e2e-password
 marker=/etc/tilo-host-session-e2e
 
 die() { printf 'guest: %s\n' "$*" >&2; exit 1; }
@@ -70,7 +71,7 @@ step_install() {
 
 step_user() {
     id "$user" >/dev/null 2>&1 || useradd --create-home --comment 'Tilo E2E' "$user"
-    echo "$user:tilo-e2e-password" | chpasswd
+    echo "$user:$password" | chpasswd
     # Linger starts the user manager (and its bus) now, so the keyring and the
     # identity are set up on the bus the graphical login will use.
     loginctl enable-linger "$user"
@@ -84,10 +85,14 @@ step_user() {
 }
 
 step_keyring() {
-    # A blank password keeps the login keyring unlocked without a prompt, the
-    # state an autologin desktop's PAM unlock leaves it in.
-    as_user sh -c "printf '' | gnome-keyring-daemon --replace --daemonize --unlock --components=secrets" \
-        >/dev/null
+    # What pam_gnome_keyring does at a password login: unlock the "login"
+    # keyring with the login password (creating it on first use) as the
+    # default collection, so storing a secret needs no prompt. A blank
+    # password does not create it: gnome-keyring asks its prompter instead.
+    as_user install -d -m 0700 "/home/$user/.local/share/keyrings"
+    as_user sh -c "printf login > /home/$user/.local/share/keyrings/default"
+    printf '%s' "$password" \
+        | as_user gnome-keyring-daemon --replace --daemonize --unlock --components=secrets >/dev/null
     printf 'probe' | as_user timeout 30 secret-tool store --label='Tilo E2E probe' tilo-e2e probe \
         || die 'the Secret Service did not store an item (locked or prompting?)'
     [[ $(as_user timeout 30 secret-tool lookup tilo-e2e probe) == probe ]] \
