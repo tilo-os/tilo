@@ -1,8 +1,8 @@
 //! The selected person, as the content column shows them.
 //!
 //! The page is ordinary retained widgets: the person's avatar, name and
-//! work as a header, their groups as tags, and every detail as a
-//! [`PropertyList`] under a sentence-case group title. Phone numbers and
+//! work as a header, their groups as tags, and every detail in one
+//! [`PropertyList`] whose labels say what each value is. Phone numbers and
 //! addresses copy, the website opens; Edit, Delete and Favorite are the
 //! column header's commands.
 
@@ -10,8 +10,7 @@ use ui::TextRole;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::widget::{
-    Avatar, AvatarSize, Chip, Column, Element, Property, PropertyList, Row, Scrollable, Section,
-    SectionHeader, Text,
+    Avatar, AvatarSize, Chip, Column, Element, Property, PropertyList, Row, Scrollable, Text,
 };
 
 use crate::model::{Address, Contact};
@@ -29,6 +28,28 @@ pub(crate) fn kind_label(kind: &str) -> String {
         .chain(crate::form::OTHER_KINDS)
         .find(|(value, _)| value.eq_ignore_ascii_case(kind))
         .map_or_else(|| kind.to_owned(), |(_, label)| (*label).to_owned())
+}
+
+/// A kind with what it qualifies ("Work email", "Home address"), so facts
+/// of different sorts read apart in one list. A kind that already names
+/// the sort ("Email") stands alone.
+fn qualified(kind: &str, noun: &str) -> String {
+    let label = kind_label(kind);
+    if label.eq_ignore_ascii_case(noun) {
+        label
+    } else {
+        format!("{label} {noun}")
+    }
+}
+
+/// A phone number's label: the kinds that are themselves a sort of line
+/// ("Mobile", "Fax", "Pager") stand alone, the rest say "phone".
+fn phone_label(kind: &str) -> String {
+    let label = kind_label(kind);
+    match label.as_str() {
+        "Mobile" | "Fax" | "Pager" | "Phone" | "Textphone" => label,
+        _ => format!("{label} phone"),
+    }
 }
 
 /// A postal address as the lines an envelope shows.
@@ -51,10 +72,6 @@ pub(crate) fn address_lines(address: &Address) -> String {
     .filter(|line| !line.is_empty())
     .collect::<Vec<_>>()
     .join("\n")
-}
-
-fn group(title: &str, body: Element) -> Element {
-    Box::new(Section::new(vec![body]).with_header(SectionHeader::group(title)))
 }
 
 /// The person: avatar, name, and what they do and where.
@@ -118,51 +135,47 @@ pub(crate) fn contact_page(
         page = page.push(Box::new(tags));
     }
 
-    let phones: Vec<Property> = contact
-        .phones
-        .iter()
-        .filter(|phone| !phone.value.trim().is_empty())
-        .map(|phone| {
-            Property::new(kind_label(&phone.label), phone.value.clone())
-                .with_kind(TextKind::Numeric)
-                .copyable()
-        })
-        .collect();
-    if !phones.is_empty() {
-        page = page.push(group("Phone", Box::new(PropertyList::new(phones))));
-    }
-
-    let emails: Vec<Property> = contact
-        .emails
-        .iter()
-        .filter(|email| !email.value.trim().is_empty())
-        .map(|email| {
-            Property::new(kind_label(&email.label), email.value.clone())
-                .with_kind(TextKind::Identifier)
-                .copyable()
-        })
-        .collect();
-    if !emails.is_empty() {
-        page = page.push(group("Email", Box::new(PropertyList::new(emails))));
-    }
-
-    let addresses: Vec<Property> = contact
-        .addresses
-        .iter()
-        .filter(|address| !address.is_empty())
-        .map(|address| Property::new(kind_label(&address.label), address_lines(address)).copyable())
-        .collect();
-    if !addresses.is_empty() {
-        page = page.push(group("Address", Box::new(PropertyList::new(addresses))));
-    }
-
-    let mut details = Vec::new();
+    // Every fact in one list, so its labels and values keep one column down
+    // the page; the label says what kind of fact a value is.
+    let mut facts: Vec<Property> = Vec::new();
+    facts.extend(
+        contact
+            .phones
+            .iter()
+            .filter(|phone| !phone.value.trim().is_empty())
+            .map(|phone| {
+                Property::new(phone_label(&phone.label), phone.value.clone())
+                    .with_kind(TextKind::Numeric)
+                    .copyable()
+            }),
+    );
+    facts.extend(
+        contact
+            .emails
+            .iter()
+            .filter(|email| !email.value.trim().is_empty())
+            .map(|email| {
+                Property::new(qualified(&email.label, "email"), email.value.clone())
+                    .with_kind(TextKind::Identifier)
+                    .copyable()
+            }),
+    );
+    facts.extend(
+        contact
+            .addresses
+            .iter()
+            .filter(|address| !address.is_empty())
+            .map(|address| {
+                Property::new(qualified(&address.label, "address"), address_lines(address))
+                    .copyable()
+            }),
+    );
     if let Some(birthday) = &contact.birthday {
-        details.push(Property::new("Birthday", birthday.pretty()).with_kind(TextKind::Numeric));
+        facts.push(Property::new("Birthday", birthday.pretty()).with_kind(TextKind::Numeric));
     }
     let website = contact.website.trim();
     if !website.is_empty() {
-        details.push(
+        facts.push(
             Property::new("Website", website)
                 .with_kind(TextKind::Identifier)
                 .action(
@@ -172,16 +185,12 @@ pub(crate) fn contact_page(
                 ),
         );
     }
-    if !details.is_empty() {
-        page = page.push(group("Details", Box::new(PropertyList::new(details))));
-    }
-
     let notes = contact.notes.trim();
     if !notes.is_empty() {
-        page = page.push(group(
-            "Notes",
-            Box::new(Text::new(notes).with_role(TextRole::Body)),
-        ));
+        facts.push(Property::new("Notes", notes));
+    }
+    if !facts.is_empty() {
+        page = page.push(Box::new(PropertyList::new(facts)));
     }
 
     Box::new(

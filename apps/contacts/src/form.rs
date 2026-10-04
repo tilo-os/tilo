@@ -9,12 +9,12 @@
 use ui::icons::Icon;
 use ui::widget::{
     Button, ButtonRole, Column, ControlSize, DatePicker, Dropdown, Element, Field, Form,
-    FormSection, Row, Scrollable, Text, TextInput, TextInputKind,
+    FormSection, LabelPlacement, Row, Scrollable, Text, TextInput, TextInputKind,
 };
 use ui::{LocalState, TextRole};
 
 use crate::model::{Address, Birthday, Contact, GroupEntry, Labeled, group_names_equal};
-use crate::view::{Readable, Request, Shared, queue};
+use crate::view::{Compact, Readable, Request, Shared, queue};
 
 /// The kinds of a phone number, an email or an address, in menu order:
 /// the stored vCard type and the label the menu shows.
@@ -554,7 +554,7 @@ impl EditForm {
         input
     }
 
-    fn type_menu(&self, target: TypeTarget) -> Option<Chooser> {
+    fn type_menu(&self, target: TypeTarget) -> Option<Compact> {
         let (_, state) = self
             .types
             .iter()
@@ -564,10 +564,10 @@ impl EditForm {
         let labels: Vec<String> = options.iter().map(|(_, label)| label.clone()).collect();
         let mut menu = Dropdown::from_state(labels.clone(), state)
             .with_id(&format!("contacts.form.type.{}", target.key()))
-            .with_accessible_name(format!("{} type", target.spoken()))
-            .control_size(ControlSize::Large);
+            .with_accessible_name(format!("{} type", target.spoken()));
         menu.set_value_options(options);
-        Some(Chooser { menu, labels })
+        // The kind stands at the field's height beside the value.
+        Some(Compact::new(menu, labels, ControlSize::Large))
     }
 
     /// `[kind][value][remove]`: one phone, email or the first line of an
@@ -647,11 +647,13 @@ impl EditForm {
             "Choose from calendar"
         };
         let mut details = FormSection::new("Details")
-            .field(Field::new("Birthday", self.input(Slot::Birthday)))
+            .field(
+                Field::new("Birthday", self.input(Slot::Birthday))
+                    .with_help("Year, month and day, such as 1990-04-25"),
+            )
             .content(Box::new(
                 Button::new("contacts.form.calendar", calendar_label, None)
                     .with_icon(Icon::Calendar)
-                    .role(ButtonRole::Plain)
                     .on_view(queue(shared, Request::ToggleCalendar)),
             ));
         if self.calendar_open {
@@ -680,7 +682,10 @@ impl EditForm {
             )
             .field(Field::new("Notes", self.input(Slot::Notes)));
 
+        // Labels stand above their fields, so every field, repeated row,
+        // button and the calendar share the form's one leading edge.
         let form = Form::new()
+            .with_label_placement(Some(LabelPlacement::Above))
             .section(name)
             .section(phones)
             .section(emails)
@@ -706,52 +711,6 @@ impl EditForm {
                         .push(Box::new(form)),
                 ))),
         )
-    }
-}
-
-/// The kind of a phone, email or address beside its value: as wide as its
-/// widest choice instead of an equal share of the row.
-struct Chooser {
-    menu: Dropdown,
-    labels: Vec<String>,
-}
-
-impl ui::widget::Decorator for Chooser {
-    type Inner = Dropdown;
-
-    fn inner(&self) -> &Dropdown {
-        &self.menu
-    }
-
-    fn inner_mut(&mut self) -> &mut Dropdown {
-        &mut self.menu
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut taffy::TaffyTree<()>,
-        theme: &ui::theme::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
-    ) -> taffy::NodeId {
-        let node = ui::widget::Widget::build_layout(&mut self.menu, taffy, theme, node_map);
-        let style = theme.text(TextRole::Body);
-        let widest = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-            self.labels
-                .iter()
-                .map(|label| text.measure_style(label, None, &style).0)
-                .fold(0.0_f32, f32::max)
-        });
-        // The label, the chevron's pointer-sized slot and the field's
-        // insets on both sides.
-        let width =
-            widest + theme.tokens.metrics.min_pointer_target + 2.0 * theme.tokens.spacing.s3;
-        if let Ok(current) = taffy.style(node) {
-            let mut layout = current.clone();
-            layout.size.width = taffy::style_helpers::length(width.ceil());
-            layout.flex_shrink = 0.0;
-            let _ = taffy.set_style(node, layout);
-        }
-        node
     }
 }
 

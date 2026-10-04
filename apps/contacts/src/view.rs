@@ -12,12 +12,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use taffy::style_helpers::{auto, length, percent};
+use taffy::style_helpers::{auto, length, percent, zero};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Action, Role};
 use ui::icons::Icon;
@@ -27,8 +26,9 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::widget::{
-    AppModel, AvatarFace, Column, EmptyState, EmptyStateContent, Interaction, ListRowFace,
-    ModelPath, RowLeading, ScrollMetrics, Scrollbar, TaffyTreeExt, Widget,
+    AppModel, AvatarFace, Column, ControlSize, Dropdown, EmptyState, EmptyStateContent,
+    Interaction, ListRowFace, ModelPath, Row, RowLeading, ScrollMetrics, Scrollbar, TaffyTreeExt,
+    Widget,
 };
 
 use crate::form::{RowKind, TypeTarget};
@@ -54,8 +54,11 @@ pub(crate) enum Request {
     Select(ContactId),
     /// A row was opened (double-click): edit it.
     Edit(ContactId),
-    /// A row's actions were asked for at a window point.
-    ContextMenu(ContactId, Point),
+    /// A row's actions were asked for: at the pointer's window point, or
+    /// (from the keyboard or assistive technology) under the row.
+    ContextMenu(ContactId, Option<Point>),
+    /// The list's order was chosen.
+    Sort(crate::model::SortKey),
     NewContact,
     /// The overview header's More button.
     More,
@@ -121,12 +124,18 @@ pub(crate) fn queue(shared: &Shared, request: Request) -> impl FnMut() + 'static
     move || shared.borrow_mut().push(request.clone())
 }
 
+/// The rest of the overview column, under the controls above the list.
 fn fill_style() -> Style {
     Style {
         size: Size {
             width: Dimension::percent(1.0),
-            height: Dimension::percent(1.0),
+            height: Dimension::auto(),
         },
+        min_size: Size {
+            width: Dimension::length(0.0),
+            height: Dimension::length(0.0),
+        },
+        flex_basis: Dimension::length(0.0),
         flex_grow: 1.0,
         ..Default::default()
     }
@@ -256,14 +265,13 @@ impl ContactList {
 
         let overflows = self.overflows();
         let bridge = self.shared.borrow();
-        // Rows sit `s2` in from the column's edges, so the selection lift
-        // stands clear of them like the sidebar's.
-        let inset = f64::from(theme.tokens.spacing.s2);
-        let row_x0 = self.rect.x0 + inset;
+        // Rows run edge to edge, so their content lines up with the
+        // column's title above them; the scroll bar keeps its gutter.
+        let row_x0 = self.rect.x0;
         let width_end = if overflows {
             self.rect.x1 - self.gutter
         } else {
-            self.rect.x1 - inset
+            self.rect.x1
         };
         let mut painted = Vec::new();
         if self.row_h > 0.0 && !bridge.rows.is_empty() {
@@ -362,7 +370,7 @@ impl ContactList {
             MouseButton::Right => {
                 self.shared
                     .borrow_mut()
-                    .push(Request::ContextMenu(id, self.cursor));
+                    .push(Request::ContextMenu(id, Some(self.cursor)));
             }
             _ => {}
         }
@@ -545,19 +553,9 @@ impl Widget for ContactList {
         else {
             return false;
         };
-        let anchor = self
-            .shared
-            .borrow()
-            .painted
-            .iter()
-            .find(|(row, _)| *row == id)
-            .map_or_else(
-                || self.rect.center(),
-                |(_, rect)| Point::new(rect.x0 + rect.height(), rect.center().y),
-            );
         let request = match action {
             Action::Activate | Action::Focus => Request::Select(id),
-            Action::ShowContextMenu => Request::ContextMenu(id, anchor),
+            Action::ShowContextMenu => Request::ContextMenu(id, None),
             _ => return false,
         };
         self.shared.borrow_mut().push(request);
@@ -566,185 +564,214 @@ impl Widget for ContactList {
     }
 }
 
-/// The content column when there is no one to show: one sentence and, on a
-/// first run, the one action that starts the book.
+/// The content column when there is no one to show: the toolkit's empty
+/// state, one sentence and, on a first run, the one action that starts the
+/// book. Its action is handed to the app after every event and activation
+/// that reaches it.
 pub(crate) struct EmptyPane {
+    state: EmptyState,
     shared: Shared,
-    title: String,
-    action: Option<(String, Request)>,
-    rect: Rect,
-    action_rect: Rect,
-    cursor: Point,
-    focused: bool,
-    dirty: bool,
+    request: Option<Request>,
 }
+
+/// The empty state's action, for assistive technology and agents.
+pub(crate) const EMPTY_ACTION: &str = "contacts.empty.action";
 
 impl EmptyPane {
     pub(crate) fn new(shared: Shared, title: &str, action: Option<(&str, Request)>) -> Self {
+        let state = EmptyState::new(title).with_icon(Icon::Users);
+        let (state, request) = match action {
+            Some((label, request)) => (
+                state.with_action(label).with_action_id(EMPTY_ACTION),
+                Some(request),
+            ),
+            None => (state, None),
+        };
         Self {
+            state,
             shared,
-            title: title.to_owned(),
-            action: action.map(|(label, request)| (label.to_owned(), request)),
-            rect: Rect::ZERO,
-            action_rect: Rect::ZERO,
-            cursor: Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
-            focused: false,
-            dirty: true,
+            request,
         }
     }
 
-    fn activate(&self) {
-        if let Some((_, request)) = &self.action {
+    fn drain(&mut self) {
+        if self.state.take_action()
+            && let Some(request) = &self.request
+        {
             self.shared.borrow_mut().push(request.clone());
         }
     }
 }
 
-impl Widget for EmptyPane {
+impl ui::widget::Decorator for EmptyPane {
+    type Inner = EmptyState;
+
+    fn inner(&self) -> &EmptyState {
+        &self.state
+    }
+
+    fn inner_mut(&mut self) -> &mut EmptyState {
+        &mut self.state
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(fill_style());
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        let node = Widget::build_layout(&mut self.state, taffy, theme, node_map);
+        // Keyboard activation reaches the focused node, so this pane answers
+        // for it and hands the action on.
+        ui::widget::decorator::register_node(node_map, node, self);
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        let content = EmptyStateContent {
-            icon: Some(Icon::Users),
-            action_label: self.action.as_ref().map(|(label, _)| label.as_str()),
-            ..EmptyStateContent::new(&self.title)
-        };
-        let mut ctx = PaintCtx::new(scene, transform, text, theme);
-        self.action_rect =
-            EmptyState::paint(&mut ctx, self.rect, &content, self.cursor).unwrap_or(Rect::ZERO);
-        if self.focused && self.action_rect.width() > 0.0 {
-            let radius = f64::from(theme.tokens.radii.control);
-            ui::widget::paint_focus_ring(scene, transform, self.action_rect, radius, theme);
-        }
-    }
-
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                let was = self.action_rect.contains(self.cursor);
-                self.cursor = cursor;
-                self.dirty |= was != self.action_rect.contains(cursor);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if self.action_rect.contains(self.cursor) => {
-                self.activate();
-                *ctx.handled = true;
-            }
-            WindowEvent::KeyboardInput { event: key, .. }
-                if self.focused
-                    && key.state == ElementState::Pressed
-                    && matches!(
-                        key.logical_key,
-                        Key::Named(NamedKey::Enter | NamedKey::Space)
-                    ) =>
-            {
-                self.activate();
-                *ctx.handled = true;
-            }
-            _ => {}
-        }
+        Widget::handle_event(&mut self.state, event, ctx);
+        self.drain();
     }
 
-    fn name(&self) -> &'static str {
-        "ContactsEmptyPane"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("contacts.empty")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn is_focusable(&self) -> bool {
-        self.action.is_some()
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        self.dirty |= self.focused != focused;
-        self.focused = focused;
-    }
-
-    fn is_focused(&self) -> bool {
-        self.focused
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
-
-    fn accessibility(&self) -> Option<AccessNode> {
-        let mut children = vec![AccessNode::new(Role::StaticText).with_name(self.title.clone())];
-        if let Some((label, _)) = &self.action {
-            children.push(
-                AccessNode::new(Role::Button)
-                    .with_name(label.clone())
-                    .with_action_target("contacts.empty.action")
-                    .with_bounds(self.action_rect)
-                    .with_state(AccessState::new().focusable(true).focused(self.focused)),
-            );
-        }
-        Some(
-            AccessNode::new(Role::Group)
-                .with_bounds(self.rect)
-                .with_children(children),
-        )
+    fn perform_action(&mut self, action: &Action, state: &mut AppModel, path: &ModelPath) -> bool {
+        let done = Widget::perform_action(&mut self.state, action, state, path);
+        self.drain();
+        done
     }
 
     fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
-        if target != "contacts.empty.action" {
-            return false;
+        let done = Widget::perform_semantic_action(&mut self.state, target, action, state, path);
+        self.drain();
+        done
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("contacts.empty")
+    }
+}
+
+/// A dropdown as wide as its widest choice instead of an equal share of the
+/// row it stands in: a phone's kind beside its number, the list's order.
+pub(crate) struct Compact {
+    menu: Dropdown,
+    labels: Vec<String>,
+    size: ControlSize,
+}
+
+impl Compact {
+    pub(crate) fn new(menu: Dropdown, labels: Vec<String>, size: ControlSize) -> Self {
+        Self {
+            menu: menu.control_size(size),
+            labels,
+            size,
         }
-        match action {
-            Action::Activate => self.activate(),
-            Action::Focus => self.focused = true,
-            _ => return false,
+    }
+}
+
+impl ui::widget::Decorator for Compact {
+    type Inner = Dropdown;
+
+    fn inner(&self) -> &Dropdown {
+        &self.menu
+    }
+
+    fn inner_mut(&mut self) -> &mut Dropdown {
+        &mut self.menu
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = Widget::build_layout(&mut self.menu, taffy, theme, node_map);
+        let style = self.size.label_style(theme);
+        let widest = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+            self.labels
+                .iter()
+                .map(|label| text.measure_style(label, None, &style).0)
+                .fold(0.0_f32, f32::max)
+        });
+        // The label, the chevron's pointer-sized slot and the field's
+        // insets on both sides.
+        let width =
+            widest + theme.tokens.metrics.min_pointer_target + 2.0 * theme.tokens.spacing.s3;
+        if let Ok(current) = taffy.style(node) {
+            let mut layout = current.clone();
+            layout.size.width = length(width.ceil());
+            layout.flex_shrink = 0.0;
+            let _ = taffy.set_style(node, layout);
         }
-        self.dirty = true;
-        true
+        node
+    }
+}
+
+/// The overview column: the controls above the list (its order), inset
+/// like the column's title so their edges line up with it and with the
+/// rows' content, then the list running to the bottom.
+pub(crate) struct Overview {
+    column: Column,
+}
+
+impl Overview {
+    pub(crate) fn new(controls: Row, list: ContactList) -> Self {
+        Self {
+            column: Column::new()
+                .with_no_padding()
+                .push(Box::new(controls))
+                .push(Box::new(list)),
+        }
+    }
+}
+
+impl ui::widget::Decorator for Overview {
+    type Inner = Column;
+
+    fn inner(&self) -> &Column {
+        &self.column
+    }
+
+    fn inner_mut(&mut self) -> &mut Column {
+        &mut self.column
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = Widget::build_layout(&mut self.column, taffy, theme, node_map);
+        if let Ok(style) = taffy.style(node) {
+            let mut style = style.clone();
+            style.gap.height = zero();
+            let _ = taffy.set_style(node, style);
+        }
+        let controls = taffy
+            .children(node)
+            .ok()
+            .and_then(|nodes| nodes.first().copied());
+        if let Some(controls) = controls
+            && let Ok(style) = taffy.style(controls)
+        {
+            let mut style = style.clone();
+            // The shell's column inset (`s3`), the rows' leading pad.
+            let inset = length(theme.tokens.spacing.s3);
+            let step = length(theme.tokens.spacing.s2);
+            style.padding.left = inset;
+            style.padding.right = inset;
+            style.padding.top = step;
+            style.padding.bottom = step;
+            style.flex_shrink = 0.0;
+            let _ = taffy.set_style(controls, style);
+        }
+        node
     }
 }
 
