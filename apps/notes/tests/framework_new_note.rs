@@ -103,3 +103,51 @@ fn the_published_surface_validates_as_the_host_checks_it() {
     let two = app.harness().component_contract_violations();
     assert!(two.is_empty(), "notebook with two notes: {two:#?}");
 }
+
+/// The headless way to edit a note: nothing is clicked or focused, a script or
+/// agent creates a note over the notebook's actions and then edits it over the
+/// note's own. The note's edits stay published once it exists, and running
+/// one changes the note.
+#[test]
+fn a_note_made_over_actions_publishes_its_edits_and_they_edit_it() {
+    let mut app = fresh();
+    app.call("new-page", serde_json::json!({ "value": "Groceries" }))
+        .unwrap();
+    app.settle();
+    let violations = app.harness().component_contract_violations();
+    assert!(violations.is_empty(), "one note: {violations:#?}");
+
+    let page = app.read_document(NotesDoc::list_pages)[0].id;
+    let note = notes::actions::page_resource_id(page);
+    let surface = app.agent_surface();
+    let published = |resource: &str, action: &str| {
+        surface.as_array().unwrap().iter().any(|row| {
+            row["resource"] == resource && row["action"] == action && row["operation"] == "Document"
+        })
+    };
+    for action in ["rename", "delete", "new-child"] {
+        assert!(
+            published(&note, action),
+            "{note} publishes {action}: {surface:#}"
+        );
+    }
+    let body = format!("notes.notebook/page/{page}/body");
+    assert!(
+        published(&body, "insert-block"),
+        "{body} publishes its edits: {surface:#}"
+    );
+
+    app.call_on(
+        &note,
+        "rename",
+        serde_json::json!({ "value": "Groceries for Sunday" }),
+    )
+    .unwrap();
+    app.settle();
+    assert_eq!(
+        app.read_document(NotesDoc::list_pages)[0].title,
+        "Groceries for Sunday"
+    );
+    let violations = app.harness().component_contract_violations();
+    assert!(violations.is_empty(), "after the edit: {violations:#?}");
+}
