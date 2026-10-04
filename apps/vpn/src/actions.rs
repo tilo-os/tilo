@@ -245,9 +245,9 @@ pub fn tunnel_toggle_specs(id: ConnId) -> Vec<ActionSpec> {
         .collect()
 }
 
-/// A one-line label for a connection in the palette.
+/// A connection's label in the palette: its name and protocol.
 fn connection_label(c: &Connection) -> String {
-    format!("{} — {} · {}", c.name, c.kind.long_name(), c.status.label())
+    format!("{} ({})", c.name, c.kind.long_name())
 }
 
 /// Global Tor preference. The label follows the saved setting.
