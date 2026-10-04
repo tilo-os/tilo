@@ -976,6 +976,29 @@ fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot<A::Resource>) 
         .and_then(|any| any.downcast_mut::<S>())
 }
 
+/// A dispatcher outside any host, for a unit test of a surface (or of the
+/// model behind it) that edits through one: each immediate action
+/// ([`Dispatcher::apply_now`]) applies to the document handed to it,
+/// attributed to `author`, through the same executor as a hosted one, so
+/// the test exercises the surface's real write path. Queued invocations
+/// ([`Dispatcher::apply`]) are not taken by anyone: drive those through
+/// [`TestApp`].
+pub fn detached_dispatcher<R: Resource>(author: &str) -> super::Dispatcher<R> {
+    super::Dispatcher::new("test", R::KIND, false, Some(author))
+}
+
+/// The live state of `doc`, for a surface a unit test attaches outside any
+/// host (see [`detached_dispatcher`]); the surface keeps it current from the
+/// document its `sync` receives, as in a host.
+///
+/// # Errors
+/// Returns why `doc` does not read as `R`.
+pub fn detached_live<R: Resource>(
+    doc: &mut tilo_resource::Doc,
+) -> Result<super::Live<R>, tilo_resource::ModelError> {
+    Ok(super::Live::new(tilo_resource::Reader::open(doc)?))
+}
+
 /// Inspect the window `A`'s live launch opens: the same definition and
 /// component, mounted in a native [`ui_core::App`] on a fresh private
 /// profile, without running its event loop. For what the window itself
