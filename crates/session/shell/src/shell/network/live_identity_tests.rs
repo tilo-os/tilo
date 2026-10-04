@@ -74,6 +74,7 @@ fn presence_published_on_the_brokers_runtime_names_the_person_without_the_secret
     let network = ShellNetwork::spawn_with(
         tree.shared(),
         &dir.path().join("device-private/keypair.bin"),
+        &dir.path().join("peer-sync"),
         Reach::Loopback,
         |_, _| None,
     )

@@ -212,6 +212,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         ShellNetwork::spawn_with(
             tree.clone(),
             &session_dir.join("device-private/keypair.bin"),
+            &session_dir.join("peer-sync"),
             Reach::Loopback,
             move |secret, _| {
                 let key = SigningKey::from_bytes(&secret.to_bytes());

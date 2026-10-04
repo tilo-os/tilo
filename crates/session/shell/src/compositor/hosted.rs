@@ -345,7 +345,7 @@ fn spawn_peer_sync(
     if !enable_peer_sync {
         return None;
     }
-    match ShellNetwork::spawn(tree_handle, &peer_key_path()) {
+    match ShellNetwork::spawn_for_session(tree_handle) {
         Ok(handle) => {
             let _ = handle.join_default_workspace();
             tracing::info!("peer-sync: actor spawned, default workspace joined");

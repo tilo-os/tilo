@@ -121,7 +121,6 @@ TILO_TEST_CONTROL="$SOCKET" \
     XDG_CACHE_HOME="$PROFILE/cache" \
     TILO_IDENTITY_ROOT="$PROFILE/identity" \
     TILO_AUTHORITY_SOCKET_DIR="$PROFILE/system/run" \
-    TILO_FS_AUTHORITY_CACHE_DIR="$PROFILE/system/fs-cache" \
     TILO_FS_CONTENT_PEER_CACHE_DIR="$PROFILE/system/peer-cache" \
     env -u DISPLAY -u WAYLAND_DISPLAY \
     "$BINARY" --backend headless &
