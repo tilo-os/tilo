@@ -4089,9 +4089,8 @@ mod tests {
             let mut app = render_at(app, doc, 1280.0, 800.0);
             rerender_at(&mut app, 1280.0, 800.0);
             rerender_at(&mut app, 1280.0, 800.0);
-            assert_eq!(
-                app.settings_sheet.dialog.scroll_offset(),
-                0.0,
+            assert!(
+                app.settings_sheet.dialog.scroll_offset().abs() < f64::EPSILON,
                 "the whole form fits a 1280x800 window"
             );
         }

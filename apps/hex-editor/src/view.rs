@@ -665,7 +665,9 @@ impl HexView {
     /// the status bar's offset readout.
     fn open_goto(&mut self) {
         let anchor = self.goto_anchor();
-        self.goto.open_prompt(anchor, "");
+        // The current offset, selected: typing replaces it, Enter keeps it.
+        let cursor = self.model.cursor();
+        self.goto.open_prompt(anchor, &format!("0x{cursor:X}"));
         self.dirty = true;
     }
 

@@ -1292,11 +1292,14 @@ impl Widget for ChromeProbe {
         presence: &PresenceCtx,
     ) {
         use tilo_ui::widget::floating_surface::{BarControl, ControlBar};
+        // The band stands at the foot of its area, as a find bar under a
+        // document does.
+        let height = self.find.height(theme);
         let band = Rect::new(
             self.band.x0,
-            self.band.y0,
+            self.band.y1 - height,
             self.band.x1,
-            self.band.y0 + self.find.height(theme),
+            self.band.y1,
         );
         self.find.layout(band, theme, tr);
         self.find.paint(scene, transform, tr, theme, presence);
@@ -1382,7 +1385,7 @@ fn overlays(theme: &Theme, out: &Path, viewport: (u32, u32)) {
     let mut prompt = Popover::prompt("Go to offset", "0x1F or 31", "Hex with 0x, or decimal")
         .with_field_chars(16)
         .side(PopoverSide::Above);
-    prompt.open_prompt(Rect::new(24.0, 560.0, 140.0, 584.0), "0x0400");
+    prompt.open_prompt(Rect::new(24.0, 360.0, 140.0, 384.0), "0x0400");
     let dropdown = Dropdown::from_state(
         vec!["Low".into(), "Medium".into(), "High".into()],
         &LocalState::new("Medium".to_owned()),
@@ -1406,32 +1409,33 @@ fn overlays(theme: &Theme, out: &Path, viewport: (u32, u32)) {
         )
         .push_button("Export PDF", || {})
         .push_button("Print", || {});
-    let mut find = tilo_ui::widget::FindBar::new()
-        .with_replace()
-        .with_hex_mode();
+    let mut find = tilo_ui::widget::FindBar::new().with_hex_mode();
     find.set_query("revenue");
     let chrome = ChromeProbe {
-        band: Rect::new(24.0, 440.0, width - 24.0, 540.0),
+        band: Rect::new(160.0, 560.0, width - 24.0, f64::from(viewport.1) - 8.0),
         media: Rect::new(24.0, 24.0, width - 24.0, 324.0),
         find,
         bar: tilo_ui::widget::floating_surface::ControlBar::new(),
     };
-    let root = busy_page()
+    let mut root = busy_page()
+        .push(Box::new(toolbar))
         .push(Box::new(
             Row::new()
                 .push(Box::new(dropdown))
-                .push(Box::new(Button::new("x", "Export", None)))
-                .push(Box::new(toolbar)),
+                .push(Box::new(Button::new("x", "Export", None))),
         ))
         .push(Box::new(chrome))
         .push(Box::new(menu))
         .push(Box::new(detail))
         .push(Box::new(context))
-        .push(Box::new(prompt))
-        .push(Box::new(TooltipProbe {
+        .push(Box::new(prompt));
+    // A narrow window has no free corner for the tooltip.
+    if width >= 1000.0 {
+        root = root.push(Box::new(TooltipProbe {
             anchor: Rect::new(width - 300.0, 120.0, width - 268.0, 152.0),
             label: "Share this report",
         }));
+    }
     let root = root.push(Box::new(ToastProbe {
         area: Rect::new(24.0, 24.0, width - 24.0, 324.0),
     }));
@@ -1443,8 +1447,8 @@ fn overlays(theme: &Theme, out: &Path, viewport: (u32, u32)) {
 }
 
 /// A three-way question whose title wraps, and a form taller than a short
-/// window allows: it scrolls inside a sheet that stands below the header
-/// row.
+/// window allows: it scrolls inside the sheet, under a fixed title and
+/// footer.
 fn modal_pages(theme: &Theme, out_question: &Path, out_tall: &Path) {
     let question = busy_page().push(Box::new(
         ModalDialog::new(
@@ -1463,7 +1467,7 @@ fn modal_pages(theme: &Theme, out_question: &Path, out_tall: &Path) {
     harness.render_png(out_question);
     println!("wrote {}", out_question.display());
 
-    let mut form = Column::new();
+    let mut section = tilo_ui::widget::FormSection::new("Server");
     for label in [
         "Name",
         "Host",
@@ -1476,11 +1480,13 @@ fn modal_pages(theme: &Theme, out_question: &Path, out_tall: &Path) {
         "Certificate",
         "Notes",
     ] {
-        form = form.push(Box::new(Field::new(
+        section = section.field(Field::new(
             label,
             TextInput::local().with_placeholder(label),
-        )));
+        ));
     }
+    let form = tilo_ui::widget::Form::new().section(section);
+
     let tall = busy_page().push(Box::new(
         ModalDialog::new("New connection", form)
             .open(true)

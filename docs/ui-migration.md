@@ -1459,7 +1459,7 @@ What used to need a workaround around `ModalDialog`:
 | a type-to-confirm gate painted by hand, or a primary action that looks enabled while locked | `set_primary_enabled(bool)` / `with_primary_enabled`, or `primary_enabled_if(\|content\| ..)`; `set_primary_label(text)` for a label that follows the content |
 | a typed-phrase confirmation body built by hand | `ModalDialog::new(title, PromptBody::confirm_phrase(message, phrase)).primary_enabled_if(PromptBody::confirms)` |
 | a title elided on one line | nothing: the title wraps to two lines before it elides |
-| a sheet that covers the window's header row | nothing: a tall sheet stands below the header row |
+| a sheet that covers the window's header row | nothing: a sheet that fits below the header row stands below it; only one too tall for that room takes the whole window (inside the gutter) |
 | a dropdown inside a dialog whose list closes the dialog when picked below the sheet | nothing: an overlay the content opened gets the press before the scrim |
 | tests that could not find the footer buttons by name | `click_named("modal.primary")` (or `"<dialog test id>.primary"`, `.secondary`, `.tertiary`) |
 

@@ -1340,7 +1340,24 @@ impl Widget for Toolbar {
             if changed {
                 let _ = tree.mark_dirty(node);
             }
-            return changed;
+            // The row gives way along its own axis (into the More menu), never
+            // across it: in a column a toolbar keeps its full height.
+            let Ok(mut style) = tree.style(node).cloned() else {
+                return changed;
+            };
+            let cross = match self.orientation {
+                Orientation::Horizontal => &mut style.min_size.height,
+                Orientation::Vertical => &mut style.min_size.width,
+            };
+            let want = Dimension::length(match self.orientation {
+                Orientation::Horizontal => self.intrinsic.height.ceil(),
+                Orientation::Vertical => self.intrinsic.width.ceil(),
+            });
+            if *cross == want {
+                return changed;
+            }
+            *cross = want;
+            return tree.set_style(node, style).is_ok() || changed;
         }
         // Hosted controls: their extents are what the host measured, and
         // the toolbar's own basis is the whole row.

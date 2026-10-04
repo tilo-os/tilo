@@ -387,15 +387,21 @@ fn title_lines(
     text_renderer.clamp_to_lines(title, &style, crate::num::f32_of_f64(width), 2)
 }
 
-/// The part of `window` a sheet may cover: below the window's header row and
-/// clear of the bottom edge by the content gutter. A sheet that fits is
-/// centred on the window; one that would reach into the header row stands
-/// just below it instead, so the row's controls stay readable.
-fn sheet_room(window: Rect, theme: &Theme) -> Rect {
+/// The part of `window` a sheet `wanted_h` tall may cover. A sheet that
+/// fits below the window's header row (and clear of the bottom edge by the
+/// content gutter) stays below it, so the row's controls stay readable. A
+/// taller one takes the whole window inside the gutter: its own content
+/// and footer matter more than the header row it covers.
+fn sheet_room(window: Rect, wanted_h: f64, theme: &Theme) -> Rect {
     let pad = pad(theme);
     let header = f64::from(theme.tokens.metrics.header_height);
     let bottom = (window.y1 - pad).max(window.y0);
-    let top = (window.y0 + header).min(bottom);
+    let below_header = (window.y0 + header).min(bottom);
+    let top = if wanted_h <= bottom - below_header {
+        below_header
+    } else {
+        (window.y0 + pad).min(bottom)
+    };
     Rect::new(window.x0, top, window.x1, bottom)
 }
 
@@ -443,7 +449,7 @@ pub fn layout(
     };
     let chrome_h = pad * 2.0 + title_h + title_gap + footer_h;
     let wanted_h = chrome_h + spec.body_height.max(0.0);
-    let room = sheet_room(window, theme);
+    let room = sheet_room(window, wanted_h, theme);
     let avail_h = room.height();
     let h = wanted_h.min(avail_h);
     // The sheet never grows past the window: a footer nobody can reach is
@@ -1446,17 +1452,20 @@ impl<C: Widget> ModalDialog<C> {
         (actions, slots)
     }
 
-    /// The footer's slots in the order they stand, leading to trailing: the
-    /// order Tab visits them.
-    fn slots_in_visual_order(&self) -> Vec<Slot> {
+    /// The footer's slots in the order Tab visits them: the order they
+    /// stand, leading to trailing, except that the alternate answer ("Don't
+    /// save") comes last. A dialog with nothing to type in opens with focus
+    /// on its first footer action, and that is never the answer that
+    /// discards the user's changes.
+    fn slots_in_focus_order(&self) -> Vec<Slot> {
         let has = |slot: Slot| match slot {
             Slot::Primary => self.primary_action.is_some(),
             Slot::Secondary => self.secondary_action.is_some(),
             Slot::Tertiary => self.tertiary_action.is_some(),
         };
         let order = match self.platform.dialog_action_order() {
-            DialogActionOrder::PrimaryLast => [Slot::Tertiary, Slot::Secondary, Slot::Primary],
-            DialogActionOrder::PrimaryFirst => [Slot::Primary, Slot::Tertiary, Slot::Secondary],
+            DialogActionOrder::PrimaryLast => [Slot::Secondary, Slot::Primary, Slot::Tertiary],
+            DialogActionOrder::PrimaryFirst => [Slot::Primary, Slot::Secondary, Slot::Tertiary],
         };
         order.into_iter().filter(|&s| has(s)).collect()
     }
@@ -1822,7 +1831,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         self.host_content = Some(content_node);
         let dialog = self.test_id.clone();
         self.keys = self
-            .slots_in_visual_order()
+            .slots_in_focus_order()
             .into_iter()
             .map(|slot| FooterKey::new(slot, dialog.as_deref()))
             .collect();
