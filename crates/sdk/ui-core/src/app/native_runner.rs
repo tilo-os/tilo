@@ -489,7 +489,9 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
             // memory pressure on exactly the low-end devices we target.
             antialiasing_support: vello::AaSupport::area_only(),
             num_init_threads: Some(shader_threads),
-            pipeline_cache: None,
+            // The session's compiled pipelines, so an app's first launch
+            // does not compile vello again for its own empty shader cache.
+            pipeline_cache: crate::pipeline_seed::seeded(device_handle),
         },
     )
     .map_err(|e| format!("could not create the renderer: {e}"))?;

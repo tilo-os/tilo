@@ -43,6 +43,30 @@ unless `--out` says otherwise. The exit status is 0 only when every check passes
 The runner refuses to start while another VM is running or when the host lacks the
 guest's memory plus 1 GiB of headroom, and always stops the VM it used.
 
+### Startup and GPU (A14, R05)
+
+A14 opens Files before anything else in the run does and times it from the app's own
+startup marks (`<data home>/tilo-rooms/<room>/so.tilo.file-explorer/.local/state/startup-<N>.json`,
+process start to `first-frame-presented`): `files_first_frame_s` (3 s) in a VM, which
+renders on a CPU rasterizer or through virgl, `files_first_frame_hw_s` (300 ms) when
+frames reach real display hardware. The compositor's request-to-present time is recorded
+too when the session logs `tilo::launch_latency` at info. A frame is not a working
+window, so A14 also walks Files' AT-SPI tree in the guest with the image's external
+client (`/usr/libexec/tilo/atspi-external-client.py`) and requires its folder listing to
+hold entries; it creates an `acc-files-*` folder in home first, so home is never empty.
+
+R05 runs `tilo system health --gpu --json` in the guest and reads every app's `tilo-gpu:
+window adapter` line from the session log. A machine without a hardware render node
+cannot show a CPU fallback, so a plain software VM leaves R05 unobservable; `--gl` boots
+virgl, where a degraded health report, a window on a `type=Cpu` adapter or a reported CPU
+fallback fails it. `gpu_check.py` is the same judgement for gates that boot an installed
+image without tilo-vm (the installed-desktop gate in `build-image.yml`):
+
+```bash
+./os/dev/vm.sh ssh "$(python3 scripts/vm-acceptance/gpu_check.py --probe)" \
+  | python3 scripts/vm-acceptance/gpu_check.py
+```
+
 ## Provenance
 
 A dev image does not carry the commit it was built from, so `build-disk.sh` writes
@@ -64,9 +88,9 @@ fail P01 if the VM booted anything else, was moved onto another image since, or 
 | provenance | P01 image ↔ commit, P02 headful slot on two outputs with an identity, P03 no failed or restart-looping session units |
 | window | W01–W17: open/focus, move, resize, maximize, full screen, tabs, strips, workspaces, two outputs, overview, workspace wheel, touch, touchpad, animation pacing (frame trace), real keyboard typing |
 | ui | U01 theme and language through actions, U02/U03 Settings, quick settings, workspace settings, overview in light/dark/high-contrast (en, de) with layout checks on `list-targets` rects, U04 German action titles |
-| apps | A01–A07: Terminal (live shell), Files, Settings, Notes, Store, a host Wayland app, an X11 app — first frame, placement, focus, exit on close, no false toasts. A08–A13, the apps used every day, one per toolkit and protocol path: Chromium on Wayland (A08, the engine Electron apps ship) and forced onto X11 (A09), GNOME Text Editor (A10, GTK4/libadwaita), FeatherPad (A11, Qt6 Wayland), alacritty (A12, winit/OpenGL), glxgears (A13, OpenGL X11 like games) — window in the current strip with focus, a first frame with content, the right buffer scale on both outputs as it moves between them, real-keyboard typing, copy to and paste from Tilo's clipboard, exit on close; A13 also full screen and back |
+| apps | A01–A07: Terminal (live shell), Files, Settings, Notes, Store, a host Wayland app, an X11 app — first frame, placement, focus, exit on close, no false toasts. A08–A13, the apps used every day, one per toolkit and protocol path: Chromium on Wayland (A08, the engine Electron apps ship) and forced onto X11 (A09), GNOME Text Editor (A10, GTK4/libadwaita), FeatherPad (A11, Qt6 Wayland), alacritty (A12, winit/OpenGL), glxgears (A13, OpenGL X11 like games) — window in the current strip with focus, a first frame with content, the right buffer scale on both outputs as it moves between them, real-keyboard typing, copy to and paste from Tilo's clipboard, exit on close; A13 also full screen and back. A14 Files' first launch: process start to first presented frame within budget, and its folder listing read off its AT-SPI tree |
 | search | S01–S09: empty-query view, English and German names, launch from search, windows, actions, files, room activity, workspace history |
-| resources | R01/R02 idle CPU, wakeups and frames with no apps and with several, R03 memory per open app from its own cgroup (memory.current, anon/file) plus the compositor's anonymous RSS, R04 frame CPU p50/p95/p99 during interactions (wall time on real display hardware); the renderer and whether the display is real hardware are recorded |
+| resources | R01/R02 idle CPU, wakeups and frames with no apps and with several, R03 memory per open app from its own cgroup (memory.current, anon/file) plus the compositor's anonymous RSS, R04 frame CPU p50/p95/p99 during interactions (wall time on real display hardware), R05 every app window renders on the machine's GPU, not a CPU fallback; the renderer and whether the display is real hardware are recorded |
 | basics | B01 brightness, B02 Wi-Fi, B03 Bluetooth (unavailable without hardware, no fake controls), B04 de nodeadkeys + compose applied to the physical keys, B05 display arrangement, B06 hotplug, B07 GNOME keyboard import (host-desktop installs only, so unobservable in a VM) |
 
 The everyday apps (A08–A13) come with the dev image (`os/Containerfile.dev`, about 600 MiB,

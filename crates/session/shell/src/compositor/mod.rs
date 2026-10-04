@@ -39,6 +39,7 @@ pub mod floating_service;
 pub mod foreign;
 pub mod frame;
 #[cfg(target_os = "linux")]
+pub mod gpu_health;
 pub mod gpu_import;
 #[cfg(target_os = "linux")]
 pub mod hosted;
