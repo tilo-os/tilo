@@ -23,6 +23,9 @@ pub const DEV_ENV_OVERRIDES: bool = cfg!(any(debug_assertions, feature = "dev-ov
 /// Names the `tilo-launcher` binary instead of `/usr/bin/tilo-launcher`.
 pub const LAUNCHER_BIN_ENV: &str = "TILO_LAUNCHER_BIN";
 
+/// Names the `app` binary instead of `/usr/bin/app`.
+pub const APP_BIN_ENV: &str = "TILO_APP_BIN";
+
 /// Read the developer override `name`, honouring it only when this build's
 /// gate is open.
 pub fn dev_override(name: &'static str) -> Option<OsString> {

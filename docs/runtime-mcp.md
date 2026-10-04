@@ -97,6 +97,27 @@ TILO_RUNTIME_MCP_HTTP_TOKEN_FILE=/run/secrets/mcp-token \
   tilo-runtime --profile /data/tilo --daemon
 ```
 
+The standalone daemon defaults to the profile's own room. A host may explicitly
+set `TILO_RUNTIME_MCP_ROOM` to the canonical UUID of a room the runtime has
+**already joined**. Startup verifies current certified device admission and
+that its root principal is the selected profile actor. An invitation, saved
+room name, client label or supplied session metadata cannot select an audience.
+Missing, fenced or stale identity fails startup. The runtime checks current
+room-selected custody on every shared-room query, invocation, retry, status and
+cancel request; the action broker also rechecks current room policy on admission. Selecting a room
+never enrolls it, requests keys or changes membership or grants.
+
+A shared-room endpoint exposes the semantic action door only. It does not attach
+the private profile's computer input/watch lease, partner viewer or media reader.
+The native endpoint and local desktop keep their existing scope. Other runtime
+hosts refuse a different MCP audience unless they implement current-admission
+validation explicitly. The endpoint's room stays fixed for its lifetime; clients
+cannot switch it through `initialize` or tool arguments.
+
+This audience selection does not itself publish semantic presence. Authenticated
+invocation transport, exact mounted app/record/resource geometry and presentation
+coherence remain necessary before a panorama can show real semantic agent work.
+
 `POST /mcp` carries one JSON-RPC message and answers with JSON; `initialize`
 without an `Mcp-Session-Id` opens a session and returns its id, later requests
 must carry it, and `DELETE /mcp` ends it. No server-initiated stream is offered.
@@ -339,7 +360,15 @@ resource id longer than 24 characters is shown as a session handle such as
 `r3`; workspace pages keep their ids (`app.<app_id>`, the permission roles),
 which provisioning code and prompts spell out. `tilo_query`'s
 `parent_resource`, `tilo_resolve` and `tilo_invoke` accept a handle wherever
-they take a resource, and full ids keep working. In `tilo_invoke`'s
+they take a resource, and full ids and a resource's kind or label
+(`canvas.artwork`) keep working. A `parent_resource` that lists nothing and
+names no resource is refused with the resources there are, rather than
+answered with an empty page. A compact session's `tilo_resolve` names the
+resource by its handle and says each parameter schema once: an optional
+property does not also list `null` (absent and `null` read alike), a `const`
+carries no `type`, bounds that only restate an integer type's range are left
+out, and a subschema repeated under several properties is one `$defs` entry
+each place `$ref`s, keeping its own description. In `tilo_invoke`'s
 `arguments`, a handle this session issued is replaced by its id where the
 action declares a `resource` parameter. Where the parameter is text, the handle
 goes as given, since it may be meant literally. If the action refuses it, the

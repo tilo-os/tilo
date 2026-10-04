@@ -18,6 +18,45 @@ sys.modules[SPEC.name] = CLIENT
 SPEC.loader.exec_module(CLIENT)
 
 
+class PageServerTests(unittest.TestCase):
+    def test_the_served_page_carries_the_expected_title_and_records_its_fetch(self):
+        import urllib.request
+
+        server, url, requests = CLIENT.serve_page("Engine <check>")
+        try:
+            self.assertTrue(url.startswith("http://127.0.0.1:"))
+            with urllib.request.urlopen(url, timeout=10) as response:
+                body = response.read().decode()
+            self.assertIn("<title>Engine &lt;check&gt;</title>", body)
+            self.assertEqual(requests, ["/"])
+        finally:
+            server.shutdown()
+
+
+class SettingsNetworkTests(unittest.TestCase):
+    DEVICES = "ethernet:connected:Wired connection 1\nwifi:connected:caf\\:e\nloopback:connected (externally):lo\n"
+
+    def test_nmcli_rows_become_what_settings_must_show(self):
+        expected = CLIENT.network_expectation(self.DEVICES, "full\n")
+        self.assertEqual(expected.connectivity, "Connected to the internet")
+        self.assertEqual(expected.wifi, "Connected to caf:e")
+        self.assertTrue(expected.wired)
+        with self.assertRaisesRegex(CLIENT.GateError, "no connected Wi-Fi or wired link"):
+            CLIENT.network_expectation("wifi:disconnected:--\n", "none")
+        with self.assertRaisesRegex(CLIENT.GateError, "unknown connectivity"):
+            CLIENT.network_expectation(self.DEVICES, "sideways")
+
+    def test_a_pane_showing_a_false_state_or_an_error_fails(self):
+        expected = CLIENT.network_expectation(self.DEVICES, "full")
+        good = ["('Connected to caf:e',)", "('Connected · 1000 Mb/s',)", "('Connected to the internet',)"]
+        self.assertEqual(CLIENT.network_mismatches(good, expected), [])
+        stale = ["('Not connected',)", "('Connectivity not checked',)"]
+        problems = CLIENT.network_mismatches(stale, expected)
+        self.assertEqual(len(problems), 3, problems)
+        failed = good + ["('Can\u2019t read network status: nmcli not installed',)", "(\"Can't check connectivity: x\",)"]
+        self.assertTrue(CLIENT.network_mismatches(failed, expected))
+
+
 class ManifestScenarioTests(unittest.TestCase):
     def test_package_store_metadata_and_payload_are_separate(self):
         with tempfile.TemporaryDirectory() as work:
@@ -70,6 +109,138 @@ class ManifestScenarioTests(unittest.TestCase):
         with self.subTest(phase='name matching uses an atspi string value'):
             tree = {"/node/1": "(< 'Settings' >,)", "/node/2": "(< 'Other' >,)"}
             self.assertEqual(CLIENT.AtspiClient.named(tree, "Settings"), ["/node/1"])
+
+
+class TypedTextTests(unittest.TestCase):
+    def test_text_replies_read_back_exactly(self):
+        self.assertEqual(CLIENT.text_reply("('hi',)\n"), "hi")
+        self.assertEqual(CLIENT.text_reply("('',)"), "")
+        self.assertEqual(CLIENT.text_reply("('it\\'s, twice!',)"), "it's, twice!")
+        self.assertIsNone(CLIENT.text_reply("Error: GDBus.Error"))
+
+    def test_property_replies_read_back_exactly(self):
+        self.assertEqual(CLIENT.property_text("(<'Level 2'>,)\n"), "Level 2")
+        self.assertEqual(CLIENT.property_text("(< 'Level 2' >,)"), "Level 2")
+        self.assertEqual(CLIENT.property_text("(<''>,)"), "")
+        self.assertIsNone(CLIENT.property_text("Error: GDBus.Error"))
+
+
+class LaunchpadCardTests(unittest.TestCase):
+    def run_card(self, opened_root: str) -> tuple[str, int]:
+        from unittest import mock
+
+        shell = mock.Mock()
+        shell.call.return_value = "(true,)"
+        with mock.patch.object(CLIENT, "shell_client", return_value=shell), \
+                mock.patch.object(CLIENT, "bus_pids", return_value={":1.1": 10}), \
+                mock.patch.object(CLIENT, "wait_for_shell_node", return_value=({}, "/card")) as node, \
+                mock.patch.object(CLIENT, "wait_for_new_app", return_value=(":1.9", 99)) as new_app, \
+                mock.patch.object(CLIENT.AtspiClient, "property", return_value=f"(<'{opened_root}'>,)"), \
+                mock.patch.object(CLIENT, "process_command", return_value="/usr/bin/tilo-launcher"), \
+                mock.patch.object(CLIENT, "close_app"):
+            opened = CLIENT.open_from_launchpad_card("unix:path=/bus", "Notes", "Notes")
+        node.assert_called_once_with(shell, "Notes")
+        shell.call.assert_called_once_with("/card", "org.a11y.atspi.Action.DoAction", "0")
+        new_app.assert_called_once_with("unix:path=/bus", {":1.1"}, "Notes")
+        return opened
+
+    def test_a_card_must_open_its_own_app(self):
+        with self.subTest(phase="the card's app joined the bus"):
+            self.assertEqual(self.run_card("notes"), (":1.9", 99))
+        with self.subTest(phase="another app is not the card's"):
+            with self.assertRaisesRegex(CLIENT.GateError, "not Notes"):
+                self.run_card("calendar")
+
+    def run_action_card(self, app_tree: dict[str, str], closed: list[int]) -> tuple[str, int]:
+        from unittest import mock
+
+        shell = mock.Mock()
+        shell.call.return_value = "(true,)"
+        with mock.patch.object(CLIENT, "shell_client", return_value=shell), \
+                mock.patch.object(CLIENT, "bus_pids", return_value={":1.1": 10}), \
+                mock.patch.object(CLIENT, "wait_for_shell_node", return_value=({}, "/card")), \
+                mock.patch.object(CLIENT, "wait_for_new_app", return_value=(":1.9", 99)), \
+                mock.patch.object(CLIENT.AtspiClient, "property", return_value="(<'calendar'>,)"), \
+                mock.patch.object(CLIENT.AtspiClient, "tree", return_value=app_tree), \
+                mock.patch.object(CLIENT, "process_command", return_value="/usr/bin/tilo-launcher"), \
+                mock.patch.object(CLIENT, "START_TIMEOUT_SECONDS", 0.05), \
+                mock.patch.object(CLIENT, "POLL_SECONDS", 0.01), \
+                mock.patch.object(CLIENT, "close_app", side_effect=closed.append):
+            return CLIENT.open_from_launchpad_card(
+                "unix:path=/bus", "Tasks", "Calendar", ("Task list",),
+            )
+
+    def test_a_card_must_do_what_it_names_in_its_app(self):
+        with self.subTest(phase="the app shows what the card's action opened"):
+            closed: list[int] = []
+            self.assertEqual(
+                self.run_action_card({"/a": "(<'Task list'>,)"}, closed), (":1.9", 99),
+            )
+            self.assertEqual(closed, [])
+        with self.subTest(phase="opening the app alone is not enough"):
+            closed = []
+            with self.assertRaisesRegex(CLIENT.GateError, "not what it names.*Task list"):
+                self.run_action_card({"/a": "(<'Month'>,)"}, closed)
+            self.assertEqual(closed, [99], "the app is closed for the next card")
+
+
+class AppDrivingTests(unittest.TestCase):
+    def test_names_are_read_from_gdbus_variants(self):
+        tree = {
+            "/root": "(<'App Store'>,)",
+            "/a": "(<'Update all'>,)",
+            "/b": "(<''>,)",
+            "/c": "(<'Settings, offered by a test registry'>,)",
+        }
+        original = CLIENT.AtspiClient.tree
+        CLIENT.AtspiClient.tree = lambda self, limit=0: tree
+        try:
+            names = CLIENT.app_names("unix:path=/x", ":1.2")
+        finally:
+            CLIENT.AtspiClient.tree = original
+        self.assertEqual(names, ["App Store", "Update all", "Settings, offered by a test registry"])
+
+
+class FakeShell:
+    """A desktop with two window groups: [Notes] and [Browser, Browser]."""
+
+    ROOT = CLIENT.ROOT_PATH
+    BASE = "/org/a11y/atspi/accessible/"
+
+    def __init__(self):
+        b = self.BASE
+        self.nodes = {
+            self.ROOT: ("frame", "", [b + "1", b + "4"]),
+            b + "1": ("page tab list", "", [b + "2", b + "3"]),
+            b + "2": ("page tab", "Notes", []),
+            b + "3": ("push button", "New tab", []),
+            b + "4": ("page tab list", "", [b + "5", b + "6", b + "7"]),
+            b + "5": ("page tab", "Browser", []),
+            b + "6": ("page tab", "Browser", []),
+            b + "7": ("push button", "New tab", []),
+        }
+
+    def tree(self, _limit):
+        return {path: f"(<'{name}'>,)" for path, (_role, name, _kids) in self.nodes.items()}
+
+    def property(self, path, _name):
+        return f"(<'{self.nodes[path][1]}'>,)"
+
+    def call(self, path, method, *args, check=True):
+        role, _name, kids = self.nodes[path]
+        if method.endswith("GetRoleName"):
+            return f"('{role}',)"
+        if method.endswith("GetChildren"):
+            return "([" + ", ".join(f"(':1.2', objectpath '{kid}')" for kid in kids) + "],)"
+        raise AssertionError(method)
+
+
+class TabListTests(unittest.TestCase):
+    def test_window_group_strips_list_only_their_tabs(self):
+        lists = CLIENT.tab_lists(FakeShell())
+        self.assertEqual(len(lists), 2)
+        self.assertEqual([len(tabs) for tabs in lists], [1, 2])
+        self.assertTrue(all("Browser" in name for name in lists[1]))
 
 
 if __name__ == "__main__":

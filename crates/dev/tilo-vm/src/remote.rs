@@ -52,17 +52,75 @@ pub fn ssh_args(endpoint: &SshEndpoint, key: Option<&str>, interactive: bool) ->
 
 /// `TILO_VM_SSH` replaces the ssh program, e.g. with a wrapper that adds
 /// options or a local stand-in for testing.
+///
+/// The remote command always runs as root: see [`as_root`].
 pub fn ssh_command(
     endpoint: &SshEndpoint,
     key: Option<&str>,
     remote: &[String],
     interactive: bool,
 ) -> CommandLine {
+    let mut command = ssh_transport(endpoint, key, interactive);
+    command.args.extend(as_root(endpoint, remote));
+    command
+}
+
+/// `ssh` to the endpoint without a remote command: the transport other
+/// tools (rsync) put their own command after.
+pub fn ssh_transport(endpoint: &SshEndpoint, key: Option<&str>, interactive: bool) -> CommandLine {
     let program = std::env::var("TILO_VM_SSH").unwrap_or_else(|_| "ssh".into());
     let mut command = CommandLine::new(&program, &[]);
     command.args = ssh_args(endpoint, key, interactive);
-    command.args.extend(remote.iter().cloned());
     command
+}
+
+/// Everything tilo-vm runs remotely runs as root (tilo-vmd manages users,
+/// units, sysext and seats; bootc and the VM lock are root's). A VM is
+/// reached as root with its own key. A device usually lets only its owner's
+/// account in over SSH (the installer's dev SSH setup refuses root), so
+/// there the command goes through `sudo -n`, which `vm add-device` checks.
+/// ssh hands the remote words to the login shell joined by spaces, so the
+/// same line runs as `sh -c` under sudo; with no command, a root login shell.
+pub fn as_root(endpoint: &SshEndpoint, remote: &[String]) -> Vec<String> {
+    if endpoint.user == "root" {
+        return remote.to_vec();
+    }
+    if remote.is_empty() {
+        return vec!["sudo".into(), "-i".into()];
+    }
+    vec![
+        "sudo".into(),
+        "-n".into(),
+        "--".into(),
+        "sh".into(),
+        "-c".into(),
+        crate::vmbuild::sh_quote(&remote.join(" ")),
+    ]
+}
+
+/// rsync's `--rsync-path` (a shell line rsync appends its server arguments
+/// to) as root, like [`as_root`].
+pub fn rsync_path_as_root(endpoint: &SshEndpoint, line: &str) -> String {
+    if endpoint.user == "root" {
+        return line.to_owned();
+    }
+    // The appended arguments become "$@" of the rsync at the line's end.
+    let line = line
+        .strip_suffix("rsync")
+        .map_or_else(|| line.to_owned(), |head| format!("{head}rsync \"$@\""));
+    format!("sudo -n -- sh -c {} rsync", crate::vmbuild::sh_quote(&line))
+}
+
+/// Why sudo refused to run a command without a password, from its stderr.
+pub fn sudo_refusal(stderr: &str) -> Option<String> {
+    stderr.lines().map(str::trim).find_map(|line| {
+        let rest = line.strip_prefix("sudo: ")?;
+        (rest.contains("password is required")
+            || rest.contains("a terminal is required")
+            || rest.contains("not in the sudoers")
+            || rest.contains("not allowed to execute"))
+        .then(|| rest.to_owned())
+    })
 }
 
 pub struct Remote {
@@ -124,6 +182,14 @@ impl Remote {
                     let _ = pipe.read_to_string(&mut stderr);
                 }
                 let stderr = stderr.trim().to_owned();
+                if let Some(detail) = sudo_refusal(&stderr) {
+                    return Err(CliError::SudoRefused {
+                        vm: vm.into(),
+                        ssh: endpoint.ssh_spec(),
+                        user: endpoint.user.clone(),
+                        detail,
+                    });
+                }
                 // 127: the remote shell found no such command.
                 if status == Some(127)
                     || stderr.contains("command not found")
@@ -284,6 +350,45 @@ mod tests {
             );
             let interactive = ssh_command(&endpoint, None, &[], true);
             assert!(interactive.args.contains(&"-t".to_string()));
+        }
+
+        // Phase: another_account_runs_everything_as_root_through_sudo.
+        {
+            let owner = SshEndpoint {
+                user: "me".into(),
+                host: "10.0.0.223".into(),
+                port: 22,
+            };
+            let line = ssh_command(&owner, Some("/k/yoga"), &vm_lock_command(), false);
+            let remote =
+                &line.args[line.args.iter().position(|a| a == "me@10.0.0.223").unwrap() + 1..];
+            assert_eq!(&remote[..5], ["sudo", "-n", "--", "sh", "-c"]);
+            assert!(
+                remote[5].starts_with("'mkdir -p /var/lib/tilo-vm/locks && flock"),
+                "{}",
+                remote[5]
+            );
+            // The daemon too, and a shell is a root login shell.
+            let rpc = ssh_command(&owner, None, &["tilo-vmd".into(), "rpc".into()], false);
+            assert_eq!(rpc.args.last().unwrap(), "'tilo-vmd rpc'");
+            let shell = ssh_command(&owner, None, &[], true);
+            assert_eq!(&shell.args[shell.args.len() - 2..], ["sudo", "-i"]);
+            // rsync's server runs under sudo with the arguments rsync appends.
+            assert_eq!(
+                rsync_path_as_root(&owner, "mkdir -p /x && flock --nonblock /l rsync"),
+                "sudo -n -- sh -c 'mkdir -p /x && flock --nonblock /l rsync \"$@\"' rsync"
+            );
+            let root = SshEndpoint {
+                user: "root".into(),
+                ..owner
+            };
+            assert_eq!(rsync_path_as_root(&root, "rsync"), "rsync");
+            assert_eq!(as_root(&root, &["true".into()]), ["true"]);
+            assert_eq!(
+                sudo_refusal("motd\nsudo: a password is required\n").as_deref(),
+                Some("a password is required")
+            );
+            assert_eq!(sudo_refusal("bash: tilo-vmd: command not found"), None);
         }
 
         // Phase: vm_lock_is_the_one_the_daemon_takes.

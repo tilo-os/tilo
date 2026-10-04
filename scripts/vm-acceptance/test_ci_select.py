@@ -20,8 +20,10 @@ class SelectTest(unittest.TestCase):
                          ",".join(f"S0{i}" for i in range(1, 10)))
 
     def test_a_module_others_import_from_selects_theirs_too(self):
-        ids = select([S + "acceptance/checks/apps.py"]).split(",")
-        self.assertEqual(ids, [f"A{i:02}" for i in range(1, 14)])
+        ids = set(select([S + "acceptance/checks/apps.py"]).split(","))
+        # daily_apps (A08-A13) imports from apps; search does not.
+        self.assertTrue({f"A{i:02}" for i in range(1, 14)} <= ids, ids)
+        self.assertNotIn("S01", ids)
 
     def test_docs_and_unit_tests_only_prove_the_run(self):
         self.assertEqual(select([S + "README.md", S + "test_frames.py"]), "provenance")

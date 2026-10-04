@@ -420,7 +420,8 @@ For example:
 They flow through `quick_ui::offscreen::OffscreenRenderer` and run a single
 `sync → build_layout → compute_layout → apply_layout → draw` cycle — no event
 loop. Browser also offers focused deterministic chrome states and, with the
-`wpe` feature, `--shots-live` for the real engine-to-frame path.
+Chromium engine runtime installed, `--shots-live` for the real engine-to-frame
+path.
 
 ## Per-app interaction: `--headless-drive`
 

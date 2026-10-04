@@ -307,6 +307,7 @@ impl RuntimeArgs {
                     pinned: true,
                     attested_by: String::new(),
                     source: tapp.display().to_string(),
+                    held: false,
                 })
             },
             None,
