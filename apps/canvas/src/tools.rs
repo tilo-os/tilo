@@ -200,6 +200,9 @@ pub struct Tools {
     pub eraser_hardness: LocalState<f64>,
     /// How much paint the eraser takes off, `0..=1`.
     pub eraser_strength: LocalState<f64>,
+    /// How unlike a colour the magic wand and the bucket still take in,
+    /// `0..=1`.
+    pub tolerance: LocalState<f64>,
     /// Draws the artwork and keeps painted layers' simulations, shared by
     /// the canvas and the layer thumbnails so each layer is simulated once.
     pub renderer: Rc<RefCell<Renderer>>,
@@ -379,6 +382,7 @@ impl Default for Tools {
             sampling: LocalState::new(Sampling::All),
             eraser_hardness: LocalState::new(1.0),
             eraser_strength: LocalState::new(1.0),
+            tolerance: LocalState::new(crate::author::TOLERANCE),
             // The canvas and the thumbnails never wait for a picture to
             // decode; a look or export asks the renderer to.
             renderer: Rc::new(RefCell::new(Renderer::impatient())),

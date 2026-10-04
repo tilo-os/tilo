@@ -138,6 +138,10 @@ impl ArtworkResource {
         ActionRef::new("use-selection", &["do", "layer", "colour"]);
     /// `select` inverting the selection.
     pub const SELECT_INVERT: ActionRef<Self, bool> = ActionRef::new("select", &["invert"]);
+    /// `select` growing (or, negative, shrinking) the selection by units.
+    pub const SELECT_GROW: ActionRef<Self, f64> = ActionRef::new("select", &["grow"]);
+    /// `select` softening the selection's edge over units.
+    pub const SELECT_FEATHER: ActionRef<Self, f64> = ActionRef::new("select", &["feather"]);
     /// `select` with a mode alone: `none` selects nothing.
     pub const SELECT_MODE: ActionRef<Self, String> = ActionRef::new("select", &["mode"]);
     /// `combine`: marks, then `union`, `subtract`, `intersect` or `exclude`.

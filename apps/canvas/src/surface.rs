@@ -754,7 +754,7 @@ impl CanvasSurface {
             .map(|layer| vec![layer]);
         let query = crate::author::ColourQuery {
             at: Some(at),
-            tolerance: crate::author::TOLERANCE,
+            tolerance: self.tools.tolerance.with(|tolerance| *tolerance),
             // Ctrl finds the colour everywhere, touching or not.
             everywhere: !fill && self.modifiers.control_key(),
             layers,

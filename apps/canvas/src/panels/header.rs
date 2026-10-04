@@ -452,6 +452,19 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
         using(Icon::SquareDashed, "stroke"),
         using(Icon::Layers, "mask"),
         using(Icon::Eraser, "clear"),
+        refine(tools, Icon::Plus, "canvas-area-grow", Refine::Grow(GROW)),
+        refine(
+            tools,
+            Icon::Minus,
+            "canvas-area-shrink",
+            Refine::Grow(-GROW),
+        ),
+        refine(
+            tools,
+            Icon::Droplet,
+            "canvas-area-feather",
+            Refine::Feather(FEATHER),
+        ),
         Command::new(
             Icon::Contrast,
             "canvas-area-invert",
@@ -475,6 +488,52 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
             }),
         ),
     ]
+}
+
+/// How far, in screen pixels, a click grows or shrinks the selection.
+const GROW: f64 = 4.0; // a step a person sees at the zoom they work at, not spacing
+/// How wide, in screen pixels, a click softens the selection's edge.
+const FEATHER: f64 = 8.0; // a step a person sees at the zoom they work at, not spacing
+
+/// A change of the selection's edge, in screen pixels.
+#[derive(Clone, Copy)]
+enum Refine {
+    Grow(f64),
+    Feather(f64),
+}
+
+/// Grow, shrink or feather the selection by a step seen at the zoom the
+/// artwork is shown at, as a person judges an edge by eye.
+fn refine(tools: &Tools, icon: Icon, id: &str, change: Refine) -> Command {
+    let zoom = tools.zoom.clone();
+    let units = move |pixels: f64| pixels / zoom.with(|zoom| zoom.max(1e-6));
+    let reads = units.clone();
+    let edit = std::sync::Arc::new(move || {
+        let (grow, feather) = match change {
+            Refine::Grow(pixels) => (Some(reads(pixels)), None),
+            Refine::Feather(pixels) => (None, Some(reads(pixels))),
+        };
+        CanvasAction::Select(Box::new(Select {
+            feather,
+            grow,
+            ..Select::default()
+        }))
+    });
+    match change {
+        Refine::Grow(pixels) => Command::new(
+            icon,
+            id,
+            ArtworkResource::SELECT_GROW.map(move |()| units(pixels)),
+            edit,
+        ),
+        Refine::Feather(pixels) => Command::new(
+            icon,
+            id,
+            ArtworkResource::SELECT_FEATHER.map(move |()| units(pixels)),
+            edit,
+        ),
+    }
+    .iconic()
 }
 
 /// Unite, subtract, intersect or exclude the picked shapes.

@@ -156,12 +156,16 @@ fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             cx.switch(&tools.layer.clone(), move |cx, layer| {
                 let settings = match tool {
                     Tool::Eraser => eraser(cx, &tools),
-                    // Picking and selecting lay no paint: nothing to set.
-                    Tool::Select | Tool::Marquee | Tool::Oval | Tool::Lasso => {
-                        return Box::new(Spacer::fixed(0.0)) as Element;
+                    // Picking lays no paint: nothing to set.
+                    Tool::Select => return Box::new(Spacer::fixed(0.0)) as Element,
+                    Tool::Marquee | Tool::Oval | Tool::Lasso | Tool::Wand => {
+                        area_tool(&tools, tool)
                     }
-                    Tool::Wand => sampling(&tools),
-                    Tool::Bucket => section(vec![brush(cx, &tools, layer, tool), sampling(&tools)]),
+                    Tool::Bucket => section(vec![
+                        brush(cx, &tools, layer, tool),
+                        tolerance(&tools),
+                        sampling(&tools),
+                    ]),
                     _ => brush(cx, &tools, layer, tool),
                 };
                 section(vec![settings, Box::new(ui::widget::Divider::horizontal())])
@@ -449,6 +453,34 @@ fn sampling(tools: &Tools) -> Element {
                 .with_id("canvas-sampling"),
         ),
     ])
+}
+
+/// A selecting tool: how it adds to and takes from the selection, and for
+/// the magic wand how alike the colours it takes in are.
+fn area_tool(tools: &Tools, tool: Tool) -> Element {
+    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let mut parts: Vec<Element> = vec![heading(tool.label())];
+    if tool == Tool::Wand {
+        parts.push(tolerance(tools));
+        parts.push(sampling(tools));
+    }
+    parts.push(Box::new(
+        Text::new(&lookup(if tool == Tool::Lasso {
+            "canvas-lasso-hint"
+        } else if tool == Tool::Wand {
+            "canvas-wand-hint"
+        } else {
+            "canvas-area-hint"
+        }))
+        .with_role(TextRole::Caption)
+        .dimmed(),
+    ));
+    section(parts)
+}
+
+/// How unlike a colour the magic wand and the bucket still take in.
+fn tolerance(tools: &Tools) -> Element {
+    fraction("canvas-tolerance", &tools.tolerance, "canvas-tolerance")
 }
 
 /// The eraser: whether it takes paint or whole strokes, its size, and for

@@ -937,3 +937,39 @@ fn brackets_resize_the_brush() {
         "{before} {larger} {smaller}"
     );
 }
+
+/// The strip grows, shrinks and softens the selection by a step seen at
+/// the zoom it is shown at, one edit each.
+#[test]
+fn the_strip_refines_the_selection() {
+    let mut desk = Desk::open();
+    desk.key("m");
+    desk.drag((100.0, 400.0), (300.0, 500.0));
+    let width = |desk: &Desk| {
+        desk.art()
+            .selection
+            .as_ref()
+            .expect("an area is selected")
+            .region()
+            .bounds()
+            .expect("it has an extent")
+            .width()
+    };
+    let before = width(&desk);
+    desk.app
+        .harness()
+        .click_named("canvas-area-grow")
+        .expect("the strip offers growing it");
+    let grown = width(&desk);
+    // Four screen pixels each side.
+    assert!(
+        near(grown - before, 8.0 / desk.zoom, 0.5),
+        "{before} {grown}"
+    );
+    desk.app
+        .harness()
+        .click_named("canvas-area-feather")
+        .expect("the strip offers softening it");
+    let feather = desk.art().selection.as_ref().unwrap().feather;
+    assert!(near(feather, 8.0 / desk.zoom, 1e-6), "{feather}");
+}
