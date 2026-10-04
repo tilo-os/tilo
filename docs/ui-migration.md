@@ -1006,6 +1006,42 @@ Apply the first row that matches each call.
 | A legend painted next to a `PieChart` | `PieChart::new(slices).with_legend()` |
 | `PageSidebar` markup dots drawn by the app | `sidebar.set_marked(page_indices)` |
 | `PageSidebar::with_header("PAGES")` | Delete the call (the default is "Pages"), or pass sentence case. |
+| A `Button` placed beside a `Banner` (Retry, Restore, Open settings) | `Banner::warning(..).with_action(button)` (and `.with_secondary_action(button)`); immediate: `BannerContent::new(..).action("Try again")`, hit-test `BannerHit::action`. Size a painted banner with `Banner::height(&content, width, text, theme)`. |
+| `Banner::paint(..)` returning the dismiss `Rect` | `Banner::paint(..)` returns a `BannerHit { rect, action, secondary_action, dismiss }`; `dismiss` is `None` when not dismissible. |
+| A banner kept in the tree with `is_dismissed()` checks and an app flag for "show it" | `Banner::from_state(&LocalState<Option<BannerNotice>>)`: `None` collapses it with its gap. `.on_dismiss(f)` runs when the person closes it. |
+| `BannerKind::Info` for a notice where nothing is wrong (a private window, a read-only copy) | `BannerKind::Neutral` (`Banner::neutral(..)`, `BannerNotice::neutral(..)`): primary ink, no hue. |
+| `toast::paint_transient` with a hand-placed action button or a second card for the body | `ToastCard::new(title, kind).body(body).action(label, hovered)`; the card sizes itself to its wrapped text. `ToastAnchor::TopCenter` / `TopRight` under a HUD. |
+| `when.elapsed() > TOAST_TTL` around an immediate toast | `toast::transient_expired(shown_at, ttl)`: holds under the capture clock. |
+| `toasts.tick(dt)` and a `toasts_ticked` instant in the app | Delete both: `ToastStack` advances itself from `ui::time`, pauses on hover and under the capture clock, and wakes the host at the next expiry. The app only pushes. |
+| `EmptyState::with_action(..)` + `take_action()` polled after events | `.with_action(label).on_view(f)` (or `.on_effect(f)`, `.on_action(binding)`); give it `.with_action_id(id)` to address it. The drain channel stays for painted hosts. |
+| A small "nothing here yet" stack hand-built under a heading inside a page | `EmptyState::new(title).inline()`: a `Heading`, hugging its content. |
+| A spinner placed over or beside an empty state while something loads | `EmptyState::new(title).busy()` (`set_busy(bool)`): a spinner in the hero slot. |
+| `EmptyState::minimum_essential_height` plus app math to find the action | `EmptyState::layout(text, theme, rect, &content)` returns `natural_height`, `hero` and `action` without painting. |
+| `ProgressBar` painted in a status colour by the app | `ProgressBar::new(f).tone(Tone::Danger)` or `.level(GaugeThresholds::default())`; painted: `ProgressBarFace::new(f).tone(..).paint(ctx, rect)`, sized by `ProgressBarFace::height(theme)`. |
+| `BarGauge::with_color(theme.tokens.colors.intent.inverted)` | `BarGauge::new(f).neutral()` |
+| A small ring with the seconds painted beside it (one-time codes) | `ProgressRingFace::new(f).size(ProgressRingSize::Small).value("23")`: a small ring holds a numeric `Caption`. |
+| A `ProgressRing` rebuilt on every tick | `ProgressRing::from_state(&state, \|s\| RingReading::new(frac, value).caption(..))`; `set_caption(..)` changes the caption in place. |
+| A wizard's own "not started" state or clickable step labels | `Stepper::new(steps).current(None)`; `.on_station(\|index\| ..)` lets the person go back to a done step; `station_rects()` / `StepperFace::station_rects(..)` for painted hosts. |
+| A qualifier appended to a stat's value ("1.2 TB of 2 TB") | `StatTile::new("Used", "1.2").unit("TB").note("of 2 TB")` |
+| A `StatGroup` rebuilt to change one reading | `group.tile_mut(i).set_value(..)` (`set_note`, `set_change`, `set_tone`), or `set_tiles(..)` for a different set. |
+| A dot painted for "unsaved changes" | `Badge::modified()` / `BadgeFace::modified(rect)`; a new-item dot is `BadgeFace::dot(rect)`. |
+| A presence dot painted on an avatar's corner | `AvatarFace::new(name, id).status(PresenceStatus::Online)` (`Away`, `Busy`, `Offline`). |
+| A rounded-rect letter tile for an app without an icon | `AvatarFace::new(name, id).neutral()` (`Avatar::person(..).neutral()`). |
+| A circular artist picture clipped by the app | `MediaCard::new(..).aspect(MediaAspect::Circle)` |
+| A 2×2 cover collage, a kind icon, or app-painted art on a media tile | `MediaSource::Mosaic(images)`, `MediaSource::Kind(icon)`, `MediaSource::Paint(Box::new(\|ctx, rect\| ..))`; painted: `MediaArt::Mosaic`, `MediaArt::Kind`, `MediaArt::Paint`. |
+| A tag painted over art ("New", "Explicit") | `.badge(OwnedBadge::Tag(text, ChipStyle::…))` / `MediaBadge::Tag(..)` |
+| A verified glyph after a channel name | `.meta(channel).meta_mark(Icon::…)` |
+| A loading grid of hand-sized grey boxes | `MediaGrid::loading(count, aspect)` |
+| `Card` with a hand-painted selected outline | `Card::new(..).selected(true)` / `CardFace::new().selected(true)` |
+| `VideoPlayer` with an app-painted still before playback | `VideoPlayer::new().with_poster(MediaSource::Url { store, url })` |
+| A page outline with a stripe and a shadow (print and scan queues) | `PagePreview::new(label, page, count)`: flat, sized by the theme. |
+| A PDF reader's rail that ignores drags and menus by hand | `PageSidebar::new(aspect).read_only()`; `set_drop_target_armed(true)` while a file is dragged over it. |
+| Edge handles or a rotation-less frame hand-drawn around a crop | `SelectionHandles::new(bounds, metrics).with_edges().without_rotation()`; `resize_for(handle, from, to)` for one-axis resizes. |
+| A camera shutter painted from circles | `CaptureButtonFace::new(CaptureKind::Photo / Video / Recording).live(..).paint(ctx, center)`; `accessibility(rect)` names it. |
+| `PieChart::with_height(px)` to make room for a legend | Delete it: the chart takes the room it is given and centres the donut and legend as one unit. `PieSlice::with_legend_detail("12 GB")` adds a size column. |
+| Axis labels drawn inside a `Chart`'s plot | Nothing to do: `Chart` sets them in a gutter outside the plot. |
+| `format!("-{}", ..)` for a negative tick on a function plane | `function_plane::format_tick(value, step)` (uses U+2212). |
+| `math::layout` at `size * text_scale` with glyphs that outgrow their bars | Unchanged call: math glyphs are content-sized now. `math::layout_wrapped(row, text, size, max_width)` breaks before top-level operators. |
 
 ### Which widget replaces which hand-drawn pattern
 
@@ -1070,6 +1106,14 @@ Apply the first row that matches each call.
   `.meta(..)` lines.
 - **Progress ring.** Plain progress or a countdown: no fill call. A measured
   level: `.level(thresholds)`. A status: `.tone(..)`.
+- **Banner actions.** A banner holds what resolves it: one action
+  (`.with_action(Button)`) and at most one secondary. They sit inside the
+  box at the trailing edge and wrap under the message when the banner is
+  narrow. Never place a button beside a banner.
+- **Empty states.** A pane with nothing in it: `EmptyState::new(..)`. A
+  section of a page with nothing in it: `.inline()`. Something on its way:
+  `.busy()`. The one action is a published button: give it
+  `.with_action_id(..)` and `.on_view(..)` / `.on_effect(..)`.
 
 ### What to delete in an app
 
@@ -1402,7 +1446,8 @@ any per-pane scrim rect.
 |---|---|
 | Ln/Col, word or character count, selection size, unresolved conflict count, zoom level that the person checks while working | `chrome::status_bar`: `let (content, bar) = ui::chrome::status_bar::split(region, theme);` lay the region's content out in `content`, then `ui::chrome::status_bar::draw(scene, t, tr, theme, bar, left, right)` |
 | A change worth noticing once: "Saved", "Synced", a page turn, a zoom step | `StatusBubble` |
-| An error or warning the person has to act on, that stays until resolved | `Banner` (in the flow, above the content it concerns) |
+| An error or warning the person has to act on, that stays until resolved | `Banner` (in the flow, above the content it concerns), with the action that resolves it inside it (`.with_action(button)`) |
+| A standing notice where nothing is wrong (a private window, a read-only copy) | `Banner::neutral(..)` |
 | A transient result or a recoverable error ("Copied", "Upload failed, retrying") | `Toast` (`ToastStack`, or `toast::paint_transient` for a painted app) |
 | A document's save state: "Saving…", "Saved", "Save failed" | `ui::SaveStatusSurface`: `set(SaveState::from(&record_save_status), now)` every frame, `paint(scene, t, tr, theme, area, now)` from `draw_overlay`, route clicks with `click(p)` (`SaveAction::Retry` / `Dismiss`). Saving and saved show in the transient bubble; a failure is an error card with Try again that stays until the save succeeds. Delete any save pill, pinned bubble or hand-drawn failure text |
 

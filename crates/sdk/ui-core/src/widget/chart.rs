@@ -607,8 +607,38 @@ impl Chart {
         if rect.width() <= 0.0 || rect.height() <= header_h {
             return;
         }
-        let plot = Rect::new(rect.x0, rect.y0 + header_h, rect.x1, rect.y1);
         let legend_style = tokens.typography.style(TextRole::Caption);
+        // The axis labels sit in a gutter at the plot's trailing edge, each
+        // centred on its gridline, never over a series. The plot keeps half
+        // a label line clear above its top rule (and a step under the
+        // legend) and below its bottom rule, so the labels stay whole.
+        let label_w = [labels.axis_hi, labels.axis_lo]
+            .into_iter()
+            .filter(|label| !label.is_empty())
+            .map(|label| f64::from(text_renderer.measure_style(label, None, &legend_style).0))
+            .fold(0.0, f64::max);
+        let has_axis = label_w > 0.0;
+        let gutter = if has_axis {
+            label_w + f64::from(tokens.spacing.s2)
+        } else {
+            0.0
+        };
+        let half_line = if has_axis {
+            f64::from(text_renderer.measure_style("0", None, &legend_style).1) / 2.0
+        } else {
+            0.0
+        };
+        let legend_gap = if style.header {
+            f64::from(tokens.spacing.s2)
+        } else {
+            0.0
+        };
+        let plot = Rect::new(
+            rect.x0,
+            rect.y0 + header_h + legend_gap + half_line,
+            (rect.x1 - gutter).max(rect.x0 + 1.0),
+            (rect.y1 - half_line).max(rect.y0 + header_h + legend_gap + half_line + 1.0),
+        );
 
         if style.header {
             // Title, legend labels and legend dots share the header band's
@@ -676,26 +706,18 @@ impl Chart {
             );
         }
 
-        // Axis ticks (right-aligned just inside the plot).
-        if !labels.axis_hi.is_empty() {
-            let (tw, _) = text_renderer.measure_style(labels.axis_hi, None, &legend_style);
+        // Axis ticks: in the gutter, right-aligned, centred on the top and
+        // bottom gridlines.
+        for (label, y) in [(labels.axis_hi, plot.y0), (labels.axis_lo, plot.y1)] {
+            if label.is_empty() {
+                continue;
+            }
+            let (tw, th) = text_renderer.measure_style(label, None, &legend_style);
             text_renderer.draw_style(
                 scene,
-                labels.axis_hi,
+                label,
                 tokens.colors.text_dim,
-                translated(transform, plot.x1 - f64::from(tw), plot.y0 - 1.0),
-                None,
-                &legend_style,
-            );
-        }
-        if !labels.axis_lo.is_empty() {
-            // Bottom-aligned inside the plot by its measured line box.
-            let (tw, th) = text_renderer.measure_style(labels.axis_lo, None, &legend_style);
-            text_renderer.draw_style(
-                scene,
-                labels.axis_lo,
-                tokens.colors.text_dim,
-                translated(transform, plot.x1 - f64::from(tw), plot.y1 - f64::from(th)),
+                translated(transform, rect.x1 - f64::from(tw), y - f64::from(th) / 2.0),
                 None,
                 &legend_style,
             );
