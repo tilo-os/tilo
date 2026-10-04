@@ -1377,6 +1377,9 @@ pub struct ShellNetwork {
     /// Local record ids behind the sealed wire names this device publishes
     /// and accepts; path-bearing record ids never leave the device.
     wire_records: Mutex<crate::network::wire_record::WireRecordIds>,
+    /// Artifacts of records in the person's own room this session has held.
+    /// Their history is answered to nobody on a room topic.
+    person_artifacts: Mutex<std::collections::HashSet<collab_types::ArtifactId>>,
     /// Received app-presence frames awaiting fan-out to local apps.
     inbound_app_presence: Arc<Mutex<Vec<InboundAppPresence>>>,
     /// This device's presence per room as workspace-host live frames.
@@ -1819,6 +1822,7 @@ impl ShellNetwork {
             drain_wake: std::sync::Arc::new(crate::idle_wake::DrainPark::default()),
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
             wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
+            person_artifacts: Mutex::default(),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             live_presence: Mutex::default(),
             live_labels: Mutex::default(),
@@ -2457,6 +2461,11 @@ impl ShellNetwork {
             );
             return false;
         }
+        // The person's own room is no room a peer shares: its records arrive
+        // only over the personal fabric, never as room traffic.
+        if self.local_person_room() == Some(room) {
+            return false;
+        }
         let Ok(replica) = self.replica.lock() else {
             return false;
         };
@@ -2522,6 +2531,10 @@ impl ShellNetwork {
         record_id: &str,
         envelope: collab_types::SignedOp,
     ) {
+        if self.is_local_person_room(&cluster_id) {
+            self.publish_person_document(app_id, &cluster_id, record_id, envelope);
+            return;
+        }
         if let Some(room) = RoomId::parse(&cluster_id)
             && self.native_topic_required(room_topic_id(room))
             && !(envelope.encryption.is_some() && self.native_room_seals_records(room))
@@ -2545,10 +2558,147 @@ impl ShellNetwork {
     /// Remember that a local app holds `record_id`, so peers' traffic for
     /// its sealed wire name can be routed to it. Returns the wire name.
     pub fn register_local_record(&self, app_id: &str, cluster_id: &str, record_id: &str) -> String {
+        if self.is_local_person_room(cluster_id) {
+            self.remember_person_artifact(collab_types::document_artifact_id(
+                app_id, cluster_id, record_id,
+            ));
+        }
         match self.wire_records.lock() {
             Ok(mut records) => records.register(cluster_id, app_id, record_id),
             Err(_) => crate::network::wire_record::wire_record_id(cluster_id, app_id, record_id),
         }
+    }
+
+    /// The person's own room: the room derived from the root that certified
+    /// this device. Its records travel only between that root's devices.
+    pub fn local_person_room(&self) -> Option<RoomId> {
+        self.personal_continuity_user
+            .map(|user| RoomId::from(collab_types::person_room(&user)))
+    }
+
+    fn is_local_person_room(&self, cluster_id: &str) -> bool {
+        self.local_person_room()
+            .is_some_and(|room| RoomId::parse(cluster_id) == Some(room))
+    }
+
+    fn remember_person_artifact(&self, artifact: collab_types::ArtifactId) {
+        if let Ok(mut artifacts) = self.person_artifacts.lock() {
+            artifacts.insert(artifact);
+        }
+    }
+
+    fn is_person_artifact(&self, artifact: &collab_types::ArtifactId) -> bool {
+        self.person_artifacts
+            .lock()
+            .is_ok_and(|artifacts| artifacts.contains(artifact))
+    }
+
+    /// Send a person-room document to each of this person's other devices on
+    /// its authenticated personal route, and nowhere else: no room topic, no
+    /// workspace host, no collaborator.
+    fn publish_person_document(
+        &self,
+        app_id: String,
+        cluster_id: &str,
+        record_id: &str,
+        envelope: collab_types::SignedOp,
+    ) {
+        let Some(user_public_key) = self.personal_continuity_user else {
+            return;
+        };
+        let record_id = self.register_local_record(&app_id, cluster_id, record_id);
+        let payload = PersonalFabricPayload::Document {
+            app_id,
+            record_id,
+            envelope: Box::new(envelope),
+        };
+        // A whole mutation fits a frame (larger ones travel as segments); one
+        // that does not would be refused by every receiver.
+        let size = postcard::to_allocvec(&payload).map_or(usize::MAX, |bytes| bytes.len());
+        if size > crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES {
+            tracing::warn!(
+                size,
+                "person room document exceeds the personal fabric frame limit; dropping"
+            );
+            return;
+        }
+        if !self.personal_fabric_allowed() {
+            return;
+        }
+        let ws = personal_continuity_topic_id(&user_public_key);
+        let targets: Vec<iroh::EndpointId> = self
+            .authenticated_personal_routes
+            .lock()
+            .map(|routes| {
+                routes
+                    .values()
+                    .filter(|route| {
+                        route.workspace_topic == ws && route.user_public_key == user_public_key
+                    })
+                    .map(|route| route.endpoint_id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if targets.is_empty() || !self.join_topic(ws) {
+            return;
+        }
+        for target in targets {
+            let _ = self.cmd_tx.try_send(NetCmd::PublishPersonalFabricTarget {
+                ws,
+                user_public_key,
+                target,
+                payload: payload.clone(),
+            });
+        }
+    }
+
+    /// A person-room document from one of this person's other devices,
+    /// authenticated by its personal route: queued for the local apps holding
+    /// the record, as written by the room's owner.
+    fn dispatch_person_document(
+        &self,
+        peer: iroh::EndpointId,
+        device: [u8; 32],
+        app_id: String,
+        wire: &str,
+        envelope: collab_types::SignedOp,
+    ) {
+        let Some(room) = self.local_person_room() else {
+            return;
+        };
+        if *envelope.author.as_bytes() != device {
+            tracing::warn!(peer = %peer, "person room document is not signed by its sending device; dropping");
+            return;
+        }
+        let cluster_id = room.to_string();
+        let Some(record_id) = self.local_record_for_wire(&app_id, &cluster_id, wire) else {
+            tracing::debug!(
+                app_id,
+                "person room document for a record no local app holds; dropping"
+            );
+            return;
+        };
+        if collab_types::validate_whole_document_payload_route(
+            &app_id,
+            &cluster_id,
+            &record_id,
+            &envelope,
+        )
+        .is_err()
+        {
+            tracing::warn!(peer = %peer, "person room document names another route; dropping");
+            return;
+        }
+        self.remember_person_artifact(envelope.artifact);
+        self.handle_document_message(
+            crate::network::behaviour::peer_liveness_handle(&peer),
+            app_id,
+            cluster_id,
+            record_id,
+            collab_types::Role::Owner,
+            false,
+            envelope,
+        );
     }
 
     /// The local record id an inbound wire record id names, if this device
@@ -2631,6 +2781,9 @@ impl ShellNetwork {
         cluster_id: String,
         presence: collab_types::PeerPresence,
     ) {
+        if self.is_local_person_room(&cluster_id) {
+            return;
+        }
         let msg = NeighbourMsg::AppPresenceV2 {
             peer: self.local_peer_id_hash(),
             app_id,
@@ -2650,7 +2803,9 @@ impl ShellNetwork {
         record_id: &str,
         presence: &collab_types::PeerPresence,
     ) {
-        let Some(room) = RoomId::parse(cluster_id).filter(|room| !room.is_nil()) else {
+        let Some(room) = RoomId::parse(cluster_id)
+            .filter(|room| !room.is_nil() && self.local_person_room() != Some(*room))
+        else {
             return;
         };
         let ws = room_topic_id(room);
@@ -2799,7 +2954,9 @@ impl ShellNetwork {
     /// before was dropped here while nothing held the record, and the app
     /// would otherwise miss the room's history.
     pub fn request_room_replay(&self, cluster_id: &str) {
-        if let Some(room) = RoomId::parse(cluster_id).filter(|room| !room.is_nil()) {
+        if let Some(room) = RoomId::parse(cluster_id)
+            .filter(|room| !room.is_nil() && self.local_person_room() != Some(*room))
+        {
             let _ = self.cmd_tx.try_send(NetCmd::Replay {
                 ws: room_topic_id(room),
             });
@@ -3053,6 +3210,9 @@ impl ShellNetwork {
         before_seq: u64,
         max: u16,
     ) {
+        if self.is_person_artifact(&artifact) {
+            return;
+        }
         let msg = NeighbourMsg::ScrollbackRequest {
             artifact,
             before_seq,
@@ -3069,6 +3229,9 @@ impl ShellNetwork {
         artifact: collab_types::ArtifactId,
         ops: Vec<Box<collab_types::SignedOp>>,
     ) {
+        if self.is_person_artifact(&artifact) {
+            return;
+        }
         let msg = NeighbourMsg::ScrollbackResponse {
             artifact,
             ops,
@@ -4868,13 +5031,7 @@ impl ShellNetwork {
         // Enrolled devices are an explicit grant made by the setup machine.
         // Presence and actions between those devices stay available when the
         // optional continuity features are switched off.
-        if !self.continuity_policy().enabled()
-            && personal_device_peer_addrs(
-                &personal_device_peer_path(),
-                Some(*self.local_peer_id.as_bytes()),
-            )
-            .is_empty()
-        {
+        if !self.personal_fabric_allowed() {
             return;
         }
         let Some(user_public_key) = self.personal_continuity_user else {
@@ -4888,6 +5045,17 @@ impl ShellNetwork {
                 payload,
             });
         }
+    }
+
+    /// The continuity master switch, unless the setup machine enrolled
+    /// personal devices: that enrollment is itself the grant.
+    fn personal_fabric_allowed(&self) -> bool {
+        self.continuity_policy().enabled()
+            || !personal_device_peer_addrs(
+                &personal_device_peer_path(),
+                Some(*self.local_peer_id.as_bytes()),
+            )
+            .is_empty()
     }
 
     fn publish_device_fabric_request(&self) {
@@ -5416,6 +5584,19 @@ impl ShellNetwork {
                 };
                 crate::shell::device_fabric_runtime::handle_nearby_transfer_frame(
                     self, &source, frame,
+                );
+            }
+            PersonalFabricPayload::Document {
+                app_id,
+                record_id,
+                envelope,
+            } => {
+                self.dispatch_person_document(
+                    peer,
+                    identity.device_pubkey,
+                    app_id,
+                    &record_id,
+                    *envelope,
                 );
             }
         }
@@ -6440,7 +6621,9 @@ impl ShellNetwork {
         before_seq: u64,
         max: u16,
     ) {
-        if requester != self.local_peer_hash {
+        // A collaborator who guesses a person-room record's artifact gets no
+        // page of it.
+        if requester != self.local_peer_hash && !self.is_person_artifact(&artifact) {
             self.handle_scrollback_request_message(requester, artifact, before_seq, max);
         }
     }
@@ -6977,6 +7160,7 @@ pub(crate) fn shell_network_for_test(
         drain_wake: std::sync::Arc::new(crate::idle_wake::DrainPark::default()),
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
         wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
+        person_artifacts: Mutex::default(),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         live_presence: Mutex::default(),
         live_labels: Mutex::default(),
@@ -11583,6 +11767,270 @@ mod tests {
                 envelope: Box::new(envelope),
             },
         }
+    }
+
+    /// One signed person-room mutation of `record_id`, written by `device`.
+    fn person_document(
+        user: &[u8; 32],
+        record_id: &str,
+        device: &ed25519_dalek::SigningKey,
+    ) -> collab_types::SignedOp {
+        let cluster = collab_types::person_room(user).to_string();
+        let mut envelope = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Snapshot(b"watched: one video".to_vec())
+                .encode()
+                .expect("typed mutation"),
+            collab_types::document_artifact_id("so.tilo.tube", &cluster, record_id),
+            collab_types::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+            collab_types::document_attestation_id("so.tilo.tube", &cluster, record_id),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut envelope, device).expect("device signs document");
+        envelope
+    }
+
+    /// A record in the person's own room goes from one of their devices to
+    /// another over the authenticated personal fabric, never on a room topic,
+    /// and reaches the other device's apps as the room owner's write.
+    #[test]
+    fn person_room_documents_travel_only_between_one_persons_devices() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xE1; 32]);
+        let user = root.verifying_key().to_bytes();
+        let cluster = collab_types::person_room(&user).to_string();
+        let record = "file:/home/ada/.local/share/tube/history";
+        let laptop = iroh::SecretKey::from_bytes(&[0xE2; 32]);
+        let laptop_signing = ed25519_dalek::SigningKey::from_bytes(&[0xE2; 32]);
+        let phone = iroh::SecretKey::from_bytes(&[0xE3; 32]);
+
+        let (sender, mut sent) = personal_continuity_network_for_test(user);
+        authenticated_personal_peer(&sender, &root, &phone);
+        while sent.try_recv().is_ok() {}
+        sender.publish_document(
+            "so.tilo.tube".into(),
+            cluster.clone(),
+            record,
+            person_document(&user, record, &laptop_signing),
+        );
+        let commands: Vec<_> = std::iter::from_fn(|| sent.try_recv().ok()).collect();
+        assert!(
+            commands.iter().all(|command| !matches!(
+                command,
+                NetCmd::Publish { .. } | NetCmd::NativePublish { .. } | NetCmd::Replay { .. }
+            )),
+            "a person-room document never reaches a room topic or host"
+        );
+        let payloads: Vec<_> = commands
+            .into_iter()
+            .filter_map(|command| match command {
+                NetCmd::PublishPersonalFabricTarget {
+                    ws,
+                    target,
+                    payload,
+                    ..
+                } => {
+                    assert_eq!(ws, personal_continuity_topic_id(&user));
+                    assert_eq!(target, phone.public(), "only the person's own device");
+                    Some(payload)
+                }
+                _ => None,
+            })
+            .collect();
+        let [payload] = payloads.as_slice() else {
+            panic!("exactly one personal fabric frame, got {}", payloads.len());
+        };
+        let encoded = postcard::to_allocvec(payload).expect("wire encoding");
+        assert!(
+            !encoded.windows(9).any(|window| window == b"/home/ada"),
+            "the record's local path stays on the device"
+        );
+
+        let (receiver, _commands) = personal_continuity_network_for_test(user);
+        receiver.register_local_record("so.tilo.tube", &cluster, record);
+        let deliver = |from: &iroh::SecretKey, payload: PersonalFabricPayload| {
+            receiver.dispatch_personal_fabric(
+                personal_continuity_topic_id(&user),
+                from.public(),
+                crate::network::actor::MembershipEpoch::for_test(1),
+                user,
+                payload,
+            );
+        };
+        deliver(&laptop, payload.clone());
+        assert!(
+            receiver
+                .inbound_documents_handle()
+                .lock()
+                .unwrap()
+                .is_empty(),
+            "a device without an authenticated personal route is refused"
+        );
+        authenticated_personal_peer(&receiver, &root, &laptop);
+        let impostor = ed25519_dalek::SigningKey::from_bytes(&[0xE4; 32]);
+        deliver(
+            &laptop,
+            PersonalFabricPayload::Document {
+                app_id: "so.tilo.tube".into(),
+                record_id: crate::network::wire_record::wire_record_id(
+                    &cluster,
+                    "so.tilo.tube",
+                    record,
+                ),
+                envelope: Box::new(person_document(&user, record, &impostor)),
+            },
+        );
+        assert!(
+            receiver
+                .inbound_documents_handle()
+                .lock()
+                .unwrap()
+                .is_empty(),
+            "a document not signed by the sending device is refused"
+        );
+        deliver(&laptop, payload.clone());
+        let inbound = receiver.inbound_documents_handle();
+        let queued = inbound.lock().unwrap();
+        let [document] = queued.as_slice() else {
+            panic!("the document reaches the broker queue once");
+        };
+        assert_eq!(document.cluster_id, cluster);
+        assert_eq!(document.record_id, record, "the app sees its own record id");
+        assert_eq!(document.role, collab_types::Role::Owner);
+        assert!(!document.replayed);
+    }
+
+    /// A collaborator never sees the person room: nothing about it is
+    /// published where they listen, and nothing naming it is accepted from
+    /// them, on a room topic or on the personal fabric.
+    #[test]
+    fn a_collaborator_never_sends_or_receives_person_room_records() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xE5; 32]);
+        let user = root.verifying_key().to_bytes();
+        let person_room = RoomId::from(collab_types::person_room(&user));
+        let collaborator_root = ed25519_dalek::SigningKey::from_bytes(&[0xE6; 32]);
+        let collaborator = iroh::SecretKey::from_bytes(&[0xE7; 32]);
+        let collaborator_signing = ed25519_dalek::SigningKey::from_bytes(&[0xE7; 32]);
+
+        // A workspace already pointing at the person room (as a tampered
+        // state file might) and an ordinary shared room.
+        let mut tree = WorkspaceTree::default();
+        let shared = tree.append_empty_workspace("Shared");
+        let shared_room = tree.room_of(shared).expect("a minted room");
+        let held = tree.append_empty_workspace("Held");
+        tree.desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == held)
+            .expect("workspace")
+            .room = person_room;
+        let (mut net, mut sent) = shell_network_for_test(tree.shared(), 0xE8);
+        net.personal_continuity_user = Some(user);
+        authenticated_personal_peer_on_topic(
+            &net,
+            &collaborator_root,
+            &collaborator,
+            crate::network::actor::MembershipEpoch::for_test(1),
+            personal_continuity_topic_id(&user),
+        );
+        while sent.try_recv().is_ok() {}
+
+        let record = "history";
+        let own_device = ed25519_dalek::SigningKey::from_bytes(&[0xE9; 32]);
+        let envelope = person_document(&user, record, &own_device);
+        let artifact = envelope.artifact;
+        net.publish_document(
+            "so.tilo.tube".into(),
+            person_room.to_string(),
+            record,
+            envelope,
+        );
+        net.publish_app_presence(
+            "so.tilo.tube".into(),
+            person_room.to_string(),
+            collab_types::PeerPresence {
+                key: Vec::new(),
+                payload: collab_types::PeerPresencePayload::Arrived,
+            },
+        );
+        net.publish_scrollback_response(artifact, Vec::new());
+        net.request_room_replay(&person_room.to_string());
+        let leaked: Vec<_> = std::iter::from_fn(|| sent.try_recv().ok()).collect();
+        assert!(
+            leaked.is_empty(),
+            "nothing about the person room leaves for anyone but the person's devices: {leaked:?}"
+        );
+
+        net.dispatch_scrollback_request(0xBEEF, artifact, u64::MAX, 8);
+        assert!(
+            net.inbound_scrollback_request.lock().unwrap().is_empty(),
+            "a peer asking for a person-room record's history gets no page"
+        );
+
+        for room in [person_room, shared_room] {
+            net.event_tx
+                .try_send(app_document_event(
+                    "so.tilo.tube",
+                    &room.to_string(),
+                    0xBBBB,
+                    collaborator.public(),
+                    &collaborator_signing,
+                ))
+                .expect("queue the collaborator's publish");
+            net.tick();
+        }
+        let inbound = net.inbound_documents_handle();
+        let queued = inbound.lock().unwrap();
+        assert!(
+            matches!(queued.as_slice(), [document] if document.cluster_id == shared_room.to_string()),
+            "only the shared room's document is accepted from a room topic"
+        );
+        drop(queued);
+
+        net.dispatch_personal_fabric(
+            personal_continuity_topic_id(&user),
+            collaborator.public(),
+            crate::network::actor::MembershipEpoch::for_test(1),
+            user,
+            PersonalFabricPayload::Document {
+                app_id: "so.tilo.tube".into(),
+                record_id: record.into(),
+                envelope: Box::new(person_document(&user, record, &collaborator_signing)),
+            },
+        );
+        assert_eq!(
+            inbound.lock().unwrap().len(),
+            1,
+            "another person's device is no route into the person room"
+        );
+    }
+
+    /// No invite, enrollment or continuation turns the person's own room
+    /// into a workspace others could share.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_person_room_never_becomes_a_workspace() {
+        let user = [0xEA; 32];
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_USER_ID", hex::encode(user));
+        let person_room = RoomId::from(collab_types::person_room(&user));
+        let mut tree = WorkspaceTree::default();
+        let local = tree.append_empty_workspace("Mine");
+        assert!(
+            !tree.set_room(local, person_room),
+            "an invite cannot name it"
+        );
+        assert!(!tree.join_enrolled_room(person_room), "nor an enrollment");
+        assert!(
+            !tree.adopt_continuation_room(person_room, "Laptop"),
+            "nor a continuation"
+        );
+        assert!(!tree.rooms().contains(&person_room));
+        let other = RoomId::new();
+        assert!(
+            tree.join_enrolled_room(other),
+            "an ordinary room still joins"
+        );
     }
 
     /// A shell whose room has admitted one certified peer device.

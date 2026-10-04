@@ -64,6 +64,14 @@ pub enum PersonalFabricPayload {
     /// Resumable generic Nearby object data. Offers and resume checkpoints
     /// travel as authenticated actions; this lane carries bounded bytes only.
     NearbyTransfer(PersonalNearbyTransferFrame),
+    /// One signed mutation of a record in the person's own room. Its room is
+    /// implied by the route: the fabric only ever joins one person's devices.
+    /// `record_id` is the sealed wire name, as on a room topic.
+    Document {
+        app_id: String,
+        record_id: String,
+        envelope: Box<collab_types::SignedOp>,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
