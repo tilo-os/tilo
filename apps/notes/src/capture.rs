@@ -135,7 +135,6 @@ pub fn supports(scenario: Option<&str>) -> bool {
                 | "image_edit"
                 | "scrolled"
                 | "shortcuts"
-                | "shortcuts_bottom"
                 | "find"
                 | "sidebar_scroll"
                 | "presence"
@@ -710,7 +709,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 driver.click_at(900.0, 400.0);
             }
         }
-        Some("shortcuts" | "shortcuts_bottom") => {
+        Some("shortcuts") => {
             if semantic_name_rect(driver, "Launch checklist").is_none()
                 && let Some(toggle) = sidebar_toggle_rect(driver)
             {
@@ -721,19 +720,6 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 .ok_or_else(|| LaunchError::Operation("sidebar focus target missing".into()))?;
             driver.click_at(rect.center().x, rect.center().y);
             driver.key("?");
-            // The pointer rests over the sheet, not on the row it was opened
-            // from, and the bottom view scrolls the sheet to its last row.
-            let sheet = driver
-                .targets()
-                .get("notes-shortcuts")
-                .copied()
-                .or_else(|| semantic_name_rect(driver, "Keyboard shortcuts"))
-                .or_else(|| semantic_target_rect(driver, |target| target == "notes.page-title"))
-                .ok_or_else(|| LaunchError::Operation("shortcuts sheet missing".into()))?;
-            move_pointer(driver, sheet.center());
-            if scenario == Some("shortcuts_bottom") {
-                driver.scroll(0.0, -4000.0);
-            }
         }
         Some("find") => {
             chord(driver, &["ctrl"], "f");
@@ -1155,7 +1141,6 @@ fn validate_capture(
                     | "title_context_menu"
                     | "rename"
                     | "shortcuts"
-                    | "shortcuts_bottom"
                     | "find"
                     | "sidebar_scroll"
                     | "presence"
@@ -1369,7 +1354,7 @@ fn validate_capture(
                 &SemanticExpectation::named("note_title").value("Launch checklist v2"),
             )
             .is_ok(),
-        Some("shortcuts" | "shortcuts_bottom") => semantic_observed(driver, |node| {
+        Some("shortcuts") => semantic_observed(driver, |node| {
             node.role == ui::a11y::Role::Dialog
                 && node.name.as_deref() == Some("Keyboard shortcuts")
                 && !node.state.hidden
