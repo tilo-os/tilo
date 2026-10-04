@@ -381,6 +381,13 @@ jobs:
             bash tools/test-env.sh cargo nextest run --locked --profile ci --tests \
             ${{ matrix.test_packages }} --no-tests=pass -E "$GOLDEN_FILTER"
 
+      # The shard's test executables are done with; Certify links the apps'
+      # own binaries from the same rlibs, and a wide shard does not fit both
+      # in a runner's store.
+      - name: Free the test executables of shard ${{ matrix.shard }}
+        if: matrix.test_packages != ''
+        run: find target/debug/deps -maxdepth 1 -type f -perm -u+x -delete
+
       # The shard's affected graphical apps through the same production-root
       # native audit the nightly runs for every app, so a change that breaks
       # an app's Tilo-native contract fails here, not overnight.
