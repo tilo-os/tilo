@@ -3605,6 +3605,27 @@ pub(crate) unsafe fn inspect_bound_node<R>(
     Ok(callback(unsafe { &*admitted.pointer }))
 }
 
+/// Measure or settle one node's geometry. History leaves the live app on
+/// screen beside its timeline, inert but visible, so layout still reaches
+/// it: only input, focus and effects stop at an inactive boundary.
+/// # Safety
+/// Same exclusive target/tree requirements as `invoke_bound_node`.
+pub(crate) unsafe fn layout_bound_node<R>(
+    bindings: &BoundNodeMap,
+    nodes: &HashMap<NodeId, *mut dyn Widget>,
+    node: NodeId,
+    callback: impl FnOnce(&mut dyn Widget) -> R,
+) -> Result<R, BoundDispatchError> {
+    let admitted = bindings.admitted(nodes, node)?;
+    let _entry = admitted
+        .binding
+        .as_ref()
+        .map(CallbackBinding::enter)
+        .transpose()?;
+    // SAFETY: admission and lifetime checked; caller exclusively owns this target.
+    Ok(callback(unsafe { &mut *admitted.pointer }))
+}
+
 /// Non-document mutations (focus/measurement) enter the same lifetime.
 /// # Safety
 /// Same exclusive target/tree requirements as `invoke_bound_node`.

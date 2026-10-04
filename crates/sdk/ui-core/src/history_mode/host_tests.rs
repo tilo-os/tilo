@@ -1656,3 +1656,86 @@ fn header_history_control_opens_the_registered_history() {
     assert!(!driver.targets().contains_key("activity_timeline"));
     assert_eq!(driver.state_mut().doc.get_heads(), before);
 }
+
+/// Opening History narrows the window's room for the app: its `NavShell`
+/// lays its header rows out again at the width it is given, so header
+/// actions keep their own places and never fold onto one another.
+#[test]
+fn opening_history_lays_the_shell_out_at_its_narrower_width() {
+    use crate::icons::Icon;
+    use crate::widget::decorator::Decorator;
+    /// A header action that remembers where it was last laid out.
+    struct Probe(Button, Rc<Cell<Rect>>);
+    impl Decorator for Probe {
+        type Inner = Button;
+        fn inner(&self) -> &Button {
+            &self.0
+        }
+        fn inner_mut(&mut self) -> &mut Button {
+            &mut self.0
+        }
+        fn apply_layout(
+            &mut self,
+            taffy: &taffy::TaffyTree<()>,
+            node: taffy::NodeId,
+            origin: vello::kurbo::Point,
+        ) {
+            self.0.apply_layout(taffy, node, origin);
+            self.1.set(self.0.get_rect());
+        }
+    }
+    let mut state = State::new();
+    for body in ["first", "second"] {
+        state.doc.put(ROOT, "body", body).unwrap();
+        state.commit_action(None, None);
+    }
+    let ids = [
+        "overview-search",
+        "overview-new",
+        "content-star",
+        "content-more",
+    ];
+    let seen: Vec<Rc<Cell<Rect>>> = ids.iter().map(|_| Rc::default()).collect();
+    let mut probes = ids.iter().zip(&seen).map(|(id, seen)| -> Box<dyn Widget> {
+        Box::new(Probe(
+            Button::icon_only(id, Icon::Plus, id),
+            Rc::clone(seen),
+        ))
+    });
+    let overview = vec![probes.next().unwrap(), probes.next().unwrap()];
+    let content = vec![probes.next().unwrap(), probes.next().unwrap()];
+    let shell = crate::widget::NavShell::new()
+        .sidebar(Box::new(crate::widget::Text::new("Library")))
+        .overview(Box::new(crate::widget::Text::new("List")))
+        .overview_header("All snippets", overview)
+        .content_header("Multi-stage build", content)
+        .content(Box::new(crate::widget::Text::new("Body")));
+    let mut driver = Driver::from_managed_root(
+        state,
+        ManagedRoot::new(Box::new(shell), registration()),
+        (1280, 800),
+    )
+    .unwrap();
+    let apart = |phase: &str| {
+        for pair in [[0, 1], [2, 3]] {
+            let [a, b] = pair.map(|index| seen[index].get());
+            assert!(
+                a.width() > 0.0 && b.width() > 0.0 && a.intersect(b).area() <= 0.0,
+                "{phase}: {a:?} and {b:?} keep their own places"
+            );
+        }
+    };
+    apart("closed");
+
+    driver.click_named("nav-shell-history").unwrap();
+    let timeline = driver.targets()["activity_timeline"];
+    apart("open");
+    for (id, seen) in ids.iter().zip(&seen) {
+        let rect = seen.get();
+        assert!(
+            rect.x0 >= timeline.x1 || rect.x1 <= timeline.x0,
+            "{id} stands beside the timeline, not under it: {rect:?} vs {timeline:?}"
+        );
+        assert!(rect.x1 <= 1280.0, "{id} stays in the window: {rect:?}");
+    }
+}
