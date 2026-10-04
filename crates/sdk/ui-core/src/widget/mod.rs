@@ -840,6 +840,16 @@ pub trait Widget {
         Ok(())
     }
 
+    /// SDK model service visits retained owners independently of visible children.
+    /// The default preserves the original custom component visitor exactly.
+    #[doc(hidden)]
+    fn visit_retained_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::RetainedComponentRequest<'_, '_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        self.visit_components(request.inner())
+    }
+
     #[doc(hidden)]
     #[allow(
         private_interfaces,

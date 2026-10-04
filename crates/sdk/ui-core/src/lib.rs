@@ -171,6 +171,7 @@ mod host_appearance;
 #[cfg(not(target_arch = "wasm32"))]
 mod host_chrome;
 pub mod host_data;
+pub mod owner_wake;
 #[cfg(all(windows, feature = "native"))]
 pub use native::host_notifications;
 #[cfg(not(all(windows, feature = "native")))]

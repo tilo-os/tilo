@@ -2079,6 +2079,24 @@ pub(crate) struct ComponentRequest<'a> {
     pub(crate) visit: &'a mut ComponentVisitor<'a>,
 }
 
+/// SDK-owned retained component traversal, separate from public callback reach.
+pub struct RetainedComponentRequest<'a, 'b> {
+    inner: &'a mut ComponentRequest<'b>,
+}
+impl<'b> RetainedComponentRequest<'_, 'b> {
+    pub(crate) fn inner(&mut self) -> &mut ComponentRequest<'b> {
+        self.inner
+    }
+    /// Forward only through actual retained storage. Unknown roots preserve their
+    /// original `visit_components` callback, including refusals and side effects.
+    pub fn visit(&mut self, child: &mut dyn Widget) -> Result<(), BoundDispatchError> {
+        if self.inner.found {
+            return Ok(());
+        }
+        child.visit_retained_components(self)
+    }
+}
+
 #[derive(Debug)]
 pub enum BoundDispatchError {
     MissingNode,
