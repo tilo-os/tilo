@@ -250,14 +250,15 @@ fn entry_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, entry: &Entry) -> Elem
                 .no_wrap()
                 .with_align_items(ui::taffy::AlignItems::Center)
                 .push(Box::new(
-                    ui::widget::IconWidget::new(Icon::Flag, 12.0).dim(),
+                    ui::widget::IconWidget::new(Icon::Flag)
+                        .sized(ui::widget::IconSize::Small)
+                        .dim(),
                 ))
                 .push(caption(&entry.checkpoints.join(", "))),
         ));
     }
-    let who = Box::new(
-        ui::widget::IconWidget::new(if by_agent { Icon::Bot } else { Icon::User }, 16.0).dim(),
-    );
+    let who =
+        Box::new(ui::widget::IconWidget::new(if by_agent { Icon::Bot } else { Icon::User }).dim());
     let mut content = Row::new()
         .with_padding(ui::tokens::Spacing::BASE.s2, ui::tokens::Spacing::BASE.s2)
         .with_gap(ui::tokens::Spacing::BASE.s3)

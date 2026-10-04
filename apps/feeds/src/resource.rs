@@ -128,7 +128,7 @@ impl Resource for Feeds {
             anchor: Some(crate::actions::feed_resource_id(feed.id)),
             title: feed.title.clone(),
             text: feed.url.clone(),
-            action: None,
+            ..Default::default()
         });
         let articles = state.store.articles.iter().map(|article| SearchEntry {
             anchor: Some(format!(
@@ -138,7 +138,7 @@ impl Resource for Feeds {
             )),
             title: article.title.clone(),
             text: article.summary.clone(),
-            action: None,
+            ..Default::default()
         });
         feeds.chain(articles).collect()
     }

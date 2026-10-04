@@ -275,7 +275,7 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
         parts.push(preset_picker(tools));
     }
     let palette = brush_palette(tools, &pigments);
-    parts.push(Box::new(palette.with_cell(f64::from(SWATCH)).bare()));
+    parts.push(Box::new(palette.with_cell(f64::from(SWATCH))));
     if medium.is_none() {
         parts.push(field(
             &ui::i18n::I18nManager::lookup_plain("canvas-colour"),
@@ -567,7 +567,6 @@ fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
     let ground_now = cx.read(|art| art.and_then(|art| packed(&art.ground.colour)));
     let grounds = swatches(&GROUNDS, GROUNDS.iter().map(|rgb| hex(*rgb)).collect(), 7)
         .with_cell(f64::from(SWATCH))
-        .bare()
         .selecting(GROUNDS.iter().position(|rgb| Some(*rgb) == ground_now))
         .on_change(move |index| {
             if let Some(rgb) = GROUNDS.get(index) {
@@ -800,7 +799,6 @@ fn paints(
     let picked = paint.clone();
     let swatches = self::swatches(&colours, names, columns)
         .with_cell(f64::from(SWATCH))
-        .bare()
         .selecting(selected)
         .on_change(move |index| {
             if let Some(value) = chosen.get(index) {

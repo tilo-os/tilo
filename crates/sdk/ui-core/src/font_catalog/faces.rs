@@ -19,11 +19,16 @@ use crate::text_render::TextKind;
 
 /// Characters a "distinct I and l" stylistic set or character variant is
 /// expected to touch: capital I, lowercase l, their accented forms and the
-/// Dutch IJ built on that I, and the one and the bar they are confused with.
-/// A set that also changes any other encoded character (a titling J, a
-/// single-storey a) is a different stylistic choice and is never applied for
-/// a kind.
-const CONFUSABLE_IL: &str = "IÌÍÎÏĨĪĬĮİǏȈȊỈỊĲlĺļľŀłƚ1|¦ǀ";
+/// Dutch IJ built on that I, the same capital in Cyrillic and Greek (І, Ї,
+/// the palochka, Ι with its accents and breathings), and the one and the bar
+/// they are confused with. A set that also changes any other encoded
+/// character (a titling J, a single-storey a) is a different stylistic
+/// choice and is never applied for a kind.
+const CONFUSABLE_IL: &str = concat!(
+    "IÌÍÎÏĨĪĬĮİƗǏȈȊḬḮỈỊĲlĺļľŀłƚ1|¦ǀ",
+    "ІЇӀӏ",
+    "ΙΊΪἸἹἺἻἼἽἾἿῘῙῚ\u{1FDB}",
+);
 
 /// What one face supports.
 #[derive(Debug)]
@@ -133,18 +138,33 @@ impl FaceCaps {
 
     /// The features `kind` asks for that this face has, in application
     /// order.
+    #[cfg(test)]
     pub(crate) fn kind_features(&self, kind: TextKind) -> Vec<[u8; 4]> {
-        let wanted: &[[u8; 4]] = match kind {
-            TextKind::Prose | TextKind::Code | TextKind::Identifier => &[],
-            TextKind::Numeric => &[*b"tnum", *b"lnum"],
-            TextKind::Secret => &[*b"tnum", *b"lnum", *b"zero"],
+        self.features_for(kind, false)
+    }
+
+    /// The features `kind` asks for that this face has, in application
+    /// order. `distinguish` (a security surface, or the person's "Always
+    /// distinguish similar letters" setting) adds the distinct zero, I and l
+    /// to every kind.
+    pub(crate) fn features_for(&self, kind: TextKind, distinguish: bool) -> Vec<[u8; 4]> {
+        let figures: &[[u8; 4]] = match kind {
+            TextKind::Numeric | TextKind::Secret => &[*b"tnum", *b"lnum"],
+            TextKind::Prose | TextKind::Code | TextKind::Identifier | TextKind::Url => &[],
         };
-        let mut out: Vec<[u8; 4]> = wanted
+        let zero = distinguish || matches!(kind, TextKind::Secret | TextKind::Url);
+        let letters = distinguish
+            || matches!(
+                kind,
+                TextKind::Secret | TextKind::Identifier | TextKind::Url
+            );
+        let mut out: Vec<[u8; 4]> = figures
             .iter()
             .copied()
+            .chain(zero.then_some(*b"zero"))
             .filter(|tag| self.has_feature(*tag))
             .collect();
-        if matches!(kind, TextKind::Secret | TextKind::Identifier) {
+        if letters {
             out.extend(self.distinct_il.iter().copied());
         }
         out
@@ -242,7 +262,15 @@ fn distinct_il_features(font: &FontRef<'_>) -> Vec<[u8; 4]> {
 /// look-alikes.
 pub(crate) fn only_distinguishes_il(substituted: &[char]) -> bool {
     substituted.iter().any(|c| matches!(c, 'I' | 'l'))
-        && substituted.iter().all(|c| CONFUSABLE_IL.contains(*c))
+        && substituted
+            .iter()
+            .all(|c| CONFUSABLE_IL.contains(*c) || private_use(*c))
+}
+
+/// A private-use code point: a face's own encoding of an alternate, which
+/// means nothing outside it and cannot appear in text that means something.
+fn private_use(c: char) -> bool {
+    matches!(u32::from(c), 0xE000..=0xF8FF | 0xF_0000..=0x10_FFFF)
 }
 
 /// PostScript name, collection index, first family name and style: the same

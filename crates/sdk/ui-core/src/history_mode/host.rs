@@ -95,7 +95,7 @@ pub struct HistoryHost {
     file_target_resolved: bool,
     toolbar: Column,
     timeline: ActivityTimeline,
-    unavailable: Text,
+    unavailable: crate::widget::EmptyState,
     unavailable_node: Option<NodeId>,
     open_requested: Rc<Cell<bool>>,
     /// The change to select once History next refreshes open.
@@ -251,7 +251,7 @@ impl HistoryHost {
             HistorySourceRegistration::Unversioned { .. }
             | HistorySourceRegistration::CheckedFiles { .. } => None,
         };
-        let unavailable = Text::new(match registration.sources.first() {
+        let unavailable = unavailable_state(match registration.sources.first() {
             Some(HistorySourceRegistration::Unversioned { reason, .. }) => reason,
             _ => "history-mode-content-unavailable",
         });
@@ -441,7 +441,8 @@ impl HistoryHost {
         self.open_requested.set(false);
         self.open = true;
         self.returning_live = false;
-        self.unavailable = Text::new(&HistoryRegistrationError::UnsupportedOwner.to_string());
+        self.unavailable =
+            unavailable_state(&HistoryRegistrationError::UnsupportedOwner.to_string());
         self.toolbar_dirty = true;
         true
     }
@@ -1172,7 +1173,7 @@ impl HistoryHost {
                                 }
                             }
                             HistorySourceRegistration::Unversioned { reason, .. } => {
-                                self.unavailable = Text::new(reason);
+                                self.unavailable = unavailable_state(reason);
                             }
                             HistorySourceRegistration::CheckedFiles { .. } => {
                                 self.close_files_presentation();
@@ -1571,3 +1572,12 @@ mod review;
 mod media;
 
 mod files;
+
+/// Why a scope has no History, where its timeline would stand: History is
+/// unavailable, and the reason (a message key or the owner's own text)
+/// says why.
+pub(super) fn unavailable_state(reason: &str) -> crate::widget::EmptyState {
+    crate::widget::EmptyState::new(I18nManager::lookup_plain("history-mode-unavailable"))
+        .with_icon(crate::icons::Icon::History)
+        .with_message(I18nManager::lookup_plain(reason))
+}

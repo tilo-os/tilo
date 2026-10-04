@@ -310,22 +310,43 @@ impl tilo_actions::Action for NoAction {
 /// A search index entry. `anchor` addresses what a hit opens (an item id);
 /// `action`, when set, is the published action a hit invokes, so choosing it
 /// goes through the same door, permissions and history as the palette.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Build one with the fields that apply and `..SearchEntry::default()`:
+///
+/// ```
+/// # use tilo_resource::{SearchEntry, SearchRow};
+/// let entry = SearchEntry {
+///     anchor: Some("contact:42".into()),
+///     title: "Ana Silva".into(),
+///     text: "ana@example.com".into(),
+///     within: Some("group:family".into()),
+///     row: Some(SearchRow::subtitle("ana@example.com").icon("user")),
+///     ..SearchEntry::default()
+/// };
+/// # let _ = entry;
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SearchEntry {
     pub anchor: Option<String>,
     pub title: String,
     pub text: String,
     pub action: Option<tilo_actions::ActionAddress>,
+    /// The scope the entry lies in, when its anchor is a flat id rather than
+    /// a path beneath one: `contact:42` in `group:family`. A scope then holds
+    /// the entry as if its anchor lay beneath it.
+    pub within: Option<String>,
+    /// How the hit reads in the results list beyond its title. `None` reads
+    /// as the generic row: the app's icon, the title and the entry's text.
+    pub row: Option<SearchRow>,
 }
 
 impl SearchEntry {
     /// An entry titled `title` whose body text is `text`.
     pub fn new(title: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
-            anchor: None,
             title: title.into(),
             text: text.into(),
-            action: None,
+            ..Self::default()
         }
     }
 
@@ -342,6 +363,83 @@ impl SearchEntry {
         self.action = Some(action);
         self
     }
+
+    /// Whether the entry lies in `scope`: its anchor, or the scope it is
+    /// [`within`](Self::within), is the scope or lies beneath it.
+    #[must_use]
+    pub fn in_scope(&self, scope: &str) -> bool {
+        [self.within.as_deref(), self.anchor.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|anchor| scope_contains(scope, anchor))
+    }
+}
+
+/// How one search hit reads in the results list: a subtitle, a named icon
+/// and what kind of thing it is. Data only; the platform draws it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchRow {
+    /// The dimmer line under the title (an address, a path, a date).
+    pub subtitle: Option<String>,
+    /// A named icon from the icon set (`"mail"`, `"calendar"`); `None` draws
+    /// the app's own.
+    pub icon: Option<String>,
+    /// What the hit is, for the row's shape.
+    pub shape: SearchRowShape,
+}
+
+impl SearchRow {
+    /// A generic row with `subtitle` under the title.
+    pub fn subtitle(subtitle: impl Into<String>) -> Self {
+        Self {
+            subtitle: Some(subtitle.into()),
+            ..Self::default()
+        }
+    }
+
+    /// A row of `shape`.
+    #[must_use]
+    pub fn shaped(shape: SearchRowShape) -> Self {
+        Self {
+            shape,
+            ..Self::default()
+        }
+    }
+
+    /// The row's named icon.
+    #[must_use]
+    pub fn icon(mut self, name: impl Into<String>) -> Self {
+        self.icon = Some(name.into());
+        self
+    }
+}
+
+/// What a search hit is, which decides the shape of its row.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SearchRowShape {
+    /// Icon, title and subtitle.
+    #[default]
+    Plain,
+    /// A message: who sent it, a snippet, when, and whether it is unread.
+    Message {
+        sender: String,
+        snippet: Option<String>,
+        date: Option<String>,
+        unread: bool,
+    },
+    /// A video, track or other media item: who made it and how long it
+    /// runs. (A provider with artwork answers its own rows, with
+    /// `AppImage::from_image_store` thumbnails.)
+    Media {
+        byline: Option<String>,
+        duration: Option<String>,
+    },
+    /// A match inside a file: the path, the line and the matched line.
+    FileHit {
+        path: String,
+        line: Option<u32>,
+        snippet: String,
+    },
 }
 
 /// Builds a resource's action from arguments already bound against the

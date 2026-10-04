@@ -69,6 +69,11 @@ pub trait ResourceApp: 'static {
     /// How many arguments (paths, URLs) a launch may name;
     /// [`Self::launch_record`] and [`Self::launch`] receive them.
     const ARGUMENTS: usize = 0;
+    /// Whether the resource keeps document state whose versions History
+    /// shows. An app whose state lives outside its document (a measurement,
+    /// a device) sets `false`: it publishes no History actions and its
+    /// window offers no History.
+    const DOCUMENT_HISTORY: bool = true;
 
     /// Build the view. Called once for the live app, and again for every
     /// historical version History mode shows (with a read-only context), so
@@ -292,6 +297,11 @@ pub(crate) fn build_root<A: ResourceApp>(
     let live = Live::new(reader);
     let alive = Rc::new(());
     let dispatch = Dispatcher::new(A::ID, resource_id, read_only, me.as_deref());
+    let dispatch = if permissions.is_none() {
+        dispatch.past()
+    } else {
+        dispatch
+    };
     let storage = super::settings::ViewStorage::new(storage);
     // Effects and projection drains run in a window someone uses only:
     // History shows a past version, and a capture reaches nothing outside.
@@ -306,7 +316,9 @@ pub(crate) fn build_root<A: ResourceApp>(
     let root = ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
         .following(permissions, scope)
         .with_presentation(A::local_operations());
-    if live {
+    if !A::DOCUMENT_HISTORY {
+        root.without_history()
+    } else if live {
         root.drawing_past(super::preview::draw_past::<A>)
     } else {
         root
@@ -417,9 +429,11 @@ fn create<A: ResourceApp>(
     }
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
     component.set_behaviour(A::BEHAVIOUR);
-    component
-        .register_document_history(super::preview::history_definition::<A>())
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    if A::DOCUMENT_HISTORY {
+        component
+            .register_document_history(super::preview::history_definition::<A>())
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    }
     Ok(component)
 }
 

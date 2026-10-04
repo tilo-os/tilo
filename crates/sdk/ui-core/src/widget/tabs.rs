@@ -208,6 +208,36 @@ enum GroupFocus {
     Unfocused,
 }
 
+/// What a tab's content is doing, marked in the tab's leading slot in place
+/// of its icon: loading, or making sound. A sound mark is a control: a
+/// click on it is reported by [`TabBar::take_mark_click`] (the host mutes
+/// or unmutes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TabMark {
+    /// The content is loading.
+    Busy,
+    /// The content is playing sound.
+    Playing,
+    /// The content's sound is muted.
+    Muted,
+}
+
+impl TabMark {
+    /// What the mark says to someone who cannot see it.
+    fn description(self) -> &'static str {
+        match self {
+            Self::Busy => "Loading",
+            Self::Playing => "Playing audio",
+            Self::Muted => "Muted",
+        }
+    }
+
+    /// Whether a click on the mark does something.
+    fn is_control(self) -> bool {
+        matches!(self, Self::Playing | Self::Muted)
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent interaction and animation flags are not one state machine"
@@ -307,6 +337,22 @@ pub struct TabBar {
     /// window has nothing for it to do, and a chip that appears under the
     /// pointer and then does nothing is worse than no chip.
     show_maximize: bool,
+    /// Whether tabs close from the strip. A strip of fixed views (a
+    /// settings window's sections) has no close control.
+    closable: bool,
+    /// Whether the strip offers a new-tab control.
+    new_tab: bool,
+    /// Per-tab content marks, keyed by tab id (a sidecar like the others).
+    marks: HashMap<u64, TabMark>,
+    /// The painted mark of each tab, aligned 1:1 with `tabs`.
+    mark_rects: Vec<Rect>,
+    /// A click on a sound mark, drained by [`TabBar::take_mark_click`].
+    pending_mark: Option<(u64, TabMark)>,
+    /// Whether this strip's host shows which window group has keyboard
+    /// input ([`TabBar::set_group_focused`]). Only then does the active tab
+    /// carry the focus keyline; in a strip of documents the active tab is
+    /// the lift alone, like every other selection.
+    shows_group_focus: bool,
     reveal_anim: HashMap<u64, RevealAnim>,
     /// Aligned 1:1 with `tabs`; read by the title zone, chip rects and body wash so
     /// width, hit region and paint can never disagree.
@@ -314,6 +360,9 @@ pub struct TabBar {
     /// Cached because `apply_layout`, where the reveal is interpolated, has no
     /// `Theme` of its own.
     reduce_motion: bool,
+    /// The host's reduced-motion setting ([`Widget::set_motion_reduced`]),
+    /// which holds whatever the theme says.
+    host_reduced_motion: bool,
     /// `tokens.metrics.min_pointer_target`, cached from `build_layout` for
     /// the same reason: the pointer target of a maximize/search chip is
     /// derived from its glyph rect at hit-test time (see
@@ -373,6 +422,12 @@ impl TabBar {
             accent_ids: HashMap::new(),
             modified_ids: HashSet::new(),
             show_maximize: true,
+            closable: true,
+            new_tab: true,
+            marks: HashMap::new(),
+            mark_rects: Vec::new(),
+            pending_mark: None,
+            shows_group_focus: false,
             press_origin: None,
             drag_offset: None,
             drag_lifted_at: None,
@@ -396,13 +451,62 @@ impl TabBar {
             reveal_anim: HashMap::new(),
             reveal_px: Vec::new(),
             reduce_motion: false,
+            host_reduced_motion: false,
             drag_lift_duration: crate::tokens::motion::Durations::default().fast(),
             drag_overlay_owned_by_parent: false,
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
         }
     }
 
+    /// Whether tabs close from the strip (default `true`). Without it no
+    /// close control is drawn, reserved or announced.
+    #[must_use]
+    pub fn closable(mut self, closable: bool) -> Self {
+        self.closable = closable;
+        self
+    }
+
+    /// No new-tab control at the end of the strip.
+    #[must_use]
+    pub fn without_new_tab(mut self) -> Self {
+        self.new_tab = false;
+        self
+    }
+
+    /// Mark what tab `id`'s content is doing, or clear the mark.
+    pub fn set_mark(&mut self, id: u64, mark: Option<TabMark>) {
+        match mark {
+            Some(mark) => {
+                self.marks.insert(id, mark);
+            }
+            None => {
+                self.marks.remove(&id);
+            }
+        }
+    }
+
+    /// Tab `id`'s mark, if any.
+    pub fn mark(&self, id: u64) -> Option<TabMark> {
+        self.marks.get(&id).copied()
+    }
+
+    /// Where tab `id`'s mark is painted, for hit-testing and tests.
+    pub fn mark_rect(&self, id: u64) -> Option<Rect> {
+        self.marks.get(&id)?;
+        let i = self.tabs.iter().position(|t| t.id == id)?;
+        self.mark_rects.get(i).copied().filter(|r| r.area() > 0.0)
+    }
+
+    /// A click on a tab's sound mark, once: the host mutes or unmutes it.
+    pub fn take_mark_click(&mut self) -> Option<(u64, TabMark)> {
+        self.pending_mark.take()
+    }
+
+    /// The host shows which window group has keyboard input: the active tab
+    /// of the focused group carries a keyline in your colour, the focus
+    /// colour, and the others carry the lift alone.
     pub fn set_group_focused(&mut self, focused: bool) {
+        self.shows_group_focus = true;
         self.group_focus = if focused {
             GroupFocus::Focused
         } else {
@@ -515,7 +619,7 @@ impl TabBar {
         // can't drift from the rest of the chrome.
         let shape = RoundedRect::from_rect(r, radius);
         crate::chrome::shell::paint_glass_body(scene, pill_transform, r, radius, theme, &look, 1.0);
-        if is_active && self.group_focus == GroupFocus::Focused {
+        if is_active && self.shows_group_focus && self.group_focus == GroupFocus::Focused {
             // A restrained focus keyline separates two different facts that
             // used to share one treatment: "active tab in this group" and
             // "group receiving keyboard input".  It sits inside the pill so
@@ -609,8 +713,19 @@ impl TabBar {
             Self::draw_pill_pinned_marker(scene, transform, r, t, accent, text_color);
             return;
         }
-        let leading_shift =
-            Self::draw_pill_leading_glyph(scene, transform, r, t, accent, text_color);
+        let leading_shift = if let Some(mark) = self.marks.get(&t.id).copied() {
+            self.draw_pill_mark(
+                scene,
+                transform,
+                theme,
+                leading_glyph_rect(r),
+                mark,
+                text_color,
+            );
+            ICON_W + ICON_GAP
+        } else {
+            Self::draw_pill_leading_glyph(scene, transform, r, t, accent, text_color)
+        };
         let title_x = title_x0(r, leading_shift);
         let title_y = r.center().y - f64::from(th) / 2.0;
         // Clip at this frame's reveal, not the close chip, so an idle pill gets
@@ -677,6 +792,78 @@ impl TabBar {
             // centred like the glyph would have been.
             let c = vello::kurbo::Circle::new(r.center(), ACCENT_DOT_R);
             scene.fill(vello::peniko::Fill::NonZero, transform, dot, None, &c);
+        }
+    }
+
+    /// A tab's content mark in its leading slot: a turning arc while busy
+    /// (a still three-quarter ring under reduced motion), a speaker while it
+    /// plays or is muted, lifted under the pointer since a click on it
+    /// mutes or unmutes.
+    fn draw_pill_mark(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        mark: TabMark,
+        ink: vello::peniko::Color,
+    ) {
+        match mark {
+            TabMark::Busy => {
+                let turn = if self.reduce_motion {
+                    0.0
+                } else {
+                    let t = crate::time::now()
+                        .saturating_duration_since(busy_epoch())
+                        .as_secs_f64();
+                    t.fract() * std::f64::consts::TAU
+                };
+                let radius = rect.width().min(rect.height()) / 2.0 - 1.5;
+                let arc = vello::kurbo::Arc::new(
+                    rect.center(),
+                    (radius, radius),
+                    turn,
+                    std::f64::consts::TAU * 0.75,
+                    0.0,
+                );
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.5).with_caps(vello::kurbo::Cap::Round),
+                    transform,
+                    ink,
+                    None,
+                    &arc,
+                );
+            }
+            TabMark::Playing | TabMark::Muted => {
+                if rect.inflate(2.0, 2.0).contains(self.last_cursor) {
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        theme
+                            .tokens
+                            .colors
+                            .lift_on(theme.tokens.colors.surfaces.content, 1.0),
+                        None,
+                        &RoundedRect::from_rect(
+                            rect.inflate(2.0, 2.0),
+                            f64::from(theme.tokens.radii.item),
+                        ),
+                    );
+                }
+                let icon = if mark == TabMark::Muted {
+                    icons::Icon::VolumeX
+                } else {
+                    icons::Icon::Volume2
+                };
+                icons::draw_icon(
+                    scene,
+                    transform,
+                    rect,
+                    icon,
+                    ink,
+                    icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
         }
     }
 
@@ -1076,7 +1263,7 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return Reveal::None;
         };
-        if self.pinned_ids.contains(&t.id) {
+        if self.pinned_ids.contains(&t.id) || !self.closable {
             return Reveal::None;
         }
         if t.id == self.active_id || self.modified_ids.contains(&t.id) {
@@ -1095,7 +1282,7 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return Reveal::None;
         };
-        if self.pinned_ids.contains(&t.id) {
+        if self.pinned_ids.contains(&t.id) || !self.closable {
             return Reveal::None;
         }
         let pressed = self.press_origin.is_some_and(|(j, _)| j == i);
@@ -1268,7 +1455,11 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return 0.0;
         };
-        if t.app_kind.is_some() || t.icon.is_some() || self.accent_ids.contains_key(&t.id) {
+        if t.app_kind.is_some()
+            || t.icon.is_some()
+            || self.accent_ids.contains_key(&t.id)
+            || self.marks.contains_key(&t.id)
+        {
             ICON_W + ICON_GAP
         } else {
             0.0
@@ -2212,6 +2403,13 @@ fn square_at(c: Point, side: f64) -> Rect {
 /// `ICON_W` square, starting on the pill's text inset and centred on the
 /// pill's centre line. The title starts `ICON_GAP` after it — see
 /// [`title_x0`].
+/// The instant a busy mark's turn is measured from, shared by every strip so
+/// two loading tabs turn together.
+fn busy_epoch() -> Instant {
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *EPOCH.get_or_init(crate::time::now)
+}
+
 fn leading_glyph_rect(r: Rect) -> Rect {
     let x0 = r.x0 + PILL_PAD_X;
     Rect::new(
@@ -2256,7 +2454,7 @@ impl Widget for TabBar {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.reduce_motion = theme.reduce_motion;
+        self.reduce_motion = theme.reduce_motion || self.host_reduced_motion;
         self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
         // `TAB_BAR_HEIGHT` is a fixed 44px layout constant, well inside `f32`'s
         // exact-integer range.
@@ -2300,6 +2498,8 @@ impl Widget for TabBar {
         self.reveal_px.clear();
         self.reveal_px
             .resize(self.tabs.len(), Reveal::None.reserve());
+        self.mark_rects.clear();
+        self.mark_rects.resize(self.tabs.len(), Rect::ZERO);
 
         let (visual_order, widths, grow) = self.compute_pill_layout();
 
@@ -2367,6 +2567,13 @@ impl Widget for TabBar {
             if let Some(slot) = self.tab_rects.get_mut(i) {
                 *slot = r;
             }
+            // Every unpinned tab keeps the slot, so a mark set between
+            // layouts lands (and hit-tests) where it will be painted.
+            if let Some(slot) = self.mark_rects.get_mut(i)
+                && !is_pinned
+            {
+                *slot = leading_glyph_rect(r);
+            }
             if let Some(slot) = self.close_rects.get_mut(i) {
                 *slot = close;
             }
@@ -2384,7 +2591,7 @@ impl Widget for TabBar {
         // `x` is the strip's write head; the "+" chip is suppressed once pills
         // fill the bar.
         let plus_x1 = x + NEW_TAB_CHIP_PX;
-        self.new_tab_rect = if plus_x1 <= self.rect.x1 {
+        self.new_tab_rect = if self.new_tab && plus_x1 <= self.rect.x1 {
             Rect::new(x, pill_y0, plus_x1, pill_y1)
         } else {
             Rect::ZERO
@@ -2547,7 +2754,7 @@ impl Widget for TabBar {
                 // that can't see it gets it as a description instead.
                 // `AccessState` has no flag for this and inventing one would
                 // ripple through every widget.
-                let node = if self.pinned_ids.contains(&t.id) {
+                let node = if self.pinned_ids.contains(&t.id) || !self.closable {
                     node
                 } else {
                     node.with_children(vec![
@@ -2560,22 +2767,42 @@ impl Widget for TabBar {
                             }),
                     ])
                 };
-                if self.modified_ids.contains(&t.id) {
+                let node = if self.modified_ids.contains(&t.id) {
                     node.with_description(crate::i18n!("tab-modified"))
                 } else {
                     node
+                };
+                match self.marks.get(&t.id) {
+                    Some(mark) if mark.is_control() => {
+                        let mut node = node.with_description(mark.description());
+                        node.children.push(
+                            AccessNode::new(Role::ToggleButton)
+                                .with_name(format!("Mute {}", t.title))
+                                .with_action_target(format!("tab-mute:{}", t.id))
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    checked: Some(*mark == TabMark::Muted),
+                                    ..Default::default()
+                                }),
+                        );
+                        node
+                    }
+                    Some(mark) => node.with_description(mark.description()),
+                    None => node,
                 }
             })
             .collect();
-        tab_children.push(
-            AccessNode::new(Role::Button)
-                .with_name("New tab")
-                .with_action_target("tab-new")
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
-        );
+        if self.new_tab {
+            tab_children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("New tab")
+                    .with_action_target("tab-new")
+                    .with_state(AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    }),
+            );
+        }
         node = node.with_children(tab_children);
         Some(node)
     }
@@ -2591,6 +2818,9 @@ impl Widget for TabBar {
             return false;
         }
         if target == "tab-new" {
+            if !self.new_tab {
+                return false;
+            }
             self.pending_new_tab = Some(());
             return true;
         }
@@ -2598,7 +2828,17 @@ impl Widget for TabBar {
             .strip_prefix("tab-close:")
             .and_then(|value| value.parse::<u64>().ok())
         {
-            return !self.pinned_ids.contains(&id) && self.start_closing(id);
+            return self.closable && !self.pinned_ids.contains(&id) && self.start_closing(id);
+        }
+        if let Some(id) = target
+            .strip_prefix("tab-mute:")
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            let Some(mark) = self.marks.get(&id).copied().filter(|m| m.is_control()) else {
+                return false;
+            };
+            self.pending_mark = Some((id, mark));
+            return true;
         }
         let Some(id) = target
             .strip_prefix("tab:")
@@ -2639,6 +2879,15 @@ impl Widget for TabBar {
     fn accepts_drop(&self, payload: &DragPayload) -> bool {
         matches!(payload, DragPayload::Tab { .. })
     }
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        // The busy mark stands still and a drag lifts at once.
+        self.host_reduced_motion = reduced;
+        self.reduce_motion = reduced;
+        for child in self.children_mut() {
+            child.set_motion_reduced(reduced);
+        }
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // Keep pumping redraws while any curve is in flight: drop-zone expand,
         // layout spring, insert fade, close fade, drop-line fade-in, or reveal.
@@ -2668,6 +2917,7 @@ impl Widget for TabBar {
         // Keeps the curve running once the pointer stops moving, until an
         // opening pill finishes.
         let reveal = self.reveal_in_flight();
+        let busy = !self.reduce_motion && self.marks.values().any(|m| *m == TabMark::Busy);
         let drag_lift = !self.reduce_motion
             && self.pending_drag.is_some()
             && self
@@ -2684,6 +2934,7 @@ impl Widget for TabBar {
             || reveal
             || drag_lift
             || hover_intent
+            || busy
     }
 }
 
@@ -3246,6 +3497,18 @@ impl TabBar {
             *handled = true;
             return;
         }
+        // A sound mark is a control of its own: it mutes, it does not select.
+        let mark_hit = self.tabs.iter().zip(&self.mark_rects).find_map(|(t, r)| {
+            let mark = self.marks.get(&t.id).copied()?;
+            (mark.is_control() && r.area() > 0.0 && r.inflate(2.0, 2.0).contains(cursor_pos))
+                .then_some((t.id, mark))
+        });
+        if let Some(hit) = mark_hit {
+            self.pending_mark = Some(hit);
+            *handled = true;
+            return;
+        }
+
         // Close button takes priority over selection/drag.
         if let Some(ci) = close_idx
             && let Some(t) = self.tabs.get(ci)
@@ -6775,5 +7038,104 @@ mod tests {
                 "no curve may be left running under reduce-motion"
             );
         }
+    }
+
+    #[test]
+    fn a_strip_of_fixed_views_has_no_close_or_new_tab_and_marks_paint_and_hit() {
+        let theme = crate::theme::Theme {
+            reduce_motion: true,
+            ..crate::theme::Theme::dark()
+        };
+        let mut fixed = bar().closable(false).without_new_tab();
+        lay_out_at_width_with(&mut fixed, 600.0, &theme);
+        assert_eq!(fixed.new_tab_rect(), Rect::ZERO, "no new-tab control");
+        hover_pill(&mut fixed, 1, 600.0, &theme);
+        assert!(
+            fixed.close_rects.iter().all(|r| r.area() <= 0.0),
+            "no close control, even under the pointer"
+        );
+        let node = Widget::accessibility(&fixed).unwrap();
+        assert!(
+            node.children
+                .iter()
+                .all(|tab| tab.children.is_empty() && tab.name.as_deref() != Some("New tab")),
+            "nothing to close or add is announced"
+        );
+
+        // Marks: a playing tab's speaker is a control of its own.
+        let mut tabs = bar();
+        tabs.set_mark(2, Some(TabMark::Playing));
+        tabs.set_mark(3, Some(TabMark::Busy));
+        lay_out_at_width_with(&mut tabs, 600.0, &theme);
+        let speaker = tabs
+            .mark_rect(2)
+            .expect("the mark stands in the leading slot");
+        assert!(tabs.tab_rects()[1].contains(speaker.center()));
+        let mut handled = false;
+        dispatch_cursor(&mut tabs, speaker.center(), &mut handled);
+        dispatch_left_button(&mut tabs, ElementState::Pressed, &mut handled);
+        assert_eq!(tabs.take_mark_click(), Some((2, TabMark::Playing)));
+        assert_eq!(
+            tabs.active_id(),
+            1,
+            "a click on the mark does not select the tab"
+        );
+        assert!(
+            tabs.needs_animation_frame() || theme.reduce_motion,
+            "a busy mark turns"
+        );
+        let node = Widget::accessibility(&tabs).unwrap();
+        assert_eq!(
+            node.children[1].description.as_deref(),
+            Some("Playing audio")
+        );
+        assert_eq!(node.children[2].description.as_deref(), Some("Loading"));
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        tabs.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        assert!(!scene.encoding().draw_tags.is_empty());
+    }
+
+    #[test]
+    fn the_active_tab_is_the_lift_alone_unless_the_host_shows_group_focus() {
+        let theme = crate::theme::Theme::dark();
+        let you = theme
+            .tokens
+            .colors
+            .intent
+            .you
+            .premultiply()
+            .to_rgba8()
+            .to_u32();
+        let paint = |b: &mut TabBar| {
+            lay_out_at_width_with(b, 600.0, &theme);
+            let mut scene = Scene::new();
+            let mut tr = TextRenderer::new();
+            b.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            scene.encoding().draw_data.contains(&you)
+        };
+        let mut documents = bar();
+        assert!(
+            !paint(&mut documents),
+            "a strip of documents shows no keyline"
+        );
+        let mut groups = bar();
+        groups.set_group_focused(true);
+        assert!(
+            paint(&mut groups),
+            "the focused window group's active tab does"
+        );
     }
 }

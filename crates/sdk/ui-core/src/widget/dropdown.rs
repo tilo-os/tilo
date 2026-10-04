@@ -12,9 +12,17 @@
 //! back without app-owned fan-out.
 //!
 //! Keyboard (while focused): Enter/Space/Down open; Up/Down move the
-//! highlight; Enter selects + closes; Esc dismisses; printable characters
-//! drive an incremental, case-insensitive substring filter (Backspace edits
-//! it) so hundred-entry lists stay usable without endless scrolling.
+//! highlight; Enter selects + closes; Esc dismisses. In a list of
+//! [`FILTER_MIN_OPTIONS`] or more, printable characters drive an
+//! incremental, case-insensitive substring filter (Backspace edits it) so
+//! hundred-entry lists stay usable without endless scrolling; the query
+//! takes the field only once typed, and the value shows until then. A
+//! shorter list never filters: a typed letter arms the next option starting
+//! with it.
+//!
+//! Closed, the control is as wide as its widest option (`fill` spans the
+//! parent). [`DropdownFace`] paints the same closed control for a painted
+//! host, paired with an option [`crate::widget::Popover`].
 //!
 //! [`Dropdown::as_menu`] makes it a menu button instead: an icon that opens
 //! a list of choices, each one a command rather than a value it keeps.
@@ -38,7 +46,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::Selection;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -107,7 +115,8 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
 )]
 pub struct Dropdown {
     id: String,
-    /// Fluent message id spoken independently from the selected value.
+    /// Fluent message id (or, with `name_resolved`, resolved text) spoken
+    /// independently from the selected value.
     accessible_name: Option<String>,
     /// Stable machine values parallel to the human-readable option labels.
     /// The legacy constructor uses equal value/label pairs.
@@ -159,7 +168,35 @@ pub struct Dropdown {
     /// A menu button's icon: the control is that icon, and a choice is a
     /// command it reports rather than a value it shows.
     menu: Option<crate::icons::Icon>,
+
+    /// Span the parent's width instead of hugging the widest option.
+    fill: bool,
+    /// A glyph before the value: what kind of thing the choice is.
+    leading_icon: Option<crate::icons::Icon>,
+    /// `accessible_name` is already resolved text, spoken as given.
+    name_resolved: bool,
+    /// The field's height in the theme of the latest layout or paint; what
+    /// [`Self::apply_layout_external`] stacks the caption above.
+    field_height: f64,
+    /// The label and caption styles of the latest layout, for measuring.
+    label_style: TextStyle,
+    caption_style: TextStyle,
+    /// The theme's caption height from the latest layout or paint.
+    theme_caption_height: f64,
+    /// The width measured for the options in the latest layout.
+    measured: f64,
+    /// The open list's width for its options, from the latest paint.
+    list_width: f64,
+    /// One row of the open list: a menu row, grown with its text.
+    item_h: f64,
+    /// An option, the placeholder, the caption or the icon changed since the
+    /// last layout, so the measured width may have.
+    layout_dirty: bool,
 }
+
+/// Lists shorter than this never show a filter: a typed letter jumps to the
+/// next option starting with it instead.
+pub const FILTER_MIN_OPTIONS: usize = 8;
 
 impl Dropdown {
     fn effectively_enabled(&self) -> bool {
@@ -196,6 +233,17 @@ impl Dropdown {
             viewport: None,
             enabled: true,
             menu: None,
+            fill: false,
+            leading_icon: None,
+            name_resolved: false,
+            field_height: CONTROL_HEIGHT,
+            label_style: crate::tokens::typography::stock().style(TextRole::Label),
+            caption_style: crate::tokens::typography::stock().style(TextRole::Caption),
+            theme_caption_height: 0.0,
+            measured: 0.0,
+            list_width: 0.0,
+            item_h: ITEM_HEIGHT,
+            layout_dirty: true,
         }
     }
 
@@ -248,6 +296,36 @@ impl Dropdown {
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
+        self.name_resolved = false;
+        self
+    }
+
+    /// Name the dropdown with text that is already resolved (a label the
+    /// app localized itself, a user's own name for a thing): spoken as
+    /// given, never looked up as a message id.
+    #[must_use]
+    pub fn with_resolved_accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = Some(name.into());
+        self.name_resolved = true;
+        self
+    }
+
+    /// Span the parent's width. Without it the control is as wide as its
+    /// widest option and the chevron need, like a [`crate::widget::NumberInput`],
+    /// so it sits in a row or a header's actions beside other controls.
+    #[must_use]
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
+        self.layout_dirty = true;
+        self
+    }
+
+    /// A glyph before the value that says what the choice is (a source, a
+    /// scope, a calendar).
+    #[must_use]
+    pub fn leading_icon(mut self, icon: crate::icons::Icon) -> Self {
+        self.leading_icon = Some(icon);
+        self.layout_dirty = true;
         self
     }
 
@@ -266,6 +344,7 @@ impl Dropdown {
     #[must_use]
     pub fn with_placeholder(mut self, placeholder: &str) -> Self {
         self.placeholder = placeholder.to_string();
+        self.layout_dirty = true;
         self
     }
 
@@ -325,6 +404,9 @@ impl Dropdown {
     /// Replace the available options while preserving the current value when
     /// possible. Useful for embedded hosts whose choices are model-derived.
     pub fn set_options(&mut self, options: Vec<String>) {
+        if self.options != options || self.values != options {
+            self.layout_dirty = true;
+        }
         self.values.clone_from(&options);
         self.options = options;
         self.highlight = self.highlight.min(self.options.len().saturating_sub(1));
@@ -334,6 +416,9 @@ impl Dropdown {
     /// duplicate label selectable and searchable without exposing ids in UI.
     pub fn set_value_options(&mut self, options: Vec<(String, String)>) {
         let (values, labels): (Vec<_>, Vec<_>) = options.into_iter().unzip();
+        if self.options != labels {
+            self.layout_dirty = true;
+        }
         self.values = values;
         self.options = labels;
         self.highlight = self.highlight.min(self.options.len().saturating_sub(1));
@@ -355,7 +440,12 @@ impl Dropdown {
     /// A bound [`crate::LocalState`] is updated immediately; this does not
     /// invoke [`Self::on_change`].
     pub fn set_selected(&mut self, selected: impl Into<String>) {
-        self.selected = selected.into();
+        let selected = selected.into();
+        // A value outside the options (loaded ahead of them) is measured too.
+        if selected != self.selected && !self.values.contains(&selected) {
+            self.layout_dirty = true;
+        }
+        self.selected = selected;
         if self.action.is_none() {
             self.publish_local_state();
         }
@@ -371,7 +461,24 @@ impl Dropdown {
     /// the counterpart to `TextInput::apply_layout_external`. The open
     /// list still paints in the overlay pass, so only the closed control's
     /// box is caller-driven; focus / a11y / CRDT-bound selection are unaffected.
+    ///
+    /// With a caption, `rect` holds the caption and the field below it (see
+    /// [`DropdownFace::outer_height`]); the caption's height comes from the
+    /// theme, so the field never covers it, even when the host never ran a
+    /// layout pass.
     pub fn apply_layout_external(&mut self, rect: Rect) {
+        self.caption_height = if self.caption.is_some() {
+            if self.theme_caption_height > 0.0 {
+                self.theme_caption_height
+            } else {
+                caption_height_in(
+                    &crate::tokens::typography::stock().style(TextRole::Caption),
+                    f64::from(crate::tokens::Spacing::BASE.s1),
+                )
+            }
+        } else {
+            0.0
+        };
         self.place(rect);
     }
 
@@ -381,6 +488,7 @@ impl Dropdown {
     #[must_use]
     pub fn caption(mut self, caption: impl Into<String>) -> Self {
         self.caption = Some(caption.into());
+        self.layout_dirty = true;
         self
     }
 
@@ -388,7 +496,40 @@ impl Dropdown {
     #[must_use]
     pub fn control_size(mut self, size: crate::widget::ControlSize) -> Self {
         self.control_size = size;
+        self.layout_dirty = true;
         self
+    }
+
+    /// Adopt the theme's geometry: the field height, the caption height and
+    /// the styles the width is measured with.
+    fn adopt_theme(&mut self, theme: &Theme) {
+        self.field_height = self.control_size.height(theme);
+        self.label_style = self.control_size.label_style(theme);
+        self.caption_style = theme.text(TextRole::Caption);
+        self.theme_caption_height =
+            caption_height_in(&self.caption_style, f64::from(theme.tokens.spacing.s1));
+        self.item_h = f64::from(theme.tokens.metrics.menu_row_height).max(
+            (f64::from(theme.text(TextRole::Body).line_height_px())
+                + 2.0 * f64::from(theme.tokens.spacing.s1))
+            .ceil(),
+        );
+    }
+
+    /// The narrowest field that shows every option, the placeholder and the
+    /// value without eliding, beside the leading icon and the chevron; at
+    /// least as wide as the caption above it.
+    fn measured_width(&self, text: &mut TextRenderer) -> f64 {
+        let labels = self
+            .options
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(self.placeholder.as_str()))
+            .chain(std::iter::once(self.selected_label()));
+        let field = field_width_for(labels, self.leading_icon.is_some(), &self.label_style, text);
+        let caption = self.caption.as_deref().map_or(0.0, |caption| {
+            f64::from(text.measure_style(caption, None, &self.caption_style).0).ceil()
+        });
+        field.max(caption)
     }
 
     /// Lay the widget out in `outer`: the caption on top, the field below.
@@ -438,7 +579,7 @@ impl Dropdown {
         } else {
             CONTROL_HEIGHT
         };
-        control + LIST_GAP + Self::list_box_height(self.visible_count())
+        control + LIST_GAP + self.list_box_height(self.visible_count())
     }
 
     /// Position of the selected option within `filtered`, or 0.
@@ -464,13 +605,13 @@ impl Dropdown {
 
     /// Height of the open list box for `n` filtered rows (>=1 so the
     /// "no matches" row has a box to live in).
-    fn list_box_height(n: usize) -> f64 {
-        Self::rows_height(n) + 2.0 * LIST_PAD
+    fn list_box_height(&self, n: usize) -> f64 {
+        self.rows_height(n) + 2.0 * LIST_PAD
     }
 
     /// Height of the visible rows of the open list, inside its inset.
-    fn rows_height(n: usize) -> f64 {
-        (count_f64(n.max(1)) * ITEM_HEIGHT).min(MAX_LIST_HEIGHT)
+    fn rows_height(&self, n: usize) -> f64 {
+        (count_f64(n.max(1)) * self.item_h).min(MAX_LIST_HEIGHT.max(self.item_h))
     }
 
     /// The rows' box inside the open `list`.
@@ -490,15 +631,17 @@ impl Dropdown {
     /// Hit-testing and paint share this, so a flipped list is clickable
     /// where it is drawn.
     fn list_rect(&self, n: usize) -> Rect {
-        let h = Self::list_box_height(n);
+        let h = self.list_box_height(n);
         let viewport = self
             .viewport
             .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
-        let width = if self.menu.is_some() {
-            self.rect.width().max(menu_min_width())
-        } else {
-            self.rect.width()
-        };
+        // At least as wide as the field, and as its widest option with the
+        // check beside it; a menu at least a menu's width.
+        let mut width = self.rect.width().max(self.list_width);
+        if self.menu.is_some() {
+            width = width.max(menu_min_width());
+        }
+        let width = width.min(viewport.width().max(1.0));
         let placed = crate::widget::floating_surface::place_anchored(
             self.rect,
             (width, h),
@@ -517,9 +660,22 @@ impl Dropdown {
         placed
     }
 
-    fn max_scroll(n: usize) -> f32 {
-        let content = count_f64(n) * ITEM_HEIGHT;
-        px((content - Self::rows_height(n)).max(0.0))
+    /// The open list's width for its options: each row's label, the check,
+    /// the row insets and the menu inset either side.
+    fn measure_list(&mut self, text: &mut TextRenderer, theme: &Theme) {
+        let style = theme.text(TextRole::Body);
+        let widest = self
+            .options
+            .iter()
+            .map(|option| f64::from(text.measure_style(option, None, &style).0))
+            .fold(0.0, f64::max);
+        let check = f64::from(theme.tokens.metrics.icon_sm);
+        self.list_width = (widest + 3.0 * LIST_PAD + check + 2.0 * LIST_PAD).ceil();
+    }
+
+    fn max_scroll(&self, n: usize) -> f32 {
+        let content = count_f64(n) * self.item_h;
+        px((content - self.rows_height(n)).max(0.0))
     }
 
     /// Filtered-list row index under `pos`, or `None` outside `list`/`n` rows.
@@ -538,21 +694,42 @@ impl Dropdown {
             reason = "rel >= 0.0 is checked above; this cast is the intended \
                       floor-to-row-index conversion"
         )]
-        let vi = (rel / ITEM_HEIGHT) as usize;
+        let vi = (rel / self.item_h) as usize;
         (vi < n).then_some(vi)
     }
 
     /// Scroll so the row at filtered-position `vi` is fully visible.
     fn ensure_visible(&mut self, vi: usize, n: usize) {
-        let box_h = px(Self::rows_height(n));
-        let top = px(count_f64(vi) * ITEM_HEIGHT);
-        let bottom = top + px(ITEM_HEIGHT);
+        let box_h = px(self.rows_height(n));
+        let top = px(count_f64(vi) * self.item_h);
+        let bottom = top + px(self.item_h);
         if top < self.scroll {
             self.scroll = top;
         } else if bottom > self.scroll + box_h {
             self.scroll = bottom - box_h;
         }
-        self.scroll = self.scroll.clamp(0.0, Self::max_scroll(n));
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll(n));
+    }
+
+    /// Arm the next option after the highlighted one whose label starts
+    /// with `typed`, wrapping round; nothing when none does.
+    fn type_ahead(&mut self, typed: &str) {
+        let typed = typed.trim().to_lowercase();
+        if typed.is_empty() {
+            return;
+        }
+        let n = self.options.len();
+        let next = (1..=n)
+            .map(|step| self.highlight.saturating_add(step) % n)
+            .find(|&index| {
+                self.options
+                    .get(index)
+                    .is_some_and(|label| label.to_lowercase().starts_with(&typed))
+            });
+        if let Some(index) = next {
+            self.highlight = index;
+            self.ensure_visible(index, n);
+        }
     }
 
     /// Open the list and align highlight + scroll to the current value.
@@ -700,7 +877,7 @@ impl Dropdown {
             MouseScrollDelta::PixelDelta(p) => px(-p.y),
         };
         let n = self.filtered().len();
-        self.scroll = (self.scroll + dy).clamp(0.0, Self::max_scroll(n));
+        self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll(n));
         *handled = true;
     }
 
@@ -746,6 +923,16 @@ impl Dropdown {
                 }
                 // A menu shows no query to type into.
                 _ if self.menu.is_some() => {}
+                _ if self.options.len() < FILTER_MIN_OPTIONS => {
+                    // A short list never filters: a typed letter arms the
+                    // next option starting with it.
+                    if let Some(typed) = ke.text.as_deref()
+                        && !ctrl
+                    {
+                        self.type_ahead(typed);
+                        *handled = true;
+                    }
+                }
                 _ => {
                     let change = self.filter_composition.handle_event(
                         event,
@@ -802,12 +989,15 @@ impl Widget for Dropdown {
         // The open list is intentionally NOT a taffy child: it paints in the
         // overlay pass, so it doesn't reserve layout space.
         //
-        // A fluid control: it asks for the row's width and is the item that
-        // gives when the row is short of room — like `TextInput`, and unlike
-        // fixed-size leaves such as `Toggle`, which refuse to shrink. With
-        // `flex_shrink: 0` a dropdown claimed the whole row and pushed every
-        // later sibling past the edge to zero width. The floor keeps the
-        // chevron slot and padding so a squeezed control is still a control.
+        // The control is as wide as its widest option (measured in
+        // `adjust_layout_with_measure`), or the row's width with `fill`. In
+        // both cases it is the item that gives when the row is short of
+        // room, like `TextInput` and unlike fixed-size leaves such as
+        // `Toggle`: with `flex_shrink: 0` a dropdown claimed the whole row
+        // and pushed every later sibling past the edge to zero width. The
+        // floor keeps the chevron slot and padding so a squeezed control is
+        // still a control.
+        self.adopt_theme(theme);
         if self.menu.is_some() {
             // A menu button is an icon-only control of its size.
             self.caption_height = 0.0;
@@ -824,16 +1014,23 @@ impl Widget for Dropdown {
             return node;
         }
         self.caption_height = if self.caption.is_some() {
-            f64::from(theme.text(TextRole::Caption).line_height_px())
-                + f64::from(theme.tokens.spacing.s1)
+            self.theme_caption_height
         } else {
             0.0
         };
-        let field = self.control_size.height(theme);
+        // Before its options are measured the width is left to `measure`,
+        // which the layout pass asks; afterwards it is pinned to them.
+        let width = if self.fill {
+            Dimension::percent(1.0)
+        } else if self.measured > 0.0 {
+            Dimension::length(px(self.measured.max(PAD_X + CHEVRON_W)))
+        } else {
+            Dimension::auto()
+        };
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(px(field + self.caption_height)),
+                width,
+                height: Dimension::length(px(self.field_height + self.caption_height)),
             },
             min_size: Size {
                 width: Dimension::length(px(PAD_X + CHEVRON_W)),
@@ -854,6 +1051,66 @@ impl Widget for Dropdown {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         ));
+        self.layout_dirty = false;
+    }
+
+    /// The width every option needs, so a parent that measures its children
+    /// (a form row placing a trailing control) reserves exactly that.
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        _available: Size<taffy::AvailableSpace>,
+        text: &mut TextRenderer,
+    ) -> Size<f32> {
+        if self.menu.is_some() {
+            // A menu button is the square of its size laid out in
+            // `build_layout`.
+            let side = px(self.field_height);
+            return Size {
+                width: known.width.unwrap_or(side),
+                height: known.height.unwrap_or(side),
+            };
+        }
+        let width = if self.fill {
+            PAD_X + CHEVRON_W
+        } else {
+            self.measured = self.measured_width(text);
+            self.measured.max(PAD_X + CHEVRON_W)
+        };
+        Size {
+            width: known.width.unwrap_or(px(width)),
+            height: known
+                .height
+                .unwrap_or(px(self.field_height + self.caption_height)),
+        }
+    }
+
+    fn adjust_layout_with_measure(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        if self.fill || self.menu.is_some() {
+            return false;
+        }
+        self.measured = self.measured_width(text);
+        let Ok(current) = tree.style(node) else {
+            return false;
+        };
+        let mut style = current.clone();
+        style.size.width = Dimension::length(px(self.measured.max(PAD_X + CHEVRON_W)));
+        if style == *current {
+            return false;
+        }
+        tree.set_style(node, style).is_ok()
+    }
+
+    /// The width follows the options, the placeholder, the caption, the
+    /// icon and the size, and nothing else: an idle dropdown never asks for
+    /// a layout pass.
+    fn is_layout_dirty(&self) -> bool {
+        self.outer == Rect::ZERO || self.layout_dirty
     }
 
     fn draw(
@@ -867,132 +1124,56 @@ impl Widget for Dropdown {
         if let Some(viewport) = presence.viewport.get() {
             self.viewport = Some(viewport);
         }
+        // An externally placed dropdown learns the theme here: its caption
+        // takes the theme's height from now on.
+        self.adopt_theme(theme);
         if let Some(icon) = self.menu {
             self.draw_menu_trigger(scene, transform, text_renderer, theme, icon);
             return;
         }
-        if let Some(caption) = &self.caption {
-            let style = theme.text(TextRole::Caption);
-            let shown = text_renderer.elide_to_width_style(
-                caption,
-                px(self.outer.width().max(1.0)),
-                &style,
-            );
-            text_renderer.draw_style(
-                scene,
-                &shown,
-                theme.tokens.colors.text_dim,
-                translated(transform, self.outer.x0, self.outer.y0),
-                None,
-                &style,
-            );
+        if self.caption.is_some() && (self.caption_height - self.theme_caption_height).abs() > 0.01
+        {
+            self.caption_height = self.theme_caption_height;
+            self.place(self.outer);
         }
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
-        // Disabled widgets paint their (forced-idle) look under a reduced
-        // group opacity so they read as non-interactive.
         let disabled = !self.effectively_enabled();
-        if disabled {
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &shape,
-            );
-        }
-        // The field is a Secondary control: the raised face, its lift under
-        // the pointer and while open (HIG §9.2), the derived rest edge, and
-        // your colour as the focus ring.
-        let raised = theme.tokens.colors.surfaces.raised;
-        let bg = if self.open || self.is_focused {
-            theme.tokens.colors.lift_on(raised, 1.0)
-        } else if self.is_hovered && !disabled {
-            theme.tokens.colors.lift_on(raised, 0.5)
+        // While open the field keeps showing the value; the query replaces
+        // it only once the person has typed, and never shows a prompt.
+        let filtering =
+            self.open && (!self.filter.is_empty() || self.filter_composition.is_composing());
+        let (label, placeholder) = if self.selected.is_empty() {
+            (self.placeholder.clone(), true)
         } else {
-            raised
+            (self.selected_label().to_string(), false)
         };
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        let (bw, bc) = if self.open || self.is_focused {
-            (2.0, theme.tokens.colors.intent.you)
-        } else {
-            (
-                1.0,
-                crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
-            )
-        };
-        // Rest edge and focus ring share one half-pixel-inset outline.
-        scene.stroke(
-            &Stroke::new(bw),
-            transform,
-            bc,
-            None,
-            &crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.control)),
+        let content = paint_face(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            &FacePaint {
+                outer: self.outer,
+                field: self.rect,
+                caption: self.caption.as_deref(),
+                icon: self.leading_icon,
+                label: (!filtering).then_some((label.as_str(), placeholder)),
+                size: self.control_size,
+                open: self.open,
+                hovered: self.is_hovered,
+                focused: self.is_focused,
+                disabled,
+            },
         );
-
-        if self.open {
+        if filtering {
             self.filter_composition.draw(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 QueryView {
                     text: &self.filter,
                     selection: &self.filter_selection,
-                    placeholder: "Type to filter…",
+                    placeholder: "",
                     show_caret: self.is_focused,
                 },
-                Rect::new(
-                    self.rect.x0 + PAD_X,
-                    self.rect.y0,
-                    self.rect.x1 - CHEVRON_W,
-                    self.rect.y1,
-                ),
+                content,
                 &self.control_size.label_style(theme),
                 QueryInk::of(&theme.tokens.colors),
             );
-        } else {
-            let (label, color) = if self.selected.is_empty() {
-                (self.placeholder.as_str(), theme.text_dim)
-            } else {
-                (self.selected_label(), theme.text_primary)
-            };
-            if !label.is_empty() {
-                scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
-                // One line, elided to the room left of the chevron: a max
-                // width handed to `draw_text` wraps instead, and a wrapped
-                // second line lands under the control's bottom edge.
-                let style = self.control_size.label_style(theme);
-                let room = px((self.rect.width() - PAD_X - CHEVRON_W).max(0.0));
-                let shown = text_renderer.elide_to_width_style(label, room, &style);
-                let (_, th) = text_renderer.measure_style(&shown, None, &style);
-                let ty = self.rect.y0 + (self.rect.height() - f64::from(th)) / 2.0;
-                text_renderer.draw_style(
-                    scene,
-                    &shown,
-                    color,
-                    translated(transform, self.rect.x0 + PAD_X, ty),
-                    None,
-                    &style,
-                );
-                scene.pop_layer();
-            }
-        }
-
-        // The trailing chevron, centred in its slot, from the one icon set.
-        let edge = f64::from(theme.tokens.metrics.icon_sm);
-        let slot_center = Point::new(self.rect.x1 - CHEVRON_W / 2.0, self.rect.center().y);
-        crate::icons::draw_icon(
-            scene,
-            transform,
-            Rect::from_center_size(slot_center, (edge, edge)),
-            if self.open {
-                crate::icons::Icon::ChevronUp
-            } else {
-                crate::icons::Icon::ChevronDown
-            },
-            theme.text_dim,
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-
-        if disabled {
-            scene.pop_layer();
         }
     }
 
@@ -1012,6 +1193,7 @@ impl Widget for Dropdown {
         if let Some(viewport) = presence.viewport.get() {
             self.viewport = Some(viewport);
         }
+        self.measure_list(text_renderer, theme);
         let filtered = self.filtered();
         let list = self.list_rect(filtered.len());
         // The open list is a floating Panel (HIG §9.1 / §9.5): the panel
@@ -1036,7 +1218,7 @@ impl Widget for Dropdown {
             // ascent/descent otherwise sits the label low in the row).
             let (_, hint_h) =
                 text_renderer.measure_style("No matches", None, &theme.text(TextRole::Body));
-            let ty = rows.y0 + (ITEM_HEIGHT - f64::from(hint_h)) / 2.0;
+            let ty = rows.y0 + (self.item_h - f64::from(hint_h)) / 2.0;
             text_renderer.draw_style(
                 scene,
                 "No matches",
@@ -1047,8 +1229,8 @@ impl Widget for Dropdown {
             );
         } else {
             for (vi, &opt_idx) in filtered.iter().enumerate() {
-                let row_top = rows.y0 + (count_f64(vi) * ITEM_HEIGHT) - f64::from(self.scroll);
-                let row_bottom = row_top + ITEM_HEIGHT;
+                let row_top = rows.y0 + (count_f64(vi) * self.item_h) - f64::from(self.scroll);
+                let row_bottom = row_top + self.item_h;
                 // Cull rows scrolled out of the box (hundreds of zones).
                 if row_bottom < rows.y0 || row_top > rows.y1 {
                     continue;
@@ -1086,7 +1268,7 @@ impl Widget for Dropdown {
                         crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                     );
                 }
-                // Rows are one `ITEM_HEIGHT` tall, so a long option elides
+                // Rows are one row tall, so a long option elides
                 // rather than wrapping into the row beneath it.
                 let shown = text_renderer.elide_to_width_style(
                     opt,
@@ -1095,7 +1277,7 @@ impl Widget for Dropdown {
                 );
                 let (_, opt_h) =
                     text_renderer.measure_style(&shown, None, &theme.text(TextRole::Body));
-                let ty = row_top + (ITEM_HEIGHT - f64::from(opt_h)) / 2.0;
+                let ty = row_top + (self.item_h - f64::from(opt_h)) / 2.0;
                 text_renderer.draw_style(
                     scene,
                     &shown,
@@ -1116,6 +1298,7 @@ impl Widget for Dropdown {
         }
         if self.open
             && self.is_focused
+            && self.options.len() >= FILTER_MIN_OPTIONS
             && let WindowEvent::Ime(_) = event
         {
             let change = self.filter_composition.handle_event(
@@ -1218,7 +1401,11 @@ impl Widget for Dropdown {
         // Explicit names are Fluent ids. Keep the legacy value/placeholder
         // fallback for unlabeled standalone dropdowns.
         let name = if let Some(name) = &self.accessible_name {
-            Some(crate::i18n!(name))
+            Some(if self.name_resolved {
+                name.clone()
+            } else {
+                crate::i18n!(name)
+            })
         } else if let Some(caption) = &self.caption {
             Some(caption.clone())
         } else if !self.selected.is_empty() {
@@ -1356,6 +1543,387 @@ impl crate::widget::controls::ActionControls for Dropdown {
     }
 }
 
+/// The height of a caption stacked above a field: its line and `spacing.s1`.
+fn caption_height_in(style: &TextStyle, gap: f64) -> f64 {
+    f64::from(style.line_height_px()) + gap
+}
+
+/// The edge of a leading icon: the label's line, so it grows with the text
+/// scale and stays the label's size.
+fn leading_icon_edge(style: &TextStyle) -> f64 {
+    f64::from(style.line_height_px()).round()
+}
+
+/// Between a leading icon and the value.
+fn leading_icon_gap(style: &TextStyle) -> f64 {
+    (leading_icon_edge(style) / 3.0).round()
+}
+
+/// The narrowest field that shows each of `labels` beside the padding, the
+/// optional leading icon and the chevron slot.
+fn field_width_for<'s>(
+    labels: impl IntoIterator<Item = &'s str>,
+    icon: bool,
+    style: &TextStyle,
+    text: &mut TextRenderer,
+) -> f64 {
+    let widest = labels
+        .into_iter()
+        .filter(|label| !label.is_empty())
+        .map(|label| f64::from(text.measure_style(label, None, style).0))
+        .fold(0.0, f64::max);
+    let lead = if icon {
+        leading_icon_edge(style) + leading_icon_gap(style)
+    } else {
+        0.0
+    };
+    // Half a pixel of slack, so a field sized to its label never elides it
+    // over shaping round-off.
+    (PAD_X + lead + widest + 0.5 + CHEVRON_W).ceil()
+}
+
+/// Where the value sits inside `field`: after the padding and a leading
+/// icon, before the chevron slot.
+fn content_rect(field: Rect, icon: bool, style: &TextStyle) -> Rect {
+    let lead = if icon {
+        leading_icon_edge(style) + leading_icon_gap(style)
+    } else {
+        0.0
+    };
+    Rect::new(
+        (field.x0 + PAD_X + lead).min(field.x1),
+        field.y0,
+        (field.x1 - CHEVRON_W).max(field.x0),
+        field.y1,
+    )
+}
+
+/// One closed dropdown, painted: the shared body of the retained
+/// [`Dropdown`] and the immediate-mode [`DropdownFace`].
+struct FacePaint<'a> {
+    outer: Rect,
+    field: Rect,
+    caption: Option<&'a str>,
+    icon: Option<crate::icons::Icon>,
+    /// The value or the placeholder (`true`), or `None` while a filter
+    /// query takes the field.
+    label: Option<(&'a str, bool)>,
+    size: crate::widget::ControlSize,
+    open: bool,
+    hovered: bool,
+    focused: bool,
+    disabled: bool,
+}
+
+/// Paint the caption, the field, its leading icon, its value and its
+/// chevron; returns the rect the value occupies.
+fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) -> Rect {
+    let theme = ctx.theme;
+    let style = face.size.label_style(theme);
+    if let Some(caption) = face.caption {
+        let caption_style = theme.text(TextRole::Caption);
+        let shown =
+            ctx.text
+                .elide_to_width_style(caption, px(face.outer.width().max(1.0)), &caption_style);
+        ctx.text(
+            &shown,
+            &caption_style,
+            theme.text_dim,
+            Point::new(face.outer.x0, face.outer.y0),
+            None,
+        );
+    }
+    let radius = f64::from(theme.tokens.radii.control);
+    let shape = RoundedRect::from_rect(face.field, radius);
+    // Disabled widgets paint their (forced-idle) look under a reduced
+    // group opacity so they read as non-interactive.
+    if face.disabled {
+        ctx.scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            crate::widget::DISABLED_ALPHA,
+            ctx.transform,
+            &shape,
+        );
+    }
+    // The field is a Secondary control: the raised face, its lift under the
+    // pointer and while open (HIG §9.2), the derived rest edge, and your
+    // colour as the focus ring.
+    let raised = theme.tokens.colors.surfaces.raised;
+    let active = (face.open || face.focused) && !face.disabled;
+    let bg = if active {
+        theme.tokens.colors.lift_on(raised, 1.0)
+    } else if face.hovered && !face.disabled {
+        theme.tokens.colors.lift_on(raised, 0.5)
+    } else {
+        raised
+    };
+    ctx.scene
+        .fill(Fill::NonZero, ctx.transform, bg, None, &shape);
+    let (bw, bc) = if active {
+        (2.0, theme.tokens.colors.intent.you)
+    } else {
+        (1.0, crate::surface::edge_on(raised))
+    };
+    // Rest edge and focus ring share one half-pixel-inset outline.
+    ctx.scene.stroke(
+        &Stroke::new(bw),
+        ctx.transform,
+        bc,
+        None,
+        &crate::surface::edge_outline(face.field, radius),
+    );
+
+    let content = content_rect(face.field, face.icon.is_some(), &style);
+    if let Some(icon) = face.icon {
+        let edge = leading_icon_edge(&style).min(face.field.height());
+        let x = face.field.x0 + PAD_X;
+        let cy = face.field.center().y;
+        crate::icons::draw_icon(
+            ctx.scene,
+            ctx.transform,
+            Rect::new(x, cy - edge / 2.0, x + edge, cy + edge / 2.0),
+            icon,
+            theme.text_dim,
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+    }
+    if let Some((label, placeholder)) = face.label
+        && !label.is_empty()
+    {
+        // The placeholder is the tertiary ink, clearly weaker than a value.
+        let color = if placeholder {
+            theme.tokens.colors.text_tertiary
+        } else {
+            theme.text_primary
+        };
+        // One line, elided to the room left of the chevron: a max width
+        // handed to `draw_text` wraps instead, and a wrapped second line
+        // lands under the control's bottom edge.
+        let room = px(content.width().max(0.0) + 0.5);
+        let shown = ctx.text.elide_to_width_style(label, room, &style);
+        let (_, th) = ctx.text.measure_style(&shown, None, &style);
+        let ty = face.field.y0 + (face.field.height() - f64::from(th)) / 2.0;
+        ctx.scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &shape,
+        );
+        ctx.text(&shown, &style, color, Point::new(content.x0, ty), None);
+        ctx.scene.pop_layer();
+    }
+
+    // The trailing chevron, centred in its slot, from the one icon set; it
+    // grows with the text.
+    let edge = (f64::from(theme.tokens.metrics.icon_sm) * f64::from(theme.text_scale.max(1.0)))
+        .min(CHEVRON_W - 2.0);
+    let slot_center = Point::new(face.field.x1 - CHEVRON_W / 2.0, face.field.center().y);
+    crate::icons::draw_icon(
+        ctx.scene,
+        ctx.transform,
+        Rect::from_center_size(slot_center, (edge, edge)),
+        if face.open {
+            crate::icons::Icon::ChevronUp
+        } else {
+            crate::icons::Icon::ChevronDown
+        },
+        theme.text_dim,
+        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+    );
+    if face.disabled {
+        ctx.scene.pop_layer();
+    }
+    content
+}
+
+/// An immediate-mode dropdown: the closed [`Dropdown`] look for a painted
+/// host (a camera's controls, a reader's settings) that owns its own
+/// hit-testing. Pair it with an option [`crate::widget::Popover`]
+/// (`Popover::new().with_items(..)`, opened with
+/// `open_at(face.field_rect(theme), Some(selected))`) for the list.
+///
+/// Size the rect from the face, so rect and glyphs agree at every scale:
+/// [`DropdownFace::outer_height`] (the field, plus a caption when it has
+/// one) and [`DropdownFace::intrinsic_width`] for the widest option.
+pub struct DropdownFace<'a> {
+    rect: Rect,
+    value: &'a str,
+    placeholder: &'a str,
+    caption: Option<&'a str>,
+    icon: Option<crate::icons::Icon>,
+    size: crate::widget::ControlSize,
+    open: bool,
+    hovered: bool,
+    focused: bool,
+    disabled: bool,
+}
+
+impl<'a> DropdownFace<'a> {
+    /// A closed dropdown at `rect` showing `value`.
+    #[must_use]
+    pub fn new(rect: Rect, value: &'a str) -> Self {
+        Self {
+            rect,
+            value,
+            placeholder: "",
+            caption: None,
+            icon: None,
+            size: crate::widget::ControlSize::Regular,
+            open: false,
+            hovered: false,
+            focused: false,
+            disabled: false,
+        }
+    }
+    /// Shown, in the weaker placeholder ink, while `value` is empty.
+    #[must_use]
+    pub fn placeholder(mut self, placeholder: &'a str) -> Self {
+        self.placeholder = placeholder;
+        self
+    }
+    /// A short label stacked above the field ("Level", "Source").
+    #[must_use]
+    pub fn caption(mut self, caption: &'a str) -> Self {
+        self.caption = Some(caption);
+        self
+    }
+    /// A glyph before the value that says what the choice is.
+    #[must_use]
+    pub fn leading_icon(mut self, icon: crate::icons::Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+    /// The field's height and label role.
+    #[must_use]
+    pub fn control_size(mut self, size: crate::widget::ControlSize) -> Self {
+        self.size = size;
+        self
+    }
+    /// Its option list is showing: the field lifts and the chevron turns.
+    #[must_use]
+    pub fn open(mut self, open: bool) -> Self {
+        self.open = open;
+        self
+    }
+    #[must_use]
+    pub fn hovered(mut self, hovered: bool) -> Self {
+        self.hovered = hovered;
+        self
+    }
+    #[must_use]
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+    #[must_use]
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// The field's height at `size` in `theme`.
+    #[must_use]
+    pub fn height(size: crate::widget::ControlSize, theme: &Theme) -> f64 {
+        size.height(theme)
+    }
+
+    /// This face's whole height: the field, and its caption above it.
+    #[must_use]
+    pub fn outer_height(&self, theme: &Theme) -> f64 {
+        Self::height(self.size, theme) + self.caption_height(theme)
+    }
+
+    fn caption_height(&self, theme: &Theme) -> f64 {
+        if self.caption.is_some() {
+            caption_height_in(
+                &theme.text(TextRole::Caption),
+                f64::from(theme.tokens.spacing.s1),
+            )
+        } else {
+            0.0
+        }
+    }
+
+    /// The narrowest rect that shows every one of `options` (and the
+    /// placeholder) beside the icon and the chevron, and the caption above.
+    #[must_use]
+    pub fn intrinsic_width<'s>(
+        &self,
+        options: impl IntoIterator<Item = &'s str>,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> f64 {
+        let style = self.size.label_style(theme);
+        let mut labels: Vec<&str> = options.into_iter().collect();
+        labels.push(self.placeholder);
+        labels.push(self.value);
+        let field = field_width_for(labels, self.icon.is_some(), &style, text);
+        let caption = self.caption.map_or(0.0, |caption| {
+            f64::from(
+                text.measure_style(caption, None, &theme.text(TextRole::Caption))
+                    .0,
+            )
+            .ceil()
+        });
+        field.max(caption)
+    }
+
+    /// The field below the caption: what the option list anchors to and
+    /// what a pointer opens.
+    #[must_use]
+    pub fn field_rect(&self, theme: &Theme) -> Rect {
+        let caption = self.caption_height(theme);
+        Rect::new(
+            self.rect.x0,
+            (self.rect.y0 + caption).min(self.rect.y1),
+            self.rect.x1,
+            self.rect.y1,
+        )
+    }
+
+    /// Whether `point` opens the list: the field, grown to the minimum
+    /// pointer target.
+    #[must_use]
+    pub fn contains(&self, theme: &Theme, point: Point) -> bool {
+        let field = self.field_rect(theme);
+        let target = f64::from(theme.tokens.metrics.min_pointer_target);
+        let grow_y = ((target - field.height()) / 2.0).max(0.0);
+        field.inflate(0.0, grow_y).contains(point)
+    }
+
+    /// Paint the face.
+    pub fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let (label, placeholder) = if self.value.is_empty() {
+            (self.placeholder, true)
+        } else {
+            (self.value, false)
+        };
+        paint_face(
+            &mut PaintCtx::new(scene, transform, text, theme),
+            &FacePaint {
+                outer: self.rect,
+                field: self.field_rect(theme),
+                caption: self.caption,
+                icon: self.icon,
+                label: Some((label, placeholder)),
+                size: self.size,
+                open: self.open,
+                hovered: self.hovered,
+                focused: self.focused,
+                disabled: self.disabled,
+            },
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1368,6 +1936,28 @@ mod tests {
             .iter()
             .map(ToString::to_string)
             .collect()
+    }
+
+    /// A list long enough to filter: `opts` and four zones with no `a`.
+    fn zones() -> Vec<String> {
+        let mut zones = opts();
+        zones.extend(
+            ["Europe/Berlin", "Europe/Oslo", "Europe/Zurich", "Etc/GMT+1"]
+                .iter()
+                .map(ToString::to_string),
+        );
+        zones
+    }
+
+    /// `first`, then numbered fillers up to a list that filters.
+    fn padded(first: &[&str]) -> Vec<String> {
+        let mut options: Vec<String> = first.iter().map(ToString::to_string).collect();
+        let mut n = 1;
+        while options.len() < FILTER_MIN_OPTIONS {
+            options.push(format!("Filler {n}"));
+            n += 1;
+        }
+        options
     }
 
     /// The open list's rows sit inside the menu inset every menu shares,
@@ -1582,12 +2172,12 @@ mod tests {
     #[test]
     fn combobox_filter_editing_handles_case_spaces_graphemes_and_ime() {
         fn typing_filters_options_case_insensitively() {
-            let mut dd = Dropdown::new(opts(), "tz");
+            let mut dd = Dropdown::new(zones(), "tz");
             let (mut doc, root) = doc_with_tz("UTC");
             dd.sync(&mut doc, &root);
             dd.set_focus(true);
             dd.do_open();
-            assert_eq!(dd.visible_count(), 4);
+            assert_eq!(dd.visible_count(), 8);
             // "ame" matches only "America/New_York".
             feed_key(
                 &mut dd,
@@ -1620,7 +2210,7 @@ mod tests {
         }
 
         fn space_is_part_of_an_open_combobox_query() {
-            let mut dd = Dropdown::new(vec!["New York".into(), "New Delhi".into()], "city");
+            let mut dd = Dropdown::new(padded(&["New York", "New Delhi"]), "city");
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             dd.set_focus(true);
@@ -1639,7 +2229,7 @@ mod tests {
         }
 
         fn backspace_edits_the_filter() {
-            let mut dd = Dropdown::new(opts(), "tz");
+            let mut dd = Dropdown::new(zones(), "tz");
             let (mut doc, root) = doc_with_tz("UTC");
             dd.sync(&mut doc, &root);
             dd.set_focus(true);
@@ -1669,7 +2259,7 @@ mod tests {
         }
 
         fn backspace_deletes_one_extended_grapheme_from_the_filter() {
-            let mut dd = Dropdown::new(opts(), "tz");
+            let mut dd = Dropdown::new(zones(), "tz");
             let (mut doc, root) = doc_with_tz("UTC");
             dd.sync(&mut doc, &root);
             dd.set_focus(true);
@@ -1693,7 +2283,7 @@ mod tests {
         }
 
         fn typing_replaces_the_selected_filter_range() {
-            let mut dd = Dropdown::new(opts(), "tz");
+            let mut dd = Dropdown::new(zones(), "tz");
             let (mut doc, root) = doc_with_tz("UTC");
             dd.sync(&mut doc, &root);
             dd.set_focus(true);
@@ -1714,7 +2304,7 @@ mod tests {
         }
 
         fn ime_preedit_is_visible_but_filters_only_after_commit() {
-            let mut dd = Dropdown::new(vec!["東京".into(), "London".into()], "city");
+            let mut dd = Dropdown::new(padded(&["東京", "London"]), "city");
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             dd.apply_layout_external(Rect::new(10.0, 10.0, 260.0, 50.0));
@@ -1731,7 +2321,7 @@ mod tests {
                 &root,
             ));
             assert_eq!(dd.filter_query(), "");
-            assert_eq!(dd.visible_count(), 2);
+            assert_eq!(dd.visible_count(), 8);
             assert_eq!(
                 Widget::accessibility(&dd).unwrap().value,
                 None,
@@ -2282,5 +2872,150 @@ mod tests {
         accessibility_unselected_uses_placeholder_name_and_no_value();
         accessibility_reflects_open_and_disabled();
         action_binding_owns_accessibility_selection();
+    }
+
+    #[test]
+    fn dropdown_sizes_to_its_options_and_keeps_its_value_while_open() {
+        fn hugs_its_widest_option_unless_it_fills() {
+            use crate::widget::Row;
+            let row = Row::new()
+                .push(Box::new(Dropdown::new(opts(), "tz").with_id("hug")))
+                .push(Box::new(
+                    Dropdown::new(vec!["A".into(), "B".into()], "ab").with_id("tiny"),
+                ));
+            let app = crate::headless::Driver::new(crate::State::new(), Box::new(row), (900, 200));
+            let targets = app.targets();
+            let hug = targets.get("hug").expect("hugging dropdown");
+            let tiny = targets.get("tiny").expect("short dropdown");
+            assert!(
+                hug.width() < 400.0 && hug.width() > tiny.width(),
+                "a dropdown is as wide as its options, not the row: {hug:?} / {tiny:?}"
+            );
+            let mut text = TextRenderer::new();
+            let theme = Theme::dark();
+            let widest = opts()
+                .iter()
+                .map(|o| f64::from(text.measure_style(o, None, &theme.text(TextRole::Label)).0))
+                .fold(0.0, f64::max);
+            assert!(
+                hug.width() >= widest + PAD_X + CHEVRON_W,
+                "the widest option fits beside the chevron: {hug:?} vs {widest}"
+            );
+
+            let filled = crate::widget::Row::new()
+                .push(Box::new(Dropdown::new(opts(), "tz").with_id("fill").fill()));
+            let app =
+                crate::headless::Driver::new(crate::State::new(), Box::new(filled), (900, 200));
+            let fill = *app.targets().get("fill").expect("filling dropdown");
+            assert!(fill.width() > 600.0, "fill spans the row: {fill:?}");
+        }
+
+        fn a_short_list_jumps_instead_of_filtering() {
+            let mut dd = Dropdown::new(opts(), "tz");
+            let (mut doc, root) = doc_with_tz("UTC");
+            dd.sync(&mut doc, &root);
+            dd.set_focus(true);
+            dd.do_open();
+            assert_eq!(dd.highlight_index(), 0);
+            assert!(feed_key(
+                &mut dd,
+                &key(Key::Character("a".into()), Some("a")),
+                &mut doc,
+                &root,
+            ));
+            assert_eq!(dd.filter_query(), "", "a short list never filters");
+            assert_eq!(dd.visible_count(), 4);
+            assert_eq!(dd.highlight_index(), 2, "the next option starting with a");
+            feed_key(
+                &mut dd,
+                &key(Key::Character("a".into()), Some("a")),
+                &mut doc,
+                &root,
+            );
+            assert_eq!(dd.highlight_index(), 3, "typing again moves on");
+            let node = Widget::accessibility(&dd).expect("semantics");
+            assert_eq!(
+                node.value.as_deref(),
+                Some("UTC"),
+                "the value stays while the list is open"
+            );
+        }
+
+        fn a_caption_placed_externally_never_covers_the_field() {
+            let mut dd = Dropdown::new(opts(), "tz").caption("Time zone");
+            let theme = Theme::dark();
+            let face = DropdownFace::new(Rect::ZERO, "").caption("Time zone");
+            let height = face.outer_height(&theme);
+            dd.apply_layout_external(Rect::new(0.0, 0.0, 200.0, height));
+            assert!(
+                (dd.rect.height() - crate::widget::ControlSize::Regular.height(&theme)).abs() < 0.5,
+                "the field keeps its height below the caption: {:?}",
+                dd.rect
+            );
+            assert!(dd.rect.y0 > 0.0);
+        }
+
+        fn a_resolved_name_is_spoken_as_given() {
+            let dd = Dropdown::new(opts(), "tz").with_resolved_accessible_name("Zeitzone");
+            let node = Widget::accessibility(&dd).expect("semantics");
+            assert_eq!(node.name.as_deref(), Some("Zeitzone"));
+        }
+
+        fn an_idle_dropdown_needs_no_layout() {
+            let theme = Theme::dark();
+            let mut dd = Dropdown::new(opts(), "tz");
+            assert!(Widget::is_layout_dirty(&dd));
+            let mut taffy = TaffyTree::new();
+            let mut node_map = HashMap::new();
+            let node = dd.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(300.0),
+                        height: taffy::AvailableSpace::Definite(200.0),
+                    },
+                )
+                .unwrap();
+            dd.apply_layout(&taffy, node, Point::ZERO);
+            assert!(!Widget::is_layout_dirty(&dd));
+            dd.set_options(zones());
+            assert!(
+                Widget::is_layout_dirty(&dd),
+                "new options may change the width"
+            );
+        }
+
+        fn the_face_matches_the_retained_control() {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let face = DropdownFace::new(Rect::ZERO, "UTC").leading_icon(crate::icons::Icon::Globe);
+            let width = face.intrinsic_width(opts().iter().map(String::as_str), &mut text, &theme);
+            let mut dd = Dropdown::new(opts(), "tz").leading_icon(crate::icons::Icon::Globe);
+            dd.adopt_theme(&theme);
+            dd.set_selected("UTC");
+            assert!((dd.measured_width(&mut text) - width).abs() < 0.5);
+            assert!(
+                (DropdownFace::height(crate::widget::ControlSize::Small, &theme)
+                    - crate::widget::ControlSize::Small.height(&theme))
+                .abs()
+                    < 1e-9
+            );
+            let captioned =
+                DropdownFace::new(Rect::new(0.0, 0.0, 120.0, 60.0), "UTC").caption("Zone");
+            let field = captioned.field_rect(&theme);
+            assert!(field.y0 > 0.0 && field.y1 == 60.0);
+            assert!(captioned.contains(&theme, field.center()));
+            assert!(!captioned.contains(&theme, Point::new(60.0, 1.0)));
+            let mut scene = Scene::new();
+            captioned.paint(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        }
+
+        hugs_its_widest_option_unless_it_fills();
+        a_short_list_jumps_instead_of_filtering();
+        a_caption_placed_externally_never_covers_the_field();
+        a_resolved_name_is_spoken_as_given();
+        an_idle_dropdown_needs_no_layout();
+        the_face_matches_the_retained_control();
     }
 }

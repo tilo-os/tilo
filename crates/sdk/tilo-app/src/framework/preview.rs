@@ -266,7 +266,7 @@ impl<R: Resource> HistoryPreview for ViewPreview<R> {
     fn layout(
         &mut self,
         bounds: Rect,
-        _text: &mut TextRenderer,
+        text: &mut TextRenderer,
         theme: &Theme,
     ) -> Result<(), String> {
         self.bounds = bounds;
@@ -278,10 +278,14 @@ impl<R: Resource> HistoryPreview for ViewPreview<R> {
         if let Some(doc) = self.doc.take() {
             frame = frame.with_state(State::from_doc(doc));
         }
+        // The view is measured by the renderer that draws it — the live
+        // window's, with its fonts and text scale — or a label laid out by
+        // another renderer can come out too narrow and collapse to "…".
+        std::mem::swap(&mut frame.text, text);
         frame.sync(&mut self.root);
-        frame
-            .layout(&mut self.root)
-            .map_err(|error| error.to_string())?;
+        let laid_out = frame.layout(&mut self.root);
+        std::mem::swap(&mut frame.text, text);
+        laid_out.map_err(|error| error.to_string())?;
         self.doc = Some(std::mem::take(&mut frame.state.doc));
         Ok(())
     }

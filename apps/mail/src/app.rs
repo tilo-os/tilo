@@ -1289,7 +1289,7 @@ impl MailApp {
             } else {
                 MenuItem::selection(label)
             };
-            menu.push(entry.with_icon(item.icon()));
+            menu.push(entry.with_icon(item.icon(read)));
         }
         if let Some(row) = row {
             menu.anchor_row(row);

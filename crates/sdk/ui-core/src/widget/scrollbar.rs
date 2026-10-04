@@ -65,6 +65,35 @@ pub fn track_color(theme: &Theme) -> Color {
     tier_on(theme.tokens.colors.surfaces.base, TRACK_ALPHA)
 }
 
+/// The track of a vertical bar along the trailing edge of `rect`, centred in
+/// the `gutter` column (`metrics.scrollbar_gutter`) a scroll owner keeps
+/// free for it: two thirds of the gutter thick, a sixth of it clear on each
+/// side and at both ends.
+#[must_use]
+pub fn vertical_track(rect: Rect, gutter: f64) -> Rect {
+    let thickness = gutter * 2.0 / 3.0;
+    let margin = (gutter - thickness) / 2.0;
+    Rect::new(
+        rect.x1 - margin - thickness,
+        rect.y0 + margin,
+        rect.x1 - margin,
+        rect.y1 - margin,
+    )
+}
+
+/// [`vertical_track`] across the bottom edge of `rect`.
+#[must_use]
+pub fn horizontal_track(rect: Rect, gutter: f64) -> Rect {
+    let thickness = gutter * 2.0 / 3.0;
+    let margin = (gutter - thickness) / 2.0;
+    Rect::new(
+        rect.x0 + margin,
+        rect.y1 - margin - thickness,
+        rect.x1 - margin,
+        rect.y1 - margin,
+    )
+}
+
 /// The scroll geometry along one axis, all lengths in logical px.
 ///
 /// `content` is the full scrollable extent, `viewport` the visible

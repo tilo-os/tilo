@@ -12,6 +12,7 @@ mod android;
 mod faces;
 mod fallback;
 pub(crate) mod matched;
+pub(crate) mod optical;
 #[cfg(test)]
 mod tests;
 #[cfg(windows)]
@@ -218,6 +219,13 @@ pub(crate) fn fixture_font_system() -> FontSystem {
         .expect("checked-in canonical font fixture")
 }
 
+/// The product catalog at `root` with no host fonts behind it: what a test
+/// loads to see exactly what one catalog directory sets text in.
+#[cfg(test)]
+pub(crate) fn catalog_font_system(root: &Path) -> Result<FontSystem, FontCatalogError> {
+    FontCatalog::product(root, "en-US").load_with_system(|_| {})
+}
+
 #[cfg(any(test, all(feature = "native", feature = "test-support")))]
 #[allow(
     clippy::expect_used,
@@ -387,7 +395,7 @@ impl FontCatalog {
                     && face
                         .families
                         .iter()
-                        .any(|family| family.0 == expected.family)
+                        .any(|family| tilo_families(expected).contains(&family.0.as_str()))
             })
         }) {
             return Ok(false);
@@ -402,6 +410,7 @@ impl FontCatalog {
         let db = system.db_mut();
         let ids = db.load_font_source(source);
         validate_faces(db, asset, &ids, Path::new(name))?;
+        set_tilo_families(db, asset, ids);
         Ok(true)
     }
 
@@ -419,19 +428,16 @@ impl FontCatalog {
         let mut canonical = HashSet::new();
         let mut required = Vec::new();
         for asset in &manifest.font {
-            if (asset.scope == Scope::Fixture && !self.fixtures) || !include(asset) {
+            // Hosts that hand over bytes (the browser) serve the standalone
+            // catalog.
+            if !(asset.scope.standalone() || self.fixtures) || !include(asset) {
                 continue;
             }
             let path = root.join(&asset.file);
             let ids = db.load_font_source(source(asset)?);
             validate_faces(&db, asset, &ids, &path)?;
-            canonical.extend(ids);
-            required.extend(
-                asset
-                    .faces
-                    .iter()
-                    .map(|face| (face.family.clone(), face_style(face))),
-            );
+            canonical.extend(set_tilo_families(&mut db, asset, ids));
+            required.extend(required_families(asset));
         }
         db.set_sans_serif_family(crate::text_render::UI_SANS_FAMILY);
         db.set_serif_family(crate::text_render::UI_SERIF_FAMILY);
@@ -455,6 +461,108 @@ impl FontCatalog {
             fallback::TiloFallback,
         ))
     }
+}
+
+/// The families Tilo sets `face` under: the manifest's `tilo_families`, or
+/// the file's own family.
+fn tilo_families(face: &Face) -> Vec<&str> {
+    if face.tilo_families.is_empty() {
+        vec![face.family.as_str()]
+    } else {
+        face.tilo_families.iter().map(String::as_str).collect()
+    }
+}
+
+/// The files a browser host delivers before first paint.
+pub(crate) fn browser_startup_files() -> Vec<&'static str> {
+    tilo_font_catalog::manifest().map_or_else(
+        |_| Vec::new(),
+        |manifest| {
+            manifest
+                .font
+                .iter()
+                .filter(|asset| asset.scope == Scope::Product && asset.browser_startup)
+                .map(|asset| asset.file.as_str())
+                .collect()
+        },
+    )
+}
+
+/// The product files that set `families` upright or `italic`, in bold only
+/// when `bold`: what a host that loads faces on demand fetches for text
+/// named in one of them.
+pub(crate) fn product_files_for(families: &[&str], italic: bool, bold: bool) -> Vec<&'static str> {
+    let Ok(manifest) = tilo_font_catalog::manifest() else {
+        return Vec::new();
+    };
+    let style = if italic {
+        fontdb::Style::Italic
+    } else {
+        fontdb::Style::Normal
+    };
+    manifest
+        .font
+        .iter()
+        .filter(|asset| asset.scope == Scope::Product)
+        .filter(|asset| {
+            asset.faces.iter().any(|face| {
+                face_style(face) == style
+                    && face.post_script_name.contains("Bold") == bold
+                    && tilo_families(face).iter().any(|family| {
+                        families
+                            .iter()
+                            .any(|wanted| wanted.eq_ignore_ascii_case(family))
+                    })
+            })
+        })
+        .map(|asset| asset.file.as_str())
+        .collect()
+}
+
+/// Every family and style `asset` must make available.
+fn required_families(asset: &Asset) -> Vec<(String, fontdb::Style)> {
+    asset
+        .faces
+        .iter()
+        .flat_map(|face| {
+            tilo_families(face)
+                .into_iter()
+                .map(move |family| (family.to_owned(), face_style(face)))
+        })
+        .collect()
+}
+
+/// Put each face of `asset`, already loaded and validated as `ids`, under
+/// the families the manifest gives it. A face whose own name cannot tell it
+/// apart from its siblings (the cuts of one optical family) gets the names
+/// the toolkit asks for; the rest keep theirs. Returns the faces' ids, which
+/// change for a renamed face.
+fn set_tilo_families(
+    db: &mut fontdb::Database,
+    asset: &Asset,
+    ids: impl IntoIterator<Item = fontdb::ID>,
+) -> Vec<fontdb::ID> {
+    ids.into_iter()
+        .map(|id| {
+            let Some(mut info) = db.face(id).cloned() else {
+                return id;
+            };
+            let Some(expected) = asset
+                .faces
+                .iter()
+                .find(|face| face.index == info.index && !face.tilo_families.is_empty())
+            else {
+                return id;
+            };
+            info.families = expected
+                .tilo_families
+                .iter()
+                .map(|family| (family.clone(), fontdb::Language::English_UnitedStates))
+                .collect();
+            db.remove_face(id);
+            db.push_face_info(info)
+        })
+        .collect()
 }
 
 fn face_style(face: &Face) -> fontdb::Style {
@@ -557,6 +665,11 @@ fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCata
         if asset.scope == Scope::Fixture && !fixtures {
             continue;
         }
+        // A catalog without the OS-only files is the SDK's standalone one
+        // (`Scope`); one that has them verifies them like any other.
+        if asset.scope == Scope::Os && !fixtures && !asset.path_in(root)?.exists() {
+            continue;
+        }
         // Only this catalog's canonical faces reserve names. Product mode
         // can still discover an ambient Adwaita as a user-named font.
         reserved.extend(asset.reserved_aliases.iter().map(|s| s.to_lowercase()));
@@ -592,9 +705,9 @@ fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCata
                     ),
                 ));
             }
-            required.push((expected.family.clone(), style));
         }
-        canonical.extend(ids);
+        required.extend(required_families(asset));
+        canonical.extend(set_tilo_families(&mut db, asset, ids));
     }
     Ok(VerifiedBundle {
         db,

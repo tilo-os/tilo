@@ -179,6 +179,10 @@ impl Core {
         }
         let spacing = &theme.tokens.spacing;
         let inset = f64::from(spacing.s2);
+        // The rows' text starts on the column's content edge (the shell's
+        // `s3` inset, where the column's title starts); a row's outer rect
+        // is that edge grown by the lift's bleed.
+        let edge = f64::from(spacing.s3) - ui::chrome::row_bleed(theme);
         let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
         let column = self.badge_column(text, theme);
 
@@ -207,12 +211,12 @@ impl Core {
         let max = (self.list.content - area.height()).max(0.0);
         self.list.scroll = self.list.scroll.clamp(0.0, max);
 
-        let x1 = area.x1 - inset.max(if overflows { gutter } else { 0.0 });
+        let x1 = area.x1 - edge.max(if overflows { gutter } else { 0.0 });
         let mut y = area.y0 + inset - self.list.scroll;
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &area);
         for (i, (snippet, meta)) in snippets.iter().zip(&metas).enumerate() {
             let h = heights.get(i).copied().unwrap_or_default();
-            let rect = Rect::new(area.x0 + inset, y, x1, y + h);
+            let rect = Rect::new(area.x0 + edge, y, x1, y + h);
             y += h;
             if rect.y1 < area.y0 || rect.y0 > area.y1 {
                 continue;
@@ -229,9 +233,9 @@ impl Core {
                 Some(next) => face.separator(self.open == Some(next.id)),
                 None => face,
             };
+            let lead = face.leading_rect(rect, text, theme);
+            let lead = Rect::new(lead.x0, rect.y0, lead.x1, rect.y1);
             face.paint(&mut PaintCtx::new(scene, t, text, theme), rect);
-            let lead_x = rect.x0 + f64::from(spacing.s3);
-            let lead = Rect::new(lead_x, rect.y0, lead_x + column, rect.y1);
             let shown = rect.intersect(area);
             self.list
                 .rows

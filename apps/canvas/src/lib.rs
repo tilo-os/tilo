@@ -54,8 +54,12 @@ impl ResourceApp for App {
     type Resource = ArtworkResource;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        if scenario == Some("inspector-narrow") {
+            (800, 600)
+        } else {
+            (1280, 800)
+        }
     }
 
     fn view(cx: &mut ViewCx<ArtworkResource>) -> Element {
@@ -82,9 +86,18 @@ impl ResourceApp for App {
                     .push(canvas)
                     .push(panels::header::context_bar(cx, &tools)),
             ));
+        // The narrow capture shows the inspector as the drawer it is there.
+        let inspector_open = LocalState::new(false);
+        let stage_open = inspector_open.clone();
+        cx.on_stage(move |scenario| {
+            if scenario == Some("inspector-narrow") {
+                stage_open.set(true);
+            }
+        });
         Box::new(
             NavShell::new()
                 .with_id("canvas-shell")
+                .with_inspector_state(&inspector_open)
                 .content(Box::new(work))
                 .content_header("", panels::header::header(cx, &tools))
                 .inspector(Box::new(Group::new(sidebar(cx, &tools, &dock)))),
@@ -99,6 +112,7 @@ impl ResourceApp for App {
             "turned",
             "points",
             "history",
+            "inspector-narrow",
         ]
     }
 
@@ -107,7 +121,7 @@ impl ResourceApp for App {
     /// is.
     fn scenario(name: Option<&str>) -> Vec<Invoke<ArtworkResource>> {
         let actions = match name {
-            Some("landscape" | "close-up" | "history") => sample::landscape(),
+            Some("landscape" | "close-up" | "history" | "inspector-narrow") => sample::landscape(),
             Some("selection" | "turned" | "points") => sample::shapes(),
             _ => return Vec::new(),
         };

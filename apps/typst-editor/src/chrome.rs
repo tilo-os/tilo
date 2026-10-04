@@ -48,9 +48,6 @@ type Queue = Rc<RefCell<Vec<Command>>>;
 
 /// The position of the Problems toggle among the toolbar's items.
 const PROBLEMS_ITEM: usize = 1;
-/// The position of the zoom-out command; zoom in follows it. The two are one
-/// pair: [`Chrome::place`] never lets overflow leave only the first showing.
-const ZOOM_OUT_ITEM: usize = 3;
 
 /// What the toolbar was built for; it is rebuilt when the Problems label or
 /// the toggle's state would differ.
@@ -64,10 +61,6 @@ pub struct Chrome {
     queue: Queue,
     toolbar: Toolbar,
     toolbar_for: ToolbarFor,
-    /// Toolbars replaced since the last layout pass. The layout tree holds
-    /// raw pointers to widgets, so a replaced one is kept alive until the
-    /// next pass rebuilds the tree without it.
-    retired: Vec<Toolbar>,
     previous: Button,
     next: Button,
     picker: Dropdown,
@@ -75,8 +68,10 @@ pub struct Chrome {
     picker_for: (Vec<String>, usize),
     view: ToggleGroup,
     close_problems: Button,
-    /// The window's History button, placed in this bar so the window draws
-    /// no History bar of its own.
+    /// The window's History control, at the bar's trailing edge: the bar is
+    /// the window's header row, so the window draws no History bar above it.
+    history: ui::widget::HistoryOpener,
+    history_rect: Rect,
     structure_dirty: bool,
     toolbar_rect: Rect,
     visible: Visible,
@@ -95,12 +90,17 @@ fn command(queue: &Queue, command: Command) -> impl FnMut() + 'static {
     move || queue.borrow_mut().push(command)
 }
 
-fn build_toolbar(queue: &Queue, problems: usize, shown: bool) -> Toolbar {
-    let label = if problems == 0 {
+/// The Problems toggle's label: the count of problems, when there are any.
+fn problems_label(problems: usize) -> String {
+    if problems == 0 {
         "Problems".to_string()
     } else {
         format!("Problems ({problems})")
-    };
+    }
+}
+
+fn build_toolbar(queue: &Queue, problems: usize, shown: bool) -> Toolbar {
+    let label = problems_label(problems);
     // Overflow folds the trailing commands first, so the order is the
     // priority: what the person needs at every width (compile, and whether the
     // source has problems) leads, the preview's zoom follows, and the file
@@ -111,6 +111,9 @@ fn build_toolbar(queue: &Queue, problems: usize, shown: bool) -> Toolbar {
         .push_separator()
         .push_icon(Icon::Minus, "Zoom out", command(queue, Command::ZoomOut))
         .push_icon(Icon::Plus, "Zoom in", command(queue, Command::ZoomIn))
+        // Zoom out without zoom in reads as a broken control: the pair folds
+        // into the More menu together.
+        .joined()
         .push_button("Fit width", command(queue, Command::Fit))
         .push_spacer()
         .push_button("Save", command(queue, Command::Save))
@@ -155,7 +158,6 @@ impl Chrome {
         Self {
             toolbar: build_toolbar(&queue, 0, false),
             toolbar_for,
-            retired: Vec::new(),
             previous: Button::icon_only(
                 "typst.previous-document",
                 Icon::ChevronLeft,
@@ -169,6 +171,8 @@ impl Chrome {
             view,
             close_problems: Button::icon_only("typst.close-problems", Icon::X, "Close problems")
                 .on_click(command(&queue, Command::ToggleProblems)),
+            history: ui::widget::HistoryOpener::new(),
+            history_rect: Rect::ZERO,
             structure_dirty: false,
             toolbar_rect: Rect::ZERO,
             visible: Visible::default(),
@@ -217,14 +221,9 @@ impl Chrome {
             shown: problems_shown,
         };
         if wanted != self.toolbar_for {
-            if wanted.problems == self.toolbar_for.problems {
-                self.toolbar.set_active(PROBLEMS_ITEM, problems_shown);
-            } else {
-                let rebuilt = build_toolbar(&self.queue, problems, problems_shown);
-                self.retired
-                    .push(std::mem::replace(&mut self.toolbar, rebuilt));
-                self.structure_dirty = true;
-            }
+            self.toolbar.set_active(PROBLEMS_ITEM, problems_shown);
+            self.toolbar
+                .set_label(PROBLEMS_ITEM, &problems_label(problems));
             self.toolbar_for = wanted;
         }
         self.view.set_selected(usize::from(preview_shown));
@@ -239,9 +238,10 @@ impl Chrome {
         dirty
     }
 
-    /// The layout tree was rebuilt: replaced controls may now be dropped.
+    /// The layout tree was rebuilt: a History control the header replaced
+    /// may now be dropped.
     pub fn layout_rebuilt(&mut self) {
-        self.retired.clear();
+        self.history.tree_rebuilt();
     }
 
     /// The height of one control in the bar: the toolbar's own measure, so
@@ -280,7 +280,18 @@ impl Chrome {
         let natural = self.natural_picker_width(tr, theme);
         let mut x = bar.x0 + pad;
 
-        let right = bar.x1 - pad;
+        let mut right = bar.x1 - pad;
+        // The window's History control holds the trailing corner.
+        self.history_rect = if self.history.is_shown() {
+            let rect = row(right - control, right);
+            right = (right - control - gap).max(x);
+            rect
+        } else {
+            Rect::ZERO
+        };
+        if let Some(button) = self.history.button_mut() {
+            button.apply_layout_external(self.history_rect);
+        }
 
         let hidden = Rect::ZERO;
         let (mut prev_rect, mut next_rect, mut view_rect) = (hidden, hidden, hidden);
@@ -324,18 +335,6 @@ impl Chrome {
         self.view.apply_layout_external(view_rect);
         self.toolbar_rect = toolbar_rect;
         self.toolbar.lay_out_in(toolbar_rect, tr, theme);
-        // Zoom out without zoom in reads as a broken control: when overflow
-        // would leave only the first of the pair showing, take back exactly
-        // the room that command used so both fold into the More menu.
-        if self.toolbar.visible_count() == ZOOM_OUT_ITEM + 1 {
-            let fold = Rect::new(
-                (toolbar_rect.x0 + control + gap).min(toolbar_rect.x1),
-                toolbar_rect.y0,
-                toolbar_rect.x1,
-                toolbar_rect.y1,
-            );
-            self.toolbar.lay_out_in(fold, tr, theme);
-        }
     }
 
     /// Place the Problems panel's close button; `None` hides it.
@@ -416,6 +415,9 @@ impl Chrome {
         if self.visible.close {
             children.push(&self.close_problems);
         }
+        if let Some(history) = self.history.button() {
+            children.push(history);
+        }
         children
     }
 
@@ -435,6 +437,9 @@ impl Chrome {
         if self.visible.close {
             children.push(&mut self.close_problems);
         }
+        if let Some(history) = self.history.button_mut() {
+            children.push(history);
+        }
         children
     }
 
@@ -450,6 +455,13 @@ impl Chrome {
         for child in self.children_mut() {
             child.draw(scene, transform, tr, theme, presence);
         }
+    }
+
+    /// Show the History control the host offers (or none) at the bar's
+    /// trailing edge; the bar is laid out and built again around it.
+    pub fn set_history(&mut self, control: Option<ui::widget::HistoryControl>) {
+        self.history.set_control(control);
+        self.structure_dirty |= self.history.take_rebuilt();
     }
 
     pub fn needs_redraw(&self) -> bool {

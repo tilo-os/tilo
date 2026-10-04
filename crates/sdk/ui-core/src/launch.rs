@@ -5079,7 +5079,7 @@ mod tests {
             app.build_a11y_tree_update(1.0)
                 .nodes
                 .iter()
-                .any(|(_, node)| node.label() == Some("The process is not versioned."))
+                .any(|(_, node)| node.description() == Some("The process is not versioned."))
         );
         let captures =
             LAUNCH_WAKE_CAPTURES.with(|captures| std::mem::take(&mut *captures.borrow_mut()));

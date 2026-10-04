@@ -1,7 +1,9 @@
 //! Offscreen renders of the content composites (list rows, property lists,
 //! sections, cards, media grids, stat tiles, data tables, empty states,
-//! drop zones, skeletons, progress rings, steppers) on the window ground,
-//! dark and light, wide and narrow, and at twice the text size.
+//! drop zones, skeletons, progress rings, steppers) and of the status
+//! surfaces (banners with their actions, toasts, progress bars, badges,
+//! avatars with presence, charts) on the window ground, dark and light, wide
+//! and narrow, and at twice the text size.
 //!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- content_shots [OUT]`
 //! Out:  `OUT` (default `target/look/fw-content`): `<page>-<theme>-<size>.png`
@@ -312,6 +314,248 @@ fn states_page() -> Element {
     ])
 }
 
+fn banners() -> Element {
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(12.0)
+            .push(Box::new(
+                tilo_ui::widget::Banner::error("Couldn't update the forecast")
+                    .with_message("Check your connection and try again.")
+                    .with_action(Button::new("retry", "Try again", None).on_view(|| {}))
+                    .with_id("forecast"),
+            ))
+            .push(Box::new(
+                tilo_ui::widget::Banner::warning("Changes aren\u{2019}t saved")
+                    .with_message("Restore keyring or storage access on this device, then retry.")
+                    .with_action(Button::new("retry-save", "Retry", None).on_view(|| {}))
+                    .with_secondary_action(Button::new("details", "Details", None).on_view(|| {}))
+                    .on_dismiss(|| {}),
+            ))
+            .push(Box::new(
+                tilo_ui::widget::Banner::neutral("Private window").with_message(
+                    "Browsing data is removed when this window closes. Files you download remain.",
+                ),
+            ))
+            .push(Box::new(
+                tilo_ui::widget::Banner::success("Backup complete").dismissible(),
+            )),
+    )
+}
+
+fn progress() -> Element {
+    use tilo_ui::widget::{BarGauge, GaugeThresholds, ProgressBar};
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(16.0)
+            .push(Box::new(ProgressBar::new(0.42).with_label("Copying")))
+            .push(Box::new(
+                ProgressBar::new(0.91)
+                    .level(GaugeThresholds::default())
+                    .with_label("Disk"),
+            ))
+            .push(Box::new(
+                ProgressBar::new(0.3)
+                    .tone(Tone::Danger)
+                    .with_label("Upload failed"),
+            ))
+            .push(Box::new(
+                ProgressBar::indeterminate().with_label("Preparing"),
+            ))
+            .push(Box::new(
+                BarGauge::new(0.64).neutral().with_label("Photos", "64 GB"),
+            ))
+            .push(Box::new(
+                Row::new()
+                    .push(Box::new(
+                        ProgressRing::new(0.4)
+                            .size(ProgressRingSize::Small)
+                            .value("12"),
+                    ))
+                    .push(Box::new(
+                        ProgressRing::new(0.75).value("118").caption("Mb/s"),
+                    )),
+            ))
+            .push(Box::new(
+                Stepper::new(
+                    ["Choose image", "Choose drive", "Write", "Verify"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                )
+                .current(None),
+            ))
+            .push(Box::new(
+                Stepper::new(
+                    ["Choose image", "Choose drive", "Write", "Verify"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                )
+                .current(2)
+                .on_station(|_| {}),
+            ))
+            .push(Box::new(StatGroup::new(vec![
+                Box::new(StatTile::new("Used", "1.2").unit("TB").note("of 2 TB")),
+                Box::new(StatTile::new("Ping", "12").unit("ms").note("median")),
+            ]))),
+    )
+}
+
+fn marks() -> Element {
+    use tilo_ui::widget::{Avatar, AvatarSize, Badge, PresenceStatus};
+    Box::new(
+        Row::new()
+            .push(Box::new(Badge::count(3)))
+            .push(Box::new(Badge::dot()))
+            .push(Box::new(Badge::modified()))
+            .push(Box::new(Badge::text("Beta")))
+            .push(Box::new(
+                Avatar::person("Ada Lovelace", "ada@example.org")
+                    .size(AvatarSize::Large)
+                    .status(PresenceStatus::Online),
+            ))
+            .push(Box::new(
+                Avatar::person("Grace Hopper", "grace@example.org")
+                    .size(AvatarSize::Large)
+                    .status(PresenceStatus::Away),
+            ))
+            .push(Box::new(
+                Avatar::person("Linus Pauling", "linus@example.org")
+                    .size(AvatarSize::Large)
+                    .status(PresenceStatus::Busy),
+            ))
+            .push(Box::new(
+                Avatar::person("Tilo 4", "tilo-4").size(AvatarSize::Large),
+            ))
+            .push(Box::new(
+                Avatar::person("Notes", "app.notes")
+                    .neutral()
+                    .size(AvatarSize::Large),
+            )),
+    )
+}
+
+fn status_page() -> Element {
+    let mut toasts = tilo_ui::widget::toast::ToastStack::new();
+    toasts.push("Link copied", tilo_ui::widget::toast::ToastKind::Success);
+    page(vec![
+        banners(),
+        Box::new(
+            EmptyState::new("No servers yet")
+                .with_message("Add a server to see it here.")
+                .inline(),
+        ),
+        Box::new(
+            tilo_ui::widget::Container::new()
+                .with_no_padding()
+                .with_height(220.0)
+                .with_child(Box::new(EmptyState::new("Calculating folder sizes").busy())),
+        ),
+        progress(),
+        marks(),
+        Box::new(toasts),
+    ])
+}
+
+fn shelf() -> Element {
+    let artists = MediaGrid::new(
+        [
+            ("Miles Davis", "12 albums"),
+            ("Nina Simone", "9 albums"),
+            ("Thelonious Monk", "7 albums"),
+        ]
+        .iter()
+        .map(|(name, meta)| {
+            MediaCard::new(*name, MediaSource::Placeholder)
+                .aspect(MediaAspect::Circle)
+                .title(*name)
+                .meta(*meta)
+                .on_activate(|| {})
+        })
+        .collect(),
+    )
+    .with_size(MediaSize::Small);
+    let mixed = MediaGrid::new(vec![
+        MediaCard::new("podcast", MediaSource::Kind(Icon::Mic))
+            .title("The Tilo Podcast")
+            .meta("Tilo")
+            .meta_mark(Icon::Check)
+            .badge(OwnedBadge::Tag(
+                "New".into(),
+                tilo_ui::widget::ChipStyle::Neutral,
+            ))
+            .on_activate(|| {}),
+        MediaCard::new("photo", MediaSource::Placeholder)
+            .seed("Lisbon")
+            .on_activate(|| {}),
+    ])
+    .with_size(MediaSize::Small);
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(24.0)
+            .push(Box::new(Section::titled(
+                "Artists",
+                vec![Box::new(artists)],
+            )))
+            .push(Box::new(Section::titled(
+                "Picked for you",
+                vec![Box::new(mixed)],
+            )))
+            .push(Box::new(Section::titled(
+                "Loading",
+                vec![Box::new(MediaGrid::loading(3, MediaAspect::Wide))],
+            ))),
+    )
+}
+
+fn charts() -> Element {
+    use tilo_ui::widget::{Chart, PieChart, PieSlice, Series};
+    let theme = Theme::dark();
+    let palette = theme.tokens.colors.presence;
+    let pie = PieChart::new(vec![
+        PieSlice::new("photos", "Photos", 42.4, palette.series(0)).with_legend_detail("42.4 GB"),
+        PieSlice::new("music", "Music", 21.0, palette.series(1)).with_legend_detail("21 GB"),
+        PieSlice::new("documents", "Documents", 9.3, palette.series(2))
+            .with_legend_detail("9.3 GB"),
+        PieSlice::new("other", "Other", 4.1, palette.series(3)).with_legend_detail("4.1 GB"),
+    ])
+    .with_legend();
+    let chart = Chart::new(vec![
+        Series::new(vec![2.0, 4.0, 3.0, 6.0, 5.0, 7.0, 6.5], palette.series(0))
+            .with_legend("Download"),
+        Series::new(vec![1.0, 1.5, 1.2, 2.0, 1.8, 2.2, 2.0], palette.series(1))
+            .with_legend("Upload"),
+    ])
+    .with_title("Throughput")
+    .with_axis_labels("8 Mb/s", "0")
+    .with_height(220.0);
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(24.0)
+            .push(Box::new(Section::titled("Storage", vec![Box::new(pie)])))
+            .push(Box::new(Section::titled("Network", vec![Box::new(chart)])))
+            .push(Box::new(Row::new().push(Box::new(
+                tilo_ui::widget::PagePreview::new("Report", 2, 5),
+            )))),
+    )
+}
+
+fn shelf_page() -> Element {
+    page(vec![shelf()])
+}
+
+fn charts_page() -> Element {
+    page(vec![charts()])
+}
+
 /// A named page and the function that builds it.
 type Page = (&'static str, fn() -> Element);
 
@@ -335,10 +579,13 @@ pub fn run(args: &[String]) {
         eprintln!("cannot create {}: {error}", out.display());
         return;
     }
-    let pages: [Page; 3] = [
+    let pages: [Page; 6] = [
         ("lists", lists_page),
         ("objects", objects_page),
         ("states", states_page),
+        ("status", status_page),
+        ("shelf", shelf_page),
+        ("charts", charts_page),
     ];
     for (theme_name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         for (page, build) in pages {

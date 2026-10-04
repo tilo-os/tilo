@@ -56,7 +56,6 @@ pub mod audio;
 pub mod backend;
 pub mod doc;
 mod files;
-pub mod icon;
 pub mod live_search;
 pub mod local_file;
 pub mod lyrics;

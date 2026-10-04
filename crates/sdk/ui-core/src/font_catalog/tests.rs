@@ -19,7 +19,7 @@ fn the_controlled_catalog_admits_only_manifest_and_named_host_faces() {
     {
         let catalog = fixture();
         let fs = catalog.load().unwrap();
-        assert_eq!(fs.db().len(), 25); // 20 single faces plus five TTC faces.
+        assert_eq!(fs.db().len(), 41); // 36 single faces plus five TTC faces.
         let root = catalog.root().canonicalize().unwrap();
         for face in fs.db().faces() {
             match &face.source {
@@ -29,7 +29,7 @@ fn the_controlled_catalog_admits_only_manifest_and_named_host_faces() {
         }
         for (generic, expected) in [
             (Family::SansSerif, crate::text_render::UI_SANS_FAMILY),
-            (Family::Serif, "Noto Serif"),
+            (Family::Serif, crate::text_render::UI_SERIF_FAMILY),
             (Family::Monospace, "Noto Sans Mono"),
         ] {
             for weight in [Weight::NORMAL, Weight(600), Weight::BOLD] {
@@ -54,7 +54,12 @@ fn the_controlled_catalog_admits_only_manifest_and_named_host_faces() {
         for expected in [
             crate::text_render::UI_SANS_FAMILY,
             "Noto Sans",
-            "Noto Serif",
+            "New Computer Modern",
+            "New Computer Modern Book",
+            "Libertinus Serif",
+            "Literata",
+            "EB Garamond",
+            "Source Serif 4 Variable",
         ] {
             let id = fs
                 .db()
@@ -263,8 +268,8 @@ fn browser_startup_catalog_requires_only_the_core_family_assets() {
             "Onest-Cyrillic[wght].ttf",
             "NotoSans[wght].ttf",
             "NotoSans-Italic[wght].ttf",
-            "NotoSerif[wght].ttf",
-            "NotoSerif-Italic[wght].ttf",
+            "NewCM10-Book.otf",
+            "NewCM10-BookItalic.otf",
             "NotoSansMono[wght].ttf",
         ]
     );
@@ -273,7 +278,7 @@ fn browser_startup_catalog_requires_only_the_core_family_assets() {
             .iter()
             .map(|name| std::fs::metadata(root.join(name)).unwrap().len())
             .sum::<u64>(),
-        4_365_004
+        4_098_812
     );
     assert_eq!(fonts.db().len(), 8);
 }
@@ -413,4 +418,95 @@ fn a_machine_without_tilo_sans_sets_ui_text_in_the_bundled_catalog() {
                 .any(|f| f.0 == crate::text_render::UI_SANS_FAMILY)
         );
     }
+}
+
+/// Every New Computer Modern file names itself `NewComputerModern` at weight
+/// 400; the catalog sets each cut under its own family so text can ask for
+/// one, and shares the Bold among them.
+#[test]
+fn new_computer_modern_cuts_are_their_own_families() {
+    let fs = fixture().load().unwrap();
+    let face_of = |family: &str, weight: u16, style: Style| {
+        let id = fs
+            .db()
+            .query(&Query {
+                families: &[Family::Name(family)],
+                weight: Weight(weight),
+                style,
+                ..Query::default()
+            })
+            .unwrap_or_else(|| panic!("{family} {weight} {style:?}"));
+        fs.db().face(id).unwrap().post_script_name.clone()
+    };
+    for (family, weight, style, expected) in [
+        (
+            "New Computer Modern Book",
+            400,
+            Style::Normal,
+            "NewCM10-Book",
+        ),
+        (
+            "New Computer Modern Book",
+            400,
+            Style::Italic,
+            "NewCM10-BookItalic",
+        ),
+        (
+            "New Computer Modern Book",
+            700,
+            Style::Normal,
+            "NewCM10-Bold",
+        ),
+        ("New Computer Modern", 400, Style::Normal, "NewCM10-Regular"),
+        ("New Computer Modern", 400, Style::Italic, "NewCM10-Italic"),
+        (
+            "New Computer Modern",
+            600,
+            Style::Italic,
+            "NewCM10-BoldItalic",
+        ),
+        ("New Computer Modern 08", 400, Style::Normal, "NewCM08-Book"),
+        ("New Computer Modern 08", 700, Style::Normal, "NewCM10-Bold"),
+        (
+            "Libertinus Serif Display",
+            400,
+            Style::Normal,
+            "LibertinusSerifDisplay-Regular",
+        ),
+    ] {
+        assert_eq!(
+            face_of(family, weight, style),
+            expected,
+            "{family} {weight} {style:?}"
+        );
+    }
+    assert!(
+        fs.db().faces().all(|face| face
+            .families
+            .iter()
+            .all(|(name, _)| name != "NewComputerModern")),
+        "the files' shared family name is never queryable"
+    );
+}
+
+#[test]
+fn a_browser_fetches_the_cuts_a_reading_style_can_take() {
+    let catalog = FontCatalog::product("", "en-US");
+    let root = fixture().root().to_path_buf();
+    let fonts = catalog
+        .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+        .unwrap();
+    let mut renderer = crate::TextRenderer::with_browser_font_system(fonts);
+    let reading = crate::tokens::Typography::default().style(crate::tokens::TextRole::Reading);
+    // Body text: Book ships at startup, the 8 pt cut serves its footnotes.
+    renderer.measure_style("Chapter", None, &reading);
+    assert_eq!(renderer.take_browser_font_demands(), ["NewCM08-Book.otf"]);
+    // A browser serves the standalone catalog, which has no Regular cut:
+    // Book sets a title too. A UI role in a startup face adds nothing.
+    let title = reading.clone().with_content_size(48.0);
+    renderer.measure_style("Chapter", None, &title);
+    assert_eq!(renderer.take_browser_font_demands(), ["NewCM08-Book.otf"]);
+    let body = crate::tokens::Typography::default().style(crate::tokens::TextRole::Body);
+    renderer.measure_style("Settings", None, &body.strong());
+    assert!(renderer.take_browser_font_demands().is_empty());
 }

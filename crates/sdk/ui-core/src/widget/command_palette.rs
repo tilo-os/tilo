@@ -1266,37 +1266,91 @@ impl CommandPalette {
                 );
                 tx += f64::from(hw);
             }
+            let rect = Rect::new(
+                tx,
+                layout.input_rect.y0,
+                layout.input_rect.x1,
+                layout.input_rect.y1,
+            );
+            let empty = arg.buffer.is_empty() && !arg.composition.is_composing();
             arg.composition.draw(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 QueryView {
                     text: &arg.buffer,
                     selection: &arg.selection,
-                    placeholder: &arg.placeholder,
+                    placeholder: "",
                     show_caret: self.is_focused,
                 },
-                Rect::new(
-                    tx,
-                    layout.input_rect.y0,
-                    layout.input_rect.x1,
-                    layout.input_rect.y1,
-                ),
+                rect,
                 &style,
                 QueryInk::of(colors),
             );
+            if empty {
+                let placeholder = arg.placeholder.clone();
+                Self::draw_placeholder(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    rect,
+                    &placeholder,
+                    &style,
+                    self.is_focused,
+                );
+            }
         } else {
+            let empty = self.query.is_empty() && !self.query_composition.is_composing();
             self.query_composition.draw(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 QueryView {
                     text: &self.query,
                     selection: &self.query_selection,
-                    placeholder: &self.query_placeholder,
+                    placeholder: "",
                     show_caret: self.is_focused,
                 },
                 layout.input_rect,
                 &style,
                 QueryInk::of(colors),
             );
+            if empty {
+                Self::draw_placeholder(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    layout.input_rect,
+                    &self.query_placeholder,
+                    &style,
+                    self.is_focused,
+                );
+            }
         }
+    }
+
+    /// The placeholder of an empty field, set off from the caret by the
+    /// `s1` step so the caret never stands on its first letter.
+    fn draw_placeholder(
+        ctx: &mut PaintCtx<'_>,
+        rect: Rect,
+        placeholder: &str,
+        style: &TextStyle,
+        caret: bool,
+    ) {
+        if placeholder.is_empty() {
+            return;
+        }
+        let theme = ctx.theme;
+        let offset = if caret {
+            f64::from(theme.tokens.spacing.s1) + 2.0
+        } else {
+            0.0
+        };
+        let (_, h) = ctx.text.measure_style(placeholder, None, style);
+        let y = centered_text_top(rect.y0, rect.height(), f64::from(h));
+        let width = crate::num::f32_of_f64((rect.width() - offset).max(1.0));
+        let shown = ctx.text.elide_to_width_style(placeholder, width, style);
+        ctx.text.draw_style(
+            ctx.scene,
+            &shown,
+            QueryInk::of(&theme.tokens.colors).placeholder,
+            ctx.transform.pre_translate(Vec2::new(rect.x0 + offset, y)),
+            None,
+            style,
+        );
     }
 
     /// `rounded-full` pill, `px-2 py-1` (≈ 12 px horizontal padding).
@@ -1657,8 +1711,8 @@ impl CommandPalette {
         icon_rect.x1 + 10.0
     }
 
-    /// Paints the row's trailing decoration — a keybinding chip or an
-    /// argument-entry cue, mutually exclusive — and returns the x the label
+    /// Paints the row's trailing decoration — a badge or a keybinding
+    /// chip, mutually exclusive — and returns the x the label
     /// text must stay clear of.
     fn draw_row_trailing(
         &self,
@@ -1674,7 +1728,6 @@ impl CommandPalette {
             theme,
         } = ctx.reborrow();
         let colors = &theme.tokens.colors;
-        let (label_style, _) = Self::row_text_styles(theme);
         // Reserved before measuring the text, so a long title is ellipsised
         // rather than painted under the chip.
         if let Some(badge) = &entry.badge {
@@ -1735,27 +1788,9 @@ impl CommandPalette {
                 theme,
             );
             chip.x0 - 8.0
-        } else if entry.argument.is_some() {
-            let cue = "\u{2192}"; // →
-            let (hw, hh) = text_renderer.measure_style(cue, None, &label_style);
-            let color = if selected {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            };
-            text_renderer.draw_style(
-                scene,
-                cue,
-                color,
-                transform.pre_translate(Vec2::new(
-                    row.x1 - f64::from(hw) - 14.0,
-                    f64::midpoint(row.y0, row.y1) - f64::from(hh) / 2.0,
-                )),
-                None,
-                &label_style,
-            );
-            row.x1 - f64::from(hw) - 22.0
         } else {
+            // A row that asks for an argument is a row like any other: the
+            // prompt it opens says what comes next.
             row.x1 - 12.0
         }
     }

@@ -251,15 +251,7 @@ fn dragging_a_selection_handle_resizes_about_the_opposite_corner() {
 fn the_native_app_contract_is_certified() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     let audit = app.harness().native_app_audit();
-    // The shell's History control opens the host window's History door,
-    // which a headless app has no window to publish: its binding is the
-    // host's to resolve, not the app's.
-    let own = audit
-        .issues
-        .iter()
-        .filter(|issue| issue.control != "nav-shell-history")
-        .count();
-    assert!(audit.accessibility.is_clean() && own == 0, "{audit:#?}");
+    assert!(audit.is_certified(), "{audit:#?}");
 }
 
 /// The history panel lists each step; choosing an earlier one shows it, and
@@ -277,9 +269,14 @@ fn an_earlier_version_chosen_in_the_history_is_restored() {
         .expect("paint");
     assert_eq!(app.state().marks.len(), 2);
 
-    let dock = app.harness().targets()["canvas-dock"];
+    // The dock's second tab is the history.
     app.harness()
-        .click_at(dock.x0 + dock.width() * 0.75, dock.center().y);
+        .perform_semantic_named(
+            "canvas-dock",
+            Some("canvas-dock:segment:1"),
+            &ui::a11y::Action::Activate,
+        )
+        .expect("the history tab opens");
     let mut versions: Vec<(String, ui::vello::kurbo::Rect)> = app
         .harness()
         .targets()

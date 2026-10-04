@@ -79,7 +79,7 @@ impl Resource for Photos {
                     .cloned()
                     .collect::<Vec<_>>()
                     .join(" "),
-                action: None,
+                ..Default::default()
             })
             .collect()
     }

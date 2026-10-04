@@ -52,8 +52,10 @@ pub enum TokenKind {
     Comment,
     Operator,
     Punctuation,
-    /// `#[derive(..)]`.
+    /// `#[derive(..)]`, an HTML attribute name.
     Attribute,
+    /// A markup tag name (`div` in `<div>`).
+    Tag,
     /// `#include`, `#!`.
     Preprocessor,
     /// Named constant / literal keyword (`true`, `null`, `None`).
@@ -127,6 +129,7 @@ pub enum Language {
     Rust,
     Typst,
     Sql,
+    Json,
 }
 
 impl Language {
@@ -138,6 +141,47 @@ impl Language {
             // No Typst grammar ships in the syntax set; Typst keeps its lexer.
             Language::Typst => Some(Box::new(TypstHighlighter)),
             Language::Sql => Some(Box::new(SyntaxHighlighter::for_token_or_plain("sql"))),
+            Language::Json => Some(Box::new(SyntaxHighlighter::for_token_or_plain("json"))),
+        }
+    }
+}
+
+/// How much a [`Diagnostic`] matters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Severity {
+    /// A note or a hint.
+    Info,
+    Warning,
+    Error,
+}
+
+/// A problem a checker found in the source: a byte `range`, how much it
+/// matters, and what it says. The editor draws it — a squiggle under the
+/// range, a mark in the gutter, the message on hover — in the theme's
+/// status colours; the app only says what is wrong where.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub range: Range<usize>,
+    pub severity: Severity,
+    pub message: String,
+}
+
+impl Diagnostic {
+    pub fn new(range: Range<usize>, severity: Severity, message: impl Into<String>) -> Self {
+        Self {
+            range,
+            severity,
+            message: message.into(),
+        }
+    }
+
+    /// The status colour of `severity` in `theme`.
+    fn color(&self, theme: &Theme) -> vello::peniko::Color {
+        let semantic = &theme.tokens.colors.semantic;
+        match self.severity {
+            Severity::Error => semantic.danger,
+            Severity::Warning => semantic.warning,
+            Severity::Info => semantic.info,
         }
     }
 }
@@ -147,28 +191,115 @@ impl Language {
 /// behaviour is the one shared implementation.
 pub struct CodeEditor {
     inner: TextInput,
+    /// Selectable and copyable, never edited.
+    read_only: bool,
+    /// The fewest and most lines the editor is tall for; past the most it
+    /// scrolls.
+    min_lines: Option<usize>,
+    max_lines: Option<usize>,
+    diagnostics: Vec<Diagnostic>,
+    /// The pointer, for the diagnostic under it.
+    hover: Option<Point>,
 }
 
 impl CodeEditor {
     /// CRDT-bound at `path` (mirrors [`TextInput::new`]). Bind the backing
     /// Automerge `Text` object with [`CodeEditor::bind_text`].
     pub fn new(path: Vec<PathSegment>) -> Self {
+        Self::wrap(Self::configure(TextInput::new(path)))
+    }
+
+    fn wrap(inner: TextInput) -> Self {
         Self {
-            inner: Self::configure(TextInput::new(path)),
+            inner,
+            read_only: false,
+            min_lines: None,
+            max_lines: None,
+            diagnostics: Vec::new(),
+            hover: None,
         }
     }
 
     /// Non-CRDT, owns its own string — read with [`CodeEditor::value`],
     /// observe edits with [`CodeEditor::take_dirty`].
     pub fn local() -> Self {
-        Self {
-            inner: Self::configure(TextInput::local()),
+        Self::wrap(Self::configure(TextInput::local()))
+    }
+
+    /// Source a person reads, selects and copies but does not edit (a
+    /// diff, a generated file, a log). Keys that would change the text do
+    /// nothing; assistive technology hears it as read-only.
+    #[must_use]
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self
+    }
+
+    /// [`Self::read_only`] after construction.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// What the editor is called to assistive technology ("Query",
+    /// "Response body").
+    #[must_use]
+    pub fn with_accessible_name(mut self, name: &str) -> Self {
+        self.inner = self.inner.with_accessible_name(name);
+        self
+    }
+
+    /// At least `lines` lines tall, however short the source.
+    #[must_use]
+    pub fn with_min_lines(mut self, lines: usize) -> Self {
+        self.min_lines = Some(lines.max(1));
+        self
+    }
+
+    /// At most `lines` lines tall; longer source scrolls inside.
+    #[must_use]
+    pub fn with_max_lines(mut self, lines: usize) -> Self {
+        self.max_lines = Some(lines.max(1));
+        self
+    }
+
+    /// Show `diagnostics` (replacing any shown before).
+    #[must_use]
+    pub fn with_diagnostics(mut self, diagnostics: Vec<Diagnostic>) -> Self {
+        self.set_diagnostics(diagnostics);
+        self
+    }
+
+    /// Replace the diagnostics shown (a checker ran again).
+    pub fn set_diagnostics(&mut self, diagnostics: Vec<Diagnostic>) {
+        self.diagnostics = diagnostics;
+    }
+
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+
+    /// The diagnostic under `point`, if any: the most severe one whose
+    /// range covers the byte there.
+    pub fn diagnostic_at(&self, point: Point) -> Option<&Diagnostic> {
+        if !self.inner.get_rect().contains(point) {
+            return None;
         }
+        let byte = self.inner.byte_at_point(point);
+        self.diagnostics
+            .iter()
+            .filter(|d| d.range.start <= byte && byte < d.range.end.max(d.range.start + 1))
+            .max_by_key(|d| d.severity)
     }
 
     /// Multiline body, monospace face, plain chrome, a line-number gutter,
     /// current-line highlight, and 4-space soft tabs by default.
     fn configure(input: TextInput) -> TextInput {
+        let mut input = input;
+        input.keep_document_inset();
         input
             .multiline(true)
             .with_kind(TextInputKind::Code)
@@ -395,6 +526,30 @@ impl CodeEditor {
         let presence = PresenceCtx::default();
         self.inner
             .draw(scene, transform, text_renderer, theme, &presence);
+        self.draw_diagnostics(scene, transform, theme);
+    }
+
+    /// For an embedded host that routes the pointer itself: where it is
+    /// (window coordinates), or `None` when it left. The diagnostic under it
+    /// shows its message in [`Self::draw_diagnostic_card`].
+    pub fn set_pointer(&mut self, point: Option<Point>) {
+        self.hover = point;
+    }
+
+    /// For an embedded host: paint the message of the diagnostic under the
+    /// pointer from its own top-layer pass, kept inside `window`.
+    pub fn draw_diagnostic_card(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        window: Rect,
+    ) {
+        let presence = PresenceCtx::default();
+        let previous = presence.push_viewport(window);
+        self.draw_diagnostic_hover(scene, transform, text_renderer, theme, &presence);
+        presence.pop_viewport(previous);
     }
 
     pub fn inner(&self) -> &TextInput {
@@ -446,7 +601,34 @@ impl Widget for CodeEditor {
         available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        self.inner.measure(known, available, text_renderer)
+        let mut size = self.inner.measure(known, available, text_renderer);
+        if known.height.is_none() && (self.min_lines.is_some() || self.max_lines.is_some()) {
+            let line = self.inner.body_line_height();
+            if line > 0.0 {
+                // The field's own padding around its lines stays as measured:
+                // what is left of its content height after whole rows.
+                let total = self.inner.content_height();
+                let rows = (total / line).floor().max(1.0);
+                let chrome = (total - rows * line).max(0.0);
+                let lines = |n: usize| {
+                    #[allow(
+                        clippy::cast_precision_loss,
+                        reason = "a line count is far below f64's integer range"
+                    )]
+                    let n = n as f64;
+                    n * line + chrome
+                };
+                let mut height = f64::from(size.height);
+                if let Some(min) = self.min_lines {
+                    height = height.max(lines(min));
+                }
+                if let Some(max) = self.max_lines {
+                    height = height.min(lines(max));
+                }
+                size.height = crate::num::f32_of_f64(height.ceil());
+            }
+        }
+        size
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -470,6 +652,7 @@ impl Widget for CodeEditor {
     ) {
         self.inner
             .draw(scene, transform, text_renderer, theme, presence);
+        self.draw_diagnostics(scene, transform, theme);
     }
 
     fn draw_with_presence(
@@ -489,6 +672,7 @@ impl Widget for CodeEditor {
             presence,
             permissions,
         );
+        self.draw_diagnostics(scene, transform, theme);
     }
 
     fn draw_overlay(
@@ -501,9 +685,27 @@ impl Widget for CodeEditor {
     ) {
         self.inner
             .draw_overlay(scene, transform, text_renderer, theme, presence);
+        self.draw_diagnostic_hover(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.hover = Some(Point::new(
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
+            ));
+        }
+        if let WindowEvent::CursorLeft { .. } = event {
+            self.hover = None;
+        }
+        if self.read_only && edits_text(event, *ctx.modifiers) {
+            // Read-only: the key is answered (nothing else acts on it) and
+            // the text stays as it is.
+            if self.inner.is_focused() {
+                *ctx.handled = true;
+            }
+            return;
+        }
         self.inner.handle_event(event, ctx);
     }
 
@@ -540,7 +742,8 @@ impl Widget for CodeEditor {
     }
 
     fn wants_tab_input(&self) -> bool {
-        self.inner.wants_tab_input()
+        // A read-only editor indents nothing: Tab moves focus on.
+        !self.read_only && self.inner.wants_tab_input()
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -552,7 +755,9 @@ impl Widget for CodeEditor {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        self.inner.accessibility()
+        let mut node = self.inner.accessibility()?;
+        node.state.read_only |= self.read_only;
+        Some(node)
     }
 
     fn perform_action(
@@ -561,6 +766,9 @@ impl Widget for CodeEditor {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        if self.read_only && matches!(action, crate::a11y::Action::SetValue(_)) {
+            return false;
+        }
         self.inner.perform_action(action, state, path)
     }
 
@@ -570,6 +778,185 @@ impl Widget for CodeEditor {
 
     fn text_review(&self) -> Option<(usize, String)> {
         self.inner.text_review()
+    }
+}
+
+impl CodeEditor {
+    /// The squiggles under every diagnostic's range and the marks in the
+    /// gutter beside its first line, in the theme's status colours.
+    fn draw_diagnostics(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        if self.diagnostics.is_empty() {
+            return;
+        }
+        let rect = self.inner.get_rect();
+        let gutter = self.inner.gutter_width();
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &rect,
+        );
+        // Least severe first, so an error's squiggle and mark win.
+        let mut order: Vec<&Diagnostic> = self.diagnostics.iter().collect();
+        order.sort_by_key(|d| d.severity);
+        for d in order {
+            let color = d.color(theme);
+            let end = d
+                .range
+                .end
+                .max(d.range.start + 1)
+                .min(self.inner.value().len());
+            let start = d.range.start.min(end);
+            for row in self.inner.selection_rects(theme, start, end) {
+                let x0 = row.x0.max(rect.x0 + gutter);
+                let x1 = row.x1.max(x0 + 4.0).min(rect.x1);
+                squiggle(scene, transform, x0, x1, row.y1 - 1.0, color);
+            }
+            if gutter > 0.0 {
+                let caret = self.inner.caret_rect(theme, start);
+                let d_px = f64::from(theme.tokens.spacing.s2) * 0.75;
+                let centre = Point::new(
+                    rect.x0 + f64::from(theme.tokens.spacing.s1) + d_px / 2.0,
+                    caret.center().y,
+                );
+                if rect.contains(centre) {
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        color,
+                        None,
+                        &vello::kurbo::Circle::new(centre, d_px / 2.0),
+                    );
+                }
+            }
+        }
+        scene.pop_layer();
+    }
+
+    /// The message of the diagnostic under the pointer, on a floating
+    /// surface just below its line, in the window's top layer.
+    fn draw_diagnostic_hover(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let Some(point) = self.hover else { return };
+        let Some(d) = self.diagnostic_at(point) else {
+            return;
+        };
+        let style = theme.text(crate::tokens::TextRole::Caption);
+        let pad = f64::from(theme.tokens.spacing.s3);
+        let max_w = f64::from(theme.tokens.metrics.panel_width_utility);
+        let (w, h) = text_renderer.measure_style(
+            &d.message,
+            Some(crate::num::f32_of_f64(max_w - pad * 2.0)),
+            &style,
+        );
+        let size = (f64::from(w) + pad * 2.0, f64::from(h) + pad * 2.0);
+        let line = self.inner.caret_rect(theme, d.range.start);
+        let anchor = Rect::new(point.x, line.y0, point.x, line.y1);
+        let window = presence
+            .viewport
+            .get()
+            .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
+        let (panel, _) = crate::widget::floating_surface::place_anchored(
+            anchor,
+            size,
+            crate::widget::PopoverSide::Below,
+            f64::from(theme.tokens.spacing.s1),
+            crate::widget::floating_surface::panel_room(window, theme),
+        );
+        crate::widget::floating_surface::paint(scene, transform, panel, theme);
+        let ink = theme.on_ground(crate::chrome::panel_ground(theme));
+        text_renderer.draw_style(
+            scene,
+            &d.message,
+            ink.text_primary,
+            transform.pre_translate(vello::kurbo::Vec2::new(panel.x0 + pad, panel.y0 + pad)),
+            Some(crate::num::f32_of_f64(panel.width() - pad * 2.0)),
+            &style,
+        );
+    }
+}
+
+/// A wavy underline from `x0` to `x1` along `y`: the mark of a problem in
+/// text, as spelling marks one.
+fn squiggle(
+    scene: &mut Scene,
+    transform: Affine,
+    x0: f64,
+    x1: f64,
+    y: f64,
+    color: vello::peniko::Color,
+) {
+    let mut path = vello::kurbo::BezPath::new();
+    path.move_to((x0, y));
+    // One zig per two pixels, counted in whole steps so the run ends
+    // exactly at `x1`.
+    let mut step = 1_u32;
+    loop {
+        let x = (x0 + 2.0 * f64::from(step)).min(x1);
+        let up = step.is_multiple_of(2);
+        path.line_to((x, y + if up { -1.0 } else { 1.0 }));
+        // Not "less than": a NaN end stops the run too.
+        if x.partial_cmp(&x1) != Some(std::cmp::Ordering::Less) {
+            break;
+        }
+        step = step.saturating_add(1);
+    }
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        color,
+        None,
+        &path,
+    );
+}
+
+/// Whether `event` would change the text of a focused editor: typed text,
+/// an editing key, the input method, or a cut, paste, undo or redo
+/// shortcut. Moving the caret, selecting and copying do not.
+fn edits_text(event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
+    use winit::event::{ElementState, KeyEvent};
+    use winit::keyboard::{Key, NamedKey};
+    match event {
+        WindowEvent::Ime(winit::event::Ime::Commit(_) | winit::event::Ime::Preedit(..)) => true,
+        WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    text,
+                    ..
+                },
+            ..
+        } => {
+            let state = modifiers.state();
+            let command = state.control_key() || state.super_key();
+            match logical_key {
+                Key::Named(
+                    NamedKey::Enter
+                    | NamedKey::Backspace
+                    | NamedKey::Delete
+                    | NamedKey::Tab
+                    | NamedKey::Space
+                    | NamedKey::Cut
+                    | NamedKey::Paste
+                    | NamedKey::Undo
+                    | NamedKey::Redo,
+                ) => true,
+                Key::Character(c) if command => {
+                    matches!(c.to_ascii_lowercase().as_str(), "x" | "v" | "z" | "y" | "d")
+                }
+                Key::Character(_) => text.is_some(),
+                _ => false,
+            }
+        }
+        _ => false,
     }
 }
 
@@ -1276,5 +1663,159 @@ mod tests {
         no_gutter_offset_when_gutter_disabled();
         scaled_gutter_and_wrapped_rows_share_the_shaped_editor_geometry();
         wrapper_layout_uses_theme_scale_with_a_stale_renderer_and_reverses_to_normal();
+    }
+}
+
+#[cfg(test)]
+mod document_tests {
+    use super::*;
+    use winit::event::{ElementState, KeyEvent};
+    use winit::keyboard::{Key, NamedKey};
+
+    fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = key;
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.text = text.map(Into::into);
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn send(editor: &mut CodeEditor, event: &WindowEvent) -> bool {
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.leaf_node(Style::default());
+        let mut handled = false;
+        editor.handle_event(
+            event,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut automerge::AutoCommit::new(),
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &taffy,
+            },
+        );
+        handled
+    }
+
+    #[test]
+    fn a_read_only_editor_selects_but_never_edits() {
+        let mut editor = CodeEditor::local()
+            .with_language(Language::Json)
+            .with_accessible_name("Response body")
+            .read_only();
+        editor.set_text("{\n  \"ok\": true\n}\n");
+        editor.set_focused(true);
+        editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+        send(
+            &mut editor,
+            &key_event(Key::Character("x".into()), Some("x")),
+        );
+        send(
+            &mut editor,
+            &key_event(Key::Named(NamedKey::Backspace), None),
+        );
+        send(&mut editor, &key_event(Key::Named(NamedKey::Enter), None));
+        assert_eq!(editor.value(), "{\n  \"ok\": true\n}\n", "nothing edits it");
+        editor.select_all();
+        assert!(editor.selection().is_some(), "it still selects");
+        assert!(!Widget::wants_tab_input(&editor), "Tab moves focus on");
+        let node = Widget::accessibility(&editor).unwrap();
+        assert!(node.state.read_only);
+        assert_eq!(node.name.as_deref(), Some("Response body"));
+        // JSON is highlighted.
+        let spans = Language::Json
+            .highlighter()
+            .expect("JSON has a grammar")
+            .spans("  \"ok\": true", 0)
+            .spans;
+        assert!(spans.iter().any(|s| s.kind == TokenKind::StringLit));
+    }
+
+    #[test]
+    fn min_and_max_lines_bound_the_height() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let measure = |editor: &mut CodeEditor, tr: &mut TextRenderer| {
+            editor
+                .inner_mut()
+                .capture_layout_text_scale(theme.text_scale);
+            Widget::measure(
+                editor,
+                taffy::Size {
+                    width: Some(400.0),
+                    height: None,
+                },
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                tr,
+            )
+            .height
+        };
+        let mut short = CodeEditor::local().with_min_lines(5);
+        short.set_text("one line");
+        let mut plain = CodeEditor::local();
+        plain.set_text("one line");
+        let min = measure(&mut short, &mut tr);
+        let natural = measure(&mut plain, &mut tr);
+        assert!(min > natural * 2.0, "five lines tall: {min} vs {natural}");
+        let mut long = CodeEditor::local().with_max_lines(3);
+        long.set_text(&"line\n".repeat(40));
+        let mut free = CodeEditor::local();
+        free.set_text(&"line\n".repeat(40));
+        assert!(measure(&mut long, &mut tr) < measure(&mut free, &mut tr) / 4.0);
+    }
+
+    #[test]
+    fn diagnostics_find_the_most_severe_under_the_pointer_and_paint() {
+        let theme = Theme::dark();
+        let mut editor = CodeEditor::local().with_diagnostics(vec![
+            Diagnostic::new(0..3, Severity::Warning, "unused variable"),
+            Diagnostic::new(1..2, Severity::Error, "unknown function `ab`"),
+        ]);
+        editor.set_text("abc def");
+        editor.set_rect(Rect::new(0.0, 0.0, 400.0, 100.0));
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        Widget::draw(
+            &mut editor,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let caret = editor.caret_rect(&theme, 1);
+        let at = Point::new(caret.x0 + 1.0, caret.center().y);
+        let hit = editor.diagnostic_at(at).map(|d| d.severity);
+        assert_eq!(
+            hit,
+            Some(Severity::Error),
+            "the error wins where both cover"
+        );
+        let danger = theme
+            .tokens
+            .colors
+            .semantic
+            .danger
+            .premultiply()
+            .to_rgba8()
+            .to_u32();
+        assert!(
+            scene.encoding().draw_data.contains(&danger),
+            "the error is marked in the danger colour"
+        );
     }
 }

@@ -66,6 +66,9 @@ impl ResourceApp for SpeedTestShell {
             })
             .unwrap_or((1280, 800))
     }
+    // Results stay on this device and the document is empty: nothing to
+    // look back on.
+    const DOCUMENT_HISTORY: bool = false;
 
     fn view(cx: &mut ViewCx<SpeedTest>) -> Element {
         cx.surface(SpeedTestApp::new().with_actions(cx.actions()))

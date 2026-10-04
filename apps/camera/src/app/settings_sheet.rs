@@ -5,21 +5,16 @@
 //! sync.
 //!
 //! A window too short for the whole form gets a sheet as tall as the window
-//! allows, and the form scrolls inside it, so every setting stays reachable.
+//! allows, and the dialog scrolls the form inside it, so every setting stays
+//! reachable.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::LocalState;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::modal_dialog::{self, MODAL_MAX_WIDTH};
-use ui::widget::{
-    Dropdown, EventCtx, Field, Form, FormSection, ModalDialog, ModalSpec, Scrollable, Toggle,
-    Widget,
-};
+use ui::widget::{Dropdown, Field, Form, FormSection, ModalDialog, Toggle};
 use vello::kurbo::Rect;
-use winit::event::WindowEvent;
 
 use super::Action;
 use crate::model::{Facing, PhotoFormat, Resolution, Settings, Timer};
@@ -32,23 +27,12 @@ const TITLE: &str = "Camera settings";
 
 /// The settings sheet and the local values its controls show.
 pub(super) struct SettingsSheet {
-    pub(super) dialog: ModalDialog<Scrollable>,
+    pub(super) dialog: ModalDialog<Form>,
     queue: ActionQueue,
     states: States,
-    /// What the form the sheet holds now was built for.
-    fitted: Option<Fit>,
-}
-
-/// How the form is built for one window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Fit {
-    /// The tallest body the window allows, in whole pixels.
-    room: i64,
-    /// The form is taller than that: it scrolls and shows its bar.
-    overflows: bool,
-    /// A compact window: the choosers are an ordinary form, each label
-    /// above a chooser as wide as the sheet.
-    compact: bool,
+    /// Whether the form was built for a compact window: the choosers are an
+    /// ordinary form there, each label above a chooser as wide as the sheet.
+    compact: Option<bool>,
 }
 
 struct States {
@@ -208,112 +192,34 @@ impl States {
             ));
         Form::new().section(capture).section(options)
     }
-
-    /// The form in a vertical scroll view at most `max_height` tall; the
-    /// scroll bar and its gutter only when the form overflows.
-    fn body(
-        &self,
-        queue: &ActionQueue,
-        max_height: f32,
-        overflows: bool,
-        compact: bool,
-    ) -> Scrollable {
-        Scrollable::new_vertical()
-            .with_semantic_key("camera.settings.body")
-            .with_max_height(max_height)
-            .with_scrollbar(overflows)
-            .with_focus_reveal()
-            .with_child(Box::new(self.form(queue, compact)))
-    }
 }
 
 impl SettingsSheet {
     pub(super) fn new(queue: &ActionQueue, settings: &Settings) -> Self {
         let states = States::of(settings);
         let dismiss = Rc::clone(queue);
-        let dialog = ModalDialog::new(TITLE, states.body(queue, f32::MAX, false, false))
+        let dialog = ModalDialog::new(TITLE, states.form(queue, false))
             .with_test_id("camera.settings")
             .on_dismiss(move || dismiss.borrow_mut().push(Action::Back));
         Self {
             dialog,
             queue: Rc::clone(queue),
             states,
-            fitted: None,
+            compact: None,
         }
     }
 
-    /// Fit the sheet to `window`: the body may be as tall as the window
-    /// leaves it, and scrolls (with its bar) when the form is taller. Call
-    /// before the sheet is drawn; a change shows from that frame on.
-    pub(super) fn fit(&mut self, window: Rect, tr: &mut TextRenderer, theme: &Theme) {
-        let spec = ModalSpec::new(TITLE)
-            .closable(true)
-            .body_height(window.height().max(1.0) * 2.0);
-        let room = modal_dialog::layout(window, &spec, tr, theme).body.height();
-        let room = room.round() as i64;
+    /// Build the form for `window`: compact below the compact breakpoint.
+    /// The dialog sizes and scrolls the sheet itself. Call before the sheet
+    /// is drawn; a change shows from that frame on.
+    pub(super) fn fit(&mut self, window: Rect, theme: &Theme) {
         let compact = window.width() < f64::from(theme.tokens.metrics.compact_breakpoint);
-        // The overflow is measured on the form laid out for this room.
-        let overflows = self
-            .fitted
-            .filter(|fit| fit.room == room && fit.compact == compact)
-            .is_some_and(|_| self.dialog.content().vertical_overflows());
-        let fit = Fit {
-            room,
-            overflows,
-            compact,
-        };
-        if self.fitted == Some(fit) {
+        if self.compact == Some(compact) {
             return;
         }
-        let offset = self.dialog.content().offset_y();
-        let mut body = self
-            .states
-            .body(&self.queue, room as f32, overflows, compact);
-        body.set_offset_y(offset);
-        *self.dialog.content_mut() = body;
-        // Lay the sheet out again around its new body.
-        self.dialog.set_max_width(MODAL_MAX_WIDTH);
-        self.fitted = Some(fit);
-    }
-
-    /// Whether the sheet is still settling on its fit and needs one more
-    /// frame.
-    pub(super) fn fitting(&self) -> bool {
-        self.dialog.is_open()
-            && self
-                .fitted
-                .is_some_and(|fit| fit.overflows != self.dialog.content().vertical_overflows())
-    }
-
-    /// A wheel turned over the sheet scrolls its form. The dialog does not
-    /// hand wheel events to its content, so the app routes them here.
-    pub(super) fn scroll(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        if !matches!(event, WindowEvent::MouseWheel { .. }) || !self.dialog.is_open() {
-            return;
-        }
-        let mut taffy = taffy::TaffyTree::<()>::new();
-        let Ok(node) = taffy.new_leaf(taffy::Style::default()) else {
-            return;
-        };
-        let mut handled = false;
-        let mut focus_target = None;
-        self.dialog.content_mut().handle_event(
-            event,
-            &mut EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: ctx.modifiers,
-                state: &mut *ctx.state,
-                path: ctx.path,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        if handled {
-            // The new offset places the form on the next layout.
-            self.dialog.set_max_width(MODAL_MAX_WIDTH);
-        }
+        *self.dialog.content_mut() = self.states.form(&self.queue, compact);
+        self.dialog.invalidate_layout();
+        self.compact = Some(compact);
     }
 
     /// Show `settings` in the sheet's controls.

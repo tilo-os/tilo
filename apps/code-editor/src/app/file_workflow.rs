@@ -1,6 +1,6 @@
 use super::{
-    AutoCommit, CodeApp, Conflict, ConflictChoice, EditorDoc, ElementState, Key, KeyEvent,
-    PortalIntent, Project, Session, TreeId, WindowEvent, disk, explorer, source_filter,
+    AutoCommit, CodeApp, Conflict, ConflictChoice, EditorDoc, PortalIntent, Project, Session,
+    TreeId, disk, explorer, source_filter,
 };
 
 impl CodeApp {
@@ -176,28 +176,6 @@ impl CodeApp {
             ConflictChoice::Cancel => {
                 self.note(format!("{} was not saved", conflict.name), false);
             }
-        }
-    }
-
-    /// The conflict prompt's keyboard shortcuts: Escape cancels, Enter takes
-    /// the safe option (reload, which cannot destroy the other writer's work).
-    pub(super) fn conflict_key(event: &WindowEvent) -> Option<ConflictChoice> {
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return None;
-        };
-        match logical_key {
-            Key::Named(winit::keyboard::NamedKey::Escape) => Some(ConflictChoice::Cancel),
-            Key::Named(winit::keyboard::NamedKey::Enter) => Some(ConflictChoice::Reload),
-            _ => None,
         }
     }
 

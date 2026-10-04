@@ -427,8 +427,8 @@ impl LogsApp {
         if self.shown_live_tail != self.live_tail {
             self.shown_live_tail = self.live_tail;
             let door = journal_door(self.live_tail, self.allow_live);
-            let shell = std::mem::take(&mut self.shell);
-            self.shell = shell.content_header("", header_actions(&door, self.live_tail));
+            self.shell
+                .set_content_header("", header_actions(&door, self.live_tail));
         }
         self.show_inspector(selected);
         self.layout_dirty = true;
@@ -460,8 +460,7 @@ impl LogsApp {
         self.shell
             .set_inspector(Some(crate::view::entry_detail(entry, &self.spacing)));
         let title = entry.map_or_else(String::new, |e| e.unit.clone());
-        let shell = std::mem::take(&mut self.shell);
-        self.shell = shell.inspector_header(title, Vec::new());
+        self.shell.set_inspector_title(title);
     }
 
     /// Turn the views' requests into document actions.

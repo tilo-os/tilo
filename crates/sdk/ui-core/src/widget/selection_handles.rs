@@ -1,7 +1,10 @@
-//! Selection handles for a vector canvas: the frame around what is
-//! selected, its resize handles at the corners and edges and its rotation
-//! handle above, drawn in the theme's accent and hit-tested at a constant
-//! size on screen whatever the zoom.
+//! Selection handles for a canvas: the frame around what is selected, its
+//! resize handles at the corners and (once the frame is big enough on
+//! screen, or always with [`SelectionHandles::with_edges`]) at the middle of
+//! each edge, and its rotation handle above (unless
+//! [`SelectionHandles::without_rotation`]: a crop, a text box, a clip),
+//! drawn in your colour and hit-tested at a constant size on screen whatever
+//! the zoom.
 //!
 //! The frame may be turned (a rotated shape keeps a frame along its own
 //! sides), and every drag is answered in the frame's own axes.
@@ -76,6 +79,12 @@ impl Handle {
         )
     }
 
+    /// Whether dragging this handle resizes along one axis only.
+    #[must_use]
+    pub fn is_edge(self) -> bool {
+        Self::EDGES.contains(&self)
+    }
+
     /// Whether dragging the handle changes the width, the height.
     fn axes(self) -> (bool, bool) {
         match self {
@@ -120,6 +129,10 @@ pub struct SelectionHandles {
     pub angle: f64,
     /// The pointer target around each handle, in screen pixels.
     target: f64,
+    /// Whether the frame offers its rotation handle.
+    rotation: bool,
+    /// Whether the edge handles show however small the frame is on screen.
+    edges: bool,
 }
 
 impl SelectionHandles {
@@ -130,7 +143,26 @@ impl SelectionHandles {
             bounds,
             angle: 0.0,
             target: f64::from(metrics.min_pointer_target),
+            rotation: true,
+            edges: false,
         }
+    }
+
+    /// Offer the edge handles however small the frame is on screen, for a
+    /// one-axis resize that must always be there (a crop, a text box's
+    /// width).
+    #[must_use]
+    pub fn with_edges(mut self) -> Self {
+        self.edges = true;
+        self
+    }
+
+    /// No rotation handle: for what cannot turn (a crop, a clip, a frame
+    /// aligned to its page).
+    #[must_use]
+    pub fn without_rotation(mut self) -> Self {
+        self.rotation = false;
+        self
     }
 
     /// The same frame turned by `angle` radians about its centre.
@@ -158,6 +190,9 @@ impl SelectionHandles {
     /// Whether the edge handles show at `zoom`: only when the frame is big
     /// enough on screen that they do not crowd the corners.
     fn edges_shown(&self, zoom: f64) -> bool {
+        if self.edges {
+            return true;
+        }
         let least = self.bounds.width().min(self.bounds.height()) * zoom;
         least >= self.target * 2.5
     }
@@ -165,7 +200,9 @@ impl SelectionHandles {
     /// The handles that can be grabbed at `zoom`, the rotation handle first.
     pub fn handles(&self, zoom: f64) -> impl Iterator<Item = Handle> {
         let edges = self.edges_shown(zoom);
+        let rotation = self.rotation;
         std::iter::once(Handle::Rotate)
+            .filter(move |_| rotation)
             .chain(Handle::CORNERS)
             .chain(Handle::EDGES.into_iter().filter(move |_| edges))
     }
@@ -204,6 +241,39 @@ impl SelectionHandles {
     /// Whether `point` (content coordinates) is inside the frame.
     pub fn contains(&self, point: Point) -> bool {
         self.bounds.contains(self.orientation().inverse() * point)
+    }
+
+    /// The uniform scale a drag of `handle` from `from` to `to` asks of an
+    /// upright frame, about the opposite corner, and that corner. Never
+    /// below a tenth. [`Self::stretch_for`] answers a turned frame.
+    pub fn scale_for(&self, handle: Handle, from: Point, to: Point) -> (f64, Point) {
+        let anchor = handle.anchor(self.bounds);
+        let before = from.distance(anchor).max(1e-6);
+        ((to.distance(anchor) / before).max(0.1), anchor)
+    }
+
+    /// The scale on each axis a drag of `handle` from `from` to `to` asks
+    /// of an upright frame, about the opposite corner or edge, and that
+    /// anchor: a corner scales both axes alike, an edge only its own. Never
+    /// below a tenth.
+    pub fn resize_for(&self, handle: Handle, from: Point, to: Point) -> (f64, f64, Point) {
+        let anchor = handle.anchor(self.bounds);
+        let axis = |from: f64, to: f64, anchor: f64| {
+            let before = from - anchor;
+            if before.abs() < 1e-6 {
+                1.0
+            } else {
+                ((to - anchor) / before).max(0.1)
+            }
+        };
+        match handle {
+            Handle::Top | Handle::Bottom => (1.0, axis(from.y, to.y, anchor.y), anchor),
+            Handle::Left | Handle::Right => (axis(from.x, to.x, anchor.x), 1.0, anchor),
+            _ => {
+                let (scale, anchor) = self.scale_for(handle, from, to);
+                (scale, scale, anchor)
+            }
+        }
     }
 
     /// The resize a drag of `handle` from `from` to `to` asks for, as an
@@ -339,21 +409,29 @@ impl SelectionHandles {
             Vec2::new(0.0, -1.0)
         };
         let knob = top + up * self.rotate_reach();
-        scene.stroke(&line, Affine::IDENTITY, accent, None, &Line::new(top, knob));
         let grip = self.grip();
         for handle in self
             .handles(zoom)
             .filter(|handle| *handle != Handle::Rotate)
         {
             let at = screen(self.local(handle, zoom));
-            let square = Rect::from_center_size(at, (grip, grip));
+            // An edge grip is a bar along its edge; a corner grip a square.
+            let size = match handle {
+                Handle::Top | Handle::Bottom => (grip * 1.6, grip * 0.7),
+                Handle::Left | Handle::Right => (grip * 0.7, grip * 1.6),
+                _ => (grip, grip),
+            };
+            let shape = Rect::from_center_size(at, size);
             let turned = Affine::rotate_about(self.angle, at);
-            scene.fill(Fill::NonZero, turned, surface, None, &square);
-            scene.stroke(&line, turned, accent, None, &square);
+            scene.fill(Fill::NonZero, turned, surface, None, &shape);
+            scene.stroke(&line, turned, accent, None, &shape);
         }
-        let knob = Circle::new(knob, grip * 0.6);
-        scene.fill(Fill::NonZero, Affine::IDENTITY, surface, None, &knob);
-        scene.stroke(&line, Affine::IDENTITY, accent, None, &knob);
+        if self.rotation {
+            scene.stroke(&line, Affine::IDENTITY, accent, None, &Line::new(top, knob));
+            let knob = Circle::new(knob, grip * 0.6);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, surface, None, &knob);
+            scene.stroke(&line, Affine::IDENTITY, accent, None, &knob);
+        }
     }
 
     /// The frame moved by `offset`, as during a drag.
@@ -372,6 +450,35 @@ mod tests {
 
     fn close(a: Point, b: Point) -> bool {
         a.distance(b) < 1e-6
+    }
+
+    #[test]
+    fn edges_resize_one_axis_and_a_frame_can_drop_its_rotation() {
+        let bounds = Rect::new(100.0, 100.0, 200.0, 150.0);
+        let frame = SelectionHandles::new(bounds, &Metrics::BASE)
+            .with_edges()
+            .without_rotation();
+        assert_eq!(
+            frame.handle_at(Point::new(201.0, 125.0), 1.0),
+            Some(Handle::Right)
+        );
+        assert!(Handle::Right.is_edge() && !Handle::TopLeft.is_edge());
+        assert_eq!(frame.handle_at(Point::new(150.0, 72.0), 1.0), None);
+        assert!(!frame.handles(1.0).any(|handle| handle == Handle::Rotate));
+        let (sx, sy, anchor) = frame.resize_for(
+            Handle::Right,
+            Point::new(200.0, 125.0),
+            Point::new(300.0, 140.0),
+        );
+        assert_eq!(anchor, Point::new(100.0, 125.0));
+        assert!((sx - 2.0).abs() < 1e-9 && (sy - 1.0).abs() < 1e-9);
+        let (scale, anchor) = frame.scale_for(
+            Handle::BottomRight,
+            Point::new(200.0, 150.0),
+            Point::new(300.0, 200.0),
+        );
+        assert_eq!(anchor, Point::new(100.0, 100.0));
+        assert!((scale - 2.0).abs() < 1e-9);
     }
 
     #[test]

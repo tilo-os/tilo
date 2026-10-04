@@ -7,8 +7,6 @@
 //! its toggle, the find band, the status bar, the property list, the empty
 //! state and the toast.
 
-use std::fmt::Write as _;
-
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer, TextStyle};
@@ -97,6 +95,7 @@ impl HexView {
     ) {
         if !self.has_file {
             self.paint_empty_state(scene, transform, tr, theme, presence);
+            self.paint_history(scene, transform, tr, theme);
             self.paint_notices(scene, transform, tr, theme);
             return;
         }
@@ -118,7 +117,27 @@ impl HexView {
         }
         self.paint_status(scene, transform, tr, theme);
         self.paint_inspector_region(scene, transform, tr, theme, presence);
+        self.paint_history(scene, transform, tr, theme);
         self.paint_notices(scene, transform, tr, theme);
+    }
+
+    /// The window's History control in the header row, on the ground it
+    /// stands on (the docked inspector's region, else the content).
+    fn paint_history(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let g = &self.geo;
+        let ground = if g.docked && g.inspector_visible && g.inspector.contains(g.history.center())
+        {
+            theme.in_region(ui::surface::Region::Inspector)
+        } else {
+            theme.clone()
+        };
+        self.history.paint(scene, transform, tr, &ground, g.history);
     }
 
     /// The file name and the edit-mode strip, standing on the content with
@@ -164,10 +183,9 @@ impl HexView {
         Widget::draw(&mut self.mode_group, scene, transform, tr, theme, presence);
     }
 
-    /// The find band under the header. The bar insets its field by the
-    /// shell's `s3` gutter; the band starts `s4` in, so the field's edge is the
-    /// file name's and the offset column's, and the hairline under it still
-    /// runs the full width like the header's.
+    /// The find band under the header, across the whole content width. Its
+    /// field and controls stand on the content edge (`s4`), the file name's
+    /// and the offset column's.
     fn paint_find(
         &mut self,
         scene: &mut Scene,
@@ -176,24 +194,10 @@ impl HexView {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let band = self.geo.find;
-        let sp = &theme.tokens.spacing;
-        let lead = f64::from(sp.s4 - sp.s3);
-        self.find_bar.layout(
-            Rect::new(band.x0 + lead, band.y0, band.x1, band.y1),
-            theme,
-            tr,
-        );
+        let edge = f64::from(theme.tokens.spacing.s4);
+        self.find_bar.set_content_inset(edge, edge);
+        self.find_bar.layout(self.geo.find, theme, tr);
         self.find_bar.paint(scene, transform, tr, theme, presence);
-        ui::surface::separator(
-            scene,
-            transform,
-            band.x0,
-            band.x1,
-            band.y1,
-            0.0,
-            theme.tokens.colors.surfaces.content,
-        );
     }
 
     /// The column labels, the rules between the columns and the rows of
@@ -451,27 +455,38 @@ impl HexView {
         Some((cur, cur + width - 1))
     }
 
-    /// The persistent readout: where the cursor is, what is selected and
-    /// edited, and how big the buffer is.
+    /// The persistent readout: where the cursor is (a click there opens Go
+    /// to offset), what is selected and edited, and how big the buffer is.
     fn paint_status(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        use ui::chrome::status_bar::{StatusReadout, draw_readouts};
         let cursor = self.model.cursor();
-        let mut left = format!("Offset 0x{cursor:08X} ({cursor})");
+        let offset = format!("Offset 0x{cursor:08X} ({cursor})");
         let selected = self.model.selection_len();
-        if selected > 0 {
-            let _ = write!(left, "    {} selected", byte_count(selected));
-        }
+        let selected = (selected > 0).then(|| format!("{} selected", byte_count(selected)));
         let edited = self.model.dirty_count();
-        if edited > 0 {
-            let _ = write!(left, "    {} edited", byte_count(edited));
-        }
-        let right = byte_count(self.model.len());
-        ui::chrome::status_bar::draw(scene, transform, tr, theme, self.geo.status, &left, &right);
+        let edited = (edited > 0).then(|| format!("{} edited", byte_count(edited)));
+        let size = byte_count(self.model.len());
+        let mut left = vec![StatusReadout::action(&offset)];
+        left.extend(selected.as_deref().map(StatusReadout::text));
+        left.extend(edited.as_deref().map(StatusReadout::text));
+        let hovered = self.offset_readout.contains(self.last_mouse).then_some(0);
+        let rects = draw_readouts(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.geo.status,
+            &left,
+            &[StatusReadout::text(&size)],
+            hovered,
+        );
+        self.offset_readout = rects.first().copied().unwrap_or(Rect::ZERO);
     }
 
     /// The inspector: the region it stands on, its header, the endianness

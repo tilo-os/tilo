@@ -98,6 +98,12 @@ pub struct RichSpan {
     pub background: Option<[u8; 3]>,
     /// Per-run baseline shift for super/subscript. `None` is the baseline.
     pub baseline: BaselineShift,
+    /// What the run is, when the run knows it: a mention is an
+    /// [`Identifier`](crate::text_render::TextKind::Identifier), a link a
+    /// [`Url`](crate::text_render::TextKind::Url). `None` takes the block
+    /// style's kind, with the identifiers found in prose set apart
+    /// ([`crate::text_detect`]).
+    pub kind: Option<crate::text_render::TextKind>,
 }
 
 impl RichSpan {
@@ -111,6 +117,7 @@ impl RichSpan {
             color: None,
             background: None,
             baseline: BaselineShift::None,
+            kind: None,
         }
     }
     #[must_use]
@@ -136,6 +143,12 @@ impl RichSpan {
     #[must_use]
     pub fn baseline(mut self, b: BaselineShift) -> Self {
         self.baseline = b;
+        self
+    }
+    /// Say what the run is ([`crate::text_render::TextKind`]).
+    #[must_use]
+    pub fn kind(mut self, kind: crate::text_render::TextKind) -> Self {
+        self.kind = Some(kind);
         self
     }
 }
@@ -224,7 +237,11 @@ impl RichPreparation {
 /// Cosmic-text runs plus the byte-ranged background/baseline decoration
 /// tables built alongside them by `RichTextLayout::build_rich_runs`.
 type RichRuns<'a, 's> = (
-    Vec<(std::borrow::Cow<'a, str>, Attrs<'s>)>,
+    Vec<(
+        std::borrow::Cow<'a, str>,
+        Attrs<'s>,
+        Option<crate::text_render::TextKind>,
+    )>,
     Vec<(usize, usize, [u8; 3])>,
     Vec<(usize, usize, BaselineShift)>,
 );
@@ -294,6 +311,8 @@ impl RichTextLayout {
             crate::text_render::browser_emoji_runs(&shaping_text, &attrs, browser_emoji),
             metrics,
             style.kind,
+            style.optical(),
+            style.distinguish || crate::font_catalog::matched::distinguish_everywhere(),
         );
         crate::font_catalog::matched::set_spans(
             &mut buffer,
@@ -483,13 +502,17 @@ impl RichTextLayout {
         let (built, backgrounds, baselines) =
             Self::build_rich_runs(spans, style, &offset_map, &base, size, line_height_mult);
 
-        let planned = crate::font_catalog::matched::plan(
+        let planned = crate::font_catalog::matched::plan_runs(
             fs.db(),
-            built.iter().flat_map(|(text, attrs)| {
+            built.iter().flat_map(|(text, attrs, kind)| {
                 crate::text_render::browser_emoji_runs(text.as_ref(), attrs, browser_emoji)
+                    .into_iter()
+                    .map(move |(text, attrs)| (text, attrs, *kind))
             }),
             Metrics::new(size, line_height),
             style.kind,
+            style.optical(),
+            style.distinguish || crate::font_catalog::matched::distinguish_everywhere(),
         );
         buffer.set_rich_text(
             planned.iter().map(|(text, attrs)| (*text, attrs.clone())),
@@ -503,7 +526,7 @@ impl RichTextLayout {
         if full_text.ends_with('\n') {
             let terminal_attrs = built
                 .last()
-                .map_or_else(|| base.clone(), |(_, attrs)| attrs.clone());
+                .map_or_else(|| base.clone(), |(_, attrs, _)| attrs.clone());
             let mut terminal_line = BufferLine::new(
                 "",
                 LineEnding::None,
@@ -679,7 +702,7 @@ impl RichTextLayout {
         let mut cursor: usize = 0;
 
         let built = if spans.iter().all(|r| r.text.is_empty()) {
-            vec![(std::borrow::Cow::Borrowed(""), base.clone())]
+            vec![(std::borrow::Cow::Borrowed(""), base.clone(), None)]
         } else {
             spans
                 .iter()
@@ -723,7 +746,7 @@ impl RichTextLayout {
                     if let Some([cr, cg, cb]) = r.color {
                         a.color_opt = Some(cosmic_text::Color::rgb(cr, cg, cb));
                     }
-                    (offset_map.shape_fragment(&r.text, start), a)
+                    (offset_map.shape_fragment(&r.text, start), a, r.kind)
                 })
                 .collect()
         };
