@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use ui::time::Duration;
 
 use media::gst::prelude::*;
+use ui::framework::{LaunchInput, RunMode};
 use ui::widget::Widget;
 use video_player::PlayerApp;
 use video_player::actions::{OPERATION_TYPE, PlayerOperation};
@@ -62,6 +63,13 @@ fn wait_for(
         );
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// The live player launched on `sample`, as `video-player SAMPLE` opens it.
+fn launched(sample: &Path) -> PlayerApp {
+    let mut app = PlayerApp::new(RunMode::Live);
+    app.open_launch(&LaunchInput::new(&[sample.display().to_string()], None));
+    app
 }
 
 #[test]
@@ -115,7 +123,7 @@ fn exercise_app(root: &Path) {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/h264-aac.mp4");
     let sample = root.join("Moving picture and silent audio.mp4");
     std::fs::copy(fixture, &sample).expect("copy the H.264/AAC fixture");
-    let mut app = PlayerApp::new().with_open_path(&sample);
+    let mut app = launched(&sample);
     let engine = app.player().engine().expect("production engine");
     assert!(
         engine.is_real_decode(),

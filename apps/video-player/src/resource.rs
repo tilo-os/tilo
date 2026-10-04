@@ -7,9 +7,9 @@
 use std::rc::Rc;
 
 use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx};
 use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind};
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{self, annotation_resource_id, playlist_resource_id};
@@ -73,6 +73,27 @@ impl Resource for VideoPlayer {
     }
 }
 
+/// The screenshot scenarios: the first run before a video is chosen, a
+/// video loading, failing to open (fixture copy, or the decoder's own error
+/// for a bad file), playing and paused, the settings and track menus, the
+/// device's queue and recent videos (and the queue with keyboard focus), the
+/// shared library, and fullscreen.
+pub(crate) const SCENARIOS: &[&str] = &[
+    "empty",
+    "loading",
+    "error",
+    "native-error",
+    "playing",
+    "paused",
+    "settings",
+    "metadata",
+    "library",
+    "library-focus",
+    "recent",
+    "shared",
+    "fullscreen",
+];
+
 /// Framework app: the player widget is the surface over [`VideoPlayer`].
 pub struct VideoPlayerShell;
 
@@ -81,30 +102,55 @@ impl ResourceApp for VideoPlayerShell {
     const ID: &'static str = "so.tilo.video-player";
     const TITLE: &'static str = "Video Player";
     const ICON: Option<&'static str> = Some("video-player");
+    /// The video to play: a path or a stream's URL.
+    const ARGUMENTS: usize = 1;
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1280, 800)
     }
 
     fn view(cx: &mut ViewCx<VideoPlayer>) -> Element {
-        cx.surface(PlayerApp::new().with_collab())
+        let player = PlayerApp::new(cx.mode());
+        // Only a window someone uses follows its peers' playback.
+        cx.surface(if cx.mode().is_live() {
+            player.with_collab()
+        } else {
+            player
+        })
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &[
-            "empty",
-            "loading",
-            "error",
-            "native-error",
-            "playing",
-            "paused",
-            "settings",
-            "metadata",
-            "library",
-            "library-focus",
-            "recent",
-            "shared",
-            "fullscreen",
+        SCENARIOS
+    }
+
+    /// The shared library scenario's playlist and the review notes on the
+    /// demo clip.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<VideoPlayer>> {
+        if name != Some("shared") {
+            return Vec::new();
+        }
+        let media_ref = crate::app::demo_media_ref();
+        [
+            SharedAction::CreatePlaylist {
+                id: "watch-later".into(),
+                name: "Watch later".into(),
+            },
+            SharedAction::CreateAnnotation {
+                id: "opening".into(),
+                media_ref: media_ref.clone(),
+                time_ms: 8_000,
+                text: "Opening detail".into(),
+            },
+            SharedAction::CreateAnnotation {
+                id: "bookmark".into(),
+                media_ref,
+                time_ms: 45_000,
+                text: String::new(),
+            },
         ]
+        .iter()
+        .filter_map(|action| Invoke::apply(action).ok())
+        .collect()
     }
 
     fn label(_state: &SharedLibrary) -> String {
@@ -120,6 +166,18 @@ impl ResourceSurface<VideoPlayer> for PlayerApp {
     fn attach(&mut self, cx: SurfaceCx<VideoPlayer>) {
         self.set_framework_hosted(true);
         self.attach_framework(cx.dispatcher());
+        match cx.mode() {
+            RunMode::Live => self.open_launch(&cx.launch()),
+            RunMode::Capture => {
+                self.capture_launched = cx.launch().argument().map(str::to_owned);
+            }
+            RunMode::Past => {}
+        }
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        let launched = self.capture_launched.take();
+        self.stage_capture(launched.as_deref(), scenario);
     }
 }
 
@@ -182,13 +240,6 @@ impl ActionSink {
     }
 }
 
-/// Live launch on the framework host. Capture modes keep the standalone path.
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<VideoPlayerShell>()
-        .allowed_live_options(&["--data-dir", "--open"])
-        .max_positionals(1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,7 +299,7 @@ mod tests {
             "play/pause must ride media children via publish, not a second hosted root"
         );
 
-        let mut app = PlayerApp::history_test_root();
+        let mut app = PlayerApp::fixture_root();
         let mut state = ui::State::new();
         Widget::sync(&mut app, &mut state.doc, &state.root);
         assert!(
@@ -352,7 +403,7 @@ mod tests {
 
     #[test]
     fn present_empty_does_not_wipe_unpublished_local_library() {
-        let mut app = PlayerApp::new();
+        let mut app = PlayerApp::new(RunMode::Capture);
         app.seed_unpublished_playlist_for_test("local-only", "Not published yet");
         let empty = Rc::new(SharedLibrary::default());
         ResourceSurface::<VideoPlayer>::present(&mut app, &empty);
