@@ -1,4 +1,4 @@
-//! `--builder rcargo`: the component builds on an rcargo builder of the
+//! `--builder remote`: the component builds on a remote builder of the
 //! machine's architecture and its layer streams from there through this
 //! host straight into tilo-vmd's upload ([`crate::builderlayer`]); no
 //! binary is written to this host's disk.
@@ -17,25 +17,25 @@ use crate::error::CliError;
 use crate::remote::Remote;
 
 impl App {
-    /// Build `component` on the rcargo builder that `config` (its
-    /// `RCARGO_CONFIG`) reaches, and import the layer it streams.
-    pub(super) fn build_layer_rcargo(
+    /// Build `component` with the remote builder whose command line is
+    /// `builder`, and import the layer it streams.
+    pub(super) fn build_layer_remote(
         &mut self,
         remote: &mut Remote,
         vm: &Resolved,
         component: &Component,
-        config: Option<&str>,
+        builder: &[String],
     ) -> Result<String, CliError> {
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         self.runner.cwd = Some(worktree.root.clone());
         let metadata = self.cargo_metadata();
         let extra = build::dev_features(&metadata, &component.packages);
-        let line = builderlayer::rcargo_command(config, component, &extra);
+        let line = builderlayer::remote_command(builder, component, &extra);
         if !self.json {
             eprintln!(
-                "tilo-vm: building {} on the rcargo builder{}; the layer streams to {} without touching this disk",
+                "tilo-vm: building {} on the remote builder ({}); the layer streams to {} without touching this disk",
                 component.name,
-                config.map_or_else(String::new, |c| format!(" of {c}")),
+                line.display(),
                 vm.name
             );
         }
@@ -49,17 +49,16 @@ impl App {
             .map_err(|e| {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     CliError::ToolMissing {
-                        tool: "rcargo".into(),
-                        purpose: "build on the rcargo builder (--builder rcargo)".into(),
+                        tool: line.program.clone(),
+                        purpose: "build on the remote builder (--builder remote)".into(),
                     }
                 } else {
-                    CliError::io("start rcargo")(e)
+                    CliError::io("start the remote builder")(e)
                 }
             })?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| CliError::io("start rcargo")(std::io::Error::other("no stdout")))?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            CliError::io("start the remote builder")(std::io::Error::other("no stdout"))
+        })?;
         let mut stream = Stream::new(BufReader::with_capacity(2 << 20, stdout));
         let header = self
             .receipt
@@ -82,16 +81,19 @@ impl App {
         let upload = self
             .receipt
             .phase("transfer", || remote.upload(&mut stream));
-        let status = child.wait().map_err(CliError::io("wait for rcargo"))?;
+        let status = child
+            .wait()
+            .map_err(CliError::io("wait for the remote builder"))?;
         let upload = upload?;
         if !status.success() {
             return Err(CliError::CommandFailed {
                 command: line.display(),
                 status: status.to_string(),
-                stderr: "rcargo failed after sending the layer; its output is above".into(),
+                stderr: "the remote builder failed after sending the layer; its output is above"
+                    .into(),
             });
         }
-        let mut provenance = build::source_provenance(&worktree, &component.name, "rcargo");
+        let mut provenance = build::source_provenance(&worktree, &component.name, "remote");
         provenance.cargo_profile = Some(component.profile.clone());
         provenance.features = component.build_features(&extra);
         provenance.target = packed.target;
@@ -103,5 +105,15 @@ impl App {
             })
         })?;
         Ok(imported.hash)
+    }
+
+    /// No remote builder serves `arch`: the line that adds one.
+    pub(super) fn no_remote_builder(&self, arch: &str) -> CliError {
+        CliError::Config {
+            path: self.registry_path.display().to_string(),
+            detail: format!(
+                "no remote builder for {arch} is configured; add `[remote_builders]` with `{arch} = [\"<a cargo drop-in whose run runs on an {arch} machine>\", ...]` (tilo-vm guide swapping)"
+            ),
+        }
     }
 }

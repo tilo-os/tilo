@@ -12,8 +12,8 @@
 //! keep_generations = 5     # gc keeps this many per slot
 //! keep_targets = 2         # gc keeps this many in-VM build dirs
 //!
-//! [rcargo]                 # builders for swap --builder rcargo, by architecture
-//! aarch64 = "/home/me/.config/rcargo/arm.toml"   # its RCARGO_CONFIG
+//! [remote_builders]        # swap --builder remote, by architecture: a cargo
+//! aarch64 = ["remote-cargo", "--on-builder"]   # drop-in whose `run` runs there
 //!
 //! [vms.dev]
 //! hypervisor = "libvirt"   # libvirt | qemu | utm | hyperv | whpx
@@ -48,12 +48,13 @@ pub struct Registry {
     /// In-VM build dirs gc keeps (the daemon's default is 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_targets: Option<u32>,
-    /// rcargo builders by CPU architecture: the `RCARGO_CONFIG` that
-    /// reaches a builder of that architecture (an empty string: rcargo's
-    /// own default config). `swap --builder rcargo` uses the one for the
-    /// machine's architecture, and is the default for a device that has one.
+    /// Remote builders by CPU architecture: the command line of a cargo
+    /// drop-in whose `run` runs the program on a machine of that
+    /// architecture, in this worktree, passing its stdout through.
+    /// `swap --builder remote` uses the one for the machine's architecture,
+    /// and is the default for a device that has one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub rcargo: BTreeMap<String, String>,
+    pub remote_builders: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub vms: BTreeMap<String, VmEntry>,
 }
