@@ -125,6 +125,7 @@ fn render_shot_to_png(
         app.stage_after_draw_for_shot(scenario);
     }
     let mut scene = frame.draw(&mut app);
+    frame.draw_overlay(&mut app, &mut scene);
     frame.draw_floating_surfaces(&mut app, &mut scene);
     // The offscreen renderer publishes the PNG atomically, so a killed
     // headless renderer never leaves a truncated screenshot at `out` for
