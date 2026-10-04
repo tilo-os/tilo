@@ -6,9 +6,7 @@
 use ui::time::Instant;
 
 #[cfg(test)]
-use std::cell::{Cell, RefCell};
-#[cfg(test)]
-use std::rc::Rc;
+use std::cell::Cell;
 
 use sysinfo::{Networks, Pid, ProcessesToUpdate, Signal, System, Users};
 
@@ -32,27 +30,6 @@ pub(crate) fn reset_provider_read_count() {
 #[cfg(test)]
 pub(crate) fn provider_read_count() -> usize {
     PROVIDER_READ_COUNT.with(Cell::get)
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SignalAttempt {
-    pub(crate) pid: u32,
-    pub(crate) started_at: u64,
-    pub(crate) kind: StopKind,
-}
-
-#[cfg(test)]
-#[derive(Clone, Default)]
-pub(crate) struct SignalProbe {
-    attempts: Rc<RefCell<Vec<SignalAttempt>>>,
-}
-
-#[cfg(test)]
-impl SignalProbe {
-    pub(crate) fn attempts(&self) -> Vec<SignalAttempt> {
-        self.attempts.borrow().clone()
-    }
 }
 
 /// Which POSIX signal a stop action dispatches. `Term` asks a process to
@@ -79,8 +56,6 @@ pub struct Sampler {
     networks: Networks,
     users: Users,
     last: Option<Instant>,
-    #[cfg(test)]
-    signal_probe: Option<SignalProbe>,
 }
 
 impl Sampler {
@@ -108,8 +83,6 @@ impl Sampler {
             networks,
             users,
             last: None,
-            #[cfg(test)]
-            signal_probe: None,
         }
     }
 
@@ -122,16 +95,7 @@ impl Sampler {
             networks: Networks::new(),
             users: Users::new(),
             last: None,
-            #[cfg(test)]
-            signal_probe: None,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn controlled(signal_probe: SignalProbe) -> Self {
-        let mut sampler = Self::inert();
-        sampler.signal_probe = Some(signal_probe);
-        sampler
     }
 
     /// Fold a fresh reading into `model`. Network and disk throughput are
@@ -262,15 +226,6 @@ impl Sampler {
     /// tick immediately before dispatch. A vanished or replaced process is a
     /// clean failure, never a signal delivered to its replacement.
     pub fn signal_if_current(&mut self, pid: u32, started_at: u64, kind: StopKind) -> bool {
-        #[cfg(test)]
-        if let Some(probe) = &self.signal_probe {
-            probe.attempts.borrow_mut().push(SignalAttempt {
-                pid,
-                started_at,
-                kind,
-            });
-            return true;
-        }
         let target = Pid::from_u32(pid);
         self.sys
             .refresh_processes(ProcessesToUpdate::Some(&[target]), true);

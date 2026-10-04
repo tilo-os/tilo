@@ -228,6 +228,33 @@ impl MonitorModel {
         }
     }
 
+    /// The sample machine a screenshot `scenario` shows: the sample, with no
+    /// processes for the empty, loading and refused process lists, and with
+    /// many cores for `resources-many`.
+    pub fn scenario(scenario: Option<&str>) -> Self {
+        let mut model = Self::sample();
+        let status = match scenario {
+            Some("empty") => ProcessDataStatus::Empty,
+            Some("process-loading") => ProcessDataStatus::Loading,
+            Some("process-permission-error") => ProcessDataStatus::PermissionDenied,
+            Some("resources-many") => {
+                // 24 cores so the grid wraps to several rows — the card must
+                // grow to hold them and the page must scroll on a short shot.
+                model.metrics.cores = (0..24)
+                    .map(|i| {
+                        let t = i as f32;
+                        (30.0 + 55.0 * (t * 0.7).sin() + 20.0 * (t * 0.3).cos()).clamp(2.0, 99.0)
+                    })
+                    .collect();
+                return model;
+            }
+            _ => return model,
+        };
+        model.processes.clear();
+        model.process_status = status;
+        model
+    }
+
     /// Empty model used as the initial state for the live sampler before
     /// the first refresh. Histories are pre-filled with zeros so the
     /// charts don't visibly "grow in" from the left edge.
