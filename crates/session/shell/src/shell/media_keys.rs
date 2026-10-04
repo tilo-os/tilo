@@ -17,8 +17,6 @@
 //! display-switch or touchpad keys; both backends deliver them as the raw
 //! XKB keysym in [`NativeKey::Xkb`], which is what [`classify`] matches.
 
-use std::path::Path;
-
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey, NativeKey};
 use xkeysym::key as keysyms;
@@ -114,10 +112,6 @@ pub struct Context<'a> {
     /// Airplane mode as Quick Settings last showed it; the wireless key
     /// flips exactly what the Quick Settings toggle would.
     pub airplane_mode: bool,
-    /// The settings document the touchpad toggle writes, where the
-    /// compositor's settings watch picks it up. `None` without a config
-    /// directory.
-    pub settings: Option<&'a Path>,
     /// Brightness keys adjust the monitor under the pointer.
     pub brightness: BrightnessKeys<'a>,
 }
@@ -213,7 +207,7 @@ pub fn apply(key: MediaKey, cx: &Context<'_>) -> Option<Response> {
         MediaKey::KeyboardBacklightDown => step_keyboard_backlight(false, cx.actions),
         MediaKey::KeyboardBacklightToggle => toggle_keyboard_backlight(cx.actions),
         MediaKey::Wireless => toggle_airplane_mode(cx.airplane_mode, cx.actions),
-        MediaKey::TouchpadToggle => toggle_touchpad(cx.settings?),
+        MediaKey::TouchpadToggle => toggle_touchpad(),
         MediaKey::Sleep => return Some(Response::Suspend),
         MediaKey::DisplayMode => return Some(Response::OpenDisplayModes),
         MediaKey::Calculator => {
@@ -328,39 +322,39 @@ fn toggle_airplane_mode(on: bool, actions: &dyn QsActions) -> Option<Osd> {
     Some(Osd::airplane_mode(next))
 }
 
-/// Flip the touchpad preference in the settings document. The compositor
+/// Flip the touchpad preference in the session's settings. The compositor
 /// owns libinput and applies the change on its next settings poll, the
 /// same path a Settings-pane toggle takes.
-fn toggle_touchpad(settings: &Path) -> Option<Osd> {
+fn toggle_touchpad() -> Option<Osd> {
     use settings_store::hardware::TOUCHPAD_ENABLED_KEY;
-    let enabled = settings_store::load_section_at(settings, "input")
+    let enabled = settings_store::load_section("input")
         .get(TOUCHPAD_ENABLED_KEY)
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
     let next = !enabled;
     let mut values = serde_json::Map::new();
     values.insert(TOUCHPAD_ENABLED_KEY.into(), serde_json::Value::Bool(next));
-    if let Err(error) = settings_store::update_section_at(settings, "input", values) {
+    if let Err(error) = settings_store::update_section("input", values) {
         tracing::warn!(%error, "touchpad toggle could not be saved");
         return None;
     }
     Some(Osd::touchpad(next))
 }
 
-/// Flip mouse keys in the settings document, for the Shift+Alt+Num Lock
+/// Flip mouse keys in the session's settings, for the Shift+Alt+Num Lock
 /// chord. Like the touchpad key, the compositor picks the change up on its
 /// next settings poll, the path a Settings-pane toggle takes.
-pub fn toggle_mouse_keys(settings: &Path) -> Option<Osd> {
+pub fn toggle_mouse_keys() -> Option<Osd> {
     const SECTION: &str = "accessibility";
     const KEY: &str = "mouse_keys";
-    let enabled = settings_store::load_section_at(settings, SECTION)
+    let enabled = settings_store::load_section(SECTION)
         .get(KEY)
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     let next = !enabled;
     let mut values = serde_json::Map::new();
     values.insert(KEY.into(), serde_json::Value::Bool(next));
-    if let Err(error) = settings_store::update_section_at(settings, SECTION, values) {
+    if let Err(error) = settings_store::update_section(SECTION, values) {
         tracing::warn!(%error, "mouse keys toggle could not be saved");
         return None;
     }
@@ -405,7 +399,7 @@ mod tests {
         actions: &dyn QsActions,
         status: Option<&StatusBridge>,
     ) -> Option<Osd> {
-        match respond(key, actions, status, false, None) {
+        match respond(key, actions, status, false) {
             Some(Response::Osd(osd)) => Some(osd),
             None => None,
             Some(other) => panic!("{key:?} answered {other:?}, not a readout"),
@@ -417,7 +411,6 @@ mod tests {
         actions: &dyn QsActions,
         status: Option<&StatusBridge>,
         airplane_mode: bool,
-        settings: Option<&Path>,
     ) -> Option<Response> {
         let (transport_osd, _mailbox) = crate::session_runtime::mailbox(std::sync::Arc::new(|| {}));
         apply(
@@ -427,7 +420,6 @@ mod tests {
                 status,
                 transport_osd: &transport_osd,
                 airplane_mode,
-                settings,
                 brightness: BrightnessKeys::default(),
             },
         )
@@ -701,7 +693,6 @@ mod tests {
                     status: None,
                     transport_osd: &transport_osd,
                     airplane_mode: false,
-                    settings: None,
                     brightness: BrightnessKeys {
                         displays: &displays,
                         under_pointer,
@@ -757,12 +748,12 @@ mod tests {
     #[test]
     fn the_wireless_key_flips_airplane_mode_through_quick_settings() {
         let rec = Recorder::default();
-        let on = respond(MediaKey::Wireless, &rec, None, false, None);
+        let on = respond(MediaKey::Wireless, &rec, None, false);
         assert!(
             matches!(on, Some(Response::Osd(osd)) if osd.caption() == "Airplane mode on"),
             "{on:?}"
         );
-        let off = respond(MediaKey::Wireless, &rec, None, true, None);
+        let off = respond(MediaKey::Wireless, &rec, None, true);
         assert!(
             matches!(off, Some(Response::Osd(osd)) if osd.caption() == "Airplane mode off"),
             "{off:?}"
@@ -773,70 +764,79 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_touchpad_key_flips_the_persisted_preference() {
+    /// Run `test` with the session's records in `dir` as the settings,
+    /// as the shell runs.
+    fn with_session_records(test: impl FnOnce(&settings_store::SessionPaths)) {
         let dir = tempfile::tempdir().unwrap();
-        let settings = dir.path().join("settings.json");
-        let rec = Recorder::default();
-        let caption = |r: Option<Response>| match r {
-            Some(Response::Osd(osd)) => osd.caption(),
-            other => panic!("expected a readout, got {other:?}"),
-        };
-        assert_eq!(
-            caption(respond(
-                MediaKey::TouchpadToggle,
-                &rec,
-                None,
-                false,
-                Some(&settings)
-            )),
-            "Touchpad off",
-            "an absent preference means the touchpad was on"
-        );
-        let stored = settings_store::load_section_at(&settings, "input");
-        assert_eq!(
-            stored.get(settings_store::hardware::TOUCHPAD_ENABLED_KEY),
-            Some(&serde_json::Value::Bool(false))
-        );
-        assert_eq!(
-            caption(respond(
-                MediaKey::TouchpadToggle,
-                &rec,
-                None,
-                false,
-                Some(&settings)
-            )),
-            "Touchpad on"
-        );
+        let paths = settings_store::SessionPaths::beside(dir.path().join("settings.json"));
+        let records = settings_store::SessionSettings::open(paths.clone()).unwrap();
+        settings_store::install_source(Some(std::sync::Arc::new(records)));
+        test(&paths);
+        settings_store::install_source(None);
     }
 
     #[test]
-    fn the_mouse_keys_chord_flips_the_persisted_preference() {
-        let dir = tempfile::tempdir().unwrap();
-        let settings = dir.path().join("settings.json");
-        let on = toggle_mouse_keys(&settings).expect("saved");
-        assert_eq!(on.caption(), "Mouse keys on", "absent means off");
-        assert_eq!(
-            settings_store::load_section_at(&settings, "accessibility").get("mouse_keys"),
-            Some(&serde_json::Value::Bool(true))
-        );
-        let off = toggle_mouse_keys(&settings).expect("saved");
-        assert_eq!(off.caption(), "Mouse keys off");
+    fn the_touchpad_key_flips_the_preference_in_the_devices_record() {
+        with_session_records(|paths| {
+            let rec = Recorder::default();
+            let caption = |r: Option<Response>| match r {
+                Some(Response::Osd(osd)) => osd.caption(),
+                other => panic!("expected a readout, got {other:?}"),
+            };
+            assert_eq!(
+                caption(respond(MediaKey::TouchpadToggle, &rec, None, false)),
+                "Touchpad off",
+                "an absent preference means the touchpad was on"
+            );
+            assert_eq!(
+                settings_store::load_at(&paths.device)["input"]
+                    [settings_store::hardware::TOUCHPAD_ENABLED_KEY],
+                false
+            );
+            assert_eq!(
+                settings_store::load_at(&paths.copy)["input"]
+                    [settings_store::hardware::TOUCHPAD_ENABLED_KEY],
+                false,
+                "the compositor reads the copy"
+            );
+            assert_eq!(
+                caption(respond(MediaKey::TouchpadToggle, &rec, None, false)),
+                "Touchpad on"
+            );
+        });
+    }
+
+    #[test]
+    fn the_mouse_keys_chord_flips_the_preference_in_the_records() {
+        with_session_records(|paths| {
+            let on = toggle_mouse_keys().expect("saved");
+            assert_eq!(on.caption(), "Mouse keys on", "absent means off");
+            assert_eq!(
+                settings_store::load_section("accessibility").get("mouse_keys"),
+                Some(&serde_json::Value::Bool(true))
+            );
+            assert_eq!(
+                settings_store::load_at(&paths.copy)["accessibility"]["mouse_keys"],
+                true
+            );
+            let off = toggle_mouse_keys().expect("saved");
+            assert_eq!(off.caption(), "Mouse keys off");
+        });
     }
 
     #[test]
     fn session_keys_hand_their_intent_to_the_compositor() {
         let rec = Recorder::default();
         assert_eq!(
-            respond(MediaKey::Sleep, &rec, None, false, None),
+            respond(MediaKey::Sleep, &rec, None, false),
             Some(Response::Suspend)
         );
         assert_eq!(
-            respond(MediaKey::DisplayMode, &rec, None, false, None),
+            respond(MediaKey::DisplayMode, &rec, None, false),
             Some(Response::OpenDisplayModes)
         );
         assert_eq!(
-            respond(MediaKey::Calculator, &rec, None, false, None),
+            respond(MediaKey::Calculator, &rec, None, false),
             Some(Response::Launch {
                 package_id: "so.tilo.calculator",
                 display_name: "Calculator",

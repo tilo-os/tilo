@@ -8459,10 +8459,7 @@ pub fn run() {
                     } else if route == PriorityRoute::ToggleMouseKeys {
                         // The compositor applies the flipped preference on its
                         // next settings poll; the readout confirms it now.
-                        if let Some(osd) = settings_store::settings_path()
-                            .as_deref()
-                            .and_then(crate::shell::media_keys::toggle_mouse_keys)
-                        {
+                        if let Some(osd) = crate::shell::media_keys::toggle_mouse_keys() {
                             frame_builder.with_chrome(|st| publish_media_osd(st, osd));
                             session_changed = true;
                         }
@@ -8473,7 +8470,6 @@ pub fn run() {
                         // here, and the lock paint draws their OSD.
                         let airplane_mode =
                             frame_builder.chrome().quick_settings.radios.airplane_mode;
-                        let settings = settings_store::settings_path();
                         let displays = if matches!(
                             mk,
                             crate::shell::media_keys::MediaKey::BrightnessUp
@@ -8493,7 +8489,6 @@ pub fn run() {
                                 status: frame_builder.host().status_bridge(),
                                 transport_osd: &transport_osd,
                                 airplane_mode,
-                                settings: settings.as_deref(),
                                 brightness: crate::shell::media_keys::BrightnessKeys {
                                     displays: &displays,
                                     under_pointer,
