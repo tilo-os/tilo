@@ -42,7 +42,7 @@ REQUIRED_PATHS = {'.forgejo/workflows/' + WORKFLOW,
                   'tools/ci/rustc-thin-app-wrapper.sh', 'os/scripts/bake-runtime-bundle.sh',
                   'os/scripts/verify-elf-hardening.sh', 'tools/ci/sccache.sh',
                   '.forgejo/actions/restore-cargo-downloads/action.yml',
-                  'tools/canonical_verifier_bundle.py'}
+                  'tools/canonical_verifier_bundle.py', 'tools/apps/publish-collections.sh'}
 
 
 def bounded_output(command, maximum, timeout=30):
