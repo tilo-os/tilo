@@ -73,6 +73,13 @@ pub use files_app::{FileExplorerWidget, StartupInputs};
 mod unavailable_projection_tests;
 pub use resource::{FileExplorer, FileExplorerShell};
 
+/// The Files a host mounted, when `widget` is the root of a Files tab: for a
+/// host's test that drives the Files it shows.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn mounted_files(widget: &mut dyn ui::widget::Widget) -> Option<&mut FileExplorerWidget> {
+    ui::framework::testing::surface_in_root::<FileExplorerShell, FileExplorerWidget>(widget)
+}
+
 /// The Files application definition: the one every host mounts.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<FileExplorerShell>()

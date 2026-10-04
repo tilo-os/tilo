@@ -385,6 +385,13 @@ impl std::fmt::Display for HostedTerminalError {
 impl std::error::Error for HostedTerminalError {}
 pub use resource::{Terminal, TerminalEffect, TerminalShell};
 
+/// The terminal a host mounted, when `widget` is the root of a terminal
+/// tab: for a host's test that types into the terminal it shows.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn mounted_terminal(widget: &mut dyn ui::widget::Widget) -> Option<&mut TerminalWidget> {
+    ui::framework::testing::surface_in_root::<TerminalShell, TerminalWidget>(widget)
+}
+
 /// The terminal's application definition: the one every host mounts.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<TerminalShell>()
