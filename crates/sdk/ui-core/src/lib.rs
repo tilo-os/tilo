@@ -110,6 +110,9 @@ pub mod a11y_tree;
 #[cfg(all(feature = "native", target_os = "android"))]
 mod accesskit_android_adapter;
 pub mod accesskit_bridge;
+/// The document action host behind the framework's dispatcher. Apps submit
+/// edits through the framework, never through this host.
+#[doc(hidden)]
 pub mod action_host;
 mod action_locus;
 pub use action_locus::ActionUiRoute;
@@ -370,7 +373,6 @@ pub use a11y_tree::{
 // narrator the `App` holds when `A11ySettings.screen_reader` is on.
 pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
-pub use action_host::ActionHost;
 pub use action_palette::ActionPalette;
 pub use tilo_actions;
 pub use widget::ModelView;
