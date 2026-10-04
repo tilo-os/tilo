@@ -138,6 +138,21 @@ pub(crate) fn reader_bar(state: &MailState) -> BarSpec {
     } else {
         "Delete"
     };
+    if state.narrow {
+        // A narrow window's header shares its row with the Back button: the
+        // commonest actions stand there as icons and the rest wait in the
+        // message's menu.
+        return vec![vec![
+            BarItem::icon(Icon::Reply, "Reply", Command::Message(CtxAction::Reply)),
+            BarItem::icon(
+                Icon::Archive,
+                "Archive",
+                Command::Message(CtxAction::Archive),
+            ),
+            BarItem::icon(Icon::Trash, delete, Command::Message(CtxAction::Delete)),
+            BarItem::icon(Icon::MoreHorizontal, "More actions", Command::MessageMenu),
+        ]];
+    }
     let mut triage = vec![BarItem::button(
         "Archive",
         Command::Message(CtxAction::Archive),
@@ -306,6 +321,13 @@ mod tests {
         );
         state.narrow = true;
         assert!(reader_bar(&state).is_empty());
+        state.set_bulk_selecting(false);
+        assert_eq!(
+            labels(&reader_bar(&state)),
+            ["Reply", "Archive", "Delete", "More actions"],
+            "a narrow header leaves room for the Back button"
+        );
+        state.set_bulk_selecting(true);
         let narrow = list_bar(&state);
         assert!(labels(&narrow).contains(&"Move to Trash"));
         assert!(labels(&narrow).contains(&"Done"));
