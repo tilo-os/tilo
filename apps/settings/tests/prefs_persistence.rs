@@ -19,11 +19,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use automerge::AutoCommit;
-use automerge::transaction::Transactable;
 use settings::accounts::{AccountDirectory, AccountKind, AccountRoot};
-use settings::prefs::SystemPrefs;
-use ui::widget::Widget;
 
 struct AcceptAccount;
 

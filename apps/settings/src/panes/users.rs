@@ -1112,7 +1112,14 @@ mod tests {
             full_name: "Cy".into(),
         }))
         .expect("the sample backend creates the account");
-        let surface = app.agent_surface().to_string();
-        assert!(!surface.contains("\"password\""), "{surface}");
+        let create = SettingsEffect::declarations()
+            .into_iter()
+            .find(|decl| decl.id == "create-user")
+            .expect("creating an account is an effect");
+        assert!(
+            create.params.iter().all(|param| param.name != "password"),
+            "{:?}",
+            create.params
+        );
     }
 }
