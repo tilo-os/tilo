@@ -251,24 +251,28 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
     assert!(issue(73).await.is_none());
     let first = issue(71).await.unwrap();
     let first_live = authority.try_admit(&first.token).unwrap();
-    let workspace = sessions.context().relay.workspaces.lock().await[&71].clone();
-    let held = workspace.lock().await;
-    let observation = grants.observe(&sessions);
-    tokio::pin!(observation);
-    // The only grant in the snapshot is now waiting for this workspace.
-    assert!(
-        poll_fn(|cx| Poll::Ready(observation.as_mut().poll(cx)))
-            .await
-            .is_pending()
-    );
-    let second = issue(72).await.unwrap();
-    let second_live = authority.try_admit(&second.token).unwrap();
-    assert!(
-        matches!(second_live.status(), AuthorizationStatus::Current),
-        "second_live must remain Current"
-    );
-    drop(held);
-    observation.await;
+    let (second, second_live) = {
+        let workspace = sessions.context().relay.workspaces.lock().await[&71].clone();
+        let held = workspace.lock().await;
+        let observation = grants.observe(&sessions);
+        tokio::pin!(observation);
+        // The only grant in the snapshot is now waiting for this workspace.
+        assert!(
+            poll_fn(|cx| Poll::Ready(observation.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        let second = issue(72).await.unwrap();
+        let second_live = authority.try_admit(&second.token).unwrap();
+        assert!(
+            matches!(second_live.status(), AuthorizationStatus::Current),
+            "second_live must remain Current"
+        );
+        drop(held);
+        drop(workspace);
+        observation.await;
+        (second, second_live)
+    };
     assert!(
         matches!(first_live.status(), AuthorizationStatus::Current),
         "first_live must remain Current"
@@ -321,7 +325,8 @@ async fn live_observation_preserves_grants_issued_after_its_snapshot() {
         Err(Admission::Denied)
     ));
     assert!(issue(71).await.is_none());
-    relay.shutdown().await;
+    drop(sessions);
+    crate::daemon::Relay::shutdown(relay).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
