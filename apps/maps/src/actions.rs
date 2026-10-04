@@ -332,7 +332,7 @@ fn route_label(model: &MapModel) -> String {
 /// A one-line label for an offline region: its human name plus the covered zoom
 /// range, so the palette row is self-describing.
 fn region_label(r: &DownloadedRegion) -> String {
-    format!("{} · z{}–{}", r.name, r.z0, r.z1)
+    format!("{}, zoom {}–{}", r.name, r.z0, r.z1)
 }
 
 fn history_resource(query: &str) -> Resource {
