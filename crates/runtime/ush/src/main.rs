@@ -30,7 +30,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use ush::broker::{Request, Response};
-use ush::images::{DirImages, Images, NoImages, SharedBuilds, StoreImages};
+use ush::images::{Images, SharedBuilds};
 use ush::store::Store;
 use ush::supervisor::{Session, SessionOptions};
 
@@ -182,17 +182,7 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
 /// Where images come from on this device: the package store, or fixture
 /// trees under `TILO_USH_IMAGES` in tests.
 fn images() -> Arc<dyn Images> {
-    if let Some(root) = std::env::var_os("TILO_USH_IMAGES") {
-        return Arc::new(DirImages::at(PathBuf::from(root)));
-    }
-    match package_store::Store::from_env() {
-        Ok(store) => Arc::new(StoreImages::new(env_tools::store::trusting_device_tools(
-            store,
-        ))),
-        Err(reason) => Arc::new(NoImages(format!(
-            "the package store cannot be opened: {reason}"
-        ))),
-    }
+    ush::images::on_this_device()
 }
 
 /// How `pkg install` builds tool images on this device.

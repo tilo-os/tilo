@@ -21,6 +21,8 @@ runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
 # The environment record a guest is built from, and the tool builder seam.
 tilo-environment = { path = "../environment" }
+# Atomic writes of the host-shell decisions.
+tilo-files = { path = "../../platform/tilo-files" }
 # Builds the tool images `pkg install` adds.
 env-tools = { path = "../env-tools" }
 tilo-resource = { path = "../../sdk/tilo-resource" }

@@ -787,6 +787,7 @@ capability-microphone = Mikrofonzugriff
 capability-screencast = Bildschirmaufnahme
 capability-remote-desktop = Fernsteuerung (Zeiger + Tastatur)
 capability-print = Dokumente an einen Drucker senden
+capability-host-shell = Die eigene Shell dieses Geräts öffnen, außerhalb jeder Sandbox
 capability-network-hosts = Netzwerkzugriff auf { $hosts }
 capability-network = Netzwerkzugriff
 
