@@ -49,7 +49,7 @@ pub struct Config {
     pub address: SocketAddr,
     pub token: Option<String>,
     /// Explicit host-selected audience; validated against current admission
-    /// by RuntimeServices before the endpoint is created.
+    /// by `RuntimeServices` before the endpoint is created.
     pub room: Option<String>,
 }
 

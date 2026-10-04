@@ -86,8 +86,8 @@ impl Joined {
             HostIdentity {
                 device_cert: cert,
                 device_signing_key: key.clone(),
-                workspace_device_certs: Default::default(),
-                workspace_revocations: Default::default(),
+                workspace_device_certs: std::collections::HashMap::default(),
+                workspace_revocations: std::collections::HashMap::default(),
                 identity_paths: None,
             },
             local_endpoint(&key).await,
