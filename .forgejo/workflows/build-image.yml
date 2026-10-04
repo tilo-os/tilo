@@ -2775,7 +2775,8 @@ jobs:
           typed_sentence='The quick brown fox jumps over the lazy dog, twice!'
           ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-typing'
           ./os/dev/vm.sh type "$typed_sentence"
-          ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$typed_sentence' --state /tmp/notes-typing"
+          # The note is durable, and Notes says so: "Saved", never "Not saved".
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$typed_sentence' --state /tmp/notes-typing --status Saved"
 
           # Keyboards and mice plugged in after login must reach the running
           # compositor: a USB keyboard hot-added on QEMU's own bus, then a
