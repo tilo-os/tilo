@@ -352,6 +352,16 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.storage.person::<P>()
     }
 
+    /// The person's record of `P` that another app, `owner`, keeps — their
+    /// accounts, which Settings keeps: read here, edited only in `owner`
+    /// ([`PersonRecord::editable`](super::PersonRecord::editable)). It is
+    /// the same record on every device, and follows the owner's edits over
+    /// the person's own room; for `owner` this app it is
+    /// [`Self::person`].
+    pub fn person_of<P: Resource>(&self, owner: &'static str) -> Option<super::PersonRecord<P>> {
+        self.storage.person_of::<P>(owner)
+    }
+
     /// The app's files, secrets and settings documents, as its host gave
     /// them. A secret of one document item is
     /// `cx.storage().secrets().item(purpose, id)`.
