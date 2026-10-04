@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use tilo_actions::{ActionParam, ParamType};
+use tilo_actions::{ActionParam, ActionSpec, ParamType};
 use tilo_document::{RichText, RichTextAction};
 use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
@@ -17,12 +17,10 @@ use ui::tilo_resource::{
 use ui::widget::Element;
 use uuid::Uuid;
 
-use crate::actions::{
-    CALENDAR_ACTION_TYPE, CalendarAction, EventData, NoteOwner, ProjectData, TaskData,
-};
+use crate::actions::{CALENDAR_ACTION_TYPE, CalendarAction, EventData, NoteOwner, ProjectData};
 use crate::app::CalendarApp;
 use crate::doc::CalDoc;
-use crate::model::{Model, Palette, Priority};
+use crate::model::{Model, Palette};
 
 /// The start of the next whole hour, where a new event lands unless it names
 /// its own time.
@@ -192,7 +190,7 @@ pub enum CalendarEffect {
     /// Show calendar view
     #[effect(view, idempotent)]
     ShowView {
-        #[param("Calendar view to show", choices = ["month", "week", "day", "agenda"])]
+        #[param("Calendar view to show", choices = ["month", "week", "day", "agenda", "tasks"])]
         view: String,
     },
     /// Show all calendars
@@ -210,6 +208,11 @@ pub enum CalendarEffect {
     /// Show agenda
     #[effect(view, idempotent)]
     ShowAgenda,
+    /// Show tasks
+    ///
+    /// Opens this workspace's Inbox task list without changing its content.
+    #[effect(view, idempotent, row)]
+    ShowTasks,
     /// Open
     ///
     /// Shows an event, one occurrence of it, a task, a project's tasks or
@@ -305,23 +308,12 @@ impl Resource for Calendar {
                     "Title",
                 )],
                 |args, _| {
-                    let title = args
-                        .text(tilo_actions::PROMPTED_PARAM)
-                        .unwrap_or_default()
-                        .trim()
-                        .to_owned();
-                    if title.is_empty() {
-                        return Err("task title must contain non-whitespace text".into());
-                    }
-                    Ok(CalendarAction::UpsertTask(TaskData {
-                        id: Uuid::new_v4().to_string(),
-                        title,
-                        done: false,
-                        due: String::new(),
-                        priority: Priority::None.rank(),
-                        project: String::new(),
-                        parent: String::new(),
-                    }))
+                    crate::actions::new_task(
+                        args.text(tilo_actions::PROMPTED_PARAM).unwrap_or_default(),
+                        None,
+                        None,
+                    )
+                    .map(|task| crate::actions::upsert_task_action(&task))
                 },
             ),
             ActionDecl::new(
@@ -350,6 +342,10 @@ impl Resource for Calendar {
                 },
             ),
         ]
+    }
+
+    fn local_operations() -> Vec<ActionSpec> {
+        vec![CalendarEffect::ShowTasks.bound().launchable_when_closed()]
     }
 
     /// A page of the calendar's projects, events and tasks with every edit
@@ -414,7 +410,7 @@ impl Resource for Calendar {
     }
 }
 
-/// Every screenshot scenario: the four views with the editor closed, the
+/// Every screenshot scenario: the five views with the editor closed, the
 /// event editor and each of its popovers, the task detail and its pickers,
 /// the empty and transport states, and the two narrow presentations.
 const SCENARIOS: &[&str] = &[
@@ -422,6 +418,7 @@ const SCENARIOS: &[&str] = &[
     "week",
     "day",
     "agenda",
+    "tasks",
     "event_editor",
     "new_event",
     "date_popover",
@@ -434,6 +431,7 @@ const SCENARIOS: &[&str] = &[
     "empty",
     "empty_week",
     "empty_agenda",
+    "empty_tasks",
     "sync_error",
     "sync_offline",
     "sync_syncing",
@@ -1152,5 +1150,227 @@ mod person_account_tests {
                 .contains("kept-on-the-device"),
             "the password never enters the record"
         );
+    }
+}
+
+#[cfg(test)]
+mod tasks_screen_tests {
+    use super::*;
+    use tilo_actions::{OperationKind, RetryPolicy};
+    use ui::accesskit::{Node, NodeId, Role, Toggled};
+    use ui::framework::testing::TestApp;
+
+    /// Semantic effects run only in live mode; captures deliberately withhold
+    /// effect runners. Seed the live test record through its published door.
+    fn sample_calendar() -> TestApp<CalendarShell> {
+        let mut app = TestApp::<CalendarShell>::new().expect("live test app");
+        let model = crate::model::seed_demo(chrono::Local::now().date_naive());
+        let actions = sample_actions(&model)
+            .iter()
+            .map(|action| Invoke::apply(action).expect("sample action"))
+            .collect::<Vec<_>>();
+        app.invoke(Invoke::group(actions))
+            .expect("seed through the calendar door");
+        app.call("show-month", serde_json::json!({}))
+            .expect("Month view");
+        app
+    }
+
+    /// The accessible "Task list" region and the names of its items, when
+    /// the Tasks screen is on screen.
+    fn task_list(app: &mut TestApp<CalendarShell>) -> Option<Vec<String>> {
+        let nodes = app.harness().a11y_nodes();
+        let (_, list) = nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::List && node.label() == Some("Task list"))?;
+        let items = list
+            .children()
+            .iter()
+            .filter_map(|child| nodes.iter().find(|(id, _)| id == child))
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
+        Some(items)
+    }
+
+    /// The accessible node whose name is exactly `name`.
+    fn named(app: &mut TestApp<CalendarShell>, name: &str) -> Option<(NodeId, Node)> {
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.label() == Some(name))
+    }
+
+    fn activate(app: &mut TestApp<CalendarShell>, name: &str) {
+        let (id, _) = named(app, name).unwrap_or_else(|| panic!("no control named {name}"));
+        app.harness()
+            .perform_a11y_action(id, &ui::a11y::Action::Activate)
+            .unwrap_or_else(|error| panic!("activate {name}: {error:?}"));
+        app.settle();
+    }
+
+    /// `show-tasks` is the root's typed view action, offered while the
+    /// calendar is closed so a launcher card reaches the tasks in one step.
+    #[test]
+    fn show_tasks_is_a_launchable_idempotent_view_on_the_root() {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        let resources = app.harness().resources();
+        let root = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == Calendar::KIND)
+            .expect("the calendar root is published");
+        let show = root
+            .actions
+            .iter()
+            .find(|action| action.id == "show-tasks")
+            .expect("show-tasks is published on the root");
+        assert_eq!(show.label, "Show tasks");
+        assert_eq!(show.kind, OperationKind::View);
+        assert_eq!(
+            show.contract.permission,
+            tilo_actions::PermissionRequirement::Read
+        );
+        assert_eq!(show.contract.retry, RetryPolicy::Idempotent);
+        assert_eq!(
+            show.contract.discovery,
+            tilo_actions::DiscoveryScope::Launchable
+        );
+        assert!(show.contract.validate_declaration().is_empty());
+        let view = root
+            .actions
+            .iter()
+            .find(|action| action.id == "show-view")
+            .expect("show-view");
+        assert!(
+            view.params().iter().any(|param| param
+                .choices
+                .iter()
+                .any(|choice| AsRef::<str>::as_ref(choice) == "tasks")),
+            "show-view offers the Tasks screen"
+        );
+    }
+
+    #[test]
+    fn viewers_can_show_tasks_but_cannot_add_tasks() {
+        let mut app =
+            TestApp::<CalendarShell>::with_role(ui::permissions::Role::Viewer).expect("viewer app");
+        let before = app.state().tasks;
+        app.call("show-tasks", serde_json::json!({}))
+            .expect("viewers can change their view");
+        assert_eq!(task_list(&mut app), Some(Vec::new()));
+        assert!(
+            before.is_empty() && app.state().tasks.is_empty(),
+            "showing Tasks writes no task state"
+        );
+        let failure = app.call("new-task", serde_json::json!({ "title": "Refused task" }));
+        assert!(
+            failure.is_err(),
+            "view permission never admits a task mutation"
+        );
+        assert!(app.state().tasks.is_empty());
+    }
+
+    /// Invoked through the published door, `show-tasks` lands on the Tasks
+    /// screen over the Inbox, whichever list the sidebar had chosen; the
+    /// "Task list" region exists only there.
+    #[test]
+    fn show_tasks_lands_on_the_inbox_task_list() {
+        let mut app = sample_calendar();
+        assert!(task_list(&mut app).is_none(), "Month shows no task list");
+        assert!(
+            named(&mut app, "Tasks view").is_some(),
+            "the bar's Tasks tab is not the task list"
+        );
+        activate(&mut app, "Show tasks in Today");
+
+        app.call("show-tasks", serde_json::json!({}))
+            .expect("show-tasks");
+        let items = task_list(&mut app).unwrap_or_else(|| {
+            panic!(
+                "the Tasks screen publishes its list: {:?}",
+                app.harness()
+                    .a11y_nodes()
+                    .iter()
+                    .filter_map(|(_, n)| n.label())
+                    .collect::<Vec<_>>()
+            )
+        });
+        let inbox: Vec<_> = app
+            .state()
+            .tasks_for(
+                &crate::model::ListSel::Inbox,
+                chrono::Local::now().date_naive(),
+            )
+            .iter()
+            .map(|task| task.title.clone())
+            .collect();
+        assert!(!inbox.is_empty(), "the sample Inbox holds a task");
+        assert_eq!(items.len(), inbox.len(), "{items:?}");
+        for (item, title) in items.iter().zip(&inbox) {
+            assert!(item.starts_with(title.as_str()), "{item} names {title}");
+        }
+        let (_, tab) = named(&mut app, "Tasks view").expect("the Tasks tab");
+        assert_eq!(
+            tab.toggled(),
+            Some(Toggled::True),
+            "the Tasks tab is chosen"
+        );
+
+        for view in ["month", "week", "day", "agenda"] {
+            app.call("show-view", serde_json::json!({ "view": view }))
+                .expect(view);
+            assert!(task_list(&mut app).is_none(), "{view} shows no task list");
+        }
+        app.call("show-view", serde_json::json!({ "view": "tasks" }))
+            .expect("show-view tasks");
+        assert!(task_list(&mut app).is_some());
+    }
+
+    /// The bar's Tasks tab and the action reach the same screen: choosing
+    /// the Inbox and the tab shows what `show-tasks` shows.
+    #[test]
+    fn the_tasks_tab_and_show_tasks_reach_the_same_list() {
+        let mut by_tab = sample_calendar();
+        activate(&mut by_tab, "Show tasks in Inbox");
+        activate(&mut by_tab, "Tasks view");
+        let mut by_action = sample_calendar();
+        by_action
+            .call("show-tasks", serde_json::json!({}))
+            .expect("show-tasks");
+        let tab = task_list(&mut by_tab).expect("the tab shows the task list");
+        assert_eq!(Some(tab), task_list(&mut by_action));
+    }
+
+    /// An empty list says so, and the entry field adds a task to it through
+    /// the same edit `new-task` makes.
+    #[test]
+    fn an_empty_task_list_explains_itself_and_its_field_adds_a_task() {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        app.call("show-tasks", serde_json::json!({}))
+            .expect("show-tasks");
+        assert_eq!(task_list(&mut app), Some(Vec::new()));
+        assert!(
+            named(
+                &mut app,
+                "Inbox is empty. Type a task in the field above and press Enter."
+            )
+            .is_some(),
+            "the empty state is announced"
+        );
+
+        activate(&mut app, "Add a task to Inbox");
+        app.harness().type_text("Water the plants");
+        app.harness().key("Enter");
+        app.settle();
+        let tasks = app.state().tasks;
+        assert_eq!(tasks.len(), 1);
+        let task = &tasks[0];
+        assert_eq!(task.title, "Water the plants");
+        assert!(!task.done && task.project.is_none() && task.parent.is_none());
+        assert_eq!(
+            task_list(&mut app),
+            Some(vec!["Water the plants".to_owned()])
+        );
+        assert!(app.undo(), "adding a task is one undo step");
+        assert!(app.state().tasks.is_empty());
     }
 }
