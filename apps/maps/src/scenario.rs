@@ -99,11 +99,7 @@ pub(crate) fn actions(scenario: Option<&str>) -> Vec<Invoke<Maps>> {
                 },
             });
         }
-        Some("pois") => actions.push(MapsAction::ClearRoute),
-        Some("offline") => {
-            actions.push(MapsAction::ClearRoute);
-            actions.extend(sample::regions().into_iter().map(MapsAction::AddRegion));
-        }
+        Some("pois" | "offline") => actions.push(MapsAction::ClearRoute),
         _ => {}
     }
     actions

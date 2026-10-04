@@ -99,6 +99,7 @@ impl MapsApp {
     pub(super) fn stage_offline(&mut self) {
         self.model.panel = Panel::Explore;
         self.model.selected = None;
+        self.model.regions = sample::regions();
         // Demonstrate the download-by-place search: a typed city with candidate
         // results in the shared dropdown (offline sample data — no network).
         self.offline_panel
