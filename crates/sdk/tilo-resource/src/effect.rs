@@ -152,16 +152,27 @@ pub trait Effect: Sized + 'static {
     /// *this* file, to a name the caller gives. The bound arguments are this
     /// effect's own; an asked one the caller supplies replaces it.
     fn bound_asking(&self, asking: &[&str]) -> ActionSpec {
+        let params = Self::declarations()
+            .into_iter()
+            .find(|decl| decl.id == self.id())
+            .map(|decl| {
+                decl.params
+                    .into_iter()
+                    .filter(|param| asking.contains(&&*param.name))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.bound_asking_params(params)
+    }
+
+    /// [`bound_asking`](Self::bound_asking) with the asked parameters given
+    /// whole, narrowed for this item: the applications that can open *this*
+    /// file as the choices of `app`.
+    fn bound_asking_params(&self, params: Vec<ActionParam>) -> ActionSpec {
         let id = self.id();
         let Some(decl) = Self::declarations().into_iter().find(|decl| decl.id == id) else {
             return self.bound();
         };
-        let params = decl
-            .params
-            .iter()
-            .filter(|param| asking.contains(&&*param.name))
-            .cloned()
-            .collect();
         let bound = self.arguments();
         decl.spec_with(Self::OPERATION, params, move |args| {
             let mut merged = bound.clone();

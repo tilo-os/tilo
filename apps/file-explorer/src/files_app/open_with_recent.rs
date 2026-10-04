@@ -13,16 +13,12 @@ use crate::model::Entry;
 use crate::open_with::{OpenWithCandidates, SharedOpenWithRoute};
 use crate::recent::RecentUse;
 use std::path::{Path, PathBuf};
-use ui::tilo_actions::{
-    ActionContract, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
-    PermissionRequirement, Resource, RetryPolicy,
-};
+use ui::tilo_actions::{ActionParam, ParamType, Resource};
+use ui::tilo_resource::Effect as _;
 use ui::widget::command_palette::CommandEntry;
 use ui::widget::context_menu::MenuItem;
 use vello::kurbo::Point;
 
-/// Operation type for every open-with action on a file resource.
-pub(super) const OPEN_WITH_OPERATION: &str = "files.open-with";
 /// Typed action id: `app` (one of the candidates) and optional `always`.
 pub(super) const OPEN_WITH_ACTION: &str = "open-with";
 /// Per-application rows the app chooser lists for its target file.
@@ -30,15 +26,6 @@ const OPEN_ONCE_PREFIX: &str = "open-with-app:";
 const ALWAYS_PREFIX: &str = "always-open-with:";
 /// How many applications the submenu lists before "Other Application…".
 pub(super) const SUBMENU_APPS: usize = 6;
-
-/// The open-with payload: which published resource, which app, and whether
-/// the choice becomes the person's default for the type.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub(super) struct OpenWithPayload {
-    pub resource_id: String,
-    pub app_id: String,
-    pub always: bool,
-}
 
 /// The cache key for a file's candidates: its MIME guess and extension, the
 /// two things the desktop resolves a type by.
@@ -340,44 +327,26 @@ impl FileExplorerWidget {
         if candidates.apps.is_empty() {
             return;
         }
-        let typed_resource = resource_id.to_string();
-        resource.actions.push(
-            ActionSpec::typed_operation(
-                OPEN_WITH_ACTION,
-                t("files-menu-open-with"),
-                t("files-open-with-app-param"),
-                OperationKind::Effect,
-                OPEN_WITH_OPERATION,
-                vec![
-                    ActionParam::required_owned(
-                        "app",
-                        ParamType::Text,
-                        t("files-open-with-app-param"),
-                    )
-                    .with_choices(candidates.apps.iter().map(|app| app.id.clone())),
-                    ActionParam::optional_owned(
-                        "always",
-                        ParamType::Boolean,
-                        t_args(
-                            "files-open-with-always-param",
-                            &[arg("type", candidates.type_label.clone())],
-                        ),
-                    ),
-                ],
-                move |args| {
-                    EncodedAction::encode_operation(
-                        OPEN_WITH_OPERATION,
-                        &OpenWithPayload {
-                            resource_id: typed_resource.clone(),
-                            app_id: args.text("app").unwrap_or_default().to_string(),
-                            always: args.boolean("always").unwrap_or(false),
-                        },
-                    )
-                    .expect("open-with payload is serializable")
-                },
-            )
-            .with_contract(open_with_contract()),
-        );
+        let mut open_with = crate::effects::FilesEffect::OpenWith {
+            entry: resource_id.to_string(),
+            app: String::new(),
+            always: None,
+        }
+        .bound_asking_params(vec![
+            ActionParam::required_owned("app", ParamType::Text, t("files-open-with-app-param"))
+                .with_choices(candidates.apps.iter().map(|app| app.id.clone())),
+            ActionParam::optional_owned(
+                "always",
+                ParamType::Boolean,
+                t_args(
+                    "files-open-with-always-param",
+                    &[arg("type", candidates.type_label.clone())],
+                ),
+            ),
+        ]);
+        open_with.id = OPEN_WITH_ACTION.into();
+        open_with.label = t("files-menu-open-with");
+        resource.actions.push(open_with);
         if self.app_chooser_target.as_deref() != Some(entry.path.as_path()) {
             return;
         }
@@ -400,47 +369,39 @@ impl FileExplorerWidget {
                     ),
                 ),
             ] {
-                if let Ok(spec) = ActionSpec::operation(
+                resource.actions.push(crate::effects::row_action(
+                    &crate::effects::FilesEffect::OpenWith {
+                        entry: resource_id.to_string(),
+                        app: app.id.clone(),
+                        always: Some(always),
+                    },
                     format!("{prefix}{}", app.id),
                     label,
-                    OperationKind::Effect,
-                    OPEN_WITH_OPERATION,
-                    &OpenWithPayload {
-                        resource_id: resource_id.to_string(),
-                        app_id: app.id.clone(),
-                        always,
-                    },
-                ) {
-                    resource
-                        .actions
-                        .push(spec.with_contract(open_with_contract()));
-                }
+                ));
             }
         }
     }
 
-    /// Execute a `files.open-with` operation against the live listing.
-    pub(super) fn invoke_open_with(&mut self, payload: &[u8]) -> Result<(), String> {
-        let request: OpenWithPayload =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+    pub(super) fn invoke_open_with(
+        &mut self,
+        entry: &str,
+        app: &str,
+        always: bool,
+    ) -> Result<(), String> {
         let path = self
-            .visible_open_path(&request.resource_id)
+            .visible_open_path(entry)
             .ok_or_else(|| "file location is no longer available".to_string())?;
         if path.is_dir() {
             return Err("folders open in Files".into());
         }
-        if self
-            .open_with_candidates(&path)
-            .find(&request.app_id)
-            .is_none()
-        {
+        if self.open_with_candidates(&path).find(app).is_none() {
             return Err(t_args(
                 "files-open-with-not-a-candidate",
-                &[arg("app", request.app_id)],
+                &[arg("app", app)],
             ));
         }
         self.close_app_chooser();
-        self.apply_open_with(&path, &request.app_id, request.always);
+        self.apply_open_with(&path, app, always);
         Ok(())
     }
 
@@ -568,13 +529,5 @@ impl FileExplorerWidget {
             Some(FileCommand::ForgetRecent(entry.path)),
         ));
         spec
-    }
-}
-
-fn open_with_contract() -> ActionContract {
-    ActionContract {
-        permission: PermissionRequirement::Read,
-        retry: RetryPolicy::AtMostOnce,
-        ..ActionContract::default()
     }
 }
