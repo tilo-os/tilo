@@ -211,18 +211,16 @@ pub(crate) fn header_actions(
 ) -> Vec<Element> {
     let apply = intents.clone();
     vec![
-        Box::new(Text::new("Firewall").with_role(TextRole::Label)),
-        Box::new(
-            Toggle::from_state(enabled)
-                .with_id("firewall-enabled")
-                .with_accessible_name("Firewall"),
-        ),
-        Box::new(Text::new("Panic mode").with_role(TextRole::Label)),
-        Box::new(
-            Toggle::from_state(panic)
-                .with_id("firewall-panic")
-                .with_accessible_name("Panic mode"),
-        ),
+        Box::new(LabelledSwitch::new(
+            "Firewall",
+            "firewall-enabled",
+            enabled.clone(),
+        )),
+        Box::new(LabelledSwitch::new(
+            "Panic mode",
+            "firewall-panic",
+            panic.clone(),
+        )),
         Box::new(
             Button::new("firewall-apply", "Apply", None)
                 .role(ButtonRole::Primary)
@@ -230,6 +228,75 @@ pub(crate) fn header_actions(
                 .on_effect(move || apply.push(Intent::Apply)),
         ),
     ]
+}
+
+/// A switch with its name beside it, as one header action: the row keeps
+/// the name and the switch together, and the overflow menu lists it by that
+/// name with its state.
+struct LabelledSwitch {
+    row: Row,
+    name: &'static str,
+    id: String,
+    state: LocalState<bool>,
+}
+
+impl LabelledSwitch {
+    fn new(name: &'static str, id: &str, state: LocalState<bool>) -> Self {
+        let row = Row::new()
+            .no_wrap()
+            .push(Box::new(Text::new(name).with_role(TextRole::Label)))
+            .push(Box::new(
+                Toggle::from_state(&state)
+                    .with_id(id)
+                    .with_accessible_name(name),
+            ));
+        Self {
+            row,
+            name,
+            id: id.to_string(),
+            state,
+        }
+    }
+}
+
+impl Decorator for LabelledSwitch {
+    type Inner = Row;
+
+    fn inner(&self) -> &Row {
+        &self.row
+    }
+
+    fn inner_mut(&mut self) -> &mut Row {
+        &mut self.row
+    }
+
+    fn accessibility(&self) -> Option<AccessNode> {
+        Some(
+            ui::widget::toggle_accessibility(
+                self.state.with(|on| *on),
+                false,
+                true,
+                Some(self.name),
+            )
+            .with_semantic_key(&self.id)
+            .with_action_target(&self.id),
+        )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::AppModel,
+        path: &ui::widget::ModelPath,
+    ) -> bool {
+        match action {
+            ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck => {
+                self.state.update(|on| *on = !*on);
+                true
+            }
+            _ => self.row.perform_action(action, state, path),
+        }
+    }
 }
 
 /// Nothing to show: firewalld cannot be read. One sentence, one action.
@@ -518,8 +585,8 @@ fn rules(model: &PageModel<'_>, intents: &Intents, switches: &Switches) -> Eleme
             continue;
         }
         let title = match action {
-            Action::Allow => "Allow rules",
-            Action::Deny => "Deny rules",
+            Action::Allow => "Rules that allow",
+            Action::Deny => "Rules that deny",
         };
         groups = groups.push(Box::new(
             Section::new(vec![Box::new(rule_table(
@@ -582,8 +649,8 @@ fn rule_table(
         Action::Deny => "firewall-deny-rules",
     })
     .with_accessible_name(match action {
-        Action::Allow => "Allow rules",
-        Action::Deny => "Deny rules",
+        Action::Allow => "Rules that allow",
+        Action::Deny => "Rules that deny",
     })
     .selectable(true);
     let ids: Vec<RuleId> = rows.iter().map(|row| row.id).collect();
