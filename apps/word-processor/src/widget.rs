@@ -94,6 +94,7 @@ use image_layout::{
     wrap as image_wrap,
 };
 use layout_cache::{ShapeKeyInput, shape_key};
+pub use proofing::PersonalDictionary;
 use proofing::misspelled_spans;
 #[cfg(test)]
 use text_runs::block_runs;
@@ -1236,29 +1237,29 @@ struct ViewPreferences {
 struct ProofingPreferences {
     enabled: bool,
     language: String,
-    /// The word list "Add to dictionary" persists to and a new dictionary
-    /// loads from; `None` keeps added words in memory only.
-    user_dictionary: Option<std::path::PathBuf>,
+    /// The person's own words, which "Add to dictionary" adds to and the
+    /// dictionary is built with; `None` until the editor is attached, which
+    /// keeps added words in memory only.
+    personal: Option<ui::framework::Setting<proofing::PersonalDictionary>>,
+    /// The personal words the dictionary was last built with.
+    personal_words: proofing::PersonalDictionary,
 }
 
 impl ProofingPreferences {
-    /// The session's language and the person's word list. A unit test starts
-    /// from a fixed English checker with no persisted words instead, so its
-    /// results do not depend on the host locale or on words the developer has
-    /// added; a test that exercises either sets it explicitly.
+    /// The session's language. A unit test starts from a fixed English
+    /// checker instead, so its results do not depend on the host locale; a
+    /// test that exercises another sets it explicitly. The person's words
+    /// arrive with the editor's settings when it is attached.
     fn for_session() -> Self {
-        if cfg!(test) {
-            Self {
-                enabled: true,
-                language: "en_US".to_owned(),
-                user_dictionary: None,
-            }
-        } else {
-            Self {
-                enabled: true,
-                language: spellcheck::default_language(),
-                user_dictionary: spellcheck::user_dict_path(),
-            }
+        Self {
+            enabled: true,
+            language: if cfg!(test) {
+                "en_US".to_owned()
+            } else {
+                spellcheck::default_language()
+            },
+            personal: None,
+            personal_words: proofing::PersonalDictionary::default(),
         }
     }
 }
@@ -1409,8 +1410,8 @@ pub struct WordProcessorWidget {
     /// ~75k words, so building it eagerly would slow every cold start). Cloned
     /// once from the process-wide shared built-in list (parsed at most once per
     /// process), then **owned** by this widget so "Add to dictionary" can splice
-    /// user words into it via [`spellcheck::Dictionary::add_word`]. Persisted
-    /// user words are layered in via `with_user_dict` on first build.
+    /// user words into it via [`spellcheck::Dictionary::add_word`]. The
+    /// person's own words are layered in when it is built.
     dict: Option<spellcheck::Dictionary>,
     /// Whether spell-checking (the red squiggles) is enabled. Default ON.
     /// Document/session dictionary selected for multilingual checking.
@@ -1713,6 +1714,23 @@ impl WordProcessorWidget {
         {
             eprintln!("word-processor: paragraphs unreadable: {error}");
         }
+    }
+
+    /// Whether `word` is spelled right here: in the dictionary, or one of
+    /// the person's own words.
+    pub fn is_spelled_right(&mut self, word: &str) -> bool {
+        self.dictionary().contains(word)
+    }
+
+    /// Build the spelling dictionary with the person's own words, and keep
+    /// the words they add there.
+    pub(crate) fn follow_personal_dictionary(
+        &mut self,
+        personal: ui::framework::Setting<proofing::PersonalDictionary>,
+    ) {
+        self.proofing.personal = Some(personal);
+        self.dict = None;
+        self.spell_cache.clear();
     }
 
     /// The framework presented a new document state: draw it.
@@ -2918,14 +2936,19 @@ impl WordProcessorWidget {
     /// with any persisted user words layered in. Owned so "Add to dictionary"
     /// can mutate it.
     fn dictionary(&mut self) -> &mut spellcheck::Dictionary {
-        let user_dictionary = self.proofing.user_dictionary.as_deref();
-        self.dict.get_or_insert_with(|| {
-            let mut d = (*shared_dictionary()).clone();
-            if let Some(path) = user_dictionary {
-                d.load_user_dict_from(path);
+        // Words added on another device, or in another window, arrive with
+        // the setting: build the dictionary again when they change.
+        if let Some(personal) = &self.proofing.personal {
+            let words = personal.get();
+            if words != self.proofing.personal_words {
+                self.proofing.personal_words = words;
+                self.dict = None;
+                self.spell_cache.clear();
             }
-            d
-        })
+        }
+        let personal = &self.proofing.personal_words;
+        self.dict
+            .get_or_insert_with(|| personal.over(&shared_dictionary()))
     }
 
     /// Misspelled byte spans for a body block, using `spell_cache` (keyed by the
@@ -10849,6 +10872,11 @@ impl Widget for WordProcessorWidget {
         "WordProcessor"
     }
 
+    // A test reaches the editor its framework app hosts.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     /// The word processor's local accessibility semantics: the editable
     /// `Role::Document` root. Blocks render directly, not as child widgets, so
     /// the full subtree comes from [`WordProcessorWidget::accessibility_tree`]
@@ -12651,15 +12679,17 @@ impl WordProcessorWidget {
             }
             CtxAction::SelectAll => self.select_all_via_primitive(state),
             CtxAction::AddToDictionary(word) => {
-                let user_dictionary = self.proofing.user_dictionary.clone();
-                let dict = self.dictionary();
-                if dict.add_word(&word) {
-                    // Persist best-effort, then drop the spell cache so every
-                    // block re-checks against the updated dictionary and the
+                if self.proofing.personal_words.add(&word) {
+                    // Keep it with the person's settings, then build the
+                    // dictionary again so every block re-checks and the
                     // squiggle clears on the next draw.
-                    if let Some(path) = user_dictionary {
-                        let _ = dict.save_user_dict_to(&path);
+                    if let Some(personal) = &self.proofing.personal {
+                        let words = self.proofing.personal_words.clone();
+                        if let Err(error) = personal.set(words) {
+                            eprintln!("word-processor: could not keep the word: {error}");
+                        }
                     }
+                    self.dict = None;
                     self.spell_cache.clear();
                 }
             }

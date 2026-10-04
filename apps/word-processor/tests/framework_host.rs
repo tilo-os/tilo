@@ -643,3 +643,23 @@ fn scenarios_stage_the_document_through_actions() {
         }
     }
 }
+
+/// The words a person added to the dictionary are their own settings: a
+/// window opened later, on any of their devices, knows them.
+#[test]
+fn the_persons_own_words_are_spelled_right_in_every_window() {
+    use word_processor::{PersonalDictionary, WordProcessorWidget};
+    let mut app = open();
+    let flagged =
+        app.with_surface(|editor: &mut WordProcessorWidget| !editor.is_spelled_right("qwordz"));
+    assert_eq!(flagged, Some(true), "an unknown word is flagged");
+    app.settings::<PersonalDictionary>()
+        .set(&PersonalDictionary {
+            dictionary_words: vec!["qwordz".into()],
+        })
+        .unwrap();
+    let mut app = app.reopen().unwrap();
+    let known =
+        app.with_surface(|editor: &mut WordProcessorWidget| editor.is_spelled_right("qwordz"));
+    assert_eq!(known, Some(true), "the person's own word is known");
+}

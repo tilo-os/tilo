@@ -295,6 +295,7 @@ impl ResourceSurface<Document> for WordProcessorWidget {
             let format = crate::WpFormat::from_path(&path);
             self.set_file(path, format);
         }
+        self.follow_personal_dictionary(cx.settings());
         self.attach_framework(cx.live(), cx.dispatcher());
     }
 
