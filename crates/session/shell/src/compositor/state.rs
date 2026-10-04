@@ -82,10 +82,10 @@ use smithay::wayland::xdg_activation::{
 use smithay::{
     delegate_compositor, delegate_content_type, delegate_cursor_shape, delegate_data_control,
     delegate_data_device, delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale,
-    delegate_idle_inhibit, delegate_input_method_manager, delegate_keyboard_shortcuts_inhibit,
+    delegate_idle_inhibit, delegate_keyboard_shortcuts_inhibit,
     delegate_output, delegate_pointer_constraints, delegate_pointer_gestures,
     delegate_primary_selection, delegate_relative_pointer,
-    delegate_seat, delegate_session_lock, delegate_shm,
+    delegate_session_lock, delegate_shm,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
     delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
 };
@@ -713,6 +713,9 @@ pub struct State {
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
     /// tree and positioned by [`crate::compositor::frame::FrameBuilder`].
     pub osk_surface: Option<u64>,
+    /// Text commits the on-screen keyboard has made into focused fields this
+    /// session: what a person typed on it, counted but never kept.
+    pub osk_commits: u64,
     /// Toplevels the compositor has asked to close, each with the moment its
     /// frame callbacks stop going unthrottled. See
     /// [`Self::ask_toplevel_to_close`].
@@ -1008,6 +1011,22 @@ impl State {
     /// Whether the focused client has committed an enabled text-input-v3
     /// session. This is the compositor's source of truth for OSK visibility;
     /// Wayland xdg-toplevels have no client-side visibility request.
+    /// Re-send `leave` and `enter` to the focused client's text inputs.
+    ///
+    /// Smithay activates the input method only when a field enables its text
+    /// input. The on-screen keyboard binds its input method shortly before
+    /// its surface appears; a field that was already enabled by then (the
+    /// tap that focused it is often the touch that started the keyboard)
+    /// would otherwise never reach it. A client re-enables an IME-allowed
+    /// field on `enter`, which activates the keyboard that is now there.
+    pub fn reannounce_text_input_focus(&self) {
+        let text_input = self.seat.text_input();
+        if text_input.focus().is_some() {
+            text_input.leave();
+            text_input.enter();
+        }
+    }
+
     pub fn text_input_active(&self) -> bool {
         let mut active = false;
         self.seat
@@ -1193,6 +1212,7 @@ impl State {
             text_fields: crate::compositor::text_commit::TextFields::default(),
             text_commit: crate::compositor::text_commit::TextCommit::default(),
             osk_surface: None,
+            osk_commits: 0,
             closing_toplevels: HashMap::new(),
             pending_floating_toplevels: Vec::new(),
             floating_toplevels: Vec::new(),
@@ -3485,6 +3505,10 @@ pub struct ClientState {
     /// id it announces becomes `legacy.<guest>.<app id>`. Claiming this only
     /// lowers what a window is trusted with, so it needs no proof.
     pub legacy_guest: Option<legacy_agent_protocol::GuestOs>,
+    /// Whether the client asked the seat for a `wl_touch`. A touch sequence
+    /// sent to a surface of a client without one reaches nothing, so such a
+    /// client gets the pointer events touch is emulated as instead.
+    pub touch_bound: std::sync::atomic::AtomicBool,
 }
 
 /// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
@@ -3503,6 +3527,7 @@ impl Default for ClientState {
             executable: None,
             pid: None,
             legacy_guest: None,
+            touch_bound: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -4822,6 +4847,7 @@ impl XdgShellHandler for State {
         if trusted_osk_identity(surface.wl_surface(), app_id.as_deref()) {
             self.client_input.promote_to_overlay(surface_id);
             self.osk_surface = Some(surface_id);
+            self.reannounce_text_input_focus();
         } else if !floating && !presentation {
             if let Some(room) = attributed_room {
                 let adopted = {
@@ -4960,6 +4986,7 @@ impl XdgShellHandler for State {
                 };
                 self.client_input.promote_to_overlay(surface_id);
                 self.osk_surface = Some(surface_id);
+                self.reannounce_text_input_focus();
                 return;
             }
             if self.promote_floating_toplevel(surface_id, &app_id) {
@@ -5429,10 +5456,130 @@ delegate_xdg_dialog!(State);
 delegate_xdg_decoration!(State);
 delegate_shm!(State);
 delegate_dmabuf!(State);
-delegate_seat!(State);
+// `wl_seat` is Smithay's, with one observation added: whether each client
+// asked for a `wl_touch` (see `ClientState::touch_bound`). The rest of the
+// seat (pointer, keyboard, touch objects) is delegated unchanged.
+smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
+    WlSeat: smithay::wayland::seat::SeatGlobalData<State>
+] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_server::protocol::wl_pointer::WlPointer: smithay::wayland::seat::PointerUserData<State>
+] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_server::protocol::wl_keyboard::WlKeyboard: smithay::wayland::seat::KeyboardUserData<State>
+] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_server::protocol::wl_touch::WlTouch: smithay::wayland::seat::TouchUserData<State>
+] => SeatState<State>);
+
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        WlSeat,
+        smithay::wayland::seat::SeatUserData<State>,
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &WlSeat,
+        request: smithay::reexports::wayland_server::protocol::wl_seat::Request,
+        data: &smithay::wayland::seat::SeatUserData<State>,
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        if matches!(
+            request,
+            smithay::reexports::wayland_server::protocol::wl_seat::Request::GetTouch { .. }
+        ) && let Some(client_state) = client.get_data::<ClientState>()
+        {
+            client_state
+                .touch_bound
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        <SeatState<State> as smithay::reexports::wayland_server::Dispatch<
+            WlSeat,
+            smithay::wayland::seat::SeatUserData<State>,
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &WlSeat,
+        data: &smithay::wayland::seat::SeatUserData<State>,
+    ) {
+        <SeatState<State> as smithay::reexports::wayland_server::Dispatch<
+            WlSeat,
+            smithay::wayland::seat::SeatUserData<State>,
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
 // Text input is dispatched in `compositor::text_commit`, which follows each
 // field's declared content type before handing the request to Smithay.
-delegate_input_method_manager!(State);
+// The input-method manager is Smithay's. `zwp_input_method_v2` is too, with
+// the on-screen keyboard's commits counted on the way (`State::osk_commits`).
+smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2:
+    smithay::wayland::input_method::InputMethodManagerGlobalData
+] => InputMethodManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2: ()
+] => InputMethodManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2:
+    smithay::wayland::input_method::InputMethodKeyboardUserData<State>
+] => InputMethodManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2:
+    smithay::wayland::input_method::InputMethodPopupSurfaceUserData
+] => InputMethodManagerState);
+
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+        smithay::wayland::input_method::InputMethodUserData<State>,
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+        request: smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::Request,
+        data: &smithay::wayland::input_method::InputMethodUserData<State>,
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        use smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::Request;
+        if matches!(request, Request::CommitString { .. })
+            && client.get_data::<ClientState>().is_some_and(|data| {
+                data.input_method
+                    == Some(crate::compositor::input_method::TrustedInputMethod::OnScreenKeyboard)
+            })
+        {
+            state.osk_commits = state.osk_commits.saturating_add(1);
+        }
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+            smithay::wayland::input_method::InputMethodUserData<State>,
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+        data: &smithay::wayland::input_method::InputMethodUserData<State>,
+    ) {
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+            smithay::wayland::input_method::InputMethodUserData<State>,
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
 delegate_virtual_keyboard_manager!(State);
 delegate_pointer_gestures!(State);
 delegate_cursor_shape!(State);

@@ -449,6 +449,8 @@ pub struct FrameBuilder {
     floating_transfer_proxies: Vec<FloatingTransferProxy>,
     osk_anchor_x: Option<f64>,
     osk_active: bool,
+    /// [`crate::compositor::state::State::osk_commits`], for the state dump.
+    osk_commits: u64,
     /// A layout rebuild invalidates every Taffy node id held by the native
     /// input loop. Re-seat its external focus cursor before the next event;
     /// otherwise the first-login wizard starts unfocused and a step change
@@ -672,6 +674,7 @@ impl FrameBuilder {
             floating_transfer_proxies: Vec::new(),
             osk_anchor_x: None,
             osk_active: false,
+            osk_commits: 0,
             focus_tree_changed: true,
             native_focus_ordinal: None,
             last_produced_sections: None,
@@ -2858,6 +2861,22 @@ impl FrameBuilder {
             .then_some((keyboard.surface_id(), rect))
     }
 
+    /// Record how many commits the on-screen keyboard has made.
+    pub fn set_osk_commits(&mut self, commits: u64) {
+        self.osk_commits = commits;
+    }
+
+    /// How many commits the on-screen keyboard has made this session.
+    pub fn osk_commits(&self) -> u64 {
+        self.osk_commits
+    }
+
+    /// Whether the trusted on-screen keyboard service has a surface, shown
+    /// or not.
+    pub fn osk_connected(&self) -> bool {
+        self.osk_overlay.is_some()
+    }
+
     /// The compositor-owned keyboard's painted rectangle, if it is currently
     /// visible. Native output membership uses this rather than the focused
     /// app's rectangle: the keyboard is its own Wayland surface and may move
@@ -2899,6 +2918,13 @@ impl FrameBuilder {
         let mut best: Option<(f64, winit::window::CursorIcon)> = None;
         chrome_cursor_walk(self.host.as_ref(), point, &mut best);
         best.map(|(_, icon)| icon)
+    }
+
+    /// Whether a chrome widget under `point` handles a touch contact that
+    /// starts there itself, rather than through the pointer events a touch
+    /// is otherwise turned into. Mirrors `ui::App` for application windows.
+    pub fn claims_raw_touch_at(&self, point: vello::kurbo::Point) -> bool {
+        claims_raw_touch_walk(self.host.as_ref(), point)
     }
 
     /// Inner node id (host's root child). Required by the input dispatch
@@ -3260,6 +3286,7 @@ impl FrameBuilder {
             }
         };
         put("add_workspace".into(), host.add_workspace_rect_for_tests());
+        launchpad_targets(host.as_ref(), &mut put);
         for (key, tab) in [
             ("general", WsTab::General),
             ("members", WsTab::Members),
@@ -3329,6 +3356,33 @@ impl FrameBuilder {
             put(name.to_string(), rect);
         }
     }
+}
+
+/// The first-use launchpad's cards, which it paints and hit-tests itself.
+fn launchpad_targets(
+    widget: &dyn ui::widget::Widget,
+    put: &mut impl FnMut(String, vello::kurbo::Rect),
+) {
+    if let Some(launchpad) = widget
+        .as_any()
+        .and_then(|any| any.downcast_ref::<tilo_desktop::launchpad::CollaborationLaunchpad>())
+    {
+        for (name, rect) in launchpad.targets() {
+            put(name, rect);
+        }
+        return;
+    }
+    for child in widget.children() {
+        launchpad_targets(child, put);
+    }
+}
+
+fn claims_raw_touch_walk(widget: &dyn ui::widget::Widget, point: vello::kurbo::Point) -> bool {
+    (widget.get_rect().contains(point) && widget.claims_raw_touch(point))
+        || widget
+            .children()
+            .into_iter()
+            .any(|child| claims_raw_touch_walk(child, point))
 }
 
 fn chrome_cursor_walk(
