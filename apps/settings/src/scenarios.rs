@@ -100,45 +100,6 @@ pub fn staged(scenario: Option<&str>) -> Staged {
     }
 }
 
-/// A `NetworkPane` populated with a deterministic scan list, a connected
-/// wired link, and a secure network's password prompt pre-expanded — the
-/// state the connect flow reaches after clicking "Connect" on a locked
-/// network. What the `network` scenario shows.
-pub(crate) fn network_pane() -> crate::panes::network::NetworkPane {
-    use os_actions::{WifiNetworkInfo, WiredInfo};
-    let nets = vec![
-        WifiNetworkInfo {
-            ssid: "Home_Network".into(),
-            signal: 4,
-            secure: true,
-            security: os_actions::WifiSecurity::Wpa3,
-            connected: true,
-        },
-        WifiNetworkInfo {
-            ssid: "Cafe_Guest".into(),
-            signal: 3,
-            secure: false,
-            security: os_actions::WifiSecurity::Open,
-            connected: false,
-        },
-        WifiNetworkInfo {
-            ssid: "Office_5G".into(),
-            signal: 2,
-            secure: true,
-            security: os_actions::WifiSecurity::Wpa2,
-            connected: false,
-        },
-    ];
-    crate::panes::network::NetworkPane::new_demo(nets)
-        .with_wired(WiredInfo {
-            connected: true,
-            device: Some("enp3s0".into()),
-            speed: Some("1000 Mb/s".into()),
-            ipv4: Some("192.168.1.42".into()),
-        })
-        .with_expanded("Office_5G")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

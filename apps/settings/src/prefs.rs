@@ -1261,7 +1261,7 @@ pub(crate) mod test_env {
         // Field order is drop order: restore the environment before the
         // directory it points at disappears.
         _env: tilo_test_env::ScopedEnv,
-        dir: tempfile::TempDir,
+        _dir: tempfile::TempDir,
     }
 
     impl ConfigGuard {
@@ -1272,17 +1272,10 @@ pub(crate) mod test_env {
                 .expect("create test config dir");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_CONFIG_HOME", dir.path());
-            Self { _env: env, dir }
-        }
-
-        /// The Tilo config root inside the redirected `XDG_CONFIG_HOME`.
-        pub(crate) fn config_root(&self) -> PathBuf {
-            self.dir.path().join("tilo")
-        }
-
-        /// The app over this guard's config root.
-        pub(crate) fn app(&self) -> SettingsApp {
-            SettingsApp::with_config_root(self.config_root())
+            Self {
+                _env: env,
+                _dir: dir,
+            }
         }
     }
 
