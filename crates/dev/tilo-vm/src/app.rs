@@ -45,6 +45,7 @@ use crate::vmbuild;
 
 mod device;
 mod kernel;
+mod reach;
 mod scenario;
 
 #[derive(Debug, Clone, Copy)]
@@ -381,6 +382,34 @@ fn short(hash: &str) -> &str {
 }
 
 /// What an apply did, in one sentence per consequence.
+/// The rest of [`describe_apply`] for a laptop's `device` slot, the owner's
+/// login: what merged, which services and desktops restarted, or why not.
+fn describe_login(result: &ApplyResult, desktops: &[&str], text: &mut String) {
+    text.push_str("; merged into the machine's /usr with systemd-sysext");
+    let services: Vec<&str> = result
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::RestartUserUnit { unit, .. } => Some(unit.as_str()),
+            _ => None,
+        })
+        .collect();
+    if !services.is_empty() {
+        let _ = write!(text, "; restarted {}", services.join(", "));
+    }
+    for user in desktops {
+        let _ = write!(
+            text,
+            "; {user}'s desktop restarted in place (still logged in; apps reopen)"
+        );
+    }
+    for action in &result.actions {
+        if let Action::Deferred { reason } = action {
+            let _ = write!(text, "; {reason}");
+        }
+    }
+}
+
 pub fn describe_apply(result: &ApplyResult) -> String {
     if !result.changed {
         return format!(
@@ -402,7 +431,19 @@ pub fn describe_apply(result: &ApplyResult) -> String {
             _ => None,
         })
         .collect();
+    let desktops: Vec<&str> = result
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::RestartDesktop { user } => Some(user.as_str()),
+            _ => None,
+        })
+        .collect();
+    let login = !desktops.is_empty()
+        || (result.slot == tilo_vm_protocol::DEVICE_SLOT
+            && result.actions.contains(&Action::SysextRefresh));
     match result.policy {
+        Policy::SessionRestart if login => describe_login(result, &desktops, &mut text),
         Policy::SessionRestart => {
             text.push_str("; session restarted (logout, user manager restart, login)");
         }
@@ -429,6 +470,12 @@ pub fn describe_apply(result: &ApplyResult) -> String {
                     text,
                     "; restarted the sessions of every slot so they see it: {}",
                     restarted_sessions.join(", ")
+                );
+            }
+            for user in &desktops {
+                let _ = write!(
+                    text,
+                    "; {user}'s desktop restarted in place (still logged in)"
                 );
             }
         }
@@ -604,17 +651,34 @@ impl App {
         commands
     }
 
+    /// Open tilo-vmd's RPC. A device is reached where it is now
+    /// ([`Self::endpoint`]), and a connection lost to a roam between that
+    /// check and ssh is tried once more.
     fn connect(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
         let adapter = Self::adapter(vm)?;
-        let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
         let debug = Self::debug_commands(adapter.as_ref(), &vm.name);
-        let remote = match Remote::connect(
-            &vm.name,
-            &endpoint,
-            vm.entry.key.as_deref(),
-            vm.entry.daemon.as_deref(),
-            debug,
-        ) {
+        let mut retried = false;
+        let (endpoint, connected) = loop {
+            let endpoint = self.endpoint(vm)?;
+            let connected = Remote::connect(
+                &vm.name,
+                &endpoint,
+                vm.entry.key.as_deref(),
+                vm.entry.daemon.as_deref(),
+                debug.clone(),
+            );
+            match &connected {
+                Err(CliError::Unreachable { detail, .. })
+                    if !retried
+                        && vm.entry.hypervisor == hypervisor::DEVICE
+                        && crate::reach::lost(detail) =>
+                {
+                    retried = true;
+                }
+                _ => break (endpoint, connected),
+            }
+        };
+        let remote = match connected {
             Ok(remote) => remote,
             // SSH works; whether vm upgrade can fix it depends on bootc.
             Err(CliError::ProtocolMismatch { client, daemon, .. }) => {
@@ -657,6 +721,14 @@ impl App {
         adapter: &dyn Hypervisor,
         error: &CliError,
     ) -> ConnectFailure {
+        if adapter.suspended(&vm.vm(), &mut self.runner) == Some(true) {
+            return ConnectFailure {
+                state: "asleep",
+                summary: "suspended (the hypervisor reports it is asleep)".into(),
+                ssh: false,
+                next: vec![format!("tilo-vm vm wake {}", vm.name)],
+            };
+        }
         let running = adapter.running(&vm.vm(), &mut self.runner);
         let debug = Self::debug_commands(adapter, &vm.name);
         connect_failure(&vm.name, running, &debug, error)
@@ -1137,6 +1209,8 @@ impl App {
             VmCommand::Create(args) => self.vm_create(args),
             VmCommand::Add(args) => self.vm_add(&args),
             VmCommand::Start { name } => self.vm_start(name.as_deref()),
+            VmCommand::Wake { name } => self.vm_wake(name.as_deref()),
+            VmCommand::Awake { name, hold, off } => self.vm_awake(name.as_deref(), hold, off),
             VmCommand::Restart { name } => {
                 let vm = self.resolve_vm(name.as_deref())?;
                 if !Self::adapter(&vm)?.powers_on() {
@@ -1225,7 +1299,7 @@ impl App {
         let adapter = Self::adapter(&vm)?;
         let mut lock = None;
         if !force {
-            let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+            let endpoint = self.endpoint(&vm)?;
             match remote::hold_vm_lock(&endpoint, vm.entry.key.as_deref()) {
                 LockOutcome::Held(held) => lock = Some(held),
                 LockOutcome::Busy => {
@@ -1241,17 +1315,14 @@ impl App {
         // A session holding logind's power-key lock (on seat0 it owns the
         // key) turns the ACPI request into its own power-key action, so the
         // guest is asked directly next, and powered off as a last resort.
-        let poweroff = adapter
-            .ssh_endpoint(&vm.vm(), &mut self.runner)
-            .ok()
-            .map(|endpoint| {
-                remote::ssh_command(
-                    &endpoint,
-                    vm.entry.key.as_deref(),
-                    &["systemctl".into(), "poweroff".into()],
-                    false,
-                )
-            });
+        let poweroff = self.endpoint(&vm).ok().map(|endpoint| {
+            remote::ssh_command(
+                &endpoint,
+                vm.entry.key.as_deref(),
+                &["systemctl".into(), "poweroff".into()],
+                false,
+            )
+        });
         let (down, step) = stop_escalating(
             &mut self.runner,
             adapter.as_ref(),
@@ -1459,8 +1530,7 @@ impl App {
             });
         }
         let vm = self.resolve_vm(name)?;
-        let adapter = Self::adapter(&vm)?;
-        let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(&vm)?;
         let line = remote::ssh_command(
             &endpoint,
             vm.entry.key.as_deref(),
@@ -1491,9 +1561,23 @@ impl App {
                     "  running and ready; tilo-vmd {} (protocol {}, {})",
                     remote.hello.daemon_version, remote.hello.protocol, remote.hello.arch
                 ));
+                if let Some(lease) = &remote.hello.awake {
+                    lines.push(format!("  awake: {}", reach::describe_lease(lease)));
+                }
+                let hello = remote.hello.clone();
+                drop(remote);
+                if let Some(wake) = self.refresh_net(&vm) {
+                    lines.push(format!("  wake: {wake}"));
+                    let entry = self.resolve_vm(Some(&vm.name))?.entry;
+                    insert(&mut data, "address", json!(entry.ssh));
+                    insert(&mut data, "hostname", json!(entry.hostname));
+                    insert(&mut data, "mac", json!(entry.mac));
+                    insert(&mut data, "wake", json!(entry.wake));
+                }
                 insert(&mut data, "state", json!("ready"));
                 insert(&mut data, "reachable", json!(true));
-                insert(&mut data, "daemon", json!(remote.hello));
+                insert(&mut data, "awake", json!(hello.awake));
+                insert(&mut data, "daemon", json!(hello));
                 Ok(Outcome::new(lines.join("\n"), data).next(&["tilo-vm status"]))
             }
             Err(error) => {
@@ -2097,6 +2181,10 @@ impl App {
                     "  reachable; tilo-vmd {} ({})",
                     remote.hello.daemon_version, remote.hello.arch
                 ));
+                drop(remote);
+                if let Some(wake) = self.refresh_net(&vm) {
+                    lines.push(format!("  wake: {wake}"));
+                }
                 true
             }
             Err(CliError::RootKeyRefused { install, .. }) => {
@@ -2128,8 +2216,7 @@ impl App {
     /// Restart a device that tilo-vm cannot power on: reboot it over SSH
     /// under the VM lock, wait for the new boot, then for tilo-vmd.
     fn vm_reboot(&mut self, vm: &Resolved) -> Result<Outcome, CliError> {
-        let adapter = Self::adapter(vm)?;
-        let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(vm)?;
         let old_boot = self
             .vm_sh(vm, &endpoint, "cat /proc/sys/kernel/random/boot_id")
             .ok()
@@ -2204,6 +2291,20 @@ impl App {
         .next(&["tilo-vm status"]))
     }
 
+    /// Start the VM when it is off; wake it when it is suspended, since a
+    /// suspended VM is running, not off.
+    fn power_up(&mut self, adapter: &dyn Hypervisor, vm: &Resolved) -> Result<(), CliError> {
+        if adapter.suspended(&vm.vm(), &mut self.runner) == Some(true)
+            && let Some(wake) = adapter.wake(&vm.vm())
+        {
+            run_all(&mut self.runner, &wake)
+        } else if adapter.running(&vm.vm(), &mut self.runner) != Some(true) {
+            run_all(&mut self.runner, &adapter.start(&vm.vm()))
+        } else {
+            Ok(())
+        }
+    }
+
     fn vm_start(&mut self, name: Option<&str>) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(name)?;
         let floor = vm_free_floor(self.registry()?.min_free_bytes(), &vm.entry.hypervisor);
@@ -2223,9 +2324,7 @@ impl App {
             });
         }
         let adapter = Self::adapter(&vm)?;
-        if adapter.running(&vm.vm(), &mut self.runner) != Some(true) {
-            run_all(&mut self.runner, &adapter.start(&vm.vm()))?;
-        }
+        self.power_up(adapter.as_ref(), &vm)?;
         let started = Instant::now();
         let mut reachable = false;
         let mut no_daemon = None;
@@ -2361,8 +2460,7 @@ impl App {
 
     fn vm_upgrade(&mut self, args: &UpgradeArgs) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(args.name.as_deref())?;
-        let adapter = Self::adapter(&vm)?;
-        let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(&vm)?;
         let Some(from) = args.from.as_deref() else {
             if let Some(layout) = args.image.as_deref().map(Path::new)
                 && imageup::is_layout(layout)
@@ -3506,8 +3604,7 @@ impl App {
         no_reboot: bool,
     ) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(name)?;
-        let adapter = Self::adapter(&vm)?;
-        let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(&vm)?;
         let facts = self.vm_facts(&vm, &endpoint, "vm rollback-image")?;
         let Some(target) = facts.bootc.rollback.clone() else {
             return Err(CliError::Unsupported {
@@ -3675,7 +3772,7 @@ impl App {
         // Fail on a missing slot before downloading anything.
         self.connect(vm)?.call(SlotShow { name: slot.clone() })?;
         let packages: Vec<String> = apps.apps.iter().map(|a| a.package.clone()).collect();
-        let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(vm)?;
         let mut words = vmbuild::daemon_command(vm.entry.daemon.as_deref(), "install-packages");
         words.extend(["--timeout".to_owned(), timeout.to_string()]);
         words.extend(packages.iter().map(|p| vmbuild::sh_quote(p)));
@@ -3729,7 +3826,7 @@ impl App {
         command: &[String],
     ) -> Result<Outcome, CliError> {
         let slot = self.slot_name(name)?;
-        let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(vm)?;
         let line = remote::ssh_command(
             &endpoint,
             vm.entry.key.as_deref(),
@@ -3748,10 +3845,7 @@ impl App {
     /// Does the VM have bootc (so vm upgrade can move it)? `None` when
     /// SSH does not say.
     fn vm_has_bootc(&mut self, vm: &Resolved) -> Option<bool> {
-        let endpoint = Self::adapter(vm)
-            .ok()?
-            .ssh_endpoint(&vm.vm(), &mut self.runner)
-            .ok()?;
+        let endpoint = self.endpoint(vm).ok()?;
         self.probe_bootc(vm, &endpoint)
     }
 
@@ -3973,7 +4067,7 @@ impl App {
                 purpose: "sync this worktree into the VM for an in-VM build".into(),
             });
         }
-        let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(vm)?;
         let id = vmbuild::worktree_id(&worktree, crate::context::hostname().as_deref());
         let rsync =
             vmbuild::rsync_command(&worktree.root, &endpoint, vm.entry.key.as_deref(), &id)?;
@@ -4005,7 +4099,7 @@ impl App {
         subcommand: &str,
         job: &impl serde::Serialize,
     ) -> Result<JobOutput, CliError> {
-        let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let endpoint = self.endpoint(vm)?;
         let command = vmbuild::daemon_command(vm.entry.daemon.as_deref(), subcommand);
         let output = vmbuild::run_job(&vm.name, &endpoint, vm.entry.key.as_deref(), &command, job)?;
         let (JobOutput::Layer { phases, .. } | JobOutput::App { phases, .. }) = &output;
@@ -5465,6 +5559,17 @@ fn slot_line(info: &SlotInfo) -> String {
 /// `status` for a slot that does not exist: create it when the VM has no
 /// slots, else show the ones it has rather than suggest yet another.
 fn missing_slot(name: &str, slots: &[SlotInfo]) -> (Vec<String>, Vec<String>) {
+    if name == tilo_vm_protocol::DEVICE_SLOT {
+        return (
+            vec![format!(
+                "slot: {name} (none here: no board session, and nobody is logged in to Tilo on the display)"
+            )],
+            vec![
+                "log in at the machine, then: tilo-vm status --slot device".into(),
+                "tilo-vm guide devices".into(),
+            ],
+        );
+    }
     let others: Vec<&SlotInfo> = slots.iter().filter(|s| s.kind != SlotKind::Vm).collect();
     if others.is_empty() {
         return (
@@ -5719,7 +5824,7 @@ fn merge_error(data: &mut Value, error: &CliError) {
 /// Why a VM's daemon could not be reached, for `status` and `vm status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectFailure {
-    /// `off`, `no-ssh`, `key-refused`, `no-daemon`, `incompatible` or `error`.
+    /// `off`, `asleep`, `no-ssh`, `key-refused`, `no-daemon`, `incompatible` or `error`.
     pub state: &'static str,
     /// What the VM is doing, in one line.
     pub summary: String,
@@ -5730,8 +5835,11 @@ pub struct ConnectFailure {
 
 impl ConnectFailure {
     fn text(&self, error: &CliError) -> String {
-        // A VM that is off explains every connection error; repeating it is noise.
-        if self.state == "off" {
+        // A VM that is off or suspended explains every connection error;
+        // repeating it is noise.
+        if self.state == "off"
+            || (self.state == "asleep" && !matches!(error, CliError::DeviceAsleep { .. }))
+        {
             return format!("  {}", self.summary);
         }
         format!(
@@ -5764,6 +5872,16 @@ pub fn connect_failure(
         next
     };
     match error {
+        CliError::DeviceAsleep { wakeable, .. } => fail(
+            "asleep",
+            "asleep or gone: it does not answer at its address, nor by name".into(),
+            false,
+            if *wakeable {
+                vec![format!("tilo-vm vm wake {vm}")]
+            } else {
+                vec![format!("tilo-vm vm status {vm}   (once woken by hand)")]
+            },
+        ),
         CliError::RootKeyRefused { .. } => fail(
             "key-refused",
             "running; SSH answers but refuses the root key".into(),
@@ -6269,6 +6387,20 @@ mod tests {
             );
             assert!(
                 describe_apply(&result(Policy::NoRestart, vec![], false)).contains("nothing to do")
+            );
+            let mut login = result(
+                Policy::SessionRestart,
+                vec![
+                    Action::SysextRefresh,
+                    Action::RestartDesktop { user: "me".into() },
+                ],
+                true,
+            );
+            login.slot = "device".into();
+            assert_eq!(
+                describe_apply(&login),
+                "generation 4 applied to slot device; merged into the machine's /usr with \
+                 systemd-sysext; me's desktop restarted in place (still logged in; apps reopen)"
             );
             let vm = describe_apply(&result(
                 Policy::VmRefresh,

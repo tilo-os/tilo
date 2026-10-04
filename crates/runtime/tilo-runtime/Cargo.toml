@@ -48,6 +48,8 @@ libc.workspace = true
 package-store = { path = "../../packaging/package-store" }
 postcard = { workspace = true, features = ["alloc"] }
 rand_core.workspace = true
+# Existing certified Join encoder; no new wire schema or credential.
+runtime-collab = { path = "../runtime-collab", default-features = false }
 runtime-fs = { path = "../runtime-fs" }
 runtime-identity = { path = "../runtime-identity" }
 serde.workspace = true

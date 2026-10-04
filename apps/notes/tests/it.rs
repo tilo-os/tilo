@@ -12,6 +12,8 @@
 
 #[path = "click_link_navigates.rs"]
 mod click_link_navigates;
+#[path = "cold_start.rs"]
+mod cold_start;
 #[path = "e2e_smoke.rs"]
 mod e2e_smoke;
 #[path = "framework_body.rs"]

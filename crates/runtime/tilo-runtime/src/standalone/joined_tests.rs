@@ -280,6 +280,7 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
         .workspace_device_certs
         .insert(room_topic(room).unwrap(), room_cert);
     let mut probe = Joined {
+        executions: super::super::execution::ExecutionPins::new(&joined.owner),
         owner: joined.owner.clone(),
         custody,
         endpoint: joined.endpoint.clone(),
@@ -299,6 +300,25 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
             .action_room(&default_actor, &room.to_string())
             .is_err(),
         "a default root must not borrow the selected root's admission"
+    );
+    let run = probe
+        .admit_mcp_execution(&room.to_string(), "different-own-room", actor)
+        .unwrap();
+    let retained = run.caller().clone();
+    probe.recheck_mcp_executions(room).unwrap();
+    assert!(retained.execution_is_live());
+    let original = probe.custody.workspace_device_certs.clone();
+    probe.custody.workspace_device_certs.clear();
+    assert!(probe.recheck_mcp_executions(room).is_err());
+    assert!(
+        !retained.execution_is_live(),
+        "authority-side original-pin recheck closes retained custody without a wrapper call"
+    );
+    probe.custody.workspace_device_certs = original;
+    probe.recheck_mcp_executions(room).unwrap();
+    assert!(
+        !retained.execution_is_live(),
+        "restoring original selection cannot revive the retired run"
     );
     probe.custody.workspace_device_certs.clear();
     assert!(
@@ -364,6 +384,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         broker,
         room: "private-profile-room".into(),
         joined: Arc::clone(joined),
+        session: None,
     };
     let owner = Caller::local_person(actor)
         .in_room(room.clone())
@@ -470,6 +491,71 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     );
     assert!(joined.action_room(&actor, &own_room.to_string()).is_err());
     assert!(joined.action_room(&actor, "not-a-room").is_err());
+    let execution = joined
+        .admit_mcp_execution(&room.to_string(), &own_room.to_string(), &actor)
+        .unwrap();
+    let presentation = runtime_collab::CertifiedJoinIdentity::decode(execution.presentation())
+        .unwrap()
+        .unwrap();
+    assert_eq!(presentation.workspace_id, room.to_string());
+    let presented: DeviceCert = serde_json::from_slice(&presentation.device_certificate).unwrap();
+    assert_eq!(presented, device);
+    device_key
+        .verifying_key()
+        .verify_strict(
+            &runtime_identity::collaboration_join_signing_bytes(&room.to_string()),
+            &ed25519_dalek::Signature::from_slice(&presentation.proof).unwrap(),
+        )
+        .unwrap();
+    let retained_caller = execution.caller().clone();
+    {
+        use tilo_action_broker::peer_actions::CertificateAuthority as _;
+        let origin = tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+            .unwrap()
+            .new_origin();
+        let authority = super::super::Certificates {
+            room: own_room.to_string(),
+            device: device.device_public_key,
+            policy_time: origin.capture().unwrap(),
+            joined: Arc::downgrade(&joined),
+        };
+        let retained_time = authority.policy_time().unwrap().unwrap();
+        let mut forged = device.clone();
+        forged.device_label =
+            "attacker-supplied certificate claiming the public local device".into();
+        assert!(
+            authority
+                .authorize_join(uuid::Uuid::parse_str(&room.to_string()).unwrap(), &forged)
+                .is_err()
+        );
+        assert!(
+            retained_time.now_ns().is_ok(),
+            "unverified input cannot retire the runtime policy origin"
+        );
+        assert!(
+            retained_caller.execution_is_live(),
+            "unverified input cannot retire an independently pinned real run"
+        );
+        joined.recheck_mcp_executions(room).unwrap();
+    }
+
+    assert_eq!(
+        retained_caller.user_public_key(),
+        Some(&device.user_public_key)
+    );
+    assert_eq!(
+        retained_caller.device_public_key(),
+        Some(&device.device_public_key)
+    );
+    assert!(
+        joined
+            .admit_mcp_execution(
+                &room.to_string(),
+                &own_room.to_string(),
+                "forged-profile-actor"
+            )
+            .is_err()
+    );
     joined
         .owner
         .with_current(room, |view| {
@@ -620,6 +706,16 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     .await;
     assert_changed_custody_refused(&joined, room, &actor);
     assert_runtime_admission_revoked(&joined, room, &actor);
+    assert!(
+        !retained_caller.execution_is_live(),
+        "native enrollment fence synchronously closes captured run custody"
+    );
+    assert!(execution.check(&joined).is_err());
+    assert!(
+        joined
+            .admit_mcp_execution(&room.to_string(), &own_room.to_string(), &actor)
+            .is_err()
+    );
     assert!(
         !joined
             .workspaces()
