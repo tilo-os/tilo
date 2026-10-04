@@ -93,7 +93,6 @@ const SHOT_SCENARIOS: &[&str] = &[
     "import_success",
     "presence",
     "shortcuts",
-    "shortcuts_bottom",
     "find",
     "scrolled",
     "sidebar_scroll",

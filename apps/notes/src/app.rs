@@ -597,6 +597,9 @@ pub struct NotesApp {
     /// the shell shows them (a closed drawer shows no page tree).
     shell_node: Option<NodeId>,
     sidebar_node: Option<NodeId>,
+    /// The page tree had the keyboard when the shortcut sheet opened, and gets
+    /// it back when the sheet closes.
+    shortcuts_return_to_tree: bool,
     main_node: Option<NodeId>,
     /// The theme of the last layout, for what the app measures between frames.
     theme: Theme,
@@ -969,6 +972,7 @@ impl NotesApp {
             header,
             shell_node: None,
             sidebar_node: None,
+            shortcuts_return_to_tree: false,
             main_node: None,
             theme: Theme::dark(),
             legacy_fixture_storage,
@@ -4596,7 +4600,7 @@ impl Widget for NotesApp {
         if self.handle_shortcuts_overlay(event, ctx) {
             return;
         }
-        if self.handle_help_key(event, ctx.handled) {
+        if self.handle_help_key(event, ctx) {
             return;
         }
         if self.handle_find_shortcut(event, *ctx.modifiers, ctx.focus_target, ctx.handled) {
@@ -4937,6 +4941,9 @@ impl NotesApp {
             return false;
         }
         self.shortcuts.handle_event(event, ctx);
+        if !self.shortcuts.is_visible() && std::mem::take(&mut self.shortcuts_return_to_tree) {
+            self.sidebar.set_focus(true);
+        }
         self.self_dirty = true;
         self.refresh_status();
         *ctx.handled = true;
@@ -4950,7 +4957,7 @@ impl NotesApp {
     /// key falls through to the block editor and types a literal `?`; when
     /// the page tree / nothing is focused, `?` opens help. This is the
     /// standard "help key only outside inputs" behaviour.
-    fn handle_help_key(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+    fn handle_help_key(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         if self.main.editor().is_focused() {
             return false;
         }
@@ -4969,8 +4976,19 @@ impl NotesApp {
         if c.as_str() != "?" {
             return false;
         }
+        // The sheet takes the pointer and the keyboard from the page tree
+        // behind it, so no row stays hovered or ringed under the scrim.
+        if let Some(node) = self.sidebar_node {
+            let left = WindowEvent::CursorLeft {
+                device_id: winit::event::DeviceId::dummy(),
+            };
+            self.sidebar
+                .handle_event(&left, &mut ctx.reborrow(ctx.path, node));
+        }
+        self.shortcuts_return_to_tree = self.sidebar.is_focused();
+        self.sidebar.set_focus(false);
         self.shortcuts.set_visible(true);
-        *handled = true;
+        *ctx.handled = true;
         self.refresh_status();
         true
     }
