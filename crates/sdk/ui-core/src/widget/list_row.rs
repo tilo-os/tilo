@@ -1539,7 +1539,7 @@ pub struct ListRow {
     leading: Option<Leading>,
     leading_column: Option<f64>,
     pub(crate) shared_leading: Option<f64>,
-    badge_tooltip: Option<String>,
+    leading_tooltip: Option<String>,
     status: Option<(StatusKind, String)>,
     disclosure: bool,
     checked: Option<bool>,
@@ -1592,7 +1592,7 @@ impl ListRow {
             leading: None,
             leading_column: None,
             shared_leading: None,
-            badge_tooltip: None,
+            leading_tooltip: None,
             status: None,
             disclosure: false,
             checked: None,
@@ -1766,11 +1766,12 @@ impl ListRow {
         self
     }
 
-    /// What the leading badge stands for, shown when the pointer rests on it
-    /// ("Retrieves the resource" for `GET`).
+    /// What the leading badge or icon stands for ("Retrieves the resource"
+    /// for `GET`, "SSH" for a terminal glyph): the tooltip when the pointer
+    /// rests on it, and the row's accessible description.
     #[must_use]
-    pub fn badge_tooltip(mut self, tooltip: impl Into<String>) -> Self {
-        self.badge_tooltip = Some(tooltip.into());
+    pub fn leading_tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.leading_tooltip = Some(tooltip.into());
         self
     }
 
@@ -2266,7 +2267,7 @@ impl ListRow {
         let theme = self.theme.as_ref()?;
         if !matches!(
             self.leading,
-            Some(Leading::Checkbox { .. } | Leading::Badge(_))
+            Some(Leading::Checkbox { .. } | Leading::Badge(_) | Leading::Icon(_))
         ) {
             return None;
         }
@@ -2736,7 +2737,7 @@ impl Widget for ListRow {
     }
 
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
-        if let Some(tooltip) = &self.badge_tooltip
+        if let Some(tooltip) = &self.leading_tooltip
             && let Some(r) = self.leading_hit()
             && r.contains(point)
         {
@@ -2906,7 +2907,7 @@ impl Widget for ListRow {
         let mut node = self
             .with_face(|face| face.accessibility(outer, id.clone()))
             .with_semantic_key(self.activation.id());
-        if let Some(tooltip) = &self.badge_tooltip {
+        if let Some(tooltip) = &self.leading_tooltip {
             node.description = Some(tooltip.clone());
         }
         // The face numbers the actions it shows; address each by its place

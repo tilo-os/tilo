@@ -1398,9 +1398,11 @@ widgets use, so it behaves like them:
   view is an `ObjectHeader::new(name).avatar(name, id)` (or `.icon(icon)`,
   `.square()`) `.caption(text)`: never a hand-stacked `Title` and `Caption`.
 - **ListRow leading column.** `.avatar(name, identity)` for people
-  (`.square()` for accounts and sites), `.icon(icon)` for kinds of things,
+  (`.square()` for accounts and sites), `.icon(icon)` for kinds of things
+  (with `.leading_tooltip(name)` when the glyph is the only place the row
+  says its kind, a connection's protocol for one; never a text prefix),
   `.badge(code)` for a short classifying code (`GET`, `PDF`, `WARN`, with
-  `.badge_tooltip(text)` when the code needs explaining; the code is part of
+  `.leading_tooltip(text)` when the code needs explaining; the code is part of
   the row's name), `.thumbnail(image)` for a picture,
   `.media(source, aspect)` for media art (the title's initials stand in until
   it loads), `.checkbox(checked, f)` for multi-select, `.swatch(colour)` for a
