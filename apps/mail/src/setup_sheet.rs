@@ -317,7 +317,7 @@ fn browser_sign_in(fields: &SetupFields, requests: &Requests) -> Element {
     let requests = Rc::clone(requests);
     let button = Button::new("mail.setup:oauth-sign-in", &fields.sign_in_label(), None)
         .role(ButtonRole::Secondary)
-        .on_click(move || requests.borrow_mut().push(SetupRequest::SignIn));
+        .on_effect(move || requests.borrow_mut().push(SetupRequest::SignIn));
     let available = fields.provider().is_some_and(OAuthProvider::is_configured);
     let note = crate::i18n::t(if available {
         "mail-setup-oauth-note-available"
@@ -445,7 +445,7 @@ fn form(fields: &SetupFields, requests: &Requests, editing: bool, shape: &Shape)
                 Row::new().push(Box::new(
                     Button::new("mail.setup:remove", &label("mail-setup-remove"), None)
                         .role(ButtonRole::Destructive)
-                        .on_click(move || requests.borrow_mut().push(SetupRequest::Remove)),
+                        .on_effect(move || requests.borrow_mut().push(SetupRequest::Remove)),
                 )),
             )),
         );
