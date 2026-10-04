@@ -24,7 +24,7 @@ use crate::color_compat::ColorCompat;
 use crate::icons::{Icon, draw_icon};
 use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle};
-use crate::text_selection::{clipboard_copy, clipboard_paste};
+use crate::text_selection::{clipboard_copy, clipboard_copy_accepted, clipboard_paste};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
@@ -3113,26 +3113,25 @@ impl BlockEditor {
             self.dirty = true;
             return true;
         }
-        if self.document_selection.is_none()
-            && let Some(index) = self.focused
-            && let Some(block) = self.blocks.get(index)
-            && self
-                .image_attachments
+        // A preview's source is the clipboard candidate, not a live text
+        // selection until a replacement actually succeeds.
+        let image_selection = self.focused.and_then(|index| {
+            let block = self.blocks.get(index)?;
+            self.image_attachments
                 .get(&block.id)
-                .is_some_and(|image| !image.editing)
-        {
-            self.document_selection = Some(DocumentSelection {
-                anchor: DocumentPosition {
-                    block: index,
-                    byte: 0,
-                },
-                cursor: DocumentPosition {
-                    block: index,
-                    byte: block.text().len(),
-                },
-            });
-        }
-        let selection = self.document_selection.or_else(|| {
+                .filter(|image| !image.editing)
+                .map(|_| DocumentSelection {
+                    anchor: DocumentPosition {
+                        block: index,
+                        byte: 0,
+                    },
+                    cursor: DocumentPosition {
+                        block: index,
+                        byte: block.text().len(),
+                    },
+                })
+        });
+        let selection = self.document_selection.or(image_selection).or_else(|| {
             let index = self.focused?;
             let line = &self.blocks.get(index)?.line;
             let (start, end) = line
@@ -3155,8 +3154,13 @@ impl BlockEditor {
         if matches!(command, "copy" | "cut") && selection.anchor == selection.cursor {
             return true;
         }
-        if command == "paste" && self.paste_image() {
-            return true;
+        if command == "paste" {
+            let prior = self.document_selection;
+            self.document_selection = prior.or(image_selection);
+            if self.paste_image() {
+                return true;
+            }
+            self.document_selection = prior;
         }
         // An unavailable clipboard must never turn Paste into Delete.
         let replacement = if command == "paste" {
@@ -3167,19 +3171,21 @@ impl BlockEditor {
         } else {
             String::new()
         };
-        if command != "copy" {
-            self.begin_action_intercept();
-        }
         let prior = self.document_selection;
         self.document_selection = Some(selection);
-        if matches!(command, "copy" | "cut")
-            && let Some(text) = self.selected_text()
-        {
-            clipboard_copy(&text);
+        if matches!(command, "copy" | "cut") {
+            let accepted = self
+                .selected_text()
+                .is_some_and(|text| clipboard_copy_accepted(&text));
+            if command == "cut" && !accepted {
+                self.document_selection = prior;
+                return true;
+            }
         }
         if command == "copy" {
             self.document_selection = prior;
         } else {
+            self.begin_action_intercept();
             self.replace_document_selection(&replacement);
             self.set_focus(true);
             let ops = self.take_intercepted_ops();
@@ -3500,7 +3506,19 @@ impl BlockEditor {
             }
             let control = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
             if control && let Key::Character(key) = logical_key {
-                if matches!(key.as_str(), "c" | "x" | "v") {
+                if key == "c" {
+                    // Browser cut first copies to its event clipboard. Copying
+                    // a preview must not expose a replacement text selection.
+                    clipboard_copy(self.blocks[index].text());
+                    *ctx.handled = true;
+                    return true;
+                }
+                if matches!(key.as_str(), "x" | "v") {
+                    let cutting = key == "x";
+                    if cutting && !clipboard_copy_accepted(self.blocks[index].text()) {
+                        *ctx.handled = true;
+                        return true;
+                    }
                     let end = self.blocks[index].text().len();
                     self.select_document_range(
                         DocumentPosition {
@@ -3512,7 +3530,11 @@ impl BlockEditor {
                             byte: end,
                         },
                     );
-                    self.handle_document_selection_ctrl_key(logical_key);
+                    if cutting {
+                        self.replace_document_selection("");
+                    } else {
+                        self.handle_document_selection_ctrl_key(logical_key);
+                    }
                     *ctx.handled = true;
                     return true;
                 }
@@ -5110,8 +5132,9 @@ fn handle_visual_formula_key(
                 false
             }
             "x" | "X" => {
-                if let Some(value) = editor.selected_linear() {
-                    clipboard_copy(&value);
+                if let Some(value) = editor.selected_linear()
+                    && clipboard_copy_accepted(&value)
+                {
                     editor.delete_selection();
                     return true;
                 }
@@ -5992,10 +6015,13 @@ impl BlockEditor {
                 Some(true)
             }
             Key::Character(c) if c.eq_ignore_ascii_case("x") => {
-                if let Some(selected) = self.selected_text() {
-                    clipboard_copy(&selected);
+                if self
+                    .selected_text()
+                    .is_some_and(|selected| clipboard_copy_accepted(&selected))
+                {
+                    self.replace_document_selection("");
                 }
-                Some(self.replace_document_selection(""))
+                Some(true)
             }
             Key::Character(c) if c.eq_ignore_ascii_case("v") => {
                 Some(clipboard_paste().is_none_or(|paste| self.replace_document_selection(&paste)))
