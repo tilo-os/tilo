@@ -153,6 +153,12 @@ impl Resource for Chat {
         Vec::new()
     }
 
+    /// Starting a call is local presentation plus the native voice service,
+    /// never a document action, so it rides the root as an Effect.
+    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
+        actions::start_call_operations()
+    }
+
     fn children(state: &ChatState) -> Vec<PublishedResource> {
         let mut children = publish_document_children(state);
         // Each composer draft is a nested rich-text resource.
@@ -347,6 +353,53 @@ mod tests {
         ChatDoc::seed_if_empty(&mut doc);
         doc.commit();
         doc
+    }
+
+    #[test]
+    fn chat_root_publishes_launchable_start_call_effects_with_video_unavailable() {
+        let state = Chat::read(&seed_doc()).expect("seeded chat state");
+        let published = ui::tilo_resource::publish::<Chat>(Chat::KIND, "Chat", &state);
+        assert_eq!(published.id.as_str(), "chat.workspace");
+        let spec = |id: &str| {
+            published
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("the Chat root publishes {id}"))
+        };
+        for id in ["start-call", "start-video-call"] {
+            let action = spec(id);
+            assert_eq!(action.kind, OperationKind::Effect, "{id}");
+            assert_eq!(
+                action.operation_type.as_deref(),
+                Some(actions::CHAT_OPERATION_TYPE)
+            );
+            assert_eq!(
+                action.contract.discovery,
+                tilo_actions::DiscoveryScope::Launchable,
+                "{id} launches Chat when it is closed"
+            );
+            assert_eq!(action.contract.retry, tilo_actions::RetryPolicy::Idempotent);
+            assert!(
+                action.contract.validate_declaration().is_empty(),
+                "{id}: {:?}",
+                action.contract.validate_declaration()
+            );
+        }
+        assert_eq!(spec("start-call").label, "Start a call");
+        assert_eq!(
+            spec("start-call").contract.availability,
+            tilo_actions::Availability::Available
+        );
+        assert_eq!(spec("start-video-call").label, "Start a video call");
+        assert_eq!(
+            spec("start-video-call").contract.availability,
+            tilo_actions::Availability::Unavailable {
+                code: actions::VIDEO_CALL_UNAVAILABLE.into(),
+                reason: actions::video_call_unavailable_reason(),
+            }
+        );
+        assert!(actions::video_call_unavailable_reason().contains("voice-only"));
     }
 
     #[test]
