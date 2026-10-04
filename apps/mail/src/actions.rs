@@ -353,6 +353,58 @@ pub enum MailAction {
     IngestBaselines { messages: Vec<IngestBaseline> },
     /// The mail server confirmed it holds what the update asked of it.
     ServerApplied(ServerUpdate),
+    /// Send a message: it waits in the mailbox's outbox until a device that
+    /// holds its account delivers it. Taking this back before then takes the
+    /// message out of the outbox unsent.
+    Send(Outgoing),
+    /// Take a message out of the outbox unsent: one still waiting, or one
+    /// its server refused.
+    CancelSend { id: String },
+    /// The account's server accepted the message: it leaves the outbox.
+    Delivered { id: String },
+    /// The account's server refused the message; it stays in the outbox
+    /// with the reason, and is not tried again.
+    SendFailed { id: String, reason: String },
+}
+
+/// A message waiting in the outbox: the account it is sent from (by its
+/// address; the device that delivers it holds the account), what it says,
+/// and the message it answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Outgoing {
+    pub id: String,
+    pub account: String,
+    pub draft: DraftData,
+    #[serde(default)]
+    pub in_reply_to: Option<String>,
+}
+
+impl Outgoing {
+    /// `draft`, sent from `account`, under a new id.
+    pub fn new(account: &str, draft: &Draft) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            account: bounded_text(account, MAX_DRAFT_ADDRESS_CHARS, false),
+            draft: DraftData::from_draft(draft),
+            in_reply_to: draft.in_reply_to.map(|id| id.to_string()),
+        }
+    }
+
+    /// The draft the engine sends.
+    pub fn to_draft(&self) -> Draft {
+        Draft {
+            in_reply_to: self.in_reply_to.as_deref().and_then(|id| id.parse().ok()),
+            ..self.draft.to_draft()
+        }
+    }
+
+    fn is_valid(&self) -> bool {
+        valid_outbox_id(&self.id) && self.account.contains('@') && !self.draft.to.trim().is_empty()
+    }
+}
+
+fn valid_outbox_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().count() <= MAX_MESSAGE_ID_CHARS
 }
 
 /// A message id plus the flags its source reports, used where the document
@@ -642,6 +694,32 @@ impl Action for MailAction {
                 }
             }
             MailAction::ServerApplied(update) => MailDoc::server_applied(doc, update),
+            MailAction::Send(outgoing) => {
+                if !outgoing.is_valid() {
+                    return Err(ActionError::Refused(
+                        "a message needs a sending account and a recipient".into(),
+                    ));
+                }
+                let bounded = Outgoing {
+                    draft: DraftData::from_draft(&outgoing.to_draft()),
+                    ..outgoing.clone()
+                };
+                MailDoc::queue_outgoing(doc, &bounded);
+            }
+            MailAction::CancelSend { id } | MailAction::Delivered { id } => {
+                if valid_outbox_id(id) {
+                    MailDoc::remove_outgoing(doc, id);
+                }
+            }
+            MailAction::SendFailed { id, reason } => {
+                if valid_outbox_id(id) {
+                    MailDoc::fail_outgoing(
+                        doc,
+                        id,
+                        &bounded_text(reason, MAX_FOLDER_NAME_CHARS * 4, false),
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -655,9 +733,10 @@ impl Action for MailAction {
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         match self {
             MailAction::SetRead { .. } => tilo_actions::ChangeKind::Housekeeping,
-            MailAction::IngestBaselines { .. } | MailAction::ServerApplied(_) => {
-                tilo_actions::ChangeKind::External
-            }
+            MailAction::IngestBaselines { .. }
+            | MailAction::ServerApplied(_)
+            | MailAction::Delivered { .. }
+            | MailAction::SendFailed { .. } => tilo_actions::ChangeKind::External,
             _ => tilo_actions::ChangeKind::Content,
         }
     }

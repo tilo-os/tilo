@@ -12,13 +12,13 @@ use tilo_document::RichText;
 use ui::framework::{
     Dispatcher, Effected, Fixture, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{ActionSpec, Resource as PublishedResource};
+use ui::tilo_actions::{ActionParam, ActionSpec, ParamType, Resource as PublishedResource};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry, publish_child};
 use ui::widget::Element;
 
 use crate::actions::{
-    MAIL_ACTION_TYPE, MailAction, MessageRow, ServerUpdate, mailbox_bound_document_actions,
-    mailbox_local_operations, publish_document_children, register,
+    MAIL_ACTION_TYPE, MailAction, MessageRow, Outgoing, ServerUpdate,
+    mailbox_bound_document_actions, mailbox_local_operations, publish_document_children, register,
 };
 use crate::app::MailApp;
 use crate::doc::MailDoc;
@@ -39,6 +39,9 @@ pub struct MailboxState {
     /// What mail servers still have to be told: the document's flags, moves
     /// and permanent deletions they do not hold yet.
     pub server_updates: Vec<ServerUpdate>,
+    /// Messages sent and not yet delivered, with the reason the server
+    /// refused one.
+    pub outbox: Vec<(Outgoing, Option<String>)>,
 }
 
 /// The mail mailbox resource.
@@ -80,6 +83,7 @@ impl Resource for Mail {
             has_draft,
             has_draft_body: MailDoc::draft_body(doc).is_some(),
             server_updates: MailDoc::server_updates(doc),
+            outbox: MailDoc::outbox(doc),
         })
     }
 
@@ -90,8 +94,54 @@ impl Resource for Mail {
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
-        // Prompted / batch mailbox Document specs are state-bound below.
-        Vec::new()
+        let text = |name, description| ActionParam::required(name, ParamType::Text, description);
+        let optional =
+            |name, description| ActionParam::optional(name, ParamType::Text, description);
+        vec![
+            ActionDecl::new(
+                "send-message",
+                "Send message",
+                vec![
+                    text(
+                        "account",
+                        "The address it is sent from: one of the mailbox's accounts",
+                    ),
+                    text("to", "Recipients, comma-separated"),
+                    optional("cc", "Copy recipients, comma-separated"),
+                    optional("bcc", "Blind copy recipients, comma-separated"),
+                    text("subject", "The subject"),
+                    text("body", "The message, as plain text"),
+                ],
+                |args, _| {
+                    let field = |name| args.text(name).unwrap_or_default().to_owned();
+                    let draft = crate::model::Draft {
+                        to: field("to"),
+                        cc: field("cc"),
+                        bcc: field("bcc"),
+                        subject: field("subject"),
+                        body: field("body"),
+                        ..crate::model::Draft::default()
+                    };
+                    Ok(MailAction::Send(Outgoing::new(&field("account"), &draft)))
+                },
+            )
+            .describe(
+                "Puts the message in the outbox; a device that holds the account delivers it. \
+                 Until then, undo takes it back unsent.",
+            )
+            .destructive(),
+            ActionDecl::new(
+                "cancel-send",
+                "Cancel sending",
+                vec![text("id", "The outbox message")],
+                |args, _| {
+                    Ok(MailAction::CancelSend {
+                        id: args.text("id").unwrap_or_default().to_owned(),
+                    })
+                },
+            )
+            .describe("Takes a message out of the outbox unsent."),
+        ]
     }
 
     fn bound_actions(_state: &MailboxState) -> Vec<tilo_actions::ActionSpec> {
@@ -104,6 +154,22 @@ impl Resource for Mail {
 
     fn children(state: &MailboxState) -> Vec<tilo_actions::Resource> {
         let mut children = publish_document_children(state);
+        children.extend(state.outbox.iter().map(|(outgoing, failed)| {
+            let subject = if outgoing.draft.subject.is_empty() {
+                "(no subject)"
+            } else {
+                outgoing.draft.subject.as_str()
+            };
+            let label = match failed {
+                Some(reason) => format!("Not sent: {subject} — {reason}"),
+                None => format!("Sending: {subject}"),
+            };
+            PublishedResource::new(
+                format!("mail.outbox:{}", outgoing.id),
+                "mail.outgoing",
+                label,
+            )
+        }));
         if state.has_draft_body {
             children.push(publish_draft_body());
         }
@@ -290,6 +356,28 @@ impl ResourceSurface<Mail> for MailApp {
             },
         );
         self.follow_projection(projection);
+        let outbox = self.server_outbox();
+        let delivery = cx.drain(
+            |state: &MailboxState| {
+                state
+                    .outbox
+                    .iter()
+                    .filter(|(_, failed)| failed.is_none())
+                    .map(|(outgoing, _)| (outgoing.id.clone(), outgoing.clone()))
+                    .collect()
+            },
+            move |outgoing: Outgoing, cx| {
+                let reply = cx.reply();
+                outbox.borrow_mut().deliver(
+                    outgoing,
+                    Box::new(move |result| {
+                        reply.finish(result.map(|()| tilo_actions::ActionOutput::default()));
+                    }),
+                );
+                Ok(Effected::Pending)
+            },
+        );
+        self.follow_delivery(delivery);
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -386,6 +474,54 @@ mod tests {
             app.mailbox_message_count(),
             before,
             "empty present must not clear unpublished local mail"
+        );
+    }
+
+    /// Sending is an action on the mailbox, the same for the composer and
+    /// an agent: the message waits in the outbox, and undo takes it back
+    /// unsent before a device holding the account delivers it.
+    #[test]
+    fn a_message_is_sent_through_the_outbox_and_undo_takes_it_back_unsent() {
+        use ui::framework::testing::TestApp;
+        use ui::tilo_resource::Invoke;
+
+        let mut app = TestApp::<MailShell>::new().unwrap();
+        let surface = app.agent_surface().to_string();
+        for action in ["send-message", "cancel-send"] {
+            assert!(surface.contains(&format!("\"{action}\"")), "{surface}");
+        }
+        let outgoing = Outgoing::new(
+            "nobody-here@example.test",
+            &crate::model::Draft {
+                to: "you@example.test".into(),
+                subject: "Lunch".into(),
+                body: "Noon?".into(),
+                ..crate::model::Draft::default()
+            },
+        );
+        app.invoke_confirmed(Invoke::apply(&MailAction::Send(outgoing.clone())).unwrap())
+            .unwrap();
+        app.settle();
+        let outbox = app.state().outbox;
+        assert_eq!(outbox.len(), 1, "{outbox:?}");
+        assert_eq!(outbox[0].0.draft.subject, "Lunch");
+        assert!(
+            outbox[0].1.is_none(),
+            "a device without the account leaves it waiting, not refused"
+        );
+        assert!(app.undo(), "sending is an undo step until it is delivered");
+        assert!(app.state().outbox.is_empty(), "undo took it back unsent");
+
+        assert!(
+            app.invoke_confirmed(
+                Invoke::apply(&MailAction::Send(Outgoing {
+                    draft: crate::actions::DraftData::default(),
+                    ..outgoing
+                }))
+                .unwrap()
+            )
+            .is_err(),
+            "a message without a recipient is refused"
         );
     }
 
