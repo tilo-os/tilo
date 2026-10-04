@@ -1979,6 +1979,11 @@ overview-items-shared = { $count ->
 
 # Fenster und Dokumente, die die Shell anzeigt
 shell-window-restoring = Dieses Fenster wird wiederhergestellt …
+peer-window-not-installed = Auf diesem Gerät nicht installiert.
+peer-window-install = { $app } installieren
+peer-window-installing = { $app } wird installiert …
+peer-window-unavailable = { $app } ist für dieses Gerät nicht verfügbar.
+hosted-window-running-on = Läuft auf { $device }
 shell-document-unavailable = Dokument nicht verfügbar
 shell-named-document-unavailable = { $name } nicht verfügbar
 shell-path-open-failed = { $path } kann nicht geöffnet werden: { $error }

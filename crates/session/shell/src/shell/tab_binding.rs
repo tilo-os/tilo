@@ -1278,6 +1278,7 @@ mod tests {
                             app_id: "so.tilo.word-processor".into(),
                             label: "Word Processor".into(),
                             note: "Opening here…".into(),
+                            missing: None,
                         },
                     };
                     let id = tab.id;

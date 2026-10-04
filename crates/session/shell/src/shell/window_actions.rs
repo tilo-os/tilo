@@ -181,6 +181,7 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateErro
             TileContent::WorkspaceActivity
             | TileContent::Foreign { .. }
             | TileContent::PeerWindow { .. }
+            | TileContent::HostedWindow { .. }
             | TileContent::LocalApp { .. } => {
                 return Err(DuplicateError::ForeignWindow);
             }
@@ -573,7 +574,9 @@ pub fn transfer_tab_to_workspace(
         }
         if matches!(
             tile,
-            TileContent::WorkspaceActivity | TileContent::PeerWindow { .. }
+            TileContent::WorkspaceActivity
+                | TileContent::PeerWindow { .. }
+                | TileContent::HostedWindow { .. }
         ) {
             return Err(MoveTabError::Pinned);
         }

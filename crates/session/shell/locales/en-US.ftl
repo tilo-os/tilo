@@ -1976,6 +1976,11 @@ overview-items-shared = { $count ->
 
 # Windows and documents the shell hosts
 shell-window-restoring = Restoring this window…
+peer-window-not-installed = Not installed on this device.
+peer-window-install = Install { $app }
+peer-window-installing = Installing { $app }…
+peer-window-unavailable = { $app } isn't available for this device.
+hosted-window-running-on = Running on { $device }
 shell-document-unavailable = Document unavailable
 shell-named-document-unavailable = { $name } unavailable
 shell-path-open-failed = Cannot open { $path }: { $error }
