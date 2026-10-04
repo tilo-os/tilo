@@ -5,7 +5,7 @@
 //! |---|---|---|
 //! | Documents (collaborative, synced) | resources and records; [`crate::persist`] for a single-document app | Automerge records |
 //! | App files (caches, imports, databases) | [`AppFiles`], [`HostContext::files`] | `tilo_files::Dir` in `tilo_paths::AppPaths`: the per-user directories natively, the origin-private file system in a page |
-//! | Preferences | typed [`Settings`] with a declared [`Scope`], [`HostContext::settings`] | the desktop settings document (`settings-store`), or the host's settings source; personal sections roam between the person's devices |
+//! | Preferences | typed [`Settings`] with a declared [`Scope`], [`HostContext::settings`] | the desktop settings document (`settings-store`), or the host's settings source: in a sandboxed app the shell's records, reached through the app's collaboration channel; personal sections roam between the person's devices |
 //! | Secrets | [`secrets`], [`HostContext::secrets`]; one per document item with `SecretStore::item` | `tilo-secrets`: the Secret Service, the Keychain, the page's wrapped store |
 //!
 //! [`AppStorage`] bundles the three for one app; framework views and
@@ -114,7 +114,8 @@ pub enum Scope {
     DeviceLocal,
     /// A per-user section shared across apps that another owner declares
     /// (`locale`, `text_assistance`). How each of its keys travels is that
-    /// section's, reviewed in `settings_store::continuity`.
+    /// section's, reviewed in `settings_store::continuity`. Only its owner
+    /// writes it: a sandboxed app reads it and nothing more.
     Shared(&'static str),
 }
 

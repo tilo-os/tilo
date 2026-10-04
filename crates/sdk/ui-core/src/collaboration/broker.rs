@@ -186,6 +186,21 @@ pub fn speaker_command(
         .map_err(|_| "the speaker service did not respond".to_string())?
 }
 
+/// Have the connected transport's worker send the app's unsent settings
+/// writes ([`super::channel_settings`]). Without a connected transport they
+/// wait for the primary route, whose join sends them.
+pub(super) fn flush_settings() {
+    let Some(sender) = SETTINGS_COMMAND_BRIDGE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|bridge| bridge.as_ref().and_then(tokio_mpsc::WeakSender::upgrade))
+    else {
+        return;
+    };
+    let _ = enqueue_sdk_command(&sender, SdkCommand::FlushSettings, &BridgeState::new());
+}
+
 /// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions are
 /// bounded. Durable overflow makes the bridge unavailable rather than
 /// silently losing an action or invocation transition; a document change
@@ -476,6 +491,8 @@ enum SdkCommand {
         command: runtime_collab::SpeakerCommand,
         reply: mpsc::SyncSender<Result<runtime_collab::SpeakerReply, String>>,
     },
+    /// Send the app's unsent settings writes over the primary route.
+    FlushSettings,
 }
 
 struct PrimaryHello {
@@ -912,6 +929,7 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
             serialized_bytes(command, &mut meter);
             meter.finish()
         }
+        SdkCommand::FlushSettings => Some(std::mem::size_of::<SdkCommand>()),
     }
 }
 
@@ -2419,6 +2437,7 @@ impl CollaborationManager {
             return Ok(Self::disabled());
         }
         let (app, room) = auto_hello_env();
+        super::channel_settings::install(&app);
         Self::for_route_from(
             SdkConnectSource::Env,
             app,
@@ -2633,6 +2652,7 @@ impl CollaborationManager {
             return Self::disabled();
         }
         let (app_id, cluster_id) = auto_hello_env();
+        super::channel_settings::install(&app_id);
         Self::connect_in_background(
             SdkConnectSource::Env,
             SdkIdentitySource::Inherited(cluster_id),
@@ -3064,6 +3084,8 @@ async fn drive_shovel(
     let mut primary: Option<String> = None;
     let mut participant_handle: Option<String> = None;
     let mut primary_result = Err("primary collaboration route was not announced".to_string());
+    // The app's settings over the primary route, when the shell keeps them.
+    let mut settings_link: Option<SettingsLink> = None;
     // The first document mutation since the last publication barrier that
     // did not reach the broker, reported to (and cleared by) that barrier.
     let mut unpublished: Option<String> = None;
@@ -3132,6 +3154,12 @@ async fn drive_shovel(
                     Err(_) => Err(PRIMARY_ROUTE_TIMED_OUT.to_string()),
                 };
                 primary = primary_result.is_ok().then_some(key);
+                if let Some(route) = primary.as_ref().and_then(|key| routes.get(key)) {
+                    settings_link = link_settings(&route.channel, &inbound_tx).await;
+                    if let Some(link) = settings_link.as_ref() {
+                        link.flush(&inbound_tx).await;
+                    }
+                }
             }
             SdkCommand::Primary(request) => {
                 if let Some(route) = primary.as_ref().and_then(|key| routes.get_mut(key)) {
@@ -3293,6 +3321,11 @@ async fn drive_shovel(
                     Err("primary collaboration route is unavailable".into())
                 };
                 let _ = reply.send(result);
+            }
+            SdkCommand::FlushSettings => {
+                if let Some(link) = settings_link.as_ref() {
+                    link.flush(&inbound_tx).await;
+                }
             }
         }
         if document && !published && unpublished.is_none() {
@@ -3642,6 +3675,105 @@ async fn spawn_invocation_stream(
             }
         });
     }
+}
+
+/// The primary route's settings capability and the task following it.
+struct SettingsLink {
+    handle: runtime_collab::AppSettingsHandle,
+    settings: Arc<super::channel_settings::ChannelSettings>,
+    follower: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for SettingsLink {
+    fn drop(&mut self) {
+        self.follower.abort();
+    }
+}
+
+fn settings_view(
+    view: &runtime_collab::SettingsView,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    match serde_json::from_slice(&view.document_json) {
+        Ok(serde_json::Value::Object(view)) => Ok(view),
+        _ => Err("the shell's settings view is not a JSON object".into()),
+    }
+}
+
+impl SettingsLink {
+    /// Send the app's unsent writes, oldest first, and show the shell's
+    /// answers.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    )]
+    async fn flush(&self, inbound_tx: &InboundBridge) {
+        for (section, values) in self.settings.take_outbox() {
+            let unanswered = super::channel_settings::Unanswered::new(&self.settings);
+            let answer = match serde_json::to_vec(&values) {
+                Ok(values) => self
+                    .handle
+                    .update(&section, &values)
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|view| settings_view(&view)),
+                Err(error) => Err(error.to_string()),
+            };
+            if unanswered.answer(answer) {
+                inbound_tx.state.owner_wake.wake();
+            }
+        }
+    }
+}
+
+/// Open the primary route's settings for the installed channel settings
+/// and follow the shell's view of them, waking the owner on each change.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn link_settings(
+    channel: &runtime_collab::ChannelHandle,
+    inbound_tx: &InboundBridge,
+) -> Option<SettingsLink> {
+    let settings = super::channel_settings::installed()?;
+    let handle = match channel.settings().await {
+        Ok(handle) => handle,
+        Err(error) => {
+            tracing::warn!(%error, "settings: the shell keeps no settings for this app");
+            return None;
+        }
+    };
+    let follower = {
+        let handle = handle.clone();
+        let settings = Arc::clone(&settings);
+        let wake = inbound_tx.state.owner_wake.clone();
+        tokio::task::spawn_local(async move {
+            let mut after = 0;
+            loop {
+                let view = match handle.read(after).await {
+                    Ok(view) => view,
+                    Err(error) => {
+                        tracing::warn!(%error, "settings: following the shell's settings stopped");
+                        break;
+                    }
+                };
+                after = view.revision;
+                match settings_view(&view) {
+                    Ok(view) => {
+                        if settings.received(view) {
+                            wake.wake();
+                        }
+                    }
+                    Err(error) => tracing::warn!(%error, "settings: ignoring a view"),
+                }
+            }
+        })
+    };
+    Some(SettingsLink {
+        handle,
+        settings,
+        follower,
+    })
 }
 
 #[allow(
@@ -5770,6 +5902,8 @@ mod tests {
     struct Captures {
         /// How long after it is asked for the op stream hands out each op.
         op_stream_delay: Option<Duration>,
+        /// The app and the records whose settings the channel hands out.
+        settings: Option<(String, Arc<dyn settings_store::SettingsSource>)>,
         #[cfg(unix)]
         directory: DirectoryCaptures,
         committed_history_fixture: Option<Vec<u8>>,
@@ -6138,6 +6272,24 @@ mod tests {
     }
 
     impl channel_handle::Server for FakeChannel {
+        fn settings(
+            self: Rc<Self>,
+            _params: channel_handle::SettingsParams,
+            mut results: channel_handle::SettingsResults,
+        ) -> Promise<(), capnp::Error> {
+            let Some((app, source)) = self.captures.lock().unwrap().settings.clone() else {
+                return Promise::err(capnp::Error::unimplemented("no settings".into()));
+            };
+            let settings: runtime_collab::collab_capnp::app_settings::Client =
+                capnp_rpc::new_client(runtime_collab::settings::host::AppSettingsServer::new(
+                    app,
+                    source,
+                    Arc::new(|| Ok(())),
+                ));
+            results.get().set_settings(settings);
+            Promise::ok(())
+        }
+
         fn publish_actions(
             self: Rc<Self>,
             params: channel_handle::PublishActionsParams,
@@ -8387,6 +8539,106 @@ mod tests {
         };
         let (fd, _, _thread) = stand_up_fake_broker(broker);
         CollaborationManager::from_sdk_fd_for_test(fd, app, room)
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct MonitorPrefs {
+        confirm_kill: bool,
+        interval_ms: u64,
+    }
+
+    impl crate::storage::SettingsSchema for MonitorPrefs {
+        const SCOPE: crate::storage::Scope = crate::storage::Scope::Personal;
+    }
+
+    /// Wait for `done`, polling: the worker and the fake broker run on their
+    /// own threads.
+    fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = tilo_test_env::hang_deadline();
+        while !done() {
+            assert!(crate::time::now() < deadline, "{what}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_apps_settings_reach_the_shells_records_and_follow_them() {
+        use settings_store::{SessionPaths, SessionSettings, SettingsSource};
+        const APP: &str = "so.tilo.monitor";
+        let dir = tempfile::tempdir().unwrap();
+        let records = Arc::new(
+            SessionSettings::open(SessionPaths::beside(dir.path().join("settings.json"))).unwrap(),
+        );
+        let paths = records.paths().clone();
+        records
+            .update_section(
+                "app_personal",
+                serde_json::from_value(serde_json::json!({APP: {"interval_ms": 1000}})).unwrap(),
+            )
+            .unwrap();
+        let captures = Captures {
+            settings: Some((
+                APP.to_owned(),
+                Arc::clone(&records) as Arc<dyn SettingsSource>,
+            )),
+            ..Captures::default()
+        };
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(captures)),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _, _thread) = stand_up_fake_broker(broker);
+        super::super::channel_settings::install(APP);
+        let _manager = CollaborationManager::from_sdk_fd_for_test(fd, APP, Uuid::new_v4());
+        let prefs = crate::storage::Settings::<MonitorPrefs>::for_app(APP);
+
+        eventually("the shell's view reaches the app", || {
+            prefs.get().interval_ms == 1000
+        });
+
+        // The app's write lands in the person's record, which roams, and in
+        // the copy every other process reads.
+        prefs.update(|prefs| prefs.confirm_kill = true).unwrap();
+        eventually("the write reaches the person's record", || {
+            settings_store::load_at(&paths.person)["app_personal"][APP]["confirm_kill"] == true
+        });
+        assert_eq!(
+            settings_store::load_at(&paths.copy)["app_personal"][APP]["interval_ms"],
+            1000
+        );
+
+        // Another device's write, as the device fabric applies it, reaches
+        // the app's settings.
+        let before = prefs.revision();
+        records
+            .update_section(
+                "app_personal",
+                serde_json::from_value(
+                    serde_json::json!({APP: {"confirm_kill": true, "interval_ms": 3000}}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        eventually("the record's change reaches the app", || {
+            prefs.get().interval_ms == 3000
+        });
+        assert_ne!(prefs.revision(), before, "views following it refresh");
+
+        // Another app's settings are out of reach.
+        let error = crate::storage::Settings::<MonitorPrefs>::for_app("so.tilo.notes")
+            .set(&MonitorPrefs::default())
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            records.load()["app_personal"]
+                .get("so.tilo.notes")
+                .is_none()
+        );
+        super::super::channel_settings::uninstall();
     }
 
     #[cfg(unix)]

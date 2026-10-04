@@ -175,7 +175,9 @@ TILO_ROOT_PLYMOUTH="$work/bin/plymouth" TILO_TEST_PLYMOUTH_LOG="$work/plymouth-e
 TILO_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/tilo-root-discover"
 }
 encrypted_discover
-test "$(cat "$work/plymouth-events")" = 'display-message --text=tilo-unlock-retry'
+printf '%s\n' 'display-message --text=tilo-unlock-retry' \
+  'display-message --text=tilo-unlock-success' >"$work/expected-plymouth-events"
+cmp "$work/expected-plymouth-events" "$work/plymouth-events"
 test "$(readlink "$work/run/tilo-root/device")" = "$work/dev/mapper/root"
 echo 'ok: encrypted root retains token unlock, retries without password caching and forwards only confirmed rejection'
 rm -rf "$work/run/tilo-root"
