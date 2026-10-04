@@ -91,19 +91,10 @@ fn populated_firewall_passes_native_certification() {
             .expect("the app opens headlessly");
         app.stage(scenario).expect("the scenario stages");
         let audit = app.harness().native_app_audit();
-        // The window's History control binds the host's History door, which
-        // the window publishes and the headless harness's resource tree does
-        // not carry; every other control must resolve.
-        let issues: Vec<_> = audit
-            .issues
-            .iter()
-            .filter(|issue| {
-                !(issue.control == "nav-shell-history" && issue.code == "stale-action-binding")
-            })
-            .collect();
         assert!(
-            issues.is_empty() && audit.accessibility.issues.is_empty(),
-            "{scenario:?}: native={issues:?}, accessibility={:?}",
+            audit.issues.is_empty() && audit.accessibility.issues.is_empty(),
+            "{scenario:?}: native={:?}, accessibility={:?}",
+            audit.issues,
             audit.accessibility.issues
         );
     }

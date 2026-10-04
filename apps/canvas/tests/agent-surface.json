@@ -2667,6 +2667,15 @@
     ]
   },
   {
+    "resource": "ui:root%7Ek%3Anav%2Dshell%2Dhistory",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
     "resource": "ui:root%7Ek%3Anav%2Dshell%2Dinspector",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
