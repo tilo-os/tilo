@@ -9,8 +9,11 @@
 //! hosts a [`FindBar`] directly ([`FindBar::layout`], `draw`, `handle_event`)
 //! and calls [`FindBar::drive`] with itself.
 //!
-//! The bar has a counter ("3 of 12"), Match case and Whole word chips,
-//! previous/next, and optionally a replace row and a text/hex mode.
+//! The bar has a counter ("3 of 12"), Match case and Whole word toggles,
+//! previous/next and one close control, and optionally a replace row, a
+//! text/hex strip and a regular-expression toggle. A view whose engine
+//! finds on its own (a web page) reports its results with
+//! [`FindBar::set_results`] and steps with [`Findable::step`].
 
 use std::collections::HashMap;
 
@@ -30,8 +33,8 @@ use crate::theme::Theme;
 use crate::widget::capability::capability_mut;
 use crate::widget::search_field::FilterCount;
 use crate::widget::{
-    AppModel, Button, ButtonFace, ChipFace, ChipLead, ControlSize, Element, ModelPath, SearchField,
-    TaffyTreeExt, Widget,
+    AppModel, Button, ButtonFace, ButtonRole, ControlSize, Element, ModelPath, SearchField,
+    SegmentedFace, TaffyTreeExt, ToggleGroup, Widget,
 };
 
 /// What a find runs over: text, or a byte view's hex digits.
@@ -41,6 +44,8 @@ pub enum FindMode {
     Text,
     /// The query is hex bytes (`de ad be ef`), for a byte view.
     Hex,
+    /// The query is a regular expression.
+    Regex,
 }
 
 /// The options the bar's chips set.
@@ -101,6 +106,21 @@ pub trait Findable {
     fn supports_hex(&self) -> bool {
         false
     }
+
+    /// Whether this view can match a regular expression, so the bar offers
+    /// the toggle for it ([`FindMode::Regex`]).
+    fn supports_regex(&self) -> bool {
+        false
+    }
+
+    /// Step to the next (or previous) match in a view whose engine owns the
+    /// matches (a web page). Return `true` when the view stepped itself; it
+    /// then reports the new position with [`FindBar::set_results`]. The
+    /// default `false` lets the bar step through the matches `find`
+    /// returned.
+    fn step(&mut self, _forward: bool) -> bool {
+        false
+    }
 }
 
 /// Paint one match highlight over `rect`, the span of the matched glyphs —
@@ -142,6 +162,8 @@ pub fn paint_find_match(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Pending {
     search: bool,
+    /// The content changed: find again, keeping the current match.
+    refresh: bool,
     step: Option<Step>,
     replace: Option<ReplaceRequest>,
     closed: bool,
@@ -164,6 +186,7 @@ enum ReplaceRequest {
 enum Part {
     MatchCase,
     WholeWord,
+    Regex,
     Text,
     Hex,
     Previous,
@@ -174,19 +197,26 @@ enum Part {
 }
 
 impl Part {
-    fn label(self) -> &'static str {
-        match self {
-            Self::MatchCase => "Match case",
-            Self::WholeWord => "Whole word",
-            Self::Text => "Text",
-            Self::Hex => "Hex",
-            Self::Previous => "Previous match",
-            Self::Next => "Next match",
-            Self::Close => "Close find",
-            Self::Replace => "Replace",
-            Self::ReplaceAll => "Replace all",
-        }
+    /// The part's name, from the toolkit's catalogue.
+    fn label(self) -> String {
+        tr(match self {
+            Self::MatchCase => "find-bar-match-case",
+            Self::WholeWord => "find-bar-whole-word",
+            Self::Regex => "find-bar-regex",
+            Self::Text => "find-bar-text",
+            Self::Hex => "find-bar-hex",
+            Self::Previous => "find-bar-previous",
+            Self::Next => "find-bar-next",
+            Self::Close => "find-bar-close",
+            Self::Replace => "find-bar-replace",
+            Self::ReplaceAll => "find-bar-replace-all",
+        })
     }
+}
+
+/// A toolkit message in the host's locale.
+fn tr(key: &str) -> String {
+    crate::i18n::widget_format(key, &[])
 }
 
 /// The find bar: a query field with a match counter, option chips,
@@ -197,6 +227,12 @@ pub struct FindBar {
     options: FindOptions,
     replace_row: bool,
     hex_mode: bool,
+    regex: bool,
+    /// The band's leading and trailing inset: the host's content edge, so
+    /// the field lines up with the text it finds in.
+    inset: Option<(f64, f64)>,
+    /// The view reports its own results ([`Self::set_results`]).
+    engine_results: bool,
     matches: usize,
     current: Option<usize>,
     pending: Pending,
@@ -222,17 +258,24 @@ impl FindBar {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            // The bar has one close control; its fields clear with the
+            // keyboard, not with an X of their own.
             field: SearchField::new()
-                .with_placeholder("Find")
+                .with_placeholder(&tr("find-bar-placeholder"))
                 .with_count_slot()
+                .without_clear()
                 .with_id("find-query"),
             replace_field: SearchField::new()
                 .with_icon(Icon::Pencil)
-                .with_placeholder("Replace with")
+                .with_placeholder(&tr("find-bar-replace-placeholder"))
+                .without_clear()
                 .with_id("find-replacement"),
             options: FindOptions::default(),
             replace_row: false,
             hex_mode: false,
+            regex: false,
+            inset: None,
+            engine_results: false,
             matches: 0,
             current: None,
             pending: Pending::default(),
@@ -260,6 +303,77 @@ impl FindBar {
     pub fn with_hex_mode(mut self) -> Self {
         self.hex_mode = true;
         self
+    }
+
+    /// Offer the regular-expression toggle (the bar also offers it whenever
+    /// its findable supports regular expressions).
+    #[must_use]
+    pub fn with_regex(mut self) -> Self {
+        self.regex = true;
+        self
+    }
+
+    /// Start in `mode` (a byte view that opens on hex).
+    #[must_use]
+    pub fn with_mode(mut self, mode: FindMode) -> Self {
+        self.set_mode(mode);
+        self
+    }
+
+    /// Switch the mode; the query runs again.
+    pub fn set_mode(&mut self, mode: FindMode) {
+        if self.options.mode != mode {
+            self.options.mode = mode;
+            self.pending.search = true;
+        }
+    }
+
+    /// Set every option at once (restoring a view's last find); the query
+    /// runs again when they changed.
+    pub fn set_options(&mut self, options: FindOptions) {
+        if self.options != options {
+            self.options = options;
+            self.pending.search = true;
+        }
+    }
+
+    /// Line the band's field and controls up with the host's content edge:
+    /// `leading` and `trailing` from the band's edges (default `s3`).
+    #[must_use]
+    pub fn with_content_inset(mut self, leading: f64, trailing: f64) -> Self {
+        self.set_content_inset(leading, trailing);
+        self
+    }
+
+    /// [`Self::with_content_inset`] after construction.
+    pub fn set_content_inset(&mut self, leading: f64, trailing: f64) {
+        self.inset = Some((leading.max(0.0), trailing.max(0.0)));
+    }
+
+    /// The content under the bar changed (output arrived, a file
+    /// reloaded): find again on the next [`Self::drive`], keeping the
+    /// current match where it still exists.
+    pub fn refresh(&mut self) {
+        self.pending.refresh = true;
+    }
+
+    /// The results of a view whose engine finds on its own: `total`
+    /// matches, `current` the 0-based one shown. The counter follows.
+    pub fn set_results(&mut self, total: usize, current: Option<usize>) {
+        self.engine_results = true;
+        self.matches = total;
+        self.current = current.filter(|&c| c < total);
+        self.update_count();
+    }
+
+    /// Focus the replacement field (Ctrl+H on an open bar).
+    pub fn focus_replace(&mut self) {
+        self.replace_row = true;
+        self.replace_focused = true;
+        self.focused = true;
+        self.field.set_focused(false);
+        self.replace_field.set_focused(true);
+        self.replace_field.select_all();
     }
 
     /// The query typed so far.
@@ -303,6 +417,13 @@ impl FindBar {
         self.pending.closed
     }
 
+    /// Whether the user asked to close the bar, once: the request is
+    /// acknowledged, so the same bar opens again later without being
+    /// rebuilt.
+    pub fn take_close_requested(&mut self) -> bool {
+        std::mem::take(&mut self.pending.closed)
+    }
+
     /// Ask the bar to close (Escape does this).
     pub fn request_close(&mut self) {
         self.pending.closed = true;
@@ -333,6 +454,7 @@ impl FindBar {
     pub fn drive(&mut self, target: &mut dyn Findable) {
         self.replace_row |= target.supports_replace();
         self.hex_mode |= target.supports_hex();
+        self.regex |= target.supports_regex();
         let _ = self.field.take_dirty();
         let pending = std::mem::take(&mut self.pending);
         if pending.closed {
@@ -362,8 +484,16 @@ impl FindBar {
             self.research(target, self.current);
         } else if pending.search || stale {
             self.research(target, Some(0));
+        } else if pending.refresh {
+            // Content changed under the bar: the counter follows, the view
+            // stays where the person is reading.
+            self.research_quietly(target, self.current);
         }
         if let Some(step) = pending.step
+            && target.step(step == Step::Next)
+        {
+            // The view's engine steps and reports where it landed.
+        } else if let Some(step) = pending.step
             && self.matches > 0
         {
             let current = self.current.unwrap_or(0);
@@ -379,6 +509,10 @@ impl FindBar {
             self.current = Some(next);
             target.reveal(next);
         }
+        self.update_count();
+    }
+
+    fn update_count(&mut self) {
         self.field
             .set_count((!self.field.value().is_empty()).then(|| {
                 FilterCount::new(
@@ -388,10 +522,27 @@ impl FindBar {
             }));
     }
 
+    /// Run the query again without moving the view, keeping the current
+    /// match near `keep`.
+    fn research_quietly(&mut self, target: &mut dyn Findable, keep: Option<usize>) {
+        let found = target.find(self.field.value(), self.options);
+        self.searched = Some((self.field.value().to_owned(), self.options));
+        if self.engine_results && found.is_empty() && !self.field.value().is_empty() {
+            return;
+        }
+        self.matches = found.len();
+        self.current =
+            (self.matches > 0).then(|| keep.unwrap_or(0).min(self.matches.saturating_sub(1)));
+    }
+
     /// Run the query again, keeping the current match near `keep`.
     fn research(&mut self, target: &mut dyn Findable, keep: Option<usize>) {
         let found = target.find(self.field.value(), self.options);
         self.searched = Some((self.field.value().to_owned(), self.options));
+        if self.engine_results && found.is_empty() && !self.field.value().is_empty() {
+            // The engine answers later, through `set_results`.
+            return;
+        }
         self.matches = found.len();
         self.current =
             (self.matches > 0).then(|| keep.unwrap_or(0).min(self.matches.saturating_sub(1)));
@@ -404,6 +555,13 @@ impl FindBar {
         match part {
             Part::MatchCase => self.options.match_case = !self.options.match_case,
             Part::WholeWord => self.options.whole_word = !self.options.whole_word,
+            Part::Regex => {
+                self.options.mode = if self.options.mode == FindMode::Regex {
+                    FindMode::Text
+                } else {
+                    FindMode::Regex
+                };
+            }
             Part::Text => self.options.mode = FindMode::Text,
             Part::Hex => self.options.mode = FindMode::Hex,
             Part::Previous => {
@@ -434,7 +592,9 @@ impl FindBar {
         match part {
             Part::MatchCase => self.options.match_case,
             Part::WholeWord => self.options.whole_word,
-            Part::Text => self.options.mode == FindMode::Text,
+            Part::Regex => self.options.mode == FindMode::Regex,
+            Part::Text => self.options.mode != FindMode::Hex,
+
             Part::Hex => self.options.mode == FindMode::Hex,
             _ => false,
         }
@@ -447,10 +607,11 @@ impl FindBar {
         self.parts.clear();
         let pad = f64::from(theme.tokens.spacing.s2);
         let gutter = f64::from(theme.tokens.spacing.s3);
+        let (lead, trail) = self.inset.unwrap_or((gutter, gutter));
         let row_h = ControlSize::Regular.height(theme);
-        let chip_h = ControlSize::Small.height(theme);
-        let x0 = rect.x0 + gutter;
-        let x1 = rect.x1 - gutter;
+        let small_h = ControlSize::Small.height(theme);
+        let x0 = rect.x0 + lead;
+        let x1 = rect.x1 - trail;
         let y = rect.y0 + pad;
         // Trailing: previous, next, close as square icon buttons.
         let mut right = x1;
@@ -460,21 +621,43 @@ impl FindBar {
             right -= row_h;
         }
         right -= pad;
-        // Option chips, then the mode switch, right to left.
-        let chip_y = y + (row_h - chip_h) / 2.0;
-        let mut chips = vec![Part::WholeWord, Part::MatchCase];
-        if self.hex_mode {
-            chips.splice(0..0, [Part::Hex, Part::Text]);
+        // The option toggles, then the mode strip, right to left. Narrow
+        // bars drop them before they squeeze the field.
+        let small_y = y + (row_h - small_h) / 2.0;
+        let field_min = 3.0 * row_h * 2.0;
+        let mut toggles = Vec::new();
+        if self.regex {
+            toggles.push(Part::Regex);
         }
-        for part in chips {
-            let w = ChipFace::intrinsic_width(part.label(), ChipLead::None, false, text, theme);
-            // Narrow bars drop the chips before they squeeze the field.
-            if right - w < x0 + 3.0 * row_h * 2.0 {
+        toggles.extend([Part::WholeWord, Part::MatchCase]);
+        for part in toggles {
+            let label = part.label();
+            let w = ButtonFace::new(Rect::ZERO, &label)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(text, theme);
+            if right - w < x0 + field_min {
                 break;
             }
-            self.parts
-                .push((part, Rect::new(right - w, chip_y, right, chip_y + chip_h)));
-            right -= w + pad;
+            self.parts.push((
+                part,
+                Rect::new(right - w, small_y, right, small_y + small_h),
+            ));
+            right -= w + f64::from(theme.tokens.spacing.s1);
+        }
+        if self.hex_mode {
+            let labels = [Part::Text.label(), Part::Hex.label()];
+            let labels = [labels[0].as_str(), labels[1].as_str()];
+            right -= pad - f64::from(theme.tokens.spacing.s1);
+            let w = SegmentedFace::intrinsic_width(&labels, ControlSize::Small, text, theme);
+            if right - w >= x0 + field_min {
+                let strip = Rect::new(right - w, small_y, right, small_y + small_h);
+                let rects =
+                    SegmentedFace::partition(strip, &labels, ControlSize::Small, text, theme);
+                for (part, rect) in [Part::Text, Part::Hex].into_iter().zip(rects) {
+                    self.parts.push((part, rect));
+                }
+                right -= w + pad;
+            }
         }
         self.field
             .apply_layout_external(Rect::new(x0, y, right.max(x0), y + row_h));
@@ -483,7 +666,7 @@ impl FindBar {
             let mut right = x1;
             for part in [Part::ReplaceAll, Part::Replace] {
                 let style = ControlSize::Regular.label_style(theme);
-                let (w, _) = text.measure_style(part.label(), None, &style);
+                let (w, _) = text.measure_style(&part.label(), None, &style);
                 let w = f64::from(w) + 2.0 * gutter;
                 self.parts
                     .push((part, Rect::new(right - w, y, right, y + row_h)));
@@ -531,14 +714,38 @@ impl FindBar {
                 .draw(scene, transform, text, theme, presence);
         }
         let parts = self.parts.clone();
+        // Text / Hex is one segmented strip.
+        let modes: Vec<(Part, Rect)> = parts
+            .iter()
+            .copied()
+            .filter(|(part, _)| matches!(part, Part::Text | Part::Hex))
+            .collect();
+        if !modes.is_empty() {
+            let rects: Vec<Rect> = modes.iter().map(|(_, rect)| *rect).collect();
+            let labels: Vec<String> = modes.iter().map(|(part, _)| part.label()).collect();
+            let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+            let selected = modes
+                .iter()
+                .position(|(part, _)| self.part_on(*part))
+                .unwrap_or(0);
+            let hovered = modes.iter().position(|(part, _)| self.hover == Some(*part));
+            let face = SegmentedFace::new(&rects, &labels, selected)
+                .control_size(ControlSize::Small)
+                .hovered(hovered);
+            ToggleGroup::paint(scene, transform, text, theme, &face);
+        }
         for (part, rect) in parts {
             let hovered = self.hover == Some(part);
+            let label = part.label();
             match part {
-                Part::MatchCase | Part::WholeWord | Part::Text | Part::Hex => {
-                    ChipFace::new(rect, part.label())
-                        .selected(self.part_on(part))
-                        .hovered(hovered)
-                        .paint(scene, transform, text, theme);
+                Part::Text | Part::Hex => {}
+                Part::MatchCase | Part::WholeWord | Part::Regex => {
+                    let face = ButtonFace::new(rect, &label)
+                        .role(ButtonRole::Plain)
+                        .control_size(ControlSize::Small)
+                        .toggled(self.part_on(part))
+                        .hovered(hovered);
+                    Button::paint(scene, transform, text, theme, &face);
                 }
                 Part::Previous | Part::Next | Part::Close => {
                     let icon = match part {
@@ -547,14 +754,14 @@ impl FindBar {
                         _ => Icon::X,
                     };
                     let disabled = matches!(part, Part::Previous | Part::Next) && self.matches == 0;
-                    let face = ButtonFace::icon_only(rect, icon, part.label())
+                    let face = ButtonFace::icon_only(rect, icon, &label)
                         .hovered(hovered)
                         .disabled(disabled);
                     Button::paint(scene, transform, text, theme, &face);
                 }
                 Part::Replace | Part::ReplaceAll => {
                     let disabled = self.matches == 0;
-                    let face = ButtonFace::new(rect, part.label())
+                    let face = ButtonFace::new(rect, &label)
                         .hovered(hovered)
                         .disabled(disabled);
                     Button::paint(scene, transform, text, theme, &face);
@@ -782,11 +989,16 @@ impl Widget for FindBar {
         let mut children = Vec::new();
         if let Some(field) = self.field.accessibility() {
             let position = match self.position() {
-                Some((current, total)) => format!("{current} of {total}"),
+                Some((current, total)) => crate::i18n::widget_format(
+                    "find-bar-position",
+                    &[("current", current.into()), ("total", total.into())],
+                ),
                 None if self.field.value().is_empty() => String::new(),
-                None => "No matches".to_owned(),
+                None => tr("find-bar-no-matches"),
             };
-            let mut field = field.with_name("Find").with_bounds(self.field.get_rect());
+            let mut field = field
+                .with_name(tr("find-bar-placeholder"))
+                .with_bounds(self.field.get_rect());
             if !position.is_empty() {
                 field = field.with_description(position);
             }
@@ -797,20 +1009,21 @@ impl Widget for FindBar {
         {
             children.push(
                 field
-                    .with_name("Replace with")
+                    .with_name(tr("find-bar-replace-placeholder"))
                     .with_bounds(self.replace_field.get_rect()),
             );
         }
         for (part, rect) in &self.parts {
             let role = match part {
-                Part::MatchCase | Part::WholeWord => Role::Checkbox,
+                Part::MatchCase | Part::WholeWord | Part::Regex => Role::ToggleButton,
                 Part::Text | Part::Hex => Role::RadioButton,
                 _ => Role::Button,
             };
             let mut state = AccessState::new().focusable(true);
-            if matches!(role, Role::Checkbox | Role::RadioButton) {
+            if matches!(role, Role::ToggleButton | Role::RadioButton) {
                 state = state.checked(self.part_on(*part));
             }
+
             children.push(
                 AccessNode::new(role)
                     .with_name(part.label())
@@ -821,7 +1034,7 @@ impl Widget for FindBar {
         }
         Some(
             AccessNode::new(Role::Toolbar)
-                .with_name("Find")
+                .with_name(tr("find-bar-name"))
                 .with_children(children),
         )
     }
@@ -877,6 +1090,9 @@ pub struct FindScope {
     bar_node: Option<NodeId>,
     content_node: Option<NodeId>,
     platform: PlatformConventions,
+    /// What opens the bar; `None` leaves opening to the host
+    /// ([`FindScope::open`]).
+    shortcut: Option<crate::platform::Shortcut>,
 }
 
 impl FindScope {
@@ -890,7 +1106,33 @@ impl FindScope {
             bar_node: None,
             content_node: None,
             platform: PlatformConventions::default(),
+            shortcut: Some(crate::platform::Shortcut::command("F")),
         }
+    }
+
+    /// Open the bar with `shortcut` instead of Ctrl+F (⌘F): a terminal,
+    /// whose Ctrl+F belongs to the program it runs, uses
+    /// `Shortcut::command("F").shift()`.
+    #[must_use]
+    pub fn with_shortcut(mut self, shortcut: crate::platform::Shortcut) -> Self {
+        self.shortcut = Some(shortcut);
+        self
+    }
+
+    /// No key opens the bar; the host opens it with [`Self::open`] (a menu
+    /// command, its own key handling).
+    #[must_use]
+    pub fn without_shortcut(mut self) -> Self {
+        self.shortcut = None;
+        self
+    }
+
+    /// Line the bar up with the content's edge (see
+    /// [`FindBar::with_content_inset`]).
+    #[must_use]
+    pub fn with_content_inset(mut self, leading: f64, trailing: f64) -> Self {
+        self.bar.set_content_inset(leading, trailing);
+        self
     }
 
     /// Configure the bar (`FindBar::with_replace`, `with_hex_mode`).
@@ -944,6 +1186,10 @@ impl FindScope {
     }
 
     fn is_find_shortcut(&self, event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
+        let Some(shortcut) = &self.shortcut else {
+            return false;
+        };
+        let state = modifiers.state();
         matches!(
             event,
             WindowEvent::KeyboardInput {
@@ -953,9 +1199,10 @@ impl FindScope {
                     ..
                 },
                 ..
-            } if c.eq_ignore_ascii_case("f")
-                && self.platform.command_modifier_down(modifiers.state())
-                && !modifiers.state().shift_key()
+            } if c.eq_ignore_ascii_case(shortcut.key_name())
+                && self.platform.command_modifier_down(state) == shortcut.has_command()
+                && state.shift_key() == shortcut.has_shift()
+                && state.alt_key() == shortcut.has_alt()
         )
     }
 }
@@ -1371,5 +1618,273 @@ mod tests {
         );
         paint_find_match(&mut scene, Affine::IDENTITY, Rect::ZERO, false, &theme);
         assert!(!scene.encoding().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod host_driven_tests {
+    use super::*;
+    use automerge::AutoCommit;
+
+    /// Lines that grow under an open bar, found case-insensitively.
+    #[derive(Default)]
+    struct Log {
+        text: String,
+        current: Option<usize>,
+        regex_offered: bool,
+    }
+
+    impl Findable for Log {
+        fn find(&mut self, query: &str, _options: FindOptions) -> Vec<FindMatch> {
+            if query.is_empty() {
+                return Vec::new();
+            }
+            self.text
+                .match_indices(query)
+                .map(|(i, m)| FindMatch::new(i, i + m.len()))
+                .collect()
+        }
+        fn reveal(&mut self, index: usize) {
+            self.current = Some(index);
+        }
+        fn supports_regex(&self) -> bool {
+            self.regex_offered
+        }
+    }
+
+    /// A web page: its engine finds and steps on its own.
+    #[derive(Default)]
+    struct Engine {
+        steps: Vec<bool>,
+        queries: Vec<String>,
+    }
+
+    impl Findable for Engine {
+        fn find(&mut self, query: &str, _options: FindOptions) -> Vec<FindMatch> {
+            self.queries.push(query.to_owned());
+            Vec::new()
+        }
+        fn reveal(&mut self, _index: usize) {}
+        fn step(&mut self, forward: bool) -> bool {
+            self.steps.push(forward);
+            true
+        }
+    }
+
+    #[test]
+    fn refresh_keeps_the_current_match_as_content_grows() {
+        let mut log = Log {
+            text: "error error".into(),
+            ..Log::default()
+        };
+        let mut bar = FindBar::new();
+        bar.set_query("error");
+        bar.drive(&mut log);
+        bar.next();
+        bar.drive(&mut log);
+        assert_eq!(bar.position(), Some((2, 2)));
+        log.text.push_str(" error");
+        bar.refresh();
+        bar.drive(&mut log);
+        assert_eq!(
+            bar.position(),
+            Some((2, 3)),
+            "the count follows; the place stays"
+        );
+    }
+
+    #[test]
+    fn a_close_request_is_acknowledged_once_and_the_bar_reopens() {
+        let mut log = Log {
+            text: "abc".into(),
+            ..Log::default()
+        };
+        let mut bar = FindBar::new().with_mode(FindMode::Hex).with_hex_mode();
+        assert_eq!(
+            bar.options().mode,
+            FindMode::Hex,
+            "a byte view opens on hex"
+        );
+        bar.request_close();
+        bar.drive(&mut log);
+        assert!(bar.take_close_requested());
+        assert!(!bar.take_close_requested(), "acknowledged once");
+        assert!(!bar.close_requested());
+        bar.set_options(FindOptions {
+            match_case: true,
+            ..bar.options()
+        });
+        assert!(bar.options().match_case);
+        assert_eq!(bar.options().mode, FindMode::Hex);
+    }
+
+    #[test]
+    fn an_engine_reports_its_own_results_and_steps() {
+        let mut page = Engine::default();
+        let mut bar = FindBar::new();
+        bar.set_query("tilo");
+        bar.drive(&mut page);
+        assert_eq!(page.queries, ["tilo"]);
+        bar.set_results(7, Some(2));
+        assert_eq!(bar.position(), Some((3, 7)));
+        bar.next();
+        bar.drive(&mut page);
+        assert_eq!(page.steps, [true], "the engine steps");
+        assert_eq!(
+            bar.position(),
+            Some((3, 7)),
+            "until it reports where it landed"
+        );
+        bar.set_results(7, Some(3));
+        assert_eq!(bar.position(), Some((4, 7)));
+    }
+
+    #[test]
+    fn options_are_toggles_and_a_strip_and_the_bar_has_one_close_control() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut log = Log {
+            regex_offered: true,
+            ..Log::default()
+        };
+        let mut bar = FindBar::new()
+            .with_hex_mode()
+            .with_content_inset(40.0, 40.0);
+        bar.drive(&mut log);
+        bar.layout(
+            Rect::new(0.0, 0.0, 900.0, bar.height(&theme)),
+            &theme,
+            &mut text,
+        );
+        let parts: Vec<Part> = bar.parts.iter().map(|(p, _)| *p).collect();
+        assert!(
+            parts.contains(&Part::Regex),
+            "a findable that matches patterns offers it"
+        );
+        assert_eq!(parts.iter().filter(|p| **p == Part::Close).count(), 1);
+        bar.field.set_query("needle");
+        bar.paint(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        assert_eq!(
+            bar.field.clear_rect(),
+            Rect::ZERO,
+            "the field has no X of its own"
+        );
+        // The band follows the host's content edge.
+        assert!((bar.field.get_rect().x0 - 40.0).abs() < 1e-9);
+        // Text and Hex share one strip.
+        let text_rect = bar.parts.iter().find(|(p, _)| *p == Part::Text).unwrap().1;
+        let hex_rect = bar.parts.iter().find(|(p, _)| *p == Part::Hex).unwrap().1;
+        assert!(
+            (text_rect.x1 - hex_rect.x0).abs() < 1.5,
+            "adjacent segments"
+        );
+        bar.toggle(Part::Regex);
+        assert_eq!(bar.options().mode, FindMode::Regex);
+        let node = Widget::accessibility(&bar).unwrap();
+        assert!(
+            node.children
+                .iter()
+                .any(|c| c.name.as_deref() == Some("Regular expression")
+                    && c.role == crate::a11y::Role::ToggleButton),
+            "named from the toolkit's catalogue"
+        );
+        bar.focus_replace();
+        assert!(bar.replace_row && bar.replace_focused);
+    }
+
+    #[test]
+    fn a_scope_opens_on_its_own_shortcut_or_only_when_asked() {
+        struct Page(Log);
+        impl Findable for Page {
+            fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
+                self.0.find(query, options)
+            }
+            fn reveal(&mut self, index: usize) {
+                self.0.reveal(index);
+            }
+        }
+        impl Widget for Page {
+            crate::provides!(dyn Findable);
+            fn build_layout(
+                &mut self,
+                taffy: &mut TaffyTree<()>,
+                _theme: &Theme,
+                node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+            ) -> NodeId {
+                let node = taffy.leaf_node(Style::default());
+                node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+                node
+            }
+            fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+            fn draw(
+                &mut self,
+                _scene: &mut Scene,
+                _transform: Affine,
+                _text: &mut TextRenderer,
+                _theme: &Theme,
+                _presence: &PresenceCtx,
+            ) {
+            }
+            fn get_rect(&self) -> Rect {
+                Rect::ZERO
+            }
+            fn name(&self) -> &'static str {
+                "Page"
+            }
+        }
+        let press = |scope: &mut FindScope, modifiers: winit::keyboard::ModifiersState| {
+            use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+            ev.logical_key = Key::Character("f".into());
+            ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+            ev.location = KeyLocation::Standard;
+            ev.state = ElementState::Pressed;
+            let event = WindowEvent::KeyboardInput {
+                device_id: winit::event::DeviceId::dummy(),
+                event: ev,
+                is_synthetic: false,
+            };
+            let mut taffy = TaffyTree::<()>::new();
+            let node = taffy.leaf_node(Style::default());
+            let mut handled = false;
+            scope.handle_event(
+                &event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::from(modifiers),
+                    state: &mut AutoCommit::new(),
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut None,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+        };
+        use winit::keyboard::ModifiersState;
+        let mut terminal = FindScope::new(Box::new(Page(Log::default())))
+            .with_shortcut(crate::platform::Shortcut::command("F").shift());
+        terminal
+            .set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+        press(&mut terminal, ModifiersState::CONTROL);
+        assert!(!terminal.is_open(), "Ctrl+F stays with the program");
+        press(
+            &mut terminal,
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+        );
+        assert!(terminal.is_open(), "its own chord opens find");
+
+        let mut quiet = FindScope::new(Box::new(Page(Log::default()))).without_shortcut();
+        quiet.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+        press(&mut quiet, ModifiersState::CONTROL);
+        assert!(!quiet.is_open());
+        quiet.open();
+        assert!(quiet.is_open(), "the host opens it");
     }
 }

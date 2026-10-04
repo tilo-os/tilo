@@ -8,7 +8,7 @@
 //! interaction; they never differ in this.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
 
 use crate::theme::Theme;
@@ -22,7 +22,21 @@ pub fn radius(theme: &Theme) -> f64 {
 /// Paint a floating Panel's body in `rect`: shadow, material, edge. Content
 /// is drawn on top by the caller.
 pub fn paint(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
-    let radius = radius(theme);
+    paint_rounded(scene, transform, rect, radius(theme), theme);
+}
+
+/// The radius of a menu panel holding a single row: the row's item radius
+/// plus the menu inset, concentric with the row, so one row never sits in
+/// a near-pill.
+#[must_use]
+pub fn single_row_radius(theme: &Theme) -> f64 {
+    let radii = &theme.tokens.radii;
+    (f64::from(radii.item) + menu_inset(theme)).min(f64::from(radii.panel))
+}
+
+/// [`paint`] with an explicit corner `radius` (a single-row menu's
+/// [`single_row_radius`]).
+pub fn paint_rounded(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
     crate::surface::shadow(
         scene,
         transform,
@@ -102,9 +116,26 @@ pub fn paint_armed_row(
     inset: f64,
     theme: &Theme,
 ) -> Color {
+    paint_armed_row_in(scene, transform, row, radius(theme), inset, theme)
+}
+
+/// [`paint_armed_row`] inside a panel of `panel_radius` (a single-row
+/// menu's [`single_row_radius`]).
+pub fn paint_armed_row_in(
+    scene: &mut Scene,
+    transform: Affine,
+    row: Rect,
+    panel_radius: f64,
+    inset: f64,
+    theme: &Theme,
+) -> Color {
     let radii = &theme.tokens.radii;
-    let radius = f64::from(radii.concentric(radii.panel, crate::num::f32_of_f64(inset)))
-        .min(row.height() / 2.0);
+    let radius = f64::from(radii.concentric(
+        crate::num::f32_of_f64(panel_radius),
+        crate::num::f32_of_f64(inset),
+    ))
+    .min(row.height() / 2.0);
+
     let (fill, ink) = armed_row(theme);
     scene.fill(
         Fill::NonZero,
@@ -114,6 +145,48 @@ pub fn paint_armed_row(
         &vello::kurbo::RoundedRect::from_rect(row, radius),
     );
     ink
+}
+
+/// How far every anchored floating Panel (popovers, menus, dropdown lists)
+/// stays from the window's edges: the `s2` step, the menu's own inset, so
+/// a panel pushed against an edge keeps the same air as its rows.
+#[must_use]
+pub fn viewport_margin(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.s2)
+}
+
+/// The room an anchored floating Panel is placed in: `window` less the
+/// [`viewport_margin`] on every side.
+#[must_use]
+pub fn panel_room(window: Rect, theme: &Theme) -> Rect {
+    let margin = viewport_margin(theme)
+        .min(window.width() / 4.0)
+        .min(window.height() / 4.0)
+        .max(0.0);
+    window.inset(-margin)
+}
+
+/// The inset of a control inside a floating Panel that holds a row of
+/// controls (a media control bar, a prompt): the panel radius less the
+/// control radius, so the control's corners run concentric with the
+/// panel's.
+#[must_use]
+pub fn control_inset(theme: &Theme) -> f64 {
+    let radii = &theme.tokens.radii;
+    f64::from((radii.panel - radii.control).max(0.0))
+}
+
+/// Which edge of its anchor a floating Panel lines up with on the cross
+/// axis.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PanelAlign {
+    /// The panel's leading edge on the anchor's leading edge (a menu under
+    /// a toolbar button at the start of a row).
+    #[default]
+    Leading,
+    /// The panel's trailing edge on the anchor's trailing edge (a menu under
+    /// a button at the end of a header row).
+    Trailing,
 }
 
 /// Which side of its anchor a floating Panel opens on.
@@ -182,6 +255,48 @@ pub fn place_anchored(
     gap: f64,
     viewport: Rect,
 ) -> (Rect, PopoverSide) {
+    place_aligned(anchor, size, side, PanelAlign::Leading, gap, viewport)
+}
+
+/// [`place_anchored`] with the cross-axis edge it lines up with: a panel
+/// aligned [`PanelAlign::Trailing`] hangs from the anchor's trailing edge
+/// and flips to the leading edge only when it would run past the
+/// viewport's leading edge.
+#[must_use]
+pub fn place_aligned(
+    anchor: Rect,
+    size: (f64, f64),
+    side: PopoverSide,
+    align: PanelAlign,
+    gap: f64,
+    viewport: Rect,
+) -> (Rect, PopoverSide) {
+    if align == PanelAlign::Trailing {
+        // Mirror the cross axis, place leading, and mirror back.
+        let (mirror_x, mirror_y) = (side.vertical(), !side.vertical());
+        let flip = |r: Rect| {
+            let (x0, x1) = if mirror_x {
+                (-r.x1, -r.x0)
+            } else {
+                (r.x0, r.x1)
+            };
+            let (y0, y1) = if mirror_y {
+                (-r.y1, -r.y0)
+            } else {
+                (r.y0, r.y1)
+            };
+            Rect::new(x0, y0, x1, y1)
+        };
+        let (rect, side) = place_aligned(
+            flip(anchor),
+            size,
+            side,
+            PanelAlign::Leading,
+            gap,
+            flip(viewport),
+        );
+        return (flip(rect), side);
+    }
     let (w, h) = (size.0.max(0.0), size.1.max(0.0));
     // An anchor past the viewport's edge (a pointer outside it) opens the
     // panel from the nearest point on the edge.
@@ -229,6 +344,196 @@ pub fn place_anchored(
         (x0, y0.min(viewport.y1 - h).max(viewport.y0))
     };
     (Rect::new(x0, y0, x0 + w, y0 + h), side)
+}
+
+/// One control of a [`ControlBar`]: an icon button over media, named for
+/// assistive technology and its tooltip.
+#[derive(Clone, Copy, Debug)]
+pub struct BarControl<'a> {
+    pub icon: crate::icons::Icon,
+    pub name: &'a str,
+    /// A toggle that is on (the grid overlay, the mute) shows the lift.
+    pub toggled: bool,
+    pub enabled: bool,
+}
+
+impl<'a> BarControl<'a> {
+    #[must_use]
+    pub fn new(icon: crate::icons::Icon, name: &'a str) -> Self {
+        Self {
+            icon,
+            name,
+            toggled: false,
+            enabled: true,
+        }
+    }
+
+    #[must_use]
+    pub fn toggled(mut self, on: bool) -> Self {
+        self.toggled = on;
+        self
+    }
+
+    #[must_use]
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
+/// The floating bar of controls over media (a camera's capture controls, a
+/// player's transport): one floating Panel shaped to a row of Regular icon
+/// buttons, `control_inset` inside it so the buttons' corners run
+/// concentric with the panel's, `s1` between them. It owns the panel, the
+/// gaps, the hover and press faces and the hit rects; the host says which
+/// controls stand in it and where, and acts on the index it reports.
+#[derive(Clone, Debug, Default)]
+pub struct ControlBar {
+    rect: Rect,
+    controls: Vec<Rect>,
+    enabled: Vec<bool>,
+    cursor: Option<Point>,
+    pressed: Option<usize>,
+}
+
+impl ControlBar {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The size of a bar of `count` controls.
+    #[must_use]
+    pub fn size(count: usize, theme: &Theme) -> (f64, f64) {
+        let control = crate::widget::ControlSize::Regular.height(theme);
+        let gap = f64::from(theme.tokens.spacing.s1);
+        let inset = control_inset(theme);
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a control bar holds a handful of controls"
+        )]
+        let n = count.max(1) as f64;
+        (
+            n * control + (n - 1.0) * gap + inset * 2.0,
+            control + inset * 2.0,
+        )
+    }
+
+    /// Where a bar of `count` controls stands in `area`: centred, one
+    /// content gutter above its bottom edge.
+    #[must_use]
+    pub fn bottom_centre(area: Rect, count: usize, theme: &Theme) -> Rect {
+        let (w, h) = Self::size(count, theme);
+        let gutter = f64::from(theme.tokens.spacing.s4);
+        let x0 = area.center().x - w / 2.0;
+        let y1 = area.y1 - gutter;
+        Rect::new(x0, y1 - h, x0 + w, y1)
+    }
+
+    /// Paint the bar with `controls` at `rect` (from [`Self::size`] or
+    /// [`Self::bottom_centre`]), and keep their hit rects.
+    pub fn paint(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut crate::text_render::TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        controls: &[BarControl<'_>],
+    ) {
+        self.rect = rect;
+        self.controls.clear();
+        self.enabled = controls.iter().map(|c| c.enabled).collect();
+        paint(scene, transform, rect, theme);
+        let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
+        let side = crate::widget::ControlSize::Regular.height(theme);
+        let gap = f64::from(theme.tokens.spacing.s1);
+        let inset = control_inset(theme);
+        let mut x = rect.x0 + inset;
+        let y = rect.y0 + inset;
+        for (i, control) in controls.iter().enumerate() {
+            let r = Rect::new(x, y, x + side, y + side);
+            let over = self.cursor.is_some_and(|p| r.contains(p));
+            let face = crate::widget::ButtonFace::icon_only(r, control.icon, control.name)
+                .role(crate::widget::ButtonRole::Plain)
+                .toggled(control.toggled)
+                .disabled(!control.enabled)
+                .hovered(over && control.enabled)
+                .pressed(over && control.enabled && self.pressed == Some(i));
+            crate::widget::Button::paint(scene, transform, text, &on_panel, &face);
+            self.controls.push(r);
+            x += side + gap;
+        }
+    }
+
+    /// The bar's rect at the last paint.
+    #[must_use]
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// Control `index`'s rect at the last paint.
+    #[must_use]
+    pub fn control_rect(&self, index: usize) -> Option<Rect> {
+        self.controls.get(index).copied()
+    }
+
+    /// The control under `point`, if any.
+    #[must_use]
+    pub fn hit(&self, point: Point) -> Option<usize> {
+        self.controls.iter().position(|r| r.contains(point))
+    }
+
+    /// Whether `point` is on the bar (a press there is the bar's).
+    #[must_use]
+    pub fn contains(&self, point: Point) -> bool {
+        self.rect.contains(point)
+    }
+
+    /// Route `event`; returns the control a click activated. A press on
+    /// the bar but between controls is still the bar's: check
+    /// [`Self::contains`] to swallow it.
+    pub fn handle(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale_factor: f64,
+    ) -> Option<usize> {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = Some(Point::new(
+                    position.x / scale_factor,
+                    position.y / scale_factor,
+                ));
+                None
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor = None;
+                self.pressed = None;
+                None
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.pressed = self
+                    .cursor
+                    .and_then(|p| self.hit(p))
+                    .filter(|&i| self.enabled.get(i).copied().unwrap_or(false));
+                None
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let pressed = self.pressed.take()?;
+                (self.cursor.and_then(|p| self.hit(p)) == Some(pressed)).then_some(pressed)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A Panel's content laid out in its own tree: a floating Panel is placed
@@ -362,5 +667,101 @@ mod tests {
         let middle = Rect::new(600.0, 100.0, 640.0, 120.0);
         let (rect, _) = place_anchored(middle, (1270.0, 100.0), PopoverSide::Below, 4.0, WINDOW);
         assert!(rect.x0 >= WINDOW.x0 && rect.x1 <= WINDOW.x1);
+    }
+}
+
+#[cfg(test)]
+mod control_bar_tests {
+    use super::*;
+    use crate::icons::Icon;
+    use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+
+    fn device() -> DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
+
+    #[test]
+    fn a_control_bar_is_concentric_and_reports_its_clicks() {
+        let theme = Theme::dark();
+        let inset = control_inset(&theme);
+        assert!(
+            (inset - f64::from(theme.tokens.radii.panel - theme.tokens.radii.control)).abs() < 1e-9
+        );
+        let area = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let rect = ControlBar::bottom_centre(area, 3, &theme);
+        assert!((rect.center().x - 400.0).abs() < 1e-9);
+        assert!(rect.height() >= 36.0, "a single row never reads as a pill");
+        let mut bar = ControlBar::new();
+        let controls = [
+            BarControl::new(Icon::Camera, "Take photo"),
+            BarControl::new(Icon::Mic, "Record sound").toggled(true),
+            BarControl::new(Icon::Settings, "Settings").enabled(false),
+        ];
+        bar.paint(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut crate::text_render::TextRenderer::new(),
+            &theme,
+            rect,
+            &controls,
+        );
+        let first = bar.control_rect(0).unwrap();
+        assert!((first.x0 - (rect.x0 + inset)).abs() < 1e-9);
+        assert!((first.y0 - (rect.y0 + inset)).abs() < 1e-9);
+        let click = |bar: &mut ControlBar, p: Point| {
+            bar.handle(
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+                },
+                1.0,
+            );
+            bar.handle(
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                1.0,
+            );
+            bar.handle(
+                &WindowEvent::MouseInput {
+                    device_id: device(),
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                },
+                1.0,
+            )
+        };
+        assert_eq!(click(&mut bar, first.center()), Some(0));
+        let disabled = bar.control_rect(2).unwrap();
+        assert_eq!(
+            click(&mut bar, disabled.center()),
+            None,
+            "a disabled control is inert"
+        );
+        assert!(bar.contains(rect.center()));
+    }
+
+    #[test]
+    fn trailing_alignment_mirrors_leading() {
+        let anchor = Rect::new(600.0, 10.0, 640.0, 42.0);
+        let window = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let (rect, side) = place_aligned(
+            anchor,
+            (200.0, 100.0),
+            PopoverSide::Below,
+            PanelAlign::Trailing,
+            4.0,
+            window,
+        );
+        assert_eq!(side, PopoverSide::Below);
+        assert!((rect.x1 - anchor.x1).abs() < 1e-9);
+        assert!((rect.y0 - (anchor.y1 + 4.0)).abs() < 1e-9);
+        let room = panel_room(window, &Theme::dark());
+        assert!(
+            room.x0 > window.x0 && room.x1 < window.x1,
+            "panels keep a margin"
+        );
     }
 }

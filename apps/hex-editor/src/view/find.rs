@@ -15,7 +15,8 @@ impl Findable for HexView {
     fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
         let (kind, rules) = match options.mode {
             FindMode::Hex => (SearchKind::Hex, MatchRules::EXACT),
-            FindMode::Text => (
+            // The byte view offers no pattern matching: a text query is text.
+            FindMode::Text | FindMode::Regex => (
                 SearchKind::Text,
                 MatchRules {
                     match_case: options.match_case,
@@ -76,13 +77,10 @@ impl HexView {
 
     /// Close the band and clear the matches. The query is kept, so Ctrl+F
     /// again finds the same thing.
+    /// Close the bar. It keeps its query, mode and options for the next
+    /// time it opens.
     pub(super) fn close_find(&mut self) {
-        let query = self.find_bar.query().to_owned();
         self.clear_find();
-        self.find_bar = new_find_bar();
-        if !query.is_empty() {
-            self.find_bar.set_query(&query);
-        }
         self.find_open = false;
         self.relayout_now();
         self.dirty = true;
@@ -93,27 +91,29 @@ impl HexView {
     pub(super) fn drive_find(&mut self) {
         let mut bar = std::mem::take(&mut self.find_bar);
         bar.drive(self);
-        let closed = bar.close_requested();
+        let closed = bar.take_close_requested();
         self.find_bar = bar;
         if closed {
             self.close_find();
         }
     }
 
-    /// The matches changed under an edit: find again.
+    /// The bytes changed under an edit: find again, keeping the current
+    /// match where it still is.
     pub(super) fn refind(&mut self) {
         if !self.find_open {
             self.matches.clear();
             self.match_idx = None;
             return;
         }
-        let query = self.find_bar.query().to_owned();
-        self.find_bar.set_query(&query);
+        self.find_bar.refresh();
         self.drive_find();
     }
 }
 
-/// The find bar of a byte view: text and hex modes.
+/// The find bar of a byte view: text and hex modes, opening on hex.
 pub(super) fn new_find_bar() -> ui::widget::FindBar {
-    ui::widget::FindBar::new().with_hex_mode()
+    ui::widget::FindBar::new()
+        .with_hex_mode()
+        .with_mode(FindMode::Hex)
 }

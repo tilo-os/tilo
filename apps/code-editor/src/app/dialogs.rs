@@ -1,20 +1,21 @@
 //! The editor's two questions: "this file changed on disk" and "save changes
 //! before closing?". Both are decisions the user makes — silently choosing for
 //! them loses somebody's work — and both have three answers, so they are the
-//! toolkit's modal sheet ([`ui::widget::modal_dialog`]) with three footer
-//! actions rather than a retained two-action dialog.
+//! toolkit's immediate modal sheet ([`ModalSheet`]): it paints, hit-tests and
+//! answers, the editor says what is asked.
 //!
 //! The sheet is painted in the window's top layer ([`Widget::draw_overlay`]),
 //! over the whole window, so its scrim covers the sidebar and the tabs too.
+//! Enter takes the answer that keeps everyone's work, Escape cancels, and Tab
+//! walks the answers.
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::TextRole;
-use ui::widget::modal_dialog::{self, ModalHit};
+use ui::widget::modal_dialog::SheetResponse;
 use ui::widget::{ModalAction, ModalSpec};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use vello::kurbo::{Affine, Rect};
+use winit::event::WindowEvent;
 
 use super::{CloseChoice, CodeApp, ConflictChoice};
 
@@ -26,12 +27,16 @@ pub(super) enum Question {
     ClosePrompt,
 }
 
-/// What one question says, in the order its actions stand.
+/// What one question says, in the order its answers are indexed: the safe
+/// default, the answer that discards something, Cancel.
 struct Wording {
     title: String,
     body: &'static str,
     actions: [ModalAction<'static>; 3],
 }
+
+/// The index of Cancel in every question's answers.
+const CANCEL: usize = 2;
 
 impl CodeApp {
     /// The question waiting for an answer, if any.
@@ -55,8 +60,8 @@ impl CodeApp {
                 body: "Something else wrote this file after you opened it. Overwriting \
                        discards their change; reloading discards yours.",
                 actions: [
-                    ModalAction::primary("Reload").focused(true),
-                    ModalAction::danger("Overwrite"),
+                    ModalAction::primary("Reload"),
+                    ModalAction::alternate_danger("Overwrite"),
                     ModalAction::secondary("Cancel"),
                 ],
             },
@@ -68,16 +73,15 @@ impl CodeApp {
                 body: "This file has unsaved changes. If you don't save them, they will \
                        be lost.",
                 actions: [
-                    ModalAction::primary("Save").focused(true),
-                    ModalAction::danger("Don't save"),
+                    ModalAction::primary("Save"),
+                    ModalAction::alternate_danger("Don't save"),
                     ModalAction::secondary("Cancel"),
                 ],
             },
         }
     }
 
-    /// Paint the open question over the whole `window`, and remember where its
-    /// actions landed for hit-testing.
+    /// Paint the open question over the whole `window`.
     pub(super) fn draw_question(
         &mut self,
         scene: &mut Scene,
@@ -86,99 +90,43 @@ impl CodeApp {
         theme: &Theme,
         window: Rect,
     ) {
-        self.dialog_layout = None;
         let Some(question) = self.question() else {
+            self.question_sheet.reset();
             return;
         };
         let wording = self.wording(question);
-        let hovered = self.dialog_hover;
-        let actions: Vec<ModalAction<'_>> = wording
-            .actions
-            .iter()
-            .enumerate()
-            .map(|(index, action)| action.hovered(hovered == Some(index)))
-            .collect();
-        let body_style = theme.text(TextRole::Body);
-        let max_width = modal_dialog::MODAL_MAX_WIDTH;
-        let body_width = modal_dialog::body_width(window, max_width, theme);
-        let (_, body_height) =
-            text_renderer.measure_style(wording.body, Some(body_width as f32), &body_style);
         let spec = ModalSpec::new(&wording.title)
-            .actions(&actions)
-            .body_height(f64::from(body_height))
-            .max_width(max_width)
+            .actions(&wording.actions)
             .closable(false)
             .dismiss_on_scrim(false);
-        let layout = modal_dialog::layout(window, &spec, text_renderer, theme);
-        modal_dialog::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
-        let (_, dim) = modal_dialog::ink(theme);
-        text_renderer.draw_style(
+        self.question_sheet.paint_message(
             scene,
+            transform,
+            text_renderer,
+            theme,
+            window,
+            &spec,
             wording.body,
-            dim,
-            transform.pre_translate(Vec2::new(layout.body.x0, layout.body.y0)),
-            Some(layout.body.width() as f32),
-            &body_style,
         );
-        modal_dialog::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
-        self.dialog_layout = Some(layout);
     }
 
     /// Resolve the open question from a keypress or a click on one of its
-    /// actions. Always consumes the event: nothing else may act on the file
+    /// answers. Always consumes the event: nothing else may act on the file
     /// until the question is answered.
     pub(super) fn handle_question(
         &mut self,
         question: Question,
         event: &WindowEvent,
+        scale_factor: f64,
         doc: &mut automerge::AutoCommit,
         handled: &mut bool,
     ) {
-        match event {
-            WindowEvent::CursorMoved { .. } => {
-                self.dialog_hover = self.dialog_action_at(self.last_cursor);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(index) = self.dialog_action_at(self.last_cursor) {
-                    self.answer(question, index, doc);
-                }
-            }
-            _ => {
-                if let Some(index) = Self::question_key(question, event) {
-                    self.answer(question, index, doc);
-                }
-            }
+        match self.question_sheet.handle(event, scale_factor) {
+            Some(SheetResponse::Action(index)) => self.answer(question, index, doc),
+            Some(SheetResponse::Dismiss) => self.answer(question, CANCEL, doc),
+            None => {}
         }
         *handled = true;
-    }
-
-    /// The action under `point`, as the sheet's own layout resolves it.
-    fn dialog_action_at(&self, point: Point) -> Option<usize> {
-        match self.dialog_layout.as_ref()?.hit(point)? {
-            ModalHit::Action(index) => Some(index),
-            _ => None,
-        }
-    }
-
-    /// The action a keypress stands for: Escape cancels, Enter takes the
-    /// default (the one that cannot destroy anyone's work).
-    fn question_key(question: Question, event: &WindowEvent) -> Option<usize> {
-        match question {
-            Question::Conflict => Self::conflict_key(event).map(|choice| match choice {
-                ConflictChoice::Reload => 0,
-                ConflictChoice::Overwrite => 1,
-                ConflictChoice::Cancel => 2,
-            }),
-            Question::ClosePrompt => Self::close_prompt_key(event).map(|choice| match choice {
-                CloseChoice::Save => 0,
-                CloseChoice::Discard => 1,
-                CloseChoice::Cancel => 2,
-            }),
-        }
     }
 
     pub(super) fn answer(
@@ -187,7 +135,7 @@ impl CodeApp {
         index: usize,
         doc: &mut automerge::AutoCommit,
     ) {
-        self.dialog_hover = None;
+        self.question_sheet.reset();
         match question {
             Question::Conflict => {
                 let choice = [

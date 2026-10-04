@@ -2274,7 +2274,7 @@ pub use page_sidebar::{PageSidebar, PageSidebarEvent};
 mod dropdown;
 pub use dropdown::Dropdown;
 pub mod tabs;
-pub use tabs::{TabBar, TabDescriptor, draw_app_mark};
+pub use tabs::{TabBar, TabDescriptor, TabMark, draw_app_mark};
 pub mod scrollbar;
 pub use scrollbar::{
     PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,
@@ -2307,7 +2307,7 @@ pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
 pub mod floating_surface;
-pub use context_menu::{ContextMenu, MenuItem};
+pub use context_menu::{ContextMenu, MenuButton, MenuItem};
 pub mod data_table;
 mod virtual_table_semantics;
 pub use virtual_table_semantics::{
@@ -2361,9 +2361,12 @@ pub mod color_swatch;
 pub use color_picker::{ColorPicker, ColorPickerOutcome};
 pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker};
 pub mod popover;
-pub use popover::{Popover, PopoverSide};
+pub use popover::{PanelAlign, Popover, PopoverButton, PopoverPrompt, PopoverSide};
 pub mod modal_dialog;
-pub use modal_dialog::{ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSpec};
+pub use modal_dialog::{
+    ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSheet, ModalSpec,
+    SheetResponse,
+};
 pub mod native_view;
 pub use native_view::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,

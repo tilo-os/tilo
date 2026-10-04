@@ -9018,7 +9018,6 @@ impl BooksApp {
         anchor: Option<(f64, f64)>,
     ) {
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
         let (paper_x, paper_w) = (geom.paper_x, geom.paper_w);
         let (body_y0, body_y1) = (geom.body_y0, geom.body_y1);
         // Hide the picker while a note is being composed (the composer takes
@@ -9030,20 +9029,8 @@ impl BooksApp {
         // The shared reader HUD owns look/spacing/hover; this reader keeps the
         // page palette's accent and maps emitted actions to its own commands.
         let del_group = self.selection_highlight_group();
-        // The HUD is app chrome, so it follows the OS theme end to end: the
-        // Panel material and border (HIG §9.5), and the OS accent for the
-        // chosen swatch ring — the reading palette stays on the page.
-        let ground = ui::chrome::panel_ground(theme);
-        let style = ui::ReaderHudStyle {
-            surface: ground,
-            border: ui::chrome::panel_border(theme),
-            elevation: theme.tokens.elevation.floating,
-            text: c.text_primary,
-            hover: c.lift_on(ground, 0.5),
-            pill: c.surfaces.raised,
-            ring: c.intent.you,
-            danger: c.semantic.danger,
-        };
+        // The HUD is app chrome: it reads the window's theme end to end and
+        // the reading palette stays on the page.
         let swatches: Vec<ui::HudSwatch> = HiColor::ALL
             .iter()
             .map(|&col| {
@@ -9051,6 +9038,7 @@ impl BooksApp {
                     [col.rgb().0, col.rgb().1, col.rgb().2],
                     self.hi_color == col,
                 )
+                .named(col.name())
             })
             .collect();
         // Anchor above the selection; fall back to the page centre near the top.
@@ -9064,18 +9052,16 @@ impl BooksApp {
             ctx.scene,
             ctx.transform,
             ctx.text,
-            &style,
+            theme,
             &ui::HudControls {
                 swatches: &swatches,
                 show_note: true,
                 show_delete: del_group.is_some(),
             },
-            ui::HudPlacement {
-                anchor: anchor_pt,
-                bounds,
-            },
+            ui::HudPlacement::new(anchor_pt, bounds),
             self.cursor,
         );
+
         // Swallow taps on the bar body, and route each control to a command.
         self.push_hit(hud.rect(), Action::Swallow);
         for &(rect, action) in hud.buttons() {

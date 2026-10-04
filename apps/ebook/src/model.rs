@@ -282,6 +282,16 @@ impl HiColor {
             HiColor::Purple => "purple",
         }
     }
+    /// The colour's name: its swatch's tooltip and accessible name.
+    pub fn name(self) -> &'static str {
+        match self {
+            HiColor::Yellow => "Yellow",
+            HiColor::Green => "Green",
+            HiColor::Blue => "Blue",
+            HiColor::Pink => "Pink",
+            HiColor::Purple => "Purple",
+        }
+    }
     pub fn from_str(s: &str) -> Self {
         match s {
             "green" => HiColor::Green,

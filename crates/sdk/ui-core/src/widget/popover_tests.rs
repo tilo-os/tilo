@@ -412,3 +412,125 @@ fn the_panel_is_painted_in_the_top_layer_lighter_than_the_window() {
         );
     }
 }
+
+#[test]
+fn a_trailing_popover_hangs_from_its_anchors_trailing_edge() {
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let anchor = Rect::new(600.0, 10.0, 640.0, 42.0);
+    let mut p = Popover::with_content(Fixed {
+        rect: Rect::ZERO,
+        w: 200.0,
+        h: 80.0,
+    })
+    .anchored(anchor)
+    .aligned(PanelAlign::Trailing)
+    .with_viewport(WINDOW)
+    .open(true);
+    p.place(&mut tr, &theme);
+    assert!((p.rect().x1 - anchor.x1).abs() < 1e-9, "{:?}", p.rect());
+    assert!(p.rect().y0 > anchor.y1);
+    // At the leading edge of the window it flips to the leading edge.
+    let mut p = Popover::with_content(Fixed {
+        rect: Rect::ZERO,
+        w: 200.0,
+        h: 80.0,
+    })
+    .anchored(Rect::new(10.0, 10.0, 50.0, 42.0))
+    .aligned(PanelAlign::Trailing)
+    .with_viewport(WINDOW)
+    .open(true);
+    p.place(&mut tr, &theme);
+    assert!(p.rect().x0 >= WINDOW.x0, "{:?}", p.rect());
+}
+
+#[test]
+fn a_prompt_popover_submits_its_one_field_with_enter() {
+    let mut p = Popover::prompt("Go to offset", "0x0000", "Hex or decimal, up to 0x3fff")
+        .with_field_chars(12)
+        .with_viewport(WINDOW);
+    p.open_prompt(Rect::new(100.0, 40.0, 180.0, 68.0), "0x10");
+    let mut tr = TextRenderer::new();
+    p.place(&mut tr, &Theme::dark());
+    assert!(p.is_open());
+    assert!(p.content().is_focused(), "the field is focused on open");
+    assert_eq!(p.content().value(), "0x10");
+    let mut typed = key_event(Key::Character("2".into()));
+    if let WindowEvent::KeyboardInput { event, .. } = &mut typed {
+        event.text = Some("2".into());
+    }
+    dispatch(&mut p, &typed);
+    assert_eq!(
+        p.content().value(),
+        "2",
+        "the selected initial value is replaced"
+    );
+    assert_eq!(p.take_submitted(), None);
+    dispatch(&mut p, &key(NamedKey::Enter));
+    assert_eq!(p.take_submitted(), Some("2".to_string()));
+    assert!(!p.is_open(), "submitting closes it");
+    let node = Widget::accessibility(p.content()).expect("the field is announced");
+    assert_eq!(node.name.as_deref(), Some("Go to offset"));
+}
+
+#[test]
+fn a_hosted_popover_lays_its_content_out_in_the_window_tree() {
+    use crate::headless::Framed;
+    use crate::widget::{Column, TextInput};
+    let content = Column::new()
+        .push(Box::new(TextInput::local().with_placeholder("Label")))
+        .push(Box::new(TextInput::local().with_placeholder("Colour")));
+    let popover = Popover::with_content(content)
+        .anchored(Rect::new(100.0, 40.0, 180.0, 68.0))
+        .open(true);
+    let mut framed = Framed::new(crate::State::new(), popover, (800, 600), Theme::dark());
+    let _ = Framed::harness_mut(&mut framed).poll_frame();
+    let second = framed.content().children()[1].get_rect();
+    assert!(
+        framed.rect().contains(second.center()),
+        "the content stands inside the panel: {second:?} in {:?}",
+        framed.rect()
+    );
+    let c = second.center();
+    Framed::harness_mut(&mut framed).click_at(c.x, c.y);
+    let focused: Vec<bool> = framed
+        .content()
+        .children()
+        .iter()
+        .map(|w| w.is_focused())
+        .collect();
+    assert_eq!(
+        focused,
+        [false, true],
+        "a click focuses the field it lands on"
+    );
+}
+
+#[test]
+fn a_popover_button_opens_its_popover_at_its_own_rect() {
+    use crate::headless::Framed;
+    let button = crate::widget::Button::new("filters", "Filters", None).with_popover(Fixed {
+        rect: Rect::ZERO,
+        w: 160.0,
+        h: 60.0,
+    });
+    let mut framed = Framed::new(crate::State::new(), button, (800, 600), Theme::dark());
+    let _ = Framed::harness_mut(&mut framed).poll_frame();
+    let rect = framed.get_rect();
+    assert!(!framed.is_open());
+    Framed::harness_mut(&mut framed).click_at(rect.center().x, rect.center().y);
+    let _ = Framed::harness_mut(&mut framed).poll_frame();
+    assert!(framed.is_open(), "a click opens it");
+    let panel = framed.popover().rect();
+    assert!(
+        panel.y0 >= rect.y1,
+        "under the button: {panel:?} vs {rect:?}"
+    );
+    // Leading-aligned with it, but never closer to the window's edge than
+    // the panel margin.
+    let margin = crate::widget::floating_surface::viewport_margin(&Theme::dark());
+    assert!(
+        (panel.x0 - rect.x0.max(margin)).abs() < 1.0,
+        "leading-aligned with it: {panel:?} vs {rect:?}"
+    );
+}

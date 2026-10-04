@@ -25,7 +25,8 @@
 //! Out:  `OUT_DIR` (default `/tmp/widget_states`): `<page>-<theme>.png` for
 //!       the pages `controls`, `sizes`, `inputs`, `rows`, `panes`,
 //!       `content`, `editor` (and `editor-large` at 200 % text), `overlays`,
-//!       `overlays-opaque` and `modal`.
+//!       `overlays-narrow` (800 × 600), `overlays-opaque`, `modal`,
+//!       `modal-question` and `modal-tall` (800 × 600).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1261,6 +1262,61 @@ impl Widget for ToastProbe {
     }
 }
 
+/// The find band and a media control bar, painted as a painted host paints
+/// them: the band across the prose, the bar over the photograph.
+struct ChromeProbe {
+    band: Rect,
+    media: Rect,
+    find: tilo_ui::widget::FindBar,
+    bar: tilo_ui::widget::floating_surface::ControlBar,
+}
+
+impl Widget for ChromeProbe {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        _nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy
+            .new_leaf(taffy::Style::default())
+            .unwrap_or_else(|_| NodeId::new(0))
+    }
+    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        use tilo_ui::widget::floating_surface::{BarControl, ControlBar};
+        let band = Rect::new(
+            self.band.x0,
+            self.band.y0,
+            self.band.x1,
+            self.band.y0 + self.find.height(theme),
+        );
+        self.find.layout(band, theme, tr);
+        self.find.paint(scene, transform, tr, theme, presence);
+        let controls = [
+            BarControl::new(Icon::Camera, "Take photo"),
+            BarControl::new(Icon::Mic, "Record sound").toggled(true),
+            BarControl::new(Icon::Timer, "Timer"),
+            BarControl::new(Icon::Settings, "Settings").enabled(false),
+        ];
+        let rect = ControlBar::bottom_centre(self.media, controls.len(), theme);
+        self.bar.paint(scene, transform, tr, theme, rect, &controls);
+    }
+    fn name(&self) -> &'static str {
+        "ChromeProbe"
+    }
+    fn get_rect(&self) -> Rect {
+        self.band
+    }
+}
+
 /// A busy page: a photograph across the top and prose under it, so the
 /// floating material over it has something to blur.
 fn busy_page() -> Column {
@@ -1286,7 +1342,9 @@ fn busy_page() -> Column {
         )))
 }
 
-fn overlays(theme: &Theme, out: &Path) {
+fn overlays(theme: &Theme, out: &Path, viewport: (u32, u32)) {
+    use tilo_ui::platform::Shortcut;
+    let width = f64::from(viewport.0);
     let mut menu =
         Popover::new()
             .with_label("Sort by")
@@ -1297,39 +1355,144 @@ fn overlays(theme: &Theme, out: &Path) {
         .side(PopoverSide::Below)
         .open(true);
     let mut context = ContextMenu::new();
-    context.push(MenuItem::selection("Open"));
+    context.push(MenuItem::selection("Open").with_shortcut(Shortcut::command("O")));
     context.push(MenuItem::selection("Rename").with_icon(Icon::Pencil));
+    context.push(MenuItem::submenu(
+        "New",
+        vec![
+            MenuItem::selection("Text file"),
+            MenuItem::selection("Markdown file"),
+            MenuItem::selection("Folder").with_shortcut(Shortcut::command("N").shift()),
+        ],
+    ));
     context.push(MenuItem::selection("Show hidden files").with_checked(true));
     context.push(MenuItem::separator());
-    context.push(MenuItem::destructive_selection("Move to bin").with_icon(Icon::Trash));
-    context.open_at([600.0, 60.0]);
-    context.focus_item(1);
+    context.push(
+        MenuItem::destructive_selection("Move to bin")
+            .with_icon(Icon::Trash)
+            .with_shortcut(Shortcut::key("Delete")),
+    );
+    let context_x = (width / 2.0).min(600.0);
+    context.open_anchored(
+        Rect::new(context_x, 60.0, context_x, 60.0),
+        Rect::new(0.0, 0.0, width, f64::from(viewport.1)),
+    );
+    context.focus_item(2);
+    context.open_submenu(2, false);
+    let mut prompt = Popover::prompt("Go to offset", "0x1F or 31", "Hex with 0x, or decimal")
+        .with_field_chars(16)
+        .side(PopoverSide::Above);
+    prompt.open_prompt(Rect::new(24.0, 560.0, 140.0, 584.0), "0x0400");
     let dropdown = Dropdown::from_state(
         vec!["Low".into(), "Medium".into(), "High".into()],
         &LocalState::new("Medium".to_owned()),
     )
     .open();
+    let toolbar = Toolbar::new(Orientation::Horizontal)
+        .push_icon_toggle(Icon::List, "Show outline", true, || {})
+        .push_button("Compile", || {})
+        .push_button("Reset", || {})
+        .with_enabled(false)
+        .push_separator()
+        .push_icon(Icon::Minus, "Zoom out", || {})
+        .push_icon(Icon::Plus, "Zoom in", || {})
+        .joined()
+        .push_menu(
+            "Sort",
+            vec![
+                MenuItem::selection("By name"),
+                MenuItem::selection("By date"),
+            ],
+        )
+        .push_button("Export PDF", || {})
+        .push_button("Print", || {});
+    let mut find = tilo_ui::widget::FindBar::new()
+        .with_replace()
+        .with_hex_mode();
+    find.set_query("revenue");
+    let chrome = ChromeProbe {
+        band: Rect::new(24.0, 440.0, width - 24.0, 540.0),
+        media: Rect::new(24.0, 24.0, width - 24.0, 324.0),
+        find,
+        bar: tilo_ui::widget::floating_surface::ControlBar::new(),
+    };
     let root = busy_page()
         .push(Box::new(
             Row::new()
                 .push(Box::new(dropdown))
-                .push(Box::new(Button::new("x", "Export", None))),
+                .push(Box::new(Button::new("x", "Export", None)))
+                .push(Box::new(toolbar)),
         ))
+        .push(Box::new(chrome))
         .push(Box::new(menu))
         .push(Box::new(detail))
         .push(Box::new(context))
+        .push(Box::new(prompt))
         .push(Box::new(TooltipProbe {
-            anchor: Rect::new(980.0, 120.0, 1012.0, 152.0),
+            anchor: Rect::new(width - 300.0, 120.0, width - 268.0, 152.0),
             label: "Share this report",
         }));
     let root = root.push(Box::new(ToastProbe {
-        area: Rect::new(24.0, 24.0, 1256.0, 324.0),
+        area: Rect::new(24.0, 24.0, width - 24.0, 324.0),
     }));
     let mut harness =
-        FrameHarness::new_with_theme(State::new(), Box::new(root), (1280, 640), theme.clone());
+        FrameHarness::new_with_theme(State::new(), Box::new(root), viewport, theme.clone());
     harness.settle_for_capture(SETTLE);
     harness.render_png(out);
     println!("wrote {}", out.display());
+}
+
+/// A three-way question whose title wraps, and a form taller than a short
+/// window allows: it scrolls inside a sheet that stands below the header
+/// row.
+fn modal_pages(theme: &Theme, out_question: &Path, out_tall: &Path) {
+    let question = busy_page().push(Box::new(
+        ModalDialog::new(
+            "Save the changes you made to Quarterly report before closing it?",
+            Text::new("Your changes will be lost if you don't save them."),
+        )
+        .open(true)
+        .primary_action("Save", || {})
+        .tertiary_action("Don't save", || {})
+        .with_destructive_tertiary(true)
+        .secondary_action("Cancel", || {}),
+    ));
+    let mut harness =
+        FrameHarness::new_with_theme(State::new(), Box::new(question), (1280, 640), theme.clone());
+    harness.settle_for_capture(SETTLE);
+    harness.render_png(out_question);
+    println!("wrote {}", out_question.display());
+
+    let mut form = Column::new();
+    for label in [
+        "Name",
+        "Host",
+        "Port",
+        "Database",
+        "User",
+        "Password",
+        "Schema",
+        "Timeout",
+        "Certificate",
+        "Notes",
+    ] {
+        form = form.push(Box::new(Field::new(
+            label,
+            TextInput::local().with_placeholder(label),
+        )));
+    }
+    let tall = busy_page().push(Box::new(
+        ModalDialog::new("New connection", form)
+            .open(true)
+            .primary_action("Connect", || {})
+            .with_primary_enabled(false)
+            .secondary_action("Cancel", || {}),
+    ));
+    let mut harness =
+        FrameHarness::new_with_theme(State::new(), Box::new(tall), (800, 600), theme.clone());
+    harness.settle_for_capture(SETTLE);
+    harness.render_png(out_tall);
+    println!("wrote {}", out_tall.display());
 }
 
 fn modal(theme: &Theme, out: &Path) {
@@ -1378,11 +1541,14 @@ pub fn run(args: &[String]) {
             &editor_blocks(),
             &file("editor-large"),
         );
-        overlays(&theme, &file("overlays"));
+        overlays(&theme, &file("overlays"), (1280, 640));
+        overlays(&theme, &file("overlays-narrow"), (800, 600));
         overlays(
             &theme.clone().with_reduce_transparency(true),
             &file("overlays-opaque"),
+            (1280, 640),
         );
         modal(&theme, &file("modal"));
+        modal_pages(&theme, &file("modal-question"), &file("modal-tall"));
     }
 }

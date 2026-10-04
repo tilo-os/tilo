@@ -532,6 +532,22 @@ impl Theme {
         self.tokens.typography.scale = self.tokens.typography.scale.scaled(factor);
     }
 
+    /// This theme with the accessibility text scale taken back out: type at
+    /// its 1× sizes, everything else unchanged. For content whose size is
+    /// the document's own (a slide's text, laid out at the slide's size and
+    /// then scaled as a whole), which must not grow a second time with the
+    /// reader's text setting. [`Theme::with_text_scale`] multiplies, so it
+    /// cannot undo a scale already applied.
+    #[must_use]
+    pub fn at_unit_text_scale(&self) -> Self {
+        let mut theme = self.clone();
+        if (theme.text_scale - 1.0).abs() > f32::EPSILON {
+            theme.multiply_type_sizes(1.0 / theme.text_scale);
+            theme.text_scale = 1.0;
+        }
+        theme
+    }
+
     /// `1.0` = unchanged. Multiplies spacing, radii, and type together,
     /// distinct from [`Theme::with_text_scale`] which only resizes type.
     /// Not assumed idempotent — call once on a fresh theme.
