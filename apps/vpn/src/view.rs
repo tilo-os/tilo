@@ -241,7 +241,7 @@ fn connection_row(entry: &ListEntry<'_>, selected: Option<ConnId>, intents: &Int
 /// The overview's one header action.
 pub(crate) fn import_button(intents: &Intents) -> Button {
     Button::icon_only("vpn-import", Icon::Plus, "Import configuration")
-        .on_click(intents.sender(Intent::OpenImport))
+        .on_view(intents.sender(Intent::OpenImport))
 }
 
 /// Nothing saved yet: one sentence and the one way forward.
@@ -325,7 +325,7 @@ fn notice(notice: &Notice<'_>, intents: &Intents) -> Element {
             if notice.retry {
                 banner = banner.with_action(
                     Button::new("vpn-retry-import", "Try again", None)
-                        .on_click(intents.sender(Intent::RetryImport)),
+                        .on_effect(intents.sender(Intent::RetryImport)),
                 );
             }
             Box::new(banner)
@@ -469,7 +469,7 @@ impl MainActionButton {
                 Button::new("vpn-main-action", action.label(), None)
                     .role(role)
                     .control_size(ControlSize::Small)
-                    .on_click(self.intents.sender(Intent::MainAction(id))),
+                    .on_effect(self.intents.sender(Intent::MainAction(id))),
             ));
         }
         self.row = row;

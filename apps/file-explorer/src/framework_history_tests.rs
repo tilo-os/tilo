@@ -242,7 +242,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         (1100, 750),
     )
     .unwrap();
-    driver.click_named("history-open").unwrap();
+    driver.click_named("nav-shell-history").unwrap();
     let target = format!("timeline-entry:{}", old.0.simple());
     wait(&mut driver, &target);
     driver
@@ -417,9 +417,9 @@ fn framework_history_production_registration_and_session_recovery() {
         tile.bind_or_create_record(store, checkout);
         let mut driver =
             ui::headless::FrameHarness::new(ui::State::new(), Box::new(tile), (1000, 700));
-        assert!(driver.targets().contains_key("history-open"));
+        assert!(driver.targets().contains_key("nav-shell-history"));
         let heads = driver.state_mut().doc.get_heads();
-        driver.click_named("history-open").unwrap();
+        driver.click_named("nav-shell-history").unwrap();
         assert!(
             driver
                 .inspection_json()
@@ -547,7 +547,7 @@ fn framework_history_production_registration_and_session_recovery() {
             (1100, 750),
         )
         .unwrap();
-        driver.click_named("history-open").unwrap();
+        driver.click_named("nav-shell-history").unwrap();
         let select = format!("timeline-entry:{}", version_a.0.simple());
         wait(&mut driver, &select);
         driver

@@ -51,6 +51,8 @@ pub(crate) struct Chrome {
     /// The window's one header row (sidebar, conversation and inspector
     /// headers share it).
     pub header_h: f64,
+    /// Leftward travel past which a row swipe commits its action.
+    pub swipe_commit: f64,
     /// Leading/trailing inset of the conversation column.
     pub gutter: f64,
     /// Side of a message author's avatar.
@@ -81,14 +83,14 @@ impl Chrome {
     pub(crate) fn of(theme: &Theme) -> Self {
         let sp = &theme.tokens.spacing;
         let metrics = &theme.tokens.metrics;
-        let heading_line = f64::from(theme.text(TextRole::Heading).line_height_px());
         let body = theme.text(TextRole::Body);
         let body_line = f64::from(body.line_height_px());
         let control = ButtonFace::height(ControlSize::Regular, theme);
         let composer_min_h =
             (control + 2.0 * f64::from(sp.s1)).max(body_line + 2.0 * f64::from(sp.s3));
         Self {
-            header_h: f64::from(metrics.header_height).max(heading_line + 2.0 * f64::from(sp.s3)),
+            header_h: ui::chrome::HeaderRowFace::height(theme),
+            swipe_commit: f64::from(metrics.swipe_commit),
             gutter: f64::from(sp.s6),
             avatar: AvatarSize::Regular.side(theme),
             avatar_gap: f64::from(sp.s3),

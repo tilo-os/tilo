@@ -265,9 +265,6 @@ impl RowSwipe {
     }
 }
 
-/// Leftward travel (px) past which a row swipe commits its delete action.
-pub(crate) const SWIPE_COMMIT_DX: f64 = 88.0;
-
 /// Everything the user can click. Recorded during `draw`, resolved on the
 /// next mouse-press.
 #[derive(Clone, Debug)]
@@ -2546,6 +2543,15 @@ impl ChatApp {
         self.chrome = Chrome::of(theme);
         self.left_flap.scale_for(theme);
         self.right_flap.scale_for(theme);
+        // The window's header row holds the sidebar toggle; a floating
+        // drawer opens under it and the row stays live.
+        let row = Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + self.chrome.header_h,
+        );
+        let _ = self.left_flap.header(row, theme);
         if !self.reconcile_flaps() && self.rect.width() < 1.0 {
             return;
         }
@@ -3731,6 +3737,18 @@ impl Widget for ChatApp {
             msg_area,
             &mut hits,
         );
+        // Older messages fade into the ground under the header row while
+        // there is more history above.
+        let history_above = self.scroll_content - self.scroll_viewport - self.scroll;
+        if history_above > 0.5 {
+            ui::surface::content_edge_fade(
+                scene,
+                tf,
+                msg_area,
+                ui::surface::ContentEdge::Top,
+                theme.tokens.colors.surfaces.content,
+            );
+        }
         scene.pop_layer();
         self.draw_composer(scene, tf, tr, theme, presence, &mut hits);
 
@@ -3765,11 +3783,8 @@ impl Widget for ChatApp {
             self.draw_live_huddle(scene, tf, tr, theme, presence, &mut hits);
         }
 
-        // Top-most popovers.
-        if let Some(mut menu) = self.menu.take() {
-            menu.widget.draw(scene, tf, tr, theme, presence);
-            self.menu = Some(menu);
-        }
+        // Popovers over the conversation; the context menu paints in the
+        // top layer, from `draw_overlay`.
         if self.emoji_open {
             self.draw_emoji_picker(scene, tf, tr, theme, presence, &mut hits);
         }
@@ -3829,10 +3844,39 @@ impl Widget for ChatApp {
         self.draw(scene, tf, tr, theme, presence);
     }
 
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if let Some(menu) = self.menu.as_mut() {
+            menu.widget.draw_overlay(scene, tf, tr, theme, presence);
+        }
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Embedded inputs request focus with a temporary layout node. Map
         // that actual request to Chat's retained keyboard/IME owner.
         let was_handled = *ctx.handled;
+        // The navigation drawer takes its toggle, its show/hide shortcut,
+        // Escape and a press on its scrim, unless a popover over the
+        // conversation is open and dismisses first.
+        if self.menu.is_none()
+            && !self.attach_open
+            && !self.emoji_open
+            && self.history_open.is_none()
+            && !self.thread_is_page()
+        {
+            self.reconcile_flaps();
+            if self.left_flap.handle_event(event, ctx) {
+                *ctx.handled = true;
+                self.canonical_dirty = true;
+                return;
+            }
+        }
         let requested = self.dispatch_event(
             event,
             ctx.scale_factor,
