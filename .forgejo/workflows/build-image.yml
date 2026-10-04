@@ -973,6 +973,20 @@ jobs:
               reservedSpace = "2GB"
               maxUsedSpace = "75%"
               minFreeSpace = "20%"
+              # Layers go before cache mounts. BuildKit's own order favours
+              # records used often, so the Rust target caches, new in a
+              # build, were the first to go when it crossed the floor, and
+              # the next build compiled everything again.
+              [[worker.oci.gcpolicy]]
+                filters = ["type!=exec.cachemount"]
+                reservedSpace = "2GB"
+                maxUsedSpace = "75%"
+                minFreeSpace = "20%"
+              [[worker.oci.gcpolicy]]
+                all = true
+                reservedSpace = "2GB"
+                maxUsedSpace = "90%"
+                minFreeSpace = "8%"
 
       - name: Record builder storage before image stages
         env:
