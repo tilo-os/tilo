@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
+use ui::framework::LiveRow;
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchProvider, SearchResult};
 use ui::time::{Duration, Instant, UNIX_EPOCH};
 use ui::widget::{AppModel, ModelPath};
@@ -139,7 +140,7 @@ fn monitor_process_target(pid: u32, started_at: u64) -> String {
 /// Decode the canonical, wire-safe process resource component used by
 /// semantic targets.  Keep parsing deliberately strict so a malformed target
 /// can never silently fall back to a PID-only action.
-fn parse_process_resource_id(id: &str) -> Option<(u32, u64)> {
+pub(crate) fn parse_process_resource_id(id: &str) -> Option<(u32, u64)> {
     let (pid, started_at) = id.strip_prefix("process:")?.split_once(":started:")?;
     Some((pid.parse().ok()?, started_at.parse().ok()?))
 }
@@ -448,11 +449,11 @@ pub(crate) fn refresh_effect() -> Option<ActionSpec> {
     })
 }
 
-/// One exact, PID-generation-bound process resource. This is shared by the
+/// One exact, PID-generation-bound process row. This is shared by the
 /// bounded contextual catalogue and lazy direct resolution, keeping every
 /// visible, searched, and agent-invoked action contract identical.
-fn monitor_process_resource(process: &ProcessInfo) -> Resource {
-    let mut resource = Resource::new(
+pub(crate) fn process_row(process: &ProcessInfo) -> LiveRow {
+    let mut row = LiveRow::new(
         process_resource_id(process.pid, process.started_at),
         "monitor.process",
         process_resource_label(process),
@@ -467,9 +468,7 @@ fn monitor_process_resource(process: &ProcessInfo) -> Resource {
             started_at: process.started_at,
         },
     ) {
-        resource
-            .actions
-            .push(inspect.with_contract(ActionContract::view()));
+        row = row.operation(inspect.with_contract(ActionContract::view()));
     }
     if let Ok(copy) = ActionSpec::operation(
         "copy-pid",
@@ -481,7 +480,7 @@ fn monitor_process_resource(process: &ProcessInfo) -> Resource {
             started_at: process.started_at,
         },
     ) {
-        resource.actions.push(copy.with_contract(ActionContract {
+        row = row.operation(copy.with_contract(ActionContract {
             permission: PermissionRequirement::Read,
             retry: RetryPolicy::Idempotent,
             ..ActionContract::default()
@@ -502,7 +501,7 @@ fn monitor_process_resource(process: &ProcessInfo) -> Resource {
                 signal,
             },
         ) {
-            resource.actions.push(spec.with_contract(ActionContract {
+            row = row.operation(spec.with_contract(ActionContract {
                 permission: PermissionRequirement::Admin,
                 risk: if signal == MonitorSignal::Kill {
                     RiskLevel::Destructive
@@ -518,7 +517,7 @@ fn monitor_process_resource(process: &ProcessInfo) -> Resource {
             }));
         }
     }
-    resource
+    row
 }
 
 /// Retained, bounded-search index over the current live process snapshot.
@@ -600,7 +599,7 @@ impl CatalogSearchProvider for MonitorProcessSearchProvider {
                     .read()
                     .ok()?
                     .get(&address.resource)
-                    .map(monitor_process_resource)
+                    .map(|process| process_row(process).into_resource())
             })
             .flatten()
     }
@@ -1324,18 +1323,33 @@ impl MonitorApp {
             "Processes",
             &state,
         );
-        root.children = self.live_process_extras();
+        root.children = self
+            .live_process_rows()
+            .into_iter()
+            .map(LiveRow::into_resource)
+            .collect();
         vec![root]
     }
 
-    /// Live process rows without a `monitor.processes` root.
-    pub(crate) fn live_process_extras(&self) -> Vec<Resource> {
+    /// The bounded contextual page of live process rows; any other process
+    /// resolves by id ([`Self::live_process_row`]).
+    pub(crate) fn live_process_rows(&self) -> Vec<LiveRow> {
         self.model
             .processes
             .iter()
             .take(MAX_CONTEXT_PROCESS_RESOURCES)
-            .map(monitor_process_resource)
+            .map(process_row)
             .collect()
+    }
+
+    /// The live row of the exact process generation `id` names.
+    pub(crate) fn live_process_row(&self, id: &str) -> Option<LiveRow> {
+        let (pid, started_at) = parse_process_resource_id(id)?;
+        self.model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid && process.started_at == started_at)
+            .map(process_row)
     }
 
     fn commit_tab(&mut self, doc: &mut AutoCommit, tab: Tab) {
@@ -6089,11 +6103,11 @@ impl ui::search::capability::SearchSource for MonitorApp {
 
 impl ui::resources::PublishesResources for MonitorApp {
     /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// the processes door — keep only live process rows.
+    /// framework hosts the surface it publishes the processes door and the
+    /// live process rows ([`ResourceSurface::live_rows`]).
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         if self.is_hosted() {
-            return crate::resource::live_extras(self);
+            return Vec::new();
         }
         self.publish_resources(doc)
     }
@@ -6118,32 +6132,13 @@ impl ui::resources::PublishesResources for MonitorApp {
         })
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
+        if self.is_hosted() {
+            return None;
         }
         if id == "processes" {
-            if self.is_hosted() {
-                return None;
-            }
             return self.publish_resources(doc).into_iter().next();
         }
-        if let Some(found) = find(&self.resources(doc), id) {
-            return Some(found);
-        }
-        let (pid, started_at) = parse_process_resource_id(id)?;
-        self.model
-            .processes
-            .iter()
-            .find(|process| process.pid == pid && process.started_at == started_at)
-            .map(monitor_process_resource)
+        self.live_process_row(id).map(LiveRow::into_resource)
     }
 }
 

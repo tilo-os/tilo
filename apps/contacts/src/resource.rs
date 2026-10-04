@@ -101,6 +101,7 @@ impl Resource for Contacts {
                     .first()
                     .map(|email| email.value.clone())
                     .unwrap_or_default(),
+                action: None,
             })
             .collect()
     }
@@ -121,7 +122,9 @@ impl ResourceApp for ContactsShell {
     const ID: &'static str = "so.tilo.contacts";
     const TITLE: &'static str = "Contacts";
     const ICON: Option<&'static str> = Some("contacts");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Contacts>) -> Element {
         cx.surface(ContactsApp::new())
@@ -137,6 +140,12 @@ impl ResourceSurface<Contacts> for ContactsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Contacts>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    // Edits bound to where the user is publish as hand-built rows of the
+    // widget's own rather than as `bound_declarations`.
+    fn publishes_document_actions(&self) -> bool {
+        true
     }
 }
 

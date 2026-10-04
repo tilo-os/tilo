@@ -33,15 +33,16 @@
 //! never the shared CRDT, so by the recipe's rule none of them is an action. A
 //! refused socket surfaces as an honest error, not a replicated document change.
 //!
-//! ## The SQL buffer stays on the native text path
+//! ## The SQL buffer is a plain-text child resource
 //!
 //! The other shared-document object is the SQL query buffer, a single Automerge
-//! `Text` at `root["editor"]["sql"]` (see [`crate::doc::EditorDoc`]). Flowing
-//! text takes the toolkit's CRDT-native text path *instead of* the action
-//! executor: the `Text` already replicates and undoes for free, so re-encoding a
-//! keystroke as an action would only duplicate that. Replacing the whole
-//! buffer — a snippet or an accessibility set-value — is
-//! [`DbAction::ReplaceEditorSql`], which splices that same `Text`.
+//! `Text` at `root["editor"]["sql"]` (see [`crate::doc::EditorDoc`]). It is
+//! published as a [`PlainText`](ui::tilo_resource::PlainText) child of the
+//! workspace, and every edit of it is [`DbAction::EditSql`] carrying one
+//! [`TextEdit`]: a keystroke is a splice (undone a word at a time), loading a
+//! snippet or an accessibility set-value replaces the text. So a viewer cannot
+//! type into it, and a collaborator's concurrent typing merges character by
+//! character.
 //!
 //! ## Presentation is never an action
 //!
@@ -60,6 +61,7 @@ use tilo_actions::{
     ExecutionMode, OperationKind, Resource, ResultSpec, RetryPolicy,
 };
 use ui::doc::put_if_changed;
+use ui::tilo_resource::TextEdit;
 
 use crate::app::{DB_OPERATION_TYPE, DbClientOperation, encode_operation};
 use crate::doc::{CONNECTIONS_KEY, SAVED_QUERIES_KEY, SavedQuery};
@@ -98,9 +100,9 @@ pub enum DbAction {
     },
     /// Hide a saved query while retaining its stable CRDT row as a tombstone.
     RemoveQuery { id: String },
-    /// Replace the shared SQL buffer. Keystrokes stay on the text object;
-    /// this is a snippet load or an accessibility set-value.
-    ReplaceEditorSql { sql: String },
+    /// One edit of the shared SQL buffer: a keystroke's splice, or a snippet
+    /// load replacing the text.
+    EditSql(TextEdit),
 }
 
 impl Action for DbAction {
@@ -182,8 +184,9 @@ impl Action for DbAction {
                     put_if_changed(doc, &row, "removed", true);
                 }
             }
-            DbAction::ReplaceEditorSql { sql } => {
-                crate::doc::EditorDoc::set_sql(doc, sql);
+            DbAction::EditSql(edit) => {
+                let text = crate::doc::EditorDoc::sql_text(doc);
+                edit.apply_under(doc, &text)?;
             }
         }
         Ok(())

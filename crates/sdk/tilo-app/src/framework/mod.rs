@@ -65,8 +65,32 @@
 //!   wrapped widget and override only the hooks that change; every other
 //!   `Widget` method, including the ones containers must forward, reaches
 //!   the wrapped widget by default.
+//! * **A resource nested in another** — a note's rich-text body, a draft's
+//!   message, a saved query's SQL — is a child resource: a resource type of
+//!   its own stored at a place in its parent's document, whose edits the
+//!   parent carries in one of its own actions (`EditBody { page, edit }`).
+//!   The parent publishes it from `children` with
+//!   [`publish_child`](tilo_resource::publish_child); a view or surface
+//!   edits it through [`ViewCx::child`] / [`SurfaceCx::child`], a
+//!   [`Dispatcher`] of the child type that wraps each edit into the
+//!   parent's action. The child is addressed, permissioned, undone (by its
+//!   own coalescing) and named in history like a root, and applies as the
+//!   parent. Rich text is `tilo_rich_text::RichTextField` over such a
+//!   dispatcher; plain text is [`PlainText`](tilo_resource::PlainText),
+//!   whose [`TextControl`] binds a `TextInput` or `CodeEditor` so every
+//!   keystroke is a splice action.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
+//! * **Launching on something** — a path or URL on the command line, a file
+//!   a host hands over — asks the app which record that is
+//!   ([`ResourceApp::launch_record`]: a file's own record, one derived from
+//!   it, a minted one) and which of the resource's actions the launch takes
+//!   there ([`ResourceApp::launch`], through the same door as every
+//!   control). [`ResourceApp::OPENS`] names the media types it is handed and
+//!   [`ResourceApp::ARGUMENTS`] how many arguments it takes. A command the
+//!   binary runs instead of a window (`--emit-photos DIR`) is a
+//!   [`Command`] in [`ResourceApp::commands`], and the app's messages are
+//!   its [`ResourceApp::catalog`], loaded in every host that mounts it.
 //! * **Who is editing** is [`ViewCx::me`] / [`SurfaceCx::me`] for the reader
 //!   of a view, and [`ActionCx::author`](tilo_resource::ActionCx::author)
 //!   inside an action: the same id, pinned with the action so every replica
@@ -120,11 +144,45 @@
 //!   — are drained with [`ViewCx::drain`]: the framework runs the drain in
 //!   the live app after every change, on every participant's device, and
 //!   the drain acknowledges each entry with an action.
-//! * **Screenshot scenarios** (`--shots --scenario NAME`) stage the resource
-//!   with actions ([`ResourceApp::scenario`]) and view state where it lives:
-//!   [`ViewCx::on_stage`] for a view's local state, `ResourceSurface::stage`
-//!   for a custom surface's. [`stage`] runs a scenario on any harness, so a
-//!   test composes the exact frame `--shots` writes.
+//! * **Run mode.** A view is built for a window someone uses, a past version
+//!   in History, or a screenshot ([`RunMode`], from [`ViewCx::mode`] and
+//!   [`SurfaceCx::mode`]). Only a live view starts work that reaches outside
+//!   the process (a mail engine, a socket, a journal reader, a hardware
+//!   probe): History rebuilds the view for every version it previews, and a
+//!   screenshot must come out the same on every machine.
+//! * **Edits bound to where the user is** — the selection, the caret, the
+//!   playhead, the folder shown — are typed builders of the resource's
+//!   action ([`ActionDecl`](tilo_resource::ActionDecl)), published on the
+//!   resource beside its declarations:
+//!   [`ResourceSurface::bound_declarations`] from a surface's view state,
+//!   [`ViewCx::bind_declarations`] from a view's local state, and
+//!   `Resource::bound_declarations` from the resource state itself.
+//! * **Live external rows** — processes, devices, containers, journal
+//!   entries, fetched catalogue rows, running jobs — are [`LiveRow`]s from
+//!   [`ResourceSurface::live_rows`], merged by id into the resource's
+//!   published children. A row carries only view and effect operations.
+//!   Neither rows nor children need to be published whole: a bounded page is
+//!   published and the rest resolve by id (`ResourceSurface::live_row`,
+//!   `Resource::child`).
+//! * **One published tree** — the palette, agents and scripts see the
+//!   resource's publication and nothing beside it that changes the document:
+//!   a document action a content widget publishes through its own
+//!   `PublishesResources` is dropped (a debug build stops at it).
+//! * **Screenshot scenarios** (`--shots --scenario NAME`, every one with
+//!   `--shots-dir DIR`, each at [`ResourceApp::shot_viewport`]) are prepared
+//!   in three parts. What the resource does not hold is the scenario's
+//!   [`Fixture`] ([`ResourceApp::fixture`]), prepared before the view is
+//!   built: typed stand-ins for live sources that views read with
+//!   [`ViewCx::fixture`] and surfaces with [`SurfaceCx::fixture`], scratch
+//!   files, content-store blobs, versions other people wrote at other times,
+//!   and collaborators shown where they are. The resource is staged with
+//!   actions ([`ResourceApp::scenario`]), and view state where it lives,
+//!   once the actions are laid out: [`ViewCx::on_stage`] for a view's local
+//!   state, `ResourceSurface::stage` for a custom surface's. The capture
+//!   then waits until no surface reports unfinished visual work (an async
+//!   page render, a decode). [`stage`] runs a scenario on any harness, and
+//!   [`TestApp::capture`](testing::HeadlessApp::capture) composes the exact
+//!   frame `--shots` writes in a test.
 
 mod app;
 mod controls;
@@ -136,9 +194,12 @@ mod dispatch;
 mod each;
 mod effect;
 pub mod history;
+mod launch;
 mod live;
 mod preview;
 mod root;
+mod rows;
+mod scenario;
 mod settings;
 mod stage;
 mod surface;
@@ -146,6 +207,7 @@ mod switch;
 // The test hosts discover native presentation, which the browser has not got.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod testing;
+mod text;
 mod view;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -158,10 +220,14 @@ pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;
 pub use effect::{EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Progress};
+pub use launch::{Command, LaunchInput};
 pub use live::Live;
 pub use preview::PastVersion;
+pub use rows::LiveRow;
+pub use scenario::{Fixture, RunMode};
 pub use settings::Setting;
 pub use stage::stage;
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
+pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use view::{EffectsHandle, ViewCx};

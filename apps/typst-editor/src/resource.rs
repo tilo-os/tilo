@@ -104,7 +104,9 @@ impl ResourceApp for TypstEditorShell {
     const ID: &'static str = "so.tilo.typst-editor";
     const TITLE: &'static str = "Typst";
     const ICON: Option<&'static str> = Some("typst-editor");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<TypstEditor>) -> Element {
         // Live path starts empty (no demo seed).
