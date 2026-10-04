@@ -987,7 +987,11 @@ def check_typed(
             if expected in texts.values():
                 print(f"typed text reads back exactly: {expected!r}")
                 if status is not None:
-                    check_save_status(client, status, deadline)
+                    # Saving starts once the typing ends: the save state gets
+                    # its own window rather than what reading the text left.
+                    check_save_status(
+                        client, status, time.monotonic() + SAVE_TIMEOUT_SECONDS
+                    )
                 return
             time.sleep(POLL_SECONDS * 4)
         seen = sorted({text[:200] for text in texts.values() if text})
@@ -1059,6 +1063,7 @@ def reopen_history(address: str, app_name: str, package: str, expect_text: str) 
 
 
 SAVE_STATES = ("Saved", "Saving…", "Save failed", "Not saved")
+SAVE_TIMEOUT_SECONDS = 30
 
 
 def check_save_status(client: AtspiClient, expected: str, deadline: float) -> None:
