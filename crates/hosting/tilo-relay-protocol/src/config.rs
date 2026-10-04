@@ -121,6 +121,9 @@ pub struct EnvironmentsConfig {
     /// The `tilo-ush` binary members' supervisors run.
     #[serde(default = "default_ush_binary")]
     pub ush_binary: PathBuf,
+    /// The `tilo-env-tools` binary members' tool builds run.
+    #[serde(default = "default_env_tools_binary")]
+    pub env_tools_binary: PathBuf,
     /// Sessions the worker runs at once, for all members together.
     #[serde(default = "default_environment_capacity")]
     pub capacity: u32,
@@ -166,6 +169,7 @@ impl Default for EnvironmentsConfig {
     fn default() -> Self {
         Self {
             ush_binary: default_ush_binary(),
+            env_tools_binary: default_env_tools_binary(),
             capacity: default_environment_capacity(),
             member_sessions: default_member_sessions(),
             member_disk_bytes: default_member_disk_bytes(),
@@ -187,6 +191,10 @@ fn default_image_sources() -> Vec<String> {
         "registry.tilo.so/tilo/env-runtime".into(),
         "registry.tilo.so/tilo/env-tools".into(),
     ]
+}
+
+fn default_env_tools_binary() -> PathBuf {
+    PathBuf::from("/usr/bin/tilo-env-tools")
 }
 
 fn default_ush_binary() -> PathBuf {

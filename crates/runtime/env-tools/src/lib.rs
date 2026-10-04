@@ -33,6 +33,7 @@
 )]
 
 pub mod builder;
+pub mod delegated;
 pub mod environment;
 pub mod image;
 pub mod index;

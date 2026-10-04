@@ -67,14 +67,18 @@ pub use blobs::{
     HashingReader, OpenBlob, PackageFetcher,
 };
 pub use id::{Kind, PackageId, ParsePackageIdError};
-pub use image::{ImageError, ImageSpec, TREE_FILE, TreeSpec, image_manifest, seal_image};
+pub use image::{
+    ImageError, ImageSpec, TREE_FILE, TreeSpec, image_manifest, seal_image, seal_image_for,
+};
 pub use manifest::{
     Capabilities, Cli, DEFAULT_PLATFORMS, Entrypoint, EntrypointType, Image, Manifest,
     ManifestParseError, NetMode, Package, PathPattern, Platform, Providers, Publisher, Requirement,
     Sandbox, SandboxFs, SandboxNet, ServiceReq, ServiceReqParseError, SplashSegment,
     SplashSegmentError, Target, Trust, TrustAttestation,
 };
-pub use pack::{PackError, Packed, SigningIdentity, pack, pack_with_signature};
+pub use pack::{
+    PackError, Packed, SigningIdentity, pack, pack_with_signature, sign_placeholder_root,
+};
 pub use package::{MetaError, PackageMeta, is_safe_path};
 pub use signed::{SIGNED_ROOT_LEN, SIGNING_PREFIX_LEN, SignedRoot, SignedRootError};
 pub use tapp::{TAPP_FORMAT_VERSION, Tapp, TappError};
