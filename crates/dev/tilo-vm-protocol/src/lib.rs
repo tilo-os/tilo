@@ -31,7 +31,7 @@ pub use input::{Button, InputAction, Stick};
 pub use manifest::{ComponentInfo, Manifest, Scope};
 
 /// Bumped on any incompatible change to a request, response or semantics.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Where in-VM builds keep one synced source tree per host worktree; its
 /// `target/` is the worktree's own, evictable build dir.
@@ -48,6 +48,11 @@ pub const VM_SLOT: &str = "vm";
 /// session an image runs for its account without a greeter (a board's
 /// always-on session). Only images that run one have it.
 pub const DEVICE_SLOT: &str = "device";
+
+/// How long the keep-awake lease lasts after the last request: every
+/// connection's [`Hello`] renews it, so a machine someone drives does not
+/// suspend under them, and one they stopped driving can again.
+pub const AWAKE_IDLE_SECONDS: u64 = 30 * 60;
 
 /// One request line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -148,6 +153,8 @@ pub enum Request {
     AppInstall(AppInstall),
     #[serde(rename = "boot.confirm")]
     BootConfirm(BootConfirm),
+    #[serde(rename = "awake")]
+    Awake(Awake),
 }
 
 impl Request {
@@ -175,6 +182,7 @@ impl Request {
             Self::Input(_) => "input",
             Self::AppInstall(_) => "app.install",
             Self::BootConfirm(_) => "boot.confirm",
+            Self::Awake(_) => "awake",
         }
     }
 }
@@ -220,6 +228,7 @@ call! {
     Input => InputResult,
     AppInstall => AppInstallResult,
     BootConfirm => BootConfirmResult,
+    Awake => AwakeLease,
 }
 
 // ---- requests ---------------------------------------------------------------
@@ -403,6 +412,20 @@ pub struct BootConfirm {
     /// one release apart. When absent, the release alone is compared.
     #[serde(default)]
     pub expect_version: Option<String>,
+}
+
+/// Change the keep-awake lease beyond what every request does by itself
+/// (hold the machine awake until [`AWAKE_IDLE_SECONDS`] after it), or with
+/// neither field set just report it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Awake {
+    /// Hold it awake this many seconds from now instead.
+    #[serde(default)]
+    pub seconds: Option<u64>,
+    /// Release the lease now, so the machine may suspend; the next request
+    /// takes it again.
+    #[serde(default)]
+    pub off: bool,
 }
 
 // ---- shared vocabulary ------------------------------------------------------
@@ -662,6 +685,26 @@ pub struct HelloResult {
     /// Which build and extraction tools the VM's image has.
     #[serde(default)]
     pub tools: VmTools,
+    /// The keep-awake lease, as this hello renewed it.
+    #[serde(default)]
+    pub awake: Option<AwakeLease>,
+}
+
+/// The logind `sleep` block lock that keeps the machine from suspending
+/// while someone works on it (`tilo-vm-awake.service`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AwakeLease {
+    /// Unix seconds when the lease ends; `None` once released.
+    #[serde(default)]
+    pub until: Option<u64>,
+    /// Unix seconds an explicit hold (`tilo-vm vm awake --for`) lasts until.
+    #[serde(default)]
+    pub hold_until: Option<u64>,
+    /// Whether the lock is in place right now.
+    pub held: bool,
+    /// Why it is not, when it should be.
+    #[serde(default)]
+    pub problem: Option<String>,
 }
 
 /// Tools found on the VM's `PATH`, which decide where builds and CI layer
