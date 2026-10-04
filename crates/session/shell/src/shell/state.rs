@@ -219,6 +219,7 @@ mod identity_fs_tests {
             let output = temp.path().join("fs-caps.json");
             tree.fs_acl_path = Some(output.clone());
             tree.export_fs_capabilities();
+            crate::shell::persist::wait_for_saves();
 
             let exported: Vec<CapOverride> =
                 serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
@@ -242,6 +243,7 @@ mod identity_fs_tests {
                 )
                 .expect("revoke current device");
             tree.export_fs_capabilities();
+            crate::shell::persist::wait_for_saves();
             let after_revoke: Vec<CapOverride> =
                 serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
             assert!(after_revoke.iter().all(|capability| {
@@ -303,6 +305,7 @@ mod identity_fs_tests {
                 ..WorkspaceTree::default()
             };
             tree.export_fs_capabilities();
+            crate::shell::persist::wait_for_saves();
 
             let exported: Vec<CapOverride> =
                 serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
@@ -333,6 +336,7 @@ mod identity_fs_tests {
                 .capabilities
                 .retain(|capability| !matches!(&capability.scope, Scope::Room(room) if room == &room_a_id.to_string()));
             tree.export_fs_capabilities();
+            crate::shell::persist::wait_for_saves();
             let after_revoke: Vec<CapOverride> =
                 serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
             assert!(after_revoke.iter().all(|capability| {
@@ -681,6 +685,41 @@ impl Default for WorkspaceTree {
             persist_path: None,
             fs_acl_path: None,
         }
+    }
+}
+
+/// What [`WorkspaceTree::export_fs_capabilities`] takes from a workspace
+/// to write on the state writer thread.
+struct FsExportWorkspace {
+    id: WorkspaceId,
+    room: RoomId,
+    /// Only those that persist across a restart; the export never carries
+    /// session grants.
+    capabilities: Vec<CapOverride>,
+}
+
+/// The filesystem's capability list as of one moment, to be written on the
+/// state writer thread.
+struct FsExport {
+    path: std::path::PathBuf,
+    workspaces: Vec<FsExportWorkspace>,
+    sequence: super::native_workspace_owner::store::StateSequence,
+    runtime: super::native_workspace_owner::NativeStateRuntime,
+}
+
+impl FsExport {
+    /// Queue the write; a newer export queued before it starts replaces it.
+    fn submit(self) {
+        crate::shell::durable_writer::global().submit(self.path.clone(), move || self.write());
+    }
+
+    /// Write it, unless an export from a later moment already landed.
+    fn write(self) {
+        self.runtime.write_companion(
+            super::native_workspace_owner::store::Companion::FsCapabilities,
+            self.sequence,
+            || WorkspaceTree::write_fs_capabilities(&self.path, &self.workspaces),
+        );
     }
 }
 
@@ -1042,7 +1081,7 @@ impl WorkspaceTree {
         }
         if changed {
             self.sync_room_doc(room);
-            self.flush_to_disk();
+            self.queue_save();
         }
         true
     }
@@ -1119,7 +1158,7 @@ impl WorkspaceTree {
         let changed = identities.insert(peer_id.to_string(), row.clone()).as_ref() != Some(&row);
         if changed {
             self.sync_room_doc(room);
-            self.flush_to_disk();
+            self.queue_save();
         }
         changed
     }
@@ -1252,7 +1291,7 @@ impl WorkspaceTree {
             return false;
         }
         self.room_authority.insert(room, RoomAuthority::Peer(peer));
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -2280,7 +2319,7 @@ impl WorkspaceTree {
         if fields_changed {
             // Mirror the merged state into the tree document and to disk.
             self.seed_doc_from_cache();
-            self.flush_to_disk();
+            self.queue_save();
         }
         let landed = fields_changed || records_changed || media_changed;
         if landed {
@@ -2313,28 +2352,36 @@ impl WorkspaceTree {
         tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
     }
 
-    /// Write the tree to [`Self::persist_path`], if one is set. Called on
-    /// every capability mutation, synchronous and eager rather than
-    /// batched on shutdown — a compositor that's killed must not forget
-    /// which permissions the user granted.
-    pub fn flush_to_disk(&self) {
+    /// Save the tree to [`Self::persist_path`], if one is set, and export
+    /// the capabilities the filesystem enforces. Called on every mutation
+    /// that must survive a restart — a compositor that's killed must not
+    /// forget which permissions the user granted.
+    ///
+    /// The caller pays only for a copy of the tree: the writes and their
+    /// fsyncs run on the state writer thread, newest copy first, so a
+    /// keypress never waits on the disk.
+    /// [`crate::shell::persist::wait_for_saves`] waits for them. A copy the
+    /// state file refuses (a stale authority snapshot) exports nothing.
+    pub fn queue_save(&self) {
         let started = std::time::Instant::now();
-        if let Some(path) = &self.persist_path
-            && let Err(e) = crate::shell::persist::save_tree_to(self, path)
-        {
-            tracing::warn!("capability persistence failed: {e}");
-            return;
+        let export = self.fs_capability_export();
+        match (&self.persist_path, export) {
+            (Some(path), export) => {
+                crate::shell::persist::queue_save(self, path, move || {
+                    if let Some(export) = export {
+                        export.write();
+                    }
+                });
+            }
+            (None, Some(export)) => export.submit(),
+            (None, None) => {}
         }
-        let saved = started.elapsed();
-        self.export_fs_capabilities();
-        let total = started.elapsed();
-        if total > std::time::Duration::from_millis(10) {
+        let took = started.elapsed();
+        if took > std::time::Duration::from_millis(4) {
             tracing::warn!(
                 target: "tilo::latency",
-                total_ms = total.as_secs_f64() * 1_000.0,
-                save_ms = saved.as_secs_f64() * 1_000.0,
-                fs_acl_ms = total.saturating_sub(saved).as_secs_f64() * 1_000.0,
-                "workspace tree persistence was slow"
+                took_ms = took.as_secs_f64() * 1_000.0,
+                "copying the workspace tree for saving was slow"
             );
         }
     }
@@ -2350,7 +2397,7 @@ impl WorkspaceTree {
     /// is converted here; an arbitrary named person cannot be safely made
     /// into a network principal and is omitted fail-closed.
     fn relay_room_capability(
-        workspace: &Workspace,
+        workspace: &FsExportWorkspace,
         capability: &CapOverride,
     ) -> Option<CapOverride> {
         if !capability.persists_across_restart() {
@@ -2397,17 +2444,49 @@ impl WorkspaceTree {
     /// after the registry and root-signed device certificate establish the
     /// `identity -> device` relationship. Restrictions are duplicated too,
     /// so translation can never widen a grant.
+    ///
+    /// The list is taken from the tree now and written on the state writer
+    /// thread, newest list first; the identity files it consults are read
+    /// there too.
     pub fn export_fs_capabilities(&self) {
-        let Some(path) = &self.fs_acl_path else {
-            return;
-        };
+        if let Some(export) = self.fs_capability_export() {
+            export.submit();
+        }
+    }
+
+    fn fs_capability_export(&self) -> Option<FsExport> {
+        let path = self.fs_acl_path.clone()?;
+        let workspaces: Vec<FsExportWorkspace> = self
+            .desktop
+            .workspaces
+            .iter()
+            .map(|workspace| FsExportWorkspace {
+                id: workspace.id,
+                room: workspace.room,
+                capabilities: workspace
+                    .capabilities
+                    .iter()
+                    .filter(|capability| capability.persists_across_restart())
+                    .cloned()
+                    .collect(),
+            })
+            .collect();
+        Some(FsExport {
+            path,
+            workspaces,
+            sequence: self.native_runtime.next_sequence(),
+            runtime: self.native_runtime.clone(),
+        })
+    }
+
+    fn write_fs_capabilities(path: &std::path::Path, workspaces: &[FsExportWorkspace]) {
         let identity_paths = crate::firstboot::collaboration_identity_paths();
         let device_public_key =
             tilo_user_identity::persist::read_device_key(identity_paths.device_privkey.as_path())
                 .ok()
                 .map(|key| key.verifying_key().to_bytes());
         let mut caps: Vec<CapOverride> = Vec::new();
-        for workspace in &self.desktop.workspaces {
+        for workspace in workspaces {
             let profile =
                 crate::identity_registry::selected_identity_profile(&workspace.room.to_string())
                     .ok()
@@ -2439,9 +2518,11 @@ impl WorkspaceTree {
                     collab_types::crypto::Ed25519PublicKey::from_bytes(profile.user_public_key),
                 )],
             });
-            for capability in workspace.capabilities.iter().filter(|capability| {
-                matches!(capability.scope, Scope::FsPath(_)) && capability.persists_across_restart()
-            }) {
+            for capability in workspace
+                .capabilities
+                .iter()
+                .filter(|capability| matches!(capability.scope, Scope::FsPath(_)))
+            {
                 caps.push(capability.clone());
                 if let (Some(device), Some(actor)) = (device_public_key, identity_actor.as_ref())
                     && capability.subject.matches_actor(actor)
@@ -2469,7 +2550,7 @@ impl WorkspaceTree {
             tracing::warn!("filesystem capability export failed: {e}");
             return;
         }
-        schedule_fs_authority_publication(path.clone());
+        schedule_fs_authority_publication(path.to_path_buf());
     }
 
     /// Give every workspace with no recorded owner to `user`, returning
@@ -2519,7 +2600,7 @@ impl WorkspaceTree {
             }
         }
         if !adopted.is_empty() {
-            self.flush_to_disk();
+            self.queue_save();
         }
         adopted.into_iter().map(|(id, _)| id).collect()
     }
@@ -2577,7 +2658,7 @@ impl WorkspaceTree {
             }
         }
         if !rebound.is_empty() {
-            self.flush_to_disk();
+            self.queue_save();
         }
         rebound.into_iter().map(|(id, _)| id).collect()
     }
@@ -2601,7 +2682,7 @@ impl WorkspaceTree {
     pub fn set_room(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
         let changed = self.set_room_in_memory(workspace_id, room);
         if changed {
-            self.flush_to_disk();
+            self.queue_save();
         }
         changed
     }
@@ -2698,7 +2779,7 @@ impl WorkspaceTree {
             tilo_clock::unix_now(),
         )?;
         self.doc_insert_capability(workspace_id, &stored);
-        self.flush_to_disk();
+        self.queue_save();
         Some(stored.id)
     }
 
@@ -2771,7 +2852,7 @@ impl WorkspaceTree {
             return false;
         }
         self.doc_revoke_capability(workspace_id, cap_id);
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3086,7 +3167,7 @@ impl WorkspaceTree {
             .tasks
             .push(task.clone());
         self.doc_upsert_workspace_task(workspace_id, &task);
-        self.flush_to_disk();
+        self.queue_save();
         Some(id)
     }
 
@@ -3109,7 +3190,7 @@ impl WorkspaceTree {
             return false;
         };
         self.doc_upsert_workspace_task(workspace_id, &task);
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3135,7 +3216,7 @@ impl WorkspaceTree {
             return false;
         };
         self.doc_upsert_workspace_task(workspace_id, &task);
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3179,7 +3260,7 @@ impl WorkspaceTree {
             return false;
         };
         self.doc_upsert_workspace_effect_receipt(workspace_id, &receipt);
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3247,7 +3328,7 @@ impl WorkspaceTree {
         if tilo_desktop_model::desktop_doc::upsert_shortcut(&mut self.doc, workspace_id, shortcut) {
             self.commit_room_change();
         }
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3298,7 +3379,7 @@ impl WorkspaceTree {
         ) {
             self.commit_room_change();
         }
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3331,7 +3412,7 @@ impl WorkspaceTree {
         ) {
             self.commit_room_change();
         }
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3640,7 +3721,7 @@ impl WorkspaceTree {
         // collaboration-document change. Persist it at the mutation boundary:
         // otherwise a compositor crash before the next unrelated edit silently
         // loses the room the person just created.
-        self.flush_to_disk();
+        self.queue_save();
         ws_id
     }
 
@@ -3669,7 +3750,7 @@ impl WorkspaceTree {
         self.room_share_floor
             .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
         self.seed_doc_from_cache();
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3700,7 +3781,7 @@ impl WorkspaceTree {
             .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
         self.seed_doc_from_cache();
         self.doc_set_owner(id, &user);
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3787,7 +3868,7 @@ impl WorkspaceTree {
                 .map_or_else(WorkspaceId::default, |workspace| workspace.id);
         }
         self.seed_doc_from_cache();
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3947,7 +4028,7 @@ impl WorkspaceTree {
         }
         if changed {
             self.seed_doc_from_cache();
-            self.flush_to_disk();
+            self.queue_save();
         }
         changed
     }
@@ -3985,7 +4066,7 @@ impl WorkspaceTree {
             }
         }
         self.seed_doc_from_cache();
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -3997,7 +4078,7 @@ impl WorkspaceTree {
             // a render hint. Persist it immediately so a compositor restart
             // opens the workspace the user selected rather than the one that
             // happened to be active at the last unrelated mutation.
-            self.flush_to_disk();
+            self.queue_save();
         }
     }
 
@@ -4016,7 +4097,7 @@ impl WorkspaceTree {
         };
         self.desktop.active = prev.id;
         tilo_desktop_model::desktop_doc::set_active(&mut self.doc, self.desktop.active);
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -4032,7 +4113,7 @@ impl WorkspaceTree {
         };
         self.desktop.active = next.id;
         tilo_desktop_model::desktop_doc::set_active(&mut self.doc, self.desktop.active);
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -4088,7 +4169,7 @@ impl WorkspaceTree {
             self.doc = before_doc;
             return false;
         }
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -4130,7 +4211,7 @@ impl WorkspaceTree {
             self.doc = before_doc;
             return None;
         }
-        self.flush_to_disk();
+        self.queue_save();
         Some(moved.new_group.id)
     }
 
@@ -4159,7 +4240,7 @@ impl WorkspaceTree {
         // Same-strip drag/split changes are user-visible layout state. Keep
         // the local restart snapshot in step with the cache and room doc;
         // callers may have no later mutation before a crash or shutdown.
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -4186,7 +4267,7 @@ impl WorkspaceTree {
         desktop.outputs.place_unhomed(&desktop.workspaces);
         let changed = self.desktop.outputs != before;
         if changed {
-            self.flush_to_disk();
+            self.queue_save();
         }
         changed
     }
@@ -4205,7 +4286,7 @@ impl WorkspaceTree {
         {
             return false;
         }
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -4219,7 +4300,7 @@ impl WorkspaceTree {
         {
             return false;
         }
-        self.flush_to_disk();
+        self.queue_save();
         true
     }
 
@@ -4309,7 +4390,7 @@ impl WorkspaceTree {
             }
             _ => {}
         }
-        self.flush_to_disk();
+        self.queue_save();
         Ok(true)
     }
 
@@ -4371,7 +4452,7 @@ impl WorkspaceTree {
             }
             return Err("the room document refused the group move".into());
         }
-        self.flush_to_disk();
+        self.queue_save();
         Ok(true)
     }
 
@@ -7467,7 +7548,7 @@ mod active_group_tests {
         // edit. Re-seed to model the symbolic launch record that a normal
         // compositor checkpoint carries across restart.
         tree.seed_doc_from_cache();
-        tree.flush_to_disk();
+        tree.queue_save();
         let first_group = tree
             .desktop
             .active_group_for(second_strip)
@@ -7479,7 +7560,7 @@ mod active_group_tests {
             Placement::NewGroup,
         );
         tree.seed_doc_from_cache();
-        tree.flush_to_disk();
+        tree.queue_save();
         let second_group = tree
             .desktop
             .active_group_for(second_strip)
@@ -7522,7 +7603,7 @@ mod active_group_tests {
         );
 
         assert!(remove_tab(&mut tree, second_tab));
-        tree.flush_to_disk();
+        tree.queue_save();
         let reloaded = load_tree_from(&state_path).expect("close persisted");
         assert!(
             reloaded
@@ -8382,8 +8463,11 @@ mod workspace_tree_lifecycle_tests {
 
     #[test]
     fn relay_authority_never_turns_session_grants_into_timeless_nas_access() {
-        let mut workspace = Workspace::new(WorkspaceId::new(), "Private");
-        workspace.room = RoomId::new();
+        let workspace = FsExportWorkspace {
+            id: WorkspaceId::new(),
+            room: RoomId::new(),
+            capabilities: Vec::new(),
+        };
         let subject = Subject::User(collab_types::Ed25519PublicKey::from_bytes([7; 32]));
         for expiry in [Expiry::AfterUse, Expiry::EndOfSession] {
             let capability =

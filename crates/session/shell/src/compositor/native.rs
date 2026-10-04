@@ -2210,7 +2210,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         let removed = ws.revoke_as(&user, id);
         if removed {
             tree.doc_revoke_capability(ws_id, id);
-            tree.flush_to_disk();
+            tree.queue_save();
         }
         // Nothing past this point touches the tree.
         drop(tree);
@@ -5406,7 +5406,7 @@ fn load_session_tree(
             target: "tilo::session_restore",
             "retrying legacy host-app cards that now resolve to installed desktop entries"
         );
-        tree.flush_to_disk();
+        tree.queue_save();
     }
 
     let adopted = tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
@@ -8853,24 +8853,13 @@ pub fn run() {
             break;
         }
         input_steps.step("input-flush");
-        // Click-to-focus persistence serialises the full workspace tree and
-        // performs two durability barriers (file + containing directory).
-        // Keep that I/O out of `route_mouse_input`: queue and flush
-        // wl_keyboard.enter/wl_pointer.button first so a slow filesystem can
-        // never delay the focused application seeing the click or the next
-        // already-buffered key. Durability still completes in this iteration,
-        // before any paint or event-loop park.
+        // Click-to-focus persistence copies the full workspace tree for the
+        // state writer. Keep even that copy out of `route_mouse_input`: queue
+        // and flush wl_keyboard.enter/wl_pointer.button first so the focused
+        // application sees the click, or the next already-buffered key,
+        // before any of it.
         if state.client_input.take_focus_persistence_pending() {
-            let started = Instant::now();
-            state.workspace_tree.read().flush_to_disk();
-            let elapsed = started.elapsed();
-            if elapsed > Duration::from_millis(10) {
-                tracing::warn!(
-                    target: "tilo::latency",
-                    elapsed_ms = elapsed.as_secs_f64() * 1_000.0,
-                    "click-focus persistence was slow after input delivery"
-                );
-            }
+            state.workspace_tree.read().queue_save();
         }
 
         input_steps.step("focus-persist");
@@ -9144,6 +9133,9 @@ pub fn run() {
                     sleep_lock_frame_pending = true;
                     sleep_lock_frame_serial = None;
                     sleep_lock_frame_failed = false;
+                    // A machine that never wakes (a flat battery) must still
+                    // come back to the layout it went to sleep with.
+                    crate::shell::persist::wait_for_saves_within(Duration::from_secs(2));
                 }
                 tilo_power_mgmt::PowerSignal::SuspendFailed => {
                     let was_prepared = sleep_lock_frame_pending;
@@ -11173,6 +11165,11 @@ pub fn run() {
             tracing::warn!(error = %e, path = ?path, "workspace tree save failed");
         }
     }
+
+    // The session is ending (logout, a close request, a run deadline): every
+    // layout change queued for the state writer reaches the disk before the
+    // next session can read it.
+    crate::shell::persist::wait_for_saves_within(Duration::from_secs(10));
 
     // Stop the render thread and wait for the frame in flight, so a
     // half-presented frame cannot outlive its device or race backend teardown.

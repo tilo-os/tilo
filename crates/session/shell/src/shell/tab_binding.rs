@@ -138,7 +138,7 @@ fn persist_adopted_toplevel(tree: &WorkspaceTree, surface_id: u64) {
     if app_id_for_surface(tree, surface_id)
         .is_some_and(|app_id| !app_id.trim().is_empty() && app_id != format!("anon-{surface_id}"))
     {
-        tree.flush_to_disk();
+        tree.queue_save();
     }
 }
 
@@ -222,7 +222,7 @@ pub fn open_hosted_app(
     // the room document; their adoption wrappers persist symbolic launch
     // records only after placement and workspace selection are settled.
     tree.seed_doc_from_cache();
-    tree.flush_to_disk();
+    tree.queue_save();
     tab_id
 }
 
@@ -442,7 +442,7 @@ pub fn open_workspace_activity(tree: &mut WorkspaceTree) -> TabId {
     let tab_id = place_tab(tree, tab, Placement::NewGroup);
     // The local cache intentionally retains the window; room projection
     // filters the typed tile before any collaborative document write.
-    tree.flush_to_disk();
+    tree.queue_save();
     tab_id
 }
 
@@ -848,7 +848,7 @@ pub fn activate_surface(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
     tree.desktop.active_strip.insert(workspace_id, strip_id);
     tree.desktop.set_active_group(strip_id, group_id);
     mark_tree_changed(tree);
-    tree.flush_to_disk();
+    tree.queue_save();
     true
 }
 
@@ -924,7 +924,7 @@ pub fn retire_starting_foreign_surface(tree: &mut WorkspaceTree, surface_id: u64
         // A live Foreign tile serialises as a retryable LocalApp.  Failure is
         // terminal for this unpainted launch, so persist its removal before a
         // restart can turn the dead placeholder back into another launch.
-        tree.flush_to_disk();
+        tree.queue_save();
     }
     removed
 }
@@ -940,7 +940,7 @@ pub fn close_tab_for_destroyed_surface_and_persist(
 ) -> bool {
     let removed = close_tab_for_destroyed_surface(tree, destroyed_surface_id);
     if removed {
-        tree.flush_to_disk();
+        tree.queue_save();
     }
     removed
 }
@@ -1160,7 +1160,7 @@ mod tests {
             let mut tree = WorkspaceTree::bootstrap_demo();
             tree.persist_path = Some(path.clone());
             let tab = open_workspace_activity(&mut tree);
-            tree.flush_to_disk();
+            tree.queue_save();
             let saved = crate::shell::persist::load_tree_from(&path).expect("activity persisted");
             assert!(
                 saved
@@ -1177,7 +1177,7 @@ mod tests {
                 remove_tab(&mut tree, tab),
                 "activity is a closeable tiled window"
             );
-            tree.flush_to_disk();
+            tree.queue_save();
             let restarted =
                 crate::shell::persist::load_tree_from(&path).expect("closed activity state");
             assert!(
@@ -2064,7 +2064,7 @@ mod tests {
             // The persistence writer deliberately turns a live Foreign tile into
             // a symbolic LocalApp record.  A real surface destroy must remove that
             // record, not leave it available for the next session to relaunch.
-            tree.flush_to_disk();
+            tree.queue_save();
             let saved = crate::shell::persist::load_tree_from(&state_path)
                 .expect("live foreign state is a valid persistence snapshot");
             assert!(
@@ -2124,7 +2124,7 @@ mod tests {
                     label: "Restored app".into(),
                     note: String::new(),
                 };
-            persisted.flush_to_disk();
+            persisted.queue_save();
             // The prior session exits, releasing the state file's single writer.
             drop(persisted);
 
@@ -2309,7 +2309,7 @@ mod tests {
                 Some(prior_group),
                 "fixture sanity: the new foreign pane took focus while opening"
             );
-            tree.flush_to_disk();
+            tree.queue_save();
 
             assert_eq!(
                 crate::shell::launcher::take_sole_claimed_surface_for_failed_launch(PACKAGE),
@@ -2849,7 +2849,7 @@ mod tests {
                 }
                 tree.seed_doc_from_cache();
                 tree.persist_path = Some(state_path.clone());
-                tree.flush_to_disk();
+                tree.queue_save();
                 let active = tree.desktop.active;
                 let target_index = usize::from(attributed);
                 let target_id = tree.desktop.workspaces[target_index].id;
@@ -2927,7 +2927,8 @@ mod tests {
                 let state_path = state_dir.path().join("state.json");
                 let mut tree = WorkspaceTree::bootstrap_default();
                 tree.persist_path = Some(state_path.clone());
-                tree.flush_to_disk();
+                tree.queue_save();
+                crate::shell::persist::wait_for_saves();
                 let before = std::fs::read(&state_path).expect("saved empty desktop");
                 if attributed {
                     let room = tree.desktop.workspaces[0].room;
@@ -2936,6 +2937,7 @@ mod tests {
                     adopt_toplevel(&mut tree, 8_890, app_id);
                 }
                 assert_eq!(app_id_for_surface(&tree, 8_890), Some("anon-8890"));
+                crate::shell::persist::wait_for_saves();
                 assert_eq!(
                     std::fs::read(&state_path).expect("desktop remains readable"),
                     before,

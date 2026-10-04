@@ -317,7 +317,7 @@ pub(crate) fn close_tab_unrecorded(
     }
     st.hosted_inputs.prune_documents(&mut st.tree_mut());
     // Close is durable before the client is asked to exit.
-    st.tree().flush_to_disk();
+    st.tree().queue_save();
     if let Some((_, surface_id)) = foreign {
         st.request_surface_close(surface_id);
     }
@@ -728,7 +728,7 @@ mod tests {
             let (changes, restarted) = {
                 let mut tree = st.tree_mut();
                 let changes = tree.export_changes_since(&baseline);
-                tree.flush_to_disk();
+                tree.queue_save();
                 drop(tree);
                 let restarted = crate::shell::persist::load_tree_from(&state_path)
                     .expect("opening a hosted app must leave a loadable state file");
