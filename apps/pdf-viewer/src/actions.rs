@@ -26,7 +26,6 @@
 //! that does not have the source can still converge on (and inspect) the shared
 //! intent/order, and reports that its local renderer cannot materialise it.
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
@@ -435,6 +434,19 @@ impl FormValueWire {
     }
 }
 
+/// `named`, or — when the payload leaves it empty — who invoked the action,
+/// as its envelope pinned them, so a palette or agent edit is signed by its
+/// author on every replica without carrying a name.
+fn signed(named: &str) -> String {
+    if !named.is_empty() {
+        return named.to_owned();
+    }
+    tilo_actions::invoking_context()
+        .and_then(|context| context.invoker)
+        .map(|invoker| invoker.actor)
+        .unwrap_or_default()
+}
+
 fn space(user: bool) -> GeomSpace {
     if user {
         GeomSpace::User
@@ -672,7 +684,6 @@ impl Action for PdfViewerAction {
         match self {
             PdfViewerAction::EnsurePagePlan { source_page_count } => {
                 PdfDoc::ensure_page_plan(doc, *source_page_count);
-                PdfDoc::migrate_page_anchors(doc);
             }
             PdfViewerAction::DuplicatePagePlan {
                 id,
@@ -693,10 +704,7 @@ impl Action for PdfViewerAction {
             PdfViewerAction::ImportPages { after_id, pages } => {
                 PdfDoc::import_pages(doc, after_id.as_deref(), pages);
             }
-            PdfViewerAction::DeletePagePlan { id } => {
-                PdfDoc::migrate_page_anchors(doc);
-                PdfDoc::delete_page_plan(doc, id);
-            }
+            PdfViewerAction::DeletePagePlan { id } => PdfDoc::delete_page_plan(doc, id),
             PdfViewerAction::MovePagePlan { id, after_id } => {
                 PdfDoc::move_page_plan(doc, id, after_id.as_deref());
             }
@@ -716,7 +724,7 @@ impl Action for PdfViewerAction {
                     page: *page,
                     kind,
                     color: Swatch::parse(color),
-                    author: author.clone(),
+                    author: signed(author),
                     chars,
                     created_ms: *created_ms,
                     space: space(*user_space),
@@ -750,6 +758,7 @@ impl Action for PdfViewerAction {
                 page_id,
                 user_space,
             } => {
+                let author = signed(author);
                 let a = Annotation {
                     id: anno_id.clone(),
                     page: *page,
@@ -765,7 +774,7 @@ impl Action for PdfViewerAction {
                     id: comment_id.clone(),
                     anno_id: Some(anno_id.clone()),
                     page: *page,
-                    author: author.clone(),
+                    author,
                     body: body.clone(),
                     // Deterministic: the ordinal is carried, no wall-clock here.
                     created: *created,
@@ -790,7 +799,7 @@ impl Action for PdfViewerAction {
                         id: id.clone(),
                         anno_id: anno_id.clone(),
                         page: *page,
-                        author: author.clone(),
+                        author: signed(author),
                         body: body.clone(),
                         created: *created,
                         resolved: false,
@@ -818,7 +827,7 @@ impl Action for PdfViewerAction {
                     comment_id,
                     &Reply {
                         id: id.clone(),
-                        author: author.clone(),
+                        author: signed(author),
                         body: body.clone(),
                         blocks: Vec::new(),
                     },
@@ -857,7 +866,7 @@ impl Action for PdfViewerAction {
                     id: id.clone(),
                     page: *page,
                     rect: PtRect::new(*x, *y, *w, *h),
-                    signer: signer.clone(),
+                    signer: signed(signer),
                     date: date.clone(),
                     ink: strokes.as_ref().map_or(SignatureInk::Typed, |strokes| {
                         SignatureInk::Drawn {
@@ -955,6 +964,19 @@ impl Action for PdfViewerAction {
     fn locus(&self) -> ExecutionLocus {
         // Personal review markup: the client applies + replicates, peers replay.
         ExecutionLocus::ClientLocal
+    }
+
+    /// What the reader records when it meets a document — the bytes the
+    /// markup is made against, the page plan they start with, the markup
+    /// the PDF already carries — came from the file, not from anyone's
+    /// edit: it syncs like any markup, but no undo takes it back.
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            PdfViewerAction::PinSource { .. }
+            | PdfViewerAction::EnsurePagePlan { .. }
+            | PdfViewerAction::ImportExisting { .. } => tilo_actions::ChangeKind::External,
+            _ => tilo_actions::ChangeKind::Content,
+        }
     }
 }
 
@@ -1463,7 +1485,7 @@ fn reply_resource(comment: &Comment, reply: &Reply) -> Resource {
 
 /// Build a comment resource: edit / reply / resolve / delete, all one source of
 /// truth with the rail's own buttons.
-fn comment_resource(c: &Comment, author: &str) -> Resource {
+fn comment_resource(c: &Comment) -> Resource {
     let mut res = Resource::new(
         format!("pdf.comment:{}", c.id),
         "pdf.comment",
@@ -1490,7 +1512,6 @@ fn comment_resource(c: &Comment, author: &str) -> Resource {
     );
 
     let reply_id = c.id.clone();
-    let reply_author = author.to_string();
     res = res.with_action(
         ActionSpec::prompted(
             "reply",
@@ -1498,7 +1519,8 @@ fn comment_resource(c: &Comment, author: &str) -> Resource {
             "Reply",
             "your reply…",
             ExecutionLocus::ClientLocal,
-            move |text: &str| encode(&add_reply_action(&reply_id, &reply_author, text)),
+            // Signed by whoever replies (see `signed`).
+            move |text: &str| encode(&add_reply_action(&reply_id, "", text)),
         )
         .requiring(PermissionRequirement::Comment),
     );
@@ -1521,10 +1543,6 @@ fn comment_resource(c: &Comment, author: &str) -> Resource {
         res = res.with_child(reply_resource(c, reply));
     }
     res
-}
-
-fn page_resource_id(doc_id: &str, page_id: &str) -> String {
-    format!("pdf.page:{doc_id}:{page_id}")
 }
 
 fn published_page_resource(
@@ -1597,73 +1615,6 @@ fn published_page_resource(
     resource
 }
 
-fn page_resource(ctx: &PdfResourceCtx, page: usize, page_id: &str) -> Resource {
-    let source_page = ctx.page_sources.get(page - 1).copied().unwrap_or(page);
-    let entry = PagePlanEntry {
-        id: page_id.to_string(),
-        source_page,
-        imported: ctx.page_imports.get(page - 1).cloned().flatten(),
-        rotation: 0,
-    };
-    let mut page_resource = Resource::new(
-        page_resource_id(&ctx.doc_id, page_id),
-        "pdf.page",
-        format!("Page {page}"),
-    )
-    .with_action(operation(
-        "open",
-        "Go to page",
-        OperationKind::View,
-        PdfOperation::GoToPage { page },
-    ));
-    if let Some(spec) = encode_spec(
-        "duplicate",
-        "Duplicate page",
-        &duplicate_page_plan_action(&entry),
-    ) {
-        page_resource = page_resource.with_action(spec.reversible());
-    }
-    if ctx.page_count > 1
-        && let Some(spec) = encode_spec("delete", "Delete page", &delete_page_plan_action(page_id))
-    {
-        page_resource = page_resource.with_action(spec.destructive().reversible());
-    }
-    if page > 1
-        && let Some(spec) = encode_spec(
-            "move-up",
-            "Move page up",
-            &move_page_plan_action(
-                page_id,
-                page.checked_sub(3)
-                    .and_then(|index| ctx.page_ids.get(index))
-                    .map(String::as_str),
-            ),
-        )
-    {
-        page_resource = page_resource.with_action(spec.reversible());
-    }
-    if page < ctx.page_count {
-        let after = ctx.page_ids.get(page).map(String::as_str);
-        if let Some(spec) = encode_spec(
-            "move-down",
-            "Move page down",
-            &move_page_plan_action(page_id, after),
-        ) {
-            page_resource = page_resource.with_action(spec.reversible());
-        }
-    }
-    let rotation = ctx.page_rotations.get(page - 1).copied().unwrap_or(0);
-    for (id, label, turn) in [
-        ("rotate-cw", "Rotate page clockwise", 90),
-        ("rotate-ccw", "Rotate page counter-clockwise", 270),
-    ] {
-        if let Some(spec) = encode_spec(id, label, &rotate_page_action(page_id, rotation + turn)) {
-            page_resource = page_resource.with_action(spec.reversible());
-        }
-    }
-    page_resource
-}
-
 fn outline_resource(ctx: &PdfResourceCtx, index: usize) -> Option<Resource> {
     let (title, page, _) = ctx.outline.get(index)?;
     let id = outline_resource_id(ctx, index)?;
@@ -1726,76 +1677,17 @@ pub fn find_result_resources(ctx: &PdfResourceCtx) -> Vec<Resource> {
     vec![search]
 }
 
-/// A compact page of contextual children, centred on the current page. The
-/// cursor is the current durable page-plan id rather than an ordinal, so a
-/// page remains addressable after a shared reorder.
-fn contextual_pages(ctx: &PdfResourceCtx) -> impl Iterator<Item = (usize, &str)> {
-    let count = ctx.page_ids.len().min(ctx.page_count);
-    let start = ctx.page.saturating_sub(1).min(count.saturating_sub(1));
-    ctx.page_ids
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(CONTEXTUAL_CHILD_LIMIT)
-        .map(|(index, id)| (index + 1, id.as_str()))
-}
-
-/// Build the resource tree the reader currently has open: the open document, its
-/// annotations (each owning its pinned comments), and any free comments — every
-/// document-mutating operation exported as an action.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the resource tree is deliberately assembled in one linear document hierarchy"
-)]
-/// Stable document root only; pages, outline entries and annotations are
-/// retained/paged separately and are never materialized for root browsing.
-/// Nested markup catalogue for [`crate::resource::PdfViewer::children`].
+/// The published children of a document's markup: its pages, its
+/// annotations (each owning the comments pinned to it), its free comments and
+/// its signatures, each with the actions that change it. A bounded first page
+/// of each; [`markup_child`] resolves the rest by id.
 pub(crate) fn markup_children(state: &crate::resource::PdfMarkup) -> Vec<Resource> {
     let mut children = Vec::new();
     for (index, page) in state.pages.iter().enumerate().take(64) {
         children.push(published_page_resource(page, index, &state.pages));
     }
     for anno in state.annotations.iter().take(CONTEXTUAL_CHILD_LIMIT) {
-        let mut res = Resource::new(
-            format!("pdf.annotation:{}", anno.id),
-            "pdf.annotation",
-            anno_label(anno),
-        );
-        res = res.with_action(operation(
-            "open",
-            "Go to annotation",
-            OperationKind::View,
-            PdfOperation::GoToPage { page: anno.page },
-        ));
-        let aid = anno.id.clone();
-        res = res.with_action(ActionSpec::prompted(
-            "change-color",
-            "Change colour",
-            "Colour",
-            "yellow, green, pink, blue, purple",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| {
-                encode(&set_annotation_color_action(
-                    &aid,
-                    Swatch::parse(name.trim()),
-                ))
-            },
-        ));
-        if let Some(spec) = encode_spec(
-            "delete",
-            "Delete annotation",
-            &delete_annotation_action(&anno.id),
-        ) {
-            res = res.with_action(spec);
-        }
-        for comment in state
-            .comments
-            .iter()
-            .filter(|comment| comment.anno_id.as_deref() == Some(anno.id.as_str()))
-        {
-            res = res.with_child(comment_resource(comment, &comment.author));
-        }
-        children.push(res);
+        children.push(annotation_resource(anno, &state.comments));
     }
     for comment in state
         .comments
@@ -1803,128 +1695,229 @@ pub(crate) fn markup_children(state: &crate::resource::PdfMarkup) -> Vec<Resourc
         .filter(|comment| comment.anno_id.is_none())
         .take(CONTEXTUAL_CHILD_LIMIT)
     {
-        children.push(comment_resource(comment, &comment.author));
+        children.push(comment_resource(comment));
     }
     for signature in state.signatures.iter().take(CONTEXTUAL_CHILD_LIMIT) {
-        let mut resource = Resource::new(
-            format!("pdf.signature:{}", signature.id),
-            "pdf.signature",
-            format!("Signature by {} · p.{}", signature.signer, signature.page),
-        );
-        if let Some(spec) = encode_spec(
-            "delete",
-            "Delete signature",
-            &delete_signature_action(&signature.id),
-        ) {
-            resource = resource.with_action(spec);
-        }
-        resource = resource.with_action(operation(
-            "open",
-            "Go to signature",
-            OperationKind::View,
-            PdfOperation::GoToPage {
-                page: signature.page,
-            },
-        ));
-        children.push(resource);
+        children.push(signature_resource(signature));
     }
     children
 }
 
-/// Root View/Effect operations for [`crate::resource::PdfViewer::local_operations`].
-pub(crate) fn document_local_operations() -> Vec<ActionSpec> {
-    let ctx = PdfResourceCtx {
-        doc_id: "default".into(),
-        title: "PDF".into(),
-        page: 0,
-        page_count: 0,
-        page_ids: Vec::new(),
-        page_sources: Vec::new(),
-        page_imports: Vec::new(),
-        page_rotations: Vec::new(),
-        author: String::new(),
-        signature_date: String::new(),
-        created_seed: 0,
-        search_query: String::new(),
-        search_whole_word: false,
-        search_case_sensitive: false,
-        search_token: String::new(),
-        search_pages: Vec::new(),
-        outline: Vec::new(),
-    };
-    document_root(&ctx)
-        .actions
-        .into_iter()
-        .filter(|spec| spec.kind != OperationKind::Document)
-        .collect()
+/// The child `id` of a document's markup, wherever its list puts it.
+pub(crate) fn markup_child(state: &crate::resource::PdfMarkup, id: &str) -> Option<Resource> {
+    if let Some(page_id) = id.strip_prefix("pdf.page:") {
+        let index = state.pages.iter().position(|page| page.id == page_id)?;
+        return Some(published_page_resource(
+            state.pages.get(index)?,
+            index,
+            &state.pages,
+        ));
+    }
+    if let Some(raw) = id.strip_prefix("pdf.annotation:") {
+        return state
+            .annotations
+            .iter()
+            .find(|anno| anno.id == raw)
+            .map(|anno| annotation_resource(anno, &state.comments));
+    }
+    if let Some(raw) = id.strip_prefix("pdf.comment:") {
+        return state
+            .comments
+            .iter()
+            .find(|comment| comment.id == raw)
+            .map(comment_resource);
+    }
+    if let Some(raw) = id.strip_prefix("pdf.reply:") {
+        let (comment_id, reply_id) = raw.split_once(':')?;
+        let comment = state.comments.iter().find(|c| c.id == comment_id)?;
+        let reply = comment.replies.iter().find(|r| r.id == reply_id)?;
+        return Some(reply_resource(comment, reply));
+    }
+    let raw = id.strip_prefix("pdf.signature:")?;
+    state
+        .signatures
+        .iter()
+        .find(|signature| signature.id == raw)
+        .map(signature_resource)
 }
 
-pub fn document_root(ctx: &PdfResourceCtx) -> Resource {
-    let mut root = Resource::new(
-        format!("pdf.document:{}", ctx.doc_id),
-        "pdf.document",
-        ctx.title.clone(),
+fn annotation_resource(anno: &Annotation, comments: &[Comment]) -> Resource {
+    let mut res = Resource::new(
+        format!("pdf.annotation:{}", anno.id),
+        "pdf.annotation",
+        anno_label(anno),
     );
+    res = res.with_action(operation(
+        "open",
+        "Go to annotation",
+        OperationKind::View,
+        PdfOperation::GoToPage { page: anno.page },
+    ));
+    let aid = anno.id.clone();
+    res = res.with_action(ActionSpec::prompted(
+        "change-color",
+        "Change colour",
+        "Colour",
+        "yellow, green, pink, blue, purple",
+        ExecutionLocus::ClientLocal,
+        move |name: &str| {
+            encode(&set_annotation_color_action(
+                &aid,
+                Swatch::parse(name.trim()),
+            ))
+        },
+    ));
+    if let Some(spec) = encode_spec(
+        "delete",
+        "Delete annotation",
+        &delete_annotation_action(&anno.id),
+    ) {
+        res = res.with_action(spec);
+    }
+    for comment in comments
+        .iter()
+        .filter(|comment| comment.anno_id.as_deref() == Some(anno.id.as_str()))
+    {
+        res = res.with_child(comment_resource(comment));
+    }
+    res
+}
 
-    for (id, label, kind, value) in [
-        (
-            "previous-page",
-            "Previous page",
-            OperationKind::View,
-            PdfOperation::PreviousPage,
-        ),
-        (
-            "next-page",
-            "Next page",
-            OperationKind::View,
-            PdfOperation::NextPage,
-        ),
-        (
-            "zoom-in",
-            "Zoom in",
-            OperationKind::View,
-            PdfOperation::ZoomIn,
-        ),
-        (
-            "zoom-out",
-            "Zoom out",
-            OperationKind::View,
-            PdfOperation::ZoomOut,
-        ),
-        (
-            "fit-page",
-            "Fit page",
-            OperationKind::View,
-            PdfOperation::FitPage,
-        ),
-        (
-            "fit-width",
-            "Fit width",
-            OperationKind::View,
-            PdfOperation::FitWidth,
-        ),
+fn signature_resource(signature: &Signature) -> Resource {
+    let mut resource = Resource::new(
+        format!("pdf.signature:{}", signature.id),
+        "pdf.signature",
+        format!("Signature by {} · p.{}", signature.signer, signature.page),
+    );
+    if let Some(spec) = encode_spec(
+        "delete",
+        "Delete signature",
+        &delete_signature_action(&signature.id),
+    ) {
+        resource = resource.with_action(spec);
+    }
+    resource.with_action(operation(
+        "open",
+        "Go to signature",
+        OperationKind::View,
+        PdfOperation::GoToPage {
+            page: signature.page,
+        },
+    ))
+}
+
+/// Add a sticky note with this text (`value`) at the top of `page`.
+pub const ADD_NOTE: ui::tilo_resource::ActionRef<crate::resource::PdfViewer, (String, usize)> =
+    ui::tilo_resource::ActionRef::new("add-note", &[tilo_actions::PROMPTED_PARAM, "page"]);
+/// Sign `page` with a typed signature by this signer (`value`; the signer's
+/// own name when empty).
+pub const ADD_TYPED_SIGNATURE: ui::tilo_resource::ActionRef<
+    crate::resource::PdfViewer,
+    (String, usize),
+> = ui::tilo_resource::ActionRef::new(
+    "add-typed-signature",
+    &[tilo_actions::PROMPTED_PARAM, "page"],
+);
+
+/// The page an action names: its `page` argument, 1 when it names none.
+fn page_argument(args: &ActionArgs) -> Result<usize, String> {
+    match args.integer("page") {
+        None => Ok(1),
+        Some(page) => usize::try_from(page)
+            .ok()
+            .filter(|page| *page >= 1)
+            .ok_or_else(|| format!("there is no page {page}")),
+    }
+}
+
+/// The document's named edits that need no pointer: a sticky note and a
+/// typed signature at a predictable, readable place on a page, for the
+/// palette, keyboard users and agents. Both are signed by whoever invokes
+/// them.
+pub(crate) fn declarations() -> Vec<ui::tilo_resource::ActionDecl<crate::resource::PdfViewer>> {
+    use ui::tilo_resource::ActionDecl;
+    let page = ActionParam::optional("page", ParamType::Integer, "Page (1 when omitted)");
+    vec![
+        ActionDecl::new(
+            "add-note",
+            "Add note",
+            vec![
+                ActionParam::required(tilo_actions::PROMPTED_PARAM, ParamType::Text, "Note"),
+                page.clone(),
+            ],
+            |args, now_ms| {
+                let body = args.text(tilo_actions::PROMPTED_PARAM).unwrap_or_default();
+                Ok(create_note_action(
+                    &NoteDraft {
+                        anno_id: &Annotation::new_id(),
+                        comment_id: &Comment::new_id(),
+                        color: Swatch::Yellow,
+                        author: "",
+                        created: now_ms,
+                        body,
+                    },
+                    page_argument(args)?,
+                    MARGIN,
+                    MARGIN,
+                ))
+            },
+        )
+        .describe("Add a sticky note with this text at the top of a page."),
+        ActionDecl::new(
+            "add-typed-signature",
+            "Add typed signature",
+            vec![
+                ActionParam::optional(
+                    tilo_actions::PROMPTED_PARAM,
+                    ParamType::Text,
+                    "Signer (the signer's own name when omitted)",
+                ),
+                page,
+            ],
+            |args, now_ms| {
+                let signer = args
+                    .text(tilo_actions::PROMPTED_PARAM)
+                    .map(str::trim)
+                    .unwrap_or_default();
+                Ok(add_signature_action(&Signature {
+                    id: Signature::new_id(),
+                    page: page_argument(args)?,
+                    // A familiar signing place, clear of the opening paragraph.
+                    rect: PtRect::new(PAGE_W - MARGIN - 218.0, PAGE_H - MARGIN - 74.0, 218.0, 74.0),
+                    signer: signer.to_owned(),
+                    date: crate::app::ymd_from_unix_ms(now_ms),
+                    ink: SignatureInk::Typed,
+                    space: GeomSpace::Page,
+                }))
+            },
+        )
+        .describe("Sign a page with a typed signature dated today."),
+    ]
+}
+
+/// Root View/Effect operations for [`crate::resource::PdfViewer::local_operations`].
+pub(crate) fn document_local_operations() -> Vec<ActionSpec> {
+    let mut operations: Vec<ActionSpec> = [
+        ("previous-page", "Previous page", PdfOperation::PreviousPage),
+        ("next-page", "Next page", PdfOperation::NextPage),
+        ("zoom-in", "Zoom in", PdfOperation::ZoomIn),
+        ("zoom-out", "Zoom out", PdfOperation::ZoomOut),
+        ("fit-page", "Fit page", PdfOperation::FitPage),
+        ("fit-width", "Fit width", PdfOperation::FitWidth),
         (
             "toggle-sidebar",
             "Toggle sidebar",
-            OperationKind::View,
             PdfOperation::ToggleSidebar,
         ),
         (
             "toggle-pages",
             "Toggle page thumbnails",
-            OperationKind::View,
             PdfOperation::ToggleRail,
         ),
-        (
-            "find",
-            "Find in document",
-            OperationKind::View,
-            PdfOperation::OpenSearch,
-        ),
+        ("find", "Find in document", PdfOperation::OpenSearch),
         (
             "mark-highlight",
             "Mark text as highlight",
-            OperationKind::View,
             PdfOperation::MarkupStyle {
                 style: "highlight".into(),
             },
@@ -1932,7 +1925,6 @@ pub fn document_root(ctx: &PdfResourceCtx) -> Resource {
         (
             "mark-underline",
             "Mark text as underline",
-            OperationKind::View,
             PdfOperation::MarkupStyle {
                 style: "underline".into(),
             },
@@ -1940,378 +1932,71 @@ pub fn document_root(ctx: &PdfResourceCtx) -> Resource {
         (
             "mark-strikeout",
             "Mark text as strike-through",
-            OperationKind::View,
             PdfOperation::MarkupStyle {
                 style: "strikeout".into(),
             },
         ),
-    ] {
-        let mut spec = operation(id, label, kind, value.clone());
-        if value == PdfOperation::PreviousPage && ctx.page <= 1 {
-            spec = spec.unavailable("first_page", "Already at the first page");
-        }
-        if value == PdfOperation::NextPage && ctx.page >= ctx.page_count {
-            spec = spec.unavailable("last_page", "Already at the last page");
-        }
-        root = root.with_action(spec);
-    }
-    root = root.with_action(file_operation("open", "Open PDF", false));
-    root = root.with_action(file_operation("save-as", "Save annotated PDF", true));
-
-    root
+    ]
+    .into_iter()
+    .map(|(id, label, value)| operation(id, label, OperationKind::View, value))
+    .collect();
+    operations.push(file_operation("open", "Open PDF", false));
+    operations.push(file_operation("save-as", "Save annotated PDF", true));
+    operations
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one resource projection keeps the document, page, annotation, comment, signature, outline, and search subtrees in one auditable traversal"
-)]
-pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let state =
-        <crate::resource::PdfViewer as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
-    let mut root = ui::tilo_resource::publish::<crate::resource::PdfViewer>(
-        &format!("pdf.document:{}", ctx.doc_id),
-        &ctx.title,
-        &state,
-    );
-    // Published page rows already carry open, duplicate, delete, move, and
-    // rotate. Keep the window around the current page. A live page the
-    // document has not published yet is added beside them.
-    let window: Vec<(usize, &str)> = contextual_pages(ctx).collect();
-    let window_ids: std::collections::HashSet<&str> =
-        window.iter().map(|(_, page_id)| *page_id).collect();
-    root.children.retain(|child| {
-        if child.kind != "pdf.page" {
-            return true;
-        }
-        let Some(page_id) = child.id.as_str().strip_prefix("pdf.page:") else {
-            return false;
-        };
-        let bare = page_id.rsplit(':').next().unwrap_or(page_id);
-        window_ids.contains(bare)
-    });
-    let published_page_ids: std::collections::HashSet<String> = root
-        .children
-        .iter()
-        .filter(|child| child.kind == "pdf.page")
-        .filter_map(|child| {
-            child
-                .id
-                .as_str()
-                .strip_prefix("pdf.page:")
-                .map(|page_id| page_id.rsplit(':').next().unwrap_or(page_id).to_string())
-        })
+/// The open document's live rows: its outline (a bounded first page) and
+/// the current find hits. Both come from the PDF and the find bar rather
+/// than the record and carry only view operations.
+pub fn live_resources(ctx: &PdfResourceCtx) -> Vec<Resource> {
+    let mut resources: Vec<Resource> = (0..ctx.outline.len().min(CONTEXTUAL_CHILD_LIMIT))
+        .filter_map(|index| outline_resource(ctx, index))
         .collect();
-    for action in &mut root.actions {
-        if action.id == "previous-page" && ctx.page <= 1 {
-            let current = action.clone();
-            *action = current.unavailable("first_page", "Already at the first page");
-        }
-        if action.id == "next-page" && ctx.page >= ctx.page_count {
-            let current = action.clone();
-            *action = current.unavailable("last_page", "Already at the last page");
-        }
-    }
-    for (page, page_id) in window {
-        if published_page_ids.contains(page_id) {
-            continue;
-        }
-        root = root.with_child(page_resource(ctx, page, page_id));
-    }
-
-    for index in 0..ctx.outline.len().min(CONTEXTUAL_CHILD_LIMIT) {
-        if let Some(resource) = outline_resource(ctx, index) {
-            root = root.with_child(resource);
-        }
-    }
-    for search in find_result_resources(ctx) {
-        root = root.with_child(search);
-    }
-
-    // Document-level: add a sticky note carrying the prompted text at the
-    // current page's top margin. The ids are minted once when the argument is
-    // committed, then baked into the envelope, so replay stays deterministic.
-    let page = ctx.page;
-    let author = ctx.author.clone();
-    let created = ctx.created_seed + 1;
-    root = root.with_action(ActionSpec::prompted(
-        "add-note",
-        "Add note",
-        "Note",
-        "your note…",
-        ExecutionLocus::ClientLocal,
-        move |text: &str| {
-            encode(&create_note_action(
-                &NoteDraft {
-                    anno_id: &Annotation::new_id(),
-                    comment_id: &Comment::new_id(),
-                    color: Swatch::Yellow,
-                    author: &author,
-                    created,
-                    body: text,
-                },
-                page,
-                MARGIN,
-                MARGIN,
-            ))
-        },
-    ));
-
-    // Agents and keyboard users do not have a pointer location to drop a
-    // signature onto. Offer the canonical typed equivalent at a predictable,
-    // readable location on the current page; the timestamp is captured in the
-    // resource snapshot, then carried in the replayable action payload.
-    let signature_page = ctx.page;
-    let signature_date = ctx.signature_date.clone();
-    let fallback_signer = ctx.author.clone();
-    root = root.with_action(ActionSpec::prompted(
-        "add-typed-signature",
-        "Add typed signature",
-        "Signer",
-        "signer name (leave blank to use the current author)…",
-        ExecutionLocus::ClientLocal,
-        move |text: &str| {
-            let signer = if text.trim().is_empty() {
-                fallback_signer.clone()
-            } else {
-                text.trim().to_string()
-            };
-            encode(&add_signature_action(&Signature {
-                id: Signature::new_id(),
-                page: signature_page,
-                // Keep the automatic, keyboard/palette-created signature out
-                // of the opening paragraph while retaining a familiar signing
-                // location on the page.
-                rect: PtRect::new(PAGE_W - MARGIN - 218.0, PAGE_H - MARGIN - 74.0, 218.0, 74.0),
-                signer,
-                date: signature_date.clone(),
-                ink: SignatureInk::Typed,
-                space: crate::model::GeomSpace::Page,
-            }))
-        },
-    ));
-
-    vec![root]
+    resources.extend(find_result_resources(ctx));
+    resources
 }
 
-/// Resolve an omitted resource from current state without rebuilding a large
-/// contextual tree. Every branch checks the stable id against the live model;
-/// a deleted annotation, moved-away local page, or stale search hit therefore
-/// fails closed instead of being rebound by list position.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one exhaustive stable-id resolver makes stale resource refusal auditable"
-)]
-fn find_pdf(resources: &[Resource], id: &str) -> Option<Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_pdf(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "PDF resource resolution still mirrors the standalone widget surface"
-)]
-pub fn resolve_resource(ctx: &PdfResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
-    let root_id = format!("pdf.document:{}", ctx.doc_id);
-    if id == root_id {
-        return provide_resources(ctx, doc).into_iter().next();
-    }
-    let page_prefix = format!("pdf.page:{}:", ctx.doc_id);
-    if let Some(page_id) = id.strip_prefix(&page_prefix) {
-        let index = ctx
-            .page_ids
-            .iter()
-            .position(|candidate| candidate == page_id)?;
-        let contextual = page_resource(ctx, index + 1, page_id);
-        let Some(mut published) = provide_resources(ctx, doc)
-            .into_iter()
-            .next()
-            .and_then(|root| {
-                root.children.into_iter().find(|child| {
-                    child.kind == "pdf.page"
-                        && child
-                            .id
-                            .as_str()
-                            .strip_prefix("pdf.page:")
-                            .is_some_and(|bare| bare.rsplit(':').next().unwrap_or(bare) == page_id)
-                })
-            })
-        else {
-            return Some(contextual);
-        };
-        // Keep the address the caller used. Document actions stay the
-        // published page's; views the published page lacks are added.
-        published.id = contextual.id;
-        published.label = contextual.label;
-        for action in contextual.actions {
-            if !published.actions.iter().any(|have| have.id == action.id) {
-                published.actions.push(action);
-            }
-        }
-        return Some(published);
-    }
-    if (id.starts_with("pdf.annotation:") || id.starts_with("pdf.comment:"))
-        && let Some(found) = find_pdf(&provide_resources(ctx, doc), id)
-    {
-        return Some(found);
-    }
-    if let Some(raw) = id.strip_prefix("pdf.annotation:") {
-        return PdfDoc::list_annotations(doc)
-            .into_iter()
-            .find(|annotation| annotation.id == raw)
-            .map(|annotation| {
-                let mut resource = Resource::new(
-                    format!("pdf.annotation:{}", annotation.id),
-                    "pdf.annotation",
-                    anno_label(&annotation),
-                );
-                resource = resource.with_action(operation(
-                    "open",
-                    "Go to annotation",
-                    OperationKind::View,
-                    PdfOperation::GoToPage {
-                        page: annotation.page,
-                    },
-                ));
-                let aid = annotation.id.clone();
-                resource = resource.with_action(ActionSpec::prompted(
-                    "change-color",
-                    "Change colour",
-                    "Colour",
-                    "yellow, green, pink, blue, purple",
-                    ExecutionLocus::ClientLocal,
-                    move |name: &str| {
-                        encode(&set_annotation_color_action(
-                            &aid,
-                            Swatch::parse(name.trim()),
-                        ))
-                    },
-                ));
-                if let Some(spec) = encode_spec(
-                    "delete",
-                    "Delete annotation",
-                    &delete_annotation_action(&annotation.id),
-                ) {
-                    resource = resource.with_action(spec);
-                }
-                resource
-            });
-    }
-    if let Some(raw) = id.strip_prefix("pdf.comment:") {
-        return PdfDoc::list_comments(doc)
-            .into_iter()
-            .find(|comment| comment.id == raw)
-            .map(|comment| comment_resource(&comment, &ctx.author));
-    }
-    if let Some(raw) = id.strip_prefix("pdf.reply:") {
-        if let Some(found) = find_pdf(&provide_resources(ctx, doc), id) {
-            return Some(found);
-        }
-        let (comment_id, reply_id) = raw.split_once(':')?;
-        return PdfDoc::list_comments(doc)
-            .into_iter()
-            .find(|comment| comment.id == comment_id)
-            .and_then(|comment| {
-                comment
-                    .replies
-                    .iter()
-                    .find(|reply| reply.id == reply_id)
-                    .map(|reply| reply_resource(&comment, reply))
-            });
-    }
-    if let Some(raw) = id.strip_prefix("pdf.signature:") {
-        if let Some(found) = find_pdf(&provide_resources(ctx, doc), id) {
-            return Some(found);
-        }
-        return PdfDoc::list_signatures(doc)
-            .into_iter()
-            .find(|signature| signature.id == raw)
-            .map(|signature| {
-                let mut resource = Resource::new(
-                    format!("pdf.signature:{}", signature.id),
-                    "pdf.signature",
-                    format!("Signature by {} · p.{}", signature.signer, signature.page),
-                );
-                if let Some(spec) = encode_spec(
-                    "delete",
-                    "Delete signature",
-                    &delete_signature_action(&signature.id),
-                ) {
-                    resource = resource.with_action(spec);
-                }
-                resource.with_action(operation(
-                    "open",
-                    "Go to signature",
-                    OperationKind::View,
-                    PdfOperation::GoToPage {
-                        page: signature.page,
-                    },
-                ))
-            });
-    }
+/// The live row `id`, beyond the bounded page [`live_resources`] lists.
+/// Every id is checked against the live model, so a changed outline entry or
+/// a stale find hit fails closed instead of being rebound by position.
+pub fn resolve_live_resource(ctx: &PdfResourceCtx, id: &str) -> Option<Resource> {
     let outline_prefix = format!("pdf.outline:{}:", ctx.doc_id);
-    if id.strip_prefix(&outline_prefix).is_some() {
-        if let Some(found) = find_pdf(&provide_resources(ctx, doc), id) {
-            return Some(found);
-        }
+    if id.starts_with(&outline_prefix) {
         return ctx.outline.iter().enumerate().find_map(|(index, _)| {
             (outline_resource_id(ctx, index).as_deref() == Some(id))
                 .then(|| outline_resource(ctx, index))
                 .flatten()
         });
     }
+    if id == format!("pdf.search:{}", ctx.doc_id) {
+        return find_result_resources(ctx).into_iter().next();
+    }
     let search_prefix = format!("pdf.search-result:{}:", ctx.doc_id);
-    if let Some(raw) = id.strip_prefix(&search_prefix) {
-        if let Some(found) = find_pdf(&provide_resources(ctx, doc), id) {
-            return Some(found);
-        }
-        let mut parts = raw.split(':');
-        let token = parts.next()?;
-        let index = parts.next()?;
-        let page = parts.next()?;
-        if parts.next().is_some() || token != ctx.search_token {
-            return None;
-        }
-        let index = index.parse::<usize>().ok()?;
-        let page = page.parse::<usize>().ok()?;
-        return ctx
-            .search_pages
-            .get(index)
-            .filter(|current| **current == page)
-            .map(|_| search_result_resource(ctx, index, page));
+    let raw = id.strip_prefix(&search_prefix)?;
+    let mut parts = raw.split(':');
+    let token = parts.next()?;
+    let index = parts.next()?;
+    let page = parts.next()?;
+    if parts.next().is_some() || token != ctx.search_token {
+        return None;
     }
-    None
-}
-
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::PdfApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        match self.pdf_resource_ctx() {
-            Some(ctx) => provide_resources(&ctx, doc),
-            None => Vec::new(),
-        }
-    }
-
-    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        self.pdf_resource_ctx()
-            .and_then(|ctx| resolve_resource(&ctx, doc, id))
-    }
+    let index = index.parse::<usize>().ok()?;
+    let page = page.parse::<usize>().ok()?;
+    ctx.search_pages
+        .get(index)
+        .filter(|current| **current == page)
+        .map(|_| search_result_resource(ctx, index, page))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::PdfApp;
+    use automerge::AutoCommit;
     use std::collections::BTreeSet;
     use std::io::Read;
     use std::sync::Mutex;
-    use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
+    use tilo_actions::{ActionRegistry, LocalTransport};
     use tilo_content::{
         ContentBackend, ContentError, ContentReader, ContentState, ContentStore, MemoryBackend,
         Stored,
@@ -2395,15 +2080,6 @@ mod tests {
         r
     }
 
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
-                panic!("expected a prompted action: {}", spec.id)
-            }
-        }
-    }
-
     /// The sample reader, synced once so its demonstration markup (two
     /// highlights, a sticky note with a two-reply thread, a highlight comment,
     /// and a free resolved comment) is in the shared document.
@@ -2428,9 +2104,10 @@ mod tests {
 
     fn markup_resources(doc: &AutoCommit) -> Vec<Resource> {
         SEEDED.with_borrow(|app| {
-            app.as_ref()
-                .expect("the contract seed ran first")
-                .publish_resources(doc)
+            let app = app.as_ref().expect("the contract seed ran first");
+            let mut resources = vec![published(doc)];
+            resources.extend(ui::resources::resources(app, doc));
+            resources
         })
     }
 
@@ -2514,11 +2191,18 @@ mod tests {
             .expect("action applies");
     }
 
+    /// The record's publication as the palette and agents see it.
+    fn published(doc: &AutoCommit) -> Resource {
+        let state = <crate::resource::PdfViewer as ui::tilo_resource::Resource>::read(doc)
+            .expect("the record reads");
+        ui::tilo_resource::publish::<crate::resource::PdfViewer>("pdf.document", "PDF", &state)
+    }
+
     /// Ctrl+K on the reader yields the full nested tree: the open document →
     /// annotation → comment, plus free-comment resources, each with the actions
-    /// the data model implies. Drives the real resource hook. Large documents
-    /// stay bounded with lazily resolvable omitted children, and outline ids
-    /// survive reordering but fail closed when changed.
+    /// the data model implies; the outline and find hits are live rows beside
+    /// it. Large documents stay bounded with omitted children resolvable by
+    /// id, and outline ids survive reordering but fail closed when changed.
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     #[allow(
@@ -2527,9 +2211,7 @@ mod tests {
     )]
     fn document_resources_publish_the_nested_tree_with_bounded_stable_children() {
         let (app, state) = open_with_markup();
-        let resources = ui::resources::resources(&app, &state.doc);
-        assert_eq!(resources.len(), 1, "one open document");
-        let document = &resources[0];
+        let document = published(&state.doc);
         assert_eq!(document.kind, "pdf.document");
         let doc_actions: Vec<&str> = document.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(doc_actions.contains(&"add-note"), "{doc_actions:?}");
@@ -2559,25 +2241,23 @@ mod tests {
                 .is_ok(),
             "page-plan actions use the same registry as all other shared PDF mutations"
         );
-        let outline = document
-            .children
+        let live = ui::resources::resources(&app, &state.doc);
+        let outline = live
             .iter()
             .find(|r| r.kind == "pdf.outline-item")
-            .expect("an outline item on the published document");
-        let resolved = app
-            .publish_resource(&state.doc, outline.id.as_str())
-            .expect("an eager outline item resolves");
-        assert_eq!(
-            resolved
-                .actions
-                .iter()
-                .map(|action| action.id.as_str())
-                .collect::<Vec<_>>(),
+            .expect("an outline item beside the published document");
+        assert!(
             outline
                 .actions
                 .iter()
-                .map(|action| action.id.as_str())
-                .collect::<Vec<_>>(),
+                .all(|action| action.kind == OperationKind::View),
+            "the outline is a live row with view operations only"
+        );
+        let resolved =
+            ui::resources::PublishesResources::resource(&app, &state.doc, outline.id.as_str())
+                .expect("an eager outline item resolves");
+        assert_eq!(
+            resolved.id, outline.id,
             "an eager outline item is the published row"
         );
         assert!(document.children.iter().any(|r| r.kind == "pdf.signature"));
@@ -2610,14 +2290,11 @@ mod tests {
             .expect("durable reply is nested under its canonical comment");
         assert_eq!(reply.kind, "pdf.reply");
         assert!(reply.actions.iter().any(|action| action.id == "open"));
+        let markup = <crate::resource::PdfViewer as ui::tilo_resource::Resource>::read(&state.doc)
+            .expect("the record reads");
         assert!(
-            resolve_resource(
-                &app.pdf_resource_ctx().unwrap(),
-                &state.doc,
-                reply.id.as_str(),
-            )
-            .is_some(),
-            "a reply remains lazily addressable for agents and history"
+            markup_child(&markup, reply.id.as_str()).is_some(),
+            "a reply remains addressable by id for agents and history"
         );
 
         // The seeded free comment (pinned to no annotation) is a document child.
@@ -2626,35 +2303,37 @@ mod tests {
             "a free-comment resource hangs off the document"
         );
 
-        // A large document's snapshot is bounded and omitted pages resolve lazily.
-        let page_count = CONTEXTUAL_CHILD_LIMIT + 9;
-        let ctx = resource_ctx(
-            "Large fixture",
-            (1..=page_count)
-                .map(|page| format!("page-{page}"))
+        // A large document's publication is bounded and omitted pages resolve
+        // by id.
+        let page_count = 64 + 9;
+        let large = crate::resource::PdfMarkup {
+            pages: (1..=page_count)
+                .map(|page| PagePlanEntry {
+                    id: format!("page-{page}"),
+                    source_page: page,
+                    imported: None,
+                    rotation: 0,
+                })
                 .collect(),
-            Vec::new(),
-        );
-        let doc = AutoCommit::new();
-        let snapshot = provide_resources(&ctx, &doc);
-        let eager_pages = snapshot[0]
-            .children
+            ..crate::resource::PdfMarkup::default()
+        };
+        let eager_pages = markup_children(&large)
             .iter()
             .filter(|resource| resource.kind == "pdf.page")
             .count();
-        assert_eq!(eager_pages, CONTEXTUAL_CHILD_LIMIT);
-        let omitted = page_resource_id(&ctx.doc_id, &format!("page-{page_count}"));
-        let resolved = resolve_resource(&ctx, &doc, &omitted).expect("lazy page resource");
+        assert_eq!(eager_pages, 64);
+        let omitted = format!("pdf.page:page-{page_count}");
+        let resolved = markup_child(&large, &omitted).expect("an omitted page resolves");
         assert_eq!(resolved.id.as_str(), omitted);
         assert_eq!(resolved.label, format!("Page {page_count}"));
-        let mut find = ctx.clone();
+        assert!(markup_child(&large, "pdf.page:page-999").is_none());
+
+        let mut find = resource_ctx("Large fixture", Vec::new(), Vec::new());
         find.search_query = "fixture".into();
         find.search_token = search_result_token("fixture", false, false);
         find.search_pages = (1..=SEARCH_RESULT_RESOURCE_LIMIT + 9).collect();
-        let find_snapshot = provide_resources(&find, &doc);
-        let find_resource = find_snapshot[0]
-            .children
-            .iter()
+        let find_resource = live_resources(&find)
+            .into_iter()
             .find(|resource| resource.kind == "pdf.search")
             .expect("non-empty find query has a result resource");
         assert_eq!(find_resource.children.len(), SEARCH_RESULT_RESOURCE_LIMIT);
@@ -2666,13 +2345,12 @@ mod tests {
             SEARCH_RESULT_RESOURCE_LIMIT + 1
         );
         assert!(
-            resolve_resource(&find, &doc, &omitted_find).is_some(),
+            resolve_live_resource(&find, &omitted_find).is_some(),
             "an omitted find hit remains addressable by its stable query/result id"
         );
-        let mut stale = ctx;
-        stale.page_ids.pop();
-        stale.page_count -= 1;
-        assert!(resolve_resource(&stale, &doc, &omitted).is_none());
+        let mut stale = find;
+        stale.search_token = search_result_token("other", false, false);
+        assert!(resolve_live_resource(&stale, &omitted_find).is_none());
 
         // Outline resource ids survive reordering but fail closed when changed.
         let mut ctx = resource_ctx(
@@ -2692,21 +2370,18 @@ mod tests {
             "duplicates retain identities"
         );
         for id in [&introduction, &first_security, &duplicate_security] {
-            assert!(
-                resolve_resource(&ctx, &doc, id).is_some(),
-                "outline id {id}"
-            );
+            assert!(resolve_live_resource(&ctx, id).is_some(), "outline id {id}");
         }
         ctx.outline.insert(0, ("Preface".into(), 1, 0));
         assert!(
-            resolve_resource(&ctx, &doc, &first_security).is_some(),
+            resolve_live_resource(&ctx, &first_security).is_some(),
             "inserting another bookmark does not rebind the saved action"
         );
-        assert!(resolve_resource(&ctx, &doc, &introduction).is_some());
-        assert!(resolve_resource(&ctx, &doc, &duplicate_security).is_some());
+        assert!(resolve_live_resource(&ctx, &introduction).is_some());
+        assert!(resolve_live_resource(&ctx, &duplicate_security).is_some());
         ctx.outline[1].1 = 3;
         assert!(
-            resolve_resource(&ctx, &doc, &introduction).is_none(),
+            resolve_live_resource(&ctx, &introduction).is_none(),
             "a changed bookmark fails closed rather than opening another section"
         );
     }
@@ -2718,7 +2393,7 @@ mod tests {
     /// Ctrl+Z reverts it.
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn markup_actions_apply_through_the_registry_and_undo_as_the_local_author() {
+    fn markup_actions_apply_through_the_registry_and_undo_as_their_author() {
         // Drawn signatures round-trip through add and delete actions.
         let mut doc = AutoCommit::new();
         let signature = Signature {
@@ -2737,22 +2412,40 @@ mod tests {
         dispatch_encoded(&mut doc, encode(&delete_signature_action(&signature.id)));
         assert!(PdfDoc::list_signatures(&doc).is_empty());
 
-        // The resource's typed signature is replayable and uses the prompted signer.
-        let (app, mut state) = open_with_markup();
-        let expected_page = app.pdf_resource_ctx().expect("open document").page;
-        let resources = ui::resources::resources(&app, &state.doc);
-        let action = resources[0]
-            .actions
+        // The declared typed signature is replayable, uses the named signer
+        // and signs as the invoker when none is named.
+        let mut app =
+            ui::framework::testing::TestApp::<crate::PdfViewerShell>::new().expect("the reader");
+        app.invoke(ADD_TYPED_SIGNATURE.with(("Grace Hopper".into(), 2)))
+            .expect("the owner signs");
+        app.invoke(ADD_TYPED_SIGNATURE.with((String::new(), 1)))
+            .expect("the owner signs as themselves");
+        app.invoke(ADD_NOTE.with(("Check the figures".into(), 3)))
+            .expect("the owner adds a note");
+        let state = app.state();
+        let signature = state
+            .signatures
             .iter()
-            .find(|action| action.id == "add-typed-signature")
-            .expect("typed signature action");
-        dispatch_encoded(&mut state.doc, prompted_encode(action, "Grace Hopper"));
-        let signature = PdfDoc::list_signatures(&state.doc)
-            .into_iter()
             .find(|signature| signature.signer == "Grace Hopper")
-            .expect("prompted signer is saved");
+            .expect("named signer is saved");
         assert_eq!(signature.ink, SignatureInk::Typed);
-        assert_eq!(signature.page, expected_page);
+        assert_eq!(signature.page, 2);
+        let own = state
+            .signatures
+            .iter()
+            .find(|signature| signature.page == 1)
+            .expect("unnamed signature is saved");
+        assert!(
+            !own.signer.is_empty(),
+            "an unnamed signature is the invoker's"
+        );
+        let note = state
+            .comments
+            .iter()
+            .find(|comment| comment.body == "Check the figures")
+            .expect("the note's comment");
+        assert_eq!(note.page, 3);
+        assert_eq!(note.author, own.signer, "both are signed by the invoker");
 
         // Deleting a seeded annotation that carries a pinned comment.
         let (_app, mut state) = open_with_markup();
@@ -2789,13 +2482,10 @@ mod tests {
             "and every comment pinned to it went with it"
         );
 
-        // perform_action undo is attributed to the local author.
+        // A markup action is one undo step of its author's.
         {
-            let (mut app, mut state) = open_with_markup();
-            let before_len = PdfDoc::list_annotations(&state.doc).len();
-            let before_heads = state.doc.get_heads();
-
-            // Add a highlight through the exact path the highlight tool uses.
+            let mut app = ui::framework::testing::TestApp::<crate::PdfViewerShell>::new()
+                .expect("the reader");
             let a = Annotation {
                 id: Annotation::new_id(),
                 page: 1,
@@ -2806,48 +2496,16 @@ mod tests {
                 created_ms: 0,
                 space: crate::model::GeomSpace::Page,
             };
-            app.perform_action(&mut state.doc, &add_annotation_action(&a));
-
-            // The host's own recorder drains the stashed heads and records the
-            // boundary. Going through it rather than pushing an entry by hand is
-            // the point: attribution happens in there, and undo is author-scoped.
-            // The node map is empty because the app widget *is* the root here.
-            let local_author = ui::collaboration::local_user_id();
-            let root: *mut dyn Widget = &mut app;
-            assert!(
-                ui::undo::record_dispatched_action(
-                    &mut state,
-                    root,
-                    &std::collections::HashMap::new(),
-                    &local_author,
-                ),
-                "the host recorded an undo boundary for the dispatched action"
-            );
-
+            app.invoke(ui::tilo_resource::Invoke::apply(&add_annotation_action(&a)).unwrap())
+                .expect("the owner highlights");
             assert_eq!(
-                PdfDoc::list_annotations(&state.doc).len(),
-                before_len + 1,
+                app.state().annotations.len(),
+                1,
                 "the action added the highlight"
             );
-            let entry = state
-                .peek_last_undo()
-                .expect("exactly one undo boundary recorded");
-            assert_eq!(
-                entry.before, before_heads,
-                "the boundary brackets the action"
-            );
-            assert_eq!(
-                entry.author.as_ref(),
-                Some(&local_author),
-                "the host attributed it to the local user, so their Ctrl+Z can reach it"
-            );
-
-            state
-                .undo_as(Some(&local_author), None, None)
-                .expect("an undo entry to pop");
-            assert_eq!(
-                PdfDoc::list_annotations(&state.doc).len(),
-                before_len,
+            assert!(app.undo(), "the highlight is an undo step");
+            assert!(
+                app.state().annotations.is_empty(),
                 "undo reverted the added highlight and nothing else"
             );
         }

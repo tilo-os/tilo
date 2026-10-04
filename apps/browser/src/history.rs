@@ -394,6 +394,30 @@ fn frequency_score(visit_count: u32) -> f64 {
     1.0 - 1.0 / (1.0 + n)
 }
 
+/// The visits the address suggestions show in a screenshot.
+pub(crate) fn sample_entries() -> Vec<HistoryEntry> {
+    vec![
+        HistoryEntry {
+            url: "https://github.com/tilo/tilo".into(),
+            title: "Tilo on code.tilo.so".into(),
+            last_visit: 3,
+            visit_count: 12,
+        },
+        HistoryEntry {
+            url: "https://en.wikipedia.org/wiki/Web_browser".into(),
+            title: "Web browser - Wikipedia".into(),
+            last_visit: 2,
+            visit_count: 5,
+        },
+        HistoryEntry {
+            url: "https://duckduckgo.com/?q=rust".into(),
+            title: "rust at DuckDuckGo".into(),
+            last_visit: 1,
+            visit_count: 3,
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

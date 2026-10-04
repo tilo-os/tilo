@@ -31,7 +31,6 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -58,10 +57,13 @@ use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive, TargetKind,
     TiloRelease, fmt_eta, fmt_rate, fmt_size,
 };
-use crate::resource::{Imager, ImagerState};
+use crate::resource::{Imager, ImagerEffect, ImagerState};
 use crate::write::{JobControl, WriteRequest, spawn_job};
 use crate::write_setup::WriteSetupPanel;
-use ui::framework::Dispatcher;
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LiveRow,
+};
+use ui::tilo_resource::Effect as _;
 
 // ---- layout constants (logical px) -------------------------------------
 // The spacing rhythm (HIG §7b) is the crate's: `crate::rhythm` names every
@@ -528,6 +530,8 @@ pub struct ImagerApp {
     // ---- transient job / portal plumbing (not in the doc) ----
     job_rx: Option<std::sync::mpsc::Receiver<Progress>>,
     job_control: Option<JobControl>,
+    /// The caller of the running write effect, answered when it ends.
+    write_reply: Option<EffectReply>,
     portal_rx: Option<PortalChannel>,
     release_rx: Option<std::sync::mpsc::Receiver<crate::release::DownloadEvent>>,
     release_control: Option<crate::release::DownloadControl>,
@@ -610,6 +614,7 @@ impl ImagerApp {
             step: Step::Source,
             job_rx: None,
             job_control: None,
+            write_reply: None,
             portal_rx: None,
             release_rx: None,
             release_control: None,
@@ -803,17 +808,10 @@ impl ImagerApp {
             })
     }
 
-    /// Read-only projections used to build the searchable resource hierarchy.
-    /// The target list and job state describe this machine, so publishing them
-    /// does not turn them into shared authority.
+    /// The reviewed image, as last presented or just chosen.
+    #[cfg(test)]
     pub(crate) fn resource_source(&self) -> Option<&Source> {
         self.source.as_ref()
-    }
-    pub(crate) fn resource_targets(&self) -> &[TargetDrive] {
-        &self.targets
-    }
-    pub(crate) fn resource_progress(&self) -> &Progress {
-        &self.progress
     }
 
     /// Show the imager resource as it is now: a local edit, a collaborator's
@@ -839,16 +837,6 @@ impl ImagerApp {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.apply(action);
         }
-    }
-
-    /// Whether startup has finished reconciling an in-flight write helper.
-    pub(crate) fn startup_write_reconciled(&self) -> bool {
-        self.startup_write_state_reconciled
-    }
-
-    /// Whether a write/verify worker channel is open on this surface.
-    pub(crate) fn job_active(&self) -> bool {
-        self.job_rx.is_some()
     }
 
     /// Stage the peer-local confirmation for a deterministic offscreen frame.
@@ -4482,73 +4470,69 @@ impl ImagerApp {
         }
     }
 
+    /// The Write button: the write effect, through the same door as the
+    /// palette and agents. What would refuse it is said here first.
     fn start_write(&mut self) {
-        let operation = crate::actions::ImagerOperation::Write {
-            device: self.target().map(TargetDrive::dev_path).unwrap_or_default(),
-            confirmation: self.confirm_input.value().to_string(),
-        };
-        if let Err(reason) = self.perform_operation(&operation) {
+        let device = self.target().map(TargetDrive::dev_path).unwrap_or_default();
+        if let Err(reason) = self.write_refusal(&device) {
             self.set_status(&reason);
             self.dirty = true;
+            return;
+        }
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect(&ImagerEffect::Write {
+                device,
+                confirmation: self.confirm_input.value().to_string(),
+            });
         }
     }
 
-    /// One semantic implementation shared by the direct Confirm control and
-    /// the resource-operation route.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "write, cancellation, status, and export share one operation-dispatch boundary"
-    )]
-    fn perform_operation(
-        &mut self,
-        operation: &crate::actions::ImagerOperation,
-    ) -> Result<(), String> {
-        if matches!(operation, crate::actions::ImagerOperation::Write { .. })
-            && !self.startup_write_state_reconciled
-        {
+    /// Why a write to `device` cannot start now, if it cannot.
+    fn write_refusal(&self, device: &str) -> Result<(), String> {
+        if !self.startup_write_state_reconciled {
             return Err("Restoring the previous image-write state; wait for drive review before starting another write".into());
         }
-        if matches!(operation, crate::actions::ImagerOperation::Cancel) {
-            let Some(control) = self.job_control.clone() else {
-                return Err("No image write is currently running".into());
-            };
-            control.cancel();
-            self.set_status(
-                "Stopping safely… Keep the drive connected until cancellation finishes.",
-            );
-            self.dirty = true;
-            return Ok(());
+        if self.job_rx.is_some() {
+            return Err("An image write is already in progress".into());
         }
-        let crate::actions::ImagerOperation::Write {
-            device,
-            confirmation,
-        } = operation
-        else {
-            return match operation {
-                crate::actions::ImagerOperation::Verify => Err(
-                    "Read-back verification runs automatically after every successful write".into(),
-                ),
-                crate::actions::ImagerOperation::Cancel => {
-                    Err("No image write is currently running".into())
-                }
-                crate::actions::ImagerOperation::Status => Ok(()),
-                crate::actions::ImagerOperation::ExportConfig => {
-                    if self.source.is_none() || self.target().is_none() {
-                        Err("Select an image source and target drive first".into())
-                    } else {
-                        self.export_config();
-                        Ok(())
-                    }
-                }
-                crate::actions::ImagerOperation::SetWifiPsk { value } => {
-                    self.wifi_psk.clone_from(value);
-                    Ok(())
-                }
-                crate::actions::ImagerOperation::Write { .. } => {
-                    Err("Invalid image-write operation dispatch".into())
-                }
-            };
+        if !crate::write::write_available() {
+            return Err(
+                "Raw-device writing is disabled; enable the privileged Imager backend first".into(),
+            );
+        }
+        let Some(target) = self.target() else {
+            return Err("Select an image source and target drive before writing".into());
         };
+        if self.source.is_none() {
+            return Err("Select an image source and target drive before writing".into());
+        }
+        if device != target.dev_path() {
+            return Err("The selected target changed; review the write plan again.".into());
+        }
+        Ok(())
+    }
+
+    /// Stop the running write safely.
+    fn cancel_write(&mut self) -> Result<(), String> {
+        let Some(control) = self.job_control.clone() else {
+            return Err("No image write is currently running".into());
+        };
+        control.cancel();
+        self.set_status("Stopping safely… Keep the drive connected until cancellation finishes.");
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Start writing the reviewed image to `device`, whose name the caller
+    /// typed as `confirmation`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the write's validation, staging and start share one boundary"
+    )]
+    fn begin_write(&mut self, device: &str, confirmation: &str) -> Result<(), String> {
+        if !self.startup_write_state_reconciled {
+            return Err("Restoring the previous image-write state; wait for drive review before starting another write".into());
+        }
         let (Some(mut src), Some(tgt)) = (self.source.clone(), self.target().cloned()) else {
             return Err("Select a source and drive first.".into());
         };
@@ -4562,7 +4546,7 @@ impl ImagerApp {
         if src.installable {
             self.profile.validate_media_profile()?;
         }
-        if *device != tgt.dev_path() {
+        if device != tgt.dev_path() {
             return Err("The selected target changed; review the write plan again.".into());
         }
         // Stage Wi-Fi / enrollment for any image the operator configured on
@@ -4640,8 +4624,64 @@ impl ImagerApp {
         Ok(())
     }
 
-    /// Drain live job progress, folding it into the doc. Called each `sync`.
+    /// Drain live job progress into the write station and the write
+    /// effect's caller. Called each `sync`.
     fn drain_job(&mut self) {
+        if self
+            .write_reply
+            .as_ref()
+            .is_some_and(EffectReply::is_cancelled)
+            && self
+                .job_control
+                .as_ref()
+                .is_some_and(|control| !control.is_cancelled())
+        {
+            let _ = self.cancel_write();
+        }
+        self.drain_job_progress();
+        self.answer_write_caller();
+    }
+
+    /// Tell the caller of the running write where it is, and how it ended
+    /// once it has.
+    fn answer_write_caller(&mut self) {
+        let Some(reply) = &self.write_reply else {
+            return;
+        };
+        if self.job_rx.is_some() {
+            reply.progress().report(
+                self.progress.phase.key(),
+                Some((self.progress.overall().clamp(0.0, 1.0) * 1000.0) as u64),
+                Some(1000),
+            );
+            return;
+        }
+        let Some(reply) = self.write_reply.take() else {
+            return;
+        };
+        reply.finish(match self.progress.phase {
+            JobPhase::Success => Ok(tilo_actions::ActionOutput {
+                value: Some(self.status_value()),
+                resources: Vec::new(),
+            }),
+            _ => Err(self
+                .progress
+                .error
+                .clone()
+                .unwrap_or_else(|| self.status.clone())),
+        });
+    }
+
+    /// The write job as callers read it.
+    fn status_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "phase": self.progress.phase.key(),
+            "progress": self.progress.overall(),
+            "message": self.status,
+        })
+    }
+
+    fn drain_job_progress(&mut self) {
         let Some(rx) = &self.job_rx else { return };
         let mut latest = None;
         loop {
@@ -4843,7 +4883,7 @@ impl ImagerApp {
             Hit::Next => self.advance(),
             Hit::StartWrite => self.start_write(),
             Hit::CancelWrite => {
-                let _ = self.perform_operation(&crate::actions::ImagerOperation::Cancel);
+                let _ = self.cancel_write();
             }
             Hit::WriteAnother => self.write_another(),
         }
@@ -4861,12 +4901,6 @@ impl ImagerApp {
 // Widget impl
 // =========================================================================
 impl Widget for ImagerApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::IMAGER_OPERATION_TYPE]
-    }
-
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         if !self.seeded {
             // Start genuinely blank. In the live app a real `lsblk` probe
@@ -5196,29 +5230,6 @@ impl Widget for ImagerApp {
         }
     }
 
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation_v2(
-                request.kind,
-                request.type_id,
-                request.payload,
-                doc,
-                path,
-            )?
-            .map(ui::widget::ResourceOperationStart::Completed))
-    }
-
     fn name(&self) -> &'static str {
         "ImagerApp"
     }
@@ -5426,90 +5437,25 @@ impl Widget for ImagerApp {
     }
 }
 
-impl ui::resources::PublishesResources for ImagerApp {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// the profile / write-plan door — keep only live extras (none today:
-    /// job status is a View on the resource, not a second published tree).
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.dispatcher.is_some() {
-            return crate::resource::live_extras(self);
-        }
-        self.publish_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.dispatcher.is_some() && id == "imager.sources" {
-            return None;
-        }
-        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        find(&self.publish_resources(doc), id)
-    }
-}
-
 impl ImagerApp {
-    fn answer_resource_operation(
+    /// Answer `effect`, from the Write button, the palette or an agent.
+    pub(crate) fn answer_effect(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected_kind = match operation {
-            crate::actions::ImagerOperation::Status
-            | crate::actions::ImagerOperation::ExportConfig => tilo_actions::OperationKind::View,
-            crate::actions::ImagerOperation::SetWifiPsk { .. } => {
-                tilo_actions::OperationKind::Effect
+        effect: ImagerEffect,
+        cx: &mut EffectCx<Imager, Self>,
+    ) -> EffectAnswer {
+        match effect {
+            ImagerEffect::Write {
+                device,
+                confirmation,
+            } => {
+                self.write_refusal(&device)?;
+                self.begin_write(&device, &confirmation)?;
+                self.write_reply = Some(cx.reply());
+                Ok(Effected::Pending)
             }
-            _ => tilo_actions::OperationKind::Effect,
-        };
-        if kind != expected_kind {
-            return Err("Imager operation kind does not match its contract".into());
-        }
-        self.perform_operation(&operation)?;
-        Ok(true)
-    }
-
-    fn answer_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        match crate::actions::decode_operation(type_id, payload)? {
-            Some(crate::actions::ImagerOperation::Status) => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Err("Imager status is a view operation".into());
-                }
-                return Ok(Some(tilo_actions::ActionOutput {
-                    value: Some(serde_json::json!({
-                        "phase": self.progress.phase.key(),
-                        "progress": self.progress.overall(),
-                        "message": self.status,
-                    })),
-                    resources: Vec::new(),
-                }));
-            }
-            Some(crate::actions::ImagerOperation::ExportConfig) => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Err("Imager config export is a view operation".into());
-                }
+            ImagerEffect::Status => Ok(Effected::value(self.status_value())),
+            ImagerEffect::ExportConfig => {
                 if self.source.is_none() || self.target().is_none() {
                     return Err("Select an image source and target drive first".into());
                 }
@@ -5518,15 +5464,111 @@ impl ImagerApp {
                     .to_headless_config(self.source.as_ref(), self.target());
                 self.export_dialog.show(text.clone());
                 self.dirty = true;
-                return Ok(Some(tilo_actions::ActionOutput {
-                    value: Some(serde_json::Value::String(text)),
-                    resources: Vec::new(),
-                }));
+                Ok(Effected::value(text))
             }
-            _ => {}
+            ImagerEffect::SetWifiPsk { value } => {
+                self.wifi_psk = value;
+                self.write_setup.sync(&self.profile, &self.wifi_psk);
+                self.dirty = true;
+                Ok(Effected::done())
+            }
+            ImagerEffect::Rescan => {
+                if self.do_rescan() {
+                    Ok(Effected::done())
+                } else {
+                    Err(self.status.clone())
+                }
+            }
+            ImagerEffect::ChooseDrive { drive } => {
+                let Some(index) = self.targets.iter().position(|target| target.name == drive)
+                else {
+                    return Err(format!("No drive named {drive} is connected"));
+                };
+                self.select_target(index);
+                if self.selected == Some(index) {
+                    Ok(Effected::done())
+                } else {
+                    Err(self.status.clone())
+                }
+            }
         }
-        self.answer_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
+    }
+
+    /// The effects that cannot run now, and why.
+    pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
+        let mut statuses = Vec::new();
+        let device = self.target().map(TargetDrive::dev_path).unwrap_or_default();
+        if let Err(reason) = self.write_refusal(&device) {
+            let code = if !crate::write::write_available() {
+                "write_backend_disabled"
+            } else if self.job_rx.is_some() {
+                "write_in_progress"
+            } else if !self.startup_write_state_reconciled {
+                "restoring_write_state"
+            } else {
+                "incomplete_plan"
+            };
+            statuses.push(EffectStatus::unavailable(ImagerEffect::WRITE, code, reason));
+        }
+        if self.source.is_none() || self.target().is_none() {
+            statuses.push(EffectStatus::unavailable(
+                ImagerEffect::EXPORT_CONFIG,
+                "incomplete_plan",
+                "Select an image source and target drive first",
+            ));
+        }
+        statuses
+    }
+
+    /// The removable drives this machine offers, and the write job.
+    pub(crate) fn published_rows(&self) -> Vec<LiveRow> {
+        let mut rows = self
+            .targets
+            .iter()
+            .filter(|target| target.is_media_target())
+            .map(|target| self.target_row(target))
+            .collect::<Vec<_>>();
+        let phase = self.progress.phase.key();
+        rows.push(
+            LiveRow::new("imager.job", "imager.job", format!("Image write: {phase}"))
+                .effect(&ImagerEffect::Status),
+        );
+        rows
+    }
+
+    /// One removable drive: choose it, or write the reviewed image to it
+    /// after typing its name.
+    fn target_row(&self, target: &TargetDrive) -> LiveRow {
+        let identity = target.stable_id.as_deref().unwrap_or(&target.name);
+        let device = target.dev_path();
+        let mut write = ImagerEffect::Write {
+            device: device.clone(),
+            confirmation: target.name.clone(),
+        }
+        .bound();
+        write.contract.risk = tilo_actions::RiskLevel::Destructive;
+        write.contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
+            phrase: target.name.clone(),
+        };
+        let write = match self.write_refusal(&device) {
+            Err(reason)
+                if self
+                    .target()
+                    .is_some_and(|chosen| chosen.name == target.name) =>
+            {
+                write.unavailable("write_unavailable", reason)
+            }
+            Err(_) => write.unavailable(
+                "not_the_chosen_drive",
+                "Choose this drive and review the write plan first",
+            ),
+            Ok(()) => write,
+        };
+        LiveRow::new(format!("imager.target:{identity}"), "imager.target", device)
+            .effect(&ImagerEffect::ChooseDrive {
+                drive: target.name.clone(),
+            })
+            .operation(write)
     }
 }
 
@@ -5766,6 +5808,7 @@ impl ImagerApp {
 mod tests {
     use super::*;
     use crate::doc::ImagerDoc;
+    use automerge::AutoCommit;
 
     /// Present `doc` as the framework presents the imager resource, then run
     /// the widget's own sync.
@@ -5871,30 +5914,22 @@ mod tests {
 
         // Phase `write_operations_are_blocked_until_startup_state_is_reconciled`.
         {
-            let (mut app, doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.select_target(0);
             app.startup_write_state_reconciled = false;
             app.confirm_input.set_text("sdb");
 
             assert!(!app.can_advance_with_writer(Step::Confirm, true));
             let error = app
-                .perform_operation(&crate::actions::ImagerOperation::Write {
-                    device: app.target().unwrap().dev_path(),
-                    confirmation: "sdb".into(),
-                })
+                .begin_write(&app.target().unwrap().dev_path(), "sdb")
                 .expect_err("unreconciled startup must not expose a write");
             assert!(error.contains("Restoring the previous image-write state"));
-
-            let root = ui::resources::resources(&app, &doc)
-                .into_iter()
-                .find(|resource| resource.kind == "imager.sources")
-                .expect("imager sources resource owns the write Effect");
-            let write = root
-                .actions
-                .iter()
-                .find(|action| action.id == "write")
-                .expect("write action");
-            assert!(!write.contract.availability.is_available());
+            assert!(
+                app.effect_statuses()
+                    .iter()
+                    .any(|status| format!("{status:?}").contains("id: \"write\"")),
+                "the write effect is unavailable"
+            );
         }
 
         // Phase `live_app_offers_no_tilo_release_to_write`.
@@ -6778,10 +6813,12 @@ mod tests {
             // only on wizard navigation.
             app.goto(Step::Confirm);
             app.confirm_input.set_text("sdb");
-            app.start_write();
+            let error = app
+                .begin_write("/dev/sdb", "sdb")
+                .expect_err("an invalid profile refuses the write");
             assert_eq!(app.step, Step::Confirm);
             assert!(app.job_rx.is_none());
-            assert!(app.status.contains("Hostname"));
+            assert!(error.contains("Hostname"));
         }
 
         // Phase `plain_iso_skips_customize`.
@@ -6835,10 +6872,7 @@ mod tests {
             app.profile.wifi_ssid = "studio".into();
             app.wifi_psk = "correct-horse".into();
             let err = app
-                .perform_operation(&crate::actions::ImagerOperation::Write {
-                    device: "/dev/sdb".into(),
-                    confirmation: "sdb".into(),
-                })
+                .begin_write("/dev/sdb", "sdb")
                 .expect_err("privileged writer is off in unit tests");
             assert!(
                 !err.to_lowercase().contains("installer stick"),
@@ -6858,11 +6892,13 @@ mod tests {
             app.select_target(0); // sdb
             app.goto(Step::Confirm);
             app.confirm_input.set_text("wrong");
-            app.start_write();
+            let error = app
+                .begin_write("/dev/sdb", "wrong")
+                .expect_err("a mistyped device name refuses the write");
             assert_eq!(app.progress.phase, JobPhase::Idle, "no job started");
             assert!(app.job_rx.is_none());
             assert_eq!(app.step, Step::Confirm, "stays on the Confirm station");
-            assert!(app.status.to_lowercase().contains("confirm"));
+            assert!(error.to_lowercase().contains("confirm"));
         }
     }
 
@@ -7228,8 +7264,7 @@ mod tests {
             app.job_control = Some(control.clone());
             app.goto(Step::Write);
 
-            app.perform_operation(&crate::actions::ImagerOperation::Cancel)
-                .unwrap();
+            app.cancel_write().unwrap();
 
             assert!(control.is_cancelled());
             assert!(app.status.contains("Keep the drive connected"));

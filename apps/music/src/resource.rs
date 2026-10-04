@@ -3,10 +3,9 @@
 
 use std::rc::Rc;
 
-use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionParam, ActionSpec, EncodedAction, ParamType};
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
+use ui::framework::{Command, Fixture, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx};
+use ui::tilo_actions::{ActionParam, ActionSpec, ParamType};
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
@@ -34,6 +33,13 @@ impl Resource for Music {
 
     fn read(doc: &Doc) -> Result<Library, ModelError> {
         Ok(doc::load_library(doc))
+    }
+
+    /// A new library holds no music yet: the containers every replica
+    /// shares, so the first edits on two devices merge into one library.
+    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
+        doc::seed(doc, &Library::default());
+        Ok(())
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
@@ -70,7 +76,7 @@ impl Resource for Music {
 
     fn local_operations() -> Vec<ActionSpec> {
         // Open-file is a device Effect. Navigation destinations are child
-        // `music.view` resources (same tree `provide_resources` publishes).
+        // `music.view` resources.
         vec![open_local_file_spec()]
     }
 
@@ -91,6 +97,36 @@ impl Resource for Music {
     }
 }
 
+/// The screenshot scenarios: the sample library (`empty` has none) with the
+/// view state each stages. The `live-*` scenarios show the real catalogue,
+/// fetched into the capture's fixture before it is built.
+const SCENARIOS: &[&str] = &[
+    "sidebar",
+    "collapsed",
+    "context",
+    "new-playlist",
+    "empty",
+    "search-focus",
+    "skeleton",
+    "nowplaying",
+    "queue",
+    "lyrics",
+    "downloading",
+    "offline-cached",
+    "offline-error",
+    "search-tabs",
+    "search-songs",
+    "search-artists",
+    "artist-page",
+    "album-page",
+    "error",
+    "membership-open",
+    #[cfg(feature = "live")]
+    crate::capture::LIVE_HOME,
+    #[cfg(feature = "live")]
+    crate::capture::LIVE_LYRICS,
+];
+
 /// Framework app: the music widget is the surface over [`Music`].
 pub struct MusicShell;
 
@@ -99,12 +135,54 @@ impl ResourceApp for MusicShell {
     const ID: &'static str = "so.tilo.music";
     const TITLE: &'static str = "Music";
     const ICON: Option<&'static str> = Some("music");
+    /// A local audio file or a `music://` link to play or open.
+    const ARGUMENTS: usize = 1;
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1280, 800)
     }
 
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
+    }
+
+    fn commands() -> &'static [Command] {
+        crate::commands::COMMANDS
+    }
+
+    /// The `live-*` scenarios fetch the real catalogue they show now, before
+    /// the capture is built; every other scenario shows the sample library.
+    fn fixture(fixture: &mut Fixture<Music>) {
+        if let Some(live) = crate::capture::LiveCapture::fetch(fixture.scenario()) {
+            fixture.provide(live);
+        }
+    }
+
+    /// Every scenario but `empty` and the live ones shows the sample library.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Music>> {
+        if matches!(name, Some("empty")) || name.is_some_and(crate::capture::is_live) {
+            return Vec::new();
+        }
+        crate::seed::sample_actions()
+            .iter()
+            .filter_map(|action| Invoke::apply(action).ok())
+            .collect()
+    }
+
     fn view(cx: &mut ViewCx<Music>) -> Element {
-        cx.surface(MusicApp::new())
+        // Only a window someone uses plays audio, reads this device's
+        // playback profile and reaches the network; a capture shows its
+        // fixture and a past version shows the library alone.
+        let app = match cx.mode() {
+            RunMode::Live => {
+                let mut app = MusicApp::new();
+                app.enable_mpris();
+                app
+            }
+            RunMode::Capture => MusicApp::for_capture(cx.fixture::<crate::capture::LiveCapture>()),
+            RunMode::Past => MusicApp::offline(),
+        };
+        cx.surface(app)
     }
 
     fn label(state: &Library) -> String {
@@ -125,94 +203,113 @@ impl ResourceSurface<Music> for MusicApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Music>) {
-        self.attach_framework(cx.dispatcher());
+        self.attach_dispatcher(cx.dispatcher());
+        if cx.mode().is_live() {
+            self.open_launch(&cx.launch());
+        }
     }
-}
 
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Music>>,
-    last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            last: None,
+    fn stage(&mut self, scenario: Option<&str>) {
+        if let Some(scenario) = scenario {
+            self.stage_scenario(scenario);
         }
     }
 }
 
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Music>) {
-        self.framework = Some(dispatcher);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::framework::testing::TestApp;
+
+    fn imported(id: &str) -> MusicAction {
+        let track = crate::model::Track {
+            id: id.into(),
+            title: "Runaway".into(),
+            album_id: "ytal_demons".into(),
+            artist_id: "ytc_aurora".into(),
+            track_no: 0,
+            duration_s: 245,
+            yt_id: "abc123".into(),
+            plays: 0,
+        };
+        let album = crate::model::Album {
+            id: "ytal_demons".into(),
+            title: "All My Demons".into(),
+            artist_id: "ytc_aurora".into(),
+            year: 0,
+        };
+        let artist = crate::model::Artist {
+            id: "ytc_aurora".into(),
+            name: "AURORA".into(),
+            genre: String::new(),
+            monthly_listeners: 0,
+        };
+        crate::actions::import_track_action(&track, &album, &artist)
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.framework.is_some()
+    #[test]
+    fn a_new_library_is_empty_and_its_containers_are_in_place() {
+        let app = TestApp::<MusicShell>::new().unwrap();
+        assert!(app.read_document(doc::is_seeded));
+        let library = app.state();
+        assert!(library.tracks.is_empty() && library.playlists.is_empty());
     }
 
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &MusicAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(crate::actions::encode(action));
-                let _ = dispatcher.apply_now_with(doc, action, context);
+    #[test]
+    fn scenarios_stage_the_sample_library_through_actions() {
+        let staged = TestApp::<MusicShell>::capture(Some("nowplaying")).unwrap();
+        let library = staged.state();
+        let sample = crate::seed::sample_library();
+        assert_eq!(library.tracks, sample.tracks);
+        assert_eq!(library.albums, sample.albums);
+        assert_eq!(library.artists, sample.artists);
+        assert_eq!(library.liked, sample.liked);
+        assert_eq!(library.saved_albums, sample.saved_albums);
+        let names: Vec<_> = library.playlists.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, ["Deep Focus", "Night Drive", "Slow Morning"]);
+        for (staged, sample) in library.playlists.iter().zip(&sample.playlists) {
+            assert_eq!(staged.track_ids, sample.track_ids);
+        }
+
+        let empty = TestApp::<MusicShell>::capture(Some("empty")).unwrap();
+        assert!(empty.state().tracks.is_empty());
+    }
+
+    #[test]
+    fn every_scenario_captures() {
+        for scenario in MusicShell::scenarios() {
+            if crate::capture::is_live(scenario) {
+                continue;
             }
-            None => self
-                .local
-                .dispatch_with_context(doc, type_id, action, context),
+            TestApp::<MusicShell>::capture(Some(scenario))
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
         }
     }
 
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
+    #[test]
+    fn an_imported_track_joins_the_library_once_and_is_nobodys_undo_step() {
+        let mut app = TestApp::<MusicShell>::new().unwrap();
+        app.invoke(Invoke::apply(&imported("yt:abc123")).unwrap())
+            .unwrap();
+        app.invoke(Invoke::apply(&imported("yt:abc123")).unwrap())
+            .unwrap();
+        let library = app.state();
+        assert_eq!(library.tracks.len(), 1);
+        assert_eq!(library.artist_name("ytc_aurora"), "AURORA");
+        assert_eq!(library.album_title("ytal_demons"), "All My Demons");
+        assert!(!app.undo(), "content from outside is not an undo step");
+        assert_eq!(app.state().tracks.len(), 1);
     }
 
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
+    #[test]
+    fn a_track_imported_without_its_own_album_is_refused() {
+        let mut app = TestApp::<MusicShell>::new().unwrap();
+        let MusicAction::ImportTrack(mut mismatched) = imported("yt:abc123") else {
+            unreachable!()
+        };
+        mismatched.track.album_id = "elsewhere".into();
+        let mismatched = MusicAction::ImportTrack(mismatched);
+        assert!(app.invoke(Invoke::apply(&mismatched).unwrap()).is_err());
+        assert!(app.state().tracks.is_empty());
     }
-}
-
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<MusicShell>()
-}
-
-pub fn standalone_launch() -> bool {
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--data-dir" => {
-                let _ = args.next();
-            }
-            "--shots"
-            | "--responsive-matrix"
-            | "--native-audit"
-            | "--headless"
-            | "--probe"
-            | "--bench"
-            | "--live" => return true,
-            "--theme" | "--play" | "--viewport" => {
-                let _ = args.next();
-                return true;
-            }
-            file if !file.starts_with('-') => return true,
-            _ => {}
-        }
-    }
-    false
 }

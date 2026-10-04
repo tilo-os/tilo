@@ -35,18 +35,74 @@ use ui_core::storage::AppStorage;
 
 struct HistoryKey<A>(std::marker::PhantomData<A>);
 
+struct FileWitnessKey<A>(std::marker::PhantomData<A>);
+
+/// The file scope of `A`'s History alone: what its root declares it owns, so
+/// the runner can tell the file source it was handed is the root's.
+pub(crate) fn file_history_witness<A: ResourceApp>() -> &'static HistoryDefinition {
+    // The definition table is not reentrant: read the whole definition first.
+    let definition = history_definition::<A>();
+    leaked(TypeId::of::<FileWitnessKey<A>>(), || {
+        let scopes: &'static [HistoryScopeDefinition] = Box::leak(
+            definition
+                .scopes
+                .iter()
+                .filter(|scope| scope.key == FILE_SCOPE)
+                .map(|scope| HistoryScopeDefinition {
+                    key: scope.key,
+                    title: scope.title,
+                    presentation: match scope.presentation {
+                        HistoryPresentation::CheckedFiles { create } => {
+                            HistoryPresentation::CheckedFiles { create }
+                        }
+                        _ => unreachable_scope(),
+                    },
+                    content_schema: None,
+                })
+                .collect::<Box<[_]>>(),
+        );
+        HistoryDefinition {
+            app_id: A::ID,
+            scopes,
+        }
+    })
+}
+
+#[allow(
+    clippy::panic,
+    reason = "the file scope is built as a checked-file scope above"
+)]
+fn unreachable_scope() -> ! {
+    panic!("the file History scope is a checked-file scope")
+}
+
+/// The History scope of the file an app of
+/// [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY) shows.
+const FILE_SCOPE: &str = "file";
+
 /// The History mode registration of `A`: one scope, previewed by its view.
 pub(crate) fn history_definition<A: ResourceApp>() -> &'static HistoryDefinition {
     leaked(TypeId::of::<HistoryKey<A>>(), || {
+        // A file of the mounted filesystem the app shows is a scope beside
+        // the resource's; History moves to it when the app opens a file's.
+        let file = A::FILE_HISTORY.map(|file| HistoryScopeDefinition {
+            key: FILE_SCOPE,
+            title: file.title,
+            presentation: HistoryPresentation::CheckedFiles {
+                create: file.preview,
+            },
+            content_schema: None,
+        });
+        let resource = HistoryScopeDefinition {
+            key: "resource",
+            title: <A::Resource as Resource>::LABEL,
+            presentation: HistoryPresentation::Domain {
+                create: preview::<A>,
+            },
+            content_schema: restore_schema::<A::Resource>(),
+        };
         let scopes: &'static [HistoryScopeDefinition] =
-            Box::leak(Box::new([HistoryScopeDefinition {
-                key: "resource",
-                title: <A::Resource as Resource>::LABEL,
-                presentation: HistoryPresentation::Domain {
-                    create: preview::<A>,
-                },
-                content_schema: restore_schema::<A::Resource>(),
-            }]));
+            Box::leak(std::iter::once(resource).chain(file).collect::<Box<[_]>>());
         HistoryDefinition {
             app_id: A::ID,
             scopes,

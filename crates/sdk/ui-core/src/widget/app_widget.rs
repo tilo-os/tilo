@@ -1806,6 +1806,27 @@ mod component_adapter {
     }
 
     impl crate::history_mode::capability::DocumentHistory for BoundAppWidget {
+        // The files of the mounted filesystem the component's History reads
+        // are named by its root, which witnesses the checked-file source it
+        // registered. The component's own registration is the runner's; a
+        // root's registration of anything else is not answered here.
+        fn history_registration(
+            &self,
+        ) -> Result<
+            Option<crate::history_mode::HistoryRegistration>,
+            crate::history_mode::HistoryRegistrationError,
+        > {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return Ok(None);
+            };
+            let Some(root) = self.component.root.as_deref() else {
+                return Ok(None);
+            };
+            Ok(crate::history_mode::capability::history_registration(root)?
+                .filter(crate::history_mode::HistoryRegistration::is_checked_files_only))
+        }
+
         fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
             let binding = self.component.callback_binding();
             let _entry = binding

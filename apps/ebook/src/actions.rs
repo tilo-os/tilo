@@ -59,10 +59,6 @@ pub enum EbookOperation {
         page: usize,
         block: Option<usize>,
     },
-    /// Request a user-consented import through the host portal. Deliberately
-    /// carries no path: an action can originate from search, an agent, or a
-    /// peer and must not turn that authority into arbitrary local file access.
-    OpenBook,
     /// Materialise the exact already-imported book into this device's shared
     /// workspace. The operation carries only its stable content id, never a
     /// device path or a peer's local capability grant.
@@ -96,29 +92,9 @@ pub fn operation_kind(operation: &EbookOperation) -> OperationKind {
         | EbookOperation::OpenSettings
         | EbookOperation::Reveal { .. }
         | EbookOperation::SelectPassage { .. } => OperationKind::View,
-        EbookOperation::OpenBook
-        | EbookOperation::ShareBook { .. }
-        | EbookOperation::HydrateSharedBook { .. } => OperationKind::Effect,
-    }
-}
-
-#[cfg(test)]
-mod file_action_tests {
-    use super::*;
-
-    #[test]
-    fn open_action_is_background_portal_only() {
-        let spec = open_book_operation();
-        let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
-        assert_eq!(
-            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(EbookOperation::OpenBook)
-        );
-        assert!(matches!(
-            spec.contract.execution,
-            ExecutionMode::Background { .. }
-        ));
-        assert_eq!(spec.contract.result, ResultSpec::Job);
+        EbookOperation::ShareBook { .. } | EbookOperation::HydrateSharedBook { .. } => {
+            OperationKind::Effect
+        }
     }
 }
 
@@ -144,33 +120,6 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<EbookOpe
 fn operation(id: &str, label: &str, kind: OperationKind, value: EbookOperation) -> ActionSpec {
     ActionSpec::operation(id, label, kind, EBOOK_OPERATION_TYPE, &value)
         .expect("EbookOperation is always serializable")
-}
-
-#[allow(
-    clippy::expect_used,
-    reason = "EbookOperation contains only JSON-representable strings and integers"
-)]
-fn open_book_operation() -> ActionSpec {
-    ActionSpec::typed_operation(
-        "open-book",
-        "Open book",
-        "choose an EPUB through the system picker",
-        OperationKind::Effect,
-        EBOOK_OPERATION_TYPE,
-        Vec::new(),
-        |_args: &ActionArgs| {
-            let operation = EbookOperation::OpenBook;
-            EncodedAction {
-                type_id: EBOOK_OPERATION_TYPE.into(),
-                payload: serde_json::to_vec(&operation).expect("EbookOperation serializes"),
-            }
-        },
-    )
-    .with_contract(tilo_actions::ActionContract {
-        execution: ExecutionMode::Background { cancellable: true },
-        result: ResultSpec::Job,
-        ..tilo_actions::ActionContract::default()
-    })
 }
 
 /// One per-block piece of a ranged highlight. A selection that spans several
@@ -1950,12 +1899,6 @@ pub(crate) fn reading_declarations(
     declarations
 }
 
-/// Effect ops on the library root (portal import). Document mutations live on
-/// [`bound_library_document_actions`] / [`publish_document_children`].
-pub(crate) fn library_effect_specs() -> Vec<ActionSpec> {
-    vec![open_book_operation()]
-}
-
 /// Shelf Document ops whose payloads bind from live library preferences.
 pub(crate) fn bound_library_document_actions(prefs: LibraryPrefs) -> Vec<ActionSpec> {
     let mut actions = Vec::new();
@@ -2364,6 +2307,12 @@ mod tests {
         }
         let (app, _seed, book_id, _group) = open_with_annotations();
         let mut resources = provide_resources(&[], doc);
+        if let Some(library) = resources.first_mut() {
+            // The reader's effects are published on the library beside it.
+            library
+                .actions
+                .extend(<crate::resource::BooksEffect as ui::tilo_resource::Effect>::specs());
+        }
         resources.extend(ui::resources::resources(&app, doc));
         let lazy = std::iter::once(format!("ebook.book:{book_id}"))
             .chain(
@@ -2603,18 +2552,25 @@ mod tests {
             }
         }
 
-        // --- phase: library_open_action_is_canonical_even_without_loaded_books ---
+        // --- phase: opening_a_book_is_a_device_only_job_of_the_reader ---
         {
-            let doc = AutoCommit::new();
-            let resources = provide_resources(&[], &doc);
-            assert_eq!(resources.len(), 1);
-            assert_eq!(resources[0].id.as_str(), "ebook.library");
-            let address = tilo_actions::ActionAddress::new("ebook.library", "open-book");
-            let encoded = tilo_actions::door::encode(&resources, &address, None)
-                .expect("library action resolves through the canonical tree");
-            assert_eq!(
-                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-                Some(EbookOperation::OpenBook)
+            use ui::tilo_resource::Effect as _;
+            let open = crate::resource::BooksEffect::specs()
+                .into_iter()
+                .find(|spec| spec.id == "open-book")
+                .expect("the reader offers to open a book");
+            assert_eq!(open.label, "Open book");
+            assert_eq!(open.kind, OperationKind::Effect);
+            assert!(matches!(
+                open.contract.execution,
+                ExecutionMode::Background { cancellable: true }
+            ));
+            assert!(
+                open.contract
+                    .tags
+                    .iter()
+                    .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY),
+                "choosing a file is the person's at this device"
             );
         }
 

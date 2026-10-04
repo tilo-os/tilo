@@ -700,8 +700,15 @@ pub struct FileExplorerWidget {
     status_bubble: ui::StatusBubble,
     /// Last label the bubble showed, so it is re-poked only on a real change.
     last_status_label: String,
-    /// `--shots` forces the bubble fully visible so a still frame captures it.
+    /// A capture forces the bubble fully visible so a still frame captures it.
     shots_status: bool,
+    /// The row a capture shows hovered.
+    staged_hover: Option<usize>,
+    /// A capture shows a file dragged onto the first folder the view lays
+    /// out, once its folder rows are known.
+    staged_move_drag: bool,
+    /// Where "New File" templates come from; `None` offers none.
+    templates_dir: Option<PathBuf>,
     /// Shared indeterminate progress indicator for the loading state. Its
     /// reduced-motion behaviour and frame scheduling come from `Spinner`.
     state_spinner: Spinner,
@@ -1132,6 +1139,37 @@ impl FileExplorerWidget {
         )
     }
 
+    /// The window a screenshot shows: the scene's made-up home and folders,
+    /// previews cached in the scene, and nothing read from the machine the
+    /// capture is taken on.
+    pub fn for_scene(scene: &crate::scenarios::Scene) -> Self {
+        let thumbnails = ThumbnailService::open(&scene.thumbnails, 4)
+            .ok()
+            .map(Arc::new);
+        let mut widget = Self::with_inputs(
+            None,
+            Some(scene.home.clone()),
+            favorites::UserDirs::default(),
+            Some(StartupInputs {
+                initial_dir: scene.home.clone(),
+                workspace_roots: scene.workspace_roots.clone(),
+                record_roots: Vec::new(),
+                remote_accounts: Vec::new(),
+                trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
+            }),
+            FileServices::Hosted(HostedFileServices {
+                thumbnails,
+                document_opener: DocumentOpenRoute::Unavailable,
+                open_with: None,
+            }),
+        );
+        widget.templates_dir = Some(scene.home.join("Templates"));
+        if scene.start != scene.home {
+            widget.navigate(scene.start.clone());
+        }
+        widget
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "Declare the complete stable widget state in one auditable constructor."
@@ -1249,6 +1287,9 @@ impl FileExplorerWidget {
             status_bubble: ui::StatusBubble::new(),
             last_status_label: String::new(),
             shots_status: false,
+            staged_hover: None,
+            staged_move_drag: false,
+            templates_dir: crate::templates::templates_dir(),
             state_spinner: Spinner::with_size(28.0),
             state_retry: Button::new("files.retry", &t("files-try-again"), None).on_effect({
                 let sink = cmds.clone();
@@ -1560,7 +1601,9 @@ impl FileExplorerWidget {
             .with_rename(self.renaming, self.rename_rect.clone())
             .with_cursor(self.last_cursor)
             .with_drop_targets(self.drop_targets.clone())
-            .with_thumbs(self.thumb_ctx());
+            .with_thumbs(self.thumb_ctx())
+            .with_workspace_roots(Rc::from(self.workspace_roots.as_slice()))
+            .with_hover(self.staged_hover);
         let view_child: Box<dyn Widget> = match self.view_mode {
             ViewMode::List => {
                 crate::views::list_view::build_list(view, self.sort_by, self.sort_order)
@@ -4215,6 +4258,128 @@ impl FileExplorerWidget {
         self.framework_history.open(None);
     }
 
+    /// Show the history of the file named by `source`: the selected file's,
+    /// as the host's History offers it.
+    pub(crate) fn show_file_history_in(
+        &mut self,
+        source: ui::history_mode::checked_files::FileHistorySource,
+    ) {
+        self.framework_history = source;
+        self.framework_history_binding = None;
+        self.refresh_framework_history_target();
+    }
+
+    /// Open what a launch names: a received share link (`tilo-file://…`) is
+    /// admitted through the recipient service, anything else is a folder,
+    /// resolved against the launcher's working directory. A folder that is
+    /// missing or unreadable shows the ordinary navigation error.
+    pub fn open_launch_argument(&mut self, argument: &str) {
+        if argument.starts_with(crate::received_shares::LINK_SCHEME) {
+            self.admit_received_share(argument.to_owned());
+            return;
+        }
+        match std::path::absolute(argument) {
+            Ok(path) => self.navigate(path),
+            Err(error) => self.set_external_status(error.to_string()),
+        }
+    }
+
+    /// Stage the view state screenshot `scenario` shows, once the window is
+    /// laid out: a selection, an open menu, a drag in flight.
+    pub fn stage_scenario(&mut self, scenario: Option<&str>) {
+        let rect = self.rect;
+        match scenario {
+            Some("grid") => self.set_view_mode(ViewMode::Grid),
+            Some("thumbnails" | "thumbnails-fs") => {
+                self.set_view_mode(ViewMode::Grid);
+                self.prefetch_thumbnails();
+            }
+            Some("select") => {
+                self.debug_select(&[9, 10]);
+                self.staged_hover = Some(12);
+                self.arm_status_bubble_for_shots();
+            }
+            Some("status") => self.arm_status_bubble_for_shots(),
+            Some("rename") => {
+                self.debug_select(&[11]);
+                self.begin_rename();
+            }
+            Some("places") => self.debug_open_places_drawer(),
+            Some("remote-account") => {
+                // A made-up account that needs signing in again: no real
+                // account store or vault is read.
+                let account = crate::remote_accounts::RemoteAccount {
+                    id: accounts::AccountId::from("shot-remote-account"),
+                    kind: crate::remote_accounts::RemoteAccountKind::Nextcloud,
+                    label: "Personal cloud".into(),
+                    host: "cloud.example".into(),
+                    health: crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
+                    mount: None,
+                };
+                self.show_remote_account_panel(&account, true);
+            }
+            Some("loading") => self.debug_show_loading_state(),
+            Some("error") => self.debug_show_error_state(),
+            Some("menu" | "archive-menu") => self.open_view_menu(),
+            Some("undo-trash") => {
+                self.debug_arm_trash_undo();
+                self.open_view_menu();
+            }
+            Some("context-menu") => {
+                // A right-click in the content pane, away from the toolbar's
+                // menu, with its first row armed as the keyboard would.
+                let at = Point::new(
+                    rect.x0 + rect.width() * 0.45,
+                    rect.y0 + rect.height() * 0.34,
+                );
+                self.debug_show_templates_menu(at);
+                self.context_menu.focus_first_action();
+            }
+            Some("reorder") => {
+                self.debug_begin_favorite_drag(4, 1);
+            }
+            Some("pindrag") => {
+                let folder = self.current_path.join("Development");
+                self.debug_begin_pin_drag(folder, Point::new(rect.x0 + 150.0, rect.y0 + 300.0));
+            }
+            Some("dropmove") => self.staged_move_drag = true,
+            Some("history") => {
+                self.debug_select(&[0]);
+                self.debug_open_history_demo();
+            }
+            _ => {}
+        }
+    }
+
+    /// Ask for the previews of every file shown, so a capture waits for them.
+    fn prefetch_thumbnails(&self) {
+        if let Some(ctx) = self.thumb_ctx() {
+            crate::views::file_view::FileView::prefetch_thumbnails(
+                &ctx,
+                &self.displayed_entries(),
+                &self.workspace_roots,
+            );
+        }
+    }
+
+    /// Carry a file onto the first folder the view laid out, for a capture
+    /// of a move in progress. The view publishes its folder rows as it draws.
+    fn resolve_staged_move_drag(&mut self) {
+        if !self.staged_move_drag {
+            return;
+        }
+        let target = self.drop_targets.borrow().first().map(|t| t.path.clone());
+        let source = self
+            .entries
+            .iter()
+            .find(|entry| !entry.is_dir)
+            .map(|entry| entry.path.clone());
+        if let (Some(target), Some(source)) = (target, source) {
+            self.staged_move_drag = false;
+            self.debug_begin_move_drag(vec![source], target);
+        }
+    }
+
     fn refresh_framework_history_target(&mut self) {
         let entry = self
             .selection
@@ -5248,8 +5413,9 @@ impl FileExplorerWidget {
     /// the current selection and clipboard.
     /// The template files currently available for the "New File ▸" submenu.
     pub fn available_templates(&self) -> Vec<PathBuf> {
-        templates::templates_dir()
-            .map(|d| templates::list_templates(&d))
+        self.templates_dir
+            .as_deref()
+            .map(templates::list_templates)
             .unwrap_or_default()
     }
 
@@ -8647,6 +8813,7 @@ impl Widget for FileExplorerWidget {
         }
         // The drop-target highlight sits on the target folder; the drag ghost
         // floats above everything else.
+        self.resolve_staged_move_drag();
         self.draw_drop_highlight(scene, transform, theme);
         self.draw_pin_ghost(scene, transform, text_renderer, theme);
         self.draw_app_chooser(scene, transform, text_renderer, theme, presence);
@@ -8821,6 +8988,15 @@ impl Widget for FileExplorerWidget {
             // now-hidden toolbar/list node.
             *ctx.focus_target = Some(ctx.node_id);
         }
+    }
+
+    fn has_pending_visual_work(&self) -> bool {
+        let mut pending = self
+            .thumbs
+            .as_deref()
+            .is_some_and(|thumbs| !thumbs.is_idle());
+        self.for_each_child(&mut |child| pending |= child.has_pending_visual_work());
+        pending
     }
 
     fn take_structure_dirty(&mut self) -> bool {

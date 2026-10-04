@@ -793,59 +793,64 @@ mod tests {
             "phase image_source_edits_persist_through_actions_and_undo_but_view_modes_do_not"
         );
         {
-            use ui::Widget;
             let original = "![Scan](assets/original.png)";
             let edited = "![Updated scan](assets/revised.png)";
-            let (doc, page) = notebook_with(&[ui::widget::BlockContent::paragraph("", original)]);
-            let mut state = ui::State::new();
-            state.doc = doc;
-            state.doc.commit();
-            let mut panel = crate::MainPanel::new();
-            panel
-                .bind_canonical_page(&state.doc, page, "Reference")
+            ui::i18n::I18nManager::init("en-US");
+            let mut app = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
+            let page = crate::PageId::new_v4();
+            for action in [
+                crate::actions::new_page_action(page, None, 0, "Reference"),
+                crate::actions::write_body_action(
+                    page,
+                    &[ui::widget::BlockContent::paragraph("", original)],
+                ),
+            ] {
+                app.invoke(ui::tilo_resource::Invoke::apply(&action).unwrap())
+                    .unwrap();
+            }
+            app.surface(|notes: &mut crate::NotesApp| notes.navigate_to(page))
                 .unwrap();
-            panel.body_editor_mut().sync(&mut state.doc, &ROOT);
-            let id = panel.editor().blocks()[0].id.clone();
-            let initial_heads = state.doc.get_heads();
-            assert!(panel.editor_mut().perform_semantic_action(
-                &format!("notes.image-edit:{id}"),
-                &ui::a11y::Action::Activate,
-                &mut state.doc,
-                &ROOT
-            ));
-            panel.body_editor_mut().sync(&mut state.doc, &ROOT);
-            assert_eq!(
-                state.doc.get_heads(),
-                initial_heads,
-                "a view mode writes nothing"
+            let id =
+                app.read_document(|doc| NotesDoc::page_block_snapshots(doc, page)[0].0.clone());
+            let text = |app: &ui::framework::testing::TestApp<crate::NotesShell>| {
+                app.read_document(|doc| NotesDoc::page_block_snapshots(doc, page)[0].1.clone())
+            };
+            let semantic = |app: &mut ui::framework::testing::TestApp<crate::NotesShell>,
+                            target: String,
+                            action: ui::a11y::Action| {
+                app.harness()
+                    .perform_semantic_named("block_editor", Some(&target), &action)
+                    .unwrap();
+            };
+            let versions = app.versions().len();
+            semantic(
+                &mut app,
+                format!("notes.image-edit:{id}"),
+                ui::a11y::Action::Activate,
             );
-            assert!(panel.editor_mut().perform_semantic_action(
-                &format!("notes.image-source:{id}"),
-                &ui::a11y::Action::SetValue(edited.into()),
-                &mut state.doc,
-                &ROOT
-            ));
-            panel.body_editor_mut().sync(&mut state.doc, &ROOT);
-            let before = ui::undo::take_committed_action(&mut panel)
-                .expect("a source edit is a Notes action");
-            state.record_committed_action(before, None, None);
-            let edited_heads = state.doc.get_heads();
-            assert!(panel.editor_mut().perform_semantic_action(
-                &format!("notes.image-done:{id}"),
-                &ui::a11y::Action::Activate,
-                &mut state.doc,
-                &ROOT
-            ));
-            panel.body_editor_mut().sync(&mut state.doc, &ROOT);
-            assert_eq!(state.doc.get_heads(), edited_heads);
-            let reopened = AutoCommit::load(&state.doc.save()).unwrap();
+            assert_eq!(app.versions().len(), versions, "a view mode writes nothing");
+            semantic(
+                &mut app,
+                format!("notes.image-source:{id}"),
+                ui::a11y::Action::SetValue(edited.into()),
+            );
+            assert_eq!(text(&app), edited);
+            let edited_versions = app.versions().len();
+            assert!(
+                edited_versions > versions,
+                "a source edit is a Notes action"
+            );
+            semantic(
+                &mut app,
+                format!("notes.image-done:{id}"),
+                ui::a11y::Action::Activate,
+            );
+            assert_eq!(app.versions().len(), edited_versions);
+            let reopened = AutoCommit::load(&app.peer_document().save()).unwrap();
             validate(&reopened).unwrap();
             assert_eq!(NotesDoc::page_block_snapshots(&reopened, page)[0].1, edited);
-            state.undo(None, None).unwrap();
-            assert_eq!(
-                NotesDoc::page_block_snapshots(&state.doc, page)[0].1,
-                original
-            );
+            assert!(app.undo());
+            assert_eq!(text(&app), original);
         }
 
         eprintln!("phase new_images_are_references_only_when_a_content_store_holds_the_bytes");

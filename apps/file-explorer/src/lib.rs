@@ -1,5 +1,6 @@
 //! Library root for the tilo-shell file explorer.
-//! Hosts the `FileExplorerWidget` (built over Tasks 8–13) and helper modules.
+//! Files: the [`FileExplorerShell`] framework app, its [`FileExplorerWidget`]
+//! surface, and the helper modules they share.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -52,6 +53,7 @@ pub mod received_shares;
 pub mod recent;
 pub mod remote_accounts;
 pub mod resource;
+pub mod scenarios;
 pub mod search_provider;
 pub mod sharing;
 pub mod shortcut_menu;
@@ -66,4 +68,4 @@ pub use files_app::{FileExplorerWidget, StartupInputs};
 
 #[cfg(all(test, windows))]
 mod unavailable_projection_tests;
-pub use resource::{FileExplorer, FileExplorerShell, launch_spec as framework_launch_spec};
+pub use resource::{FileExplorer, FileExplorerShell};
