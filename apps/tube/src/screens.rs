@@ -842,8 +842,6 @@ fn watch_actions(ui: Ui<'_>, v: &Video) -> Row {
         .with_accessible_name(&like_name)
         .toggled(liked)
         .on_click(ui.push(Action::ToggleLike(v.id.clone())));
-    let invocations = ui.invocations.clone();
-    let queue_binding = crate::actions::queue_binding(model, &v.id);
     let queue = Button::new(
         "watch_queue",
         &t(if queued {
@@ -853,8 +851,11 @@ fn watch_actions(ui: Ui<'_>, v: &Video) -> Row {
         }),
         None,
     )
-    .with_icon(Icon::ListVideo)
-    .on_click(move || action::invoke(&invocations, queue_binding.clone()));
+    .with_icon(Icon::ListVideo);
+    let queue = match crate::actions::queue_binding(model, &v.id) {
+        Some(binding) => queue.on_action(binding),
+        None => queue,
+    };
     let copy_link = Button::new("watch_copy_link", &t("tube-copy-link"), None)
         .with_icon(Icon::Copy)
         .on_click(ui.push(Action::Share(v.id.clone())));
