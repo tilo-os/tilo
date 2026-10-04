@@ -97,12 +97,14 @@ pub fn assert_presentation(theme: &tilo_ui::Theme, scale: f32, ui_scale: f32) {
 }
 
 thread_local! {
-    static COMMIT_REQUEST: Cell<bool> = const { Cell::new(false) };
+    static COMMITTED_ACTION: RefCell<Option<Vec<automerge::ChangeHash>>> = const { RefCell::new(None) };
     static COMMIT_DRAINS: Cell<usize> = const { Cell::new(0) };
 }
-pub fn request_probe_commit() {
-    COMMIT_REQUEST.set(true);
+/// The probe's next committed action: the heads captured before its writes.
+pub fn report_probe_action(before: Vec<automerge::ChangeHash>) {
+    COMMITTED_ACTION.set(Some(before));
 }
+/// How many committed actions the host has taken from the probe.
 pub fn probe_commit_drains() -> usize {
     COMMIT_DRAINS.get()
 }
@@ -282,7 +284,7 @@ impl ProbeHost {
     pub fn new() -> Self {
         CALLS.set(0);
         OPERATIONS.with_borrow_mut(Vec::clear);
-        COMMIT_REQUEST.set(false);
+        COMMITTED_ACTION.set(None);
         COMMIT_DRAINS.set(0);
         INITIALIZATIONS.set(0);
         HANDLES.with_borrow_mut(Vec::clear);
@@ -527,7 +529,8 @@ impl Widget for ProbeRoot {
         dyn tilo_ui::resources::PublishesResources,
         dyn tilo_ui::search::capability::SearchSource,
         dyn tilo_ui::view::capability::ViewState,
-        dyn tilo_ui::undo::UndoPoints
+        dyn tilo_ui::undo::UndoPoints,
+        dyn tilo_ui::undo::CommittedActions
     );
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -659,22 +662,15 @@ impl Widget for ProbeRoot {
     }
 }
 
-impl tilo_ui::undo::UndoPoints for ProbeRoot {
-    fn needs_commit(&self) -> bool {
-        COMMIT_REQUEST.get()
-    }
-    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        Some(tilo_actions::ActionContext::for_resource(
-            &self.caret,
-            "probe:shared",
-            "probe",
-            &self.caret,
-        ))
-    }
-    fn on_commit(&mut self) {
-        COMMIT_REQUEST.set(false);
+impl tilo_ui::undo::CommittedActions for ProbeRoot {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        let before = COMMITTED_ACTION.take()?;
         COMMIT_DRAINS.set(COMMIT_DRAINS.get().saturating_add(1));
+        Some(before)
     }
+}
+
+impl tilo_ui::undo::UndoPoints for ProbeRoot {
     fn get_state(&self) -> Option<String> {
         Some(self.caret.clone())
     }

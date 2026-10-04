@@ -386,8 +386,6 @@ impl Router {
 }
 
 impl Widget for Router {
-    crate::provides!(dyn crate::undo::UndoPoints);
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
@@ -542,15 +540,6 @@ impl Widget for Router {
             presence,
             permissions,
         );
-    }
-}
-
-impl crate::undo::UndoPoints for Router {
-    fn needs_commit(&self) -> bool {
-        crate::undo::needs_commit(self.child.as_ref())
-    }
-    fn on_commit(&mut self) {
-        crate::undo::on_commit(self.child.as_mut());
     }
 }
 

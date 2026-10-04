@@ -2,14 +2,6 @@
 
 pub(super) struct IdleModelProgress {
     pub(super) changed: bool,
-    #[cfg_attr(
-        not(feature = "native"),
-        expect(
-            dead_code,
-            reason = "only the native window runner reacts to a local commit"
-        )
-    )]
-    pub(super) local_commit: bool,
 }
 
 /// `TILO_HOST_PERF_BASELINE=1` restores the previous always-refresh hosted
@@ -263,24 +255,14 @@ impl super::App {
     }
 
     pub(super) fn service_idle_model(&mut self) -> IdleModelProgress {
-        let mut changed = self.service_local_control_history();
-        let local_commit = crate::undo::needs_commit(self.root_widget.as_ref());
-        if local_commit {
-            self.commit_action();
-            crate::undo::on_commit(self.root_widget.as_mut());
-            self.needs_sync = true;
-            changed = true;
-        }
+        let changed = self.service_local_control_history();
         // This is local writer progress, never a durable owner receipt. The
         // existing scoped publication barrier still gates terminal success.
         #[cfg(feature = "native")]
         if let Err(error) = self.autosave_tick() {
             crate::diag!("[app] component autosave tick refused: {error:?}");
         }
-        IdleModelProgress {
-            changed,
-            local_commit,
-        }
+        IdleModelProgress { changed }
     }
 }
 

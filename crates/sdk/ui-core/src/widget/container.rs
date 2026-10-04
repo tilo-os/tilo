@@ -247,8 +247,7 @@ impl Container {
 impl Widget for Container {
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::presence::capability::PublishesPresence
     );
 
     fn start_operation(
@@ -505,19 +504,6 @@ impl Widget for Container {
             && let Some(user) = peers.first()
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
-    }
-}
-
-impl crate::undo::UndoPoints for Container {
-    fn needs_commit(&self) -> bool {
-        self.children()
-            .iter()
-            .any(|c| crate::undo::needs_commit(*c))
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            crate::undo::on_commit(child);
         }
     }
 }

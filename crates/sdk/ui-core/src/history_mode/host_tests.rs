@@ -830,9 +830,7 @@ fn history_preserves_pending_work_and_restores_exactly_one_focus() {
                 "timeline-entry:{}",
                 crate::widget::history_group::hex16(&id)
             );
-            let root = Column::new().push(Box::new(
-                TextInput::from_document_string("draft").with_id("draft-editor"),
-            ));
+            let root = Column::new().push(Box::new(TextInput::local().with_id("draft-editor")));
             let mut driver = Driver::from_managed_root(
                 state,
                 ManagedRoot::new(Box::new(root), registration()),
@@ -969,12 +967,8 @@ fn history_preserves_pending_work_and_restores_exactly_one_focus() {
         use crate::widget::TextInput;
         for route in ["tab", "shift-tab", "pointer"] {
             let root = Column::new()
-                .push(Box::new(
-                    TextInput::from_document_string("first").with_id("first-editor"),
-                ))
-                .push(Box::new(
-                    TextInput::from_document_string("second").with_id("second-editor"),
-                ));
+                .push(Box::new(TextInput::local().with_id("first-editor")))
+                .push(Box::new(TextInput::local().with_id("second-editor")));
             let mut driver = Driver::from_managed_root(
                 State::new(),
                 ManagedRoot::new(Box::new(root), registration()),

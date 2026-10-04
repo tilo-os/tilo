@@ -993,7 +993,7 @@ fn tiled_history_keeps_pending_owners_and_checks_current_authority() {
     }
 }
 
-pub(crate) struct TileEditor<T: Widget = crate::widget::TextInput>(pub(crate) T);
+pub(crate) struct TileEditor<T: Widget = crate::testing::OwnedText>(pub(crate) T);
 crate::testing::test_app_widget!(impl [T: Widget + 'static] TileEditor<T>, "Tile editor");
 impl<T: Widget + 'static> Widget for TileEditor<T> {
     crate::provides!(dyn crate::record::capability::RecordScoped);
@@ -1081,12 +1081,14 @@ pub(crate) fn legacy_tiles_root(
     second: &crate::record::RecordCheckout,
 ) -> Box<dyn Widget> {
     let tile = |checkout: &crate::record::RecordCheckout, name: &str| {
-        let mut tile =
-            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(TileEditor(
-                crate::widget::TextInput::from_document_string("body")
+        let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
+            TileEditor(crate::testing::OwnedText::new(
+                "body",
+                crate::widget::TextInput::local()
                     .with_id(name)
                     .with_accessible_name(name),
-            ))));
+            )),
+        )));
         tile.bind_record(store.clone(), checkout.clone());
         tile
     };
@@ -1129,9 +1131,10 @@ fn legacy_admission_refuses_busy_rebound_dropped_or_replaced_owners() {
                 .unwrap();
         }
         let content = || {
-            crate::widget::TileContent::App(Box::new(TileEditor(
-                crate::widget::TextInput::from_document_string("body").with_id("legacy-leaf"),
-            )))
+            crate::widget::TileContent::App(Box::new(TileEditor(crate::testing::OwnedText::new(
+                "body",
+                crate::widget::TextInput::local().with_id("legacy-leaf"),
+            ))))
         };
         let mut tile = crate::widget::TileHost::new(content());
         tile.bind_record(a.clone(), checkout.clone());
@@ -1236,10 +1239,10 @@ fn legacy_admission_refuses_busy_rebound_dropped_or_replaced_owners() {
                 .unwrap();
         }
         let mut tile = Box::new(crate::widget::TileHost::new(
-            crate::widget::TileContent::App(Box::new(TileEditor(
-                crate::widget::TextInput::from_document_string("body")
-                    .with_accessible_name("owned editor"),
-            ))),
+            crate::widget::TileContent::App(Box::new(TileEditor(crate::testing::OwnedText::new(
+                "body",
+                crate::widget::TextInput::local().with_accessible_name("owned editor"),
+            )))),
         ));
         tile.bind_record(a.clone(), checkout.clone());
         let pointer = std::ptr::from_mut(tile.as_mut());
@@ -1749,11 +1752,12 @@ impl TopLegacyFixture {
                 .unwrap();
         }
         let mut tile = Box::new(crate::widget::TileHost::new(
-            crate::widget::TileContent::App(Box::new(TileEditor(
-                crate::widget::TextInput::from_document_string("body")
+            crate::widget::TileContent::App(Box::new(TileEditor(crate::testing::OwnedText::new(
+                "body",
+                crate::widget::TextInput::local()
                     .with_id("owned-editor")
                     .with_accessible_name("owned editor"),
-            ))),
+            )))),
         ));
         tile.bind_record(store.clone(), checkout.clone());
         let source = HistorySourceRegistration::owned(
@@ -1903,7 +1907,8 @@ struct RetainedLifecycleProbe {
     text: crate::widget::Text,
     handles: RetainedLifecycleHandles,
     ready: bool,
-    dirty: bool,
+    /// Heads before the last result this owner wrote, until the host takes them.
+    committed: Option<Vec<automerge::ChangeHash>>,
     observed: String,
 }
 
@@ -2069,7 +2074,7 @@ fn retained_lifecycle_probe_with_owner_policy(
             text: crate::widget::Text::new("Retained lifecycle"),
             handles: handles.clone(),
             ready: false,
-            dirty: false,
+            committed: None,
             observed: String::new(),
         },
         handles,
@@ -2087,7 +2092,7 @@ impl Widget for RetainedLifecycleProbe {
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
         dyn crate::record::capability::RecordScoped,
-        dyn crate::undo::UndoPoints
+        dyn crate::undo::CommittedActions
     );
 
     crate::testing::delegate_widget_methods!(text: apply_layout, draw, get_rect);
@@ -2121,13 +2126,14 @@ impl Widget for RetainedLifecycleProbe {
             *self.handles.queued.borrow_mut() = Some(result);
             return;
         }
+        let before = doc.get_heads();
         doc.put(path, "body", result.value.as_str()).unwrap();
         doc.put(path, "accepted-owner", self.expected_owner)
             .unwrap();
+        self.committed.get_or_insert(before);
         self.observed = result.value;
         increment(&self.handles.accepts);
         self.ready = true;
-        self.dirty = true;
     }
     fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
         increment(&self.handles.updates);
@@ -2223,12 +2229,9 @@ impl Widget for RetainedLifecycleProbe {
     }
 }
 
-impl crate::undo::UndoPoints for RetainedLifecycleProbe {
-    fn needs_commit(&self) -> bool {
-        self.dirty
-    }
-    fn on_commit(&mut self) {
-        self.dirty = false;
+impl crate::undo::CommittedActions for RetainedLifecycleProbe {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.committed.take()
     }
 }
 
@@ -2270,7 +2273,8 @@ struct ReleasableLifecycleProbe {
     receiver: Option<std::sync::mpsc::Receiver<QueuedLifecycleResult>>,
     handles: ReleasableLifecycleHandles,
     ready: bool,
-    dirty: bool,
+    /// Heads before the last result this owner wrote, until the host takes them.
+    committed: Option<Vec<automerge::ChangeHash>>,
 }
 
 fn releasable_lifecycle_probe() -> (ReleasableLifecycleProbe, ReleasableLifecycleHandles) {
@@ -2294,7 +2298,7 @@ fn releasable_lifecycle_probe() -> (ReleasableLifecycleProbe, ReleasableLifecycl
             receiver: Some(receiver),
             handles: handles.clone(),
             ready: false,
-            dirty: false,
+            committed: None,
         },
         handles,
     )
@@ -2309,7 +2313,7 @@ crate::testing::test_app_widget!(
 impl Widget for ReleasableLifecycleProbe {
     crate::provides!(
         dyn crate::record::capability::RecordScoped,
-        dyn crate::undo::UndoPoints
+        dyn crate::undo::CommittedActions
     );
 
     crate::testing::delegate_widget_methods!(text: apply_layout, draw, get_rect);
@@ -2332,9 +2336,10 @@ impl Widget for ReleasableLifecycleProbe {
         if self.handles.admitted.get() != Some(result.invocation) {
             return;
         }
+        let before = doc.get_heads();
         doc.put(path, "body", result.value).unwrap();
+        self.committed.get_or_insert(before);
         self.ready = true;
-        self.dirty = true;
         increment(&self.handles.accepts);
     }
     fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
@@ -2401,13 +2406,14 @@ impl Widget for ReleasableLifecycleProbe {
     }
 }
 
-impl crate::undo::UndoPoints for ReleasableLifecycleProbe {
-    fn needs_commit(&self) -> bool {
-        self.dirty
-    }
-    fn on_commit(&mut self) {
-        self.dirty = false;
-        increment(&self.handles.commits);
+impl crate::undo::CommittedActions for ReleasableLifecycleProbe {
+    /// The host taking the owner's step is what acknowledges its write.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        let committed = self.committed.take();
+        if committed.is_some() {
+            increment(&self.handles.commits);
+        }
+        committed
     }
 }
 

@@ -4176,10 +4176,6 @@ impl FrameHarness {
             }
             if !owns_document && self.state.doc.get_heads() != before {
                 self.state.record_committed_action(before, None, None);
-                crate::undo::on_commit(self.root.as_mut());
-            } else if !owns_document && crate::undo::needs_commit(self.root.as_ref()) {
-                self.state.commit_action(None, None);
-                crate::undo::on_commit(self.root.as_mut());
             }
             // Action-bound controls enqueue an intent instead of mutating the
             // document inside `perform_action`; drain it before presenting
@@ -5190,18 +5186,6 @@ impl FrameHarness {
 
     fn host_tick(&mut self) {
         self.idle_control_tick();
-        let author = self.author.clone();
-        if crate::undo::needs_commit(self.root.as_ref()) {
-            // Authored *and* carrying the widget's commit context. An
-            // anonymous entry is invisible to author-scoped undo, so a
-            // scenario that pressed Ctrl+Z would find nothing where the user
-            // finds their last edit; dropping the context loses the
-            // provenance the history explorer reads.
-            let context = crate::undo::take_commit_context(self.root.as_mut());
-            self.state
-                .commit_action_authored_with_context(None, None, Some(author), context);
-            crate::undo::on_commit(self.root.as_mut());
-        }
         // An Undo/Redo control the widget tree activated during that event.
         // Same route the live host takes: the widget asks, the host performs.
         self.drain_undo_requests();
@@ -9876,40 +9860,6 @@ mod tests {
             assert!(semantics.state.focused);
         }
 
-        // Case `semantic_document_edit_is_immediately_undoable`.
-        {
-            let input = TextInput::local()
-                .with_id("title-input")
-                .with_on_change_path("title");
-            let mut driver = Driver::new_with_controlled_inputs(
-                State::new(),
-                Box::new(input),
-                (400, 200),
-                Theme::dark(),
-                crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("task-4-fixture-author".into()),
-            );
-
-            driver
-                .perform_named(
-                    "title-input",
-                    &crate::a11y::Action::SetValue("Project Atlas".to_owned()),
-                )
-                .expect("set durable value through semantic action");
-            driver
-                .state_mut()
-                .undo(None, None)
-                .expect("semantic mutation records one undo boundary");
-            driver.relayout();
-
-            let semantics = driver
-                .inspection()
-                .root
-                .semantics
-                .expect("text input semantics");
-            assert_eq!(semantics.value.as_deref(), Some(""));
-        }
-
         // Case `semantic_activate_uses_the_widget_action_path`.
         {
             use std::cell::Cell;
@@ -10656,45 +10606,6 @@ mod tests {
         );
         assert!(driver.focused_access_node().is_none());
     }
-
-    #[test]
-    fn semantic_empty_replacement_clears_bound_text_and_has_one_undo_boundary() {
-        let input = TextInput::local()
-            .with_id("draft")
-            .with_on_change_path("draft");
-        let mut driver = Driver::new_with_controlled_inputs(
-            State::new(),
-            Box::new(input),
-            (400, 200),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture-user".into()),
-        );
-        driver
-            .perform_named("draft", &crate::a11y::Action::SetValue("Draft 🦀".into()))
-            .unwrap();
-        driver
-            .perform_named("draft", &crate::a11y::Action::SetValue(String::new()))
-            .unwrap();
-        assert_eq!(
-            driver
-                .access_node_named("draft", None)
-                .unwrap()
-                .value
-                .as_deref(),
-            Some("")
-        );
-        driver.state_mut().undo(None, None).unwrap();
-        driver.relayout();
-        assert_eq!(
-            driver
-                .access_node_named("draft", None)
-                .unwrap()
-                .value
-                .as_deref(),
-            Some("Draft 🦀")
-        );
-    }
 }
 
 #[cfg(test)]
@@ -11050,19 +10961,25 @@ mod undo_driver_tests {
     use super::*;
     use crate::state::State;
 
-    /// A minimal editor: appends every typed character to `body` and asks for
-    /// a commit boundary straight away.
+    /// A minimal editor: appends every typed character to `body` and reports
+    /// the heads before that write as its committed action.
     ///
     /// Deliberately a widget rather than a direct write to the document —
-    /// the edit has to travel the driver's own `send` → `needs_commit` →
-    /// commit path, or a test cannot see how that path attributes the action.
+    /// the edit has to travel the driver's own `send` → owner bracket →
+    /// record path, or a test cannot see how that path attributes the action.
     struct Typer {
         rect: vello::kurbo::Rect,
-        pending: bool,
+        committed: Option<Vec<automerge::ChangeHash>>,
+    }
+
+    impl crate::undo::CommittedActions for Typer {
+        fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+            self.committed.take()
+        }
     }
 
     impl crate::widget::Widget for Typer {
-        crate::provides!(dyn crate::undo::UndoPoints);
+        crate::provides!(dyn crate::undo::CommittedActions);
 
         fn build_layout(
             &mut self,
@@ -11118,6 +11035,7 @@ mod undo_driver_tests {
             let winit::keyboard::Key::Character(c) = &ke.logical_key else {
                 return;
             };
+            let before = doc.get_heads();
             let obj = match doc.get(&automerge::ROOT, "body") {
                 Ok(Some((_, o))) => o,
                 _ => doc
@@ -11126,7 +11044,7 @@ mod undo_driver_tests {
             };
             let len = doc.length(&obj);
             doc.splice_text(&obj, len, 0, c.as_str()).unwrap();
-            self.pending = true;
+            self.committed.get_or_insert(before);
             *ctx.handled = true;
         }
 
@@ -11139,21 +11057,12 @@ mod undo_driver_tests {
         }
     }
 
-    impl crate::undo::UndoPoints for Typer {
-        fn needs_commit(&self) -> bool {
-            self.pending
-        }
-        fn on_commit(&mut self) {
-            self.pending = false;
-        }
-    }
-
     /// A typing surface plus history controls, and a driver over them.
     fn undo_driver() -> Driver {
         let row = crate::widget::Row::new()
             .push(Box::new(Typer {
                 rect: vello::kurbo::Rect::ZERO,
-                pending: false,
+                committed: None,
             }))
             .push(Box::new(crate::widget::UndoButton::undo()))
             .push(Box::new(crate::widget::UndoButton::redo()));
@@ -11266,12 +11175,12 @@ mod undo_driver_tests {
 /// Undo for an app whose edits are dispatched [`tilo_actions`] actions — the
 /// shape every migrated Tilo app has — driven headlessly.
 ///
-/// The module above drives the *other* editing path, `needs_commit` /
-/// `on_commit`, where the widget writes the document itself. An app built on
-/// [`ActionHost`](crate::action_host::ActionHost) never sets `needs_commit`:
-/// its boundary arrives through
+/// The module above drives a widget that writes the document itself and
+/// reports its own bracket. An app built on
+/// [`ActionHost`](crate::action_host::ActionHost) writes only through
+/// dispatched actions: its boundary arrives through
 /// [`take_committed_action`](crate::undo::CommittedActions::take_committed_action)
-/// instead. Until the driver drained that, a headless test of such an app could
+/// from the action host. Until the driver drained that, a headless test of such an app could
 /// deliver the input but could not observe the undo history the input produced,
 /// so undo behaviour was untestable for the majority of the fleet.
 #[cfg(test)]
@@ -11309,8 +11218,8 @@ mod dispatched_action_driver_tests {
 
     /// An editor in the migrated shape: every edit is dispatched through
     /// [`ActionHost`](crate::action_host::ActionHost), and the only thing it
-    /// tells the host is the bracket. It deliberately does **not** implement
-    /// `needs_commit` — that is the whole distinction under test.
+    /// tells the host is the bracket the action host captured — that is the
+    /// whole distinction under test.
     ///
     /// Two ways in, because a canvas app has two: a keystroke, and an
     /// accessibility verb routed to `perform_action_at` (how an assistive
@@ -11591,7 +11500,7 @@ mod dispatched_action_driver_tests {
 
         // Case `ctrl_z_and_the_control_undo_the_same_dispatched_action`:
         // The keyboard and the control must reach the same undo — for the action
-        // path too, not just the `needs_commit` one.
+        // path too, not just the widget-written one.
         {
             let mut via_key = action_driver();
             via_key.type_text("a");

@@ -707,8 +707,6 @@ impl Card {
 }
 
 impl Widget for Card {
-    ui::provides!(dyn ui::undo::UndoPoints);
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -887,19 +885,6 @@ impl Widget for Card {
     }
 }
 
-impl ui::undo::UndoPoints for Card {
-    fn needs_commit(&self) -> bool {
-        self.children
-            .iter()
-            .any(|c| ui::undo::needs_commit(c.as_ref()))
-    }
-    fn on_commit(&mut self) {
-        for child in &mut self.children {
-            ui::undo::on_commit(child.as_mut());
-        }
-    }
-}
-
 // ===================================================================
 // ViewportStage — centres short cards, then lets the spacers collapse before
 // a tall card overflows into the surrounding Scrollable. This keeps the
@@ -922,8 +907,6 @@ impl ViewportStage {
 }
 
 impl Widget for ViewportStage {
-    ui::provides!(dyn ui::undo::UndoPoints);
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1069,19 +1052,6 @@ impl Widget for ViewportStage {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-}
-
-impl ui::undo::UndoPoints for ViewportStage {
-    fn needs_commit(&self) -> bool {
-        self.children
-            .iter()
-            .any(|child| ui::undo::needs_commit(child.as_ref()))
-    }
-    fn on_commit(&mut self) {
-        for child in &mut self.children {
-            ui::undo::on_commit(child.as_mut());
-        }
     }
 }
 
@@ -3940,10 +3910,7 @@ fn args_none() -> serde_json::Map<String, serde_json::Value> {
 }
 
 impl Widget for InstallerApp {
-    ui::provides!(
-        dyn ui::resources::PublishesResources,
-        dyn ui::undo::UndoPoints
-    );
+    ui::provides!(dyn ui::resources::PublishesResources);
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
@@ -4201,19 +4168,6 @@ impl Widget for InstallerApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-}
-
-impl ui::undo::UndoPoints for InstallerApp {
-    fn needs_commit(&self) -> bool {
-        self.composed
-            .as_ref()
-            .is_some_and(|c| ui::undo::needs_commit(c.as_ref()))
-    }
-    fn on_commit(&mut self) {
-        if let Some(c) = &mut self.composed {
-            ui::undo::on_commit(c.as_mut());
-        }
     }
 }
 

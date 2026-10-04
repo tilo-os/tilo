@@ -54,8 +54,6 @@ impl Section {
 }
 
 impl Widget for Section {
-    crate::provides!(dyn crate::undo::UndoPoints);
-
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
@@ -151,15 +149,6 @@ impl Widget for Section {
 
     fn wants_pointer_capture(&self) -> bool {
         self.inner.wants_pointer_capture()
-    }
-}
-
-impl crate::undo::UndoPoints for Section {
-    fn needs_commit(&self) -> bool {
-        crate::undo::needs_commit(self.inner.as_ref())
-    }
-    fn on_commit(&mut self) {
-        crate::undo::on_commit(self.inner.as_mut());
     }
 }
 

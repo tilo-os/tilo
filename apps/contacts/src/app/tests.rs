@@ -2068,7 +2068,7 @@ fn search_field_focus_and_typing_narrow_the_list() {
         h.type_text("hopper");
         assert_eq!(h.app.search.value(), "hopper");
         assert!(
-            !ui::undo::needs_commit(&*h.app) && h.app.app.versions().len() == versions,
+            h.app.app.versions().len() == versions,
             "a query is the window's own, never a document edit"
         );
         let visible = h.app.visible_ids();

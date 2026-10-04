@@ -86,7 +86,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
     {
         let mut app = app();
         app.root_widget = Box::new(crate::widget::Column::new().push(Box::new(
-            crate::widget::TextInput::from_document_string("draft").with_id("draft-editor"),
+            crate::widget::TextInput::local().with_id("draft-editor"),
         )));
         app.root_widget.sync(&mut app.state.doc, &ROOT);
         layout(&mut app);
@@ -290,9 +290,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
     // Case `native_history_tab_shift_tab_release_and_ime_keep_pending_live_editor_isolated`.
     {
         let mut app = app();
-        app.root_widget = Box::new(
-            crate::widget::TextInput::from_document_string("draft").with_id("pending-editor"),
-        );
+        app.root_widget = Box::new(crate::widget::TextInput::local().with_id("pending-editor"));
         layout(&mut app);
         let editor = node_for_test_id(&app, "pending-editor");
         app.set_focused_node(Some(editor));
@@ -2305,10 +2303,10 @@ fn legacy_ids_and_effects_cannot_reach_a_replacement_owner() {
         }
         let mut tile = Box::new(crate::widget::TileHost::new(
             crate::widget::TileContent::App(Box::new(
-                crate::history_mode::integration_tests::TileEditor(
-                    crate::widget::TextInput::from_document_string("body")
-                        .with_accessible_name("replaceable editor"),
-                ),
+                crate::history_mode::integration_tests::TileEditor(crate::testing::OwnedText::new(
+                    "body",
+                    crate::widget::TextInput::local().with_accessible_name("replaceable editor"),
+                )),
             )),
         ));
         tile.bind_record(a.clone(), checkout.clone());
