@@ -2,15 +2,16 @@
 //!
 //! Genuine content drawing. The bar is the data (each partition's share of the
 //! device), so it paints itself; everything around it is the toolkit's: the
-//! "Whole disk" chip is a [`ChipFace`], the legend is measured by the renderer
-//! and wraps, and every colour, radius and gap comes from the theme.
-//! A partition is not someone's presence, so the bar carries no hue: each block
-//! is a neutral lift whose darker share is the part of the filesystem in use,
-//! and the unallocated tail is an outline.
+//! "Whole disk" chip is a [`ChipFace`], the legend is the charts' shared
+//! legend (a swatch per block, measured and wrapped), and every colour, radius
+//! and gap comes from the theme. Like any chart, each partition takes a series
+//! colour: the block is a wash of it, the part of the filesystem in use is the
+//! full colour, and the unallocated tail is an outline.
 
 use std::collections::HashMap;
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
+use ui::charts::legend;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -18,10 +19,10 @@ use ui::taffy::style_helpers::{auto, percent};
 use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::TextRole;
 use ui::tokens::colors::Colors;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point, Rect};
+use ui::vello::peniko::Color;
 use ui::widget::{AppModel, ChipFace, ChipLead, EventCtx, ModelPath, TaffyTreeExt, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::window::CursorIcon;
@@ -156,7 +157,7 @@ impl PartitionMap {
         }
     }
 
-    /// One entry per block (its label in `Caption`), measured by the renderer
+    /// One entry per block: its swatch and label, measured by the renderer
     /// and wrapped before the trailing edge so a long label never overlaps its
     /// neighbour.
     fn lay_out_legend(
@@ -166,53 +167,21 @@ impl PartitionMap {
         text: &mut TextRenderer,
         theme: &Theme,
     ) -> Vec<Rect> {
-        let style = theme.text(TextRole::Caption);
-        let gap = f64::from(theme.tokens.spacing.rhythm.section);
-        let row = f64::from(text.measure_style("Ag", None, &style).1)
-            + f64::from(theme.tokens.spacing.rhythm.tight);
-        let available = width.max(1.0);
-        let mut x = 0.0;
-        let mut y = top;
-        self.entries
-            .iter()
-            .map(|entry| {
-                let label = f64::from(text.measure_style(&entry.label, None, &style).0);
-                let entry_w = label.ceil().min(available);
-                if x > 0.0 && x + entry_w > width {
-                    x = 0.0;
-                    y += row;
-                }
-                let rect = Rect::new(x, y, x + entry_w, y + row);
-                x += entry_w + gap;
-                rect
-            })
-            .collect()
+        let entries = legend::measure(text, theme, self.entries.iter().map(|e| e.label.as_str()));
+        legend::wrap(&entries, 0.0, width, top, theme)
     }
 
-    fn paint_legend_entry(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, lit: bool) {
-        let theme = ctx.theme;
-        let style = theme.text(TextRole::Caption);
-        let shown = ctx
-            .text
-            .elide_to_width_style(label, rect.width() as f32, &style);
-        let height = f64::from(ctx.text.measure_style(&shown, None, &style).1);
-        let ink = if lit {
-            theme.text_primary
-        } else {
-            theme.text_dim
-        };
-        ctx.text.draw_style(
-            ctx.scene,
-            &shown,
-            ink,
-            ctx.transform * Affine::translate((rect.x0, rect.center().y - height / 2.0)),
-            None,
-            &style,
-        );
+    /// The block's series colour; the unallocated tail is the outline's ink.
+    fn colour(entry: &MapEntry, theme: &Theme) -> Color {
+        let colors = &theme.tokens.colors;
+        match entry.partition {
+            Some(index) => colors.presence.series(index),
+            None => Colors::hairline_on(colors.surfaces.content, OUTLINE_ALPHA),
+        }
     }
 
-    /// Paint one block: a neutral lift with the used share darker, or, for
-    /// the unallocated tail, an outline.
+    /// Paint one block: a wash of its colour with the used share in full,
+    /// or, for the unallocated tail, an outline.
     fn paint_block(ctx: &mut PaintCtx<'_>, rect: Rect, entry: &MapEntry, hovered: bool) {
         let theme = ctx.theme;
         let colors = &theme.tokens.colors;
@@ -224,12 +193,13 @@ impl PartitionMap {
             ctx.stroke_round(rect, radius, edge, width);
             return;
         }
-        let step = if hovered { 0.5 } else { 0.0 };
-        ctx.fill_round(rect, radius, colors.lift_on(ground, 1.0 + step));
+        let colour = Self::colour(entry, theme);
+        let wash = if hovered { 0.55 } else { 0.4 };
+        ctx.fill_round(rect, radius, colour.multiply_alpha(wash));
         let used = entry.used.unwrap_or(0.0).clamp(0.0, 1.0);
         if used > 0.0 {
             let share = Rect::new(rect.x0, rect.y0, rect.x0 + rect.width() * used, rect.y1);
-            ctx.fill_round(share, radius, colors.lift_on(ground, 2.5 + step));
+            ctx.fill_round(share, radius, colour);
         }
     }
 
@@ -351,7 +321,16 @@ impl Widget for PartitionMap {
             let hovered =
                 matches!(self.hover, Some(Hover::Segment(h) | Hover::Legend(h)) if h == i);
             let lit = hovered || self.is_selected(entry);
-            Self::paint_legend_entry(&mut ctx, at(*rect), &entry.label, lit);
+            legend::paint_entry_emphasised(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                at(*rect),
+                Self::colour(entry, theme),
+                &entry.label,
+                lit,
+            );
         }
     }
 
