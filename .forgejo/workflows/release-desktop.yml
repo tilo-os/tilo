@@ -252,6 +252,14 @@ jobs:
           path: dist/ci-output/fedora-44-${{ matrix.arch }}/*
           if-no-files-found: error
 
+  # The amd64 Fedora RPMs this run built, installed on stock Fedora in a KVM
+  # VM and logged into through a display manager, with apps opened.
+  host-session-e2e:
+    needs: package
+    uses: ./.forgejo/workflows/host-session-e2e.yml
+    with:
+      rpm-artifact: fedora-44-amd64
+
   publish-os-payload:
     if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     needs: package
