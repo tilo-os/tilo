@@ -454,7 +454,7 @@ jobs:
           BASELINE_EVIDENCE: ${{ github.event.inputs.baseline_evidence }}
           BASELINE_RECEIPT_SHA256: ${{ github.event.inputs.baseline_receipt_sha256 }}
         run: python3 -I tools/ci/python.py tools/app_packaging_plan.py
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: github.event.inputs.coordinator_intent != ''
         with:
           name: coordinator-plan-${{ github.run_attempt }}
@@ -602,7 +602,7 @@ jobs:
             --runtime-binary target/release/tilo-runtime-bundle \
             --signers dist/app-release/work/receipt-signers.json \
             --source-sha "$GITHUB_SHA" --architecture "$RECEIPT_ARCH"
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-apps-${{ matrix.arch }}
           path: |
@@ -631,7 +631,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release
       - name: Assemble and verify without publication
@@ -674,7 +674,7 @@ jobs:
               --baseline-proof "$baseline" --baseline-proof-sha256 "$BASELINE_RECEIPT_SHA256" \
               --baseline-source "$BASELINE_SHA"
           done < <(jq -r '.include[].arch' <<< "$MATRIX")
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: contains(github.event.inputs.architectures, 'x86_64')
         with:
           name: final-app-collection-x86_64
@@ -683,7 +683,7 @@ jobs:
             dist/qualified-apps/x86_64/final-publication-receipt.json
             dist/qualified-apps/x86_64/assembly-provenance.json
           if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: contains(github.event.inputs.architectures, 'aarch64')
         with:
           name: final-app-collection-aarch64
@@ -713,7 +713,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release
       - name: Publish reusable tapps and assemble immutable collections

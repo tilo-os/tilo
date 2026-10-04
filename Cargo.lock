@@ -1551,9 +1551,11 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "tempfile",
  "tilo-app",
  "tilo-content",
  "tilo-files",
+ "tilo-paths",
  "tilo-wet-media",
  "tracing",
  "usvg",
@@ -15703,6 +15705,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-image-codec"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-installed-apps"
 version = "0.1.0"
 dependencies = [
@@ -16692,6 +16702,7 @@ dependencies = [
  "tilo-headless-schema",
  "tilo-host",
  "tilo-host-search",
+ "tilo-image-codec",
  "tilo-media",
  "tilo-paths",
  "tilo-resource",
