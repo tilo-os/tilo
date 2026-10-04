@@ -416,3 +416,7 @@ history-day-today = Heute
 history-day-yesterday = Gestern
 history-day-this-week = Diese Woche
 history-day-earlier = Früher
+
+widget-block-duplicate = Block mit Unterelementen duplizieren
+
+widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren

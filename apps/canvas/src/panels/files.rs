@@ -187,13 +187,13 @@ impl FileDesk {
         let bytes =
             export::part(art, settings.area, view, &selection).and_then(|(part, region)| {
                 let text = self.text.get_or_insert_with(TextRenderer::new);
-                export::encode(
-                    &mut self.tools.renderer.borrow_mut(),
-                    text,
-                    &part,
-                    region,
-                    settings,
-                )
+                let mut renderer = self.tools.renderer.borrow_mut();
+                // An export shows every picture: it waits for those still
+                // decoding.
+                renderer.pictures.patient = true;
+                let encoded = export::encode(&mut renderer, text, &part, region, settings);
+                renderer.pictures.patient = false;
+                encoded
             });
         let bytes = match bytes {
             Ok(bytes) => bytes,

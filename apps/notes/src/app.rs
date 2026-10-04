@@ -599,6 +599,9 @@ pub struct NotesApp {
     legacy_read_blocked: Option<PageId>,
     /// Last framework-owned durability projection; querying it never touches the record.
     record_save_status: ui::record::RecordSaveStatus,
+    /// The framework host's durability state when Notes is hosted as a
+    /// resource surface: the host reports there, not to this widget.
+    hosted_save_status: Option<ui::LocalState<ui::record::RecordSaveStatus>>,
     pub(crate) workspace_lock: Option<advisory_lock::FileLock>,
     /// A host-portal file choice in flight. File access never escapes the
     /// workspace sandbox without an explicit portal grant.
@@ -949,6 +952,7 @@ impl NotesApp {
             workspace_asset_root,
             legacy_read_blocked: None,
             record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
+            hosted_save_status: None,
             workspace_lock: None,
             markdown_transfer: None,
             markdown_job: ui::LatestRequest::new(),
@@ -1055,8 +1059,19 @@ impl NotesApp {
         let announce = self.status.state().save_status != save_status
             || self.status.state().page_path != path
             || self.status.state().page_count != self.workspace.pages().len();
+        let save_problem = match &self.record_save_status {
+            ui::record::RecordSaveStatus::Failed(reason)
+                if self.shots_save_status.is_none()
+                    && self.legacy_read_blocked.is_none()
+                    && self.legacy_fixture_storage.is_none() =>
+            {
+                Some(reason.clone())
+            }
+            _ => None,
+        };
         self.status.set_state(StatusBarState {
             save_status,
+            save_problem,
             page_path: path,
             page_count: self.workspace.pages().len(),
             word_count,
@@ -1108,7 +1123,9 @@ impl NotesApp {
         // On a phone the full page/word summary becomes a wide obstruction.
         // Keep the transient edge affordance to the actionable save state;
         // wider layouts retain the richer summary.
-        let label = if self.built_narrow {
+        let label = if self.status.needs_attention() {
+            self.status.save_detail()
+        } else if self.built_narrow {
             self.status.save_text().to_string()
         } else {
             self.status.bubble_text()
@@ -1125,9 +1142,8 @@ impl NotesApp {
         // Reveal zone: the bottom-right corner band (plus the pill), so nudging
         // the pointer there re-surfaces the status on demand.
         let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
-        let over = self.shots_status
-            || self.status.state().save_status == SaveStatus::Failed
-            || zone.contains(self.last_mouse);
+        let over =
+            self.shots_status || self.status.needs_attention() || zone.contains(self.last_mouse);
         self.status_bubble.set_hover(over, now);
         // The bubble is useful status, but its fade is decorative.  Keep its
         // visibility transition discrete under reduced motion so people never
@@ -2025,11 +2041,29 @@ impl NotesApp {
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Notebook>,
+        save_status: ui::LocalState<ui::record::RecordSaveStatus>,
     ) {
         self.main.attach_notebook(dispatcher.clone());
         self.actions.attach(dispatcher);
         self.seeded = true;
         self.adopted = true;
+        self.hosted_save_status = Some(save_status);
+        self.follow_hosted_save_status();
+    }
+
+    /// Take the framework host's latest durability report, when hosted.
+    fn follow_hosted_save_status(&mut self) {
+        let Some(status) = self
+            .hosted_save_status
+            .as_ref()
+            .map(|state| state.with(Clone::clone))
+        else {
+            return;
+        };
+        if status != self.record_save_status {
+            self.record_save_status = status;
+            self.refresh_status();
+        }
     }
 
     /// The context Ctrl+K needs to build the notebook's resource tree: the page
@@ -4427,6 +4461,7 @@ impl Widget for NotesApp {
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        self.follow_hosted_save_status();
         let (state, path) = ui::doc::document(state, path);
         self.refresh_canonical_assets(state);
         if self.legacy_fixture_storage.is_none() {
@@ -4878,7 +4913,11 @@ impl Widget for NotesApp {
         children.push(
             AccessNode::new(Role::StaticText)
                 .with_name(self.status.save_text())
-                .with_description(self.status.right_text())
+                .with_description(if self.status.needs_attention() {
+                    self.status.save_detail()
+                } else {
+                    self.status.right_text()
+                })
                 .with_live(ui::a11y::Politeness::Polite)
                 .with_hashed_key("notes.save-status"),
         );

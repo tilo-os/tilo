@@ -152,6 +152,9 @@ pub struct CanvasSurface {
     area: AreaGesture,
     points: Option<PointEdit>,
     text: Option<TextSession>,
+    /// Where the text caret was last drawn, for the input method's
+    /// candidate window.
+    ime_caret: std::cell::Cell<Option<Rect>>,
     guides: Vec<Guide>,
     cursor: Point,
     /// Where and when the last press was, to tell a double click.
@@ -214,6 +217,7 @@ impl CanvasSurface {
             area: AreaGesture::default(),
             points: None,
             text: None,
+            ime_caret: std::cell::Cell::new(None),
             guides: Vec::new(),
             cursor: Point::ZERO,
             last_press: None,
@@ -1876,7 +1880,7 @@ impl CanvasSurface {
         if let Some(text) = &self.text {
             let art = shown.get_or_insert_with(|| (*self.art).clone());
             if let Some(mark) = art.marks.iter_mut().find(|mark| mark.id == text.id) {
-                mark.shape = text.shape.clone();
+                mark.shape = text.shown_shape();
             } else {
                 let layer = text
                     .layer
@@ -1888,7 +1892,7 @@ impl CanvasSurface {
                     layer,
                     order: String::new(),
                     name: String::new(),
-                    shape: text.shape.clone(),
+                    shape: text.shown_shape(),
                     style: crate::model::Style {
                         fill: Some(text.fill.clone()),
                         ..crate::model::Style::default()
@@ -2549,7 +2553,6 @@ impl CanvasSurface {
         let Shape::Text {
             x,
             y,
-            text: words,
             size,
             line_height,
             align,
@@ -2558,6 +2561,10 @@ impl CanvasSurface {
         else {
             return;
         };
+        // The caret and line are found in the text as shown, so a
+        // composition in progress pushes the caret along with it.
+        let words = session.shown_text();
+        let words = words.as_ref();
         let affine = self
             .art
             .mark(&session.id)
@@ -2565,7 +2572,7 @@ impl CanvasSurface {
         let Some(style) = crate::render::text_style(&session.shape) else {
             return;
         };
-        let caret = session.caret.caret().min(words.len());
+        let caret = session.caret.display_caret(session.text()).min(words.len());
         let before = words.get(..caret).unwrap_or_default();
         let row = before.matches('\n').count();
         let line_start = before.rfind('\n').map_or(0, |at| at + 1);
@@ -2603,6 +2610,24 @@ impl CanvasSurface {
             None,
             &caret_line,
         );
+        self.ime_caret
+            .set(Some(ui::vello::kurbo::Shape::bounding_box(&caret_line)));
+        // The composition is underlined until the input method commits it.
+        if let Some(range) = session.caret.preedit_display_range(session.text())
+            && range.start >= line_start
+            && range.end <= line_end
+        {
+            let from = left + measure(text, words.get(line_start..range.start).unwrap_or_default());
+            let to = left + measure(text, words.get(line_start..range.end).unwrap_or_default());
+            let under = top + size * 1.05;
+            scene.stroke(
+                &Stroke::new(1.0),
+                Affine::IDENTITY,
+                accent,
+                None,
+                &Line::new(at * Point::new(from, under), at * Point::new(to, under)),
+            );
+        }
         if let Some(area) = session.shape.text_box() {
             let pad = self.units(4.0);
             let mut frame = ui::vello::kurbo::Shape::to_path(&area.inflate(pad, pad), 0.1);
@@ -2906,9 +2931,9 @@ impl Widget for CanvasSurface {
                 self.zoom_by((1.0 + delta).max(0.1), Some(self.cursor));
                 *ctx.handled = true;
             }
-            WindowEvent::Ime(ui::winit::event::Ime::Commit(typed)) if self.text.is_some() => {
+            WindowEvent::Ime(ime) if self.text.is_some() => {
                 if let Some(session) = &mut self.text {
-                    session.insert(typed);
+                    session.ime(ime);
                 }
                 *ctx.handled = true;
             }
@@ -2948,7 +2973,11 @@ impl Widget for CanvasSurface {
         }
         let view: ViewOp = serde_json::from_slice(request.payload)
             .map_err(|error| format!("not a canvas view: {error}"))?;
-        let output = self.answer(&view, doc)?;
+        // An answer shows every picture: it waits for those still decoding.
+        self.tools.renderer.borrow_mut().pictures.patient = true;
+        let output = self.answer(&view, doc);
+        self.tools.renderer.borrow_mut().pictures.patient = false;
+        let output = output?;
         Ok(Some(ResourceOperationStart::Completed(output)))
     }
 
@@ -3006,11 +3035,19 @@ impl Widget for CanvasSurface {
             .then_some(ui::winit::window::ImePurpose::Normal)
     }
 
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.text
+            .is_some()
+            .then(|| self.ime_caret.get().unwrap_or(self.rect))
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // A slow medium previews the stroke behind the pointer: keep
-        // drawing until it has caught up. A picture being chosen is
-        // waited for.
-        self.wet().is_some() || self.tools.picking.borrow().is_some()
+        // drawing until it has caught up. A picture being chosen, or
+        // decoded, is waited for.
+        self.wet().is_some()
+            || self.tools.picking.borrow().is_some()
+            || self.tools.renderer.borrow().pictures.decoding()
     }
 
     fn cursor_shape(&self, point: Point) -> Option<CursorIcon> {
