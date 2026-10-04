@@ -29,9 +29,7 @@
 use automerge::ROOT;
 use serde::{Deserialize, Serialize};
 
-use tilo_actions::{
-    Action, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, OperationKind, Resource,
-};
+use tilo_actions::{Action, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource};
 use ui::framework::LiveRow;
 // `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource::{self, Effect};
@@ -41,7 +39,7 @@ use crate::model::{CaptureKind, CaptureMode, Facing, PhotoFormat, Resolution, Se
 
 /// Registry `type_id` for every Camera action.
 pub const CAMERA_ACTION_TYPE: &str = "camera.action";
-pub const APPLICATION_LAUNCH_TYPE: &str = "tilo.application.launch";
+pub use ui::tilo_actions::remote::ApplicationLaunch;
 /// Device discovery is external and potentially hostile. Publishing a small,
 /// deterministic prefix keeps resource/search materialization bounded.
 pub const MAX_PUBLISHED_CAMERA_DEVICES: usize = 16;
@@ -382,23 +380,10 @@ pub(crate) const fn capture_destination(is_video: bool) -> (&'static str, &'stat
 /// action here lets the painted handoff, global search, agents,
 /// and history all address the exact same external operation.
 pub fn open_photos_action() -> ActionSpec {
-    ActionSpec::typed_operation(
+    ApplicationLaunch::app("so.tilo.photos").spec(
         "open-photos",
         "Open Photos",
         "Browse your photo library in Photos",
-        OperationKind::Effect,
-        APPLICATION_LAUNCH_TYPE,
-        Vec::new(),
-        |_| {
-            EncodedAction::encode_operation(
-                APPLICATION_LAUNCH_TYPE,
-                &serde_json::json!({ "app_id": "so.tilo.photos" }),
-            )
-            .unwrap_or_else(|_| EncodedAction {
-                type_id: APPLICATION_LAUNCH_TYPE.into(),
-                payload: Vec::new(),
-            })
-        },
     )
 }
 
@@ -429,28 +414,10 @@ pub(crate) fn capture_resource(it: &CaptureItem) -> Resource {
     {
         let (app_id, destination) = capture_destination(it.is_video);
         let label = format!("Open in {destination}");
-        let app_id = app_id.to_owned();
-        let content_hash = content_hash.to_owned();
-        let spec = ActionSpec::typed_operation(
+        let spec = ApplicationLaunch::with_content(app_id, content_hash).spec(
             "open",
             &label,
             "Open the verified portable capture in its owning app",
-            OperationKind::Effect,
-            APPLICATION_LAUNCH_TYPE,
-            Vec::new(),
-            move |_| {
-                EncodedAction::encode_operation(
-                    APPLICATION_LAUNCH_TYPE,
-                    &serde_json::json!({
-                        "app_id": app_id,
-                        "content_hash": content_hash,
-                    }),
-                )
-                .unwrap_or_else(|_| EncodedAction {
-                    type_id: APPLICATION_LAUNCH_TYPE.into(),
-                    payload: Vec::new(),
-                })
-            },
         );
         child = child.with_action(spec);
     }
@@ -788,6 +755,7 @@ mod tests {
     use automerge::AutoCommit;
     use tilo_actions::ActionInput;
     use tilo_actions::ActionRegistry;
+    use ui::tilo_actions::OperationKind;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -944,7 +912,7 @@ mod tests {
                 .expect("capture surface routes browsing to Photos");
             assert_eq!(
                 browse.operation_type.as_deref(),
-                Some(APPLICATION_LAUNCH_TYPE)
+                Some(ApplicationLaunch::TYPE)
             );
             let ActionInput::Immediate(encoded) = &browse.input else {
                 panic!("Photos browse is a zero-argument application handoff");
@@ -968,7 +936,7 @@ mod tests {
                     .expect("capture has its typed open handoff");
                 assert_eq!(
                     action.operation_type.as_deref(),
-                    Some(APPLICATION_LAUNCH_TYPE)
+                    Some(ApplicationLaunch::TYPE)
                 );
                 assert!(
                     !resource.actions.iter().any(|action| {
