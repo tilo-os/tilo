@@ -4840,6 +4840,30 @@ impl crate::widget::controls::ActionControls for TextInput {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let mut bindings = self.field_action_bindings();
+        // The show/hide control changes only this field's own paint: a
+        // process-local view toggle, published through the semantic route.
+        if self.has_reveal_control()
+            && let Some(reveal) = Widget::test_id(&self.reveal)
+        {
+            bindings.push(ControlBindingMetadata::semantic(reveal));
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+        self.reveal.set_enabled(!self.effectively_disabled());
+    }
+}
+
+impl TextInput {
+    /// The binding of the field's own value.
+    fn field_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("text_input");
         if let Some(action) = &self.action {
             vec![action.metadata(control_id)]
@@ -4865,15 +4889,6 @@ impl crate::widget::controls::ActionControls for TextInput {
                 kind: ControlBindingKind::SemanticAction(control_id.to_string()),
             }]
         }
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-        self.reveal.set_enabled(!self.effectively_disabled());
     }
 }
 
