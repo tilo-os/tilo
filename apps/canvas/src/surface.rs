@@ -2135,7 +2135,7 @@ impl CanvasSurface {
                     resources: Vec::new(),
                 });
             };
-            let hash = tilo_content::ContentStore::for_app()
+            let hash = crate::content::store()
                 .put(&picture.bytes)
                 .map_err(|error| format!("the picture could not be stored: {error}"))?;
             let address = tilo_actions::content_resource(&hash)

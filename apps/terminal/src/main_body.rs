@@ -6913,7 +6913,7 @@ impl TerminalWidget {
     /// thread exits when the shell closes the PTY or the widget (hence the
     /// receiver) is dropped.
     fn from_backend(backend: TerminalBackend) -> Self {
-        let mut widget = Self::without_process(ContentStore::for_app());
+        let mut widget = Self::without_process(ContentStore::memory());
         widget.attach_backend(backend);
         widget
     }
@@ -7063,7 +7063,7 @@ impl TerminalWidget {
         if !services.has_ush() {
             return Err(crate::HostedTerminalError::RequiredServiceMissing("ush"));
         }
-        let mut widget = Self::without_process(ContentStore::for_app());
+        let mut widget = Self::without_process(ContentStore::memory());
         widget.sessions = crate::sessions::Sessions::hosted(services);
         Ok(widget)
     }
@@ -7074,7 +7074,7 @@ impl TerminalWidget {
     /// # Errors
     /// Infallible today; kept fallible for hosts that construct it eagerly.
     pub fn spawn_default() -> anyhow::Result<Self> {
-        let mut widget = Self::without_process(ContentStore::for_app());
+        let mut widget = Self::without_process(ContentStore::memory());
         widget.sessions = crate::sessions::Sessions::standalone();
         Ok(widget)
     }
@@ -7109,6 +7109,15 @@ impl TerminalWidget {
     /// This function should not fail under normal circumstances as it uses a null backend.
     pub fn spawn_headless() -> anyhow::Result<Self> {
         Ok(Self::without_process(ContentStore::memory()))
+    }
+
+    /// Keep the pictures programs show in `content`: the store the host
+    /// lends the window, which carries them to the terminal record's other
+    /// readers. A terminal made without it keeps them in memory.
+    #[must_use]
+    pub fn with_content(mut self, content: ContentStore) -> Self {
+        self.content = content;
+        self
     }
 }
 

@@ -520,7 +520,7 @@ fn document_declarations() -> Vec<ActionDecl<ArtworkResource>> {
             let bytes = artwork_bytes(&open.file)?;
             // The file's pictures go in the content store here; the action
             // carries the artwork's JSON alone.
-            let file = crate::document::unpack(&bytes, &tilo_content::ContentStore::for_app())?;
+            let file = crate::document::unpack(&bytes, &crate::content::store())?;
             let file = String::from_utf8_lossy(&file.to_json()).into_owned();
             Ok(CanvasAction::OpenArtwork(OpenArtwork { file }))
         })
@@ -539,7 +539,7 @@ fn artwork_bytes(file: &str) -> Result<Vec<u8>, String> {
         return Ok(trimmed.as_bytes().to_vec());
     }
     if let Some(hash) = ui::tilo_actions::content_hash(trimmed) {
-        return tilo_content::ContentStore::for_app()
+        return crate::content::store()
             .read(hash)
             .ok_or_else(|| format!("no stored content {trimmed}"));
     }
@@ -570,7 +570,7 @@ pub fn read_file(path: &str, limit: usize) -> Result<Vec<u8>, String> {
 /// # Errors
 /// Returns the store's failure.
 pub fn store(bytes: &[u8]) -> Result<String, String> {
-    let hash = tilo_content::ContentStore::for_app()
+    let hash = crate::content::store()
         .put(bytes)
         .map_err(|error| format!("the content could not be stored: {error}"))?;
     ui::tilo_actions::content_resource(&hash).ok_or_else(|| "the content has no address".to_owned())

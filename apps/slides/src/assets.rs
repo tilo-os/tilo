@@ -35,18 +35,10 @@ const MAX_READY_IMAGE_BYTES: usize = 96 * 1024 * 1024;
 const ARRIVING_RETRY: std::time::Duration = std::time::Duration::from_millis(500);
 pub const ASSET_PREFIX: &str = "asset:blake3:";
 
-/// The app's own content store, where pictures placed on slides and the
-/// pictures of imported presentations are kept; an in-memory one under unit
-/// test, so tests never write to the user's data directory.
+/// Where pictures are kept when no host lent the window a store (the
+/// store a host lends carries them on the deck's route): in memory.
 pub fn app_content() -> ContentStore {
-    #[cfg(test)]
-    {
-        ContentStore::memory()
-    }
-    #[cfg(not(test))]
-    {
-        ContentStore::for_app()
-    }
+    ContentStore::memory()
 }
 
 /// A deck carries this content identity, never a machine-local file path.

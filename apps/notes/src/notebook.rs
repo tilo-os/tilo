@@ -406,28 +406,43 @@ pub fn validate_asset_payload(digest: &str, bytes: &[u8]) -> Result<(), String> 
 /// Returns an error when validation fails, the content store refuses the
 /// bytes, or the collaborative asset map cannot be updated.
 pub fn put_asset(doc: &mut AutoCommit, digest: &str, bytes: &[u8]) -> Result<(), String> {
-    put_asset_in(content(), doc, digest, bytes)
+    put_asset_in(&content(), doc, digest, bytes)
 }
 
-/// The content store this process keeps notebook images in: the device
-/// content store when the launcher handed the process one. Notebook actions
-/// write images while they apply, where no app handle reaches them, so the
-/// store is the process's own, created on first use.
-pub fn content() -> &'static tilo_content::ContentStore {
-    static CONTENT: std::sync::OnceLock<tilo_content::ContentStore> = std::sync::OnceLock::new();
-    CONTENT.get_or_init(|| {
-        // A host without native files (a browser page) has no local store for
-        // notebook images; it keeps them in memory, as tests do.
-        let native = matches!(
-            tilo_files::availability(tilo_files::Feature::NativePaths),
-            tilo_files::Availability::Available
-        );
-        if native && !cfg!(test) {
-            tilo_content::ContentStore::for_app()
-        } else {
-            tilo_content::ContentStore::memory()
-        }
-    })
+/// The content store this process keeps notebook images in: the one the
+/// host lends the window (`cx.content()`), joined to the notebook's route,
+/// so an image reaches every device that opens the notebook. Notebook
+/// actions write images while they apply, where no view reaches them, so
+/// the window's store is adopted here ([`adopt_content`]); before a host
+/// lent one (a test, a browser page without a store), images are kept in
+/// memory, and inline in the notebook.
+pub fn content() -> tilo_content::ContentStore {
+    static MEMORY: std::sync::OnceLock<tilo_content::ContentStore> = std::sync::OnceLock::new();
+    content_slot()
+        .read()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .unwrap_or_else(|| {
+            MEMORY
+                .get_or_init(tilo_content::ContentStore::memory)
+                .clone()
+        })
+}
+
+/// Keep notebook images in `store` from now on; `None` leaves the current
+/// one.
+pub fn adopt_content(store: Option<&tilo_content::ContentStore>) {
+    if let Some(store) = store
+        && let Ok(mut slot) = content_slot().write()
+    {
+        *slot = Some(store.clone());
+    }
+}
+
+fn content_slot() -> &'static std::sync::RwLock<Option<tilo_content::ContentStore>> {
+    static SLOT: std::sync::OnceLock<std::sync::RwLock<Option<tilo_content::ContentStore>>> =
+        std::sync::OnceLock::new();
+    SLOT.get_or_init(std::sync::RwLock::default)
 }
 
 /// [`put_asset`] against an explicit store.
@@ -508,7 +523,8 @@ fn write_reference(
 /// # Errors
 /// Returns an error when the notebook asset schema or any payload is invalid.
 pub fn asset_snapshot(doc: &AutoCommit) -> Result<HashMap<String, Vec<u8>>, String> {
-    asset_snapshot_with(doc, |hash| content().read(hash))
+    let content = content();
+    asset_snapshot_with(doc, |hash| content.read(hash))
 }
 
 /// [`asset_snapshot`] reading referenced bytes through `read`.

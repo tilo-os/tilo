@@ -54,6 +54,7 @@ run 'Dev-override features stay out of production images' \
   python3 tools/policy/check_dev_overrides_contract.py
 run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract.py
 run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
+run 'App content store contract' python3 tools/policy/check_app_content_store.py
 run 'Apps and portable SDK crates hold no platform code' \
   python3 tools/policy/check_app_portability.py
 run 'Apps declare the capabilities their code uses' \

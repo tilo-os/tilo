@@ -2,8 +2,8 @@
 //! file, once each, as the bytes they were placed from, and opening it
 //! where they never were shows them.
 //!
-//! The content store is chosen by the environment, so this binary holds
-//! its one test that moves between stores.
+//! Each app opens on a profile of its own, whose content store never had
+//! what another profile kept.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -19,7 +19,7 @@ use canvas::render::Renderer;
 use canvas::resource::Look;
 use canvas::view_ops;
 use serde_json::json;
-use tilo_content::{ContentStore, SHARED_STORE_ENV};
+use tilo_content::ContentStore;
 use ui::prelude::TestApp;
 
 const RED: [u8; 4] = [210, 40, 30, 255];
@@ -71,9 +71,6 @@ fn shows_both(app: &TestApp<App>) {
 
 #[test]
 fn a_saved_artwork_carries_its_pictures_once_and_shows_them_where_they_never_were() {
-    let painted_here = tempfile::tempdir().unwrap();
-    let elsewhere = tempfile::tempdir().unwrap();
-    let launched_elsewhere = tempfile::tempdir().unwrap();
     let files = tempfile::tempdir().unwrap();
     let path = files.path().join("Twice.artwork");
     let picture_path = files.path().join("halves.png");
@@ -81,8 +78,6 @@ fn a_saved_artwork_carries_its_pictures_once_and_shows_them_where_they_never_wer
     std::fs::write(&picture_path, &png).unwrap();
     let hash = tilo_content::hash_bytes(&png);
 
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(SHARED_STORE_ENV, painted_here.path());
     let mut painter = TestApp::<App>::new().unwrap();
     let src = picture_path.display().to_string();
     painter
@@ -134,21 +129,18 @@ fn a_saved_artwork_carries_its_pictures_once_and_shows_them_where_they_never_wer
     drop(painter);
 
     // Another machine: its content store never had the picture.
-    env.set(SHARED_STORE_ENV, elsewhere.path());
-    assert!(!ContentStore::for_app().has(&hash));
     let mut opener = TestApp::<App>::new().unwrap();
+    assert!(!opener.content().has(&hash));
     opener
         .call("open-artwork", json!({"file": path.display().to_string()}))
         .unwrap();
-    assert!(ContentStore::for_app().has(&hash));
+    assert!(opener.content().has(&hash));
     assert_eq!(opener.state().marks.len(), 2);
     shows_both(&opener);
 
     // Opened by a person from Files, in yet another.
-    env.set(SHARED_STORE_ENV, launched_elsewhere.path());
-    assert!(!ContentStore::for_app().has(&hash));
     let launched = TestApp::<App>::launched(&[&path.display().to_string()]).unwrap();
-    assert!(ContentStore::for_app().has(&hash));
+    assert!(launched.content().has(&hash));
     shows_both(&launched);
 }
 

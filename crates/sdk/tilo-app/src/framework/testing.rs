@@ -125,6 +125,13 @@ fn operation(error: impl std::fmt::Display) -> LaunchError {
 }
 
 impl<A: ResourceApp> HeadlessApp<A> {
+    /// The content store the app's profile keeps the bytes its record names
+    /// in: what `cx.content()` reads and writes on this device.
+    #[must_use]
+    pub fn content(&self) -> tilo_content::ContentStore {
+        self.profile.content()
+    }
+
     /// The app as its owner opens it on a fresh private profile.
     ///
     /// # Errors

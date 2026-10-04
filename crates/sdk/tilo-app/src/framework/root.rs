@@ -66,6 +66,10 @@ pub(crate) struct ResourceRoot<R: Resource> {
     effects: Effects<R>,
     /// The app's view: the custom surface itself when the view is one.
     pub(crate) content: Element,
+    /// The store the view keeps the bytes its record names in, where
+    /// `render` keeps its picture.
+    #[allow(dead_code, reason = "read only by render, which is native-only")]
+    store: Option<tilo_content::ContentStore>,
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
     presentation: Vec<tilo_actions::ActionSpec>,
@@ -160,10 +164,12 @@ impl<R: Resource> ResourceRoot<R> {
         alive: Rc<()>,
         content: Element,
     ) -> Self {
+        let store = cx.content();
         Self {
             title,
             icon,
             label,
+            store,
             live: cx.live,
             updaters: cx.updaters,
             followed: std::cell::Cell::new(0),
@@ -482,7 +488,10 @@ impl<R: Resource> ResourceRoot<R> {
         let rgba = offscreen.try_render_resilient(&scene, theme.bg_app)?;
         let png =
             ui_core::png::encode_rgba8(width, height, &rgba).map_err(|error| error.to_string())?;
-        let hash = tilo_content::ContentStore::for_app()
+        let hash = self
+            .store
+            .clone()
+            .unwrap_or_else(tilo_content::ContentStore::memory)
             .put(&png)
             .map_err(|error| format!("the picture could not be stored: {error}"))?;
         let address = tilo_actions::content_resource(&hash)

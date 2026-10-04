@@ -82,7 +82,7 @@ impl ResourceApp for PhotosShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Photos>) -> Element {
-        let content = cx.content().unwrap_or_else(ContentStore::for_app);
+        let content = cx.content().unwrap_or_else(ContentStore::memory);
         let app = if cx.mode().is_live() {
             PhotosApp::new_persistent(content)
                 .launched_on(cx.launch_arguments().first().map(PathBuf::from))

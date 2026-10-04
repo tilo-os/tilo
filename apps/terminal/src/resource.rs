@@ -341,6 +341,10 @@ impl ResourceApp for TerminalShell {
             TerminalWidget::spawn_headless()
         }
         .expect("terminal surface requires an emulator");
+        let widget = match cx.content() {
+            Some(content) => widget.with_content(content),
+            None => widget,
+        };
         cx.surface(widget)
     }
 
