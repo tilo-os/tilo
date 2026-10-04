@@ -47,8 +47,6 @@ mod tests {
             "totp-add-label-account",
             "totp-add-label-secret",
             "totp-add-advanced",
-            "totp-add-show",
-            "totp-add-hide",
             "totp-add-label-algorithm",
             "totp-add-label-digits",
             "totp-add-label-period",

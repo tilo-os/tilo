@@ -37,9 +37,9 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    AppModel, Button, Column, ControlSize, Element, EventCtx, Field, LabelPlacement, ListRow,
-    ModalDialog, ModelPath, Row, Scrollable, Section, SectionHeader, Spacer, TaffyTreeExt, Text,
-    TextInput, TextInputKind, ToggleGroup, Widget,
+    AppModel, Column, ControlSize, Element, EventCtx, Field, LabelPlacement, ListRow, ModalDialog,
+    ModelPath, Row, Scrollable, Section, SectionHeader, Spacer, TaffyTreeExt, Text, TextInput,
+    TextInputKind, ToggleGroup, Widget,
 };
 
 use crate::model::{self, Account, AccountId, Algorithm};
@@ -621,18 +621,9 @@ fn details_section(sheet: &Shared, values: &Values, headed: bool) -> Section {
     }
 }
 
-/// The cryptographic parameters, behind a Show / Hide action in the header.
+/// The cryptographic parameters, behind a disclosure in the group's header.
 fn advanced_section(sheet: &Shared, values: &Values, theme: &Theme, open: bool) -> Section {
-    let toggle = Button::new(
-        "totp-advanced",
-        &t(if open {
-            "totp-add-hide"
-        } else {
-            "totp-add-show"
-        }),
-        None,
-    )
-    .on_click(queued(sheet, Msg::ToggleAdvanced));
+    let mut toggle = queued(sheet, Msg::ToggleAdvanced);
     let mut items: Vec<Element> = Vec::new();
     if open {
         let algorithms: Vec<String> = Algorithm::ALL
@@ -673,7 +664,13 @@ fn advanced_section(sheet: &Shared, values: &Values, theme: &Theme, open: bool) 
             None,
         ));
     }
-    Section::new(items).with_header(SectionHeader::group(t("totp-add-advanced")).action(toggle))
+    let section = Section::new(items).with_header(SectionHeader::group(t("totp-add-advanced")));
+    let section = if open {
+        section.collapsible()
+    } else {
+        section.collapsed()
+    };
+    section.on_toggle(move |_| toggle())
 }
 
 /// How tall the form may be in a window `viewport_h` tall before it scrolls:

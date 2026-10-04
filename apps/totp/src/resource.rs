@@ -134,15 +134,47 @@ impl ResourceApp for TotpShell {
                 Box::new(Spacer::token(SpacingStep::S0))
             }
         });
-        Box::new(
-            NavShell::new()
-                .content(cx.surface(AuthenticatorApp::new().with_account_signal(has_accounts)))
+        let count = cx.local(0usize);
+        Box::new(CountedShell {
+            shell: NavShell::new()
+                .content(
+                    cx.surface(
+                        AuthenticatorApp::new()
+                            .with_account_signal(has_accounts)
+                            .with_count_signal(count.clone()),
+                    ),
+                )
                 .content_header("Accounts", vec![search, add]),
-        )
+            count,
+        })
     }
 
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
+    }
+}
+
+/// The navigation shell whose header says how many accounts the vault holds.
+struct CountedShell {
+    shell: NavShell,
+    count: ui::LocalState<usize>,
+}
+
+impl ui::widget::Decorator for CountedShell {
+    type Inner = NavShell;
+
+    fn inner(&self) -> &NavShell {
+        &self.shell
+    }
+
+    fn inner_mut(&mut self) -> &mut NavShell {
+        &mut self.shell
+    }
+
+    fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        let count = self.count.get();
+        self.shell.set_content_count((count > 0).then_some(count));
+        ui::widget::Widget::update(&mut self.shell, state, path)
     }
 }
 
