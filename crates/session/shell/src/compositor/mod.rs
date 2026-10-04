@@ -80,6 +80,8 @@ pub mod screen_dim;
 pub mod selection;
 pub mod session_env;
 #[cfg(target_os = "linux")]
+pub mod shell_text_input;
+#[cfg(target_os = "linux")]
 pub mod shortcut_inhibit;
 #[cfg(target_os = "linux")]
 pub mod state;
@@ -94,7 +96,6 @@ pub mod tablet;
 pub mod tablet_pad;
 #[cfg(target_os = "linux")]
 pub mod test_control;
-#[cfg(target_os = "linux")]
 pub mod text_commit;
 #[cfg(target_os = "linux")]
 pub mod toplevel_icon;

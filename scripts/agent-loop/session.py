@@ -14,7 +14,7 @@ only sets up and tears down what is around it:
               connection survives each restart.
   mcp APP     the MCP endpoint for that session on stdio: what an agent
               (`.cursor/mcp.json`, Claude Code, a model harness) runs.
-  status APP  whether the session is up, and its paths.
+  status APP  whether the session is up, its paths and its files folder.
   usage APP   what each MCP connection of the session cost: calls, bytes
               and estimated tokens of what the agent read, time (see
               usage.py for how tokens are estimated).
@@ -22,6 +22,12 @@ only sets up and tears down what is around it:
               `history`, `inspect` and `look` actions, where it publishes
               them), and what it cost, written to target/agent-runs/APP-TIME.
   stop APP    stop the session and remove its runtime directory.
+
+The app's own file choosers (Open, Add picture, Export...) show
+target/agent-loop/APP/files: put files there for the app to open, and find
+there what it saves. `start` has the session's workspace grant the app read
+and write on that folder, as the workspace's owner grants an app a folder in
+its Permissions, so the chooser the shell draws offers it and nothing else.
 
 Everything lives under target/agent-loop/APP (state, logs) and a private
 directory in $XDG_RUNTIME_DIR (sockets, the runtime profile). Your real home,
@@ -38,10 +44,12 @@ import os
 import pathlib
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
 import time
+import tomllib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import usage as cost  # noqa: E402
@@ -72,6 +80,8 @@ class Session:
         self.run = runtime_root() / name
         self.profile = self.run / "p"
         self.state_file = self.root / "session.json"
+        # The folder the app's file choosers offer.
+        self.files = self.root / "files"
 
     def env(self) -> dict:
         """The environment every process of the session runs in."""
@@ -127,6 +137,7 @@ class Session:
 def prepare(session: Session) -> None:
     for sub in ("home", "config", "data", "state", "cache", "identity", "system/fs-cache", "system/peer-cache", "logs"):
         (session.root / sub).mkdir(parents=True, exist_ok=True, mode=0o700)
+    session.files.mkdir(parents=True, exist_ok=True)
     for path in (session.run, session.run / "system"):
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(path, 0o700)
@@ -194,6 +205,9 @@ def start(args) -> int:
     display_file = session.run / "tilo-session" / "wayland-display"
     wait_for(display_file, compositor, args.timeout, "the compositor")
     env["WAYLAND_DISPLAY"] = display_file.read_text().strip()
+    # The workspace in front, which the app joins, is up once its room is.
+    wait_for(display_file.with_name("workspace-id"), compositor, args.timeout, "the compositor")
+    grant_files(session, app_dir)
     # The app sees the desktop a Tilo login gives its apps, so it leaves
     # History and its title to the shell's chrome as it does there, rather
     # than drawing a standalone window's bar. The compositor is not told:
@@ -229,6 +243,7 @@ def start(args) -> int:
     print(f"READY {session.name}: display {env['WAYLAND_DISPLAY']}, profile {session.profile}")
     print(f"  app log      {logs / 'app.log'}")
     print(f"  MCP endpoint {pathlib.Path(__file__).resolve()} mcp {session.name}")
+    print(f"  files        {session.files} (what the app's file choosers show)")
     if args.foreground:
         try:
             dev.wait()
@@ -237,6 +252,37 @@ def start(args) -> int:
         finally:
             stop_session(session)
     return 0
+
+
+def grant_files(session: Session, app_dir: pathlib.Path) -> None:
+    """Have the workspace in front grant the app read and write on the
+    session's files folder: the shell records it as its owner granting it,
+    as the Permissions of a workspace do, and the app's choosers then offer
+    that folder."""
+    with open(app_dir / "tilo-app.toml", "rb") as manifest:
+        app_id = tomllib.load(manifest)["package"]["id"]
+    request = {
+        "op": "grant",
+        "subject": f"app:{app_id}",
+        "scope": f"fs:{session.files.resolve()}",
+        "verb": "write",
+        "id": "agent-loop-files",
+    }
+    try:
+        with socket.socket(socket.AF_UNIX) as control:
+            control.settimeout(30)
+            control.connect(str(session.run / "control.sock"))
+            control.sendall(json.dumps(request).encode() + b"\n")
+            answer = control.makefile().readline()
+    except OSError as error:
+        answer = str(error)
+    try:
+        granted = "granted" in json.loads(answer).get("answer", {})
+    except (ValueError, AttributeError):
+        granted = False
+    if not granted:
+        # The session still runs; only the app's choosers have nothing to offer.
+        print(f"WARN: the workspace did not grant {app_id} its files folder: {answer}")
 
 
 def profile_owners(session: Session) -> list:
@@ -306,7 +352,7 @@ def status(args) -> int:
     session = Session(app_name(args.app))
     state = session.load()
     up = session.alive(state.get("compositor")) and session.alive(state.get("dev"))
-    print(json.dumps({"running": up, **state}, indent=2))
+    print(json.dumps({"running": up, **state, "files": str(session.files)}, indent=2))
     return 0 if up else 1
 
 

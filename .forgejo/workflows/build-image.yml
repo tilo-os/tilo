@@ -2810,6 +2810,16 @@ jobs:
           ./os/dev/vm.sh keys tab
           ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh described "Paragraph block 2" "Level 2" --state /tmp/notes-nesting'
 
+          # A screenshot copied elsewhere pastes into a note as an image with
+          # Ctrl+V, kept by the document media service the launcher must reach.
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-image'
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh copy-image
+          # The copy reaches Notes as a selection event; give it a moment to
+          # read the image before pasting.
+          sleep 2
+          ./os/dev/vm.sh keys ctrl-v
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh present Notes "Pasted image" --state /tmp/notes-image'
+
           # Keyboards and mice plugged in after login must reach the running
           # compositor: a USB keyboard hot-added on QEMU's own bus, then a
           # virtual keyboard plugged and unplugged repeatedly, every time

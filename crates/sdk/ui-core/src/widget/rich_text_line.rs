@@ -905,6 +905,12 @@ impl Default for RichTextLine {
 }
 
 impl Widget for RichTextLine {
+    /// The inner field's timers (a settling squiggle, a suggestion for the
+    /// word under the caret) must wake the host; the field is not a child.
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        self.inner.next_wake_deadline()
+    }
+
     fn layout_needs_measure(&self) -> bool {
         (self.wrap && self.dirty.styled_layout) || self.inner.layout_needs_measure()
     }
