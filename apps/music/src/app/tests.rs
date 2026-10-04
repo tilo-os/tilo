@@ -3996,7 +3996,7 @@ fn queue_view_and_volume_controls_are_responsive() {
             (cols.actions_x - album_x1 - gap).abs() < 0.5,
             "the actions follow the album"
         );
-        assert!(cols.duration_x1 <= right);
+        assert!(cols.actions_x < right);
 
         // Too narrow for two readable columns: the title keeps the width.
         let narrow = render::track_columns(0.0, 420.0, widths, true);
