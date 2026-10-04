@@ -43,7 +43,8 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::dispatcher::dispatcher_or_real;
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, caption, card, card_with_action, choice_row, rows, setting_row, value_row,
+    El, caption, card, card_with_action, choice_row, error_caption, error_row, rows, setting_row,
+    value_row,
 };
 
 fn connectivity_shown(state: ConnectivityState) -> String {
@@ -260,7 +261,7 @@ pub struct VpnInfo {
 }
 
 /// VPN-list provider — prod shells out to `nmcli`, tests supply a closure.
-type VpnLister = Arc<dyn Fn() -> Vec<VpnInfo> + Send + Sync>;
+type VpnLister = Arc<dyn Fn() -> Result<Vec<VpnInfo>, String> + Send + Sync>;
 type ToolOpener = Arc<dyn Fn(ToolIntent) -> Result<(), String> + Send + Sync>;
 
 #[derive(Debug)]
@@ -334,52 +335,57 @@ fn initial_secret_buffers() -> HashMap<String, Arc<Mutex<String>>> {
 
 /// Read the configured VPN connections from `NetworkManager`. Two `nmcli`
 /// calls: every connection (to find the VPN/WireGuard ones) and the active
-/// set (to mark which are up). Best-effort — an empty vec when `nmcli` is
-/// missing.
-fn read_vpn_connections() -> Vec<VpnInfo> {
-    os_actions::list_vpn_connections()
-        .unwrap_or_default()
+/// set (to mark which are up).
+fn read_vpn_connections() -> Result<Vec<VpnInfo>, String> {
+    Ok(os_actions::list_vpn_connections()?
         .into_iter()
         .map(|v| VpnInfo {
             name: v.name,
             active: v.active,
         })
-        .collect()
+        .collect())
 }
 
+/// One part of a snapshot: `None` when it was not read (the pane keeps what
+/// it has), otherwise the value or why it could not be read.
+type Part<T> = Option<Result<T, String>>;
+
 /// Everything the pane shows from `NetworkManager`, read in one pass on the
-/// app runtime's blocking pool. `None` means the value was not read and the
-/// pane keeps what it has.
+/// app runtime's blocking pool. Each part keeps its own failure, so one
+/// unreadable value is shown as unreadable instead of as a device state.
 struct NetworkSnapshot {
     networks: Result<Vec<WifiNetworkInfo>, String>,
     /// Read only for the first snapshot, which seeds the pane's controls.
-    wifi_enabled: Option<bool>,
+    wifi_enabled: Part<bool>,
     /// Read only for the first snapshot.
-    sims: Option<Vec<os_actions::SimInfo>>,
-    wired: Option<WiredInfo>,
-    radios: Option<os_actions::RadioState>,
-    connectivity: Option<ConnectivityState>,
-    profiles: Option<Vec<SavedNetworkProfile>>,
+    sims: Part<Vec<os_actions::SimInfo>>,
+    wired: Part<WiredInfo>,
+    radios: Part<os_actions::RadioState>,
+    connectivity: Part<ConnectivityState>,
+    profiles: Part<Vec<SavedNetworkProfile>>,
     profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
-    hotspot_clients: Option<Vec<os_actions::HotspotClient>>,
-    vpns: Option<Vec<VpnInfo>>,
+    hotspot_clients: Part<Vec<os_actions::HotspotClient>>,
+    vpns: Part<Vec<VpnInfo>>,
 }
 
 impl NetworkSnapshot {
     /// Query `NetworkManager`. Every call here may block on `nmcli` or the
     /// system bus, so this never runs on the UI thread.
     fn read(lister: &NetworkLister, vpn_lister: &VpnLister, initial: bool) -> Self {
-        let profiles = os_actions::list_saved_network_profiles().unwrap_or_default();
+        let profiles = os_actions::list_saved_network_profiles();
         Self {
             networks: lister(),
-            wifi_enabled: initial.then(|| os_actions::get_wifi().unwrap_or(true)),
-            sims: initial.then(|| os_actions::list_mobile_sims().unwrap_or_default()),
-            wired: os_actions::get_wired().ok(),
-            radios: os_actions::get_radio_state().ok(),
-            connectivity: Some(os_actions::get_connectivity().unwrap_or_default()),
-            profile_settings: load_profile_settings(&profiles),
+            wifi_enabled: initial.then(os_actions::get_wifi),
+            sims: initial.then(os_actions::list_mobile_sims),
+            wired: Some(os_actions::get_wired()),
+            radios: Some(os_actions::get_radio_state()),
+            connectivity: Some(os_actions::get_connectivity()),
+            profile_settings: profiles
+                .as_deref()
+                .map(load_profile_settings)
+                .unwrap_or_default(),
             profiles: Some(profiles),
-            hotspot_clients: Some(os_actions::list_hotspot_clients().unwrap_or_default()),
+            hotspot_clients: Some(os_actions::list_hotspot_clients()),
             vpns: Some(vpn_lister()),
         }
     }
@@ -397,6 +403,37 @@ impl NetworkSnapshot {
             profile_settings: HashMap::new(),
             hotspot_clients: None,
             vpns: None,
+        }
+    }
+}
+
+/// The parts of the last snapshot that could not be read, each with the
+/// reason. A part listed here is shown as unreadable, never as a state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct NetworkReadErrors {
+    networks: Option<String>,
+    wifi_enabled: Option<String>,
+    sims: Option<String>,
+    wired: Option<String>,
+    radios: Option<String>,
+    connectivity: Option<String>,
+    profiles: Option<String>,
+    hotspot_clients: Option<String>,
+    vpns: Option<String>,
+}
+
+/// Keep `value` on success and record why it failed otherwise. `None` (the
+/// part was not read this time) leaves both as they were.
+fn adopt<T>(part: Part<T>, error: &mut Option<String>) -> Option<T> {
+    match part? {
+        Ok(value) => {
+            *error = None;
+            Some(value)
+        }
+        Err(reason) => {
+            warn!(target: "tilo::settings", %reason, "network read failed");
+            *error = Some(reason);
+            None
         }
     }
 }
@@ -610,6 +647,8 @@ pub struct NetworkPane {
     hotspot_band: String,
     hotspot_qr_visible: bool,
     hotspot_clients: Vec<os_actions::HotspotClient>,
+    /// Why each part of the last snapshot could not be read.
+    read_errors: NetworkReadErrors,
     /// Passwords never enter the Settings CRDT. Each expanded row gets a
     /// process-local buffer which is zeroed immediately after dispatch.
     secret_buffers: HashMap<String, Arc<Mutex<String>>>,
@@ -673,7 +712,7 @@ impl NetworkPane {
         Self::from_parts(
             dispatcher,
             Arc::new(move || Ok(snapshot.clone())),
-            Arc::new(Vec::<VpnInfo>::new),
+            Arc::new(|| Ok(Vec::new())),
             Arc::new(EmptyWifiContinuityClient),
             initial_wifi_enabled,
             networks,
@@ -687,7 +726,7 @@ impl NetworkPane {
         let mut pane = Self::from_parts(
             dispatcher_or_real(None),
             Arc::new(move || Ok(snapshot.clone())),
-            Arc::new(Vec::<VpnInfo>::new),
+            Arc::new(|| Ok(Vec::new())),
             Arc::new(ProductionWifiContinuityClient),
             true,
             networks,
@@ -750,6 +789,7 @@ impl NetworkPane {
             hotspot_band: "Automatic".into(),
             hotspot_qr_visible: false,
             hotspot_clients: Vec::new(),
+            read_errors: NetworkReadErrors::default(),
             secret_buffers: initial_secret_buffers(),
             expanded_ssid: None,
             structure_dirty: false,
@@ -800,10 +840,14 @@ impl NetworkPane {
         let outcome = match snapshot.networks {
             Ok(networks) => {
                 self.networks = networks;
+                self.read_errors.networks = None;
                 Ok(t("net-notice-refreshed"))
             }
             Err(error) => {
                 warn!(target: "tilo::settings", op = "list_wifi_networks", %error, "network scan failed");
+                // The last list is no longer what the radio sees.
+                self.networks.clear();
+                self.read_errors.networks = Some(error.clone());
                 Err(t_args("net-notice-refresh-err", &[("error", error.into())]))
             }
         };
@@ -816,20 +860,27 @@ impl NetworkPane {
             self.structure_dirty = true;
             return;
         }
-        if let Some(enabled) = snapshot.wifi_enabled {
+        let errors = &mut self.read_errors;
+        if let Some(enabled) = adopt(snapshot.wifi_enabled, &mut errors.wifi_enabled) {
             self.initial_wifi_enabled = enabled;
             self.last_wifi_enabled = enabled;
         }
-        if let Some(sims) = snapshot.sims {
+        if let Some(sims) = adopt(snapshot.sims, &mut errors.sims) {
             self.sims = sims;
         }
-        if let Some(wired) = snapshot.wired {
+        let wired = adopt(snapshot.wired, &mut errors.wired);
+        let radios = adopt(snapshot.radios, &mut errors.radios);
+        let connectivity = adopt(snapshot.connectivity, &mut errors.connectivity);
+        let hotspot_clients = adopt(snapshot.hotspot_clients, &mut errors.hotspot_clients);
+        let profiles = adopt(snapshot.profiles, &mut errors.profiles);
+        let vpns = adopt(snapshot.vpns, &mut errors.vpns);
+        if let Some(wired) = wired {
             self.wired = wired;
             if !initial {
                 let _ = state.put(root, WIRED_ENABLED_KEY, self.wired.connected);
             }
         }
-        if let Some(radios) = snapshot.radios {
+        if let Some(radios) = radios {
             self.radios = radios;
             if !initial {
                 for (key, value) in [
@@ -841,18 +892,18 @@ impl NetworkPane {
                 }
             }
         }
-        if let Some(connectivity) = snapshot.connectivity {
+        if let Some(connectivity) = connectivity {
             self.connectivity = connectivity;
         }
-        if let Some(clients) = snapshot.hotspot_clients {
+        if let Some(clients) = hotspot_clients {
             self.hotspot_clients = clients;
         }
-        if let Some(profiles) = snapshot.profiles {
+        if let Some(profiles) = profiles {
             self.profiles = profiles;
             self.profile_settings = snapshot.profile_settings;
             self.select_available_profiles();
         }
-        if let Some(vpns) = snapshot.vpns {
+        if let Some(vpns) = vpns {
             self.vpns = vpns;
             if !initial {
                 for vpn in &self.vpns {
@@ -1153,7 +1204,7 @@ impl NetworkPane {
     #[must_use]
     pub fn with_vpns(mut self, vpns: Vec<VpnInfo>) -> Self {
         let snapshot = vpns.clone();
-        self.vpn_lister = Arc::new(move || snapshot.clone());
+        self.vpn_lister = Arc::new(move || Ok(snapshot.clone()));
         self.vpns = vpns;
         self
     }
@@ -1277,6 +1328,12 @@ impl NetworkPane {
     /// Rows for the VPN card use the same `NetworkManager` profiles and
     /// action boundary as quick settings.
     fn vpn_rows(&self) -> Vec<El> {
+        if let Some(error) = &self.read_errors.vpns {
+            return vec![error_caption(&t_args(
+                "net-vpn-error",
+                &[("error", error.as_str().into())],
+            ))];
+        }
         if self.vpns.is_empty() {
             return vec![
                 caption(&t("net-vpn-empty")),
@@ -1334,6 +1391,20 @@ impl NetworkPane {
         &self.networks
     }
 
+    /// Why the Wi-Fi status cannot be told, when it cannot: the radio or the
+    /// network list could not be read.
+    fn wifi_status_error(&self) -> Option<String> {
+        let error = self
+            .read_errors
+            .wifi_enabled
+            .as_ref()
+            .or(self.read_errors.networks.as_ref())?;
+        Some(t_args(
+            "net-status-error",
+            &[("error", error.as_str().into())],
+        ))
+    }
+
     fn connection_status_text(&self) -> String {
         if !self.last_wifi_enabled {
             return t("net-wifi-off");
@@ -1360,7 +1431,7 @@ impl NetworkPane {
             self.profile_card(),
             card(&t("net-diag-title"), rows(self.diagnostic_rows())),
             card(&t("net-vpn"), rows(self.vpn_rows())),
-            Self::airplane_card(),
+            self.airplane_card(),
             self.hotspot_card(),
         ];
         if self.radios.wwan_available {
@@ -1377,9 +1448,18 @@ impl NetworkPane {
     /// state, plus a sign-in shortcut when a portal is blocking the route.
     fn internet_access_card(&self) -> El {
         let connectivity = t("net-connectivity");
-        let connectivity_value = connectivity_shown(self.connectivity);
+        let connectivity_row = match &self.read_errors.connectivity {
+            Some(error) => error_row(
+                &connectivity,
+                &t_args(
+                    "net-connectivity-error",
+                    &[("error", error.as_str().into())],
+                ),
+            ),
+            None => value_row(&connectivity, &connectivity_shown(self.connectivity)),
+        };
         let mut content = vec![
-            value_row(&connectivity, &connectivity_value),
+            connectivity_row,
             caption(&t(if self.connectivity == ConnectivityState::Portal {
                 "net-portal-caption"
             } else {
@@ -1409,15 +1489,20 @@ impl NetworkPane {
         let wifi_toggle =
             Toggle::new("settings.network.wifi", WIFI_ENABLED_KEY).with_id("network.wifi");
         let wifi_toggle = match crate::actions::network_bool_binding("wifi") {
-            Some(binding) => wifi_toggle.on_action(binding),
-            None => wifi_toggle.with_enabled(false),
+            // An unread radio state is not offered as a switch position.
+            Some(binding) if self.read_errors.wifi_enabled.is_none() => {
+                wifi_toggle.on_action(binding)
+            }
+            _ => wifi_toggle.with_enabled(false),
         };
         let wifi_toggle: El = Box::new(wifi_toggle);
 
         let mut wifi_rows: Vec<El> = Vec::new();
         let status_label = t("net-status");
-        let status_value = self.connection_status_text();
-        wifi_rows.push(value_row(&status_label, &status_value));
+        match self.wifi_status_error() {
+            Some(error) => wifi_rows.push(error_row(&status_label, &error)),
+            None => wifi_rows.push(value_row(&status_label, &self.connection_status_text())),
+        }
         if let Some(notice) = &self.connection_notice {
             wifi_rows.push(caption(notice));
         }
@@ -1455,6 +1540,15 @@ impl NetworkPane {
     /// Wired card (real nmcli snapshot). `NetworkManager` applies the switch
     /// to this interface only; Wi-Fi and VPN stay untouched.
     fn wired_card(&self) -> El {
+        if let Some(error) = &self.read_errors.wired {
+            return card(
+                &t("net-wired"),
+                rows(vec![error_caption(&t_args(
+                    "net-wired-error",
+                    &[("error", error.as_str().into())],
+                ))]),
+            );
+        }
         if self.wired.device.is_some() {
             card_with_action(
                 &t("net-wired"),
@@ -1469,12 +1563,40 @@ impl NetworkPane {
         }
     }
 
-    fn airplane_card() -> El {
+    fn airplane_card(&self) -> El {
+        let mut content = Vec::new();
+        if let Some(error) = &self.read_errors.radios {
+            content.push(error_caption(&t_args(
+                "net-radios-error",
+                &[("error", error.as_str().into())],
+            )));
+        }
+        content.push(caption(&t("net-airplane-caption")));
         card_with_action(
             &t("net-airplane"),
-            Box::new(Toggle::new("settings.network.airplane", AIRPLANE_KEY)),
-            rows(vec![caption(&t("net-airplane-caption"))]),
+            Box::new(
+                Toggle::new("settings.network.airplane", AIRPLANE_KEY)
+                    .with_enabled(self.read_errors.radios.is_none()),
+            ),
+            rows(content),
         )
+    }
+
+    /// The hotspot's on/off state, or why the radios could not be read.
+    fn hotspot_status_row(&self) -> El {
+        let status = t("net-status");
+        if let Some(error) = &self.read_errors.radios {
+            return error_row(
+                &status,
+                &t_args("net-radios-error", &[("error", error.as_str().into())]),
+            );
+        }
+        let value = if self.radios.hotspot_active {
+            t("net-hotspot-active")
+        } else {
+            t("net-hotspot-off")
+        };
+        value_row(&status, &value)
     }
 
     /// Rows for the hotspot card: SSID/password/band configuration, the
@@ -1487,15 +1609,7 @@ impl NetworkPane {
             .map(|value| value.clone())
             .unwrap_or_default();
         let mut hotspot_rows: Vec<El> = vec![
-            {
-                let status = t("net-status");
-                let value = if self.radios.hotspot_active {
-                    t("net-hotspot-active")
-                } else {
-                    t("net-hotspot-off")
-                };
-                value_row(&status, &value)
-            },
+            self.hotspot_status_row(),
             Box::new(
                 TextInput::new(Vec::new())
                     .with_id("network.hotspot.ssid")
@@ -1556,7 +1670,14 @@ impl NetworkPane {
                 hotspot_rows.push(caption(&t("net-qr-caption")));
             }
         }
-        if self.radios.hotspot_active {
+        if let Some(error) = &self.read_errors.hotspot_clients
+            && self.radios.hotspot_active
+        {
+            hotspot_rows.push(error_caption(&t_args(
+                "net-hotspot-clients-error",
+                &[("error", error.as_str().into())],
+            )));
+        } else if self.radios.hotspot_active {
             let clients = t("net-hotspot-clients");
             hotspot_rows.push(value_row(&clients, &self.hotspot_clients.len().to_string()));
             for client in &self.hotspot_clients {
@@ -1593,7 +1714,13 @@ impl NetworkPane {
                 )
                 .content_sized(),
             ),
-            rows(self.profile_rows()),
+            rows(match &self.read_errors.profiles {
+                Some(error) => vec![error_caption(&t_args(
+                    "net-profiles-error",
+                    &[("error", error.as_str().into())],
+                ))],
+                None => self.profile_rows(),
+            }),
         )
     }
 
@@ -1787,7 +1914,14 @@ impl NetworkPane {
     }
 
     fn mobile_rows(&self) -> Vec<El> {
-        let mut rows = vec![
+        let mut rows = Vec::new();
+        if let Some(error) = &self.read_errors.sims {
+            rows.push(error_caption(&t_args(
+                "net-sims-error",
+                &[("error", error.as_str().into())],
+            )));
+        }
+        let form: Vec<El> = vec![
             caption(&t("net-mobile-caption")),
             Box::new(
                 TextInput::new(Vec::new())
@@ -1812,6 +1946,7 @@ impl NetworkPane {
             ),
             caption(&t("net-sim-pin-caption")),
         ];
+        rows.extend(form);
         if let Some(first_sim) = self.sims.first() {
             rows.push(choice_row(
                 &t("net-sim"),
@@ -3452,6 +3587,87 @@ mod tests {
         }
     }
 
+    /// A sandbox or host that answers no `NetworkManager` query: every part
+    /// fails, each with its reason.
+    fn unreadable_snapshot(reason: &str) -> NetworkSnapshot {
+        fn failed<T>(reason: &str) -> Result<T, String> {
+            Err(reason.to_string())
+        }
+        NetworkSnapshot {
+            networks: failed(reason),
+            wifi_enabled: Some(failed(reason)),
+            sims: Some(failed(reason)),
+            wired: Some(failed(reason)),
+            radios: Some(failed(reason)),
+            connectivity: Some(failed(reason)),
+            profiles: Some(failed(reason)),
+            profile_settings: HashMap::new(),
+            hotspot_clients: Some(failed(reason)),
+            vpns: Some(failed(reason)),
+        }
+    }
+
+    /// A status the pane could not read is shown as that failure: the Wi-Fi
+    /// row never says "Not connected", connectivity never "not checked", and
+    /// the wired card never claims an unplugged cable. A later successful
+    /// read clears the failure.
+    #[test]
+    fn unreadable_network_state_is_shown_as_an_error_not_as_a_state() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = NetworkPane::with_dispatcher(
+            rec as Arc<dyn Dispatcher + Send + Sync>,
+            true,
+            sample_networks(),
+        );
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.apply_snapshot(&mut doc, &root, unreadable_snapshot("nmcli not installed"));
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        let says = |needle: &str| text.iter().any(|line| line.contains(needle));
+        assert!(
+            says("Can't read network status: nmcli not installed"),
+            "{text:#?}"
+        );
+        assert!(
+            says("Can't check connectivity: nmcli not installed"),
+            "{text:#?}"
+        );
+        assert!(
+            says("Can't read the wired connection: nmcli not installed"),
+            "{text:#?}"
+        );
+        for false_state in [
+            t("net-not-connected"),
+            t("net-connectivity-unknown"),
+            t("net-wired-empty"),
+            t("net-vpn-empty"),
+            t("net-no-saved-wifi"),
+        ] {
+            assert!(!says(&false_state), "shows {false_state:?}: {text:#?}");
+        }
+        assert!(
+            pane.networks().is_empty(),
+            "an unreadable scan keeps no stale list"
+        );
+
+        let mut recovered = unreadable_snapshot("unused");
+        recovered.networks = Ok(sample_networks());
+        recovered.wifi_enabled = Some(Ok(true));
+        recovered.connectivity = Some(Ok(ConnectivityState::Full));
+        pane.apply_snapshot(&mut doc, &root, recovered);
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        assert!(
+            text.iter().any(|line| line == "Connected to Home_Network"),
+            "{text:#?}"
+        );
+        assert!(
+            !text
+                .iter()
+                .any(|line| line.contains("Can't read network status")),
+            "{text:#?}"
+        );
+    }
+
     /// MDI signal glyphs, one row per network, refresh and the first snapshot via the wake.
     #[test]
     #[expect(
@@ -3559,7 +3775,7 @@ mod tests {
                         let _ = gate.lock().unwrap().recv();
                         Ok(sample_networks())
                     }),
-                    Arc::new(Vec::<VpnInfo>::new),
+                    Arc::new(|| Ok(Vec::new())),
                     Arc::new(EmptyWifiContinuityClient),
                     true,
                     Vec::new(),

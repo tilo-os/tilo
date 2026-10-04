@@ -3931,7 +3931,8 @@ impl ShellOverlayHost {
     }
 
     /// Shell chrome on screen that holds a secret: the administrator
-    /// authentication and network-secrets sheets, the quick-settings pane
+    /// authentication and network-secrets sheets, a shortcut step that asks
+    /// for a secret answer, the quick-settings pane
     /// while it asks for a Wi-Fi passphrase, the display sheet while it asks
     /// for an `AirPlay` PIN or password, a Bluetooth pairing dialog, and the
     /// setup steps that restore or back up the identity (passphrases and a
@@ -3947,13 +3948,8 @@ impl ShellOverlayHost {
         {
             rects.push(rect);
         }
-        if self.portal_dialogs.view().is_some_and(|view| {
-            matches!(
-                view,
-                crate::shell::portal_dialog::DialogView::Authentication { .. }
-                    | crate::shell::portal_dialog::DialogView::NetworkSecrets { .. }
-            )
-        }) && let Some(layout) = self.portal_dialogs.layout(self.rect)
+        if self.portal_dialogs.holds_secret()
+            && let Some(layout) = self.portal_dialogs.layout(self.rect)
         {
             rects.push(layout.sheet);
         }
@@ -5498,6 +5494,7 @@ impl ShellOverlayHost {
                         display_name = %event.display_name,
                         "session helper exited without a window the user asked to open"
                     );
+                    crate::shell::launcher::restart_session_helper(&event.package_id);
                     continue;
                 }
                 LaunchEventKind::Failed { .. } | LaunchEventKind::SpawnFailed { .. } => {}

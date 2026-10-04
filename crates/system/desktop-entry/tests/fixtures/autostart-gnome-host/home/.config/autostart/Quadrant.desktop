@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Quadrant
+Comment=Quadrantstartup script
+Exec=/app/bin/quadrant_next --autostart
+StartupNotify=false
+Terminal=false
