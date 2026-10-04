@@ -158,14 +158,6 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
     }
 }
 
-fn float_label(floating: bool) -> &'static str {
-    if floating {
-        "Stop floating"
-    } else {
-        "Keep floating"
-    }
-}
-
 fn millis(duration: std::time::Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
@@ -225,12 +217,9 @@ fn live_rows(shown: &Shown) -> Vec<LiveRow> {
                 badge: floating.then(|| "Floating".into()),
                 preview: None,
             })
-            .operation(
-                ClocksEffect::FloatStopwatch {
-                    floating: !floating,
-                }
-                .bound("set-floating", float_label(floating)),
-            ),
+            .effect(&ClocksEffect::FloatStopwatch {
+                floating: !floating,
+            }),
     );
     rows
 }
@@ -259,13 +248,10 @@ fn timer_row(
         badge: floating.then(|| "Floating".into()),
         preview: None,
     })
-    .operation(
-        ClocksEffect::FloatTimer {
-            timer: id.as_str().to_owned(),
-            floating: !floating,
-        }
-        .bound("set-floating", float_label(floating)),
-    )
+    .effect(&ClocksEffect::FloatTimer {
+        timer: id.as_str().to_owned(),
+        floating: !floating,
+    })
 }
 
 #[cfg(test)]
