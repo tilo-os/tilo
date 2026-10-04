@@ -4,7 +4,7 @@
 //! `app_root()` is the single integration point used by both the live
 //! event loop and the `--shots` offscreen renderer. Everything else —
 //! data model, vCard interop, the Automerge document layer, and the
-//! master/detail widget — lives in the modules below so each layer is
+//! window's widgets — lives in the modules below so each layer is
 //! testable in isolation.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
@@ -34,14 +34,15 @@
 pub mod actions;
 pub mod app;
 pub mod date;
+mod detail;
 pub mod doc;
-mod export_dialog;
+mod form;
 pub mod model;
 mod priority_contacts;
 pub mod resource;
-pub mod responsive;
 pub mod search_provider;
 pub mod vcard;
+mod view;
 
 pub use app::ContactsApp;
 
