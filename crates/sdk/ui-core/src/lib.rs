@@ -455,8 +455,8 @@ pub use gesture::{DragSelect, Granularity};
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use status_bubble::StatusBubble;
 pub use text_edit::{
-    CaretWord, CharFilter, CharSplice, Edit, EditCore, Motion, SUGGESTION_SETTLE, TYPING_RUN_IDLE,
-    TypingRun, delete_last_grapheme, word_at_caret,
+    CaretWord, CharFilter, CharSplice, Edit, EditCore, Motion, SUGGESTION_SETTLE, TypingRun,
+    delete_last_grapheme, word_at_caret,
 };
 pub use text_render::{
     FontChoice, FontVariation, Fragmentation, GlyphOutline, HangingPunctuation, Hyphenation,
