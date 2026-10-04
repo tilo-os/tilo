@@ -2854,6 +2854,13 @@ impl WordProcessorWidget {
         self.stage_replacement(PendingReplacement::Template(crate::Template::Report));
     }
 
+    /// Offer `markdown` for recovery the way a crash leaves it, for review
+    /// shots.
+    pub fn stage_recovery_for_shot(&mut self, markdown: &str) {
+        self.recovery.stage(markdown.as_bytes().to_vec());
+        self.lifecycle.dirty = true;
+    }
+
     /// Stage the template picker for the next headless overlay pass.
     pub fn stage_template_picker_for_shot(&mut self) {
         self.staged.template_picker = true;
