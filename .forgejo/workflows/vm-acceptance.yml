@@ -332,7 +332,8 @@ jobs:
           # any core limit QEMU asks for.
           ulimit -Hc unlimited 2>/dev/null || echo "::notice::core hard limit stays $(ulimit -Hc)"
           as_user() { sudo -n -u "$RUN_USER" -H --preserve-env="$keep" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "$@"; }
-          as_user cat "/home/$RUN_USER/.config/libvirt/qemu.conf"
+          echo "the run user keeps: $keep"
+          as_user cargo -V
           as_user virsh --connect qemu:///session capabilities | grep -q "<domain type='kvm'"
           as_user tilo-vm doctor || true
 
