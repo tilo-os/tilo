@@ -90,9 +90,10 @@ containerfile="$repo/os/Containerfile"
 # The build-only Cisco OpenH264 gate is a deliberate addition (removed after it runs).
 # The extension-manifest public key ships beside the helper.
 # The release gate's greetd session-context check ships beside the other
-# booted-guest checks in /usr/libexec/tilo, and so does the device admin's
-# action-model check.
-expected_contract=823b26fe2c16203475952cc5a7cc7bda7509816586a6337b9b5f93806d39808e
+# booted-guest checks in /usr/libexec/tilo.
+# The release gate's input hotplug check and the device admin's action-model
+# check ship beside them.
+expected_contract=ea7981bb8af6a2c8c3901f9ff7117d7b565926e33c7186d5e7aafe19b4380281
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
