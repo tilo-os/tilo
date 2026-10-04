@@ -690,6 +690,7 @@ fn export_dialog(acknowledged: bool, reminded: bool, requests: &Requests) -> Mod
     }
     ModalDialog::new("Export passwords to a CSV file?", body(children))
         .primary_action("Choose file…", ask(requests, Request::ConfirmExport))
+        .with_primary_enabled(acknowledged)
         .secondary_action("Cancel", ask(requests, Request::CloseDialog))
 }
 
