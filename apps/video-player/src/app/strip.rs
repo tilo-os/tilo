@@ -67,7 +67,7 @@ impl PlayerApp {
         self.player.controls_visible() || self.player.latest_frame().is_none()
     }
 
-    /// Place Library (leading) and Open (trailing) on the strip's centre
+    /// Place Library (leading), Open and History (trailing) on the strip's centre
     /// line, each as wide as its label needs. With nothing open the empty
     /// state owns Open, so the strip keeps only Library.
     pub(super) fn place_top_strip(&mut self, text: &mut TextRenderer, theme: &Theme) {
@@ -81,9 +81,28 @@ impl PlayerApp {
         let lx0 = self.rect.x0 + margin;
         let lx1 = (lx0 + library_w).min(self.rect.x1 - margin).max(lx0);
         self.library_button_rect = Rect::new(lx0, y0, lx1, y1);
+        // The window's History control stands at the strip's trailing edge,
+        // a square the height of its buttons; Open sits before it.
+        let trailing = if self.history.is_shown() {
+            let hx1 = self.rect.x1 - margin;
+            let hx0 = (hx1 - strip.button_h).max(lx1 + margin);
+            self.history_button_rect = Rect::new(hx0, y0, hx1, y1);
+            hx0 - f64::from(theme.tokens.spacing.s2)
+        } else {
+            self.history_button_rect = Rect::ZERO;
+            self.rect.x1 - margin
+        };
+        let shown = if self.overlay_visible() {
+            self.history_button_rect
+        } else {
+            Rect::ZERO
+        };
+        if let Some(button) = self.history.button_mut() {
+            button.apply_layout_external(shown);
+        }
         self.open_button_rect = if self.player.has_media() {
             let open_w = width(text, Self::open_face(Rect::ZERO, false, false));
-            let bx1 = self.rect.x1 - margin;
+            let bx1 = trailing;
             let bx0 = (bx1 - open_w).max(lx1 + margin);
             Rect::new(bx0.min(bx1), y0, bx1, y1)
         } else {
@@ -152,6 +171,8 @@ impl PlayerApp {
             let title_x = self.library_button_rect.x1 + margin;
             let title_end = if self.open_button_rect.width() > 0.0 {
                 self.open_button_rect.x0
+            } else if self.history_button_rect.width() > 0.0 {
+                self.history_button_rect.x0
             } else {
                 self.rect.x1
             } - margin;
@@ -183,6 +204,12 @@ impl PlayerApp {
                 &panel_theme,
                 &Self::library_face(library, hovered(library), self.library_focused),
             );
+        }
+        let history = self.history_button_rect;
+        if history.width() > 0.0 {
+            floating_surface::paint(scene, transform, history, theme);
+            self.history
+                .paint(scene, transform, text, &panel_theme, history);
         }
         let open = self.open_button_rect;
         if open.width() > 0.0 {
@@ -244,7 +271,7 @@ impl PlayerApp {
                 message: Some(error),
                 action_label: Some("Open another video"),
                 error: true,
-                ..EmptyStateContent::new("Couldn't open video")
+                ..EmptyStateContent::new("Can't play this video")
             },
         };
         let cursor: Point = self.last_cursor;

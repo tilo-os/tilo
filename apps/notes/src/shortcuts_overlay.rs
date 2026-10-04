@@ -10,7 +10,9 @@ use winit::event::WindowEvent;
 
 use ui::Widget;
 use ui::text_render::TextKind;
-use ui::widget::{Column, Element, ModalDialog, Property, PropertyList, Section, SectionHeader};
+use ui::widget::{
+    Column, Element, ModalDialog, Property, PropertyColumn, PropertyList, Section, SectionHeader,
+};
 
 /// One group of shortcuts. The label titles the group; the rows list each
 /// shortcut.
@@ -109,8 +111,9 @@ fn spell(template: &str) -> String {
     out
 }
 
-/// One group of the reference: its title over its shortcut rows.
-fn group(group: &Group) -> Element {
+/// One group of the reference: its title over its shortcut rows, the keys
+/// in the column every group shares.
+fn group(group: &Group, keys: &PropertyColumn) -> Element {
     let rows = group
         .rows
         .iter()
@@ -120,7 +123,7 @@ fn group(group: &Group) -> Element {
         })
         .collect();
     Box::new(
-        Section::new(vec![Box::new(PropertyList::new(rows))])
+        Section::new(vec![Box::new(PropertyList::new(rows).shared_column(keys))])
             .with_header(SectionHeader::group(group.label)),
     )
 }
@@ -128,9 +131,10 @@ fn group(group: &Group) -> Element {
 /// The body of the sheet: every group in one column. A window too short for
 /// all of it gets the dialog's own scrolling body.
 fn sheet_body() -> Element {
+    let keys = PropertyColumn::new();
     let mut column = Column::new().with_intrinsic_height().with_no_padding();
     for entry in GROUPS {
-        column = column.push(group(entry));
+        column = column.push(group(entry, &keys));
     }
     Box::new(column)
 }

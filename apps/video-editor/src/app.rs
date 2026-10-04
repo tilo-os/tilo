@@ -1259,8 +1259,9 @@ pub struct VideoEditorApp {
     /// An in-progress timecode entry, or `None`. Typing a timecode and
     /// pressing Enter jumps the playhead there.
     goto_entry: Option<ui::widget::TextInput>,
-    /// The window's History button, in the editor's own header row; while
+    /// The window's History control, in the editor's own header row; while
     /// the editor shows it the window draws no History bar above it.
+    history: ui::widget::HistoryOpener,
     /// Set when the typed timecode could not be read, so the field can say so
     /// instead of closing and going nowhere.
     thumbnails: crate::thumbnail::ThumbnailCache,
@@ -1512,6 +1513,7 @@ impl VideoEditorApp {
             inspector_flap: FlapState::open_when_docked(),
             flap_tick: ui::time::now(),
             bin_menu: ContextMenu::new(),
+            history: ui::widget::HistoryOpener::new(),
             menu_target: None,
             // PROJECT starts folded — the one section that does. A folded
             // header still states what is inside it, and what is inside this
@@ -5773,43 +5775,50 @@ impl VideoEditorApp {
             top
         });
         y += header_gap;
-        // `n` equal segments across the body, one spacing step apart — the
-        // same gapped convention the inspector's segmented rows use.
-        let seg = |n: usize, y: f64| -> Vec<Rect> {
-            let w = (x1 - x0 + s1) / n as f64;
-            (0..n)
-                .map(|i| {
-                    Rect::new(
-                        x0 + i as f64 * w,
-                        y,
-                        x0 + (i as f64 + 1.0) * w - s1,
-                        y + seg_h,
-                    )
-                })
-                .collect()
-        };
+        // Each group is one segmented strip across the body, its segments
+        // sized to their labels the way every segmented control is.
         let mut captions = [0.0; 3];
-        let mut group = |caption: &mut f64, n: usize| -> Vec<Rect> {
+        let mut group = |caption: &mut f64, labels: &[String]| -> Vec<Rect> {
             *caption = y;
             y += line_xs + s1;
-            let rects = seg(n, y);
+            let strip = Rect::new(x0, y, x1, y + seg_h);
+            let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+            let rects = ui::widget::SegmentedFace::partition(
+                strip,
+                &labels,
+                control_size_for(strip, theme),
+                tr,
+                theme,
+            );
             y += seg_h + group_gap;
             rects
         };
+        let resolution_labels: Vec<String> = Resolution::ALL
+            .iter()
+            .map(|v| v.label().to_string())
+            .collect();
         let resolution = Resolution::ALL
             .iter()
             .copied()
-            .zip(group(&mut captions[0], Resolution::ALL.len()))
+            .zip(group(&mut captions[0], &resolution_labels))
+            .collect();
+        let container_labels: Vec<String> = Container::ALL
+            .iter()
+            .map(|v| v.label().to_string())
             .collect();
         let container = Container::ALL
             .iter()
             .copied()
-            .zip(group(&mut captions[1], Container::ALL.len()))
+            .zip(group(&mut captions[1], &container_labels))
+            .collect();
+        let fps_labels: Vec<String> = FrameRate::ALL
+            .iter()
+            .map(|v| format!("{} fps", v.label()))
             .collect();
         let fps = FrameRate::ALL
             .iter()
             .copied()
-            .zip(group(&mut captions[2], FrameRate::ALL.len()))
+            .zip(group(&mut captions[2], &fps_labels))
             .collect();
 
         // The footer, from the body's foot up.
@@ -6262,7 +6271,9 @@ impl Widget for VideoEditorApp {
         dyn ui::undo::UndoControl,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::widget::WindowHeader,
+        dyn ui::widget::controls::ActionControls
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -6637,10 +6648,8 @@ impl Widget for VideoEditorApp {
         if self.pending_open.is_some() {
             self.draw_discard_dialog(scene, transform, tr, theme);
         }
-        // The context menus float above everything else.
-        self.bin_menu.draw(scene, transform, tr, theme, presence);
-        self.project_menu
-            .draw(scene, transform, tr, theme, presence);
+        // The context menus float above everything else: they are children,
+        // painted in the top layer by `draw_overlay`.
     }
 
     #[allow(
@@ -6656,6 +6665,19 @@ impl Widget for VideoEditorApp {
         let _gesture = self.actions.gesture();
         let r = self.regions();
         let bin_overlay_open = self.bin_overlay_is_open();
+        // The window's History control in the header row, unless a dialog
+        // holds the window.
+        let modal_open = self.presentation.export_open
+            || self.pending_open.is_some()
+            || self.navigation.help_open;
+        if !modal_open
+            && self
+                .history
+                .handle_event(event, r.history_btn, ctx.scale_factor)
+        {
+            *ctx.handled = true;
+            return;
+        }
         // An in-flight inline rename owns input: forward every event to the
         // shared editable label, then reconcile its outcome. A blur-commit
         // (click outside) is intentionally not consumed, so the same click also
@@ -7472,6 +7494,34 @@ impl Widget for VideoEditorApp {
         )
     }
 
+    /// The window's History control answers to its own target; everything
+    /// else the tree publishes is a keyed route to [`Self::perform_action_at`].
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AppModel,
+        path: &ModelPath,
+    ) -> bool {
+        if self.history.perform_semantic_action(target, action) {
+            return true;
+        }
+        let Some((_, encoded)) = target
+            .strip_prefix("tilo.key-action:")
+            .and_then(|route| route.rsplit_once(':'))
+        else {
+            return false;
+        };
+        let Ok(key_path) = encoded
+            .split('/')
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            return false;
+        };
+        !key_path.is_empty() && self.perform_action_at(action, &key_path, state, path)
+    }
+
     /// Route an assistive technology's action to the element it named.
     ///
     /// `key_path` is the chain of keys from this widget down: `[pane]` for a
@@ -7691,6 +7741,24 @@ impl ui::undo::UndoControl for VideoEditorApp {
     }
     fn take_undo_request(&mut self) -> Option<ui::UndoRequest> {
         self.undo.take_request()
+    }
+}
+
+/// The editor's header row is the window's: it holds the History control
+/// the host offers, so the window draws no History bar above the editor.
+impl ui::widget::WindowHeader for VideoEditorApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        self.history.set_control(control);
+    }
+}
+
+impl ui::widget::controls::ActionControls for VideoEditorApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.history.take().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
     }
 }
 
@@ -8447,6 +8515,7 @@ impl VideoEditorApp {
             inspector_open && r.inspector_overlay,
             hovered(r.inspector_btn),
         );
+        self.history.paint(scene, tf, tr, theme, r.history_btn);
         // The project button: which file is open, whether it is written down,
         // and the way to open or save one. The app name and the window title
         // remain the OS's, and this is neither.
