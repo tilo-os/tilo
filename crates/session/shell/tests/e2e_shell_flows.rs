@@ -1027,11 +1027,11 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
             assert!(!host.palette_visible(), "palette starts closed");
 
             let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-            let handled = pump_host(&mut host, &key_press(Key::Character("k".into())), mods);
-            assert!(handled, "Super+K must be consumed by the overlay host");
+            let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Space)), mods);
+            assert!(handled, "Super+Space must be consumed by the overlay host");
             assert!(
                 host.palette_visible(),
-                "Super+K must open the global-search palette in the live-binary event path"
+                "Super+Space must open the global-search palette in the live-binary event path"
             );
         }
 
@@ -1043,10 +1043,10 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
             let tree = WorkspaceTree::bootstrap_demo();
             let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
 
-            // Open via Super+K rather than bypassing the host's state machine, guarding
+            // Open via Super+Space rather than bypassing the host's state machine, guarding
             // against a mutation-ordering regression.
             let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-            let _ = pump_host(&mut host, &key_press(Key::Character("k".into())), mods);
+            let _ = pump_host(&mut host, &key_press(Key::Named(NamedKey::Space)), mods);
             assert!(host.palette_visible());
 
             // Escape priority order: palette > overview > ws_settings > quick_settings.

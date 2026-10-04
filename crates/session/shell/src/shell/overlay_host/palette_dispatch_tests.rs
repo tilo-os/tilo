@@ -1136,10 +1136,10 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
             "Add tab here:Super+T",
             "Duplicate tab:Super+D",
             "Open terminal:Super+Enter",
-            "Global search:Super+K",
+            "Search everywhere:Super+Space",
             "Emoji:Super+.",
             "Overview:Super+Tab",
-            "Lock:Super+L",
+            "Lock screen:Super+L",
             "Quick Settings:Super+Q",
             "Workspace wheel:Super+S",
             "Display layout:Super+P",
@@ -1163,8 +1163,8 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
             )
             .unwrap();
         let rows = shortcut_reference_rows(&shortcuts);
-        assert!(rows.contains(&("Global search".into(), "Alt+G".into())));
-        assert!(!rows.contains(&("Global search".into(), "Super+K".into())));
+        assert!(rows.contains(&("Search everywhere".into(), "Alt+G".into())));
+        assert!(!rows.contains(&("Search everywhere".into(), "Super+Space".into())));
     }
 
     fn shortcut_reference_does_not_repeat_the_open_guide_action() {
@@ -1289,7 +1289,7 @@ fn shortcut_guide_names_keys_as_the_active_layout_prints_them() {
     ui::keycaps::set_active(ui::Keycaps::US);
     let english = guide_description(&host);
 
-    assert!(german_rows.contains(&("Global search".into(), "Strg+Umschalt+G".into())));
+    assert!(german_rows.contains(&("Search everywhere".into(), "Strg+Umschalt+G".into())));
     assert!(german_rows.contains(&("Reopen closed tab".into(), "Super+Umschalt+T".into())));
     assert!(german.contains("Screenshot: Druck"), "{german}");
     assert!(german.contains("Strg+Umschalt+G"), "{german}");

@@ -230,7 +230,7 @@ When the env var is set, the compositor binds an additional unix socket alongsid
 | Shortcut                  | Action                                         |
 |---------------------------|------------------------------------------------|
 | Ctrl+K                    | Search the focused app                         |
-| Super+K / Super+Space     | Search all of Tilo                             |
+| Super+Space               | Search all of Tilo                             |
 | Super+Page Up / Page Down | Previous / next workspace                      |
 | Super+Up / Down           | Previous / next strip                          |
 | Super+Shift+Up / Down     | Carry the focused group to the strip above / below |

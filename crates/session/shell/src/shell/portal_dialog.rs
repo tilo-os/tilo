@@ -3008,7 +3008,7 @@ mod tests {
             let mut controller = PortalDialogController::new(queue);
             controller.pump();
             assert!(controller.key(
-                &PhysicalKey::Code(KeyCode::KeyK),
+                &PhysicalKey::Code(KeyCode::Space),
                 Modifiers::from(ModifiersState::SUPER),
             ));
             let view = controller.view().unwrap();

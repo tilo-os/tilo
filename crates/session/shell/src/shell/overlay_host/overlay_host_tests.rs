@@ -2135,7 +2135,7 @@ fn assert_no_peer_sync_work_from_a_click_in_the_panel(h: &mut Harness) {
 )]
 fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
     /// Opening the palette with a stale query must both focus the input
-    /// and clear it. Drives the configured Super+K path through
+    /// and clear it. Drives the configured Super+Space path through
     /// `handle_event`.
     fn toggle_palette_focuses_input() {
         let mut h = build_harness();
@@ -2149,16 +2149,16 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .unwrap();
         let mods = Modifiers::from(ModifiersState::SUPER);
-        let handled = pump(&mut h, &key_press(Key::Character("k".into())), mods);
+        let handled = pump(&mut h, &key_press(Key::Named(NamedKey::Space)), mods);
 
-        assert!(handled, "Super+K must be consumed by the overlay host");
+        assert!(handled, "Super+Space must be consumed by the overlay host");
         assert!(
             h.host.palette_visible(),
-            "Super+K must open the global-search palette"
+            "Super+Space must open the global-search palette"
         );
         assert!(
             h.host.palette.is_focused(),
-            "opening the palette via Super+K must focus its input \
+            "opening the palette via Super+Space must focus its input \
              (so the very first keystroke after open lands in the search box)"
         );
         assert_eq!(
@@ -2190,14 +2190,14 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             .unwrap();
         let mut doc = AutoCommit::new();
 
-        // Super+K is the default Search action.  Any rebind goes through the
+        // Super+Space is the default Search action.  Any rebind goes through the
         // same effective-action resolver used by this dispatcher.
         let sup = Modifiers::from(ModifiersState::SUPER);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
+        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), sup));
         assert_eq!(
             h.chrome.borrow().search_scope,
             SearchScope::All,
-            "Super+K searches the machine"
+            "Super+Space searches the machine"
         );
         h.host.palette.set_query("zzyzx");
         // Retained application indexes are built from the compositor update
@@ -2269,7 +2269,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         });
 
         let sup = Modifiers::from(ModifiersState::SUPER);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
+        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), sup));
         assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
 
         h.host.palette.set_query("Welcome");
@@ -2315,7 +2315,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
     }
 
     /// A room starting empty is only workable if moving one of your own
-    /// records into it costs one step: Super+K, type the name, and a
+    /// records into it costs one step: Super+Space, type the name, and a
     /// record from *another* room is among the answers — labelled with
     /// where it lives — and Enter brings it here.
     #[allow(
@@ -2362,7 +2362,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
 
         let mut doc = AutoCommit::new();
         let sup = Modifiers::from(ModifiersState::SUPER);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
+        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), sup));
         assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
         h.host.palette.set_query("field-guide");
         h.host.refresh_search_results(&doc, &automerge::ROOT);
