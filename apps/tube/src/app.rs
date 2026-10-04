@@ -720,8 +720,7 @@ impl TubeApp {
     /// renders its "Nothing to show yet" empty state rather than a
     /// fabricated trending feed, and nothing is fetched.
     ///
-    /// This is what [`crate::app_root`] hands a host that embeds Tube
-    /// without opting into live data.
+    /// This is what a past version of the library is shown in.
     pub fn empty() -> Self {
         Self {
             model: TubeModel::default(),
@@ -832,20 +831,28 @@ impl TubeApp {
     /// "loading", not a blank page.
     #[must_use]
     pub fn with_loading_home_shot(mut self) -> Self {
+        self.show_loading_home();
+        self
+    }
+
+    fn show_loading_home(&mut self) {
         self.model = TubeModel::default();
         self.model.feed_loading = true;
         self.model.route = Route::Home;
-        self
     }
 
     /// `--shots` builder for the terminal offline/empty state after a live
     /// fetch failed. Kept distinct from the cold-start loading skeleton.
     #[must_use]
     pub fn with_empty_home_shot(mut self) -> Self {
+        self.show_empty_home();
+        self
+    }
+
+    fn show_empty_home(&mut self) {
         self.model = TubeModel::default();
         self.model.data_source.label = "offline — network unavailable".into();
         self.model.route = Route::Home;
-        self
     }
 
     /// `--shots` builder: render at the narrow breakpoint with the navigation
@@ -855,6 +862,30 @@ impl TubeApp {
     pub fn with_open_sidebar_shot(mut self) -> Self {
         self.force_sidebar_open_shot = true;
         self
+    }
+
+    /// Stage the view state of the screenshot scenario `scenario` (see
+    /// [`crate::resource::SCENARIOS`]) over the bundled sample catalogue.
+    pub(crate) fn stage_scenario(&mut self, scenario: &str) {
+        match scenario {
+            "empty" => self.show_empty_home(),
+            "loading" => self.show_loading_home(),
+            #[cfg(feature = "grayjay-sync")]
+            "device-sync" => self.show_device_sync_sample(),
+            "palette" => self.open_palette_with("rust"),
+            "play-demo" => self.play_demo(),
+            "narrow" => self.force_sidebar_open_shot = true,
+            "trending" => self.show_route(Route::Trending),
+            "subscriptions" => self.show_route(Route::Subscriptions),
+            "queue" => self.show_route(Route::Queue),
+            "history" => self.show_route(Route::History),
+            "settings" => self.show_route(Route::Settings),
+            "search" => self.show_route(Route::Search("rust".into())),
+            "watch" => self.show_route(Route::Watch("vid_donut".into())),
+            _ => {}
+        }
+        self.structure_dirty = true;
+        self.shell_stale = true;
     }
 
     /// `--shots` builder: record the render viewport up front so the single
@@ -877,6 +908,11 @@ impl TubeApp {
     /// mirrored so the search header + active chip resolve.
     #[must_use]
     pub fn with_route_shot(mut self, route: Route) -> Self {
+        self.show_route(route);
+        self
+    }
+
+    fn show_route(&mut self, route: Route) {
         if let Route::Search(q) = &route {
             q.clone_into(&mut self.model.search_query);
             self.search_query.set(q.clone());
@@ -888,7 +924,6 @@ impl TubeApp {
         // state that a user or an agent could never actually navigate to.
         self.nav = ui::NavStack::new(route.clone());
         self.model.route = route;
-        self
     }
 
     /// Secret-free offscreen proof of the real device lifecycle surface. The
@@ -897,6 +932,12 @@ impl TubeApp {
     #[cfg(feature = "grayjay-sync")]
     #[must_use]
     pub fn with_device_sync_shot(mut self) -> Self {
+        self.show_device_sync_sample();
+        self
+    }
+
+    #[cfg(feature = "grayjay-sync")]
+    fn show_device_sync_sample(&mut self) {
         self.model.route = Route::Settings;
         self.device_sync = crate::sync::DeviceSync::visual_sample();
         let y = if self.rect.width() < self.nav_breakpoint {
@@ -907,7 +948,6 @@ impl TubeApp {
         self.scroll_cells
             .borrow_mut()
             .insert("settings".into(), Rc::new(Cell::new((0.0, y))));
-        self
     }
 
     /// Test/shots hook: start with the Ctrl+K command palette already open, and
@@ -916,10 +956,14 @@ impl TubeApp {
     /// outside the crate) and by the palette `--shots`.
     #[must_use]
     pub fn with_palette_open_for_test(mut self, query: &str) -> Self {
+        self.open_palette_with(query);
+        self
+    }
+
+    fn open_palette_with(&mut self, query: &str) {
         self.model.palette_open = true;
         self.model.palette_query = query.to_string();
         self.palette_query.set(query.to_string());
-        self
     }
 
     /// Test/shots hook: open a watch page with the shared [`VideoPlayer`] already
@@ -929,6 +973,11 @@ impl TubeApp {
     /// seeds a frame on `open` — the exact surface the live decode path paints.
     #[must_use]
     pub fn with_playing_demo_for_test(mut self) -> Self {
+        self.play_demo();
+        self
+    }
+
+    fn play_demo(&mut self) {
         let id = self
             .model
             .videos
@@ -962,7 +1011,6 @@ impl TubeApp {
             p.sync(&mut doc, &root);
         }
         self.player_video = Some(id);
-        self
     }
 
     /// `--live-shots` hook: open the shared player on a real, directly-playable
@@ -4071,7 +4119,7 @@ mod tests {
         // The installed binary launches through the framework, so the surface
         // it mounts must be the online app: no bundled sample catalogue, and
         // a first `sync` that fetches the real feed.
-        let app = crate::resource::TubeShell::surface();
+        let app = crate::resource::TubeShell::surface(ui::framework::RunMode::Live);
         assert!(
             app.online,
             "the framework launch must reach the live backend"

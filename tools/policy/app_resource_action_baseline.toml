@@ -55,8 +55,6 @@
 "apps/settings/src/main.rs" = 1
 "apps/slides/src/lib.rs" = 2
 "apps/slides/src/main.rs" = 1
-"apps/tube/src/lib.rs" = 2
-"apps/tube/src/main.rs" = 2
 "apps/word-processor/src/main.rs" = 3
 
 [ratchets.direct_document_api]
