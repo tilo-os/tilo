@@ -919,7 +919,7 @@ workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/dev/test-nearby-pairing.sh"
-reason = "boots two VMs (KVM) from the gated dev disk"
+reason = "boots two VMs (KVM) from the gated dev disk; with --wake (os/dev/nearby-wake-phase.sh) suspends and wakes one"
 workflow = "build-image.yml"
 
 [[unrequired]]

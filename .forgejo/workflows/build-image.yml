@@ -2522,8 +2522,12 @@ jobs:
           # Two more overlays on one Ethernet segment: one creates an
           # identity, the other joins it from first-boot onboarding through
           # Connect a nearby device, first through an injected helper failure
-          # and then for real, and signs in again afterwards.
-          ./os/dev/test-nearby-pairing.sh "$TILO_DISK" --out "$TILO_RUN/nearby-pairing"
+          # and then for real, and signs in again afterwards. On the x86 dev
+          # disk (it carries tilo-control) the paired devices then hold each
+          # other awake, wake each other from suspend and survive a cut link.
+          nearby_wake=()
+          if [[ $DEV_GATE == true && '${{ matrix.arch }}' == x86_64 ]]; then nearby_wake=(--wake); fi
+          ./os/dev/test-nearby-pairing.sh "$TILO_DISK" --out "$TILO_RUN/nearby-pairing" "${nearby_wake[@]}"
           # Any failing check leaves the guest's own account of it in the log:
           # failed units and this boot's warnings (the gate user reads the
           # system journal through wheel), before the VM goes away.
