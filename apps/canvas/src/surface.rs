@@ -1872,6 +1872,7 @@ impl CanvasSurface {
                     transform: None,
                     group: String::new(),
                     clip: String::new(),
+                    area: String::new(),
                 });
             }
         }
@@ -1896,6 +1897,8 @@ impl CanvasSurface {
             .layer
             .clone()
             .or_else(|| self.art.layers.last().map(|layer| layer.id.clone()))?;
+        let (clip, area) =
+            crate::actions::clip_named(&self.art, stroke.clip.as_deref()).unwrap_or_default();
         Some(Mark {
             id: id.clone(),
             layer,
@@ -1913,7 +1916,8 @@ impl CanvasSurface {
             },
             transform: None,
             group: String::new(),
-            clip: stroke.clip.unwrap_or_default(),
+            clip,
+            area,
         })
     }
 

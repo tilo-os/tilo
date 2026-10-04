@@ -15,10 +15,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use canvas::actions::{AddLayer, Draw, EditLayer, NewMark, NewStroke, Paint, RemoveLayer};
+use canvas::actions::{
+    AddLayer, Draw, EditLayer, EditMarks, NewMark, NewStroke, Paint, RemoveLayer,
+};
 use canvas::model::{Artwork, Shape};
 use canvas::region::Region;
 use canvas::render::{Options, Renderer};
+use canvas::resource::Inspect;
 use canvas::selection::{Combine, Select, UseSelection};
 use canvas::{ArtworkResource, CanvasAction, view_ops};
 use ui::prelude::{Invoke, Replica};
@@ -444,10 +447,12 @@ fn a_mask_shows_and_hides_its_layer() {
     assert!(state.layers.is_empty() && state.marks.is_empty());
 }
 
-/// Paint and shapes cut to the selection stay inside it; the cut is a mark
-/// of the selection's shape that draws nothing and is never picked.
+/// Paint kept inside the selection stays inside it: the stroke carries the
+/// area itself, so no mark of the selection's shape is added, and the area
+/// moves with the stroke, shows in `inspect` and is let go with an empty
+/// clip.
 #[test]
-fn paint_cut_to_the_selection_stays_inside_it() {
+fn paint_kept_inside_the_selection_carries_its_area() {
     let mut art = Replica::<ArtworkResource>::new();
     select(
         &mut art,
@@ -472,37 +477,90 @@ fn paint_cut_to_the_selection_stays_inside_it() {
     )
     .unwrap();
     let state = art.state().unwrap();
+    assert_eq!(state.marks.len(), 1, "only the stroke: {:?}", state.marks);
     let swash = state.mark("swash").unwrap();
-    let cut = state.mark(&swash.clip).expect("cut to a mark");
-    assert!(!cut.inked(), "the cut draws nothing");
+    assert!(swash.clip.is_empty() && !swash.area.is_empty());
     assert_eq!(
-        state.mark_at(Point::new(150.0, 20.0)),
+        state.mark_at(Point::new(50.0, 150.0)),
         None,
-        "nor is it picked"
+        "the stroke is not picked where it is cut away"
+    );
+    assert_eq!(
+        state
+            .mark_at(Point::new(150.0, 150.0))
+            .map(|mark| mark.id.as_str()),
+        Some("swash")
     );
     let shown = pixels(&state);
     assert!(alpha(&shown, 150, 150) > 200, "inside the selection");
     assert!(alpha(&shown, 50, 150) < 5, "not outside it");
 
-    // A second passage in the same selection uses the same cut.
+    let listed = view_ops::inspect(&state, &Inspect::default()).unwrap();
+    let entry = &listed["marks_bottom_first"][0];
+    assert_eq!(entry["id"], "swash");
+    assert_eq!(
+        entry["inside"],
+        serde_json::json!([100.0, 0.0, 100.0, 300.0])
+    );
+    assert_eq!(
+        entry["bounds"][0],
+        serde_json::json!(100.0),
+        "bounds are what shows"
+    );
+
+    // Moved, the cut stroke takes its area along.
     apply(
+        &mut art,
+        CanvasAction::EditMarks(Box::new(EditMarks {
+            ids: vec!["swash".into()],
+            move_by: Some([50.0, 0.0]),
+            ..EditMarks::default()
+        })),
+    )
+    .unwrap();
+    let shown = pixels(&art.state().unwrap());
+    assert!(alpha(&shown, 220, 150) > 200, "the area moved with it");
+    assert!(alpha(&shown, 120, 150) < 5);
+
+    // An empty clip lets it out.
+    apply(
+        &mut art,
+        CanvasAction::EditMarks(Box::new(EditMarks {
+            ids: vec!["swash".into()],
+            clip: Some(String::new()),
+            ..EditMarks::default()
+        })),
+    )
+    .unwrap();
+    let state = art.state().unwrap();
+    assert!(state.mark("swash").unwrap().area.is_empty());
+    assert!(alpha(&pixels(&state), 90, 150) > 200, "whole again");
+}
+
+/// With nothing selected, `clip: "selection"` is refused and says why.
+#[test]
+fn keeping_inside_no_selection_is_refused() {
+    let mut art = Replica::<ArtworkResource>::new();
+    draw(
+        &mut art,
+        None,
+        vec![rect("base", [0.0, 0.0, 10.0, 10.0], "#ff0000")],
+    );
+    let refused = apply(
         &mut art,
         CanvasAction::Paint(Paint {
             layer: None,
             strokes: vec![NewStroke {
-                id: Some("again".into()),
-                points: vec![vec![20.0, 50.0], vec![380.0, 50.0]],
-                size: 10.0,
+                points: vec![vec![20.0, 150.0], vec![380.0, 150.0]],
+                size: 30.0,
                 colour: "#0000ff".into(),
                 clip: Some("selection".into()),
                 ..NewStroke::default()
             }],
         }),
     )
-    .unwrap();
-    let state = art.state().unwrap();
-    assert_eq!(state.mark("again").unwrap().clip, swash.clip);
-    assert_eq!(state.marks.len(), 3);
+    .unwrap_err();
+    assert!(refused.contains("nothing is selected"), "{refused}");
 }
 
 /// A layer clipped to the one below shows only where that one has paint.

@@ -134,6 +134,7 @@ pub fn read(doc: &Doc) -> Artwork {
                 transform: body.transform,
                 group: body.group,
                 clip: body.clip,
+                area: body.area,
                 id,
             })
         })
@@ -265,6 +266,7 @@ pub fn write_mark(doc: &mut Doc, mark: &Mark) -> Result<(), AutomergeError> {
         transform: mark.transform,
         group: mark.group.clone(),
         clip: mark.clip.clone(),
+        area: mark.area.clone(),
     };
     let encoded = serde_json::to_string(&body).unwrap_or_default();
     put_text(doc, &obj, "body", &encoded)
