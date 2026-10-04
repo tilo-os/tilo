@@ -398,3 +398,20 @@ save-status-saved = Gespeichert
 save-status-failed = Speichern fehlgeschlagen
 save-status-retry = Erneut versuchen
 save-status-dismiss = Schließen
+
+# Suchleiste: das Band oben in einem Dokument, das darin sucht.
+find-bar-name = Suchen
+find-bar-placeholder = Suchen
+find-bar-replace-placeholder = Ersetzen durch
+find-bar-match-case = Groß-/Kleinschreibung
+find-bar-whole-word = Ganzes Wort
+find-bar-regex = Regulärer Ausdruck
+find-bar-text = Text
+find-bar-hex = Hex
+find-bar-previous = Vorheriger Treffer
+find-bar-next = Nächster Treffer
+find-bar-close = Suche schließen
+find-bar-replace = Ersetzen
+find-bar-replace-all = Alle ersetzen
+find-bar-position = { $current } von { $total }
+find-bar-no-matches = Keine Treffer

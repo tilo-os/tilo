@@ -3,9 +3,8 @@ use crate::layout::{Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects
 use crate::suggest::{Suggestion, suggestion_rects};
 use crate::toolbar::{OskToolbarItem, toolbar_rects};
 use crate::touch_model::{CORE_FRACTION, HitCell, core_zone};
-use ui::chrome::{SelectionState, selection_floor_ramp};
 use ui::text_render::TextWeight;
-use ui::widget::{Button, ButtonFace, ButtonRole, ChipFace};
+use ui::widget::{Button, ButtonFace, ButtonInteract, ButtonRole, ChipFace};
 use ui::{
     TextRenderer, TextRole, TextStyle, Theme,
     icons::{self, Icon},
@@ -359,8 +358,9 @@ pub(crate) fn key_pad_for_height(height: f64) -> f64 {
 }
 
 /// The face of a key at rest, hovered or pressed, standing on the window
-/// ground. A character key is a floor lifted off the ground; a modifier
-/// stays on the ground itself until touched, so the letters lead.
+/// ground. A character key is the toolkit's key face (a faint lift off the
+/// ground); a modifier stays on the ground itself until touched, so the
+/// letters lead.
 fn key_fill(theme: &Theme, tone: CellTone, hovered: bool, pressed: bool) -> Color {
     let c = &theme.tokens.colors;
     let ground = c.surfaces.content;
@@ -373,7 +373,16 @@ fn key_fill(theme: &Theme, tone: CellTone, hovered: bool, pressed: bool) -> Colo
             }
         }
         CellTone::Plain => {
-            selection_floor_ramp(theme, SelectionState::new(false, hovered, pressed), ground)
+            ui::widget::face_colors(
+                theme,
+                ButtonRole::Key,
+                ButtonInteract {
+                    hovered,
+                    pressed,
+                    ..ButtonInteract::default()
+                },
+            )
+            .0
         }
         CellTone::Modifier | CellTone::Flat => {
             if pressed {

@@ -40,17 +40,19 @@ use winit::keyboard::{Key, NamedKey};
 /// Geometry constants for the inner layout. Pulled out so the test fixture
 /// and the live layout agree on rect positions without poking taffy.
 const PICKER_WIDTH: f64 = 260.0;
-const PICKER_HEIGHT: f64 = 220.0;
+/// The SV square at [`PICKER_WIDTH`]; it grows and shrinks with the width.
 const SV_SIZE: f64 = 120.0;
+/// The smallest SV square that still keeps the preview column beside it;
+/// narrower, the preview and the hex field move under it.
+const SV_MIN: f64 = 80.0;
 const HUE_STRIP_WIDTH: f64 = 16.0;
+/// The ring marking the chosen point of the SV square.
+const SV_CURSOR_RADIUS: f64 = 6.0;
 const PREVIEW_SIZE: f64 = 40.0;
-const SLIDER_HEIGHT: f64 = 14.0;
-const SLIDER_GAP: f64 = 6.0;
+/// One channel slider's row: the shared `Slider` with its knob.
+const SLIDER_HEIGHT: f64 = 24.0;
+const SLIDER_GAP: f64 = 4.0;
 const COMPONENT_GAP: f64 = 8.0;
-const TRACK_HEIGHT: f64 = 6.0;
-const KNOB_RADIUS: f64 = 6.0;
-/// Height of the RGB sliders and the gaps around them, below the SV square.
-const SLIDERS_HEIGHT: f64 = COMPONENT_GAP + 3.0 * SLIDER_HEIGHT + 2.0 * SLIDER_GAP;
 /// A spacing or metric token as a layout length. Layout runs without a
 /// theme (hosts may place the picker externally), so the optional rows use
 /// the unscaled token values, as the base block's geometry does.
@@ -74,6 +76,29 @@ const SWATCH_GAP: f64 = token(SPACE.s2);
 const BUTTON_HEIGHT: f64 = token(crate::tokens::Metrics::BASE.min_pointer_target);
 const BUTTON_WIDTH: f64 = token(SPACE.s16) + token(SPACE.s6);
 const BUTTON_GAP: f64 = token(SPACE.s2);
+/// The preview and hex column beside the SV square.
+const COLUMN_WIDTH: f64 = token(SPACE.s16) + token(SPACE.s8);
+/// The hex field: a Small control.
+const FIELD_HEIGHT: f64 = token(crate::tokens::Metrics::BASE.bar_control_height);
+
+/// Where every part of a picker sits in one rect: shared by layout and by
+/// the size the picker reports, so the reported size is the drawn one.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct PickerLayout {
+    title: Rect,
+    sv: Rect,
+    hue: Rect,
+    preview: Rect,
+    hex: Rect,
+    r: Rect,
+    g: Rect,
+    b: Rect,
+    swatches: Vec<Rect>,
+    cancel: Rect,
+    done: Rect,
+    /// The lowest edge any part reaches.
+    bottom: f64,
+}
 /// Hue stops the strip's gradient passes through (every 60°).
 const HUE_STOPS: usize = 7;
 
@@ -170,6 +195,7 @@ impl ColorPicker {
             last_cursor: Point::ZERO,
             is_focused: false,
             hex_input: TextInput::local()
+                .control_size(crate::widget::ControlSize::Small)
                 .with_kind(TextInputKind::Code)
                 .with_id("color_picker.hex")
                 .with_accessible_name("Hex colour"),
@@ -287,6 +313,7 @@ impl ColorPicker {
 
     /// The size the picker lays out at, including any swatch and confirm
     /// rows — for hosts that place it with [`Self::apply_layout_external`].
+    /// Every part it draws, the hex field included, lies inside it.
     #[must_use]
     pub fn preferred_size(&self) -> (f64, f64) {
         (PICKER_WIDTH, self.content_height(PICKER_WIDTH))
@@ -300,9 +327,20 @@ impl ColorPicker {
         self.content_height(width)
     }
 
-    /// Side of the SV square (and height of the hue strip) at `width`.
+    /// Whether `width` keeps the preview column beside the SV square.
+    fn side_column(width: f64) -> bool {
+        width >= SV_MIN + 2.0 * COMPONENT_GAP + HUE_STRIP_WIDTH + COLUMN_WIDTH
+    }
+
+    /// Side of the SV square (and height of the hue strip) at `width`: it
+    /// takes the room the hue strip and the preview column leave.
     fn sv_size(width: f64) -> f64 {
-        SV_SIZE + (width - PICKER_WIDTH).clamp(0.0, SV_GROWTH_MAX)
+        if Self::side_column(width) {
+            (width - 2.0 * COMPONENT_GAP - HUE_STRIP_WIDTH - COLUMN_WIDTH)
+                .clamp(SV_MIN, SV_SIZE + SV_GROWTH_MAX)
+        } else {
+            (width - COMPONENT_GAP - HUE_STRIP_WIDTH).max(token(SPACE.s8))
+        }
     }
 
     fn has_extras(&self) -> bool {
@@ -321,25 +359,84 @@ impl ColorPicker {
         per
     }
 
-    fn swatch_rows(&self, width: f64) -> usize {
-        self.swatches.len().div_ceil(Self::swatches_per_row(width))
+    fn content_height(&self, width: f64) -> f64 {
+        self.layout_in(Rect::new(0.0, 0.0, width.max(1.0), f64::MAX / 4.0))
+            .bottom
+            .ceil()
     }
 
-    fn content_height(&self, width: f64) -> f64 {
-        let sv = Self::sv_size(width);
-        if !self.has_extras() {
-            return PICKER_HEIGHT + (sv - SV_SIZE);
-        }
-        let mut height = sv + SLIDERS_HEIGHT;
+    /// Lay every part out in `rect`, from the top.
+    fn layout_in(&self, rect: Rect) -> PickerLayout {
+        let (x0, x1) = (rect.x0, rect.x1);
+        let width = x1 - x0;
+        let mut layout = PickerLayout::default();
+        let mut y0 = rect.y0;
         if self.confirm_title.is_some() {
-            height += TITLE_HEIGHT + COMPONENT_GAP + SECTION_GAP + BUTTON_HEIGHT;
+            layout.title = Rect::new(x0, y0, x1, y0 + TITLE_HEIGHT);
+            y0 = layout.title.y1 + COMPONENT_GAP;
         }
-        let rows = self.swatch_rows(width);
-        if rows > 0 {
-            let rows = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
-            height += SECTION_GAP + rows * SWATCH_SIZE + (rows - 1.0) * SWATCH_GAP;
+        let sv = Self::sv_size(width);
+        layout.sv = Rect::new(x0, y0, x0 + sv, y0 + sv);
+        let hue_x0 = layout.sv.x1 + COMPONENT_GAP;
+        layout.hue = Rect::new(hue_x0, y0, hue_x0 + HUE_STRIP_WIDTH, y0 + sv);
+        let mut block_bottom = layout.sv.y1;
+        if Self::side_column(width) {
+            // The preview and the hex field in a column at the trailing
+            // edge, beside the square.
+            let col_x0 = x1 - COLUMN_WIDTH;
+            layout.preview = Rect::new(col_x0, y0, x1, y0 + PREVIEW_SIZE);
+            let hex_y0 = layout.preview.y1 + COMPONENT_GAP;
+            layout.hex = Rect::new(col_x0, hex_y0, x1, hex_y0 + FIELD_HEIGHT);
+            block_bottom = block_bottom.max(layout.hex.y1);
+        } else {
+            // Too narrow for the column: a row under the square.
+            let top = block_bottom + COMPONENT_GAP;
+            layout.preview = Rect::new(x0, top, x0 + FIELD_HEIGHT, top + FIELD_HEIGHT);
+            let hex_x0 = layout.preview.x1 + COMPONENT_GAP;
+            layout.hex = Rect::new(hex_x0, top, x1.max(hex_x0), top + FIELD_HEIGHT);
+            block_bottom = layout.hex.y1;
         }
-        height
+        // The channel sliders: the shared `Slider` face, inset so its knob
+        // overhangs into the picker, never past its edge.
+        let overhang = crate::widget::SliderFace::overhang();
+        let mut top = block_bottom + COMPONENT_GAP;
+        for slot in [&mut layout.r, &mut layout.g, &mut layout.b] {
+            *slot = Rect::new(
+                x0 + overhang,
+                top,
+                (x1 - overhang).max(x0 + overhang),
+                top + SLIDER_HEIGHT,
+            );
+            top = slot.y1 + SLIDER_GAP;
+        }
+        let mut bottom = layout.b.y1;
+        if !self.swatches.is_empty() {
+            let per_row = Self::swatches_per_row(width);
+            let top = bottom + SECTION_GAP;
+            for index in 0..self.swatches.len() {
+                let row = f64::from(u32::try_from(index / per_row).unwrap_or(u32::MAX));
+                let col = f64::from(u32::try_from(index % per_row).unwrap_or(u32::MAX));
+                let sx = x0 + col * (SWATCH_SIZE + SWATCH_GAP);
+                let sy = top + row * (SWATCH_SIZE + SWATCH_GAP);
+                let swatch = Rect::new(sx, sy, sx + SWATCH_SIZE, sy + SWATCH_SIZE);
+                bottom = bottom.max(swatch.y1);
+                layout.swatches.push(swatch);
+            }
+        }
+        if self.confirm_title.is_some() {
+            let top = bottom + SECTION_GAP;
+            layout.done = Rect::new(x1 - BUTTON_WIDTH, top, x1, top + BUTTON_HEIGHT);
+            let cancel_x1 = layout.done.x0 - BUTTON_GAP;
+            layout.cancel = Rect::new(
+                cancel_x1 - BUTTON_WIDTH,
+                top,
+                cancel_x1,
+                top + BUTTON_HEIGHT,
+            );
+            bottom = layout.done.y1;
+        }
+        layout.bottom = bottom - rect.y0;
+        layout
     }
 
     /// Choose the swatch at `index`, as a click on it does.
@@ -386,84 +483,19 @@ impl ColorPicker {
     /// Mirrors [`TextInput::apply_layout_external`].
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
-        let (x0, mut y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
-        if self.confirm_title.is_some() {
-            self.title_rect = Rect::new(x0, y0, x1, y0 + TITLE_HEIGHT);
-            y0 = self.title_rect.y1 + COMPONENT_GAP;
-        } else {
-            self.title_rect = Rect::ZERO;
-        }
-
-        let sv = Self::sv_size(x1 - x0);
-        self.sv_rect = Rect::new(x0, y0, x0 + sv, y0 + sv);
-
-        let hue_x0 = self.sv_rect.x1 + COMPONENT_GAP;
-        self.hue_strip_rect = Rect::new(hue_x0, y0, hue_x0 + HUE_STRIP_WIDTH, y0 + sv);
-
-        self.preview_rect = Rect::new(x1 - PREVIEW_SIZE, y0, x1, y0 + PREVIEW_SIZE);
-
-        let sliders_top = self.sv_rect.y1 + COMPONENT_GAP;
-        self.r_slider_rect = Rect::new(x0, sliders_top, x1, sliders_top + SLIDER_HEIGHT);
-        self.g_slider_rect = Rect::new(
-            x0,
-            self.r_slider_rect.y1 + SLIDER_GAP,
-            x1,
-            self.r_slider_rect.y1 + SLIDER_GAP + SLIDER_HEIGHT,
-        );
-        self.b_slider_rect = Rect::new(
-            x0,
-            self.g_slider_rect.y1 + SLIDER_GAP,
-            x1,
-            self.g_slider_rect.y1 + SLIDER_GAP + SLIDER_HEIGHT,
-        );
-        if self.b_slider_rect.y1 > y1 {
-            self.b_slider_rect = Rect::new(
-                self.b_slider_rect.x0,
-                self.b_slider_rect.y0,
-                self.b_slider_rect.x1,
-                y1,
-            );
-        }
-
-        let text_h = 22.0;
-        self.hex_input_rect = Rect::new(
-            self.preview_rect.x0,
-            self.preview_rect.y1 + COMPONENT_GAP,
-            self.preview_rect.x1.max(self.preview_rect.x0 + 96.0),
-            self.preview_rect.y1 + COMPONENT_GAP + text_h,
-        );
+        let layout = self.layout_in(rect);
+        self.title_rect = layout.title;
+        self.sv_rect = layout.sv;
+        self.hue_strip_rect = layout.hue;
+        self.preview_rect = layout.preview;
+        self.hex_input_rect = layout.hex;
+        self.r_slider_rect = layout.r;
+        self.g_slider_rect = layout.g;
+        self.b_slider_rect = layout.b;
+        self.swatch_rects = layout.swatches;
+        self.cancel_rect = layout.cancel;
+        self.done_rect = layout.done;
         self.hex_input.apply_layout_external(self.hex_input_rect);
-
-        // Optional rows below the base block.
-        let mut bottom = self.b_slider_rect.y1;
-        self.swatch_rects.clear();
-        if !self.swatches.is_empty() {
-            let per_row = Self::swatches_per_row(x1 - x0);
-            let top = bottom + SECTION_GAP;
-            for index in 0..self.swatches.len() {
-                let row = f64::from(u32::try_from(index / per_row).unwrap_or(u32::MAX));
-                let col = f64::from(u32::try_from(index % per_row).unwrap_or(u32::MAX));
-                let sx = x0 + col * (SWATCH_SIZE + SWATCH_GAP);
-                let sy = top + row * (SWATCH_SIZE + SWATCH_GAP);
-                let swatch = Rect::new(sx, sy, sx + SWATCH_SIZE, sy + SWATCH_SIZE);
-                bottom = bottom.max(swatch.y1);
-                self.swatch_rects.push(swatch);
-            }
-        }
-        if self.confirm_title.is_some() {
-            let top = bottom + SECTION_GAP;
-            self.done_rect = Rect::new(x1 - BUTTON_WIDTH, top, x1, top + BUTTON_HEIGHT);
-            let cancel_x1 = self.done_rect.x0 - BUTTON_GAP;
-            self.cancel_rect = Rect::new(
-                cancel_x1 - BUTTON_WIDTH,
-                top,
-                cancel_x1,
-                top + BUTTON_HEIGHT,
-            );
-        } else {
-            self.cancel_rect = Rect::ZERO;
-            self.done_rect = Rect::ZERO;
-        }
     }
 
     /// Sets the embedded hex input's text directly, bypassing
@@ -496,15 +528,6 @@ impl ColorPicker {
     /// intentionally not encoded — the picker doesn't expose that channel.
     pub fn hex_string(&self) -> String {
         crate::color::to_hex(self.color)
-    }
-
-    pub fn rgb_string(&self) -> String {
-        format!(
-            "rgb({}, {}, {})",
-            self.color.r(),
-            self.color.g(),
-            self.color.b()
-        )
     }
 
     /// Register a callback that fires whenever `color` mutates, after the
@@ -627,7 +650,7 @@ impl ColorPicker {
     }
 
     fn channel_from_point(slider_rect: Rect, p: Point) -> f32 {
-        Self::px(((p.x - slider_rect.x0) / slider_rect.width()).clamp(0.0, 1.0))
+        Self::px(crate::widget::SliderFace::new(slider_rect, 0.0).value_at(p))
     }
 
     fn target_at(&self, p: Point) -> Option<DragTarget> {
@@ -637,13 +660,16 @@ impl ColorPicker {
         if self.hue_strip_rect.contains(p) {
             return Some(DragTarget::Hue);
         }
-        if self.r_slider_rect.contains(p) {
+        // A channel slider takes the pointer over its track and the knob
+        // overhanging its ends.
+        let reach = crate::widget::SliderFace::overhang();
+        if self.r_slider_rect.inflate(reach, 0.0).contains(p) {
             return Some(DragTarget::R);
         }
-        if self.g_slider_rect.contains(p) {
+        if self.g_slider_rect.inflate(reach, 0.0).contains(p) {
             return Some(DragTarget::G);
         }
-        if self.b_slider_rect.contains(p) {
+        if self.b_slider_rect.inflate(reach, 0.0).contains(p) {
             return Some(DragTarget::B);
         }
         None
@@ -770,7 +796,7 @@ impl ColorPicker {
             self.sv_rect.x0 + f64::from(sat) * self.sv_rect.width(),
             self.sv_rect.y0 + (1.0 - f64::from(val)) * self.sv_rect.height(),
         );
-        let sv_ring = vello::kurbo::Circle::new(sv_cursor, KNOB_RADIUS);
+        let sv_ring = vello::kurbo::Circle::new(sv_cursor, SV_CURSOR_RADIUS);
         scene.stroke(
             &Stroke::new(2.0),
             transform,
@@ -907,7 +933,7 @@ impl ColorPicker {
         &self,
         scene: &mut Scene,
         transform: Affine,
-        colors: &crate::tokens::colors::Colors,
+        theme: &Theme,
         radius_sm: f64,
     ) {
         // --- Preview swatch ---
@@ -928,81 +954,18 @@ impl ColorPicker {
             &preview_shape,
         );
 
-        // --- RGB sliders --- computed from RGB directly rather than
-        // cached, since the slider has no separate 0..1 state.
-        let r_fill = Color::from_rgba8(self.color.r(), 0, 0, 255);
-        let g_fill = Color::from_rgba8(0, self.color.g(), 0, 255);
-        let b_fill = Color::from_rgba8(0, 0, self.color.b(), 255);
-        for (slider, fill, frac) in [
-            (
-                self.r_slider_rect,
-                r_fill,
-                f64::from(self.color.r()) / 255.0,
-            ),
-            (
-                self.g_slider_rect,
-                g_fill,
-                f64::from(self.color.g()) / 255.0,
-            ),
-            (
-                self.b_slider_rect,
-                b_fill,
-                f64::from(self.color.b()) / 255.0,
-            ),
+        // --- RGB sliders --- the shared `Slider` face, one per channel.
+        for (slider, channel, target) in [
+            (self.r_slider_rect, self.color.r(), DragTarget::R),
+            (self.g_slider_rect, self.color.g(), DragTarget::G),
+            (self.b_slider_rect, self.color.b(), DragTarget::B),
         ] {
-            let track_y0 = slider.y0 + (slider.height() - TRACK_HEIGHT) / 2.0;
-            let track_y1 = track_y0 + TRACK_HEIGHT;
-            let track = Rect::new(slider.x0, track_y0, slider.x1, track_y1);
-            let track_shape = RoundedRect::from_rect(track, radius_sm);
-            // Unfilled half is a lift off the ground (HIG §9.5 Slider row).
-            let unfilled = colors.lift(1.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
+            crate::widget::Slider::paint(
+                scene,
                 transform,
-                unfilled,
-                None,
-                &track_shape,
-            );
-
-            let active = Rect::new(
-                track.x0,
-                track.y0,
-                track.x0 + frac * track.width(),
-                track.y1,
-            );
-            let active_shape = RoundedRect::from_rect(active, radius_sm);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                fill,
-                None,
-                &active_shape,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                crate::surface::edge_on(unfilled),
-                None,
-                &track_shape,
-            );
-
-            // Knob — filled at text_primary so it pops on any track fill.
-            let knob_x = track.x0 + frac * track.width();
-            let knob_y = slider.y0 + slider.height() / 2.0;
-            let knob = vello::kurbo::Circle::new(Point::new(knob_x, knob_y), KNOB_RADIUS);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                colors.text_primary,
-                None,
-                &knob,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                crate::surface::edge_on(colors.text_primary),
-                None,
-                &knob,
+                theme,
+                &crate::widget::SliderFace::new(slider, f64::from(channel) / 255.0)
+                    .dragging(self.drag_target == Some(target)),
             );
         }
     }
@@ -1026,17 +989,42 @@ impl Widget for ColorPicker {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Its preferred size, narrowed to what the parent gives; the height
+        // then follows the width it got (`adjust_layout_style`).
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(Self::px(PICKER_WIDTH)),
                 height: Dimension::length(Self::px(self.content_height(PICKER_WIDTH))),
             },
-            // Fixed target: never the item that gives in an overflowing row.
-            flex_shrink: 0.0,
+            max_size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            flex_shrink: 1.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    /// A picker narrowed by its parent is as tall as that width needs.
+    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Ok(layout) = taffy.layout(node) else {
+            return false;
+        };
+        let width = f64::from(layout.size.width);
+        if width <= 0.0 {
+            return false;
+        }
+        let Ok(current) = taffy.style(node) else {
+            return false;
+        };
+        let mut style = current.clone();
+        style.size.height = Dimension::length(Self::px(self.content_height(width)));
+        if style == *current {
+            return false;
+        }
+        taffy.set_style(node, style).is_ok()
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1065,28 +1053,14 @@ impl Widget for ColorPicker {
         // ring, hue tick, and slider knobs.
         self.draw_title(scene, transform, text_renderer, theme);
         self.draw_sv_and_hue(scene, transform, colors, radius_sm);
-        self.draw_preview_and_sliders(scene, transform, colors, radius_sm);
+        self.draw_preview_and_sliders(scene, transform, theme, radius_sm);
         self.draw_swatches(scene, transform, text_renderer, theme);
         self.draw_buttons(scene, transform, text_renderer, theme);
 
-        // --- Hex input + RGB readout --- drawn here directly since
-        // `hex_input` isn't in the taffy tree.
+        // --- Hex input --- drawn here directly since `hex_input` isn't in
+        // the taffy tree.
         self.hex_input
             .draw(scene, transform, text_renderer, theme, presence);
-
-        let text_style = theme.text(TextRole::Caption);
-        let rgb_label = self.rgb_string();
-        let label_x = self.preview_rect.x0;
-        let row_gap = f64::from(theme.tokens.spacing.s2);
-        let rgb_y = self.hex_input_rect.y1 + row_gap;
-        text_renderer.draw_style(
-            scene,
-            &rgb_label,
-            colors.text_dim,
-            transform.pre_translate(Vec2::new(label_x, rgb_y)),
-            None,
-            &text_style,
-        );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1401,29 +1375,8 @@ mod tests {
     /// pass. Mirrors the SV/hue/slider arithmetic in `apply_layout`.
     fn picker_at(initial: Color, origin: Point) -> ColorPicker {
         let mut p = ColorPicker::new(initial);
-        let x0 = origin.x;
-        let y0 = origin.y;
-        let x1 = x0 + PICKER_WIDTH;
-        let y1 = y0 + PICKER_HEIGHT;
-        p.rect = Rect::new(x0, y0, x1, y1);
-        p.sv_rect = Rect::new(x0, y0, x0 + SV_SIZE, y0 + SV_SIZE);
-        let hue_x0 = p.sv_rect.x1 + COMPONENT_GAP;
-        p.hue_strip_rect = Rect::new(hue_x0, y0, hue_x0 + HUE_STRIP_WIDTH, y0 + SV_SIZE);
-        p.preview_rect = Rect::new(x1 - PREVIEW_SIZE, y0, x1, y0 + PREVIEW_SIZE);
-        let sliders_top = p.sv_rect.y1 + COMPONENT_GAP;
-        p.r_slider_rect = Rect::new(x0, sliders_top, x1, sliders_top + SLIDER_HEIGHT);
-        p.g_slider_rect = Rect::new(
-            x0,
-            p.r_slider_rect.y1 + SLIDER_GAP,
-            x1,
-            p.r_slider_rect.y1 + SLIDER_GAP + SLIDER_HEIGHT,
-        );
-        p.b_slider_rect = Rect::new(
-            x0,
-            p.g_slider_rect.y1 + SLIDER_GAP,
-            x1,
-            p.g_slider_rect.y1 + SLIDER_GAP + SLIDER_HEIGHT,
-        );
+        let (w, h) = p.preferred_size();
+        p.apply_layout_external(Rect::new(origin.x, origin.y, origin.x + w, origin.y + h));
         p
     }
 
@@ -1603,11 +1556,6 @@ mod tests {
             assert_eq!(p.hex_string(), "#0A00FF");
         }
 
-        fn rgb_string_formats_decimal_triple() {
-            let p = ColorPicker::new(Color::from_rgba8(99, 102, 241, 255));
-            assert_eq!(p.rgb_string(), "rgb(99, 102, 241)");
-        }
-
         fn parse_hex_rejects_non_ascii_six_byte_input() {
             // 6 bytes via UTF-8 multi-byte chars, not 6 chars.
             assert!(parse_hex("ä♥X").is_none());
@@ -1617,7 +1565,6 @@ mod tests {
         }
 
         hex_string_formats_six_uppercase_digits();
-        rgb_string_formats_decimal_triple();
         parse_hex_rejects_non_ascii_six_byte_input();
     }
 
@@ -1819,7 +1766,24 @@ mod tests {
     fn swatches_lay_out_select_and_expose_radio_actions() {
         fn plain_picker_keeps_its_size_and_rows() {
             let p = ColorPicker::new(Color::from_rgb8(1, 2, 3));
-            assert_eq!(p.preferred_size(), (PICKER_WIDTH, PICKER_HEIGHT));
+            let (w, h) = p.preferred_size();
+            assert_eq!(w, PICKER_WIDTH);
+            let laid = laid_out(ColorPicker::new(Color::from_rgb8(1, 2, 3)));
+            let bounds = Rect::new(0.0, 0.0, w, h);
+            for part in [
+                laid.sv_rect,
+                laid.hue_strip_rect,
+                laid.preview_rect,
+                laid.hex_input_rect,
+                laid.b_slider_rect,
+            ] {
+                assert!(
+                    bounds.contains(Point::new(part.x0, part.y0))
+                        && part.x1 <= bounds.x1 + 1e-9
+                        && part.y1 <= bounds.y1 + 1e-9,
+                    "every part lies inside the preferred size {bounds:?}: {part:?}"
+                );
+            }
             let p = laid_out(p);
             assert!(p.swatch_rects.is_empty());
             assert_eq!(p.done_rect, Rect::ZERO);

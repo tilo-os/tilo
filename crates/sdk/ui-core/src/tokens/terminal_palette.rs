@@ -48,7 +48,9 @@ impl TerminalPalette {
     /// primary text and ground; the neutral ANSI anchors blend
     /// ground→foreground so both ends stay legible in light or dark.
     pub fn from_colors(c: &Colors) -> Self {
-        let bg = c.surfaces.base;
+        // The terminal stands on the window ground every app has: a terminal
+        // is content, not a well sunk into it.
+        let bg = c.surfaces.content;
         let fg = c.text_primary;
         let dark = luma(bg) < 0.5;
 

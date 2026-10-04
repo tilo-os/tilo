@@ -108,11 +108,6 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
     )
     .with_id("api.method")
     .with_accessible_name("Method");
-    // A dropdown asks for the whole row; the method picker holds a verb.
-    let method = Container::new()
-        .with_no_padding()
-        .with_width(Metrics::BASE.min_pointer_target * 4.0)
-        .with_child(Box::new(method));
     let url = TextInput::from_document_string("url")
         .with_kind(TextInputKind::Url)
         .with_id("api.url")

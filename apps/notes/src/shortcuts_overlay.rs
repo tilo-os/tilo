@@ -10,11 +10,7 @@ use winit::event::WindowEvent;
 
 use ui::Widget;
 use ui::text_render::TextKind;
-use ui::theme::Theme;
-use ui::tokens::TextRole;
-use ui::widget::{
-    Column, Element, ModalDialog, Property, PropertyList, Scrollable, Section, SectionHeader,
-};
+use ui::widget::{Column, Element, ModalDialog, Property, PropertyList, Section, SectionHeader};
 
 /// One group of shortcuts. The label titles the group; the rows list each
 /// shortcut.
@@ -129,28 +125,14 @@ fn group(group: &Group) -> Element {
     )
 }
 
-/// The body of the sheet: every group in one column, scrolling inside
-/// `height` when the window bounds it.
-fn sheet_body(height: Option<f64>) -> Element {
+/// The body of the sheet: every group in one column. A window too short for
+/// all of it gets the dialog's own scrolling body.
+fn sheet_body() -> Element {
     let mut column = Column::new().with_intrinsic_height().with_no_padding();
     for entry in GROUPS {
         column = column.push(group(entry));
     }
-    let scroll = Scrollable::new_vertical().with_child(Box::new(column));
-    Box::new(match height {
-        Some(height) => scroll.with_max_height(ui::num::f32_of_f64(height)),
-        None => scroll,
-    })
-}
-
-/// How tall the reference may be in `window`: what the sheet leaves between
-/// its margins, its padding, its title and the gap under it.
-fn body_height(window: Rect, theme: &Theme) -> f64 {
-    let spacing = &theme.tokens.spacing;
-    let title = f64::from(theme.text(TextRole::Title).line_height_px())
-        .max(f64::from(theme.tokens.metrics.min_pointer_target));
-    (window.height() - 4.0 * f64::from(spacing.s6) - title - f64::from(spacing.s4))
-        .max(f64::from(spacing.s16))
+    Box::new(column)
 }
 
 /// The shortcuts sheet, closed until `?` opens it.
@@ -158,32 +140,26 @@ pub struct ShortcutsOverlay {
     dialog: ModalDialog<Column>,
     dismissed: Rc<Cell<bool>>,
     visible: bool,
-    viewport: Rect,
-    /// The height the reference was last built to scroll in, so a resize
-    /// rebuilds it only when that changed.
-    built_for: Option<i64>,
 }
 
 impl ShortcutsOverlay {
     pub fn new() -> Self {
         let dismissed = Rc::new(Cell::new(false));
         Self {
-            dialog: Self::dialog(&dismissed, None),
+            dialog: Self::dialog(&dismissed),
             dismissed,
             visible: false,
-            viewport: Rect::ZERO,
-            built_for: None,
         }
     }
 
-    fn dialog(dismissed: &Rc<Cell<bool>>, height: Option<f64>) -> ModalDialog<Column> {
+    fn dialog(dismissed: &Rc<Cell<bool>>) -> ModalDialog<Column> {
         let dismissed = Rc::clone(dismissed);
         ModalDialog::new(
             "Keyboard shortcuts",
             Column::new()
                 .with_intrinsic_height()
                 .with_no_padding()
-                .push(sheet_body(height)),
+                .push(sheet_body()),
         )
         .with_test_id("notes-shortcuts")
         .on_dismiss(move || dismissed.set(true))
@@ -203,22 +179,6 @@ impl ShortcutsOverlay {
 
     pub fn toggle(&mut self) {
         self.set_visible(!self.visible);
-    }
-
-    /// The window the sheet is shown in: how much of the reference scrolls
-    /// follows its height.
-    pub fn set_viewport(&mut self, viewport: Rect, theme: &Theme) {
-        self.viewport = viewport;
-        if viewport.width() <= 0.0 {
-            return;
-        }
-        let height = body_height(viewport, theme);
-        let key = Some(ui::num::i64_of_f64(height.round()));
-        if key != self.built_for {
-            self.built_for = key;
-            self.dialog = Self::dialog(&self.dismissed, Some(height));
-            self.dialog.set_open(self.visible);
-        }
     }
 
     /// The sheet's card, for hit-testing in tests.
@@ -304,34 +264,5 @@ mod tests {
         assert!(overlay.is_visible());
         overlay.toggle();
         assert!(!overlay.is_visible());
-    }
-
-    #[test]
-    fn the_reference_scrolls_inside_what_the_window_leaves() {
-        let theme = Theme::dark();
-        let short = body_height(Rect::new(0.0, 0.0, 800.0, 400.0), &theme);
-        let tall = body_height(Rect::new(0.0, 0.0, 800.0, 900.0), &theme);
-        assert!(short < 400.0, "the body is inside the window: {short}");
-        assert!(
-            (tall - short - 500.0).abs() < 1e-9,
-            "every extra pixel of window is a pixel of body"
-        );
-        let squeezed = body_height(Rect::new(0.0, 0.0, 800.0, 20.0), &theme);
-        assert!(squeezed > 0.0, "a body never collapses to nothing");
-    }
-
-    #[test]
-    fn a_resize_rebuilds_the_sheet_only_when_its_scroll_height_changes() {
-        let theme = Theme::dark();
-        let mut overlay = ShortcutsOverlay::new();
-        overlay.set_visible(true);
-        overlay.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0), &theme);
-        let built = overlay.built_for;
-        assert!(built.is_some());
-        overlay.set_viewport(Rect::new(0.0, 0.0, 1000.0, 600.0), &theme);
-        assert_eq!(overlay.built_for, built, "a wider window scrolls the same");
-        overlay.set_viewport(Rect::new(0.0, 0.0, 800.0, 700.0), &theme);
-        assert_ne!(overlay.built_for, built, "a taller window scrolls less");
-        assert!(overlay.is_visible(), "a resize does not close the sheet");
     }
 }

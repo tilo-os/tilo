@@ -403,3 +403,20 @@ save-status-saved = Saved
 save-status-failed = Save failed
 save-status-retry = Try again
 save-status-dismiss = Dismiss
+
+# Find bar: the band at the top of a document that finds in it.
+find-bar-name = Find
+find-bar-placeholder = Find
+find-bar-replace-placeholder = Replace with
+find-bar-match-case = Match case
+find-bar-whole-word = Whole word
+find-bar-regex = Regular expression
+find-bar-text = Text
+find-bar-hex = Hex
+find-bar-previous = Previous match
+find-bar-next = Next match
+find-bar-close = Close find
+find-bar-replace = Replace
+find-bar-replace-all = Replace all
+find-bar-position = { $current } of { $total }
+find-bar-no-matches = No matches

@@ -2244,13 +2244,15 @@ pub use image_crop::{CropSelection, ImageCropEditor};
 mod slider;
 pub use slider::{Slider, SliderFace};
 mod text_input;
-pub use text_input::{TextActionRequest, TextInput, TextInputKind};
+pub use text_input::{
+    AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextInput, TextInputKind,
+};
 pub mod code_editor;
 pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
 mod editable_label;
 pub use editable_label::{EditOutcome, EditableLabel};
 pub mod autocomplete;
-pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion};
+pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion, SuggestionList};
 mod number_input;
 pub use number_input::NumberInput;
 pub mod marks;
@@ -2273,9 +2275,9 @@ pub use page_palette::PageJumpPalette;
 pub mod page_sidebar;
 pub use page_sidebar::{PageSidebar, PageSidebarEvent};
 mod dropdown;
-pub use dropdown::Dropdown;
+pub use dropdown::{Dropdown, DropdownFace, FILTER_MIN_OPTIONS};
 pub mod tabs;
-pub use tabs::{TabBar, TabDescriptor, draw_app_mark};
+pub use tabs::{TabBar, TabDescriptor, TabMark, draw_app_mark};
 pub mod scrollbar;
 pub use scrollbar::{
     PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,
@@ -2308,7 +2310,7 @@ pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
 pub mod floating_surface;
-pub use context_menu::{ContextMenu, MenuItem};
+pub use context_menu::{ContextMenu, MenuButton, MenuItem};
 pub mod data_table;
 mod virtual_table_semantics;
 pub use virtual_table_semantics::{
@@ -2362,9 +2364,12 @@ pub mod color_swatch;
 pub use color_picker::{ColorPicker, ColorPickerOutcome};
 pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker};
 pub mod popover;
-pub use popover::{Popover, PopoverSide};
+pub use popover::{PanelAlign, Popover, PopoverButton, PopoverPrompt, PopoverSide};
 pub mod modal_dialog;
-pub use modal_dialog::{ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSpec};
+pub use modal_dialog::{
+    ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSheet, ModalSpec,
+    SheetResponse,
+};
 pub mod native_view;
 pub use native_view::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
@@ -2496,7 +2501,7 @@ pub use synthetic_focus::{
     semantic_focus_order, semantic_target_at_path, semantic_target_bounds,
 };
 pub mod toggle_group;
-pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_colors};
+pub use toggle_group::{Segment, SegmentedFace, SegmentedStyle, ToggleGroup, segment_colors};
 
 // EmptyState / Banner / StatTile also expose an immediate-mode `paint(...)`
 // entry point for apps that render straight to a `Scene` rather than a

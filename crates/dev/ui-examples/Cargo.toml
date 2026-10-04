@@ -109,5 +109,9 @@ name = "type-specimen-shots"
 path = "examples/type_specimen_shots.rs"
 
 [[example]]
-name = "distinct-letters-shots"
+name = "reading-face-shots"
+path = "examples/reading_face_shots.rs"
+
+[[example]]
+name ="distinct-letters-shots"
 path = "examples/distinct_letters_shots.rs"

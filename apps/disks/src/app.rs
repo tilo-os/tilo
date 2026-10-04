@@ -24,7 +24,9 @@ use ui::time::{Duration, Instant};
 use ui::tokens::TextRole;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point, Rect};
-use ui::widget::modal_dialog::{self, ModalAction, ModalHit, ModalLayout, ModalSpec};
+use ui::widget::modal_dialog::{
+    self, ModalAction, ModalLayout, ModalSheet, ModalSpec, SheetResponse,
+};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{AppModel, ControlSize, ModelPath, NavShell, TextInput, Widget};
 use ui::winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -286,6 +288,8 @@ pub struct DisksApp {
     built: Option<ViewKey>,
     toast: Option<ToastState>,
     modal: Option<ModalState>,
+    /// The confirm sheet: it paints, hit-tests and answers the pointer.
+    sheet: ModalSheet,
     /// The pointer, for the sheet's hover states and the toast's close control.
     cursor: Point,
     shared: crate::resource::ActionSink,
@@ -396,6 +400,7 @@ impl DisksApp {
             built: None,
             toast: None,
             modal: None,
+            sheet: ModalSheet::new(),
             cursor: Point::ZERO,
             shared: crate::resource::ActionSink::default(),
         }
@@ -589,6 +594,7 @@ impl DisksApp {
     ) {
         let Some(pending) = self.pending else {
             self.modal = None;
+            self.sheet.reset();
             return;
         };
         let target = self.pending_target_name(pending);
@@ -599,84 +605,73 @@ impl DisksApp {
         let ready = self.confirm_ready();
         let spacing = &theme.tokens.spacing;
         let gap = f64::from(spacing.rhythm.sibling);
+        let tight = f64::from(spacing.rhythm.tight);
 
         // The body: the explanation, then (for a destructive action) the
         // name to type and its field.
-        let body_style = theme.text(TextRole::Body);
         let body_width = modal_dialog::body_width(window, modal_dialog::MODAL_MAX_WIDTH, theme);
-        let (_, body_h) = text.measure_style(&body, Some(body_width as f32), &body_style);
+        let body_h =
+            ModalSheet::message_height(text, theme, window, modal_dialog::MODAL_MAX_WIDTH, &body);
         let prompt = format!("Type {leaf} to confirm");
-        let label_h = f64::from(
-            text.measure_style(&prompt, None, &theme.text(TextRole::Label))
-                .1,
-        );
+        let label_h = f64::from(theme.text(TextRole::Label).line_height_px());
         let field_h = ControlSize::Regular.height(theme);
-        let mut body_height = f64::from(body_h);
+        let mut body_height = body_h;
         if danger {
-            body_height += gap + label_h + f64::from(spacing.rhythm.tight) + field_h;
+            body_height += gap + label_h + tight + field_h;
         }
-
-        let confirm_label = if danger { "Erase" } else { "Confirm" };
-        let hovered = |layout: &ModalLayout, i: usize| {
-            layout
-                .actions
-                .get(i)
-                .is_some_and(|r| r.contains(self.cursor))
-        };
-        let actions = |layout: Option<&ModalLayout>| {
-            let cancel = ModalAction::secondary("Cancel");
-            let confirm = if danger {
-                ModalAction::danger(confirm_label)
+        // The confirmation is the destructive answer, locked until the name
+        // is typed exactly.
+        let actions = [
+            ModalAction::secondary("Cancel"),
+            if danger {
+                ModalAction::danger("Erase")
             } else {
-                ModalAction::primary(confirm_label)
+                ModalAction::primary("Confirm")
             }
-            .enabled(!danger || ready);
-            match layout {
-                Some(l) => [
-                    cancel.hovered(hovered(l, 0)),
-                    confirm.hovered(hovered(l, 1)),
-                ],
-                None => [cancel, confirm],
-            }
-        };
-        let first = actions(None);
+            .enabled(!danger || ready),
+        ];
         let spec = ModalSpec::new(&title)
-            .actions(&first)
+            .actions(&actions)
             .body_height(body_height)
             .closable(false);
-        let layout = modal_dialog::layout(window, &spec, text, theme);
-        let shown = actions(Some(&layout));
-        let spec = ModalSpec::new(&title)
-            .actions(&shown)
-            .body_height(body_height)
-            .closable(false);
-        modal_dialog::paint_backdrop(scene, transform, text, theme, &layout, &spec);
-
-        let (ink, dim) = modal_dialog::ink(theme);
-        let mut ctx = PaintCtx::new(scene, transform, text, theme);
-        let origin = layout.body.origin();
-        ctx.text_role(&body, TextRole::Body, dim, origin, Some(body_width as f32));
-        let mut input = Rect::ZERO;
-        if danger {
-            let label_y = origin.y + f64::from(body_h) + gap;
-            ctx.text_role(
-                &prompt,
-                TextRole::Label,
-                ink,
-                Point::new(origin.x, label_y),
-                None,
-            );
-            let field_y = label_y + label_h + f64::from(spacing.rhythm.tight);
-            input = Rect::new(layout.body.x0, field_y, layout.body.x1, field_y + field_h);
-            self.confirm_input.set_placeholder(&leaf);
-            self.confirm_input.apply_layout_external(input);
-            self.confirm_input
-                .draw(scene, transform, text, theme, presence);
-        }
-        modal_dialog::paint_actions(scene, transform, text, theme, &layout, &spec);
-        self.modal = Some(ModalState {
+        let input = &mut self.confirm_input;
+        let mut input_rect = Rect::ZERO;
+        self.sheet.paint(
+            scene,
+            transform,
+            text,
+            theme,
+            window,
+            &spec,
+            |scene, transform, text, sheet_theme, body_rect| {
+                let (ink, dim) = modal_dialog::ink(theme);
+                let origin = body_rect.origin();
+                let label_y = origin.y + body_h + gap;
+                {
+                    let mut ctx = PaintCtx::new(scene, transform, text, sheet_theme);
+                    ctx.text_role(&body, TextRole::Body, dim, origin, Some(body_width as f32));
+                    if danger {
+                        ctx.text_role(
+                            &prompt,
+                            TextRole::Label,
+                            ink,
+                            Point::new(origin.x, label_y),
+                            None,
+                        );
+                    }
+                }
+                if danger {
+                    let field_y = label_y + label_h + tight;
+                    input_rect = Rect::new(body_rect.x0, field_y, body_rect.x1, field_y + field_h);
+                    input.set_placeholder(&leaf);
+                    input.apply_layout_external(input_rect);
+                    input.draw(scene, transform, text, sheet_theme, presence);
+                }
+            },
+        );
+        self.modal = self.sheet.layout().cloned().map(|layout| ModalState {
             layout,
-            input,
+            input: input_rect,
             ready,
         });
     }
@@ -1458,25 +1453,12 @@ impl DisksApp {
         if self.confirm_input.take_dirty().is_some() {
             self.dirty = true;
         }
-        if matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
+        match self.sheet.handle(event, ctx.scale_factor) {
+            Some(SheetResponse::Action(1)) => self.confirm_pending(ctx.state),
+            Some(SheetResponse::Action(_) | SheetResponse::Dismiss) => {
+                self.cancel_pending(ctx.state);
             }
-        ) {
-            let hit = self
-                .modal
-                .as_ref()
-                .and_then(|modal| modal.layout.hit(self.cursor));
-            match hit {
-                Some(ModalHit::Action(1)) => self.confirm_pending(ctx.state),
-                Some(ModalHit::Action(_) | ModalHit::Close | ModalHit::Scrim) => {
-                    self.cancel_pending(ctx.state);
-                }
-                Some(ModalHit::Card) | None => {}
-            }
+            None => {}
         }
         // The open sheet is fully blocking, including IME events and
         // clicks/releases that the editor itself did not consume.

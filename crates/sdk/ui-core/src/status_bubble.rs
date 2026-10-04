@@ -167,7 +167,7 @@ impl StatusBubble {
         area: Rect,
         now: Instant,
     ) -> Option<Rect> {
-        let alpha = self.alpha(now);
+        let alpha = self.alpha_in(theme, now);
         if alpha <= 0.0 || self.text.is_empty() {
             return None;
         }
@@ -188,6 +188,17 @@ impl StatusBubble {
             scene.pop_layer();
         }
         Some(rect)
+    }
+
+    /// [`Self::alpha`] as `theme` shows it: under reduced motion the bubble
+    /// cuts in and out instead of fading.
+    pub fn alpha_in(&self, theme: &Theme, now: Instant) -> f32 {
+        let alpha = self.alpha(now);
+        if theme.reduce_motion && alpha > 0.0 {
+            1.0
+        } else {
+            alpha
+        }
     }
 
     /// Hovered/hidden states need no frames.
@@ -537,6 +548,15 @@ mod tests {
             // Past the linger: gone.
             assert!(!b.is_visible(t0 + Duration::from_secs(1)));
             assert!(!b.needs_frame(t0 + Duration::from_secs(1)));
+            // Under reduced motion it cuts instead of fading.
+            let reduced = Theme {
+                reduce_motion: true,
+                ..Theme::dark()
+            };
+            let tail = t0 + Duration::from_millis(850);
+            assert!((b.alpha_in(&reduced, tail) - 1.0).abs() < 1e-6);
+            assert!(b.alpha_in(&reduced, t0 + Duration::from_secs(1)) <= 0.0);
+            assert!(b.alpha_in(&Theme::dark(), tail) < 1.0);
         }
 
         // Case `hover_pins_open_then_lingers_after_leave`.

@@ -29,6 +29,11 @@ const AAA: f64 = 7.0;
 const MAX_CONTRAST_TEXT: f64 = 19.0;
 /// The presence slot keywords and markup start from: the blue at 265°.
 const KEYWORD_SLOT: usize = 8;
+/// The presence slot attributes and macros take: the magenta at 325°. Not
+/// the danger hue: an attribute is not an error.
+const ATTRIBUTE_SLOT: usize = 10;
+/// The presence slot markup tags take: the cyan at 205°.
+const TAG_SLOT: usize = 6;
 
 /// Theme-derived colour for every syntax role. Read it from
 /// `theme.tokens.syntax` and resolve a token with [`SyntaxPalette::color`].
@@ -47,6 +52,8 @@ pub struct SyntaxPalette {
     pub operator: Color,
     /// Attributes, macros and preprocessor lines.
     pub attribute: Color,
+    /// Markup tags (`<div>`, an XML element name).
+    pub tag: Color,
     /// Markup headings; also the role snippet placeholders borrow.
     pub markup: Color,
     /// Raw / inline-code markup runs.
@@ -81,7 +88,8 @@ impl SyntaxPalette {
             number: legible(c.semantic.warning),
             comment: legible(c.text_dim),
             operator: legible(c.neutral[7]),
-            attribute: legible(c.semantic.danger),
+            attribute: legible(mix8(c.presence.get(ATTRIBUTE_SLOT), c.text_primary, 0.25)),
+            tag: legible(mix8(c.presence.get(TAG_SLOT), c.text_primary, 0.25)),
             markup: legible(blue),
             raw: legible(step(0.5)),
             math: legible(step(0.25)),
@@ -101,6 +109,7 @@ impl SyntaxPalette {
             TokenKind::Comment => self.comment,
             TokenKind::Operator | TokenKind::Punctuation => self.operator,
             TokenKind::Attribute | TokenKind::Preprocessor => self.attribute,
+            TokenKind::Tag => self.tag,
             TokenKind::Heading => self.markup,
             TokenKind::Raw => self.raw,
             TokenKind::Math => self.math,
@@ -144,7 +153,8 @@ mod tests {
     use crate::color::relative_luminance;
     use crate::theme::Theme;
 
-    const ROLES: [TokenKind; 12] = [
+    const ROLES: [TokenKind; 13] = [
+        TokenKind::Tag,
         TokenKind::Keyword,
         TokenKind::Type,
         TokenKind::Function,
@@ -233,7 +243,27 @@ mod tests {
                 }
             }
         }
+        // phase: attributes_and_tags_are_not_the_error_hue
+        {
+            for name in Theme::ALL {
+                let theme = Theme::named(name).unwrap_or_else(|| panic!("named({name}) resolves"));
+                let syntax = &theme.tokens.syntax;
+                let danger = rgb(theme.tokens.colors.semantic.danger);
+                assert_ne!(
+                    rgb(syntax.attribute),
+                    danger,
+                    "{name}: attribute is not an error"
+                );
+                assert_ne!(rgb(syntax.tag), danger, "{name}: tag is not an error");
+                assert_ne!(
+                    rgb(syntax.tag),
+                    rgb(syntax.attribute),
+                    "{name}: tag and attribute differ"
+                );
+            }
+        }
         // phase: the_palette_tracks_the_theme
+
         {
             assert_ne!(
                 rgb(Theme::dark().tokens.syntax.keyword),

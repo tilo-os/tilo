@@ -11,11 +11,11 @@ use taffy::{NodeId, TaffyTree};
 use ui::icons::Icon;
 use ui::tokens::{Metrics, spacing::Spacing};
 use ui::widget::{
-    Actions, Banner, Button, ButtonRole, Card, CardGrid, CardWidth, Checkbox, Column, Container,
-    ControlSize, Dropdown, Element, EmptyState, Field, LabelPlacement, ListRow, ModalDialog,
-    ModelView, NavItem, NavList, NavSection, NavShell, NumberInput, ProgressRing, Property,
-    PropertyList, Row, Scrollable, Section, SectionHeader, Stack, Text, TextInput, TextInputKind,
-    Toggle, Widget,
+    Actions, Banner, Button, ButtonRole, Card, CardGrid, CardWidth, Column, Container, ControlSize,
+    Dropdown, Element, EmptyState, Field, LabelPlacement, ListRow, ModalDialog, ModelView, NavItem,
+    NavList, NavSection, NavShell, NumberInput, ProgressRing, Property, PropertyList, Row,
+    Scrollable, Section, SectionHeader, Segment, Stack, Text, TextInput, TextInputKind, Toggle,
+    ToggleGroup, Widget,
 };
 use ui::widget::{AppModel, ModelPath};
 use ui::{TextKind, TextRole};
@@ -288,41 +288,27 @@ fn fields(items: Vec<Element>) -> Column {
 /// The weekday choices of the new alarm form: a strip of seven equal days,
 /// each a checkbox under its short name.
 fn weekday_picker(days: &[ui::LocalState<bool>]) -> Element {
-    let mut picker = Row::new().with_gap(Spacing::BASE.s1);
-    for ((day, label), state) in WEEKDAYS.iter().zip(days) {
-        picker = picker.push(Box::new(
-            Container::new()
-                .with_no_padding()
-                .with_width(Metrics::BASE.min_pointer_target)
-                .with_child(Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .with_gap(Spacing::BASE.s1)
-                        .push(Box::new(text(label, TextRole::Label).dimmed()))
-                        .push(Box::new(
-                            Checkbox::from_state(state)
-                                .with_id(&format!("clocks.alarm.day.{day:?}"))
-                                .with_accessible_name(&day_name(*day)),
-                        )),
-                )),
-        ));
-    }
-    labelled("Repeat", Box::new(picker))
-}
-
-/// A weekday's full name, for assistive technology.
-fn day_name(day: WeekdayKey) -> String {
-    match day {
-        WeekdayKey::Mon => "Monday",
-        WeekdayKey::Tue => "Tuesday",
-        WeekdayKey::Wed => "Wednesday",
-        WeekdayKey::Thu => "Thursday",
-        WeekdayKey::Fri => "Friday",
-        WeekdayKey::Sat => "Saturday",
-        WeekdayKey::Sun => "Sunday",
-    }
-    .to_owned()
+    // One toggle per day, each as wide as its label, wrapping when the
+    // dialog is narrow.
+    let segments = WEEKDAYS
+        .iter()
+        .map(|(_, label)| Segment::new(*label))
+        .collect();
+    let chosen = days.iter().map(ui::LocalState::get).collect();
+    let states = days.to_vec();
+    labelled(
+        "Repeat",
+        Box::new(
+            ToggleGroup::multiple(segments, chosen)
+                .with_id("clocks.alarm.days")
+                .with_accessible_name("Repeat")
+                .on_chosen_change(move |chosen| {
+                    for (state, on) in states.iter().zip(chosen) {
+                        state.set(*on);
+                    }
+                }),
+        ),
+    )
 }
 
 /// The current wall-clock second: what a live readout is keyed on.

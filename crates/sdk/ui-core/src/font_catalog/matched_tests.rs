@@ -48,7 +48,14 @@ fn plan_text<'t>(
     attrs: Attrs<'static>,
     kind: TextKind,
 ) -> Vec<(&'t str, Attrs<'static>)> {
-    plan(fs.db(), [(text, attrs)], BASE, kind, false)
+    plan(
+        fs.db(),
+        [(text, attrs)],
+        BASE,
+        kind,
+        Optical::default(),
+        false,
+    )
 }
 
 fn ui(weight: u16) -> Attrs<'static> {
@@ -220,6 +227,7 @@ fn explicit_features_win_and_stylistic_sets_stay_with_their_face() {
         [("y Привет", attrs)],
         BASE,
         TextKind::Numeric,
+        Optical::default(),
         false,
     );
     assert_eq!(features(&spans[0].1), [*b"tnum", *b"ss03", *b"kern"]);
@@ -270,6 +278,7 @@ fn planned_paragraphs_keep_their_final_empty_line() {
         [("Hi Привет\n", attrs.clone())],
         BASE,
         TextKind::Prose,
+        Optical::default(),
         false,
     );
     assert!(spans.len() > 1);
@@ -294,7 +303,14 @@ fn glyph_ids(fs: &mut FontSystem, text: &str, kind: TextKind) -> Vec<u16> {
 
 fn glyph_ids_with(fs: &mut FontSystem, text: &str, kind: TextKind, distinguish: bool) -> Vec<u16> {
     let attrs = Attrs::new().family(Family::Name(FEATURES_FIXTURE_FAMILY));
-    let spans = plan(fs.db(), [(text, attrs.clone())], BASE, kind, distinguish);
+    let spans = plan(
+        fs.db(),
+        [(text, attrs.clone())],
+        BASE,
+        kind,
+        Optical::default(),
+        distinguish,
+    );
     let mut buffer = Buffer::new(fs, BASE);
     set_spans(&mut buffer, &spans, &attrs, None);
     buffer.shape_until_scroll(fs, false);
@@ -396,7 +412,14 @@ fn expect(spans: &[(&str, &[[u8; 4]])]) -> Vec<(String, Vec<[u8; 4]>)> {
 fn identifiers_in_prose_are_spans_of_their_own_kind() {
     let fs = fixture_system();
     let text = "Mail Il0@example.org or open https://paypa1.com/I0l, @lena_l1.";
-    let spans = plan(fs.db(), [(text, fixture())], BASE, TextKind::Prose, false);
+    let spans = plan(
+        fs.db(),
+        [(text, fixture())],
+        BASE,
+        TextKind::Prose,
+        Optical::default(),
+        false,
+    );
     assert_eq!(
         planned(&spans),
         expect(&[
@@ -410,7 +433,14 @@ fn identifiers_in_prose_are_spans_of_their_own_kind() {
         ])
     );
     // Text that already says what it is is not split.
-    let secret = plan(fs.db(), [(text, fixture())], BASE, TextKind::Secret, false);
+    let secret = plan(
+        fs.db(),
+        [(text, fixture())],
+        BASE,
+        TextKind::Secret,
+        Optical::default(),
+        false,
+    );
     assert_eq!(secret.len(), 1);
 }
 
@@ -423,6 +453,7 @@ fn a_link_across_styled_runs_is_found_in_each() {
         [("see https://exa", fixture()), ("mple.org/Il now", bold)],
         BASE,
         TextKind::Prose,
+        Optical::default(),
         false,
     );
     assert_eq!(
@@ -447,6 +478,7 @@ fn a_run_that_says_its_kind_keeps_it() {
         ],
         BASE,
         TextKind::Prose,
+        Optical::default(),
         false,
     );
     assert_eq!(

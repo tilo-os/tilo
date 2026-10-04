@@ -1822,8 +1822,8 @@ fn searching_the_project_and_the_palette_shortcuts_open_the_platform_search() {
 fn three_action_sheet(app: &mut CodeApp) -> Vec<vello::kurbo::Rect> {
     let _frame = render(app, (1280, 800));
     let actions = app
-        .dialog_layout
-        .as_ref()
+        .question_sheet
+        .layout()
         .map(|layout| layout.actions.clone())
         .unwrap_or_default();
     assert_eq!(actions.len(), 3, "a question has three answers");
@@ -1867,7 +1867,7 @@ fn a_save_conflict_outranks_the_close_question() {
     app.shots_conflict();
     assert_eq!(app.question(), Some(dialogs::Question::Conflict));
     three_action_sheet(&mut app);
-    assert!(app.dialog_hover.is_none());
+    assert!(app.question_sheet.focused_action().is_none());
 }
 
 #[test]

@@ -246,10 +246,10 @@ fn input(shared: &Shared, field: DraftField, value: &str) -> TextInput {
             .with_kind(TextInputKind::Url)
             .with_placeholder("https://example.com"),
         DraftField::Password => input.with_secret(true),
-        DraftField::Notes => input.multiline(true).with_placeholder("Add a note"),
+        DraftField::Notes => input.with_min_lines(4).with_placeholder("Add a note"),
         DraftField::Tags => input.with_placeholder("Separate tags with commas"),
         DraftField::CustomFields => input
-            .multiline(true)
+            .with_min_lines(3)
             .with_placeholder("One per line, such as PIN = 1234"),
     };
     input
