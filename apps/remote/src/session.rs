@@ -46,13 +46,13 @@ impl TransportReadiness {
         matches!(self, Self::Ready)
     }
 
-    /// Short state label that fits alongside a protocol badge in a list row.
+    /// Short state that fits the meta column of a list row.
     pub fn label(self) -> &'static str {
         match self {
             Self::Ready => "Ready",
-            Self::NeedsLiveSessionCapability => "Needs live access",
-            Self::BackendUnavailable => "Not supported",
-            Self::InvalidProfile => "Fix profile",
+            Self::NeedsLiveSessionCapability => "Not available here",
+            Self::BackendUnavailable => "RDP isn't supported",
+            Self::InvalidProfile => "Needs editing",
         }
     }
 
@@ -66,24 +66,21 @@ impl TransportReadiness {
         }
     }
 
-    /// Concise explanation shown without implying that a connection was tried.
+    /// One sentence for the person, without implying that a connection was
+    /// tried.
     pub fn detail(self, kind: ConnectionKind) -> &'static str {
         match self {
-            Self::Ready => "This transport is ready to connect.",
+            Self::Ready => "Remote can connect to this machine.",
             Self::NeedsLiveSessionCapability => match kind {
-                ConnectionKind::Ssh => {
-                    "SSH is installed, but this build has not been granted live network access."
-                }
-                ConnectionKind::Vnc => {
-                    "VNC is installed, but this build has not been granted live network access."
-                }
-                _ => "This transport needs a capability before it can connect.",
+                ConnectionKind::Ssh => "Remote can't open SSH sessions on this device.",
+                ConnectionKind::Vnc => "Remote can't open VNC sessions on this device.",
+                _ => "Remote can't open this kind of session on this device.",
             },
             Self::BackendUnavailable => {
-                "RDP profiles are preserved, but this Tilo build has no RDP client backend."
+                "Remote doesn't support RDP. Switch the connection to SSH or VNC to keep using it."
             }
             Self::InvalidProfile => {
-                "This saved connection has incompatible target or authentication settings."
+                "The saved address or sign-in method doesn't fit this protocol."
             }
         }
     }

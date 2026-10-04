@@ -5,12 +5,15 @@ fn doc() -> AutoCommit {
     AutoCommit::new()
 }
 
-/// An app holding the sample connections, as a scenario's actions leave it.
+/// An app holding the sample connections and the legacy RDP profile, as
+/// the `session-rdp` scenario's actions leave it.
 fn demo() -> RemoteApp {
+    let now = ui::clock::local_now().timestamp();
     let mut workspace = Workspace::new();
-    for connection in sample_connections(ui::clock::local_now().timestamp()) {
+    for connection in sample_connections(now) {
         workspace.upsert(connection);
     }
+    workspace.upsert(sample_legacy_rdp(now));
     let mut app = RemoteApp::from_parts(workspace, seed_tilo_devices());
     app.seeded = true;
     app
@@ -65,7 +68,17 @@ fn the_live_app_starts_empty_and_the_samples_are_complete() {
             assert!(connection.profile_issue().is_none(), "{}", connection.name);
         }
         assert!(connections.iter().any(|c| c.favorite));
-        assert!(connections.iter().any(|c| c.last_used.is_none()));
+        assert!(
+            connections.iter().all(|c| c.last_used.is_some()),
+            "every sample machine has been used"
+        );
+        assert!(
+            connections
+                .iter()
+                .all(|c| crate::session::connection_readiness(c)
+                    != TransportReadiness::BackendUnavailable),
+            "the list holds only machines Remote opens"
+        );
         let again = sample_connections(1_782_812_520);
         assert_eq!(
             connections, again,
@@ -78,7 +91,7 @@ fn the_live_app_starts_empty_and_the_samples_are_complete() {
 fn rows_say_when_a_machine_was_used_or_why_it_cannot_open() {
     let app = demo();
     let rows = app.rows();
-    assert_eq!(rows.len(), 8);
+    assert_eq!(rows.len(), 9);
     assert!(
         rows.iter().take_while(|row| row.favourite).count() == 2,
         "pinned connections lead the list"
@@ -87,16 +100,22 @@ fn rows_say_when_a_machine_was_used_or_why_it_cannot_open() {
         .iter()
         .find(|row| row.name == "Studio desktop")
         .unwrap();
-    assert_eq!(studio.tag, "Tilo");
+    assert_eq!(studio.kind, ConnectionKind::Tilo);
+    assert_eq!(studio.address, "Tilo device", "no endpoint id to read");
     assert_eq!(studio.meta, "1 min ago");
+    let build = rows.iter().find(|row| row.name == "Build server").unwrap();
+    assert_eq!(build.address, "admin@build.lab.internal");
+    assert_eq!(
+        build.meta, "12 min ago",
+        "what this device lacks is said on opening, not in the list"
+    );
     let workstation = rows
         .iter()
         .find(|row| row.name == "Windows workstation")
         .unwrap();
-    assert_eq!(workstation.meta, "Not supported");
+    assert_eq!(workstation.meta, "RDP isn't supported");
     for row in &rows {
         assert!(!row.address.contains(" · "), "{}", row.address);
-        assert!(!row.address.starts_with("Tilo device"));
     }
 
     eprintln!("phase pinned_destination_lists_only_pinned_connections");
@@ -173,6 +192,28 @@ fn the_form_saves_through_the_upsert_action_and_reports_problems_at_save() {
         app.apply(Action::PickTiloDevice(1), &mut state);
         assert_eq!(app.fields.name.with(Clone::clone), "Workshop laptop");
         assert!(app.form_model(None).devices[1].picked);
+    }
+
+    eprintln!("phase after_a_failed_save_problems_follow_each_edit");
+    {
+        let mut app = demo();
+        let mut state = doc();
+        app.apply(Action::NewConnection, &mut state);
+        app.revalidate();
+        assert_eq!(app.problems, FormProblems::default(), "quiet while typing");
+        app.apply(Action::SaveForm, &mut state);
+        assert!(app.problems.name.is_some());
+        app.fields.name.set("Lab box".into());
+        app.revalidate();
+        assert!(app.problems.name.is_none(), "a fixed field loses its error");
+        assert!(app.problems.host.is_some(), "the rest stay");
+        app.apply(Action::NewConnection, &mut state);
+        app.revalidate();
+        assert_eq!(
+            app.problems,
+            FormProblems::default(),
+            "a new draft starts quiet"
+        );
     }
 
     eprintln!("phase editing_preserves_favourite_and_history");
@@ -293,6 +334,47 @@ fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
             app.session.borrow().live,
             Some(LiveSession::Error(_))
         ));
+    }
+}
+
+#[test]
+fn leaving_a_session_that_is_not_live_closes_it() {
+    let mut app = demo();
+    app.stage(Some("session-closed"));
+    assert!(app.session_for.is_some());
+    app.apply(Action::Show(Destination::Connections), &mut doc());
+    assert!(app.session_for.is_none(), "the rail no longer offers it");
+    assert_eq!(app.screen, Screen::List);
+    assert_eq!(app.destination, Destination::Connections);
+
+    let mut app = demo();
+    app.stage(Some("session-ssh"));
+    app.apply(Action::Show(Destination::Pinned), &mut doc());
+    assert!(app.session_for.is_some(), "a connected session stays open");
+    assert_eq!(app.destination, Destination::Pinned);
+}
+
+#[test]
+fn staged_sessions_show_a_connected_surface_and_record_nothing() {
+    for (scenario, kind) in [
+        ("session-ssh", ConnectionKind::Ssh),
+        ("session-vnc", ConnectionKind::Vnc),
+    ] {
+        let mut app = demo();
+        app.stage(Some(scenario));
+        let id = app.first_of_kind(kind).unwrap();
+        assert!(matches!(app.content(), Content::Surface(shown) if shown == id));
+        app.pump_session();
+        assert!(
+            app.pending_records.is_empty(),
+            "{scenario} observed no machine"
+        );
+        let session = app.session.borrow();
+        assert_eq!(
+            SessionPane::terminal_grid(&session).is_some(),
+            kind.is_terminal()
+        );
+        assert_eq!(session.fb_image.is_some(), !kind.is_terminal());
     }
 }
 

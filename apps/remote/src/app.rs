@@ -78,6 +78,17 @@ enum LiveSession {
     /// A fixed status with no transport, for `--shots`/preview rendering of
     /// the connecting/failed/closed states. Never on the live path.
     Preview(SessionStatus),
+    /// A connected session staged with a sample surface and no transport,
+    /// for `--shots`. Never on the live path.
+    Sample(SampleSurface),
+}
+
+/// What a staged connected session shows.
+enum SampleSurface {
+    /// A terminal grid, as an SSH session fills it.
+    Terminal(Box<crate::vt::VtGrid>),
+    /// A remote desktop; its frame is the session's framebuffer image.
+    Desktop,
 }
 
 impl LiveSession {
@@ -91,6 +102,7 @@ impl LiveSession {
                 SessionStatus::Unavailable(readiness.detail(*kind).into())
             }
             LiveSession::Preview(s) => s.clone(),
+            LiveSession::Sample(_) => SessionStatus::Connected,
         }
     }
 }
@@ -487,8 +499,11 @@ pub struct RemoteApp {
     draft: ConnectionDraft,
     /// The text behind the form's fields.
     fields: FormFields,
-    /// The problems the last Save found; empty until Save is tried.
+    /// What stops the draft from being saved; empty until Save is tried,
+    /// then kept current as the person edits.
     problems: FormProblems,
+    /// Save was tried on this draft, so its problems follow every edit.
+    validating: bool,
     /// The open session's transport, shared with its pane.
     session: SharedSession,
     /// Connection id the open session belongs to.
@@ -557,6 +572,7 @@ impl RemoteApp {
             draft: ConnectionDraft::default(),
             fields: FormFields::default(),
             problems: FormProblems::default(),
+            validating: false,
             session: SharedSession::default(),
             session_for: None,
             session_generation: 0,
@@ -616,16 +632,8 @@ impl RemoteApp {
                     self.apply(Action::EditConnection(id), &mut scratch);
                 }
             }
-            "session-ssh" => {
-                if let Some(id) = self.first_of_kind(ConnectionKind::Ssh) {
-                    self.open_session(id);
-                }
-            }
-            "session-vnc" => {
-                if let Some(id) = self.first_of_kind(ConnectionKind::Vnc) {
-                    self.open_session(id);
-                }
-            }
+            "session-ssh" => self.sample_session(ConnectionKind::Ssh),
+            "session-vnc" => self.sample_session(ConnectionKind::Vnc),
             "session-rdp" => {
                 if let Some(id) = self.first_of_kind(ConnectionKind::Rdp) {
                     self.open_session(id);
@@ -695,6 +703,35 @@ impl RemoteApp {
         }
     }
 
+    /// Stage a connected session of `kind` showing its sample surface, with
+    /// no transport (shots and tests only).
+    fn sample_session(&mut self, kind: ConnectionKind) {
+        let Some(id) = self.first_of_kind(kind) else {
+            return;
+        };
+        let mut session = self.session.borrow_mut();
+        if kind.is_terminal() {
+            session.live = Some(LiveSession::Sample(SampleSurface::Terminal(Box::new(
+                crate::sample::terminal(),
+            ))));
+        } else {
+            let (width, height) = crate::sample::DESKTOP_SIZE;
+            session.fb_image = Some(PenikoImage {
+                data: Blob::new(Arc::new(crate::sample::desktop())),
+                format: ImageFormat::Rgba8,
+                alpha_type: ImageAlphaType::Alpha,
+                width,
+                height,
+            });
+            session.live = Some(LiveSession::Sample(SampleSurface::Desktop));
+        }
+        drop(session);
+        self.session_for = Some(id);
+        self.selected = Some(id);
+        self.screen = Screen::Session { id };
+        self.destination = Destination::Session;
+    }
+
     /// Id of the first saved connection of a given kind, if any.
     fn first_of_kind(&self, kind: ConnectionKind) -> Option<ConnectionId> {
         self.ordered()
@@ -713,6 +750,13 @@ impl RemoteApp {
         self.dirty = true;
         match action {
             Action::Show(destination) => {
+                // Leaving a session that has ended or never opened closes it.
+                if destination != Destination::Session
+                    && self.session_for.is_some()
+                    && !self.session.borrow().live_active()
+                {
+                    self.disconnect_session();
+                }
                 self.destination = destination;
                 self.screen = match (destination, self.session_for) {
                     (Destination::Session, Some(id)) => Screen::Session { id },
@@ -728,6 +772,7 @@ impl RemoteApp {
             Action::NewConnection => {
                 self.draft = ConnectionDraft::default();
                 self.problems = FormProblems::default();
+                self.validating = false;
                 self.screen = Screen::Form { editing: None };
                 self.load_fields();
             }
@@ -735,6 +780,7 @@ impl RemoteApp {
                 if let Some(c) = self.workspace.get(id) {
                     self.draft = ConnectionDraft::from_connection(c);
                     self.problems = FormProblems::default();
+                    self.validating = false;
                     self.screen = Screen::Form { editing: Some(id) };
                     self.load_fields();
                 }
@@ -1293,7 +1339,10 @@ impl RemoteApp {
             _ => return,
         };
         // A preview has no machine behind it to observe.
-        if matches!(self.session.borrow().live, Some(LiveSession::Preview(_))) {
+        if matches!(
+            self.session.borrow().live,
+            Some(LiveSession::Preview(_) | LiveSession::Sample(_))
+        ) {
             return;
         }
         if self.recorded == Some((self.session_generation, presence)) {
@@ -1316,9 +1365,11 @@ impl RemoteApp {
         let problems = self.draft.problems();
         if !problems.is_empty() {
             self.problems = sort_problems(problems);
+            self.validating = true;
             return;
         }
         self.problems = FormProblems::default();
+        self.validating = false;
         let editing = match &self.screen {
             Screen::Form { editing } => *editing,
             _ => None,
@@ -1339,6 +1390,20 @@ impl RemoteApp {
         self.dispatch(state, &action);
         self.selected = Some(id);
         self.screen = Screen::List;
+    }
+
+    /// Once Save has been tried, keep the form's problems in step with what
+    /// the person types, so a fixed field loses its error at once.
+    fn revalidate(&mut self) {
+        if !self.validating || !matches!(self.screen, Screen::Form { .. }) {
+            return;
+        }
+        self.read_fields();
+        let problems = sort_problems(self.draft.problems());
+        if problems != self.problems {
+            self.problems = problems;
+            self.dirty = true;
+        }
     }
 
     /// Copy the draft into the form's fields.
@@ -1414,27 +1479,35 @@ impl RemoteApp {
 
     // -- the window ---------------------------------------------------------
 
-    /// One list row per connection the destination shows.
+    /// One list row per connection the destination shows. The meta says
+    /// when the machine was last used, or what about the saved connection
+    /// stops it from opening; what this device lacks is said when a session
+    /// is opened, where it can be acted on.
     fn rows(&self) -> Vec<RowModel> {
         let now = ui::clock::local_now().timestamp();
         self.ordered()
             .into_iter()
             .filter(|c| self.destination != Destination::Pinned || c.favorite)
             .map(|c| {
-                let readiness = connection_readiness(c);
-                let meta = if readiness.can_connect() {
-                    c.last_used.map_or_else(
-                        || "Never connected".to_owned(),
-                        |at| ui::format::capitalize_first(&ui::format::relative(now - at)),
-                    )
-                } else {
-                    readiness.label().to_owned()
+                let meta = match connection_readiness(c) {
+                    readiness @ (TransportReadiness::BackendUnavailable
+                    | TransportReadiness::InvalidProfile) => readiness.label().to_owned(),
+                    TransportReadiness::Ready | TransportReadiness::NeedsLiveSessionCapability => {
+                        c.last_used.map_or_else(
+                            || "Never connected".to_owned(),
+                            |at| ui::format::capitalize_first(&ui::format::relative(now - at)),
+                        )
+                    }
                 };
                 RowModel {
                     id: c.id,
                     name: c.name.clone(),
-                    tag: c.kind.tag(),
-                    address: c.address(),
+                    kind: c.kind,
+                    address: if c.kind == ConnectionKind::Tilo {
+                        c.kind.label().to_owned()
+                    } else {
+                        c.address()
+                    },
                     meta,
                     presence: c.presence,
                     favourite: c.favorite,
@@ -1454,7 +1527,6 @@ impl RemoteApp {
                     .iter()
                     .map(|d| DeviceModel {
                         name: d.name.clone(),
-                        endpoint: d.node.clone(),
                         online: d.online,
                         picked: self.draft.host == d.node,
                     })
@@ -1542,7 +1614,7 @@ impl RemoteApp {
             ),
             Content::Form(model) => (
                 String::new(),
-                view::form_actions(&self.requests, model.editing),
+                view::form_actions(&self.requests),
                 view::connection_form(&self.requests, &self.fields, &model),
             ),
             Content::Surface(id) => {
@@ -1552,7 +1624,6 @@ impl RemoteApp {
                     connection.map(|c| c.name.clone()).unwrap_or_default(),
                     view::session_actions(
                         &self.requests,
-                        true,
                         framebuffer,
                         self.session.borrow().scale_to_fit,
                     ),
@@ -1565,16 +1636,20 @@ impl RemoteApp {
                     .get(id)
                     .map(|c| c.name.clone())
                     .unwrap_or_default();
-                let live = self.session.borrow().live_active();
+                let actions = if self.session.borrow().live_active() {
+                    view::session_actions(&self.requests, false, true)
+                } else {
+                    Vec::new()
+                };
                 (
                     name,
-                    view::session_actions(&self.requests, live, false, true),
+                    actions,
                     view::session_status(&self.requests, self.status_model(id)),
                 )
             }
             Content::Missing => (
                 String::new(),
-                view::session_actions(&self.requests, false, false, true),
+                Vec::new(),
                 Box::new(
                     ui::widget::EmptyState::new("This connection was deleted")
                         .with_icon(Icon::Monitor)
@@ -2079,6 +2154,7 @@ impl Widget for RemoteApp {
             self.open_found();
             self.apply_requests(doc);
         }
+        self.revalidate();
         self.check_views();
         self.body_mut().sync(state, path);
     }
@@ -2214,6 +2290,7 @@ impl Widget for RemoteApp {
         self.flush_records(doc);
         self.open_found();
         self.apply_requests(doc);
+        self.revalidate();
         self.check_views();
     }
 
@@ -2654,22 +2731,28 @@ impl SessionPane {
         );
     }
 
-    /// Paint the live SSH terminal grid, straight from the remote PTY output
-    /// held in the [`crate::vt::VtGrid`].
+    /// The terminal grid the session shows, if it is a terminal.
+    fn terminal_grid(core: &SessionCore) -> Option<&crate::vt::VtGrid> {
+        match &core.live {
+            Some(LiveSession::Ssh(s)) => Some(s.grid()),
+            Some(LiveSession::Sample(SampleSurface::Terminal(grid))) => Some(grid),
+            _ => None,
+        }
+    }
+
+    /// Paint the SSH terminal grid, straight from the remote PTY output held
+    /// in the [`crate::vt::VtGrid`], on the window's content ground in the
+    /// theme's terminal palette.
     fn draw_terminal(
-        core: &SessionCore,
+        grid: &crate::vt::VtGrid,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         surface: Rect,
     ) {
-        let palette = ui::tokens::terminal_palette::TerminalPalette::dark();
-        scene.fill(Fill::NonZero, transform, palette.bg_default, None, &surface);
-        let (lines, cursor) = match &core.live {
-            Some(LiveSession::Ssh(s)) => (s.grid().lines(), s.grid().cursor()),
-            _ => return,
-        };
+        let palette = &theme.tokens.terminal_palette;
+        let (lines, cursor) = (grid.lines(), grid.cursor());
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -2901,8 +2984,8 @@ impl Widget for SessionPane {
         _presence: &PresenceCtx,
     ) {
         let mut core = self.session.borrow_mut();
-        if matches!(core.live, Some(LiveSession::Ssh(_))) {
-            Self::draw_terminal(&core, scene, transform, text_renderer, theme, self.rect);
+        if let Some(grid) = Self::terminal_grid(&core) {
+            Self::draw_terminal(grid, scene, transform, text_renderer, theme, self.rect);
         } else {
             Self::draw_framebuffer(&mut core, scene, transform, text_renderer, theme, self.rect);
         }
@@ -2954,9 +3037,10 @@ impl Widget for SessionPane {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         let core = self.session.borrow();
-        let name = match &core.live {
-            Some(LiveSession::Ssh(_)) => "Remote terminal",
-            _ => "Remote desktop",
+        let name = if Self::terminal_grid(&core).is_some() {
+            "Remote terminal"
+        } else {
+            "Remote desktop"
         };
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::Group)
@@ -3163,27 +3247,27 @@ pub(crate) fn sample_connections(now: i64) -> Vec<Connection> {
             favorite: true,
         },
         ConnectionSeed {
-            name: "Office NAS",
-            host: "10.0.0.20",
+            name: "Design iMac",
+            host: "10.0.0.24",
             port: 5900,
             user: "",
             kind: ConnectionKind::Vnc,
             auth: AuthMethod::Password,
             used_minutes_ago: Some(130),
             presence: Presence::Online,
-            group: "Home",
+            group: "Studio",
             favorite: false,
         },
         ConnectionSeed {
-            name: "Windows workstation",
-            host: "10.0.0.31",
-            port: 3389,
-            user: "ada",
-            kind: ConnectionKind::Rdp,
+            name: "Media PC",
+            host: "192.168.1.40",
+            port: 5900,
+            user: "",
+            kind: ConnectionKind::Vnc,
             auth: AuthMethod::Password,
             used_minutes_ago: Some(26 * 60),
-            presence: Presence::Offline,
-            group: "Work",
+            presence: Presence::Online,
+            group: "Home",
             favorite: false,
         },
         ConnectionSeed {
@@ -3225,12 +3309,12 @@ pub(crate) fn sample_connections(now: i64) -> Vec<Connection> {
         ConnectionSeed {
             name: "Backup vault",
             host: "vault.example.com",
-            port: 5901,
-            user: "",
-            kind: ConnectionKind::Vnc,
-            auth: AuthMethod::Password,
-            used_minutes_ago: None,
-            presence: Presence::Unknown,
+            port: 22,
+            user: "backup",
+            kind: ConnectionKind::Ssh,
+            auth: AuthMethod::PublicKey,
+            used_minutes_ago: Some(12 * 24 * 60),
+            presence: Presence::Online,
             group: "Production",
             favorite: false,
         },
@@ -3240,6 +3324,24 @@ pub(crate) fn sample_connections(now: i64) -> Vec<Connection> {
         .zip(1_u128..)
         .map(|(seed, index)| seed.build(index, now))
         .collect()
+}
+
+/// A remote desktop profile saved before Remote dropped RDP: kept so its
+/// owner can switch it to a protocol Remote opens.
+pub(crate) fn sample_legacy_rdp(now: i64) -> Connection {
+    ConnectionSeed {
+        name: "Windows workstation",
+        host: "10.0.0.31",
+        port: 3389,
+        user: "ada",
+        kind: ConnectionKind::Rdp,
+        auth: AuthMethod::Password,
+        used_minutes_ago: Some(40 * 24 * 60),
+        presence: Presence::Offline,
+        group: "Work",
+        favorite: false,
+    }
+    .build(100, now)
 }
 
 fn seed_tilo_devices() -> Vec<TiloDevice> {
