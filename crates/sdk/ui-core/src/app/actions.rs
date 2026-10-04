@@ -1710,11 +1710,14 @@ impl App {
         if let Some(participant) = &participant {
             self.join_participant(participant);
         }
+        let admitted = self.admitted_requirement(&address, argument);
         self.actions.acting_for.insert(
             invocation,
-            ActingInvoker {
+            crate::invocation_scope::Continuation {
                 invoker: invoker.clone(),
                 context: attributed.clone(),
+                admitted,
+                refused: None,
             },
         );
         let invoker_scope = crate::invocation_scope::InvokerScope::enter(invoker);
@@ -1750,12 +1753,15 @@ impl App {
             Err(error) => (Err(error), None),
         };
         drop(invoker_scope);
-        if !matches!(result, Ok(crate::widget::ResourceOperationStart::Accepted)) {
+        let continuation = if matches!(result, Ok(crate::widget::ResourceOperationStart::Accepted))
+        {
+            None
+        } else {
             // What the effect submitted is applied for its invoker before
             // its caller learns it finished.
             self.dispatch_control_invocations();
-            self.actions.acting_for.remove(&invocation);
-        }
+            self.actions.acting_for.remove(&invocation)
+        };
         let update = match result {
             Ok(crate::widget::ResourceOperationStart::Completed(output)) => {
                 tilo_actions::InvocationUpdate::Succeeded { invocation, output }
@@ -1785,6 +1791,10 @@ impl App {
                 },
             },
         };
+        let update = match &continuation {
+            Some(continuation) => continuation.settle(update),
+            None => update,
+        };
         // A terminal must follow the document commands it covers: queue every
         // changed owned record first, or retire the transport as uncertain.
         if update.is_terminal() && !self.queue_documents_before_terminal() {
@@ -1793,6 +1803,54 @@ impl App {
         self.collaboration
             .manager
             .send(CollabRequest::UpdateInvocation { id, update });
+    }
+
+    /// What the invoker of `address` was admitted for: the action's own
+    /// requirement for its `argument`, which the admitting host checked
+    /// they hold. Nothing when it no longer resolves.
+    fn admitted_requirement(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> tilo_actions::PermissionRequirement {
+        let key = self.ensure_resource_cache();
+        let mut resources = self
+            .actions
+            .resource_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.key == key)
+            .and_then(|cache| cache.complete.clone())
+            .unwrap_or_default();
+        if tilo_actions::door::resolve(&resources, address).is_none() {
+            resources.extend(crate::bound_dispatch::resolve_unbound_resource(
+                self.root_widget.as_ref(),
+                &self.state.doc,
+                &address.resource,
+            ));
+        }
+        if tilo_actions::door::resolve(&resources, address).is_none()
+            && let Ok(Some(target)) = self.actions.bound_publication.target(address)
+            && let Ok(snapshots) = crate::bound_dispatch::discover_bound_resources(
+                self.root_widget.as_ref(),
+                &self.state.doc,
+                Some(&target.address.address),
+            )
+        {
+            return snapshots
+                .iter()
+                .filter(|snapshot| snapshot.binding.same_component(&target.binding))
+                .find_map(|snapshot| {
+                    tilo_actions::door::resolve(&snapshot.resources, &target.address.address)
+                })
+                .map_or(tilo_actions::PermissionRequirement::None, |spec| {
+                    spec.permission_for_argument(argument)
+                });
+        }
+        tilo_actions::door::resolve(&resources, address)
+            .map_or(tilo_actions::PermissionRequirement::None, |spec| {
+                spec.permission_for_argument(argument)
+            })
     }
 
     fn resolve_resource_invocation<'a>(
@@ -2392,6 +2450,13 @@ impl App {
         if let Some(scope) = scope {
             scope.check_dispatch_spec(resolved)?;
         }
+        crate::invocation_scope::check_continuation(
+            resolved,
+            match typed_arguments.as_ref() {
+                Some(arguments) => resolved.permission_for_json(arguments),
+                None => resolved.permission_for_argument(argument),
+            },
+        )?;
         // The local participant's tree offers an action under the least it
         // needs; this invocation needs what its value asks.
         if actor == self.collaboration.local_author.0
@@ -2754,17 +2819,47 @@ impl App {
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
         intent: &tilo_actions::ControlInvocation,
+        on_behalf_of: Option<tilo_actions::InvocationId>,
     ) -> bool {
         let argument = format!(
             "{}{}",
             tilo_actions::ARGUMENTS_JSON_PREFIX,
             serde_json::Value::Object(intent.arguments.clone())
         );
-        let actor = self.collaboration.local_author.0.clone();
+        // An edit an effect submitted is applied for the effect's invoker,
+        // in its context, as far as the invoker was admitted.
+        let acting = on_behalf_of.and_then(|id| self.actions.acting_for.get(&id).cloned());
+        let actor = acting.as_ref().map_or_else(
+            || self.collaboration.local_author.0.clone(),
+            |acting| acting.invoker.actor.clone(),
+        );
+        let scopes = acting
+            .as_ref()
+            .map(crate::invocation_scope::Continuation::enter);
         let result = self.invoke_bound_target(
             target,
-            &ResourceInvocation::new(&target.address.address, &actor).argument(Some(&argument)),
+            &ResourceInvocation::new(&target.address.address, &actor)
+                .argument(Some(&argument))
+                .ambient_context(acting.as_ref().and_then(|acting| acting.context.as_ref())),
         );
+        drop(scopes);
+        // Nobody here asked for it: the person at the device is never
+        // prompted to confirm another invoker's edit.
+        let result = match result {
+            Err(tilo_actions::DoorError::ConfirmationRequired) if acting.is_some() => {
+                self.note_continuation(on_behalf_of, &result);
+                if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
+                    self.root_widget.as_mut(),
+                    target,
+                    &result,
+                ) {
+                    tracing::warn!(?error, "bound control feedback unavailable");
+                }
+                return false;
+            }
+            result => result,
+        };
+        self.note_continuation(on_behalf_of, &result);
         if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
             self.root_widget.as_mut(),
             target,
@@ -3084,8 +3179,13 @@ impl App {
                 "control traversal incomplete; delivering already drained intents"
             );
         }
-        for (target, intent) in registered.components.into_iter().chain(bound.pending) {
-            if self.dispatch_bound_control_invocation(&target, &intent) {
+        for (target, intent, on_behalf_of) in registered
+            .components
+            .into_iter()
+            .map(|(target, intent)| (target, intent, None))
+            .chain(bound.pending)
+        {
+            if self.dispatch_bound_control_invocation(&target, &intent, on_behalf_of) {
                 dispatched = dispatched.saturating_add(1);
             }
         }
@@ -3120,10 +3220,12 @@ impl App {
                     action = %intent.address.action,
                     "action-bound control is unavailable to the local actor"
                 );
+                let refused = Err(tilo_actions::DoorError::Unknown(intent.address.clone()));
+                self.note_continuation(on_behalf_of, &refused);
                 crate::widget::controls::on_control_invocation_result(
                     self.root_widget.as_mut(),
                     &intent.address,
-                    &Err(tilo_actions::DoorError::Unknown(intent.address.clone())),
+                    &refused,
                 );
                 continue;
             };
@@ -3136,10 +3238,12 @@ impl App {
                 // Nobody here asked for it: the person at the device is
                 // never prompted to confirm another invoker's edit.
                 tracing::warn!(resource = %intent.address.resource, action = %intent.address.action, "an effect's edit that needs confirmation is refused");
+                let refused = Err(tilo_actions::DoorError::ConfirmationRequired);
+                self.note_continuation(on_behalf_of, &refused);
                 crate::widget::controls::on_control_invocation_result(
                     self.root_widget.as_mut(),
                     &intent.address,
-                    &Err(tilo_actions::DoorError::ConfirmationRequired),
+                    &refused,
                 );
                 continue;
             }
@@ -3172,9 +3276,9 @@ impl App {
                 || self.collaboration.local_author.0.clone(),
                 |acting| acting.invoker.actor.clone(),
             );
-            let _invoker = acting
+            let scopes = acting
                 .as_ref()
-                .map(|acting| crate::invocation_scope::InvokerScope::enter(acting.invoker.clone()));
+                .map(crate::invocation_scope::Continuation::enter);
             // An outer control was produced outside every component and
             // legacy owner: it acts on the outer document it was captured
             // with, even when an owner declares the same address.
@@ -3184,6 +3288,8 @@ impl App {
                     .ambient_context(acting.as_ref().and_then(|acting| acting.context.as_ref())),
                 None,
             );
+            drop(scopes);
+            self.note_continuation(on_behalf_of, &result);
             crate::widget::controls::on_control_invocation_result(
                 self.root_widget.as_mut(),
                 &intent.address,
@@ -3197,6 +3303,23 @@ impl App {
             }
         }
         dispatched
+    }
+
+    /// Keep why an edit the running effect `on_behalf_of` submitted was
+    /// refused: the effect then fails rather than claim what it did not do.
+    fn note_continuation(
+        &mut self,
+        on_behalf_of: Option<tilo_actions::InvocationId>,
+        result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        let Err(error) = result else {
+            return;
+        };
+        if let Some(continuation) = on_behalf_of.and_then(|id| self.actions.acting_for.get_mut(&id))
+            && continuation.refused.is_none()
+        {
+            continuation.refused = Some(crate::invocation_scope::Continuation::failure(error));
+        }
     }
 
     fn request_invocation_cancellation(&mut self, wire_id: u64) {
@@ -3317,6 +3440,9 @@ impl App {
                 // What the effect's completion submitted is applied for its
                 // invoker before its caller learns it finished.
                 self.dispatch_control_invocations();
+                if let Some(continuation) = self.actions.acting_for.get(&invocation) {
+                    update = continuation.settle(update);
+                }
             }
             if update.is_terminal() && !self.queue_documents_before_terminal() {
                 // Keep admitted lifecycle state; do not poll the completed

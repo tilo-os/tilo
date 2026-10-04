@@ -93,6 +93,15 @@ pub enum PermissionRequirement {
     Admin,
 }
 
+impl PermissionRequirement {
+    /// Whether someone admitted for `self` holds what `needed` asks: each
+    /// level holds every one before it, as each role holds the roles below.
+    #[must_use]
+    pub const fn covers(self, needed: Self) -> bool {
+        self as u8 >= needed as u8
+    }
+}
+
 /// Confirmation required after argument binding and immediately before run.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
@@ -355,6 +364,17 @@ impl ActionContract {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_permission_level_covers_the_levels_below_it() {
+        use super::PermissionRequirement as P;
+        assert!(P::Write.covers(P::Read));
+        assert!(P::Write.covers(P::Write));
+        assert!(!P::Read.covers(P::Write));
+        assert!(!P::Comment.covers(P::Write));
+        assert!(P::Read.covers(P::None));
+        assert!(P::Admin.covers(P::Invite));
+    }
+
     use super::*;
 
     /// Risk levels keep their compact wire discriminants and a broker-owned job identity is not a
