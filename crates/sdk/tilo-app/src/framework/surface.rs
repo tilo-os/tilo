@@ -215,6 +215,12 @@ pub struct SurfaceCx<R: Resource> {
 }
 
 impl<R: Resource> SurfaceCx<R> {
+    /// The names of the participants, for showing the ids actions record
+    /// ([`People::name`](super::People::name)).
+    pub fn people(&self) -> super::People {
+        self.run.people.clone()
+    }
+
     pub fn dispatcher(&self) -> Dispatcher<R> {
         self.dispatch.clone()
     }

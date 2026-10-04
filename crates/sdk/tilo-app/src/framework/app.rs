@@ -354,6 +354,7 @@ pub(crate) fn build_root<A: ResourceApp>(
         }
         Editing::ReadOnly => (None, true, None, Run::past()),
     };
+    let run = run.for_participant(me.as_deref());
     let label = A::label(reader.state());
     let resource_id = <A::Resource as Resource>::KIND;
     let published = tilo_resource::publish::<A::Resource>(resource_id, &label, reader.state());
