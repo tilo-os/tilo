@@ -2550,6 +2550,10 @@ impl VideoEditorApp {
         let now = ui::time::now();
         let dt = now.duration_since(self.last_tick).as_secs_f64();
         self.last_tick = now;
+        // A screenshot shows the moment its scenario staged, however long
+        // the capture takes to settle: a shuttle at 8x would otherwise run
+        // to the end of the timeline first.
+        let dt = if self.seed.capture { 0.0 } else { dt };
         let dur = self.project.duration();
         if self.playback.playing || self.shuttle != 0.0 {
             // A moving playhead pulls the view along with it.

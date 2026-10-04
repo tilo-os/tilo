@@ -939,9 +939,33 @@ pub(crate) fn permits_local_action(
     app_id: &str,
     action: &tilo_actions::ActionSpec,
 ) -> bool {
+    permits_local_invocation(permissions, app_id, action, action.contract.permission)
+}
+
+/// [`permits_local_action`] for one invocation: what its arguments ask.
+pub(crate) fn permits_local_value(
+    permissions: &PermissionContext,
+    app_id: &str,
+    action: &tilo_actions::ActionSpec,
+    typed: Option<&serde_json::Map<String, serde_json::Value>>,
+    argument: Option<&str>,
+) -> bool {
+    let requirement = match typed {
+        Some(arguments) => action.permission_for_json(arguments),
+        None => action.permission_for_argument(argument),
+    };
+    permits_local_invocation(permissions, app_id, action, requirement)
+}
+
+fn permits_local_invocation(
+    permissions: &PermissionContext,
+    app_id: &str,
+    action: &tilo_actions::ActionSpec,
+    requirement: tilo_actions::PermissionRequirement,
+) -> bool {
     use crate::permissions::Verb;
     use tilo_actions::PermissionRequirement as Requirement;
-    let verb = match action.contract.permission {
+    let verb = match requirement {
         Requirement::None => return true,
         Requirement::Read => Verb::Read,
         Requirement::Comment => Verb::Comment,
@@ -952,6 +976,46 @@ pub(crate) fn permits_local_action(
     permissions.check(&crate::permissions::PermissionScope::action(
         app_id, &action.id, verb,
     ))
+}
+
+/// May the component's participant take this one invocation of `action`:
+/// what its arguments ask, under the same app scope the published tree is
+/// filtered by.
+fn permits_invocation(
+    binding: &CallbackBinding,
+    action: &tilo_actions::ActionSpec,
+    typed: Option<&serde_json::Map<String, serde_json::Value>>,
+    argument: Option<&str>,
+) -> bool {
+    use crate::permissions::Verb;
+    use tilo_actions::PermissionRequirement as Requirement;
+    let requirement = match typed {
+        Some(arguments) => action.permission_for_json(arguments),
+        None => action.permission_for_argument(argument),
+    };
+    let verb = match requirement {
+        Requirement::None => return true,
+        Requirement::Read => Verb::Read,
+        Requirement::Comment => Verb::Comment,
+        Requirement::Write => Verb::Write,
+        Requirement::Invite => Verb::Invite,
+        Requirement::Admin => Verb::Admin,
+    };
+    binding
+        .permissions
+        .borrow()
+        .check(&crate::permissions::PermissionScope::app(
+            &binding.app_id,
+            verb,
+        ))
+}
+
+/// The refusal of an invocation the participant may not take.
+pub(crate) fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::DoorError {
+    tilo_actions::DoorError::Unavailable {
+        code: "permission_denied".into(),
+        reason: format!("you may not {} here", action.label.to_lowercase()),
+    }
 }
 
 pub(crate) fn filter_resource(
@@ -1910,6 +1974,11 @@ pub(crate) fn invoke_resource_action(
                     )?;
                     if let Some(scope) = scope {
                         scope.check_dispatch_spec(spec)?;
+                    }
+                    // The tree offers an action under the least it needs;
+                    // this invocation needs what its value asks.
+                    if !permits_invocation(binding, spec, arguments.as_ref(), argument) {
+                        return Err(denied(spec).into());
                     }
                     // A refused private View must not invoke a Deferred encoder.
                     // The execution guard below remains an independent boundary.

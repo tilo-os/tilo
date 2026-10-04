@@ -39,6 +39,8 @@ pub mod model_contract;
 pub mod participant;
 #[path = "person_records.rs"]
 pub mod person_records;
+#[path = "private_windows.rs"]
+pub mod private_windows;
 #[path = "render_view.rs"]
 pub mod render_view;
 #[path = "scenarios.rs"]

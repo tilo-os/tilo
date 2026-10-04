@@ -81,6 +81,81 @@ impl App {
             .map(crate::state::DocumentReplica::document)
     }
 
+    /// Show the record the window's component asked to open in its place
+    /// ([`AppComponent::take_replacement`](crate::application::AppComponent::take_replacement)):
+    /// close the component, keeping its recovery, mount the one it built,
+    /// and move the window's collaboration to the new record's route.
+    /// Whether the window now shows another record.
+    pub fn swap_requested_component(&mut self) -> bool {
+        let _entry = self.enter_wake_scope();
+        let Some(replacement) =
+            crate::component_lifecycle::take_replacement(self.root_widget.as_mut())
+        else {
+            return false;
+        };
+        let mut component = replacement.component;
+        let Some(handle) = self.wake_scope.as_ref().map(crate::wake::WakeScope::handle) else {
+            let _ = component.close();
+            return false;
+        };
+        let retirement = component.take_root_retirement();
+        if let Err(error) = component.mount(move |_| handle.wake()) {
+            tracing::warn!(%error, "the record asked for could not be shown");
+            let _ = component.close();
+            return false;
+        }
+        let binding = component.callback_binding();
+        let history = component.history.take();
+        let mut root: Box<dyn Widget> = Box::new(crate::widget::BoundAppWidget { component });
+        if let Some(registration) = &history
+            && let Err(error) = registration.validate_root(root.as_ref())
+        {
+            tracing::warn!(%error, "the record asked for could not be shown");
+            self.component_close_reports
+                .extend(crate::component_lifecycle::close_components(root.as_mut()));
+            return false;
+        }
+        // The outgoing component is closed whole: its controls, its
+        // semantic mount and its writer.
+        self.close_components();
+        self.retirement = retirement;
+        let control_domain = crate::control_custody::ControlDomain::outer();
+        crate::widget::controls::install_control_custody(
+            root.as_mut(),
+            &control_domain,
+            crate::control_custody::CustodyAttachment::Initial,
+        );
+        control_domain.finish_initial_installation();
+        self.control_domain = control_domain;
+        self.root_widget = root;
+        self.history = None;
+        self.layout.node_map.clear();
+        self.bindings.clear();
+        self.focused_node = None;
+        self.layout.structure_dirty = true;
+        self.layout.layout_dirty = true;
+        self.needs_sync = true;
+        if let Some(registration) = history
+            && let Err(error) = self.install_history(registration)
+        {
+            tracing::warn!(%error, "the reopened record shows without its history");
+        }
+        let checkout = binding.checkout;
+        if self.collaboration.manager.has_native_committed_primary() {
+            if let Err(error) = self.collaboration.manager.switch_native_record(&checkout) {
+                tracing::warn!(%error, "the reopened record collaborates once its route opens");
+            }
+        } else {
+            self.collaboration.manager = CollaborationManager::for_record(&checkout);
+        }
+        if let Some(scope) = self.presence.broadcast_scope.clone() {
+            self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
+        }
+        self.collaboration.snapshot_on_ready = true;
+        self.request_checkout_snapshot();
+        true
+    }
+
     pub fn record_tick(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
         let native = self.collaboration.manager.has_native_committed_primary();

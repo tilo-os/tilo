@@ -2993,6 +2993,15 @@ impl ContactsApp {
         y += nh + gap;
 
         self.detail_content_h = (y + self.detail_scroll) - top + 24.0;
+        // A scroll set before the form was measured (or a form that got
+        // shorter) never shows the page past its end: the next layout lands
+        // on the last field, as the wheel would.
+        let max = (self.detail_content_h - self.detail_rect.height() + 80.0).max(0.0);
+        if self.detail_scroll > max {
+            self.detail_scroll = max;
+            self.relayout = true;
+            self.dirty = true;
+        }
 
         // Apply the rect plan to the actual inputs.
         if let Some(form) = &mut self.form {

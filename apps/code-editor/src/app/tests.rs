@@ -187,6 +187,53 @@ fn ide_terminal_runs_a_command_and_shows_output() {
     );
 }
 
+#[test]
+fn the_embedded_terminal_is_the_projects_terminal_child() {
+    let mut app = ui::framework::testing::TestApp::<crate::CodeEditorShell>::new().unwrap();
+    crate::test_support::editor(&mut app, CodeApp::shots_open_terminal);
+    app.settle();
+    crate::test_support::editor(&mut app, |app| {
+        app.shots_terminal_input("printf 'CHILD_TERM_OK\\n'\n");
+    });
+    let shown = |app: &ui::framework::testing::TestApp<crate::CodeEditorShell>| {
+        app.state().terminal.as_ref().is_some_and(|session| {
+            session
+                .screen
+                .active()
+                .iter()
+                .any(|line| line.text.contains("CHILD_TERM_OK"))
+        })
+    };
+    let deadline = ui::time::now() + HANG_BOUND;
+    while !shown(&app) && ui::time::now() < deadline {
+        app.settle();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        shown(&app),
+        "the shell's output is the session the project records"
+    );
+    let published =
+        <crate::resource::CodeEditor as ui::tilo_resource::Resource>::children(&app.state());
+    let child = published
+        .iter()
+        .find(|child| child.id.as_str() == crate::resource::TERMINAL_RESOURCE_ID)
+        .expect("the project publishes its terminal");
+    assert_eq!(child.kind, "terminal.session");
+    app.read_document(|doc| {
+        assert!(
+            doc.get(automerge::ROOT, "terminal_title")
+                .unwrap()
+                .is_none()
+                && doc
+                    .get(automerge::ROOT, "terminal_local_session")
+                    .unwrap()
+                    .is_none(),
+            "nothing of the session is written beside the project's files"
+        );
+    });
+}
+
 fn ensure_buffers_seeds_active_text() {
     let mut sample = synced_sample();
     let (text, bound) = sample.with_doc(|app, doc| {

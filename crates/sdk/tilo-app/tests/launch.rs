@@ -483,3 +483,47 @@ fn a_launch_invokes_an_effect_which_changes_no_document_and_a_viewer_reaches() {
     );
     assert!(dispatcher.refused().get().is_none(), "nothing was refused");
 }
+
+#[test]
+fn a_window_opens_another_record_in_its_own_place() {
+    let mut app = TestApp::<SketchApp>::new().unwrap();
+    assert_eq!(app.record(), &RecordId::room_default());
+    app.invoke(Sketch::NOTE.with("on the default".into()))
+        .unwrap();
+
+    app.open_here(&["/pictures/harbour.png"]).unwrap();
+    let harbour = RecordId::derived("sketch", &RecordId::for_file("/pictures/harbour.png"));
+    assert_eq!(
+        app.record(),
+        &harbour,
+        "the window shows the path's own record"
+    );
+    assert_eq!(
+        app.state().source,
+        "/pictures/harbour.png",
+        "with the actions a launch on it takes"
+    );
+    assert!(
+        app.state().notes.is_empty(),
+        "and none of the other record's"
+    );
+    let frame = app.harness().inspection_json().unwrap();
+    assert!(
+        frame.contains("Launched on /pictures/harbour.png"),
+        "the view is built for the launch: {frame}"
+    );
+
+    // Edits go to the record shown now, through the same door.
+    app.invoke(Sketch::NOTE.with("on the harbour".into()))
+        .unwrap();
+    assert_eq!(app.state().notes.len(), 1);
+
+    // Each record kept its own edits, durably.
+    let harbour_again = app.relaunch(&["/pictures/harbour.png"]).unwrap();
+    assert_eq!(harbour_again.record(), &harbour);
+    assert_eq!(harbour_again.state().notes.len(), 1);
+    // A bare launch reopens the record the window showed last.
+    let bare = harbour_again.relaunch(&[]).unwrap();
+    assert_eq!(bare.record(), &harbour);
+    assert_eq!(bare.state().notes.len(), 1);
+}

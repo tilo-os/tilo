@@ -1,6 +1,2 @@
 # Audited ceilings of apps/browser (tools/policy/check_app_resource_action_contract.py).
 # Each count may only go down; the target is an empty file.
-
-[ratchets.raw_operation_handler]
-"apps/browser/src/browser_tabs.rs" = 1
-"apps/browser/src/browser_widget.rs" = 3

@@ -1643,7 +1643,7 @@ impl AppHandler {
         // record, sync against that record's document, not the
         // outgoing one's.
         mark_first_frame("first-frame-record-start");
-        let record_changed = app.record_tick();
+        let record_changed = app.swap_requested_component() | app.record_tick();
         mark_first_frame("first-frame-record-done");
         floating_content_changed |= record_changed;
         full_redraw_required |= record_changed;

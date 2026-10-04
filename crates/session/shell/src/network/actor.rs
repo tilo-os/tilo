@@ -176,6 +176,13 @@ pub enum NetCmd {
         ws: u64,
         msg: NeighbourMsg,
     },
+    /// A message for `ws`'s workspace hosts only, held until a host session
+    /// is up, never gossiped: what only the hosts of the person's own
+    /// continuity topic may keep for their other devices.
+    PublishToHosts {
+        ws: u64,
+        msg: NeighbourMsg,
+    },
     NativeMedia(super::native_media::Command),
     NativeEnrollment(super::invite::enrollment_driver::Command),
     /// Ask the room authority of the relay at `relay`, as `certificate`, from
@@ -1162,6 +1169,19 @@ impl ActorState {
                 }
             }
             Some(NetCmd::SetWake(LoopWake(wake))) => self.wake = Some(wake),
+            Some(NetCmd::PublishToHosts { ws, msg }) => {
+                self.hold_for_host(ws, &msg, false);
+                publish(
+                    &self.topics,
+                    &self.host_sessions,
+                    ws,
+                    msg,
+                    false,
+                    false,
+                    true,
+                )
+                .await;
+            }
             Some(NetCmd::PublishHostedTopology { ws, msg }) => {
                 if matches!(msg, NeighbourMsg::SyncResp { .. }) {
                     publish(
@@ -4796,12 +4816,21 @@ mod tests {
         a_pub: [u8; 32],
         b_pub: [u8; 32],
     ) -> (Relay, tempfile::TempDir, DeviceCert) {
+        spawn_pinned_relay_for_members_on(root, 42, a_pub, b_pub).await
+    }
+
+    async fn spawn_pinned_relay_for_members_on(
+        root: &ed25519_dalek::SigningKey,
+        ws: WorkspaceId,
+        a_pub: [u8; 32],
+        b_pub: [u8; 32],
+    ) -> (Relay, tempfile::TempDir, DeviceCert) {
         let (host_key, host_cert) = enrol(root, DeviceCapabilities::host(), "host");
         let state = tempfile::tempdir().unwrap();
         let config = RelayConfig {
             state_root: state.path().to_path_buf(),
             workspaces: vec![WorkspaceBinding {
-                id: 42,
+                id: ws,
                 pin: true,
                 replication: ReplicationIntent::FullWorkspace,
                 admitted_users: Vec::new(),
@@ -4822,7 +4851,7 @@ mod tests {
         .await
         .unwrap();
         relay
-            .set_workspace_membership(42, true, vec![a_pub, b_pub], state.path().to_path_buf())
+            .set_workspace_membership(ws, true, vec![a_pub, b_pub], state.path().to_path_buf())
             .await
             .unwrap();
         (relay, state, host_cert)
@@ -5751,6 +5780,152 @@ mod tests {
                 }
             }
         })
+        .await;
+    }
+
+    /// The person's always-on host keeps a record of their own room that one
+    /// of their devices published to it, and hands it to another of their
+    /// devices that connects after the first went away; only to hosts, on
+    /// the person's continuity topic.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a host, two of one person's devices and the first leaving before the second arrives in one scenario"
+    )]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_persons_host_keeps_their_records_for_a_device_that_comes_later() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let user = root.verifying_key().to_bytes();
+        let continuity = tilo_relay_protocol::personal_continuity_workspace_id(&user);
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "laptop");
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "phone");
+        let (relay, _state, _host_cert) = spawn_pinned_relay_for_members_on(
+            &root,
+            continuity,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
+        let identity = |key, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let cluster = collab_types::person_room(&user).to_string();
+        let mut op = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Snapshot(b"watched one video".to_vec())
+                .encode()
+                .unwrap(),
+            collab_types::document_artifact_id("so.tilo.tube", &cluster, "history"),
+            collab_types::Ed25519PublicKey::from_bytes(a_key.verifying_key().to_bytes()),
+            collab_types::document_attestation_id("so.tilo.tube", &cluster, "history"),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut op, &a_key).unwrap();
+
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (cmd_a, task_a) = Actor::spawn_reporting_addrs(
+            a,
+            lookup_a,
+            Some(identity(a_key, a_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events_a, mut rx_a) = mpsc::channel(16);
+        cmd_a
+            .send(NetCmd::JoinWorkspace {
+                ws: continuity,
+                on_event: events_a,
+            })
+            .await
+            .unwrap();
+        cmd_a
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        cmd_a
+            .send(NetCmd::PublishToHosts {
+                ws: continuity,
+                msg: NeighbourMsg::AppDocument {
+                    peer: 7,
+                    app_id: "so.tilo.tube".into(),
+                    cluster_id: cluster.clone(),
+                    record_id: "history".into(),
+                    envelope: Box::new(op.clone()),
+                },
+            })
+            .await
+            .unwrap();
+        tilo_test_env::within("the laptop's host session is ready", async {
+            while !matches!(rx_a.recv().await, Some(NetEvent::HostReady { .. })) {}
+        })
+        .await;
+        // The host has it once the session is up; the laptop goes away.
+        tilo_test_env::within("the host retains the laptop's record", async {
+            while relay
+                .room_records()
+                .retained(continuity)
+                .await
+                .unwrap_or_default()
+                .is_empty()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        drop(cmd_a);
+        task_a.abort();
+
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
+            b,
+            lookup_b,
+            Some(identity(b_key, b_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events_b, mut rx_b) = mpsc::channel(16);
+        cmd_b
+            .send(NetCmd::JoinWorkspace {
+                ws: continuity,
+                on_event: events_b,
+            })
+            .await
+            .unwrap();
+        cmd_b
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        tilo_test_env::within(
+            "the phone receives the laptop's record from the host",
+            async {
+                loop {
+                    if let Some(NetEvent::Msg {
+                        ws,
+                        msg:
+                            NeighbourMsg::AppDocument {
+                                envelope,
+                                cluster_id,
+                                ..
+                            },
+                        ..
+                    }) = rx_b.recv().await
+                        && *envelope == op
+                    {
+                        assert_eq!(ws, continuity);
+                        assert_eq!(cluster_id, cluster);
+                        break;
+                    }
+                }
+            },
+        )
         .await;
     }
 

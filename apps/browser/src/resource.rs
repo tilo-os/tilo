@@ -5,8 +5,11 @@
 
 use std::rc::Rc;
 
-use ui::framework::{Command, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionParam, ActionSpec, ParamType};
+use ui::framework::{
+    Command, EffectAnswer, EffectCx, Effected, LiveRow, ResourceApp, ResourceSurface, SurfaceCx,
+    ViewCx,
+};
+use ui::tilo_actions::{ActionParam, ParamType};
 use ui::tilo_resource::{
     ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry, declaration_spec,
 };
@@ -16,8 +19,9 @@ use crate::BrowserTabs;
 use crate::actions::{
     BROWSER_ACTION_TYPE, BrowserAction, bookmark_resource_id, bookmarks_from_doc, register,
 };
-use crate::browser_widget::{BrowserWidget, window_navigation_operations};
+use crate::browser_widget::BrowserWidget;
 use crate::browsing_mode::BrowsingMode;
+use crate::effects::BrowserEffect;
 use crate::library::{Bookmark, Bookmarks};
 use crate::settings::Settings;
 
@@ -110,10 +114,6 @@ impl Resource for Browser {
                 },
             ),
         ]
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        window_navigation_operations()
     }
 
     fn children(state: &BrowserState) -> Vec<tilo_actions::Resource> {
@@ -291,10 +291,6 @@ impl ResourceApp for BrowserShell {
     const ARGUMENTS: usize = 1;
     const PRIVATE_WINDOWS: bool = true;
 
-    fn local_operations() -> Vec<ActionSpec> {
-        crate::browser_widget::window_presentation_operations()
-    }
-
     fn commands() -> &'static [Command] {
         &[
             Command {
@@ -383,7 +379,7 @@ impl ResourceApp for BrowserShell {
     }
 }
 
-impl ResourceSurface<Browser> for BrowserTabs {
+impl ResourceSurface<Browser, BrowserEffect> for BrowserTabs {
     fn present(&mut self, state: &Rc<BrowserState>) {
         self.present_state(state);
     }
@@ -427,6 +423,24 @@ impl ResourceSurface<Browser> for BrowserTabs {
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
+    }
+
+    /// Every effect acts on the page the person is looking at; one that
+    /// waits (a page loading, the engine answering) is answered from that
+    /// tab once it settles, even if another tab is shown by then.
+    fn effect(&mut self, effect: BrowserEffect, cx: &mut EffectCx<Browser, Self>) -> EffectAnswer {
+        let invocation = cx.invocation().unwrap_or_default();
+        match self
+            .active_page_mut()
+            .admit(invocation, effect.operation())?
+        {
+            ui::widget::ResourceOperationStart::Completed(output) => Ok(Effected::Done(output)),
+            ui::widget::ResourceOperationStart::Accepted => {
+                let reply = cx.reply();
+                self.active_page_mut().answer_later(invocation, reply);
+                Ok(Effected::Pending)
+            }
+        }
     }
 
     fn bound_declarations(&self) -> Vec<ActionDecl<Browser>> {

@@ -426,6 +426,9 @@ struct ComponentRunnerWakeState {
     generation: std::cell::Cell<Option<u64>>,
     binding: crate::bound_dispatch::CallbackBinding,
     dirty: std::cell::Cell<bool>,
+    /// The host's scheduling signal, kept for a component mounted in this
+    /// one's place.
+    notify: std::sync::Arc<dyn Fn() + Send + Sync>,
 }
 impl ComponentRunnerWakeState {
     fn drain(&self) {
@@ -775,45 +778,13 @@ impl FrameHarness {
     /// task identifier/proxy, never a GPU, widget tree, or owning host reference.
     /// Browser hosts can dispatch that identifier to their local animation-frame queue.
     pub fn from_component_with_wake_notifier(
-        mut component: crate::application::AppComponent,
+        component: crate::application::AppComponent,
         viewport: (u32, u32),
         inputs: crate::application::ComponentRunnerInputs,
         notify: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, crate::launch::LaunchError> {
-        static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let Ok(generation) = NEXT_GENERATION.fetch_update(
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-            |value| value.checked_add(1),
-        ) else {
-            return Err(component.setup_error(crate::launch::LaunchError::Operation(
-                "component mount generation exhausted".into(),
-            )));
-        };
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let binding = component.callback_binding();
-        let wake = ComponentRunnerWakeState {
-            receiver: std::cell::RefCell::new(receiver),
-            generation: std::cell::Cell::new(Some(generation)),
-            binding: binding.clone(),
-            dirty: std::cell::Cell::new(false),
-        };
-        if let Err(error) = component.mount(move |event| {
-            if sender.send((generation, event)).is_ok() {
-                notify();
-            }
-        }) {
-            return Err(component.setup_error(error));
-        }
-        let history = component.history.take();
-        let mut root = Box::new(crate::widget::BoundAppWidget { component });
-        if let Some(registration) = &history
-            && let Err(error) = registration.validate_root(root.as_ref())
-        {
-            return Err(root
-                .component
-                .setup_error(crate::launch::LaunchError::Operation(error.to_string())));
-        }
+        let (root, wake, history) = Self::mount_component(component, std::sync::Arc::new(notify))?;
+        let binding = wake.binding.clone();
         let mut harness = Self::with_inputs(
             State::new(),
             root,
@@ -837,6 +808,113 @@ impl FrameHarness {
             });
         }
         Ok(harness)
+    }
+
+    /// Mount `component` as a root, its wakes reaching `notify`: the root,
+    /// its wake channel and the history it registers.
+    fn mount_component(
+        mut component: crate::application::AppComponent,
+        notify: std::sync::Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<
+        (
+            Box<dyn Widget>,
+            ComponentRunnerWakeState,
+            Option<crate::history_mode::HistoryRegistration>,
+        ),
+        crate::launch::LaunchError,
+    > {
+        static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let Ok(generation) = NEXT_GENERATION.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |value| value.checked_add(1),
+        ) else {
+            return Err(component.setup_error(crate::launch::LaunchError::Operation(
+                "component mount generation exhausted".into(),
+            )));
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let binding = component.callback_binding();
+        let wake = ComponentRunnerWakeState {
+            receiver: std::cell::RefCell::new(receiver),
+            generation: std::cell::Cell::new(Some(generation)),
+            binding,
+            dirty: std::cell::Cell::new(false),
+            notify: std::sync::Arc::clone(&notify),
+        };
+        if let Err(error) = component.mount(move |event| {
+            if sender.send((generation, event)).is_ok() {
+                notify();
+            }
+        }) {
+            return Err(component.setup_error(error));
+        }
+        let history = component.history.take();
+        let root = Box::new(crate::widget::BoundAppWidget { component });
+        if let Some(registration) = &history
+            && let Err(error) = registration.validate_root(root.as_ref())
+        {
+            let mut root = root;
+            return Err(root
+                .component
+                .setup_error(crate::launch::LaunchError::Operation(error.to_string())));
+        }
+        Ok((root, wake, history))
+    }
+
+    /// Show the record the component asked to open in its window
+    /// ([`AppComponent::take_replacement`](crate::application::AppComponent::take_replacement)):
+    /// close it, keeping its recovery, and mount the component it built in
+    /// its place, with everything the host set on this harness kept.
+    fn swap_requested_component(&mut self) {
+        let Some(replacement) = crate::component_lifecycle::take_replacement(self.root.as_mut())
+        else {
+            return;
+        };
+        let notify = self.component_wake.as_ref().map_or_else(
+            || std::sync::Arc::new(|| {}) as std::sync::Arc<dyn Fn() + Send + Sync>,
+            |wake| std::sync::Arc::clone(&wake.notify),
+        );
+        let (root, wake, history) = match Self::mount_component(replacement.component, notify) {
+            Ok(mounted) => mounted,
+            Err(error) => {
+                tracing::warn!(%error, "the record asked for could not be shown");
+                return;
+            }
+        };
+        let reports = {
+            self.close_components();
+            self.take_component_close_reports()
+        };
+        self.component_close_reports.extend(reports);
+        let mut root = root;
+        let control_domain = crate::control_custody::ControlDomain::outer();
+        crate::widget::controls::install_control_custody(
+            root.as_mut(),
+            &control_domain,
+            crate::control_custody::CustodyAttachment::Initial,
+        );
+        control_domain.finish_initial_installation();
+        self.control_domain = control_domain;
+        self.component_wake = Some(wake);
+        self.history = None;
+        self.discard_layout_tree();
+        self.focused = None;
+        self.focus_before_trap = None;
+        self.root_type = None;
+        self.root = root;
+        if let Some(registration) = history
+            && let Err(error) = self.install_history(registration)
+        {
+            tracing::warn!(%error, "the reopened record shows without its history");
+        }
+    }
+
+    /// The record the mounted component shows.
+    pub fn component_record(&self) -> Option<&crate::record::RecordCheckout> {
+        self.component_wake
+            .as_ref()
+            .map(|wake| &wake.binding.checkout)
     }
 
     #[cfg(feature = "native")]
@@ -2377,6 +2455,7 @@ impl FrameHarness {
         use crate::widget::layout::{
             CompositionFocus, composition_geometry, settle_widget_composition,
         };
+        self.swap_requested_component();
         let viewport_changed = self.last_layout_viewport != Some(self.viewport);
         self.presence_redraw = false;
         // A failed attempt mutates the tree as well as the requested viewport.
@@ -5952,6 +6031,12 @@ impl FrameHarness {
                     crate::bound_dispatch::resolve_resource_invocation(
                         &resources, address, argument, json, confirmed,
                     )?;
+                if !self
+                    .permissions
+                    .permits_invocation(&app_id, spec, arguments.as_ref(), argument)
+                {
+                    return Err(crate::bound_dispatch::denied(spec));
+                }
                 let encoded = crate::bound_dispatch::encode_resource_action(
                     &resources,
                     address,
@@ -6050,10 +6135,12 @@ impl FrameHarness {
                         Some(&intent.arguments),
                         false,
                     )?;
-                if !crate::bound_dispatch::permits_local_action(
+                if !crate::bound_dispatch::permits_local_value(
                     &self.permissions,
                     &crate::collaboration::local_app_id(),
                     spec,
+                    arguments.as_ref(),
+                    None,
                 ) {
                     return Err(tilo_actions::DoorError::Unknown(intent.address.clone()));
                 }
@@ -6150,12 +6237,14 @@ impl FrameHarness {
             Some(supplied),
             confirmed,
         )?;
-        if !crate::bound_dispatch::permits_local_action(
+        if !crate::bound_dispatch::permits_local_value(
             &self.permissions,
             &crate::collaboration::local_app_id(),
             spec,
+            arguments.as_ref(),
+            None,
         ) {
-            return Err(tilo_actions::DoorError::Unknown(address.clone()));
+            return Err(crate::bound_dispatch::denied(spec));
         }
         let encoded = crate::bound_dispatch::encode_resource_action(
             &resources,

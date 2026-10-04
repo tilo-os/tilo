@@ -99,6 +99,17 @@ impl Default for HostedProcessServices {
     }
 }
 
+impl HostedProcessServices {
+    /// No process service: a host that shows a terminal (a capture, a
+    /// fixture) without letting it open sessions.
+    pub fn unavailable() -> Self {
+        Self {
+            #[cfg(unix)]
+            ush: None,
+        }
+    }
+}
+
 #[cfg(unix)]
 impl HostedProcessServices {
     /// Whether the host handed over the `ush` supervisor.

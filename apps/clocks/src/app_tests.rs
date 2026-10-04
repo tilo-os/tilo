@@ -38,7 +38,7 @@ fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
         );
         assert!(
             x >= 0.0 && x + nav_width <= f64::from(width),
-            "width {width}: switcher fits the window"
+            "width {width}: switcher at {x}, {nav_width} wide, fits the window"
         );
         for label in ["World", "Alarms", "Timers", "Stopwatch"] {
             assert!(

@@ -236,6 +236,26 @@ pub struct SurfaceCx<R: Resource> {
 }
 
 impl<R: Resource> SurfaceCx<R> {
+    /// Open, in this window and in place of the record it shows, what a
+    /// launch of the app naming `arguments` opens: the record
+    /// [`ResourceApp::launch_record`](super::ResourceApp::launch_record)
+    /// names, with its launch actions — the document a person chose with
+    /// the app's own Open. The window's view is rebuilt for that record on
+    /// the next frame. Refused in a past version and a capture.
+    ///
+    /// # Errors
+    /// Returns why the record cannot be opened.
+    pub fn open_here(&self, arguments: &[String]) -> Result<(), String> {
+        self.run.open_here(arguments)
+    }
+
+    /// What [`Self::open_here`] does, kept for later: the input that asks
+    /// for another record arrives after attaching (a file chosen in a
+    /// picker). `None` in a past version and a capture.
+    pub fn opener(&self) -> Option<super::OpenHere> {
+        self.run.opener.clone()
+    }
+
     /// The names of the participants, for showing the ids actions record
     /// ([`People::name`](super::People::name)).
     pub fn people(&self) -> super::People {
@@ -345,6 +365,18 @@ impl<R: Resource> SurfaceCx<R> {
     /// [`ViewCx::launch_flag`](super::ViewCx::launch_flag).
     pub fn launch_flag(&self, name: &str) -> bool {
         super::launch::flag(&self.run.launched.options, name)
+    }
+
+    /// The service of type `T` the host that mounts the app in its own
+    /// process lent it ([`HostContext::lend`](ui_core::application::HostContext::lend)),
+    /// taken once: the shell's connection to the session's process
+    /// supervisor for a terminal it hosts. `None` in the app's own process,
+    /// and for a past version or a capture, which start nothing.
+    pub fn take_lent<T: 'static>(&self) -> Option<T> {
+        if !self.run.mode.is_live() {
+            return None;
+        }
+        self.run.launched.lent.take::<T>()
     }
 
     /// Whether the window is private, as
