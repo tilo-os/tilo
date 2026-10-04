@@ -71,7 +71,7 @@ concurrency:
 
 jobs:
   plan:
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 15
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}

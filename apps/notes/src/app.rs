@@ -7528,6 +7528,34 @@ mod tests {
             assert_eq!(restored, marks);
         }
 
+        eprintln!("phase rebinding_the_open_note_keeps_the_caret_where_it_was");
+        {
+            let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
+            let (index, block, end) = {
+                let editor = app.main.editor();
+                let index = editor.blocks().len().saturating_sub(1);
+                let block = &editor.blocks()[index];
+                (index, block.id.clone(), block.text().len())
+            };
+            assert!(end > 0);
+            app.main
+                .editor_mut()
+                .focus_block(index, ui::widget::CursorPlacement::End);
+            app.bound_page = None;
+            app.sync(&mut state.doc, &state.root);
+            let editor = app.main.editor();
+            let focused = editor
+                .focused_index()
+                .and_then(|focused| editor.blocks().get(focused))
+                .expect("the rebound editor keeps a focused block");
+            assert_eq!(focused.id, block, "the caret stays in its block");
+            assert_eq!(
+                focused.line.cursor_pos(),
+                end,
+                "the next letter is typed after the last one, not at the start"
+            );
+        }
+
         eprintln!("phase mark_only_dirty_edge_dispatches_the_canonical_action");
         {
             let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();

@@ -759,6 +759,19 @@ fn the_wand_finds_colour_where_the_artwork_is_shown() {
     let bounds = found.bounds().unwrap();
     assert!(bounds.union(Rect::new(100.0, 100.0, 700.0, 200.0)).area() < 61_000.0);
 
+    // Its edge follows the paint closely, not the pixels it was found in.
+    canvas::author::see(&renderer, &Rc::new(art.state().unwrap()));
+    art.apply(wand.with(([150.0, 450.0], 0.1))).unwrap();
+    let bounds = selected(&art.state().unwrap()).bounds().unwrap();
+    for (edge, at) in [
+        (bounds.x0, 100.0),
+        (bounds.x1, 400.0),
+        (bounds.y0, 400.0),
+        (bounds.y1, 500.0),
+    ] {
+        assert!((edge - at).abs() < 0.2, "{bounds:?}");
+    }
+
     // Applied as a plain value, a colour cannot be found.
     let error = apply(
         &mut art,
@@ -769,4 +782,51 @@ fn the_wand_finds_colour_where_the_artwork_is_shown() {
     )
     .unwrap_err();
     assert!(error.contains("select action itself"), "{error}");
+}
+
+/// Taking from the selection with the wand takes only what is like the
+/// colour clicked inside the selection, connected there: the same ground
+/// around another selected part is left selected.
+#[test]
+fn the_wand_takes_from_the_selection_only_what_it_touches_inside() {
+    let mut art = Replica::<ArtworkResource>::new();
+    draw(
+        &mut art,
+        None,
+        vec![rect("dot", [120.0, 120.0, 40.0, 40.0], "#2040c0")],
+    );
+    select(
+        &mut art,
+        Select {
+            rect: Some([50.0, 50.0, 200.0, 200.0]),
+            ..Select::default()
+        },
+    );
+    select(
+        &mut art,
+        Select {
+            rect: Some([600.0, 50.0, 200.0, 200.0]),
+            mode: Some("add".into()),
+            ..Select::default()
+        },
+    );
+    let renderer = Rc::new(RefCell::new(Renderer::default()));
+    canvas::author::see(&renderer, &Rc::new(art.state().unwrap()));
+    let wand: ActionRef<ArtworkResource, ([f64; 2], String)> =
+        ActionRef::new("select", &["at", "mode"]);
+    // Alt-click the ground in the left part.
+    art.apply(wand.with(([70.0, 70.0], "subtract".into())))
+        .unwrap();
+    let left = selected(&art.state().unwrap());
+    assert!(
+        left.contains(Point::new(700.0, 150.0)),
+        "the right part stays"
+    );
+    assert!(left.contains(Point::new(140.0, 140.0)), "the dot stays");
+    assert!(
+        !left.contains(Point::new(70.0, 230.0)),
+        "the ground around it goes"
+    );
+    let area = left.area();
+    assert!((area - 40_000.0 - 1_600.0).abs() < 400.0, "{area}");
 }
