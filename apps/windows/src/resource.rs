@@ -120,18 +120,6 @@ impl Resource for Windows {
             .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
             .collect()
     }
-
-    fn search(state: &WindowsState) -> Vec<ui::tilo_resource::SearchEntry> {
-        state
-            .routes
-            .iter()
-            .map(|(app_id, route)| ui::tilo_resource::SearchEntry {
-                anchor: Some(format!("windows.app:{app_id}")),
-                title: app_id.clone(),
-                text: route.label().to_owned(),
-            })
-            .collect()
-    }
 }
 
 /// Hosted-only extras that are not document state: pending install confirmation
@@ -171,6 +159,14 @@ impl ResourceApp for WindowsShell {
     fn view(cx: &mut ViewCx<Windows>) -> Element {
         cx.surface(WindowsApp::new_live())
     }
+
+    fn scenarios() -> &'static [&'static str] {
+        WindowsApp::SCENARIOS
+    }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        WindowsApp::scenario_viewport(name)
+    }
 }
 
 impl ResourceSurface<Windows> for WindowsApp {
@@ -182,6 +178,10 @@ impl ResourceSurface<Windows> for WindowsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Windows>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 }
 
@@ -416,5 +416,21 @@ mod tests {
             before,
             "adopting empty view prefs must not clear unpublished local overrides"
         );
+    }
+}
+
+#[cfg(test)]
+mod capture_tests {
+    /// Every declared scenario stages through the framework's capture hook
+    /// and renders, the same path `--shots --scenario NAME` takes.
+    #[test]
+    fn every_scenario_stages_and_renders_in_the_framework_app() {
+        let dir = tempfile::tempdir().unwrap();
+        for scenario in super::WindowsApp::SCENARIOS {
+            let mut app = ui::framework::testing::TestApp::<super::WindowsShell>::new().unwrap();
+            app.stage(Some(scenario)).unwrap();
+            app.harness()
+                .render_png(&dir.path().join(format!("{scenario}.png")));
+        }
     }
 }

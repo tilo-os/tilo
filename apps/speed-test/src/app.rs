@@ -6,13 +6,16 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui::automerge::{AutoCommit, ObjId};
+use ui::framework::Actions;
 use ui::presence::PresenceCtx;
 use ui::taffy::{NodeId, TaffyTree};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::{
-    ActionContract, ActionOutput, ActionSpec, DiscoveryScope, OperationKind, Resource,
+    ActionBinding, ActionContract, ActionOutput, ActionSpec, DiscoveryScope, OperationKind,
+    Resource,
 };
+use ui::tilo_resource::ActionRef;
 use ui::time::{Duration, Instant};
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point, Rect};
@@ -20,9 +23,15 @@ use ui::widget::{AppModel, Element, ModelPath, Widget};
 use ui::winit::event::WindowEvent;
 
 use crate::model::Model;
+use crate::resource::SpeedTest;
 use crate::view::{self, ScrollOffset, Shared};
 
 pub(crate) const OPERATION_TYPE: &str = "speed-test.operation";
+
+/// The operation the resource publishes to start a measurement.
+const START: ActionRef<SpeedTest, ()> = ActionRef::new("start", &[]);
+/// The operation the running test publishes to stop it.
+const STOP: &str = "stop";
 
 /// The longest wait between frames while the dial is moving.
 const FRAME: Duration = Duration::from_millis(16);
@@ -47,6 +56,8 @@ pub(crate) fn action(id: &str, label: &str, op: &SpeedOperation) -> Option<Actio
 pub struct SpeedTestApp {
     shared: Shared,
     scroll: ScrollOffset,
+    /// The resource's published actions, which the run button invokes.
+    actions: Option<Actions<SpeedTest>>,
     /// The page for the model's current shape; built with the theme at
     /// layout time and again whenever the shape changes.
     root: Option<Element>,
@@ -59,10 +70,18 @@ impl SpeedTestApp {
         Self {
             shared: Rc::new(RefCell::new(Model::new())),
             scroll: Rc::new(Cell::new((0.0, 0.0))),
+            actions: None,
             root: None,
             built: None,
             structure_dirty: false,
         }
+    }
+
+    /// Route the run button through `actions`, the resource the app hosts.
+    #[must_use]
+    pub fn with_actions(mut self, actions: Actions<SpeedTest>) -> Self {
+        self.actions = Some(actions);
+        self
     }
 
     pub(crate) fn model(&self) -> std::cell::Ref<'_, Model> {
@@ -85,11 +104,17 @@ impl SpeedTestApp {
         if !self.model().is_running() {
             return Vec::new();
         }
-        let mut run = Resource::new("speed-test.run", "speed-test.run", "Running test");
-        if let Some(spec) = action("stop", "Stop speed test", &SpeedOperation::Stop) {
-            run.actions.push(spec);
+        vec![run_resource()]
+    }
+
+    /// What the run button invokes: stop on the running test, otherwise the
+    /// resource's start. `None` while the app is not hosting its resource.
+    fn run_binding(&self) -> Option<ActionBinding<()>> {
+        if self.model().is_running() {
+            ActionBinding::unit_for(&run_resource(), STOP).ok()
+        } else {
+            self.actions.as_ref()?.invocation(START.invoke())
         }
-        vec![run]
     }
 }
 
@@ -135,10 +160,11 @@ impl Widget for SpeedTestApp {
             self.root = None;
             self.built = Some(revision);
         }
-        let (shared, scroll) = (&self.shared, &self.scroll);
-        self.root
-            .get_or_insert_with(|| view::build(shared, scroll, theme))
-            .build_layout(taffy, theme, node_map)
+        let root = match self.root.take() {
+            Some(root) => root,
+            None => view::build(&self.shared, &self.scroll, self.run_binding(), theme),
+        };
+        self.root.insert(root).build_layout(taffy, theme, node_map)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -232,6 +258,15 @@ impl Widget for SpeedTestApp {
             .as_ref()
             .map_or(Rect::ZERO, |root| root.get_rect())
     }
+}
+
+/// The measurement in progress, which carries its stop action.
+fn run_resource() -> Resource {
+    let mut run = Resource::new("speed-test.run", "speed-test.run", "Running test");
+    if let Some(spec) = action(STOP, "Stop speed test", &SpeedOperation::Stop) {
+        run.actions.push(spec);
+    }
+    run
 }
 
 impl ui::resources::PublishesResources for SpeedTestApp {

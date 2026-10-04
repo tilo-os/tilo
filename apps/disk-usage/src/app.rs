@@ -7,13 +7,16 @@ use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use ui::automerge::{AutoCommit, ObjId};
+use ui::framework::Actions;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer};
 use ui::theme::Theme;
 use ui::tilo_actions::{
-    ActionContract, ActionOutput, ActionSpec, DiscoveryScope, OperationKind, Resource,
+    ActionBinding, ActionContract, ActionOutput, ActionSpec, DiscoveryScope, OperationKind,
+    Resource,
 };
+use ui::tilo_resource::ActionRef;
 use ui::tokens::TextRole;
 use ui::vello::Scene;
 use ui::vello::kurbo::Affine;
@@ -67,12 +70,15 @@ enum View {
     Error(PathBuf, String),
 }
 
+/// The navigation operations the resource publishes, which the view's
+/// buttons invoke.
+const CHOOSE: ActionRef<crate::resource::DiskUsage, ()> = ActionRef::new("choose", &[]);
+const BACK: ActionRef<crate::resource::DiskUsage, ()> = ActionRef::new("back", &[]);
+
 /// What a control in the current view asks for. Controls run inside the
 /// widget tree; the app applies their requests on its next update.
 enum Request {
     Analyze(PathBuf),
-    Choose,
-    Back,
 }
 
 type Inbox = Rc<RefCell<Vec<Request>>>;
@@ -294,6 +300,9 @@ pub struct DiskUsageApp {
     picker_rx: Option<ui::portal::PortalChannel>,
     shot_mode: bool,
     pub(crate) actions: crate::resource::ActionSink,
+    /// The hosted resource's published actions, which the view's buttons
+    /// invoke. Standalone, they invoke the root this app publishes itself.
+    published: Option<Actions<crate::resource::DiskUsage>>,
     hosted: bool,
 }
 
@@ -332,6 +341,7 @@ impl DiskUsageApp {
             picker_rx: None,
             shot_mode: false,
             actions: crate::resource::ActionSink::default(),
+            published: None,
             hosted: false,
         };
         app.rebuild();
@@ -506,8 +516,6 @@ impl DiskUsageApp {
                 let push = matches!(self.view, View::Analysis(_));
                 self.start_scan(path, push);
             }
-            Request::Choose => self.choose_folder(),
-            Request::Back => self.go_back(),
         }
     }
 
@@ -541,10 +549,39 @@ impl DiskUsageApp {
         self.structure_dirty = true;
     }
 
+    /// Invoke the published navigation operations through `actions`, the
+    /// resource the framework hosts.
+    pub(crate) fn host_actions(&mut self, actions: Actions<crate::resource::DiskUsage>) {
+        self.published = Some(actions);
+        self.rebuild();
+    }
+
+    /// The binding of the published `action`, or `None` when nothing
+    /// publishes it.
+    fn binding(
+        &self,
+        action: &ActionRef<crate::resource::DiskUsage, ()>,
+    ) -> Option<ActionBinding<()>> {
+        match &self.published {
+            Some(actions) => actions.invocation(action.invoke()),
+            None => ActionBinding::unit_for(&standalone_root(), action.invoke().id).ok(),
+        }
+    }
+
+    /// `button`, bound to the published `action`; disabled when nothing
+    /// publishes it.
+    fn bind(&self, button: Button, action: &ActionRef<crate::resource::DiskUsage, ()>) -> Button {
+        match self.binding(action) {
+            Some(binding) => button.on_action(binding),
+            None => button.with_enabled(false),
+        }
+    }
+
     fn back_button(&self) -> Button {
-        let inbox = Rc::clone(&self.inbox);
-        Button::icon_only("disk-usage.back", Icon::ChevronLeft, "Back")
-            .on_click(move || inbox.borrow_mut().push(Request::Back))
+        self.bind(
+            Button::icon_only("disk-usage.back", Icon::ChevronLeft, "Back"),
+            &BACK,
+        )
     }
 
     fn place_row(&self, place: &Place) -> Element {
@@ -564,10 +601,10 @@ impl DiskUsageApp {
 
     fn home_view(&self) -> Element {
         let (places, recent) = self.locations();
-        let inbox = Rc::clone(&self.inbox);
-        let choose = Button::new("disk-usage.choose", "Choose folder", None)
-            .with_icon(Icon::FolderOpen)
-            .on_click(move || inbox.borrow_mut().push(Request::Choose));
+        let choose = self.bind(
+            Button::new("disk-usage.choose", "Choose folder", None).with_icon(Icon::FolderOpen),
+            &CHOOSE,
+        );
         let mut page = Column::new()
             .with_intrinsic_height()
             .push(Box::new(
@@ -629,17 +666,17 @@ impl DiskUsageApp {
         } else {
             "Can’t read this folder"
         };
-        let recover = EmptyState::error(title, message)
+        let mut recover = EmptyState::error(title, message)
             .with_icon(Icon::FolderOpen)
             .with_action("Choose another folder")
             .with_action_id("disk-usage.error.choose");
+        if let Some(binding) = self.binding(&CHOOSE) {
+            recover = recover.on_action(binding);
+        }
         Box::new(
             Column::new()
                 .push(Box::new(self.header(path)))
-                .push(Box::new(ErrorState {
-                    state: recover,
-                    inbox: Rc::clone(&self.inbox),
-                })),
+                .push(Box::new(recover)),
         )
     }
 
@@ -691,37 +728,6 @@ impl DiskUsageApp {
             ));
         }
         Box::new(Scrollable::new_vertical().with_child(Box::new(page)))
-    }
-}
-
-/// The error view's empty state, with its recovery action wired to the app.
-struct ErrorState {
-    state: EmptyState,
-    inbox: Inbox,
-}
-
-impl ui::widget::Decorator for ErrorState {
-    type Inner = EmptyState;
-
-    fn inner(&self) -> &EmptyState {
-        &self.state
-    }
-
-    fn inner_mut(&mut self) -> &mut EmptyState {
-        &mut self.state
-    }
-
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        let changed = Widget::update(&mut self.state, state, path);
-        if self.state.take_action() {
-            self.inbox.borrow_mut().push(Request::Choose);
-            return true;
-        }
-        changed
-    }
-
-    fn name(&self) -> &'static str {
-        "ErrorState"
     }
 }
 
@@ -988,6 +994,19 @@ fn find_resource_tree(resources: &[Resource], id: &str) -> Option<Resource> {
     None
 }
 
+/// The id of the root a standalone app publishes itself.
+const STANDALONE_ROOT: &str = "disk-usage:root";
+
+/// The root a standalone app publishes, for binding its controls. The
+/// navigation operations it carries do not depend on the document.
+fn standalone_root() -> Resource {
+    ui::tilo_resource::publish::<crate::resource::DiskUsage>(
+        STANDALONE_ROOT,
+        "Disk Usage Analyzer",
+        &crate::resource::DiskUsageState::default(),
+    )
+}
+
 impl ui::resources::PublishesResources for DiskUsageApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         if self.hosted {
@@ -996,7 +1015,7 @@ impl ui::resources::PublishesResources for DiskUsageApp {
         let state = <crate::resource::DiskUsage as ui::tilo_resource::Resource>::read(doc)
             .unwrap_or_default();
         let mut root = ui::tilo_resource::publish::<crate::resource::DiskUsage>(
-            "disk-usage:root",
+            STANDALONE_ROOT,
             "Disk Usage Analyzer",
             &state,
         );
@@ -1008,12 +1027,12 @@ impl ui::resources::PublishesResources for DiskUsageApp {
         let state = <crate::resource::DiskUsage as ui::tilo_resource::Resource>::read(doc)
             .unwrap_or_default();
         let mut root = ui::tilo_resource::publish::<crate::resource::DiskUsage>(
-            "disk-usage:root",
+            STANDALONE_ROOT,
             "Disk Usage Analyzer",
             &state,
         );
         root.children.extend(self.live_analyze_extras());
-        if self.hosted && id == "disk-usage:root" {
+        if self.hosted && id == STANDALONE_ROOT {
             return None;
         }
         find_resource_tree(&[root], id)

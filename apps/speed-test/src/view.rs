@@ -8,6 +8,7 @@ use std::rc::Rc;
 use ui::TextRole;
 use ui::taffy::JustifyContent;
 use ui::theme::Theme;
+use ui::tilo_actions::ActionBinding;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Banner, Button, ButtonRole, Column, Container, Decorator, Element, ListRow, ProgressRing,
@@ -24,7 +25,13 @@ pub(crate) type Shared = Rc<RefCell<Model>>;
 pub(crate) type ScrollOffset = Rc<Cell<(f32, f32)>>;
 
 /// The page for the model's current state.
-pub(crate) fn build(shared: &Shared, scroll: &ScrollOffset, theme: &Theme) -> Element {
+/// `run` is what the run button invokes; without it the button is disabled.
+pub(crate) fn build(
+    shared: &Shared,
+    scroll: &ScrollOffset,
+    run: Option<ActionBinding<()>>,
+    theme: &Theme,
+) -> Element {
     let model = shared.borrow();
     let min_column = theme.tokens.metrics.content_min_width;
     let columns = Row::new()
@@ -34,7 +41,7 @@ pub(crate) fn build(shared: &Shared, scroll: &ScrollOffset, theme: &Theme) -> El
                 .with_no_padding()
                 .with_flex_grow()
                 .with_min_width(min_column)
-                .with_child(Box::new(test_column(shared, &model, theme))),
+                .with_child(Box::new(test_column(shared, &model, run, theme))),
         ))
         .push(Box::new(
             Container::new()
@@ -66,7 +73,12 @@ pub(crate) fn build(shared: &Shared, scroll: &ScrollOffset, theme: &Theme) -> El
 }
 
 /// The dial, what it is doing, and the one action.
-fn test_column(shared: &Shared, model: &Model, theme: &Theme) -> Column {
+fn test_column(
+    shared: &Shared,
+    model: &Model,
+    run: Option<ActionBinding<()>>,
+    theme: &Theme,
+) -> Column {
     let status = match model.phase {
         Phase::Idle => "Ready to test",
         Phase::Ping => "Measuring latency",
@@ -80,10 +92,11 @@ fn test_column(shared: &Shared, model: &Model, theme: &Theme) -> Column {
     } else {
         ("Run speed test", ButtonRole::Primary)
     };
-    let handle = Rc::clone(shared);
-    let run = Button::new("run", label, None)
-        .role(role)
-        .on_click(move || handle.borrow_mut().toggle());
+    let button = Button::new("run", label, None).role(role);
+    let run = match run {
+        Some(binding) => button.on_action(binding),
+        None => button.with_enabled(false),
+    };
 
     let mut column = Column::new()
         .with_intrinsic_height()
