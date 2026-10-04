@@ -37,8 +37,8 @@ use ui::tokens::spacing::Spacing;
 use ui::tokens::{Metrics, TextRole};
 use ui::widget::{
     BadgeFace, Button, ButtonFace, ButtonRole, CardFace, ChipStyle, ContextMenu, ControlSize,
-    EmptyState, EmptyStateContent, Interaction, ListRowFace, MenuItem, PropertyListFace,
-    PropertyRow, RowLeading, SegmentedFace, SegmentedStyle, ToggleGroup, Tone,
+    EmptyState, EmptyStateContent, Interaction, ListRowFace, MenuItem, NumberStepperFace,
+    PropertyListFace, PropertyRow, RowLeading, SegmentedFace, SegmentedStyle, ToggleGroup, Tone,
 };
 use ui::widget::{FloatingSurfaceProvider, Widget};
 
@@ -3808,49 +3808,34 @@ impl MapsApp {
         self.click_targets
             .push((segs[1], Hit::TransitTimeMode(TransitTimeMode::Arrive)));
 
-        // The time stepper: earlier, the time, later.
-        let side = ButtonFace::height(ControlSize::Regular, theme);
-        let plus = Rect::new(
-            right - side,
-            y + (row_h - side) / 2.0,
-            right,
-            y + (row_h + side) / 2.0,
-        );
+        // The time stepper: earlier, the time, later. Wide enough for any
+        // clock time, so stepping never moves it.
         let target = ui::clock::local_now() + chrono::Duration::minutes(i64::from(tt.offset_min));
         let label = if tt.is_now() {
             "Now".to_string()
         } else {
             clock_label(target)
         };
-        let style = theme.text(TextRole::Body).numeric();
-        let label_w = draw::measure_w(tr, "00:00", &style).max(draw::measure_w(tr, &label, &style));
-        let minus_x1 = plus.x0 - s1 - label_w - s1;
-        let minus = Rect::new(minus_x1 - side, plus.y0, minus_x1, plus.y1);
-        self.icon_button(
-            &mut PaintCtx::new(scene, t, tr, theme),
-            minus,
-            (Icon::Minus, "Earlier"),
-            ButtonRole::Plain,
-            false,
-            Hit::TransitTimeDelta(-15),
+        let size = ControlSize::Regular;
+        let height = NumberStepperFace::height(size, theme);
+        let width = NumberStepperFace::width(size, &["00:00", &label], tr, theme);
+        let stepper = Rect::new(
+            right - width,
+            y + (row_h - height) / 2.0,
+            right,
+            y + (row_h + height) / 2.0,
         );
-        self.icon_button(
-            &mut PaintCtx::new(scene, t, tr, theme),
-            plus,
-            (Icon::Plus, "Later"),
-            ButtonRole::Plain,
-            false,
-            Hit::TransitTimeDelta(15),
-        );
-        let mut ctx = PaintCtx::new(scene, t, tr, theme);
-        let top = draw::vmid(ctx.text, y, row_h, &style);
-        draw::text_center(
-            &mut ctx,
-            &label,
-            Point::new((minus.x1 + plus.x0) / 2.0, top),
-            &style,
-            theme.text_primary,
-        );
+        let probe = NumberStepperFace::new(stepper, &label).names("Earlier", "Later");
+        let hovered = probe
+            .part_at(theme, self.last_mouse)
+            .filter(|_| !self.dragging);
+        probe
+            .hovered(hovered)
+            .paint(&mut PaintCtx::new(scene, t, tr, theme));
+        let (earlier, later) = probe.hit_rects(theme);
+        self.click_targets
+            .push((earlier, Hit::TransitTimeDelta(-15)));
+        self.click_targets.push((later, Hit::TransitTimeDelta(15)));
         let mut y = y + row_h;
 
         // A way back to "now" appears only when the time is off it.
