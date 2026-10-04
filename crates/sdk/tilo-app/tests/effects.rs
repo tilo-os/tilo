@@ -303,6 +303,11 @@ pub enum TallyEffect {
     /// Tally.
     #[effect(job)]
     Tally,
+    /// Count a row.
+    Count {
+        #[param("How much the row counts")]
+        by: u32,
+    },
 }
 
 #[derive(Default)]
@@ -346,6 +351,10 @@ impl ResourceSurface<Mailbox, TallyEffect> for Tally {
         cx: &mut EffectCx<Mailbox, Self>,
     ) -> Result<Effected, String> {
         match effect {
+            TallyEffect::Count { by } => {
+                self.counted = self.counted.saturating_add(by);
+                Ok(Effected::done())
+            }
             TallyEffect::Tally => Ok(cx.thread(
                 |_| 1,
                 |tally: &mut Self, step: u32, cx| {
@@ -362,6 +371,10 @@ impl ResourceSurface<Mailbox, TallyEffect> for Tally {
             TallyEffect::TALLY,
             format!("Tally ({})", self.counted),
         )]
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        vec![LiveRow::new("row:5", "test.tally.row", "Five").effect(&TallyEffect::Count { by: 5 })]
     }
 }
 
@@ -392,6 +405,14 @@ fn a_surface_answers_its_effects_and_completes_them_with_its_own_state() {
     assert_eq!(app.state().fetched, "tally 2");
     let surface = app.agent_surface();
     assert_eq!(effect(&surface, "tally").unwrap()["label"], "Tally (2)");
+
+    // A live row offers the effect bound to its own arguments.
+    app.call_on("row:5", "count", serde_json::json!({}))
+        .unwrap();
+    assert_eq!(
+        app.effect(&TallyEffect::Tally).unwrap().value,
+        Some(serde_json::json!(8))
+    );
 
     // A past version shows the surface without running or publishing it.
     let first = app.versions().first().unwrap().hash;
