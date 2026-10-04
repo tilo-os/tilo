@@ -4,6 +4,7 @@
 //! the palette, agents and scripts.
 
 use tilo_actions::{ActionSpec, OperationKind, Resource};
+use tilo_resource::Effect;
 
 /// One live external entity a surface publishes beneath its resource, with
 /// the view and effect operations it offers (inspect a process, stop a
@@ -45,6 +46,14 @@ impl LiveRow {
             self.resource.actions.push(operation);
         }
         self
+    }
+
+    /// Offer `effect`, bound to this row's entity (stop *this* process):
+    /// invoked here, it reaches the surface's or view's handler of `E` as
+    /// that value, under the effect's declared contract.
+    #[must_use]
+    pub fn effect<E: Effect>(self, effect: &E) -> Self {
+        self.operation(effect.bound())
     }
 
     /// Nest `row` beneath this one (a container's logs).
