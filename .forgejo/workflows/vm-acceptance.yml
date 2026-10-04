@@ -49,7 +49,10 @@ on:
       - ".forgejo/workflows/vm-acceptance.yml"
 
 concurrency:
-  group: vm-acceptance-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  # A pull request's newest commit replaces its older run; dispatched and
+  # nightly runs only queue behind an identical request. (github.run_id is
+  # not available here: it collapsed every dispatch into one queue.)
+  group: vm-acceptance-${{ github.event_name }}-${{ github.ref }}-${{ github.event.inputs.ref }}-${{ github.event.inputs.swap }}-${{ github.event.inputs.only }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
