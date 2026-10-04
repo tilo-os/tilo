@@ -358,6 +358,7 @@ impl<R: Resource> ResourceRoot<R> {
                 resource = resource.with_action(spec);
             }
         }
+        resource.children.extend(self.storage.person_resources());
         for spec in self.effects.specs() {
             let shadowed = resource
                 .actions
@@ -799,6 +800,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             handlers.insert(RENDER_TYPE.to_owned());
         }
         handlers.insert(super::history::VIEW_TYPE.to_owned());
+        handlers.insert(super::person::HISTORY_TYPE.to_owned());
         handlers.extend(self.effects.operations().into_iter().map(str::to_owned));
         for spec in R::local_operations()
             .into_iter()
@@ -846,6 +848,14 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             && request.type_id == super::history::VIEW_TYPE
         {
             let output = super::history::answer(doc, request.payload)?;
+            return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
+                output,
+            )));
+        }
+        if let Some(request) = op.unscoped()
+            && request.type_id == super::person::HISTORY_TYPE
+        {
+            let output = self.storage.person_history(request.payload)?;
             return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
                 output,
             )));

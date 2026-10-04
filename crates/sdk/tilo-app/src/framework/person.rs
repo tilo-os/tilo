@@ -175,6 +175,98 @@ pub(crate) struct PersonState {
     opened: RefCell<HashMap<&'static str, Rc<dyn Any>>>,
     owners: RefCell<Vec<HistoryOwner>>,
     refreshers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
+    /// The open records' undo and redo, as the palette and agents reach
+    /// them.
+    published: RefCell<Vec<Published>>,
+}
+
+/// One open record as the root publishes it.
+struct Published {
+    kind: &'static str,
+    label: &'static str,
+    /// Take back (`true`) or redo (`false`) one of the person's steps.
+    /// Whether there was one.
+    step: Box<dyn Fn(bool) -> bool>,
+}
+
+/// The operation type of a person record's undo and redo.
+pub(crate) const HISTORY_TYPE: &str = "tilo.app.person-history";
+
+/// The most steps one undo or redo of a person record takes.
+const MAX_STEPS: i64 = 50;
+
+/// What a person record's undo or redo was asked.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct HistoryRequest {
+    kind: String,
+    undo: bool,
+    steps: Option<i64>,
+}
+
+/// The address a person record of `kind` is published under.
+#[must_use]
+pub(crate) fn resource_id(kind: &str) -> String {
+    format!("person:{kind}")
+}
+
+fn history_spec(kind: &'static str, label: &'static str, undo: bool) -> tilo_actions::ActionSpec {
+    let mut spec = history_operation(kind, label, undo);
+    spec.contract.result = tilo_actions::ResultSpec::Json {
+        schema: serde_json::json!({
+            "type": "object",
+            "properties": { "steps": { "type": "integer" } },
+        }),
+    };
+    spec
+}
+
+fn history_operation(
+    kind: &'static str,
+    label: &'static str,
+    undo: bool,
+) -> tilo_actions::ActionSpec {
+    let (id, verb) = if undo {
+        ("undo", "Undo")
+    } else {
+        ("redo", "Redo")
+    };
+    tilo_actions::ActionSpec::typed_operation(
+        id,
+        verb,
+        verb,
+        tilo_actions::OperationKind::Effect,
+        HISTORY_TYPE,
+        vec![
+            tilo_actions::ActionParam::optional(
+                "steps",
+                tilo_actions::ParamType::Number,
+                "How many of your steps (default 1, at most 50)",
+            )
+            .nullable(),
+        ],
+        move |args| {
+            tilo_actions::EncodedAction::encode_operation(
+                HISTORY_TYPE,
+                &HistoryRequest {
+                    kind: kind.to_owned(),
+                    undo,
+                    steps: args.integer("steps"),
+                },
+            )
+            .unwrap_or_else(|_| tilo_actions::EncodedAction {
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
+                payload: Vec::new(),
+            })
+        },
+    )
+    .requiring(tilo_actions::PermissionRequirement::Read)
+    .with_description(if undo {
+        format!(
+            "Take back your last change to your {label}: it is yours alone, on all of your devices."
+        )
+    } else {
+        format!("Make again the change to your {label} you last took back.")
+    })
 }
 
 impl PersonState {
@@ -192,6 +284,7 @@ impl PersonState {
             opened: RefCell::default(),
             owners: RefCell::default(),
             refreshers: RefCell::default(),
+            published: RefCell::default(),
         }
     }
 
@@ -227,6 +320,17 @@ impl PersonState {
         self.refreshers.borrow_mut().push(Box::new(move || {
             weak.upgrade().is_some_and(|shared| shared.refresh())
         }));
+        let weak = Rc::downgrade(&shared);
+        self.published.borrow_mut().push(Published {
+            kind: P::KIND,
+            label: P::LABEL,
+            step: Box::new(move |undo| {
+                weak.upgrade().is_some_and(|shared| {
+                    let record = PersonRecord { shared };
+                    if undo { record.undo() } else { record.redo() }
+                })
+            }),
+        });
         self.opened
             .borrow_mut()
             .insert(P::KIND, Rc::clone(&shared) as Rc<dyn Any>);
@@ -239,6 +343,55 @@ impl PersonState {
             .borrow()
             .iter()
             .fold(false, |moved, refresh| refresh() | moved)
+    }
+
+    /// The open records as resources of their own: the person's undo and
+    /// redo of each, which the palette and agents reach like the app's own
+    /// history.
+    pub(crate) fn resources(&self) -> Vec<tilo_actions::Resource> {
+        self.published
+            .borrow()
+            .iter()
+            .map(|published| {
+                tilo_actions::Resource::new(
+                    resource_id(published.kind),
+                    published.kind,
+                    format!("Your {}", published.label.to_lowercase()),
+                )
+                .with_action(history_spec(published.kind, published.label, true))
+                .with_action(history_spec(published.kind, published.label, false))
+            })
+            .collect()
+    }
+
+    /// Answer an undo or redo of an open record: how many steps it took.
+    pub(crate) fn answer(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, String> {
+        let request: HistoryRequest =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let steps = request.steps.unwrap_or(1);
+        if !(1..=MAX_STEPS).contains(&steps) {
+            return Err(format!("steps is 1 to {MAX_STEPS}"));
+        }
+        let published = self.published.borrow();
+        let record = published
+            .iter()
+            .find(|published| published.kind == request.kind)
+            .ok_or_else(|| format!("no record of yours is open as {}", request.kind))?;
+        let mut taken = 0;
+        while taken < steps && (record.step)(request.undo) {
+            taken = taken.saturating_add(1);
+        }
+        if taken == 0 {
+            return Err(if request.undo {
+                "nothing of yours to undo".to_owned()
+            } else {
+                "nothing of yours to redo".to_owned()
+            });
+        }
+        Ok(tilo_actions::ActionOutput {
+            value: Some(serde_json::json!({ "steps": taken })),
+            resources: vec![resource_id(record.kind)],
+        })
     }
 
     /// The routes of the open records, which the runtime syncs.
