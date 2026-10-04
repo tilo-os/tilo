@@ -5045,7 +5045,7 @@ mod tests {
                 .apply_changes(&bootstrap)
                 .expect("rendered tree accepts its shared baseline");
             rendered.persist_path = Some(state_path.clone());
-            rendered.flush_to_disk();
+            rendered.queue_save();
 
             // This is the durable close route used by both the close button and
             // Super+W after their event handlers resolve the exact tab.
@@ -5100,7 +5100,7 @@ mod tests {
             // A state round-trip may not revive the closed group; live Wayland
             // surfaces intentionally do not survive a compositor restart because
             // their surface ids belong to the old process.
-            rendered.flush_to_disk();
+            rendered.queue_save();
             let restarted = crate::shell::persist::load_tree_from(&state_path)
                 .expect("the post-revision layout restarts cleanly");
             assert!(
@@ -5331,7 +5331,7 @@ mod tests {
                 "closing an external client must not remove the hosted sibling"
             );
 
-            rendered.flush_to_disk();
+            rendered.queue_save();
             let restarted = crate::shell::persist::load_tree_from(&state_path)
                 .expect("interleaved layout remains restartable");
             assert_eq!(tabs_for_surface(&restarted, surface), 0);

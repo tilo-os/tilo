@@ -395,3 +395,6 @@ greetd-client = { path = "../greetd-client" }
 # launcher registry and fresh workspace capability authority.
 compat-service = { path = "../../windows/compat-service" }
 windows-vm = { path = "../../windows/windows-vm" }
+# The shell runtime's policy, where the person's allow for Terminal's Host
+# target (the device's own shell) is recorded.
+ush = { path = "../../runtime/ush" }

@@ -4,7 +4,8 @@
 //! title, width, height      scalars
 //! ground                    JSON of Ground
 //! layers.<id>               { name, order, medium, opacity, visible, texture, locked,
-//!                             mask_of, base, invert, clip }
+//!                             mask_of, base, invert, clip,
+//!                             adjust: JSON of Adjust, when it has one }
 //! marks.<id>                { layer, order, body: JSON of MarkBody }
 //! media.<id>                JSON of MediumSpec
 //! reference                 JSON of Reference, when there is one
@@ -107,6 +108,7 @@ pub fn read(doc: &Doc) -> Artwork {
                 visible: flag(doc, &obj, "visible").unwrap_or(true),
                 texture: number(doc, &obj, "texture").unwrap_or(0.0),
                 locked: flag(doc, &obj, "locked").unwrap_or(false),
+                adjust: json(doc, &obj, "adjust"),
                 mask_of: text(doc, &obj, "mask_of").unwrap_or_default(),
                 base: number(doc, &obj, "base").unwrap_or(1.0),
                 invert: flag(doc, &obj, "invert").unwrap_or(false),
@@ -219,6 +221,17 @@ pub fn write_layer(doc: &mut Doc, layer: &Layer) -> Result<(), AutomergeError> {
     }
     if flag(doc, &obj, "locked").unwrap_or(false) != layer.locked {
         doc.put(&obj, "locked", layer.locked)?;
+    }
+    match &layer.adjust {
+        Some(adjust) => {
+            let encoded = serde_json::to_string(adjust).unwrap_or_default();
+            put_text(doc, &obj, "adjust", &encoded)?;
+        }
+        None => {
+            if doc.get(&obj, "adjust")?.is_some() {
+                doc.delete(&obj, "adjust")?;
+            }
+        }
     }
     // A mask's fields are written only on a mask, and clipping only once
     // set, so an ordinary layer's entry stays as it was.

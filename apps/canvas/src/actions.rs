@@ -19,8 +19,8 @@ use ui::tilo_resource::{self, Doc, JsonSchema, order};
 use crate::doc;
 use crate::media::{self, MediumSpec};
 use crate::model::{
-    Artwork, BLENDS, Gradient, Layer, MAX_MARKS_PER_ACTION, MAX_SIDE, Mark, Reference, Shadow,
-    Shape, StrokePoint, Style, valid_id,
+    Adjust, Artwork, BLENDS, Gradient, Layer, MAX_MARKS_PER_ACTION, MAX_SIDE, Mark, Reference,
+    Shadow, Shape, StrokePoint, Style, valid_id,
 };
 
 pub const ACTION_TYPE: &str = "canvas.artwork";
@@ -38,6 +38,10 @@ pub struct SetArtwork {
     pub texture: Option<String>,
     /// Ground colour, `#rrggbb`.
     pub ground_colour: Option<String>,
+    /// Crop to `[x, y, width, height]`; marks move with it.
+    pub crop: Option<[f64; 4]>,
+    /// Crop to what this mark or group shows.
+    pub fit: Option<String>,
 }
 
 /// Add a layer on top, or above another.
@@ -58,6 +62,26 @@ pub struct AddLayer {
     pub texture: Option<f64>,
 }
 
+/// A value whose schema another action already teaches: its parameter
+/// names that action instead of repeating the whole schema, which keeps
+/// what an agent reads before it can act small. Serialized as the value.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Taught<T>(pub T);
+
+impl<T> JsonSchema for Taught<T> {
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+}
+
+impl<T> std::ops::Deref for Taught<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
 /// Change a layer.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -74,6 +98,8 @@ pub struct EditLayer {
     pub to: Option<String>,
     /// `0..=1`: let the ground's tooth show through the layer's marks.
     pub texture: Option<f64>,
+    /// Colour and tone of all on it, as `edit-marks` adjust; `{}` clears.
+    pub adjust: Option<Taught<Box<Adjust>>>,
     /// `reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint
     /// greys on, white shows, black hides.
     pub mask: Option<String>,
@@ -142,7 +168,7 @@ pub struct NewMark {
     /// A group id: edits naming it change the members as one; `a/b`
     /// nests group b in a.
     pub group: Option<String>,
-    /// Cut to this mark's shape (opacity 0 hides that mark), or
+    /// Cut to this mark's or group's shape (opacity 0 hides it), or
     /// `selection`.
     pub clip: Option<String>,
     /// An affine `[a, b, c, d, e, f]` on the geometry, as `inspect` shows.
@@ -258,8 +284,9 @@ pub struct EditMarks {
     /// Marks, or groups (all their members).
     pub ids: Vec<String>,
     pub name: Option<String>,
-    /// Replace the geometry (e.g. edit a path's `d`).
-    pub shape: Option<Shape>,
+    /// Replace the geometry: a shape as `draw` takes it (e.g. a path's
+    /// new `d`).
+    pub shape: Option<Taught<Shape>>,
     /// `[]` removes dashes.
     pub dash: Option<Vec<f64>>,
     pub cap: Option<String>,
@@ -275,7 +302,7 @@ pub struct EditMarks {
     pub feather: Option<f64>,
     /// Put into this group (`a/b` nests b in a); empty takes out of any.
     pub group: Option<String>,
-    /// Cut to this mark's shape; empty uncuts.
+    /// Cut to this mark's or group's shape; empty uncuts.
     pub clip: Option<String>,
     /// A colour (replacing a gradient), or `none`.
     pub fill: Option<String>,
@@ -304,6 +331,15 @@ pub struct EditMarks {
     /// An affine `[a, b, c, d, e, f]` in artwork units applied after the
     /// rest, to all the marks as one: a stretch or turn about any point.
     pub transform: Option<[f64; 6]>,
+    /// `horizontal` or `vertical`: mirror about each centre.
+    pub flip: Option<String>,
+    /// Images: fractions `[x, y, w, h]` of the picture to show (it stays
+    /// put); `[]` all of it.
+    pub crop: Option<Vec<f64>>,
+    /// Images: degrees, -45 to 45, to level it.
+    pub straighten: Option<f64>,
+    /// Colour and tone; given steps replace, `{}` clears.
+    pub adjust: Option<Adjust>,
     /// Strokes: take the wobble out of their paths, 0..=1.
     pub smooth: Option<f64>,
     /// Strokes: drop points within this many units of the line.
@@ -409,6 +445,20 @@ pub enum CanvasAction {
     Select(Box<crate::selection::Select>),
     UseSelection(crate::selection::UseSelection),
     Combine(crate::selection::Combine),
+    OpenPicture(Open),
+}
+
+/// Start a new artwork from a picture: sized to it, the picture its first
+/// mark (`picture`) on its one layer. Everything the artwork held before is
+/// replaced, as one step.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Open {
+    /// The picture's content address.
+    pub src: String,
+    /// Its size in pixels.
+    pub pixels: [u32; 2],
+    pub title: String,
 }
 
 impl CanvasAction {
@@ -624,14 +674,30 @@ fn check_group(art: &Artwork, group: &str, new_ids: &[String]) -> Result<(), Act
     Ok(())
 }
 
-/// A clip must name an existing (or just drawn) mark other than itself.
-fn check_clip(art: &Artwork, id: &str, clip: &str, new_ids: &[String]) -> Result<(), ActionError> {
+/// A clip must name an existing (or just drawn) mark other than itself, or
+/// a group it is not in.
+fn check_clip(
+    art: &Artwork,
+    (id, group): (&str, &str),
+    clip: &str,
+    new: &[Mark],
+) -> Result<(), ActionError> {
     if clip == id {
         return Err(refuse(format!("mark {id:?} cannot clip itself")));
     }
-    if art.mark(clip).is_none() && !new_ids.iter().any(|new| new == clip) {
+    let mark = art.mark(clip).is_some() || new.iter().any(|mark| mark.id == clip);
+    let members = art.members(clip).next().is_some()
+        || new
+            .iter()
+            .any(|mark| crate::model::in_group(&mark.group, clip));
+    if crate::model::in_group(group, clip) {
         return Err(refuse(format!(
-            "clip {clip:?} is not a mark; clip names the mark whose shape cuts this one"
+            "mark {id:?} is in group {clip:?}, so the group cannot clip it"
+        )));
+    }
+    if !mark && !members {
+        return Err(refuse(format!(
+            "clip {clip:?} is not a mark or group; clip names what cuts this one"
         )));
     }
     Ok(())
@@ -722,7 +788,7 @@ pub(crate) fn add_marks(
             check_group(art, &mark.group, &ids).map_err(problem)?;
         }
         if !mark.clip.is_empty() {
-            check_clip(art, &mark.id, &mark.clip, &ids).map_err(problem)?;
+            check_clip(art, (&mark.id, &mark.group), &mark.clip, &marks).map_err(problem)?;
         }
     }
     let orders = on_top(art, layer, marks.len());
@@ -817,19 +883,24 @@ impl Draw {
                     inner_shadow: mark.inner_shadow.clone(),
                     grain: mark.grain.filter(|grain| *grain > 0.0),
                     feather: mark.feather.filter(|feather| *feather > 0.0),
+                    adjust: None,
                 };
-                let style =
-                    if style.fill.is_none() && style.gradient.is_none() && style.stroke.is_none() {
-                        // An uncoloured shape would be invisible: draw it in ink.
-                        Style {
-                            fill: mark.shape.closed().then(|| "#1d1b19".to_owned()),
-                            stroke: (!mark.shape.closed()).then(|| "#1d1b19".to_owned()),
-                            stroke_width: if mark.shape.closed() { 0.0 } else { 2.0 },
-                            ..style
-                        }
-                    } else {
-                        style
-                    };
+                let picture = matches!(mark.shape, Shape::Image { .. });
+                let style = if !picture
+                    && style.fill.is_none()
+                    && style.gradient.is_none()
+                    && style.stroke.is_none()
+                {
+                    // An uncoloured shape would be invisible: draw it in ink.
+                    Style {
+                        fill: mark.shape.closed().then(|| "#1d1b19".to_owned()),
+                        stroke: (!mark.shape.closed()).then(|| "#1d1b19".to_owned()),
+                        stroke_width: if mark.shape.closed() { 0.0 } else { 2.0 },
+                        ..style
+                    }
+                } else {
+                    style
+                };
                 Mark {
                     group: mark.group.clone().unwrap_or_default(),
                     clip: clips.get(index).cloned().unwrap_or_default(),
@@ -913,6 +984,13 @@ fn check_brush(art: &Artwork, layer: &str, mark: &Mark) -> Result<(), ActionErro
     if !matches!(mark.shape, Shape::Stroke { .. }) {
         return Ok(());
     }
+    if mark.erases()
+        && let Shape::Stroke { forks: Some(_), .. } = mark.shape
+    {
+        return Err(refuse(
+            "an eraser does not fork; give it dabs to clear broken patches, or erase along plain strokes",
+        ));
+    }
     let plain = art.layer(layer).is_none_or(|layer| layer.medium.is_empty());
     match crate::brushes::problem(mark.style.brush.as_deref(), &mark.style.params, plain) {
         Some(problem) => Err(refuse(problem)),
@@ -974,7 +1052,7 @@ impl EditMarks {
         if !scale.is_finite() || scale <= 0.0 || !rotate.is_finite() {
             return Err(refuse("scale must be positive and rotate finite"));
         }
-        if let Some(problem) = self.shape.as_ref().and_then(Shape::problem) {
+        if let Some(problem) = self.shape.as_deref().and_then(Shape::problem) {
             return Err(refuse(problem));
         }
         if let Some(group) = self.group.as_deref().filter(|group| !group.is_empty()) {
@@ -983,11 +1061,13 @@ impl EditMarks {
         if let Some(transform) = self.transform {
             check_transform(transform)?;
         }
+        let (mirror, crop) = self.picture_edits()?;
         for unit in units {
             let centre = extent(art, &unit).center() + ui::vello::kurbo::Vec2::new(dx, dy);
             let about = ui::vello::kurbo::Affine::translate(centre.to_vec2())
                 * ui::vello::kurbo::Affine::rotate(rotate.to_radians())
                 * ui::vello::kurbo::Affine::scale(scale)
+                * mirror
                 * ui::vello::kurbo::Affine::translate(-centre.to_vec2());
             for original in unit {
                 let mut mark = original.clone();
@@ -1000,23 +1080,24 @@ impl EditMarks {
                     }
                 }
                 if let Some(shape) = &self.shape {
-                    mark.shape = shape.clone();
+                    mark.shape = shape.0.clone();
                 }
                 if let Some(group) = &self.group {
                     mark.group.clone_from(group);
                 }
                 if let Some(clip) = &self.clip {
                     if !clip.is_empty() {
-                        check_clip(art, &mark.id, clip, &[])?;
+                        check_clip(art, (&mark.id, &mark.group), clip, &[])?;
                     }
                     mark.clip.clone_from(clip);
                 }
                 self.restyle(&mut mark);
+                self.reframe(&mut mark, crop)?;
                 self.reshape(&mut mark);
                 if dx != 0.0 || dy != 0.0 {
                     mark = mark.moved(dx, dy);
                 }
-                if self.scale.is_some() || self.rotate.is_some() {
+                if self.scale.is_some() || self.rotate.is_some() || self.flip.is_some() {
                     mark.transform = Some((about * mark.affine()).as_coeffs());
                 }
                 if let Some(transform) = self.transform {
@@ -1030,6 +1111,60 @@ impl EditMarks {
                 }
                 doc::write_mark(doc, &mark)?;
             }
+        }
+        Ok(())
+    }
+
+    /// The flip as an affine about the origin, and the crop asked for,
+    /// refusing what cannot be.
+    fn picture_edits(&self) -> Result<(ui::vello::kurbo::Affine, Option<[f64; 4]>), ActionError> {
+        let mirror = match self.flip.as_deref() {
+            None => ui::vello::kurbo::Affine::IDENTITY,
+            Some("horizontal") => ui::vello::kurbo::Affine::FLIP_X,
+            Some("vertical") => ui::vello::kurbo::Affine::FLIP_Y,
+            Some(other) => {
+                return Err(refuse(format!(
+                    "flip {other:?} must be horizontal or vertical"
+                )));
+            }
+        };
+        if let Some(problem) = self.adjust.as_ref().and_then(Adjust::problem) {
+            return Err(refuse(problem));
+        }
+        let crop = match self.crop.as_deref() {
+            None => None,
+            Some([]) => Some([0.0, 0.0, 1.0, 1.0]),
+            Some(&[x, y, w, h]) => Some([x, y, w, h]),
+            Some(_) => {
+                return Err(refuse(
+                    "crop is [x, y, w, h] fractions of the picture, or [] for all of it",
+                ));
+            }
+        };
+        Ok((mirror, crop))
+    }
+
+    /// An image's crop and straightening, onto `mark`.
+    fn reframe(&self, mark: &mut Mark, crop: Option<[f64; 4]>) -> Result<(), ActionError> {
+        if crop.is_none() && self.straighten.is_none() {
+            return Ok(());
+        }
+        let Some(mut placement) = crate::picture::Placement::of(&mark.shape) else {
+            return Err(refuse(format!(
+                "mark {:?} is a {}; crop and straighten are for images",
+                mark.id,
+                mark.shape.kind()
+            )));
+        };
+        if let Some(crop) = crop {
+            placement = placement.with_crop(crop);
+        }
+        if let Some(angle) = self.straighten {
+            placement.straighten = angle;
+        }
+        placement.apply(&mut mark.shape);
+        if let Some(problem) = mark.shape.problem() {
+            return Err(refuse(format!("mark {:?}: {problem}", mark.id)));
         }
         Ok(())
     }
@@ -1157,6 +1292,9 @@ impl EditMarks {
             }
             if let Some(params) = &self.params {
                 mark.style.params.extend(params.clone());
+            }
+            if let Some(adjust) = &self.adjust {
+                mark.style.adjust = mark.style.adjust.clone().unwrap_or_default().merged(adjust);
             }
         }
     }
@@ -1299,7 +1437,7 @@ impl tilo_actions::Action for CanvasAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let art = doc::read(doc);
         match self {
-            Self::SetArtwork(set) => set_artwork(doc, set),
+            Self::SetArtwork(set) => set_artwork(doc, &art, set),
             Self::AddLayer(add) => add_layer(doc, &art, add),
             Self::EditLayer(edit) => edit_layer(doc, &art, edit),
             Self::RemoveLayer(remove) => {
@@ -1378,6 +1516,7 @@ impl tilo_actions::Action for CanvasAction {
             }
             Self::Align(align) => align.apply(doc, &art),
             Self::SetReference(set) => set_reference(doc, &art, set),
+            Self::OpenPicture(open) => open.apply(doc, &art),
             Self::Select(select) => select.apply(doc, &art),
             Self::UseSelection(using) => using.apply(doc, &art),
             Self::Combine(combine) => combine.apply(doc, &art),
@@ -1389,9 +1528,30 @@ impl tilo_actions::Action for CanvasAction {
     }
 }
 
-fn set_artwork(doc: &mut Doc, set: &SetArtwork) -> Result<(), ActionError> {
+fn set_artwork(doc: &mut Doc, art: &Artwork, set: &SetArtwork) -> Result<(), ActionError> {
     use ui::automerge::ROOT;
     use ui::automerge::transaction::Transactable as _;
+    let crop = match (&set.crop, &set.fit) {
+        (Some(_), Some(_)) => return Err(refuse("give crop or fit, not both")),
+        (Some([x, y, width, height]), None) => {
+            Some(ui::vello::kurbo::Rect::new(*x, *y, x + width, y + height))
+        }
+        // Whole units inside what the mark shows, so no sliver of ground
+        // is left along an edge.
+        (None, Some(id)) => {
+            let shown = extent(art, &units_of(art, id)?);
+            Some(ui::vello::kurbo::Rect::new(
+                (shown.x0 - 1e-6).ceil(),
+                (shown.y0 - 1e-6).ceil(),
+                (shown.x1 + 1e-6).floor(),
+                (shown.y1 + 1e-6).floor(),
+            ))
+        }
+        (None, None) => None,
+    };
+    if let Some(crop) = crop {
+        crop_artwork(doc, art, crop)?;
+    }
     for (value, what) in [(set.width, "width"), (set.height, "height")] {
         if let Some(value) = value {
             if !(16.0..=MAX_SIDE).contains(&value) {
@@ -1424,6 +1584,113 @@ fn set_artwork(doc: &mut Doc, set: &SetArtwork) -> Result<(), ActionError> {
         doc::put_text(doc, &ROOT, "ground", &encoded)?;
     }
     Ok(())
+}
+
+/// The artwork cut down to `area`: its corner becomes the origin, every
+/// mark and the reference moving with it.
+fn crop_artwork(
+    doc: &mut Doc,
+    art: &Artwork,
+    area: ui::vello::kurbo::Rect,
+) -> Result<(), ActionError> {
+    use ui::automerge::ROOT;
+    use ui::automerge::transaction::Transactable as _;
+    // Whole units, so the picture an export makes is exactly the area.
+    let (x0, y0) = (area.x0.round(), area.y0.round());
+    let (width, height) = ((area.x1.round() - x0), (area.y1.round() - y0));
+    if ![x0, y0, width, height]
+        .iter()
+        .all(|value| value.is_finite())
+        || !(16.0..=MAX_SIDE).contains(&width)
+        || !(16.0..=MAX_SIDE).contains(&height)
+    {
+        return Err(refuse(format!(
+            "a crop is [x, y, width, height] with width and height 16 to {MAX_SIDE}"
+        )));
+    }
+    doc.put(&ROOT, "width", width)?;
+    doc.put(&ROOT, "height", height)?;
+    if x0 != 0.0 || y0 != 0.0 {
+        for mark in &art.marks {
+            doc::write_mark(doc, &mark.moved(-x0, -y0))?;
+        }
+        if let Some(reference) = &art.reference
+            && let Some([x, y, w, h]) = reference.frame
+        {
+            let moved = Reference {
+                frame: Some([x - x0, y - y0, w, h]),
+                ..reference.clone()
+            };
+            doc::write_reference(doc, Some(&moved))?;
+        }
+    }
+    Ok(())
+}
+
+impl Open {
+    fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
+        use ui::automerge::ROOT;
+        use ui::automerge::transaction::Transactable as _;
+        let [width, height] = self.pixels.map(f64::from);
+        if width < 1.0 || height < 1.0 {
+            return Err(refuse("the picture has no pixels"));
+        }
+        // A unit to a pixel, unless the picture is larger than an artwork
+        // may be; never smaller than an artwork may be.
+        let fit = (MAX_SIDE / width.max(height)).min(1.0);
+        let fit = fit.max(16.0 / width.min(height));
+        let (width, height) = ((width * fit).round(), (height * fit).round());
+        for mark in &art.marks {
+            doc::remove(doc, doc::MARKS, &mark.id)?;
+        }
+        for layer in &art.layers {
+            doc::remove(doc, doc::LAYERS, &layer.id)?;
+        }
+        for medium in art.media.keys() {
+            doc::remove(doc, doc::MEDIA, medium)?;
+        }
+        doc::write_reference(doc, None)?;
+        doc.put(&ROOT, "width", width.clamp(16.0, MAX_SIDE))?;
+        doc.put(&ROOT, "height", height.clamp(16.0, MAX_SIDE))?;
+        doc::put_text(doc, &ROOT, "title", &self.title)?;
+        let ground = crate::model::Ground {
+            texture: "smooth".into(),
+            colour: "#ffffff".into(),
+        };
+        let encoded = serde_json::to_string(&ground).unwrap_or_default();
+        doc::put_text(doc, &ROOT, "ground", &encoded)?;
+        let fresh = doc::read(doc);
+        add_layer(
+            doc,
+            &fresh,
+            &AddLayer {
+                id: Some("layer-1".into()),
+                name: "Layer 1".into(),
+                ..AddLayer::default()
+            },
+        )?;
+        let fresh = doc::read(doc);
+        let shape = Shape::Image {
+            src: self.src.clone(),
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+            crop: None,
+            straighten: None,
+        };
+        add_marks(
+            doc,
+            &fresh,
+            "layer-1",
+            vec![placed(
+                "picture".into(),
+                self.title.clone(),
+                shape,
+                Style::default(),
+            )],
+        )
+    }
 }
 
 fn check_medium(art: &Artwork, medium: &str) -> Result<(), ActionError> {
@@ -1550,6 +1817,12 @@ fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), Acti
     }
     if let Some(locked) = edit.locked {
         layer.locked = locked;
+    }
+    if let Some(adjust) = &edit.adjust {
+        if let Some(problem) = adjust.problem() {
+            return Err(refuse(problem));
+        }
+        layer.adjust = layer.adjust.clone().unwrap_or_default().merged(adjust);
     }
     if let Some(to) = &edit.to {
         let all: Vec<(String, String)> = art

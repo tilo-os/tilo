@@ -101,8 +101,8 @@ pub struct ClientInput {
     /// retained chrome. Prevents cleanup from touching an ordinary tab drag.
     content_drop_hover_active: bool,
     /// Click/touch focus changes awaiting durable session-state persistence.
-    /// Persistence fsyncs both the replacement file and its directory, so it
-    /// must run after latency-sensitive Wayland input has been queued/flushed.
+    /// Saving copies the whole workspace tree, so it runs after
+    /// latency-sensitive Wayland input has been queued/flushed.
     focus_persistence_pending: bool,
     /// Whether the latest direct-touch down was delivered to a client over
     /// `wl_touch`. That client owns the whole tap, so the compositor must not
@@ -2091,7 +2091,7 @@ mod tests {
                     insert_foreign_group(&mut tree, 710_002, Some("org.example.second"))
                         .expect("second foreign group");
                 tree.desktop.set_active_group(strip_id, first_group);
-                tree.flush_to_disk();
+                tree.queue_save();
                 drop(tree);
                 (strip_id, first_group, second_group)
             };
@@ -2106,7 +2106,7 @@ mod tests {
             );
 
             // The native loop performs this only after `display.flush_clients()`.
-            fb.chrome().tree().flush_to_disk();
+            fb.chrome().tree().queue_save();
 
             let restarted = persist::load_tree_from(&state_path).expect("reload focused layout");
             assert_eq!(

@@ -247,6 +247,15 @@ impl Slider {
         if let Some(action) = &mut self.action {
             if !(self.settles && self.is_dragging) {
                 let _ = action.emit(self.value);
+            } else if let Some(binding) = self
+                .binding
+                .as_mut()
+                .filter(|binding| binding.document_key().is_none())
+            {
+                // The value a drag will settle on, shown to whatever reads
+                // the control's local state (a label, a live preview) before
+                // the action is invoked at release.
+                binding.push(state, root, &self.value);
             }
         } else if let Some(binding) = &mut self.binding {
             binding.push(state, root, &self.value);
@@ -1142,6 +1151,32 @@ mod tests {
             let value = invoked.arguments["value"].as_f64().unwrap();
             assert!((value - slider.value).abs() < 1e-9);
             assert!(crate::widget::controls::take_control_invocation(&mut slider).is_none());
+        }
+
+        // Case `a_settling_slider_shows_its_drag_in_its_local_state`.
+        {
+            let state = crate::LocalState::new(0.0);
+            let mut slider = Slider::from_state(&state)
+                .on_action(crate::widget::test_number_action_binding())
+                .commits_on_release();
+            slider.rect = Rect::new(0.0, 0.0, 200.0, 30.0);
+            crate::widget::controls::refresh_control_action_availability(
+                &mut slider,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                    "test:control",
+                    "set",
+                )]),
+            );
+            dispatch(&mut slider, &cursor_moved(20.0, 15.0));
+            dispatch(&mut slider, &mouse_press());
+            dispatch(&mut slider, &cursor_moved(150.0, 15.0));
+            assert!(
+                (state.with(|value| *value) - slider.value).abs() < 1e-9,
+                "the local state follows the drag"
+            );
+            assert!(crate::widget::controls::take_control_invocation(&mut slider).is_none());
+            dispatch(&mut slider, &mouse_release());
+            assert!(crate::widget::controls::take_control_invocation(&mut slider).is_some());
         }
 
         // Case `action_binding_owns_accessibility_value_changes`.

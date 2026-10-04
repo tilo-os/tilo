@@ -132,15 +132,6 @@ pub struct PeerView {
 }
 
 impl PeerView {
-    /// Shell-owned display sessions are not app-tree children, so the trusted
-    /// host supplies their viewport directly.
-    pub fn set_shell_viewport(&mut self, rect: Rect) {
-        if self.rect != rect {
-            self.rect = rect;
-            self.dirty = true;
-        }
-    }
-
     fn content_rect(&self) -> Rect {
         let Some(frame) = self.latest.as_ref() else {
             return self.rect;
@@ -763,7 +754,7 @@ mod tests {
 
     #[test]
     fn peer_view_paints_fitted_frames_or_a_placeholder() {
-        fn personal_display_aspect_fit_preserves_pixels_and_letterboxes() {
+        fn aspect_fit_preserves_pixels_and_letterboxes() {
             let viewport = Rect::new(0.0, 0.0, 1000.0, 1000.0);
             let fitted = aspect_fit_rect(viewport, 1920, 1080);
             assert!(fitted.x0.abs() < 0.001);
@@ -819,7 +810,7 @@ mod tests {
             );
         }
 
-        personal_display_aspect_fit_preserves_pixels_and_letterboxes();
+        aspect_fit_preserves_pixels_and_letterboxes();
         decoded_frame_paints_image_into_scene();
         empty_view_paints_placeholder_text_not_image();
     }
