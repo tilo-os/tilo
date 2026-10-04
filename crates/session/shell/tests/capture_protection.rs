@@ -627,7 +627,7 @@ fn the_on_screen_keyboard_is_withheld_while_a_password_field_has_focus() {
     h.state.osk_surface = Some(KEYBOARD);
     let mut fb = FrameBuilder::new((W, H));
     store().publish_rgba(KEYBOARD, &solid(960, 360, CLIENT), 960, 360);
-    fb.set_osk_surface(Some(KEYBOARD), None, true);
+    fb.set_osk_surface(Some(KEYBOARD), None, None, true);
     // Paint until the keyboard's frame is presented and any opening
     // cross-fade is over, so samples measure the keyboard itself.
     let settled = std::time::Instant::now()
