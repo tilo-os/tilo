@@ -9,7 +9,7 @@
 use ui::theme::Theme;
 use ui::widget::{SidebarDrawer, SidebarSide, text_control_height};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 /// The measurements of the header row in one theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -74,6 +74,9 @@ pub struct SidePanel {
     content: Rect,
     toggle: Rect,
     header: Header,
+    /// Room kept at the window's trailing corner for the window's History
+    /// control, which the trailing show/hide button stands beside.
+    trailing_reserve: f64,
 }
 
 impl SidePanel {
@@ -93,6 +96,7 @@ impl SidePanel {
             content: Rect::ZERO,
             toggle: Rect::ZERO,
             header: Header::default(),
+            trailing_reserve: 0.0,
         }
     }
 
@@ -106,6 +110,12 @@ impl SidePanel {
     /// Advance the eased reveal one frame (draw path only).
     pub fn tick(&mut self, theme: &Theme) {
         self.drawer.tick(theme);
+    }
+
+    /// Keep `reserve` of the trailing corner free for the window's History
+    /// control; the show/hide button of a trailing panel stands beside it.
+    pub fn set_trailing_reserve(&mut self, reserve: f64) {
+        self.trailing_reserve = reserve;
     }
 
     /// Resolve the panel, content column and button for the window `area`.
@@ -127,6 +137,9 @@ impl SidePanel {
             area
         };
         self.toggle = self.header.chip_at(on, self.leading);
+        if !self.leading {
+            self.toggle = self.toggle - Vec2::new(self.trailing_reserve, 0.0);
+        }
     }
 
     /// The panel's rect (header row included), `Rect::ZERO` while hidden.
