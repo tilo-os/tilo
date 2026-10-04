@@ -321,6 +321,7 @@ impl FeedsDoc {
         }
     }
 
+    #[cfg(test)]
     /// Write the entire store into the document (first-run seed).
     pub fn seed(doc: &mut AutoCommit, store: &Store) {
         for f in &store.folders {
