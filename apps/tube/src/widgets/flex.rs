@@ -100,7 +100,7 @@ pub struct Surface {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent layout toggle set by its own builder method \
-              (wrap, block, clip, overlay, float), not a state machine"
+              (wrap, block, clip, float), not a state machine"
 )]
 pub struct Flex {
     children: Vec<Box<dyn Widget>>,
@@ -125,13 +125,9 @@ pub struct Flex {
     shrink: f32,
     block: bool,
     clip: bool,
-    /// When set, this box is absolutely positioned filling its containing
-    /// block (inset 0 on all sides) so it stacks *over* its siblings — used for
-    /// the command-palette overlay on top of the shell.
-    overlay: bool,
-    /// Like `overlay` for positioning (absolute, fills the containing block and
-    /// stacks over siblings) but WITHOUT the modal pointer capture: events that
-    /// miss this box's interactive children fall through to the content beneath.
+    /// Absolutely positioned, filling the containing block and stacking over
+    /// its siblings, without modal pointer capture: events that miss this
+    /// box's interactive children fall through to the content beneath.
     /// Used for a small on-video affordance (the `SponsorBlock` "Skip" button).
     float: bool,
 
@@ -182,7 +178,6 @@ impl Flex {
             shrink: 0.0,
             block: false,
             clip: false,
-            overlay: false,
             float: false,
             surface: None,
             hover_surface: None,
@@ -328,16 +323,6 @@ impl Flex {
     #[must_use]
     pub fn clip(mut self) -> Self {
         self.clip = true;
-        self
-    }
-
-    /// Make this box an absolutely-positioned overlay filling its containing
-    /// block (inset 0), so it stacks on top of its siblings. The containing
-    /// block is the nearest positioned ancestor — the shell root sets itself
-    /// `position: relative` implicitly by being the flex parent.
-    #[must_use]
-    pub fn overlay(mut self) -> Self {
-        self.overlay = true;
         self
     }
 
@@ -534,14 +519,14 @@ impl Widget for Flex {
             } else {
                 taffy::Display::Flex
             },
-            position: if self.overlay || self.float {
+            position: if self.float {
                 taffy::Position::Absolute
             } else {
                 taffy::Position::Relative
             },
             // Absolute + inset 0 => fill the containing block, stacking over
             // in-flow siblings.
-            inset: if self.overlay || self.float {
+            inset: if self.float {
                 taffy::Rect {
                     left: length(0.0_f32),
                     right: length(0.0_f32),
@@ -859,11 +844,8 @@ impl Widget for Flex {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        // An overlay captures all pointer events so it behaves modally — the
-        // parent routes exclusively to it, keeping clicks off the shell beneath
-        // (e.g. the top-bar menu button under the command-palette scrim). A
-        // `float` deliberately does NOT capture (see `is_floating`).
-        self.overlay || self.children.iter().any(|c| c.wants_pointer_capture())
+        // A `float` deliberately does NOT capture (see `is_floating`).
+        self.children.iter().any(|c| c.wants_pointer_capture())
     }
 
     fn is_floating(&self) -> bool {

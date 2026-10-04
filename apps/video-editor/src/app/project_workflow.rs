@@ -280,12 +280,8 @@ impl VideoEditorApp {
             Some(portal::ProjectOutcome::Cancelled) => {
                 self.save_then_open = None;
                 self.project_notice = None;
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_operation = None;
-                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
-                        invocation,
-                        message: Some("project file selection was cancelled".into()),
-                    });
+                if self.resource_reply.is_some() {
+                    self.settle_resource_job(Err("project file selection was cancelled".into()));
                 }
             }
             Some(portal::ProjectOutcome::Failed(reason)) => {
@@ -460,12 +456,10 @@ impl VideoEditorApp {
             Some(portal::ExportDestOutcome::Opened(path)) => self.begin_export_to(path),
             Some(portal::ExportDestOutcome::Cancelled) => {
                 self.export_notice = None;
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_operation = None;
-                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
-                        invocation,
-                        message: Some("export destination selection was cancelled".into()),
-                    });
+                if self.resource_reply.is_some() {
+                    self.settle_resource_job(Err(
+                        "export destination selection was cancelled".into()
+                    ));
                 }
             }
             Some(portal::ExportDestOutcome::Failed(reason)) => {

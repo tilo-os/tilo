@@ -13,19 +13,19 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use tilo_actions::{
-    ActionAddress, ActionContract, ActionSpec, ConfirmationPolicy, ExecutionMode, OperationKind,
-    Resource, ResultSpec, RetryPolicy, RiskLevel,
+    ActionAddress, ActionContract, ActionSpec, ConfirmationPolicy, Resource, RetryPolicy, RiskLevel,
 };
 use ui::icons::Icon;
 use ui::search::SearchResult;
 use ui::tilo_resource::{SearchBody, SearchPiece, SearchText, SearchWeight};
 
 use crate::actions::{
-    CommentDraft, EBOOK_OPERATION_TYPE, EbookOperation, NoteDraft, change_color_action,
-    delete_annotation_action, delete_highlight_action, edit_note_action, encode,
-    remove_library_book_action,
+    CommentDraft, NoteDraft, change_color_action, delete_annotation_action,
+    delete_highlight_action, edit_note_action, encode, remove_library_book_action,
 };
 use crate::model::{AnnoKind, Annotation, AnnotationAnchor, Book, HiColor, LibraryEntry};
+use crate::resource::BooksEffect;
+use ui::tilo_resource::Effect as _;
 
 pub const BOOK_KIND: &str = "Books";
 pub const CHAPTER_KIND: &str = "Chapters";
@@ -361,9 +361,10 @@ impl BookSearch {
             } else {
                 entry.title.clone()
             };
-            let mut result =
-                SearchResult::for_action(BOOK_KIND, title.clone(), Self::book_address(&entry.id))
-                    .with_icon(Icon::FileText);
+            // A collaborator's book is fetched before it opens.
+            let download = ActionAddress::new(format!("ebook.book:{}", entry.id), "download");
+            let mut result = SearchResult::for_action(BOOK_KIND, title.clone(), download)
+                .with_icon(Icon::FileText);
             if !entry.author.trim().is_empty() {
                 result = result.with_subtitle(entry.author.clone());
             }
@@ -557,21 +558,12 @@ impl BookSearch {
             "ebook.location",
             format!("{} · {chapter_title}", Self::book_title(book)),
         )
-        .with_action(
-            ActionSpec::operation(
-                "open",
-                "Open match",
-                OperationKind::View,
-                EBOOK_OPERATION_TYPE,
-                &EbookOperation::Reveal {
-                    book_id: book.id.clone(),
-                    chapter,
-                    page: 0,
-                    block: Some(block),
-                },
-            )
-            .ok()?,
-        );
+        .with_action(crate::actions::open_at(
+            &book.id,
+            chapter,
+            Some(block),
+            "Open match",
+        ));
         resource
             .actions
             .iter()
@@ -589,24 +581,10 @@ impl BookSearch {
             // A remote metadata hit is never a dead reveal. The operation is
             // typed and derives its only path from the content id, so opening
             // a peer's result remains a capability-safe workspace hydrate.
-            let hydrate = ActionSpec::operation(
-                "open",
-                "Download and open",
-                OperationKind::Effect,
-                EBOOK_OPERATION_TYPE,
-                &EbookOperation::HydrateSharedBook {
-                    book_id: remote.id.clone(),
-                },
-            )
-            .ok()?
-            .with_contract(ActionContract {
-                risk: RiskLevel::Low,
-                retry: RetryPolicy::Idempotent,
-                execution: ExecutionMode::Background { cancellable: true },
-                result: ResultSpec::Job,
-                tags: vec!["workspace".into(), "materialize".into(), "remote".into()],
-                ..ActionContract::default()
-            });
+            let hydrate = BooksEffect::Download {
+                book: remote.id.clone(),
+            }
+            .bound();
             let remove_from_library = ActionSpec::immediate(
                 "remove-from-library",
                 "Remove from library",
@@ -662,40 +640,14 @@ impl BookSearch {
             }
             SearchTarget::RemoteBook(_) => return None,
         };
-        let action = ActionSpec::operation(
-            "open",
-            "Open",
-            OperationKind::View,
-            EBOOK_OPERATION_TYPE,
-            &EbookOperation::Reveal {
-                book_id: book_id.to_string(),
-                chapter,
-                page: 0,
-                block,
-            },
-        )
-        .ok()?;
+        let action = crate::actions::open_at(book_id, chapter, block, "Open");
         let mut resource =
             Resource::new(&address.resource, kind, &entry.result.title).with_action(action);
         if matches!(entry.target, SearchTarget::Book(_)) {
-            let share = ActionSpec::operation(
-                "share",
-                "Share with workspace",
-                OperationKind::Effect,
-                EBOOK_OPERATION_TYPE,
-                &EbookOperation::ShareBook {
-                    book_id: book_id.to_string(),
-                },
-            )
-            .ok()?
-            .with_contract(ActionContract {
-                risk: RiskLevel::Low,
-                retry: RetryPolicy::Idempotent,
-                execution: ExecutionMode::Background { cancellable: true },
-                result: ResultSpec::Job,
-                tags: vec!["workspace".into(), "materialize".into()],
-                ..ActionContract::default()
-            });
+            let share = BooksEffect::Share {
+                book: book_id.to_string(),
+            }
+            .bound();
             let remove = ActionSpec::immediate(
                 "remove-from-library",
                 "Remove from library",
@@ -1049,17 +1001,17 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "open")
                 .expect("open action");
-            let tilo_actions::ActionInput::Immediate(encoded) = &open.input else {
-                panic!("location open is immediate");
-            };
+            let encoded = open
+                .build_json(&serde_json::Map::new())
+                .expect("a bound open takes no arguments");
             assert_eq!(
-                crate::actions::decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-                Some(EbookOperation::Reveal {
-                    book_id: "stable-book".into(),
+                BooksEffect::from_payload(&encoded.payload).unwrap(),
+                BooksEffect::Open {
+                    book: "stable-book".into(),
                     chapter: 0,
                     page: 0,
                     block: Some(1),
-                })
+                }
             );
         }
 
@@ -1117,21 +1069,21 @@ mod tests {
             let open = resource
                 .actions
                 .iter()
-                .find(|action| action.id == "open")
-                .expect("open");
+                .find(|action| action.id == "download")
+                .expect("download");
             assert_eq!(open.label, "Download and open");
             assert!(matches!(
                 open.contract.execution,
-                ExecutionMode::Background { .. }
+                tilo_actions::ExecutionMode::Background { .. }
             ));
-            let tilo_actions::ActionInput::Immediate(operation) = &open.input else {
-                panic!("remote open is a lifecycle operation");
-            };
+            let operation = open
+                .build_json(&serde_json::Map::new())
+                .expect("a bound download takes no arguments");
             assert_eq!(
-                crate::actions::decode_operation(&operation.type_id, &operation.payload).unwrap(),
-                Some(EbookOperation::HydrateSharedBook {
-                    book_id: "book:remote".into(),
-                })
+                BooksEffect::from_payload(&operation.payload).unwrap(),
+                BooksEffect::Download {
+                    book: "book:remote".into(),
+                }
             );
             let remove = resource
                 .actions
@@ -1571,11 +1523,10 @@ mod tests {
                 .expect("share");
             assert!(matches!(
                 share.contract.execution,
-                ExecutionMode::Background { .. }
+                tilo_actions::ExecutionMode::Background { .. }
             ));
             assert_eq!(share.contract.retry, RetryPolicy::Idempotent);
-            assert_eq!(share.contract.result, ResultSpec::Job);
-            assert_eq!(share.contract.tags, ["workspace", "materialize"]);
+            assert_eq!(share.contract.result, tilo_actions::ResultSpec::Job);
             let remove = book_resource
                 .actions
                 .iter()

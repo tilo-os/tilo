@@ -11,8 +11,8 @@
 use std::rc::Rc;
 
 use ui::framework::{
-    EffectAnswer, EffectCx, Fixture, LaunchInput, ResourceApp, ResourceSurface, SeedCx, SurfaceCx,
-    ViewCx,
+    EffectAnswer, EffectCx, Effected, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface,
+    SeedCx, SurfaceCx, ViewCx,
 };
 use ui::prelude::Effect;
 use ui::tilo_actions::{ActionSpec, OperationKind, Resource as PublishedResource};
@@ -199,23 +199,100 @@ pub(crate) fn launch_file(input: &LaunchInput<'_>) -> Option<Invoke<Ebook>> {
     }
 }
 
-/// What Books does that changes no document by itself.
+/// What Books does that changes no document by itself: what this reader
+/// shows, opening books on this device, and sharing or fetching a book's
+/// bytes through the workspace. Effects on one book, chapter or annotation
+/// ride its row; going to or selecting a passage asks for the place in the
+/// book whose row it rides.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "ebook.effect", device_only)]
+#[effect(operation = "ebook.effect")]
 pub enum BooksEffect {
     /// Open book
     ///
     /// Choose an EPUB through the system picker and open it.
-    #[effect(job, cancellable)]
+    #[effect(job, cancellable, device_only)]
     OpenBook,
     /// Open a book the content store holds, putting it on the shelf.
-    #[effect(job)]
+    #[effect(job, device_only)]
     OpenStored {
         #[param("Content hash of the book's bytes")]
         content: String,
         #[param("The book's file name, for messages")]
         name: String,
     },
+    /// Previous page
+    #[effect(view, row)]
+    PreviousPage,
+    /// Next page
+    #[effect(view, row)]
+    NextPage,
+    /// Toggle table of contents
+    #[effect(view, row)]
+    Contents,
+    /// Toggle notes
+    #[effect(view, row)]
+    Notes,
+    /// Open reading settings
+    #[effect(view, row)]
+    Settings,
+    /// Open
+    ///
+    /// Shows a book at a chapter, page and block. A place that the book no
+    /// longer has is refused rather than opened somewhere near it.
+    #[effect(view, row)]
+    Open {
+        book: String,
+        chapter: usize,
+        page: usize,
+        block: Option<usize>,
+    },
+    /// Go to
+    ///
+    /// Opens the book at a chapter and paragraph without selecting
+    /// anything.
+    #[effect(view, row)]
+    GoTo {
+        #[param("The book's id")]
+        book: String,
+        #[param("Chapter, counted from 0; the open chapter when omitted")]
+        chapter: Option<usize>,
+        #[param(
+            "Block (paragraph or heading) to open at, counted from 0 in the chapter; its start when omitted"
+        )]
+        block: Option<usize>,
+    },
+    /// Select passage
+    ///
+    /// Selects a passage by paragraph and character, as a drag would, and
+    /// shows its page.
+    #[effect(view, row)]
+    SelectPassage {
+        #[param("The book's id")]
+        book: String,
+        #[param("Chapter, counted from 0; the open chapter when omitted")]
+        chapter: Option<usize>,
+        #[param(
+            "Block (paragraph or heading) the selection starts in, counted from 0 in the chapter"
+        )]
+        start_block: usize,
+        #[param("Character offset into the start block; 0 when omitted")]
+        start_char: Option<usize>,
+        #[param("Block the selection ends in; the start block when omitted")]
+        end_block: Option<usize>,
+        #[param("Exclusive character offset into the end block; the block's end when omitted")]
+        end_char: Option<usize>,
+    },
+    /// Share with workspace
+    ///
+    /// Puts this device's copy of the book in the shared workspace, so
+    /// collaborators can open it.
+    #[effect(row, job, cancellable, idempotent)]
+    Share { book: String },
+    /// Download and open
+    ///
+    /// Fetches a book a collaborator shared from the workspace and opens it.
+    #[effect(row, job, cancellable, idempotent)]
+    Download { book: String },
 }
 
 impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
@@ -235,7 +312,30 @@ impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
         match effect {
             BooksEffect::OpenBook => Ok(Self::choose_book(cx)),
             BooksEffect::OpenStored { content, name } => self.open_stored(content, name, cx),
+            effect => {
+                let invocation = cx.invocation().unwrap_or_default();
+                let entries = cx.live().with(|state| state.entries.clone());
+                let answer = self.begin_effect(invocation, effect, &entries)?;
+                if matches!(answer, Effected::Pending) {
+                    self.await_effect(invocation, cx.reply());
+                }
+                Ok(answer)
+            }
         }
+    }
+
+    /// Where the reader is in the open book: its page chrome, a row beside
+    /// the library.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.reading_row().into_iter().collect()
+    }
+
+    /// The reading position, or the book, chapter, annotation or location a
+    /// search hit names, when the published page leaves it out.
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.reading_row()
+            .filter(|row| row.id() == id)
+            .or_else(|| self.search_row(id))
     }
 
     /// The library's edits bound to where the reader is: the page's
@@ -337,7 +437,10 @@ mod tests {
         );
         let mut seeded = doc.clone();
         app.sync(&mut seeded, &ui::automerge::ROOT);
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
+        let extras: Vec<_> = <BooksApp as ResourceSurface<Ebook, BooksEffect>>::live_rows(&app)
+            .into_iter()
+            .map(LiveRow::into_resource)
+            .collect();
         assert_eq!(
             extras.len(),
             1,
@@ -364,6 +467,7 @@ mod tests {
                 "the reader offers `{id}`"
             );
         }
+
         assert!(
             extras[0]
                 .actions
@@ -372,7 +476,8 @@ mod tests {
             "where the reader is changes no document"
         );
         assert!(
-            ui::resources::resource(&app, &seeded, "ebook.settings").is_none(),
+            <BooksApp as ResourceSurface<Ebook, BooksEffect>>::live_row(&app, "ebook.settings")
+                .is_none(),
             "the settings are the library's, published once"
         );
 
