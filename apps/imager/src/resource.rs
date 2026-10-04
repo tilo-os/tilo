@@ -13,7 +13,7 @@
 use std::rc::Rc;
 
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
+    EffectAnswer, EffectCx, EffectStatus, Fixture, Helper, LiveRow, ResourceApp, ResourceSurface,
     SurfaceCx, ViewCx,
 };
 use ui::tilo_resource::{self, ActionDecl, Doc, Effect, Invoke, ModelError, Resource};
@@ -212,6 +212,15 @@ impl ResourceApp for ImagerShell {
     const TITLE: &'static str = "Disk Imager";
     const ICON: Option<&'static str> = Some("imager");
     const FLAGS: &'static [&'static str] = &["--setup", "--import-folders"];
+    // Windows has no workspace runtime for the imager to take part in.
+    const ATTACHES_RUNTIME: bool = !cfg!(target_os = "windows");
+
+    /// The privileged and staging helpers the imager's binary also is, and
+    /// its packaging probes: each is started with its own command line and
+    /// runs before anything of the app does.
+    fn helpers() -> &'static [Helper] {
+        &crate::helpers::HELPERS
+    }
 
     fn scenarios() -> &'static [&'static str] {
         &SCENARIOS
