@@ -1609,13 +1609,14 @@ impl<'a> PageResourceIndex<'a> {
 }
 
 /// Build one page resource and a bounded contextual slice of its descendants.
+#[cfg(test)]
 pub(crate) fn page_resource(m: &PageMeta, pages: &[PageMeta], doc: &AutoCommit) -> Resource {
     let workspace = crate::notebook::project(doc, None).ok();
     page_resource_in(m, pages, workspace.as_ref(), &read_bodies(doc, pages))
 }
 
 /// [`page_resource`] in the notebook `workspace`, whose notes say `bodies`.
-fn page_resource_in(
+pub(crate) fn page_resource_in(
     m: &PageMeta,
     pages: &[PageMeta],
     workspace: Option<&crate::Workspace>,
@@ -2387,7 +2388,7 @@ fn tag_page_resource(tag: TagId, page: &PageMeta) -> Resource {
     page_ref
 }
 
-// Inherent resource publication (was ResourceProvider)
+/// The note `id` within `resource`, at any depth.
 fn find_note(resource: &Resource, id: &str) -> Option<Resource> {
     if resource.id.as_str() == id {
         return Some(resource.clone());
@@ -2398,23 +2399,6 @@ fn find_note(resource: &Resource, id: &str) -> Option<Resource> {
         }
     }
     None
-}
-
-impl crate::app::NotesApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        self.notes_resource_ctx_for(doc)
-            .map(|ctx| provide_resources(&ctx, doc))
-            .unwrap_or_default()
-    }
-
-    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let ctx = self.notes_resource_ctx_for(doc)?;
-        let workspace = ctx.workspace(read_bodies(doc, &ctx.pages));
-        if id == "notes.notebook" {
-            return Some(notebook_resource(&ctx, &workspace));
-        }
-        notebook_child(&workspace, id)
-    }
 }
 
 #[cfg(test)]
@@ -2896,9 +2880,13 @@ mod tests {
     }
 
     fn notebook_resources(doc: &AutoCommit) -> Vec<Resource> {
-        let author = ui::permissions::UserId("action-contract".into());
-        let app = crate::app::NotesApp::from_document(doc, &author).expect("a canonical notebook");
-        app.publish_resources(doc)
+        use ui::tilo_resource::Resource as _;
+        let state = crate::resource::Notebook::read(doc).expect("a canonical notebook");
+        vec![ui::tilo_resource::publish::<crate::resource::Notebook>(
+            "notes.notebook",
+            "Notes",
+            &state,
+        )]
     }
 
     fn page_meta(doc: &AutoCommit, id: PageId) -> PageMeta {

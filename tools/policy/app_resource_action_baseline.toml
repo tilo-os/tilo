@@ -21,7 +21,6 @@
 [ratchets.app_action_host]
 "apps/chat/src/resource.rs" = 2
 "apps/file-explorer/src/resource.rs" = 2
-"apps/notes/src/resource.rs" = 1
 "apps/pdf-viewer/src/resource.rs" = 2
 "apps/photos/src/resource.rs" = 2
 "apps/settings/src/resource.rs" = 2
@@ -42,8 +41,6 @@
 
 [ratchets.widget_owned_document]
 "apps/agent/src/apply.rs" = 2
-"apps/notes/src/search_provider.rs" = 1
-"apps/notes/src/storage.rs" = 2
 "apps/photos/src/framework_history.rs" = 2
 "apps/settings/src/actions/mod.rs" = 17
 "apps/settings/src/panes/agent_models.rs" = 1
