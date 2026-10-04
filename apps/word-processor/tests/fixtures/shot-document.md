@@ -1,4 +1,4 @@
-# Lower Valley irrigation trial: report for the third quarter
+# Lower Valley irrigation trial
 
 The third quarter closed the field trial of the new irrigation controllers across the twelve partner farms in the Lower Valley. Every site reported through the season, and the controllers ran for 2,184 hours without a missed schedule.
 

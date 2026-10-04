@@ -1,7 +1,5 @@
 //! Toolbar action vocabulary and the document's colour palettes.
 
-use ui::icons::Icon;
-
 pub(super) const STYLE_PALETTE: [[u8; 3]; 7] = [
     [0x1c, 0x1c, 0x20],
     [0x55, 0x57, 0x60],
@@ -72,7 +70,7 @@ impl ToolAction {
     }
 }
 
-/// One entry of the toolbar this frame: a command (with its face, and
+/// One entry of the toolbar this frame: a command (with its label, and
 /// whether it is a toggle that is on), a group separator or the flexible
 /// space that pushes the view toggles to the trailing edge.
 #[derive(Clone, Debug, PartialEq)]
@@ -80,7 +78,6 @@ pub(super) enum ToolEntry {
     Command {
         action: ToolAction,
         label: String,
-        icon: Option<Icon>,
         active: Option<bool>,
     },
     Separator,
@@ -92,7 +89,6 @@ impl ToolEntry {
         ToolEntry::Command {
             action,
             label: label.into(),
-            icon: None,
             active: None,
         }
     }
@@ -101,17 +97,7 @@ impl ToolEntry {
         ToolEntry::Command {
             action,
             label: label.into(),
-            icon: None,
             active: Some(on),
-        }
-    }
-
-    pub(super) fn icon(action: ToolAction, icon: Icon, name: impl Into<String>) -> Self {
-        ToolEntry::Command {
-            action,
-            label: name.into(),
-            icon: Some(icon),
-            active: None,
         }
     }
 
@@ -123,16 +109,14 @@ impl ToolEntry {
                 ToolEntry::Command {
                     action: a,
                     label: la,
-                    icon: ia,
                     active: aa,
                 },
                 ToolEntry::Command {
                     action: b,
                     label: lb,
-                    icon: ib,
                     active: ab,
                 },
-            ) => a == b && la == lb && ia == ib && aa.is_some() == ab.is_some(),
+            ) => a == b && la == lb && aa.is_some() == ab.is_some(),
             (ToolEntry::Separator, ToolEntry::Separator)
             | (ToolEntry::Spacer, ToolEntry::Spacer) => true,
             _ => false,

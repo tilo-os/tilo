@@ -70,7 +70,7 @@ use ui::paint::with_alpha;
 use ui::portal;
 use ui::tokens::TextRole;
 use ui::widget::{
-    Button, ButtonFace, ButtonRole, ChipFace, ColorSwatchFace, ControlSize, SegmentedFace,
+    Button, ButtonFace, ButtonRole, CardFace, ColorSwatchFace, ControlSize, SegmentedFace, Tone,
 };
 
 mod block_layout;
@@ -500,6 +500,8 @@ enum PanelHit {
     ImageCropInset,
     /// Restore the full source image without changing its display frame.
     ImageCropReset,
+    /// Put the selected object back in the text flow, between paragraphs.
+    ImageInline,
     /// Turn the selected object into a freely positioned page object.
     ImageFreePosition,
     /// Float the selected object at paragraph scope, with text on its right.
@@ -537,6 +539,16 @@ fn line_spacing_menu(pick: &std::rc::Rc<std::cell::Cell<Option<usize>>>) -> ui::
         })
         .control_size(ControlSize::Small)
         .with_accessible_name(t("a11y-line-spacing"))
+}
+
+/// The inspector's paragraph-style menu; a pick lands in `choice` as the
+/// style's id.
+fn style_pick_menu(choice: &std::rc::Rc<std::cell::Cell<Option<String>>>) -> ui::widget::Dropdown {
+    let choice = std::rc::Rc::clone(choice);
+    ui::widget::Dropdown::from_state(Vec::new(), &ui::LocalState::new(String::new()))
+        .on_change(move |id| choice.set(Some(id.to_owned())))
+        .control_size(ControlSize::Small)
+        .with_accessible_name(t("panel-style"))
 }
 
 /// The toggleable inline mark a qdoc mark name denotes (Ctrl+B/I/U, toolbar,
@@ -1102,6 +1114,16 @@ pub struct WordProcessorWidget {
     line_spacing: ui::widget::Dropdown,
     line_spacing_pick: std::rc::Rc<std::cell::Cell<Option<usize>>>,
     line_spacing_rect: Rect,
+    /// A failed save, shown as an error banner under the toolbar until the
+    /// next save succeeds or it is dismissed; holds the banner's dismiss
+    /// control as last drawn.
+    save_error: Option<Rect>,
+    /// The inspector's paragraph-style menu: the style it picked, the
+    /// `(id, name)` choices it offers, and where it was drawn.
+    style_pick: ui::widget::Dropdown,
+    style_pick_choice: std::rc::Rc<std::cell::Cell<Option<String>>>,
+    style_pick_options: Vec<(String, String)>,
+    style_pick_rect: Rect,
     /// The inspector's scrolled column and how far it scrolls.
     panel_body: Rect,
     panel_scroll: f64,
@@ -1269,6 +1291,7 @@ impl WordProcessorWidget {
     )]
     pub fn new() -> Self {
         let line_spacing_pick = std::rc::Rc::new(std::cell::Cell::new(None));
+        let style_pick_choice = std::rc::Rc::new(std::cell::Cell::new(None));
         let mut widget = Self {
             inner: WordProcessor::new(),
             rect: Rect::ZERO,
@@ -1363,6 +1386,11 @@ impl WordProcessorWidget {
             line_spacing: ui::widget::Dropdown::new(Vec::new(), ""),
             line_spacing_pick: std::rc::Rc::clone(&line_spacing_pick),
             line_spacing_rect: Rect::ZERO,
+            save_error: None,
+            style_pick: ui::widget::Dropdown::new(Vec::new(), ""),
+            style_pick_choice: std::rc::Rc::clone(&style_pick_choice),
+            style_pick_options: Vec::new(),
+            style_pick_rect: Rect::ZERO,
             panel_body: Rect::ZERO,
             panel_scroll: 0.0,
             panel_max_scroll: 0.0,
@@ -1441,6 +1469,7 @@ impl WordProcessorWidget {
             participant_host: false,
         };
         widget.line_spacing = line_spacing_menu(&line_spacing_pick);
+        widget.style_pick = style_pick_menu(&style_pick_choice);
         widget
     }
 
@@ -2805,7 +2834,7 @@ impl WordProcessorWidget {
     /// Stage a representative non-destructive error toast for visual/a11y
     /// regression shots. Runtime failures use the same toast surface.
     pub fn stage_error_for_shot(&mut self) {
-        self.toast = Some((t("toast-save-failed"), ToastKind::Error));
+        self.save_error = Some(Rect::ZERO);
         self.lifecycle.dirty = true;
     }
 
@@ -3296,15 +3325,16 @@ impl WordProcessorWidget {
                     tilo_files::native::atomic::write_preserving_target(path, &bytes).map_err(
                         |e| {
                             eprintln!("word-processor: could not write {}: {e}", path.display());
-                            self.toast = Some((t("toast-save-failed"), ToastKind::Error));
+                            self.save_error = Some(Rect::ZERO);
                             format!("could not write {}: {e}", path.display())
                         },
                     )?;
+                    self.save_error = None;
                     self.toast = Some((t("toast-saved"), ToastKind::Success));
                 }
                 Err(e) => {
                     eprintln!("word-processor: export failed: {e}");
-                    self.toast = Some((t("toast-save-failed"), ToastKind::Error));
+                    self.save_error = Some(Rect::ZERO);
                     return Err(format!("export failed: {e}"));
                 }
             }
@@ -4463,17 +4493,40 @@ impl WordProcessorWidget {
                 } else {
                     (rest, rule)
                 };
-                let line = if vert {
-                    Rect::new(c - t / 2.0, page.y0, c + t / 2.0, page.y1)
+                // At rest a guide runs through the margins only, from the
+                // page's edge to the text block's corner on either side, so
+                // it never runs along the text; the guide being dragged
+                // spans the page.
+                let (lo, hi) = if vert {
+                    (page.y0 + e.top, page.y1 - e.bottom)
                 } else {
-                    Rect::new(page.x0, c - t / 2.0, page.x1, c + t / 2.0)
+                    (page.x0 + e.left, page.x1 - e.right)
                 };
-                scene.fill(Fill::NonZero, transform, col, None, &line);
-                // A grip at the line's midpoint shows where to take it.
-                let (gx, gy) = if vert {
-                    (c, f64::midpoint(page.y0, page.y1))
+                let (start, end) = if vert {
+                    (page.y0, page.y1)
                 } else {
-                    (f64::midpoint(page.x0, page.x1), c)
+                    (page.x0, page.x1)
+                };
+                let spans = if active {
+                    vec![(start, end)]
+                } else {
+                    vec![(start, lo), (hi, end)]
+                };
+                for (a, b) in spans {
+                    let line = if vert {
+                        Rect::new(c - t / 2.0, a, c + t / 2.0, b)
+                    } else {
+                        Rect::new(a, c - t / 2.0, b, c + t / 2.0)
+                    };
+                    scene.fill(Fill::NonZero, transform, col, None, &line);
+                }
+                // A grip in the margin shows where to take the guide: half
+                // way across the top margin on a side guide, half way across
+                // the leading margin on a top or bottom one.
+                let (gx, gy) = if vert {
+                    (c, f64::midpoint(start, lo))
+                } else {
+                    (f64::midpoint(start, lo), c)
                 };
                 scene.fill(
                     Fill::NonZero,
@@ -4487,7 +4540,7 @@ impl WordProcessorWidget {
                 let (lx, ly) = if vert {
                     (c + gap, page.y0 + gap)
                 } else {
-                    (page.x0 + gap, c + gap / 2.0)
+                    (page.x0 + gap, c + gap)
                 };
                 tr.draw_style(
                     scene,
@@ -4545,41 +4598,38 @@ impl WordProcessorWidget {
         let sp = &theme.tokens.spacing;
         let (s3, s4) = (f64::from(sp.s3), f64::from(sp.s4));
         let cy = bar.center().y;
-        let control_h = SegmentedFace::height(ControlSize::Small, theme);
+        let control_h = ButtonFace::height(ControlSize::Small, theme);
 
-        let labels = [t("layout-margins"), t("layout-spacing")];
-        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-        let strip_w = SegmentedFace::intrinsic_width(&label_refs, ControlSize::Small, tr, theme);
-        let seg_w = strip_w / 2.0;
-        let x0 = bar.x0 + s3;
-        let segments = [
-            Rect::new(x0, cy - control_h / 2.0, x0 + seg_w, cy + control_h / 2.0),
-            Rect::new(
-                x0 + seg_w,
-                cy - control_h / 2.0,
-                x0 + strip_w,
-                cy + control_h / 2.0,
-            ),
-        ];
-        let selected = match self.layout_mode {
-            LayoutMode::Margins => 0,
-            LayoutMode::Spacing => 1,
-            LayoutMode::None => usize::MAX,
-        };
-        let hovered = segments.iter().position(|r| r.contains(self.pointer));
-        ui::widget::ToggleGroup::paint(
-            scene,
-            transform,
-            tr,
-            theme,
-            &SegmentedFace::new(&segments, &label_refs, selected)
+        // The two layout modes are toggles, at most one of them in use and
+        // neither at rest: plain buttons that stand on the selection lift
+        // while their mode is on.
+        let gap = f64::from(sp.s1);
+        let mut x = bar.x0 + s3;
+        let mut chips = Vec::with_capacity(2);
+        for (mode, label) in [
+            (LayoutMode::Margins, t("layout-margins")),
+            (LayoutMode::Spacing, t("layout-spacing")),
+        ] {
+            let w = ButtonFace::new(Rect::ZERO, &label)
                 .control_size(ControlSize::Small)
-                .hovered(hovered),
-        );
-        self.layout_chips = vec![
-            (LayoutMode::Margins, segments[0]),
-            (LayoutMode::Spacing, segments[1]),
-        ];
+                .intrinsic_width(tr, theme);
+            let rect = Rect::new(x, cy - control_h / 2.0, x + w, cy + control_h / 2.0);
+            Button::paint(
+                scene,
+                transform,
+                tr,
+                theme,
+                &ButtonFace::new(rect, &label)
+                    .role(ButtonRole::Plain)
+                    .control_size(ControlSize::Small)
+                    .toggled(self.layout_mode == mode)
+                    .hovered(rect.contains(self.pointer)),
+            );
+            chips.push((mode, rect));
+            x = rect.x1 + gap;
+        }
+        let strip_x1 = x - gap;
+        self.layout_chips = chips;
 
         // Trailing: the zoom field, then the counts before it.
         let zoom_w = self.zoom_input.preferred_width(theme, tr);
@@ -4607,7 +4657,7 @@ impl WordProcessorWidget {
         let style = theme.text(TextRole::Caption).numeric();
         let ink = theme.tokens.colors.text_dim;
         let mut right = zoom.x0 - s4;
-        let mut left = x0 + strip_w + s4;
+        let mut left = strip_x1 + s4;
         for readout in self.status_readouts().into_iter().rev() {
             let (w, h) = tr.measure_style(&readout, None, &style);
             let w = f64::from(w);
@@ -4789,7 +4839,6 @@ impl WordProcessorWidget {
     /// caret — alignment as a segmented control and line spacing as a menu.
     fn draw_panel_this_paragraph(&mut self, ctx: &mut PanelCtx<'_>) {
         ctx.section(&t("panel-this-paragraph"), true);
-        // Alignment, as one segmented control the width of the column.
         ctx.field_label(&t("panel-align"));
         let values = ["left", "center", "right", "justify"];
         let labels = [
@@ -4807,34 +4856,43 @@ impl WordProcessorWidget {
         for (rect, value) in rects.into_iter().zip(values) {
             self.panel_hits.push((rect, PanelHit::ParaAlign(value)));
         }
-        // Line spacing, a menu of named values.
-        let row = ctx.row(&t("panel-line-spacing"));
-        let width = (ctx.right - ctx.x0) / 2.0;
-        let rect = Rect::new(row.x1 - width, row.y0, row.x1, row.y1);
+        ctx.field_label(&t("panel-line-spacing"));
+        let rect = ctx.control_line();
         let current = line_spacing_label(self.current_line_spacing());
         if !self.line_spacing.is_open() {
             self.line_spacing.set_selected(current);
         }
-        self.line_spacing.apply_layout_external(rect);
-        self.line_spacing.set_viewport(self.rect);
-        if ctx.visible(rect) {
-            Widget::draw(
-                &mut self.line_spacing,
-                ctx.scene,
-                ctx.transform,
-                ctx.tr,
-                ctx.theme,
-                &PresenceCtx::empty(),
-            );
-            self.line_spacing_rect = rect;
-        } else {
-            self.line_spacing_rect = Rect::ZERO;
-        }
+        let viewport = self.floating_viewport();
+        self.line_spacing_rect = Self::host_menu(&mut self.line_spacing, ctx, rect, viewport);
     }
 
-    /// "Paragraph style": the named style under the caret — its name and
-    /// what editing it changes, the style picker, then the style's
-    /// properties, which change every paragraph of that style.
+    /// Lay out and draw a hosted menu in `rect`; returns where it was drawn
+    /// (nothing while scrolled out of view).
+    fn host_menu(
+        menu: &mut ui::widget::Dropdown,
+        ctx: &mut PanelCtx<'_>,
+        rect: Rect,
+        viewport: Rect,
+    ) -> Rect {
+        menu.apply_layout_external(rect);
+        menu.set_viewport(viewport);
+        if !ctx.visible(rect) {
+            return Rect::ZERO;
+        }
+        Widget::draw(
+            menu,
+            ctx.scene,
+            ctx.transform,
+            ctx.tr,
+            ctx.theme,
+            &PresenceCtx::empty(),
+        );
+        rect
+    }
+
+    /// "Paragraph style": the named style under the caret, picked from a
+    /// menu, then the style's properties, which change every paragraph of
+    /// that style.
     fn draw_panel_style(
         &mut self,
         ctx: &mut PanelCtx<'_>,
@@ -4842,41 +4900,31 @@ impl WordProcessorWidget {
         st: &crate::styles::StyleProps,
     ) {
         ctx.section(&t("panel-style"), false);
-        let display_name = crate::styles::style_display_name(key, st);
-        ctx.text_line(&display_name, TextRole::Body, true, false);
-        ctx.text_line(
-            &t_args("panel-style-hint", &[arg("name", display_name.clone())]),
-            TextRole::Caption,
-            false,
-            true,
-        );
-        ctx.y += f64::from(ctx.theme.tokens.spacing.rhythm.related);
-
-        // The style picker: one chip per style, the one in use lifted.
-        let order = self.sheet.order();
-        let gap = f64::from(ctx.theme.tokens.spacing.s2);
-        let col_w = (ctx.right - ctx.x0 - gap) / 2.0;
-        let chip_h = ChipFace::height(ctx.theme);
-        for (i, id) in order.iter().enumerate() {
-            let col = num::f64_of_usize(i % 2);
-            let row = num::f64_of_usize(i / 2);
-            let cx = ctx.x0 + col * (col_w + gap);
-            let cy = ctx.y + row * (chip_h + gap);
-            let r = Rect::new(cx, cy, cx + col_w, cy + chip_h);
-            let name = crate::styles::style_display_name(id, &self.sheet.get(id));
-            if ctx.visible(r) {
-                ChipFace::new(r, &name)
-                    .selected(id.as_str() == key)
-                    .hovered(r.contains(self.pointer))
-                    .paint(ctx.scene, ctx.transform, ctx.tr, ctx.theme);
-                self.panel_hits.push((r, PanelHit::Pick(id.clone())));
-            }
+        let options: Vec<(String, String)> = self
+            .sheet
+            .order()
+            .iter()
+            .map(|id| {
+                (
+                    id.clone(),
+                    crate::styles::style_display_name(id, &self.sheet.get(id)),
+                )
+            })
+            .collect();
+        if options != self.style_pick_options {
+            self.style_pick.set_value_options(options.clone());
+            self.style_pick_options = options;
         }
-        let rows = num::f64_of_usize(order.len().div_ceil(2));
-        ctx.y += rows * (chip_h + gap) - gap + f64::from(ctx.theme.tokens.spacing.rhythm.section);
+        if !self.style_pick.is_open() {
+            self.style_pick.set_selected(key);
+        }
+        let rect = ctx.control_line();
+        let viewport = self.floating_viewport();
+        self.style_pick_rect = Self::host_menu(&mut self.style_pick, ctx, rect, viewport);
+        ctx.caption(&t("panel-style-hint"));
 
         // Font family, as a segmented control.
-        let row = ctx.row(&t("panel-font"));
+        ctx.field_label(&t("panel-font"));
         let fonts = ["sans", "serif", "mono"];
         let labels = [
             t("panel-font-sans"),
@@ -4887,27 +4935,17 @@ impl WordProcessorWidget {
             .iter()
             .position(|f| *f == st.font.as_str())
             .unwrap_or(0);
-        let rects = ctx.segmented_in(row, &labels, selected, self.pointer, false);
+        let rects = ctx.segmented(&labels, selected, self.pointer);
         for (rect, font) in rects.into_iter().zip(fonts) {
             self.panel_hits.push((rect, PanelHit::SetFont(font)));
         }
 
-        // Bold and italic, as toggles.
-        let row = ctx.row(&t("panel-weight"));
-        let bold = t("panel-bold");
-        let italic = t("panel-italic");
-        let width = |label: &str, tr: &mut TextRenderer, theme: &Theme| {
-            ButtonFace::new(Rect::ZERO, label)
-                .control_size(ControlSize::Small)
-                .intrinsic_width(tr, theme)
-        };
-        let iw = width(&italic, ctx.tr, ctx.theme);
-        let bw = width(&bold, ctx.tr, ctx.theme);
-        let ri = Rect::new(row.x1 - iw, row.y0, row.x1, row.y1);
-        let rb = Rect::new(ri.x0 - gap - bw, row.y0, ri.x0 - gap, row.y1);
-        ctx.toggle(rb, &bold, st.bold, self.pointer);
-        ctx.toggle(ri, &italic, st.italic, self.pointer);
-        if ctx.visible(row) {
+        // Bold and italic, as two toggles side by side.
+        ctx.field_label(&t("panel-weight"));
+        let (rb, ri) = ctx.pair();
+        ctx.button(rb, &t("panel-bold"), Some(st.bold), self.pointer);
+        ctx.button(ri, &t("panel-italic"), Some(st.italic), self.pointer);
+        if ctx.visible(rb) {
             self.panel_hits.push((rb, PanelHit::ToggleBold));
             self.panel_hits.push((ri, PanelHit::ToggleItalic));
         }
@@ -4955,64 +4993,57 @@ impl WordProcessorWidget {
             );
             self.panel_hits.push((custom, PanelHit::OpenColorPicker));
         }
-        ctx.y += side + f64::from(ctx.theme.tokens.spacing.rhythm.sibling);
+        ctx.y += side + f64::from(ctx.theme.tokens.spacing.rhythm.related);
 
-        // Size and spacing, as number fields.
-        for field in [
-            NumField::Size,
-            NumField::SpaceBefore,
-            NumField::SpaceAfter,
-            NumField::Indent,
+        // Size and spacing, as number fields two to a line, each under its
+        // label.
+        for pair in [
+            [NumField::Size, NumField::Indent],
+            [NumField::SpaceBefore, NumField::SpaceAfter],
         ] {
-            let row = ctx.row(&field.label());
-            let value = f64::from(field.get(st));
-            let decimals = usize::from(value.fract().abs() > 0.05);
-            let Some(slot) = self.num_inputs.iter_mut().find(|slot| slot.field == field) else {
-                continue;
-            };
-            if slot.decimals != decimals {
-                slot.input = field.input().with_precision(decimals);
-                slot.decimals = decimals;
-            }
-            if !slot.input.is_editing() {
-                slot.input.set_value(value);
-            }
-            let w = slot.input.preferred_width(ctx.theme, ctx.tr);
-            let rect = Rect::new(row.x1 - w, row.y0, row.x1, row.y1);
-            slot.input.apply_layout_external(rect);
-            if ctx.visible(rect) {
-                Widget::draw(
-                    &mut slot.input,
-                    ctx.scene,
-                    ctx.transform,
-                    ctx.tr,
-                    ctx.theme,
-                    &PresenceCtx::empty(),
-                );
-                slot.rect = rect;
-            } else {
-                slot.rect = Rect::ZERO;
+            let (left, right) = ctx.label_pair(&pair[0].label(), &pair[1].label());
+            for (field, column) in pair.into_iter().zip([left, right]) {
+                let value = f64::from(field.get(st));
+                let decimals = usize::from(value.fract().abs() > 0.05);
+                let Some(slot) = self.num_inputs.iter_mut().find(|slot| slot.field == field) else {
+                    continue;
+                };
+                if slot.decimals != decimals {
+                    slot.input = field.input().with_precision(decimals);
+                    slot.decimals = decimals;
+                }
+                if !slot.input.is_editing() {
+                    slot.input.set_value(value);
+                }
+                let w = slot
+                    .input
+                    .preferred_width(ctx.theme, ctx.tr)
+                    .min(column.width());
+                let rect = Rect::new(column.x0, column.y0, column.x0 + w, column.y1);
+                slot.input.apply_layout_external(rect);
+                if ctx.visible(rect) {
+                    Widget::draw(
+                        &mut slot.input,
+                        ctx.scene,
+                        ctx.transform,
+                        ctx.tr,
+                        ctx.theme,
+                        &PresenceCtx::empty(),
+                    );
+                    slot.rect = rect;
+                } else {
+                    slot.rect = Rect::ZERO;
+                }
             }
         }
 
         // A new style from this paragraph's look.
         ctx.y += f64::from(ctx.theme.tokens.spacing.rhythm.related);
-        let h = ButtonFace::height(ControlSize::Small, ctx.theme);
-        let r = Rect::new(ctx.x0, ctx.y, ctx.right, ctx.y + h);
+        let r = ctx.control_line();
+        ctx.button(r, &t("panel-new-style"), None, self.pointer);
         if ctx.visible(r) {
-            let label = t("panel-new-style");
-            Button::paint(
-                ctx.scene,
-                ctx.transform,
-                ctx.tr,
-                ctx.theme,
-                &ButtonFace::new(r, &label)
-                    .control_size(ControlSize::Small)
-                    .hovered(r.contains(self.pointer)),
-            );
             self.panel_hits.push((r, PanelHit::NewStyle));
         }
-        ctx.y += h;
     }
 
     /// The image inspector shown when an image is selected: its size, a
@@ -5027,7 +5058,7 @@ impl WordProcessorWidget {
             num::i64_of_f64(dh.round())
         );
         ctx.text_line(&dims, TextRole::Body, false, false);
-        ctx.y += f64::from(ctx.theme.tokens.spacing.rhythm.sibling);
+        ctx.y += f64::from(ctx.theme.tokens.spacing.rhythm.related);
 
         let img_id = self.selected_image_id();
         let block = self
@@ -5062,31 +5093,10 @@ impl WordProcessorWidget {
                 false,
             ),
         ] {
-            let row = ctx.row(&label);
-            let gap = f64::from(ctx.theme.tokens.spacing.s2);
-            let width = |label: &str, tr: &mut TextRenderer, theme: &Theme| {
-                ButtonFace::new(Rect::ZERO, label)
-                    .control_size(ControlSize::Small)
-                    .intrinsic_width(tr, theme)
-            };
-            let w2 = width(&second.0, ctx.tr, ctx.theme);
-            let w1 = width(&first.0, ctx.tr, ctx.theme);
-            let r2 = Rect::new(row.x1 - w2, row.y0, row.x1, row.y1);
-            let r1 = Rect::new(r2.x0 - gap - w1, row.y0, r2.x0 - gap, row.y1);
+            ctx.field_label(&label);
+            let (r1, r2) = ctx.pair();
             for (rect, (label, hit, on)) in [(r1, first), (r2, second)] {
-                if toggles {
-                    ctx.toggle(rect, &label, on, self.pointer);
-                } else if ctx.visible(rect) {
-                    Button::paint(
-                        ctx.scene,
-                        ctx.transform,
-                        ctx.tr,
-                        ctx.theme,
-                        &ButtonFace::new(rect, &label)
-                            .control_size(ControlSize::Small)
-                            .hovered(rect.contains(self.pointer)),
-                    );
-                }
+                ctx.button(rect, &label, toggles.then_some(on), self.pointer);
                 if ctx.visible(rect) {
                     self.panel_hits.push((rect, hit));
                 }
@@ -5094,9 +5104,9 @@ impl WordProcessorWidget {
         }
 
         // Placement, as one segmented control the width of the column.
-        ctx.y += f64::from(ctx.theme.tokens.spacing.rhythm.related);
         ctx.field_label(&t("panel-image-position"));
         let labels = [
+            t("panel-image-inline"),
             t("panel-image-free"),
             t("panel-image-wrap-left"),
             t("panel-image-wrap-right"),
@@ -5105,13 +5115,14 @@ impl WordProcessorWidget {
             block
                 .as_ref()
                 .map_or(usize::MAX, |b| match (image_anchor(b), image_wrap(b)) {
-                    ("page", _) => 0,
-                    (_, "left") => 1,
-                    (_, "right") => 2,
-                    _ => usize::MAX,
+                    ("page", _) => 1,
+                    (_, "left") => 2,
+                    (_, "right") => 3,
+                    _ => 0,
                 });
         let rects = ctx.segmented(&labels, selected, self.pointer);
         for (rect, hit) in rects.into_iter().zip([
+            PanelHit::ImageInline,
             PanelHit::ImageFreePosition,
             PanelHit::ImageWrapLeft,
             PanelHit::ImageWrapRight,
@@ -5302,31 +5313,66 @@ impl PanelCtx<'_> {
         self.y += f64::from(self.theme.tokens.spacing.rhythm.related);
     }
 
-    /// The label of a field whose control fills the line below it.
+    /// A field's label, in secondary ink, over the control on the line
+    /// below it. Every field of the inspector is set this way, so labels
+    /// and controls share one leading edge.
     fn field_label(&mut self, label: &str) {
         self.text_line(label, TextRole::Label, false, true);
         self.y += f64::from(self.theme.tokens.spacing.rhythm.tight);
     }
 
-    /// A field row one small control tall, its label leading; returns the
-    /// row for the control the caller sets at its trailing edge.
-    fn row(&mut self, label: &str) -> Rect {
+    /// One line of `Caption` in secondary ink under the control above it.
+    fn caption(&mut self, text: &str) {
+        self.y -= f64::from(self.theme.tokens.spacing.rhythm.related)
+            - f64::from(self.theme.tokens.spacing.rhythm.tight);
+        self.text_line(text, TextRole::Caption, false, true);
+        self.y += f64::from(self.theme.tokens.spacing.rhythm.related);
+    }
+
+    /// A line one small control tall, the width of the column; returns it
+    /// for the control.
+    fn control_line(&mut self) -> Rect {
         let h = ButtonFace::height(ControlSize::Small, self.theme);
-        let row = Rect::new(self.x0, self.y, self.right, self.y + h);
-        if self.visible(row) {
-            let style = self.theme.text(TextRole::Label);
-            let (_, lh) = self.tr.measure_style(label, None, &style);
-            self.tr.draw_style(
-                self.scene,
-                label,
-                self.theme.tokens.colors.text_primary,
-                self.transform * Affine::translate((self.x0, row.center().y - f64::from(lh) / 2.0)),
-                Some(num::f32_of_f64((row.width() / 2.0).max(1.0))),
-                &style,
-            );
-        }
+        let line = Rect::new(self.x0, self.y, self.right, self.y + h);
         self.y += h + f64::from(self.theme.tokens.spacing.rhythm.related);
-        row
+        line
+    }
+
+    /// A control line split into two equal halves.
+    fn pair(&mut self) -> (Rect, Rect) {
+        let gap = f64::from(self.theme.tokens.spacing.s2);
+        let line = self.control_line();
+        let mid = f64::midpoint(line.x0, line.x1);
+        (
+            Rect::new(line.x0, line.y0, mid - gap / 2.0, line.y1),
+            Rect::new(mid + gap / 2.0, line.y0, line.x1, line.y1),
+        )
+    }
+
+    /// Two fields side by side, each label over its half of the control
+    /// line below; returns the two halves.
+    fn label_pair(&mut self, first: &str, second: &str) -> (Rect, Rect) {
+        let gap = f64::from(self.theme.tokens.spacing.s2);
+        let mid = f64::midpoint(self.x0, self.right);
+        let style = self.theme.text(TextRole::Label);
+        let ink = self.theme.tokens.colors.text_dim;
+        let width = num::f32_of_f64((mid - gap / 2.0 - self.x0).max(1.0));
+        let (_, h) = self.tr.measure_style(first, Some(width), &style);
+        let label = Rect::new(self.x0, self.y, self.right, self.y + f64::from(h));
+        if self.visible(label) {
+            for (text, x) in [(first, self.x0), (second, mid + gap / 2.0)] {
+                self.tr.draw_style(
+                    self.scene,
+                    text,
+                    ink,
+                    self.transform * Affine::translate((x, self.y)),
+                    Some(width),
+                    &style,
+                );
+            }
+        }
+        self.y += f64::from(h) + f64::from(self.theme.tokens.spacing.rhythm.tight);
+        self.pair()
     }
 
     /// A segmented control the width of the column on its own line;
@@ -5334,38 +5380,29 @@ impl PanelCtx<'_> {
     fn segmented(&mut self, labels: &[String], selected: usize, pointer: Point) -> Vec<Rect> {
         let h = SegmentedFace::height(ControlSize::Small, self.theme);
         let row = Rect::new(self.x0, self.y, self.right, self.y + h);
-        let rects = self.segmented_in(row, labels, selected, pointer, true);
+        let rects = self.segmented_in(row, labels, selected, pointer);
         self.y += h + f64::from(self.theme.tokens.spacing.rhythm.related);
         rects
     }
 
-    /// A segmented control at the trailing edge of `row`, as wide as its
-    /// labels need or, with `fill`, the whole row.
+    /// A segmented control filling `row`; returns each segment's rect.
     fn segmented_in(
         &mut self,
         row: Rect,
         labels: &[String],
         selected: usize,
         pointer: Point,
-        fill: bool,
     ) -> Vec<Rect> {
         if !self.visible(row) || labels.is_empty() {
             return Vec::new();
         }
         let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-        let width = if fill {
-            row.width()
-        } else {
-            SegmentedFace::intrinsic_width(&refs, ControlSize::Small, self.tr, self.theme)
-                .min(row.width())
-        };
         let n = num::f64_of_usize(labels.len());
-        let x0 = row.x1 - width;
-        let seg = width / n;
+        let seg = row.width() / n;
         let rects: Vec<Rect> = (0..labels.len())
             .map(|i| {
                 let i = num::f64_of_usize(i);
-                Rect::new(x0 + i * seg, row.y0, x0 + (i + 1.0) * seg, row.y1)
+                Rect::new(row.x0 + i * seg, row.y0, row.x0 + (i + 1.0) * seg, row.y1)
             })
             .collect();
         let hovered = rects.iter().position(|r| r.contains(pointer));
@@ -5381,28 +5418,21 @@ impl PanelCtx<'_> {
         rects
     }
 
-    /// A small toggle button: plain at rest, the selection lift while on.
-    fn toggle(&mut self, rect: Rect, label: &str, on: bool, pointer: Point) {
+    /// A small secondary button in `rect`; with `toggle`, a toggle that
+    /// stands on the selection lift while on.
+    fn button(&mut self, rect: Rect, label: &str, toggle: Option<bool>, pointer: Point) {
         if !self.visible(rect) {
             return;
         }
-        let hovered = rect.contains(pointer);
-        ui::chrome::paint_row_selection(
-            self.scene,
-            self.transform,
-            rect,
-            ui::chrome::SelectionState::new(on, hovered, false),
-            self.theme.tokens.colors.surfaces.content,
-            self.theme,
-        );
         Button::paint(
             self.scene,
             self.transform,
             self.tr,
             self.theme,
             &ButtonFace::new(rect, label)
-                .role(ButtonRole::Plain)
-                .control_size(ControlSize::Small),
+                .control_size(ControlSize::Small)
+                .toggled(toggle == Some(true))
+                .hovered(rect.contains(pointer)),
         );
     }
 }
@@ -5766,6 +5796,11 @@ impl WordProcessorWidget {
             .iter()
             .filter_map(|(rect, hit)| {
                 let (id, name, description) = match hit {
+                    PanelHit::ImageInline => (
+                        "inline",
+                        t("a11y-image-inline"),
+                        t("a11y-image-inline-description"),
+                    ),
                     PanelHit::ImageFreePosition => (
                         "free",
                         t("a11y-image-free-position"),
@@ -6115,6 +6150,7 @@ impl WordProcessorWidget {
         let available = column.width();
         let mobile_page = available < 600.0;
         let accessible_page = self.text_scale > 1.01;
+        let page_right = self.page_area_right(theme, column, mobile_page || accessible_page);
         if self.view.auto_fit_page {
             // Phone-sized tiles use a responsive editing sheet instead of
             // shrinking an entire Letter page until its body copy is 7 px.
@@ -6124,7 +6160,7 @@ impl WordProcessorWidget {
             } else if mobile_page {
                 1.0
             } else {
-                ((available - 32.0) / MAX_PAGE_W).clamp(ZOOM_MIN, 1.0)
+                ((page_right - column.x0 - 32.0) / MAX_PAGE_W).clamp(ZOOM_MIN, 1.0)
             };
             self.zoom.set(fit);
         }
@@ -6140,7 +6176,13 @@ impl WordProcessorWidget {
         let layout_bar_top = (content_bottom - self.layout_bar_height).max(full.y0 + tb_h);
         // Version-history strip: a band between the canvas and the layout bar,
         // so the page shrinks rather than the history painting over the text.
-        let history_h = self.history.band_height();
+        // The strip stands clear of the page above it and the status band
+        // below it.
+        let history_h = if self.history.is_open() {
+            self.history.band_height() + 2.0 * f64::from(theme.tokens.spacing.s2)
+        } else {
+            0.0
+        };
         let history_top = (layout_bar_top - history_h).max(full.y0 + tb_h);
         // The page's column: what the docked outline and inspector leave.
         let canvas_left = column.x0;
@@ -6184,7 +6226,7 @@ impl WordProcessorWidget {
         // changes. The toolbar/find-bar/status bar are drawn with the unscaled
         // `transform` and are unaffected.
         self.zoom
-            .set_anchor(Point::new(f64::midpoint(canvas.x0, canvas.x1), canvas.y0));
+            .set_anchor(Point::new(f64::midpoint(canvas.x0, page_right), canvas.y0));
         let ctf = self.content_transform(transform);
 
         // Per-side page geometry — every margin is independently customizable.
@@ -6202,7 +6244,7 @@ impl WordProcessorWidget {
         // unscaled canvas. Scaling about the canvas centre then keeps both page
         // edges visible in auto-fit mode instead of pinning the left edge and
         // clipping the right.
-        let page_x = f64::midpoint(canvas.x0, canvas.x1) - page_w / 2.0;
+        let page_x = f64::midpoint(canvas.x0, page_right) - page_w / 2.0;
         let page_top = canvas.y0 + PAGE_TOP;
         let content_x = page_x + m.left;
         let content_w = num::f32_of_f64((page_w - m.left - m.right).max(80.0));
@@ -6251,6 +6293,29 @@ impl WordProcessorWidget {
         }
     }
 
+    /// The trailing edge of the area the page centres in. Review cards stand
+    /// in a column beside the page: when a page centred in the whole
+    /// `column` would leave too little room for them on its trailing side,
+    /// the page moves over (and, fitted, shrinks) so the cards never cover
+    /// the text. A phone-sized or large-text sheet keeps the whole width.
+    fn page_area_right(&self, theme: &Theme, column: Rect, responsive: bool) -> f64 {
+        if responsive || !self.review.shows_cards() {
+            return column.x1;
+        }
+        let reserve = ReviewOverlay::column_reserve(theme);
+        let zoom = if self.view.auto_fit_page {
+            ((column.width() - 32.0) / MAX_PAGE_W).clamp(ZOOM_MIN, 1.0)
+        } else {
+            self.zoom.factor()
+        };
+        let beside = (column.width() - MAX_PAGE_W * zoom) / 2.0;
+        if beside >= reserve {
+            column.x1
+        } else {
+            (column.x1 - reserve).max(column.x0 + 1.0)
+        }
+    }
+
     /// Reserve + draw the crash-recovery banner (when an offer is staged) and
     /// the Find bar (when open), stacked directly under the toolbar at
     /// `tb_bottom`. Returns `(recovery_h, find_h)` — the heights the caller
@@ -6268,11 +6333,30 @@ impl WordProcessorWidget {
             right: canvas_right,
             top: tb_bottom,
         } = *geometry;
-        let recovery_h = self.recovery.height(theme);
+        let mut recovery_h = self.recovery.height(theme);
         if recovery_h > 0.0 {
             let rbar = Rect::new(canvas_left, tb_bottom, canvas_right, tb_bottom + recovery_h);
             self.recovery
                 .draw(scene, transform, text_renderer, theme, rbar);
+        }
+        // A failed save stays in view, in the flow above the page, until it
+        // is resolved: an error banner, not a toast over the text.
+        if self.save_error.is_some() {
+            let sp = &theme.tokens.spacing;
+            let (across, along) = (f64::from(sp.s3), f64::from(sp.s2));
+            let h = ButtonFace::height(ControlSize::Regular, theme) + 2.0 * along;
+            let top = tb_bottom + recovery_h + along;
+            let rect = Rect::new(canvas_left + across, top, canvas_right - across, top + h);
+            let title = t("toast-save-failed");
+            let close = ui::widget::Banner::paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                rect,
+                &ui::widget::BannerContent::new(ui::widget::BannerKind::Error, &title)
+                    .dismissible(true),
+                self.pointer,
+            );
+            self.save_error = Some(close);
+            recovery_h += h + 2.0 * along;
         }
         let find_h = self.find.height(theme);
         self.find_band = Rect::new(
@@ -8406,10 +8490,9 @@ impl WordProcessorWidget {
         self.pointer = Point::new(x / scale_factor, y / scale_factor);
         let _ = tb_h;
         // Hover lifts on the chrome the editor paints itself.
-        let content_pointer = self.pointer_to_content(self.pointer);
         let hover_changed = self.outline.pointer_moved(self.pointer)
             | self.recovery.pointer_moved(self.pointer)
-            | self.review.pointer_moved(content_pointer)
+            | self.review.pointer_moved(self.pointer)
             | self.panel_rect.contains(self.pointer)
             | self.thread_panel.contains(self.pointer)
             | self
@@ -8580,6 +8663,16 @@ impl WordProcessorWidget {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
+        // The failed-save banner's dismiss control.
+        if self
+            .save_error
+            .is_some_and(|close| close.contains(self.pointer))
+        {
+            self.save_error = None;
+            self.lifecycle.dirty = true;
+            *handled = true;
+            return true;
+        }
         // Crash-recovery banner (just under the toolbar): a click on
         // Restore / Discard resolves the offer before any other hit-test.
         if let Some(decision) = self.recovery.handle_click(self.pointer) {
@@ -8705,7 +8798,7 @@ impl WordProcessorWidget {
         // Accept/Reject) are drawn through the zoom transform, so they
         // hit-test in content space too. A hit dispatches + consumes the
         // click before it can start a text selection.
-        if let Some(action) = self.review.action_at(cp) {
+        if let Some(action) = self.review.action_at(self.pointer) {
             self.dispatch_review_action(action, state);
             self.lifecycle.dirty = true;
             *handled = true;
@@ -9902,6 +9995,7 @@ impl Widget for WordProcessorWidget {
             || self.template_picker.is_open()
             || self.tool_bar.is_overflow_open()
             || self.line_spacing.is_open()
+            || self.style_pick.is_open()
         {
             Some(self.rect)
         } else {
@@ -9968,15 +10062,10 @@ impl Widget for WordProcessorWidget {
                 note_numbers: &note_nums,
             },
         );
-        self.review.draw(
+        self.review.draw_pips(
             &mut ui::paint::PaintCtx::new(scene, fg.ctf, text_renderer, theme),
-            &ReviewPlacement {
-                canvas: fg.canvas,
-                page_x1: fg.page_x + fg.page_w,
-                paper: self.chrome.paper,
-            },
+            self.chrome.paper,
             &markers.comment_markers,
-            &markers.change_markers,
         );
         self.draw_footnotes(
             scene,
@@ -9999,6 +10088,15 @@ impl Widget for WordProcessorWidget {
         // covers the body but the band + its caret stay crisp on top.
         self.draw_running_region_veil(scene, &fg, text_renderer, num_pages, sy);
 
+        self.draw_review_column(
+            scene,
+            (transform, &fg),
+            text_renderer,
+            theme,
+            presence,
+            &markers,
+        );
+
         scene.pop_layer();
 
         self.draw_scrollbar(scene, transform, fg.canvas);
@@ -10011,11 +10109,15 @@ impl Widget for WordProcessorWidget {
         self.draw_remote_overlays(scene, fg.ctf, text_renderer, theme, presence);
 
         if fg.history_h > 0.0 {
+            // Inset from the column's sides by the gutter the status band's
+            // controls keep, and from the page and the status band.
+            let sp = &theme.tokens.spacing;
+            let (across, along) = (f64::from(sp.s3), f64::from(sp.s2));
             let band = Rect::new(
-                fg.canvas_left,
-                fg.history_top,
-                fg.canvas_right,
-                fg.layout_bar_top,
+                fg.canvas_left + across,
+                fg.history_top + along,
+                fg.canvas_right - across,
+                fg.layout_bar_top - along,
             );
             self.history
                 .draw(scene, transform, text_renderer, theme, presence, band);
@@ -10359,7 +10461,9 @@ impl Widget for WordProcessorWidget {
         // Toast first, so an open menu stacks above it.
         self.draw_toast(scene, transform, text_renderer, theme);
         let toolbar_presence = PresenceCtx::empty();
-        toolbar_presence.viewport.set(Some(self.rect));
+        toolbar_presence
+            .viewport
+            .set(Some(self.floating_viewport()));
         Widget::draw_overlay(
             &mut self.tool_bar,
             scene,
@@ -10368,13 +10472,14 @@ impl Widget for WordProcessorWidget {
             theme,
             &toolbar_presence,
         );
+        let viewport = self.floating_viewport();
         for menu in [
             &mut self.context_menu,
             self.template_picker.menu_mut(),
             self.style_menu.menu_mut(),
         ] {
             if menu.is_open() {
-                menu.constrain_to(self.rect);
+                menu.constrain_to(viewport);
             }
         }
         if self.context_menu.is_open() {
@@ -10387,22 +10492,28 @@ impl Widget for WordProcessorWidget {
                 presence,
             );
         }
-        if self.styles_panel_visible() && self.line_spacing.is_open() {
+        if self.styles_panel_visible() {
             let local = if self.styles_panel_overlay() {
                 theme.on_ground(ui::chrome::panel_ground(theme))
             } else {
                 theme.in_region(ui::surface::Region::Inspector)
             };
             let overlay_presence = PresenceCtx::empty();
-            overlay_presence.viewport.set(Some(self.rect));
-            Widget::draw_overlay(
-                &mut self.line_spacing,
-                scene,
-                transform,
-                text_renderer,
-                &local,
-                &overlay_presence,
-            );
+            overlay_presence
+                .viewport
+                .set(Some(self.floating_viewport()));
+            for menu in [&mut self.line_spacing, &mut self.style_pick] {
+                if menu.is_open() {
+                    Widget::draw_overlay(
+                        menu,
+                        scene,
+                        transform,
+                        text_renderer,
+                        &local,
+                        &overlay_presence,
+                    );
+                }
+            }
         }
         self.compact_swatch_palette
             .draw(scene, transform, text_renderer, theme, presence);
@@ -10414,7 +10525,6 @@ impl Widget for WordProcessorWidget {
             self.find
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        self.draw_comment_thread(scene, transform, text_renderer, theme, presence);
         self.color_picker.draw(
             crate::style_color_picker::DrawArgs {
                 scene,
@@ -10537,6 +10647,7 @@ impl Widget for WordProcessorWidget {
         }
         if let Some(panel_hit) = self.panel_hits.iter().find_map(|(_, panel_hit)| {
             let id = match panel_hit {
+                PanelHit::ImageInline => "inline",
                 PanelHit::ImageFreePosition => "free",
                 PanelHit::ImageWrapLeft => "left",
                 PanelHit::ImageWrapRight => "right",
@@ -11047,6 +11158,39 @@ impl ui::widget::AppWidget for WordProcessorWidget {
     }
 }
 
+/// A comment's own text, its paragraphs joined.
+fn thread_root_text(comment: &tilo_doc::snapshot::CommentView) -> String {
+    comment
+        .blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Lay `view` out in `x0..x1` from `top` so its text, not the editor's
+/// padding around it, starts at `x0` (the edge the author's name above it
+/// starts at). Returns its height.
+fn lay_out_flush(
+    view: &mut RichTextView,
+    (x0, x1, top): (f64, f64, f64),
+    tr: &mut TextRenderer,
+    theme: &Theme,
+) -> f64 {
+    let height = view.layout(Rect::new(x0, top, x1, top), theme, tr);
+    let inset = view
+        .editor_mut()
+        .blocks()
+        .first()
+        .map_or(0.0, |block| block.line.caret_rect(theme, 0).x0 - x0);
+    if inset > 0.5 {
+        view.layout(Rect::new(x0 - inset, top, x1 + inset, top), theme, tr)
+    } else {
+        height
+    }
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CommentThreadLayout {
@@ -11092,14 +11236,120 @@ impl CommentThreadLayout {
 }
 
 impl WordProcessorWidget {
-    /// Draw the expanded, durable comment thread: a floating panel over the
-    /// page's trailing side with the comment, its replies and the reply
-    /// composer. The panel is on demand, keeping the canvas the primary
-    /// surface while every persisted reply stays visible and usable.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the thread panel paints its header, persisted replies and composer in one pass sharing the running y cursor"
-    )]
+    /// The margin column beside the page: a card per comment and tracked
+    /// change, and the open thread expanded in place of its comment's card.
+    fn draw_review_column(
+        &mut self,
+        scene: &mut Scene,
+        (transform, fg): (Affine, &FrameGeometry),
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        markers: &Pass2Markers,
+    ) {
+        let to_window = self.zoom.transform(Affine::IDENTITY);
+        let placement = ReviewPlacement {
+            canvas: fg.canvas,
+            page_x1: (to_window * Point::new(fg.page_x + fg.page_w, 0.0)).x,
+            to_window,
+        };
+        let (_, width) = ReviewOverlay::column(theme, &placement);
+        let thread = self
+            .thread_comment
+            .clone()
+            .zip(self.comment_thread_height(width, tr, theme));
+        self.review.draw_cards(
+            &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
+            &placement,
+            (&markers.comment_markers, &markers.change_markers),
+            thread.as_ref().map(|(id, height)| (id.as_str(), *height)),
+        );
+        if let Some(slot) = self.review.expanded_slot() {
+            self.draw_comment_thread(scene, transform, tr, theme, presence, slot);
+        } else {
+            self.thread_panel = Rect::ZERO;
+            self.thread_submit = Rect::ZERO;
+            self.thread_cancel = Rect::ZERO;
+        }
+    }
+
+    /// The comment whose thread is open, its replies in reading order.
+    fn open_thread(&self) -> Option<tilo_doc::snapshot::CommentView> {
+        let id = self.thread_comment.as_ref()?;
+        let mut comment = self
+            .review
+            .comments()
+            .iter()
+            .find(|c| &c.id == id)
+            .cloned()
+            .or_else(|| self.thread_snapshot.clone())?;
+        crate::review_overlay::sort_replies(&mut comment);
+        Some(comment)
+    }
+
+    /// The open thread's card: its comment's card, expanded in place.
+    fn thread_face(comment: &tilo_doc::snapshot::CommentView) -> CardFace<'_> {
+        CardFace::new()
+            .title(&comment.author)
+            .leading_stripe(Tone::of_identity(&comment.author))
+    }
+
+    /// Lay out the open thread's card body from `top`, `x0..x1`: the
+    /// comment, every reply shown (up to three) and the composer with its
+    /// actions. Returns the body's height; positions the reply views and
+    /// the composer.
+    fn lay_out_thread_body(
+        &mut self,
+        comment: &tilo_doc::snapshot::CommentView,
+        (x0, x1, top): (f64, f64, f64),
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> f64 {
+        let sp = &theme.tokens.spacing;
+        let related = f64::from(sp.rhythm.related);
+        let tight = f64::from(sp.rhythm.tight);
+        let wrap = num::f32_of_f64((x1 - x0).max(1.0));
+        let root = thread_root_text(comment);
+        let mut y = top;
+        y += f64::from(
+            tr.measure_style(&root, Some(wrap), &theme.text(TextRole::Body))
+                .1,
+        );
+        let replies: Vec<_> = comment.replies.iter().take(3).collect();
+        self.thread_reply_views
+            .resize_with(replies.len(), RichTextView::new);
+        let who_style = theme.text(TextRole::Caption).strong();
+        for (reply, view) in replies.iter().zip(&mut self.thread_reply_views) {
+            y += related;
+            y += f64::from(tr.measure_style(&reply.author, Some(wrap), &who_style).1) + tight;
+            view.show_views(&reply.blocks);
+            y += lay_out_flush(view, (x0, x1, y), tr, theme);
+        }
+        y += f64::from(sp.s3);
+        // The composer stands in a field well, its actions under it.
+        let field_h = ButtonFace::height(ControlSize::Regular, theme);
+        y += field_h + f64::from(sp.s2) + ButtonFace::height(ControlSize::Small, theme);
+        y - top
+    }
+
+    /// The open thread's height at `width`, the slot its comment's card
+    /// gives up for it.
+    fn comment_thread_height(
+        &mut self,
+        width: f64,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<f64> {
+        let comment = self.open_thread()?;
+        let face = Self::thread_face(&comment);
+        let body = face.body_rect(tr, theme, Rect::new(0.0, 0.0, width, 1.0e4));
+        let content = self.lay_out_thread_body(&comment, (body.x0, body.x1, body.y0), tr, theme);
+        Some(face.height_for_body(tr, theme, width, content))
+    }
+
+    /// Draw the open thread in `slot`, where its comment's card stands in
+    /// the margin: the same card, expanded with every reply and the reply
+    /// composer, so the thread and the card are one object.
     fn draw_comment_thread(
         &mut self,
         scene: &mut Scene,
@@ -11107,202 +11357,106 @@ impl WordProcessorWidget {
         tr: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
+        slot: Rect,
     ) {
-        let Some(id) = self.thread_comment.clone() else {
-            return;
-        };
-        let comment = self
-            .review
-            .comments()
-            .iter()
-            .find(|c| c.id == id)
-            .cloned()
-            .or_else(|| self.thread_snapshot.clone());
-        let Some(comment) = comment else {
+        let Some(comment) = self.open_thread() else {
             self.close_comment_thread();
             return;
         };
+        self.thread_panel = slot;
+        let face = Self::thread_face(&comment);
+        face.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
+            slot,
+        );
+        let body = face.body_rect(tr, theme, slot);
+        self.lay_out_thread_body(&comment, (body.x0, body.x1, body.y0), tr, theme);
         let sp = &theme.tokens.spacing;
-        let (s2, s3, pad) = (f64::from(sp.s2), f64::from(sp.s3), f64::from(sp.s4));
-        let related = f64::from(sp.rhythm.related);
-        // The panel floats `s3` off the window's edge and above the status
-        // band, as wide as a list panel, and as tall as what it holds.
-        let width = f64::from(theme.tokens.metrics.panel_width_list)
-            .min(self.rect.width() - 2.0 * s3)
-            .max(1.0);
-        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
-        let wrap = num::f32_of_f64((width - 2.0 * pad).max(1.0));
-        let title = t("review-thread");
-        let title_style = ink.text(TextRole::Heading);
-        let author_style = ink.text(TextRole::Label).strong();
-        let body_style = ink.text(TextRole::Body);
-        let caption = ink.text(TextRole::Caption);
-        let root = comment
-            .blocks
-            .iter()
-            .map(|block| block.text.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let title_h = f64::from(tr.measure_style(&title, Some(wrap), &title_style).1);
-        let author_h = f64::from(
-            tr.measure_style(&comment.author, Some(wrap), &author_style)
-                .1,
-        );
-        let root_h = f64::from(tr.measure_style(&root, Some(wrap), &body_style).1);
-        let replies: Vec<_> = comment.replies.iter().take(3).collect();
-        self.thread_reply_views
-            .resize_with(replies.len(), RichTextView::new);
-        let mut replies_h = 0.0;
-        for (reply, view) in replies.iter().zip(&mut self.thread_reply_views) {
-            let who = f64::from(tr.measure_style(&reply.author, Some(wrap), &caption).1);
-            view.show_views(&reply.blocks);
-            let body = view.layout(Rect::new(0.0, 0.0, width - 2.0 * pad, 0.0), &ink, tr);
-            replies_h += s2 + who + body + related;
-        }
-        let btn_h = ButtonFace::height(ControlSize::Regular, &ink);
-        let field_h = ButtonFace::height(ControlSize::Regular, &ink);
-        let content = pad
-            + title_h
-            + related
-            + author_h
-            + root_h
-            + s3
-            + replies_h
-            + s3
-            + field_h
-            + s2
-            + btn_h
-            + pad;
-        let bottom = self.rect.y1 - self.layout_bar_height - s3;
-        let top_limit = self.rect.y0 + self.tool_band.height() + s3;
-        let height = content.min(bottom - top_limit).max(1.0);
-        let panel = Rect::new(
-            self.rect.x1 - width - s3,
-            bottom - height,
-            self.rect.x1 - s3,
-            bottom,
-        );
-        self.thread_panel = panel;
-        ui::widget::floating_surface::paint(scene, transform, panel, theme);
-        let colors = &ink.tokens.colors;
-        let x0 = panel.x0 + pad;
-        let mut y = panel.y0 + pad;
-        tr.draw_style(
-            scene,
-            &title,
-            colors.text_primary,
-            transform * Affine::translate((x0, y)),
-            Some(wrap),
-            &title_style,
-        );
-        y += title_h + related;
-
-        // The comment: its author in `Label`, the comment in `Body`.
-        tr.draw_style(
-            scene,
-            &comment.author,
-            colors.text_primary,
-            transform * Affine::translate((x0, y)),
-            Some(wrap),
-            &author_style,
-        );
-        y += author_h;
+        let tight = f64::from(sp.rhythm.tight);
+        let colors = &theme.tokens.colors;
+        let wrap = num::f32_of_f64(body.width().max(1.0));
+        let body_style = theme.text(TextRole::Body);
+        let who_style = theme.text(TextRole::Caption).strong();
+        let root = thread_root_text(&comment);
         tr.draw_style(
             scene,
             &root,
             colors.text_primary,
-            transform * Affine::translate((x0, y)),
+            transform * Affine::translate((body.x0, body.y0)),
             Some(wrap),
             &body_style,
         );
-        y += root_h + s3;
-
-        // Footer: the reply field above the action row; replies stop short
-        // of the field.
-        let btn_top = panel.y1 - pad - btn_h;
-        let field_top = btn_top - s2 - field_h;
-        let replies_bottom = field_top - s3;
-        for (reply, view) in replies.iter().zip(&mut self.thread_reply_views) {
-            // A reply: its author in `Caption`, then its text, under a
-            // hairline that parts it from what is above.
-            let author_h = f64::from(tr.measure_style(&reply.author, Some(wrap), &caption).1);
-            let body_top = y + s2 + author_h;
-            view.show_views(&reply.blocks);
-            let body_h = view.layout(Rect::new(x0, body_top, panel.x1 - pad, body_top), &ink, tr);
-            let h = body_top - y + body_h;
-            if y + h > replies_bottom {
-                break;
-            }
-            ui::surface::separator(
-                scene,
-                transform,
-                x0,
-                panel.x1 - pad,
-                y,
-                0.0,
-                ui::chrome::panel_ground(theme),
-            );
+        // Each reply: its author over its text, both from the body's edge.
+        for (reply, view) in comment
+            .replies
+            .iter()
+            .take(3)
+            .zip(&mut self.thread_reply_views)
+        {
+            let who_h = f64::from(tr.measure_style(&reply.author, Some(wrap), &who_style).1);
             tr.draw_style(
                 scene,
                 &reply.author,
-                colors.text_dim,
-                transform * Affine::translate((x0, y + s2)),
+                colors.text_primary,
+                transform * Affine::translate((body.x0, view.rect().y0 - tight - who_h)),
                 Some(wrap),
-                &caption,
+                &who_style,
             );
-            view.draw(scene, transform, tr, &ink);
-            y += h + related;
+            view.draw(scene, transform, tr, theme);
         }
-        // The composer stands in a field well.
-        let field = Rect::new(x0, field_top, panel.x1 - pad, field_top + field_h);
+
+        // The composer in its field well, then Cancel and Send (the card's
+        // one primary action) along the card's foot.
+        let btn_h = ButtonFace::height(ControlSize::Small, theme);
+        let field_h = ButtonFace::height(ControlSize::Regular, theme);
+        let btn_top = body.y1 - btn_h;
+        let field_top = btn_top - f64::from(sp.s2) - field_h;
+        let field = Rect::new(body.x0, field_top, body.x1, field_top + field_h);
         ui::surface::card(
             scene,
             transform,
             field,
-            f64::from(ink.tokens.radii.control),
+            f64::from(theme.tokens.radii.control),
             colors.surfaces.raised,
         );
-        let inset = f64::from(ink.tokens.spacing.s3);
         let line = f64::from(tr.measure_style("Ag", None, &body_style).1);
         let editor_y = field.center().y - line / 2.0;
         self.thread_reply.layout(
-            Rect::new(
-                field.x0 + inset,
-                editor_y,
-                field.x1 - inset,
-                editor_y + line,
-            ),
-            &ink,
+            Rect::new(field.x0, editor_y, field.x1, editor_y + line),
+            theme,
             tr,
         );
-        self.thread_reply.draw(scene, transform, tr, &ink, presence);
-        // The action row: Send as the panel's primary action, Cancel beside
-        // it, trailing-aligned.
+        self.thread_reply
+            .draw(scene, transform, tr, theme, presence);
         let cancel_label = t("review-cancel-reply");
         let submit_label = t("review-send-reply");
         let submit_w = ButtonFace::new(Rect::ZERO, &submit_label)
             .role(ButtonRole::Primary)
-            .intrinsic_width(tr, &ink);
-        let cancel_w = ButtonFace::new(Rect::ZERO, &cancel_label).intrinsic_width(tr, &ink);
-        let submit_x1 = panel.x1 - pad;
-        self.thread_submit = Rect::new(submit_x1 - submit_w, btn_top, submit_x1, btn_top + btn_h);
-        let cancel_x1 = self.thread_submit.x0 - s2;
+            .control_size(ControlSize::Small)
+            .intrinsic_width(tr, theme);
+        let cancel_w = ButtonFace::new(Rect::ZERO, &cancel_label)
+            .control_size(ControlSize::Small)
+            .intrinsic_width(tr, theme);
+        self.thread_submit = Rect::new(body.x1 - submit_w, btn_top, body.x1, btn_top + btn_h);
+        let cancel_x1 = self.thread_submit.x0 - f64::from(sp.s2);
         self.thread_cancel = Rect::new(cancel_x1 - cancel_w, btn_top, cancel_x1, btn_top + btn_h);
         Button::paint(
             scene,
             transform,
             tr,
-            &ink,
+            theme,
             &ButtonFace::new(self.thread_cancel, &cancel_label)
+                .control_size(ControlSize::Small)
                 .hovered(self.thread_cancel.contains(self.pointer)),
         );
         Button::paint(
             scene,
             transform,
             tr,
-            &ink,
+            theme,
             &ButtonFace::new(self.thread_submit, &submit_label)
                 .role(ButtonRole::Primary)
+                .control_size(ControlSize::Small)
                 .hovered(self.thread_submit.contains(self.pointer)),
         );
     }
@@ -11718,6 +11872,9 @@ impl WordProcessorWidget {
             PanelHit::ImageFlipV => self.apply_panel_hit_image_flip(state, false),
             PanelHit::ImageCropInset => self.apply_panel_hit_image_crop(state, true),
             PanelHit::ImageCropReset => self.apply_panel_hit_image_crop(state, false),
+            PanelHit::ImageInline => {
+                self.apply_panel_hit_image_placement(state, "inline", "none");
+            }
             PanelHit::ImageFreePosition => {
                 self.apply_panel_hit_image_placement(state, "page", "none");
             }
@@ -12436,6 +12593,9 @@ impl WordProcessorWidget {
     /// Reads the current frame's `panel_hits` (rebuilt every draw), so the chip
     /// rects are live at right-click time.
     fn style_chip_at(&self, p: Point) -> Option<String> {
+        if self.style_pick_rect.contains(p) {
+            return self.focused_style_key();
+        }
         self.panel_hits.iter().find_map(|(r, h)| match h {
             PanelHit::Pick(id) if r.contains(p) => Some(id.clone()),
             _ => None,
@@ -12558,20 +12718,38 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    /// Open the "New" picker below the toolbar's leading edge.
+    /// Open the "New" picker under the New button (under the toolbar's
+    /// leading edge while New sits in the More menu).
     fn open_template_picker(&mut self) {
-        // Anchor below the toolbar's left edge (where the "New" button lives).
-        let anchor_x = self
+        let gap = f64::from(self.desk_theme.tokens.spacing.s2);
+        let anchor = self
             .toolbar
-            .first()
-            .map_or(self.rect.x0 + 8.0, |(_, r)| r.x0);
-        let anchor_y = self.tool_band.y1;
+            .iter()
+            .find(|(action, _)| *action == ToolAction::NewMenu)
+            .map_or_else(
+                || {
+                    Rect::new(
+                        self.tool_band.x0,
+                        self.tool_band.y0,
+                        self.tool_band.x0,
+                        self.tool_band.y1,
+                    )
+                },
+                |(_, rect)| *rect,
+            );
+        let anchor = Rect::new(anchor.x0, anchor.y0 - gap, anchor.x1, anchor.y1 + gap);
         self.template_picker
             .set_text_scale(crate::num::f32_of_f64(self.text_scale));
-        self.template_picker.set_viewport(self.rect);
-        self.template_picker.open_at(Point::new(anchor_x, anchor_y));
-        self.template_picker.menu_mut().constrain_to(self.rect);
+        self.template_picker
+            .open_anchored(anchor, self.floating_viewport());
         self.lifecycle.dirty = true;
+    }
+
+    /// Where menus and pickers may float: the window less a small margin,
+    /// so a floating panel never runs flush against the window's edge.
+    fn floating_viewport(&self) -> Rect {
+        self.rect
+            .inset(-f64::from(self.desk_theme.tokens.spacing.s2))
     }
 
     /// Replace the open document's content with `template`'s Markdown, **in place**
@@ -12879,9 +13057,12 @@ impl WordProcessorWidget {
         };
         let mut took = false;
         let panel = self.styles_panel_visible();
-        // An open line-spacing menu owns every event until it closes.
-        if panel && self.line_spacing.is_open() {
-            Self::forward(&mut self.line_spacing, event, ctx);
+        // An open menu owns every event until it closes.
+        let open_menu = [&mut self.style_pick, &mut self.line_spacing]
+            .into_iter()
+            .find(|menu| panel && menu.is_open())
+            .map(|menu| Self::forward(menu, event, ctx));
+        if open_menu.is_some() {
             self.drain_hosted_fields(ctx.state);
             *ctx.handled = true;
             self.lifecycle.dirty = true;
@@ -12894,6 +13075,7 @@ impl WordProcessorWidget {
                         Self::forward(&mut slot.input, event, ctx);
                     }
                     Self::forward(&mut self.line_spacing, event, ctx);
+                    Self::forward(&mut self.style_pick, event, ctx);
                 }
                 Self::forward(&mut self.zoom_input, event, ctx);
                 if *ctx.handled {
@@ -12906,31 +13088,7 @@ impl WordProcessorWidget {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                let field = panel
-                    .then(|| {
-                        self.num_inputs
-                            .iter()
-                            .find(|slot| slot.rect.contains(pointer))
-                            .map(|slot| slot.field)
-                    })
-                    .flatten();
-                let zoom = self.zoom_rect.contains(pointer);
-                let spacing = panel && self.line_spacing_rect.contains(pointer);
-                self.focus_hosted(field, zoom);
-                if let Some(field) = field {
-                    if let Some(slot) = self.num_inputs.iter_mut().find(|s| s.field == field) {
-                        Self::forward(&mut slot.input, event, ctx);
-                    }
-                    took = true;
-                } else if zoom {
-                    Self::forward(&mut self.zoom_input, event, ctx);
-                    took = true;
-                } else if spacing {
-                    Self::forward(&mut self.line_spacing, event, ctx);
-                    took = true;
-                }
-            }
+            } => took = self.press_hosted(pointer, panel, event, ctx),
             WindowEvent::MouseInput { .. } => {
                 for slot in &mut self.num_inputs {
                     if Widget::wants_pointer_capture(&slot.input) {
@@ -12942,9 +13100,11 @@ impl WordProcessorWidget {
                     Self::forward(&mut self.zoom_input, event, ctx);
                     took = true;
                 }
-                if Widget::wants_pointer_capture(&self.line_spacing) {
-                    Self::forward(&mut self.line_spacing, event, ctx);
-                    took = true;
+                for menu in [&mut self.line_spacing, &mut self.style_pick] {
+                    if Widget::wants_pointer_capture(menu) {
+                        Self::forward(menu, event, ctx);
+                        took = true;
+                    }
                 }
             }
             WindowEvent::KeyboardInput { event: key, .. } => {
@@ -12967,6 +13127,41 @@ impl WordProcessorWidget {
             self.lifecycle.dirty = true;
         }
         took
+    }
+
+    /// A press on a hosted field focuses it and goes to it; returns
+    /// whether one took it.
+    fn press_hosted(
+        &mut self,
+        pointer: Point,
+        panel: bool,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let field = panel
+            .then(|| {
+                self.num_inputs
+                    .iter()
+                    .find(|slot| slot.rect.contains(pointer))
+                    .map(|slot| slot.field)
+            })
+            .flatten();
+        let zoom = self.zoom_rect.contains(pointer);
+        self.focus_hosted(field, zoom);
+        if let Some(field) = field {
+            if let Some(slot) = self.num_inputs.iter_mut().find(|s| s.field == field) {
+                Self::forward(&mut slot.input, event, ctx);
+            }
+        } else if zoom {
+            Self::forward(&mut self.zoom_input, event, ctx);
+        } else if panel && self.line_spacing_rect.contains(pointer) {
+            Self::forward(&mut self.line_spacing, event, ctx);
+        } else if panel && self.style_pick_rect.contains(pointer) {
+            Self::forward(&mut self.style_pick, event, ctx);
+        } else {
+            return false;
+        }
+        true
     }
 
     /// Hand typing to the hosted field that has the keyboard; returns
@@ -13033,13 +13228,17 @@ impl WordProcessorWidget {
             self.save_status = DocumentSaveStatus::Modified;
             self.lifecycle.dirty = true;
         }
+        if let Some(id) = self.style_pick_choice.take() {
+            self.apply_panel_hit(state, PanelHit::Pick(id));
+        }
         if let Some(percent) = self.zoom_input.take_changed() {
             self.set_zoom(percent / 100.0);
         }
     }
 
-    /// The toolbar's commands for this frame, grouped: New; character
-    /// formatting; colour and type; insertion (the table group turns into
+    /// The toolbar's commands for this frame, grouped: New; bold, italic
+    /// and underline; type and colour; the rarer character formats;
+    /// insertion (the table group turns into
     /// table editing inside a cell); then, at the trailing edge, the view
     /// toggles. Commands that do not fit go to the toolbar's More menu.
     fn toolbar_entries(&self) -> Vec<ToolEntry> {
@@ -13048,32 +13247,41 @@ impl WordProcessorWidget {
             ToolEntry::Separator,
             ToolEntry::toggle(
                 ToolAction::Bold,
-                "B",
+                t("toolbar-bold"),
                 self.mark_active_in_selection("strong"),
             ),
-            ToolEntry::toggle(ToolAction::Italic, "I", self.mark_active_in_selection("em")),
             ToolEntry::toggle(
-                ToolAction::Underline,
-                "U",
-                self.mark_active_in_selection("underline"),
+                ToolAction::Italic,
+                t("toolbar-italic"),
+                self.mark_active_in_selection("em"),
             ),
             ToolEntry::toggle(
+                ToolAction::Underline,
+                t("toolbar-underline"),
+                self.mark_active_in_selection("underline"),
+            ),
+            ToolEntry::Separator,
+            ToolEntry::command(ToolAction::FontCycle, self.current_font().label()),
+            ToolEntry::command(ToolAction::FontSizeDec, t("toolbar-size-down")),
+            ToolEntry::command(ToolAction::FontSizeInc, t("toolbar-size-up")),
+            ToolEntry::command(ToolAction::TextColorPalette, t("toolbar-text-color")),
+            ToolEntry::command(ToolAction::HighlightPalette, t("toolbar-highlight")),
+            ToolEntry::Separator,
+            ToolEntry::toggle(
                 ToolAction::Strike,
-                "S",
+                t("toolbar-strikethrough"),
                 self.mark_active_in_selection("strike"),
             ),
             ToolEntry::toggle(
                 ToolAction::Super,
-                "x²",
+                t("toolbar-superscript"),
                 self.mark_active_in_selection("super"),
             ),
-            ToolEntry::toggle(ToolAction::Sub, "x₂", self.mark_active_in_selection("sub")),
-            ToolEntry::Separator,
-            ToolEntry::command(ToolAction::FontCycle, self.current_font().label()),
-            ToolEntry::command(ToolAction::FontSizeDec, "A−"),
-            ToolEntry::command(ToolAction::FontSizeInc, "A+"),
-            ToolEntry::command(ToolAction::TextColorPalette, t("toolbar-text-color")),
-            ToolEntry::command(ToolAction::HighlightPalette, t("toolbar-highlight")),
+            ToolEntry::toggle(
+                ToolAction::Sub,
+                t("toolbar-subscript"),
+                self.mark_active_in_selection("sub"),
+            ),
             ToolEntry::Separator,
         ];
         if !self.selection_blocks_cached().is_empty() {
@@ -13085,11 +13293,7 @@ impl WordProcessorWidget {
                 ToolEntry::command(ToolAction::TableRowDel, t("toolbar-row-del")),
                 ToolEntry::command(ToolAction::TableColAdd, t("toolbar-col-add")),
                 ToolEntry::command(ToolAction::TableColDel, t("toolbar-col-del")),
-                ToolEntry::icon(
-                    ToolAction::TableDelete,
-                    Icon::Trash2,
-                    t("a11y-table-delete"),
-                ),
+                ToolEntry::command(ToolAction::TableDelete, t("toolbar-table-delete")),
             ]);
         } else {
             entries.push(ToolEntry::command(
@@ -13098,7 +13302,7 @@ impl WordProcessorWidget {
             ));
         }
         entries.extend([
-            ToolEntry::icon(ToolAction::InsertImage, Icon::Image, t("a11y-insert-image")),
+            ToolEntry::command(ToolAction::InsertImage, t("toolbar-image")),
             ToolEntry::command(ToolAction::InsertToc, t("toolbar-toc")),
             ToolEntry::Spacer,
             ToolEntry::toggle(
@@ -13150,16 +13354,14 @@ impl WordProcessorWidget {
                     ToolEntry::Command {
                         action,
                         label,
-                        icon,
                         active,
                     } => {
                         let fired = std::rc::Rc::clone(&self.tool_fired);
                         let action = *action;
                         let on_click = move || fired.set(Some(action));
-                        match (icon, active) {
-                            (Some(icon), _) => bar.push_icon(*icon, label, on_click),
-                            (None, Some(on)) => bar.push_toggle(label, *on, on_click),
-                            (None, None) => bar.push_button(label, on_click),
+                        match active {
+                            Some(on) => bar.push_toggle(label, *on, on_click),
+                            None => bar.push_button(label, on_click),
                         }
                     }
                     ToolEntry::Separator => bar.push_separator(),
@@ -13210,6 +13412,7 @@ impl WordProcessorWidget {
                 slot.rect = Rect::ZERO;
             }
             self.line_spacing_rect = Rect::ZERO;
+            self.style_pick_rect = Rect::ZERO;
         }
     }
 
@@ -13293,7 +13496,7 @@ impl WordProcessorWidget {
         );
         self.tool_bar.lay_out_in(inner, tr, theme);
         let presence = PresenceCtx::empty();
-        presence.viewport.set(Some(self.rect));
+        presence.viewport.set(Some(self.floating_viewport()));
         Widget::draw(&mut self.tool_bar, scene, transform, tr, theme, &presence);
         self.toolbar.clear();
         self.toolbar

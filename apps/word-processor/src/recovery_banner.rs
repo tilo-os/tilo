@@ -9,11 +9,10 @@ use std::path::{Path, PathBuf};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::TextRole;
-use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize};
+use ui::widget::{Banner, BannerContent, BannerKind, Button, ButtonFace, ButtonRole, ControlSize};
 
 use crate::i18n::t;
 
@@ -54,12 +53,13 @@ impl RecoveryBanner {
         self.offer.is_some()
     }
 
-    /// The band the banner reserves: one regular control row with the
-    /// sibling step above and below, or nothing while no offer is staged.
+    /// The band the banner reserves: an information banner one regular
+    /// control row tall, its own padding inside it and the same step around
+    /// it, or nothing while no offer is staged.
     pub(crate) fn height(&self, theme: &Theme) -> f64 {
         if self.is_active() {
             ButtonFace::height(ControlSize::Regular, theme)
-                + 2.0 * f64::from(theme.tokens.spacing.s2)
+                + 4.0 * f64::from(theme.tokens.spacing.s2)
         } else {
             0.0
         }
@@ -207,14 +207,11 @@ impl RecoveryBanner {
         if !self.is_active() {
             return;
         }
-        ui::widget::toolbar::paint_band(scene, transform, theme, bar);
+        // The offer is the toolkit's information banner, with Discard and
+        // Restore beside it at the band's trailing end.
         let sp = &theme.tokens.spacing;
         let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
         let cy = bar.center().y;
-        let icon = f64::from(theme.tokens.metrics.icon_md);
-        let icon_rect =
-            Rect::from_center_size(Point::new(bar.x0 + s3 + icon / 2.0, cy), (icon, icon));
-        Icon::Info.draw(scene, transform, icon_rect, theme.tokens.colors.text_dim);
         let button_h = ButtonFace::height(ControlSize::Regular, theme);
         let mut x = bar.x1 - s3;
         for (action, label, role) in [
@@ -241,19 +238,18 @@ impl RecoveryBanner {
             self.buttons.push((action, rect));
             x -= s2;
         }
-        let banner = t("recovery-banner");
-        let style = theme.text(TextRole::Body);
-        let text_x = icon_rect.x1 + s2;
-        let max_w = (x - s2 - text_x).max(1.0);
-        let line = tr.elide_to_width_style(&banner, crate::num::f32_of_f64(max_w), &style);
-        let (_, line_h) = tr.measure_style(&line, None, &style);
-        tr.draw_style(
-            scene,
-            &line,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((text_x, cy - f64::from(line_h) / 2.0)),
-            None,
-            &style,
+        let title = t("recovery-banner");
+        let card = Rect::new(
+            bar.x0 + s3,
+            bar.y0 + s2,
+            x.max(bar.x0 + s3 + 1.0),
+            bar.y1 - s2,
+        );
+        Banner::paint(
+            &mut PaintCtx::new(scene, transform, tr, theme),
+            card,
+            &BannerContent::new(BannerKind::Info, &title),
+            Point::new(f64::NAN, f64::NAN),
         );
     }
 }

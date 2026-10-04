@@ -32,11 +32,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
-/// Height of the history strip when open (with the version band showing). The
-/// strip asks the widget rather than hard-coding this, since a host that
-/// reserved the old (bandless) height would clip the button row.
-pub const HISTORY_BAND_H: f64 = 168.0;
-
 /// Longest preview excerpt rendered. A historical document can be arbitrarily
 /// long; the card is a glance, not a second editor.
 const PREVIEW_CHARS: usize = 600;
@@ -773,10 +768,6 @@ mod tests {
             let mut panel = HistoryPanel::new();
             panel.toggle();
             panel.refresh(&mut s.doc);
-            assert!(
-                (panel.band_height() - HISTORY_BAND_H).abs() < f64::EPSILON,
-                "the strip asks for the taller band once it has versions to show"
-            );
             let mut empty = HistoryPanel::new();
             empty.toggle();
             let mut blank = State::new();
@@ -784,6 +775,10 @@ mod tests {
             assert!(
                 empty.band_height() > 0.0,
                 "an open strip over an empty document still reserves space to say so"
+            );
+            assert!(
+                panel.band_height() > empty.band_height(),
+                "the strip asks for the taller band once it has versions to show"
             );
         }
     }

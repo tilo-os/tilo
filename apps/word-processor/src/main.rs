@@ -140,7 +140,6 @@ fn main() {
         &LaunchSpec::new_with_args("so.tilo.word-processor", live_root)
             .max_positionals(1)
             .allowed_flags(&[
-                "--history",
                 "--styles",
                 "--comments",
                 "--threaded-comments",
@@ -177,7 +176,7 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
     let out = args.shots.as_deref().ok_or("missing screenshot output")?;
     let file = file_arg(args);
-    if args.has("--history") {
+    if args.history {
         // The strip renders the document's own change graph, so a shot of it is
         // only worth anything over a document that has one. Give the document a
         // few authored revisions first, through the same editing path a user
