@@ -5,8 +5,8 @@
 //! Modes:
 //! * default        — run the live window.
 //! * `--shots PATH` — render the window over the hermetic sample book to a
-//!   PNG and exit; `--scenario NAME` stages one state of it, `--detail`
-//!   brings the selected person to the front of a narrow window.
+//!   PNG and exit; `--scenario NAME` stages one state of it (`detail`
+//!   brings the selected person to the front of a narrow window).
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -32,56 +32,32 @@
     )
 )]
 
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::widget::Widget;
-
-/// Every state a capture can stage.
-const SCENARIOS: &[&str] = &[
-    "new",
-    "edit",
-    "calendar",
-    "export",
-    "unsaved",
-    "groups",
-    "favorites",
-    "context",
-    "more",
-    "confirm",
-    "import-conflict",
-    "duplicate-review",
-    "empty",
-];
-
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "signature is fixed by ui::launch::ShotFactory"
-)]
-fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    // Captures use the hermetic sample book, so a frame is populated and
-    // never reads or writes the person's address book.
-    let mut app = contacts::ContactsApp::sample();
-    if let Some(scenario) = args.scenario.as_deref() {
-        app.stage_scenario(scenario);
-    }
-    if args.has("--detail") {
-        app.shots_show_detail();
-    }
-    Ok(Box::new(app))
-}
+use ui::launch::LaunchSpec;
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(&launch_spec());
+    if capture_requested(std::env::args().skip(1)) {
+        ui::framework::run::<contacts::ContactsShell>();
+    } else {
+        ui::launch::run_or_exit(&launch_spec());
+    }
+}
+
+/// Whether the command line asks for captures, which the framework app
+/// stages from its scenarios over the sample book.
+fn capture_requested(mut args: impl Iterator<Item = String>) -> bool {
+    args.any(|arg| {
+        ["--shots", "--shots-dir", "--responsive-matrix"]
+            .iter()
+            .any(|flag| arg == *flag || arg.starts_with(&format!("{flag}=")))
+    })
 }
 
 fn launch_spec() -> LaunchSpec {
     LaunchSpec::new("so.tilo.contacts", contacts::app_root)
         .history(&contacts::framework_history::HISTORY)
-        .shot_root(shot_root)
-        .allowed_flags(&["--detail"])
-        .scenarios(SCENARIOS)
         .configure_app(|app| contacts::actions::register(app.action_registry_mut()))
 }
 

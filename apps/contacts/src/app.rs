@@ -554,6 +554,26 @@ impl ContactsApp {
         self.show_pane = Some(NavPane::Content);
     }
 
+    /// Stage a hosted capture's scenario once its sample book has been
+    /// presented: open on the book's first, richly filled record, then pose
+    /// `scenario`.
+    pub(crate) fn stage_capture(&mut self, scenario: Option<&str>) {
+        if self.selected.is_none() {
+            self.selected = sample_contacts()
+                .first()
+                .map(|contact| contact.id)
+                .filter(|id| self.store.get(*id).is_some())
+                .or_else(|| self.visible_ids().first().copied());
+            self.list_stale = true;
+        }
+        match scenario {
+            Some("detail") => self.shots_show_detail(),
+            Some(name) => self.stage(name),
+            None => {}
+        }
+        self.dirty = true;
+    }
+
     fn stage(&mut self, scenario: &str) {
         match scenario {
             "new" => {
