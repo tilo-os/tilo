@@ -267,6 +267,12 @@ impl<R: Resource> ResourceRoot<R> {
         self.content.as_mut()
     }
 
+    /// Open what a launch naming `arguments` opens in this window
+    /// ([`ViewCx::open_here`](super::ViewCx::open_here)).
+    pub(crate) fn open_here(&self, arguments: &[String]) -> Result<(), String> {
+        self.run.open_here(arguments)
+    }
+
     /// What the launch that opened the window named.
     pub(crate) fn launch(&self) -> super::launch::LaunchInput<'_> {
         self.run.launch()
@@ -549,6 +555,39 @@ struct SearchCache {
     revision: u64,
     shown: Vec<SearchEntry>,
     indexed: Arc<IndexedEntries>,
+    /// An index of newer entries being built away from the UI thread: the
+    /// revision and surface entries it is of, and where it arrives.
+    building: Option<(
+        u64,
+        Vec<SearchEntry>,
+        std::sync::mpsc::Receiver<IndexedEntries>,
+    )>,
+}
+
+/// A [`SearchText`](tilo_resource::SearchText), as the index reads it.
+struct BodyText(Arc<dyn tilo_resource::SearchText>);
+
+impl tilo_search::BodySource for BodyText {
+    fn segment_count(&self) -> usize {
+        self.0.segment_count()
+    }
+
+    fn piece_count(&self, segment: usize) -> usize {
+        self.0.piece_count(segment)
+    }
+
+    fn piece(&self, segment: usize, piece: usize) -> Option<tilo_search::BodyPiece<'_>> {
+        self.0
+            .piece(segment, piece)
+            .map(|piece| tilo_search::BodyPiece {
+                text: piece.text,
+                space_before: piece.space_before,
+            })
+    }
+
+    fn locates(&self, segment: usize) -> bool {
+        self.0.locates(segment)
+    }
 }
 
 /// A resource's search entries and their index, keyed by position.
@@ -569,13 +608,17 @@ impl IndexedEntries {
         // Entry titles are names a person half remembers: typos match too.
         let mut index = SearchIndex::new(Matching::LOOSE);
         index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
-            Document::new(at as u64)
+            let document = Document::new(at as u64)
                 .field(entry.title.as_str(), FieldWeight::TITLE)
                 .field(entry.text.as_str(), FieldWeight::BODY)
                 .field(
                     entry.subtitle.as_deref().unwrap_or_default(),
                     FieldWeight::BODY,
-                )
+                );
+            match &entry.body {
+                Some(body) => document.body(Arc::new(BodyText(body.shared()))),
+                None => document,
+            }
         }));
         if let Err(error) = index.commit() {
             tracing::warn!(%error, "could not index resource search entries");
@@ -682,7 +725,17 @@ impl ResourceSearch {
             .hits
             .into_iter()
             .filter_map(|hit| {
-                let entry = self.indexed.entries.get(usize::try_from(hit.key).ok()?)?;
+                let parent = self.indexed.entries.get(usize::try_from(hit.key).ok()?)?;
+                // A match in a located segment of a body is that location's
+                // hit, listed with its entry unless it names its own group.
+                let located = hit.segment.and_then(|segment| {
+                    let mut location = parent.body.as_ref()?.text().location(segment)?;
+                    if location.group.is_none() {
+                        location.group.clone_from(&parent.group);
+                    }
+                    Some(location)
+                });
+                let entry = located.as_ref().unwrap_or(parent);
                 let group = entry.group.as_deref().unwrap_or(self.name);
                 let mut result = match &entry.action {
                     Some(action) => SearchResult::for_action(group, entry.title.clone(), action),
@@ -915,6 +968,74 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     }
 }
 
+impl<R: Resource> ResourceRoot<R> {
+    /// The index of the resource's entries at `revision` and the surfaces'
+    /// `shown` ones. Entries with prose bodies (whole books) are indexed
+    /// away from the UI thread: until that index arrives, search answers
+    /// from the one before it.
+    fn current_search_index(&self, revision: u64, shown: Vec<SearchEntry>) -> Arc<IndexedEntries> {
+        let mut cached = self.search.borrow_mut();
+        if let Some(cache) = cached.as_mut()
+            && let Some((at, entries_shown, arriving)) = cache.building.take()
+        {
+            match arriving.try_recv() {
+                Ok(indexed) => {
+                    cache.revision = at;
+                    cache.shown = entries_shown;
+                    cache.indexed = Arc::new(indexed);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    cache.building = Some((at, entries_shown, arriving));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        if let Some(cache) = cached.as_ref() {
+            let current = cache.revision == revision && cache.shown == shown;
+            let arriving = cache
+                .building
+                .as_ref()
+                .is_some_and(|(at, building, _)| *at == revision && *building == shown);
+            if current || arriving {
+                return Arc::clone(&cache.indexed);
+            }
+        }
+        let generation = cached
+            .as_ref()
+            .map_or(0, |cache| cache.indexed.generation.wrapping_add(1));
+        let mut entries = R::search(&self.live.get());
+        entries.extend(shown.iter().cloned());
+        #[cfg(not(target_arch = "wasm32"))]
+        if entries.iter().any(|entry| entry.body.is_some()) {
+            let (send, arriving) = std::sync::mpsc::channel();
+            let building = entries.clone();
+            let spawned = std::thread::Builder::new()
+                .name("resource-search-index".into())
+                .spawn(move || {
+                    let _ = send.send(IndexedEntries::built(building, generation));
+                });
+            if spawned.is_ok() {
+                let cache = cached.get_or_insert_with(|| SearchCache {
+                    revision,
+                    shown: Vec::new(),
+                    indexed: Arc::new(IndexedEntries::built(Vec::new(), generation)),
+                    building: None,
+                });
+                cache.building = Some((revision, shown, arriving));
+                return Arc::clone(&cache.indexed);
+            }
+        }
+        let indexed = Arc::new(IndexedEntries::built(entries, generation));
+        *cached = Some(SearchCache {
+            revision,
+            shown,
+            indexed: Arc::clone(&indexed),
+            building: None,
+        });
+        indexed
+    }
+}
+
 impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> {
     fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
         // The resource's entries change with its revision; what the surfaces
@@ -923,27 +1044,7 @@ impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> 
         let revision = self.live.revision();
         let mut shown = Vec::new();
         self.surfaces(&mut |surface| shown.extend(surface.search_entries()));
-        let indexed = {
-            let mut cached = self.search.borrow_mut();
-            match cached.as_ref() {
-                Some(cache) if cache.revision == revision && cache.shown == shown => {
-                    Arc::clone(&cache.indexed)
-                }
-                previous => {
-                    let generation =
-                        previous.map_or(0, |cache| cache.indexed.generation.wrapping_add(1));
-                    let mut entries = R::search(&self.live.get());
-                    entries.extend(shown.iter().cloned());
-                    let indexed = Arc::new(IndexedEntries::built(entries, generation));
-                    *cached = Some(SearchCache {
-                        revision,
-                        shown,
-                        indexed: Arc::clone(&indexed),
-                    });
-                    indexed
-                }
-            }
-        };
+        let indexed = self.current_search_index(revision, shown);
         let mut providers: Vec<Box<dyn SearchProvider>> = vec![Box::new(ResourceSearch {
             name: R::LABEL,
             indexed,
@@ -1304,5 +1405,74 @@ mod tests {
                 .len(),
             DEFAULT_SEARCH_RESULT_LIMIT
         );
+    }
+
+    /// A chapter of a book: one paragraph per segment, each opening the
+    /// book where it is.
+    struct Chapter(Vec<&'static str>);
+
+    impl tilo_resource::SearchText for Chapter {
+        fn segment_count(&self) -> usize {
+            self.0.len()
+        }
+
+        fn piece_count(&self, segment: usize) -> usize {
+            usize::from(segment < self.0.len())
+        }
+
+        fn piece(&self, segment: usize, piece: usize) -> Option<tilo_resource::SearchPiece<'_>> {
+            let text = self.0.get(segment)?;
+            (piece == 0).then_some(tilo_resource::SearchPiece {
+                text,
+                space_before: segment > 0,
+            })
+        }
+
+        fn locates(&self, _segment: usize) -> bool {
+            true
+        }
+
+        fn location(&self, segment: usize) -> Option<SearchEntry> {
+            Some(
+                SearchEntry::new(format!("Paragraph {}", segment.saturating_add(1)), "").invoking(
+                    tilo_actions::ActionAddress::new(format!("book.location:{segment}"), "open"),
+                ),
+            )
+        }
+    }
+
+    #[test]
+    fn a_match_in_a_body_is_the_place_it_is_in() {
+        let body = tilo_resource::SearchBody::new(Arc::new(Chapter(vec![
+            "It was a dark and stormy night.",
+            "The lighthouse keeper counted the waves.",
+        ])));
+        let search = ResourceSearch::over(
+            "Library",
+            vec![
+                SearchEntry::new("Storm Tales", "")
+                    .invoking(tilo_actions::ActionAddress::new("book:1", "open"))
+                    .grouped("Books")
+                    .with_body(body.clone()),
+            ],
+        );
+        let hits = search.search("lighthouse keeper");
+        let place = hits
+            .iter()
+            .find(|hit| hit.title == "Paragraph 2")
+            .expect("the paragraph the words are in is a hit");
+        assert_eq!(
+            place.action_address(),
+            Some(tilo_actions::ActionAddress::new("book.location:1", "open"))
+        );
+        assert_eq!(place.kind, "Books", "a location is listed with its book");
+        assert!(
+            search
+                .search("storm tales")
+                .iter()
+                .any(|hit| hit.title == "Storm Tales"),
+            "the book itself is found by its title"
+        );
+        assert_eq!(body, body.clone(), "a body is the text it shares");
     }
 }

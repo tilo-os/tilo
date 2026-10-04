@@ -475,7 +475,7 @@ mod tests {
         seed: seeded_library(),
         registry: registry(),
         resources: |doc| published(doc),
-        palette: ["Remove bookmark", "Set homepage", "Show history", "Open bookmark"],
+        palette: ["Remove bookmark", "Set homepage", "Show history", "Open page"],
         replay: [
             remove_bookmark => |doc| encode(&removal(doc, RUST)),
             set_homepage => |_| encode(&BrowserAction::SetHomepage {

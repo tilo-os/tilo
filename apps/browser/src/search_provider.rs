@@ -8,10 +8,7 @@
 //! against the current index, which refuses an address that went stale after
 //! the result was rendered.
 
-use tilo_actions::{
-    ActionAddress, ActionContract, ActionSpec, ExecutionMode, OperationKind, Resource, ResultSpec,
-    RetryPolicy,
-};
+use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
@@ -27,6 +24,8 @@ struct Row {
     /// opening the same row from Library.
     resource_kind: &'static str,
     search_kind: &'static str,
+    /// The download a hit shows; `None` for a page it opens.
+    download: Option<String>,
     icon: Icon,
     score: i32,
 }
@@ -102,6 +101,7 @@ impl BrowserSearchIndex {
                 url: entry.url.clone(),
                 resource_kind: "browser.history-entry",
                 search_kind: "History",
+                download: None,
                 icon: Icon::History,
                 score: i32::try_from(entry.visit_count.min(20)).unwrap_or(20),
             };
@@ -119,6 +119,7 @@ impl BrowserSearchIndex {
                 url: format!("{} {destination}", entry.source_url),
                 resource_kind: "browser.download",
                 search_kind: "Downloads",
+                download: Some(entry.id.clone()),
                 icon: Icon::Download,
                 score: if entry.status == crate::downloads::DownloadStatus::Completed {
                     35
@@ -149,8 +150,8 @@ impl BrowserSearchIndex {
             &row.title,
             ActionAddress::new(
                 &row.resource_id,
-                if row.resource_kind == "browser.download" {
-                    "show"
+                if row.download.is_some() {
+                    "show-download"
                 } else {
                     "open"
                 },
@@ -181,48 +182,18 @@ pub struct BrowserSearchProvider {
 }
 
 impl BrowserSearchProvider {
+    /// The row a hit opens: the same row, with the same effect, the window
+    /// publishes for it.
     fn row_resource(row: &Row) -> Resource {
-        let mut resource = Resource::new(&row.resource_id, row.resource_kind, &row.title);
-        let (action, label, payload, contract) = if row.resource_kind == "browser.download" {
-            (
-                "show",
-                "Show download",
-                serde_json::json!({ "operation": "show-library", "section": "downloads" }),
-                ActionContract::view(),
-            )
-        } else {
-            (
-                "open",
-                "Open page",
-                serde_json::json!({ "operation": "navigate", "url": row.url }),
-                navigation_contract(),
-            )
+        use ui::tilo_resource::Effect as _;
+        let action = match &row.download {
+            Some(id) => crate::effects::BrowserEffect::ShowDownload { id: id.clone() }.bound(),
+            None => crate::effects::BrowserEffect::Open {
+                url: row.url.clone(),
+            }
+            .bound(),
         };
-        if let Ok(spec) = ActionSpec::operation(
-            action,
-            label,
-            OperationKind::Effect,
-            "browser.operation",
-            &payload,
-        ) {
-            resource.actions.push(spec.with_contract(contract));
-        }
-        resource
-    }
-}
-
-/// This mirrors `BrowserWidget`'s navigation contract.  Search resolution can
-/// happen without materialising the whole widget tree, so it owns a value
-/// copy rather than a second, weaker action shape.
-fn navigation_contract() -> ActionContract {
-    ActionContract {
-        retry: RetryPolicy::Idempotent,
-        execution: ExecutionMode::Background { cancellable: false },
-        result: ResultSpec::Json {
-            schema: serde_json::json!({ "type": "string" }),
-        },
-        tags: vec!["network".into(), "navigation".into()],
-        ..ActionContract::view()
+        Resource::new(&row.resource_id, row.resource_kind, &row.title).with_action(action)
     }
 }
 
@@ -258,8 +229,8 @@ impl CatalogSearchProvider for BrowserSearchProvider {
             .rows
             .get(&address.resource)
             .cloned()?;
-        let expected = if row.resource_kind == "browser.download" {
-            "show"
+        let expected = if row.download.is_some() {
+            "show-download"
         } else {
             "open"
         };
@@ -342,10 +313,10 @@ mod tests {
             let hit = provider.search_limited("Tilo-SDK", 1).pop().unwrap();
             let address = hit.action_address().unwrap();
             assert_eq!(address.resource, "browser.download.stable-download");
-            assert_eq!(address.action, "show");
+            assert_eq!(address.action, "show-download");
             let resource = provider.resolve_action_resource(&address).unwrap();
             assert_eq!(resource.kind, "browser.download");
-            assert_eq!(resource.actions[0].id, "show");
+            assert_eq!(resource.actions[0].id, "show-download");
             assert!(!provider.search_limited("example.test/sdk", 1).is_empty());
             assert!(!provider.search_limited("home/alex/Downloads", 1).is_empty());
         }

@@ -75,6 +75,10 @@ impl Resource for PdfViewer {
         crate::actions::declarations()
     }
 
+    fn least_permission() -> PermissionRequirement {
+        PermissionRequirement::Comment
+    }
+
     /// Replying and commenting need only the right to comment.
     fn permission(action: &PdfViewerAction) -> PermissionRequirement {
         match action.required_verb() {
@@ -239,6 +243,7 @@ impl ResourceSurface<PdfViewer> for PdfApp {
     fn attach(&mut self, cx: SurfaceCx<PdfViewer>) {
         self.attach_framework(cx.dispatcher());
         self.attach_people(cx.people());
+        self.attach_open_here(cx.opener());
         // A capture shows the scenario's signature, never the person's.
         if cx.mode().is_live()
             && let Some(signature) = cx.person::<crate::signature::SignatureProfile>()

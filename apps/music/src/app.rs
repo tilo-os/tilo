@@ -289,10 +289,8 @@ pub struct MusicApp {
     library_heads: Option<Vec<ChangeHash>>,
     /// Shared, preindexed Ctrl+K catalog. Cloning the provider is O(1), so
     /// host/provider retrieval never walks the whole music corpus.
-    library_search_provider: crate::search_type::LibrarySearchProvider,
     /// Monotonic diagnostic used by tests to prove provider retrieval does not
     /// trigger a catalog rebuild.
-    library_search_builds: u64,
     /// Terminal download/cache choices belong to this device.  They are
     /// overlaid onto the shared library projection after every reload, never
     /// serialized into Automerge or offered as document actions.
@@ -332,6 +330,9 @@ pub struct MusicApp {
     /// re-injected into the library snapshot each frame so they stay visible
     /// across a `sync` that reloads the catalog from the document).
     live_hits: Vec<CatalogueTrack>,
+    /// The library as the document holds it, last presented: what the live
+    /// hits add to it is searchable beside the library's own entries.
+    stored_library: crate::model::Library,
     /// A live search query awaiting results (drives animation frames + a
     /// "searching…" affordance). `None` when idle.
     live_search_pending: Option<String>,
@@ -728,10 +729,6 @@ impl MusicApp {
         Self {
             lib: Library::default(),
             library_heads: None,
-            library_search_provider: crate::search_type::LibrarySearchProvider::new(
-                &Library::default(),
-            ),
-            library_search_builds: 0,
             device_cache,
             media_cache,
             media_cache_root,
@@ -749,6 +746,7 @@ impl MusicApp {
             backend_name: "offline (bundled library)".to_string(),
             backend_live: false,
             live_hits: Vec::new(),
+            stored_library: Library::default(),
             live_search_pending: None,
             live_results: None,
             live_bundle: None,
@@ -924,28 +922,9 @@ impl MusicApp {
             return;
         }
         let next_library = doc::load_library(state);
-        let searchable_catalog_changed = self.lib.tracks != next_library.tracks
-            || self.lib.albums != next_library.albums
-            || self.lib.artists != next_library.artists
-            || self.lib.playlists != next_library.playlists;
         self.lib = next_library;
         self.library_heads = Some(heads);
-        // Playback/cache/liked-state document updates need their render
-        // projection refreshed, but they do not change a Ctrl+K row's title,
-        // metadata, membership, or canonical target. Reindex only when those
-        // searchable library entities actually changed.
-        if searchable_catalog_changed {
-            self.refresh_library_search_provider();
-        }
         self.sync_playlist_covers();
-    }
-
-    /// Rebuild the owned catalog only after the library itself changed. The
-    /// provider clones an Arc-backed [`ui::search::SearchCatalog`], so every
-    /// later `search_providers()` call is O(1).
-    fn refresh_library_search_provider(&mut self) {
-        self.library_search_provider = crate::search_type::LibrarySearchProvider::new(&self.lib);
-        self.library_search_builds = self.library_search_builds.wrapping_add(1);
     }
 
     /// Retire the old simulated-download seam. The render loop still invokes
@@ -1101,6 +1080,7 @@ impl MusicApp {
     /// Show the shared library, keeping this device's cache.
     /// An empty projection does not wipe a library that has not been published yet.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::Library) {
+        self.stored_library.clone_from(state);
         if state.tracks.is_empty()
             && state.albums.is_empty()
             && state.artists.is_empty()
@@ -1112,14 +1092,7 @@ impl MusicApp {
         {
             return;
         }
-        let searchable = self.lib.tracks != state.tracks
-            || self.lib.albums != state.albums
-            || self.lib.artists != state.artists
-            || self.lib.playlists != state.playlists;
         self.lib = state.clone();
-        if searchable {
-            self.refresh_library_search_provider();
-        }
         self.sync_playlist_covers();
     }
 
@@ -3449,30 +3422,41 @@ impl MusicApp {
     /// snapshot. Idempotent; runs each frame so live tracks survive a `sync`
     /// that reloads the catalog from the document.
     fn inject_live_hits(&mut self) {
-        let mut changed = false;
         for hit in &self.live_hits {
-            let had_artist = self.lib.artists.contains_key(&hit.artist.id);
             self.lib
                 .artists
                 .entry(hit.artist.id.clone())
                 .or_insert_with(|| hit.artist.clone());
-            changed |= !had_artist;
-            let had_album = self.lib.albums.contains_key(&hit.album.id);
             self.lib
                 .albums
                 .entry(hit.album.id.clone())
                 .or_insert_with(|| hit.album.clone());
-            changed |= !had_album;
-            let had_track = self.lib.tracks.contains_key(&hit.track.id);
             self.lib
                 .tracks
                 .entry(hit.track.id.clone())
                 .or_insert_with(|| hit.track.clone());
-            changed |= !had_track;
         }
-        if changed {
-            self.refresh_library_search_provider();
+    }
+
+    /// The songs the live search found that the library does not hold yet,
+    /// as search entries beside the library's own: shown here, so findable
+    /// here, without listing a song the library already has twice.
+    pub(crate) fn live_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        let mut found = crate::model::Library::default();
+        for hit in &self.live_hits {
+            if !self.stored_library.tracks.contains_key(&hit.track.id) {
+                found.tracks.insert(hit.track.id.clone(), hit.track.clone());
+            }
+            if !self.stored_library.albums.contains_key(&hit.album.id) {
+                found.albums.insert(hit.album.id.clone(), hit.album.clone());
+            }
+            if !self.stored_library.artists.contains_key(&hit.artist.id) {
+                found
+                    .artists
+                    .insert(hit.artist.id.clone(), hit.artist.clone());
+            }
         }
+        crate::search_type::library_entries(&found)
     }
 
     /// Remember the best cover URL for an entity id (album / artist / track /

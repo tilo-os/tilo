@@ -750,8 +750,9 @@ pub struct PdfApp {
     /// The same request on a host without paths (a browser page), which
     /// answers with the file's bytes.
     portal_contents_rx: Option<ContentsChannel>,
-    /// A document handed to the desktop to open in a window of its own.
-    open_elsewhere: Option<ui::portal::LaunchChannel>,
+    /// Opens another document in this window, on that document's own
+    /// markup record, in place of the one shown. Absent outside a host.
+    open_here: Option<ui::framework::OpenHere>,
 
     /// When the window is too narrow to reserve space for the side panels,
     /// the rail + sidebar become closed-by-default overlays drawn over the
@@ -1202,7 +1203,7 @@ impl PdfApp {
             empty_open_button: std::cell::Cell::new(Rect::ZERO),
             portal_rx: None,
             portal_contents_rx: None,
-            open_elsewhere: None,
+            open_here: None,
             overlay_mode: false,
             prev_overlay: None,
             toolbar_rect: Rect::ZERO,
@@ -1291,6 +1292,11 @@ impl PdfApp {
             me.clone_into(&mut self.author);
         }
         self.dispatcher = Some(dispatcher);
+    }
+
+    /// Open other documents through `open_here`.
+    pub(crate) fn attach_open_here(&mut self, open_here: Option<ui::framework::OpenHere>) {
+        self.open_here = open_here;
     }
 
     /// Show the participants' names from `people`.
@@ -4227,6 +4233,9 @@ impl PdfApp {
                     return;
                 };
                 let name = file.name.clone();
+                // A file chosen by its contents has no file identity to name
+                // a record of its own, so it opens only in a window that
+                // marks up nothing yet.
                 if self.holds_document() {
                     let refusal = format!(
                         "{name} keeps its markup in a window of its own; open it from Files"
@@ -4312,51 +4321,36 @@ impl PdfApp {
     }
 
     /// Whether this window's record marks up a document already: it shows
-    /// one, is opening one, or has one pinned. A record's markup belongs to
-    /// one document, so another document opens in a window of its own.
+    /// one, is opening one, or has one pinned.
     fn holds_document(&self) -> bool {
         self.has_document || self.pending_open.is_some() || self.record_source.is_some()
     }
 
-    /// Open the PDF the user chose at `path`: here, when this window holds
-    /// no document yet; else in a window of its own, through the desktop,
-    /// which launches the reader on the file's own markup record.
+    /// Open the PDF the user chose at `path` on its own markup record, in
+    /// this window in place of the document shown: the record a launch on
+    /// the file opens, so its markup is the same however it was opened.
+    /// Outside a host (the reader on its own, in a test) it opens here.
     fn open_chosen(&mut self, path: &std::path::Path, state: &AutoCommit) {
-        if !self.holds_document() {
+        let Some(open_here) = self.open_here.clone() else {
             self.load_path(path, state);
             return;
-        }
-        if self.source_path.as_deref() != Some(path) {
-            self.open_elsewhere = Some(ui::portal::LaunchRequest::open(path).send());
-            self.status_note = Some(format!(
-                "Opening {} in a new window",
-                path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |name| name.to_string_lossy().into_owned()
-                )
-            ));
-            self.dirty = true;
-        }
-        self.finish_portal_action(true, None);
-    }
-
-    /// Report a document the desktop could not open in its own window.
-    fn drain_open_elsewhere(&mut self) {
-        let Some(rx) = self.open_elsewhere.as_ref() else {
+        };
+        if self.source_path.as_deref() == Some(path) {
+            self.finish_portal_action(true, None);
             return;
-        };
-        let outcome = match rx.try_recv() {
-            Ok(outcome) => outcome,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                ui::portal::LaunchOutcome::Failed("the desktop did not answer".into())
-            }
-        };
-        self.open_elsewhere = None;
-        if let ui::portal::LaunchOutcome::Failed(reason) = outcome {
-            self.status_note = Some(format!("Could not open the PDF in a new window: {reason}"));
-            self.dirty = true;
         }
+        match open_here.open(&[path.display().to_string()]) {
+            Ok(()) => {
+                self.status_note = Some("Opening PDF…".to_string());
+                self.finish_portal_action(true, None);
+            }
+            Err(error) => {
+                let error = format!("Could not open {}: {error}", path.display());
+                self.status_note = Some(error.clone());
+                self.finish_portal_action(false, Some(error));
+            }
+        }
+        self.dirty = true;
     }
 
     /// Reopen the document the record's markup is made against from the
@@ -5044,7 +5038,6 @@ impl Widget for PdfApp {
         // frame (off-thread; never blocks the UI).
         self.drain_portal(state);
         self.drain_portal_contents();
-        self.drain_open_elsewhere();
         // And any completed save-location choice, flattening markup to it.
         self.drain_portal_save();
         // And any completed import (a PDF/image chosen to add as pages).
@@ -6124,19 +6117,6 @@ mod tests {
         app.sync(&mut st.doc, &st.root);
     }
 
-    /// Place a highlight on page 1 through the drag path a user takes.
-    fn annotate(app: &mut PdfApp, st: &mut ui::State) {
-        app.tool = Tool::Highlight;
-        app.drag = Some(DragState {
-            tool: Tool::Highlight,
-            page: 1,
-            start: (70.0, 150.0),
-            cur: (360.0, 165.0),
-            points: vec![],
-        });
-        app.commit_drag(&mut st.doc);
-    }
-
     /// The reader launched on `path` on a fresh profile, as
     /// `pdf-viewer PATH` opens it.
     fn launched(path: &std::path::Path) -> ui::framework::testing::TestApp<crate::PdfViewerShell> {
@@ -6206,32 +6186,47 @@ mod tests {
             );
         }
 
-        eprintln!("phase a_window_holding_a_document_opens_another_in_its_own_window");
+        eprintln!("phase the_apps_open_shows_the_chosen_document_on_its_own_record");
         {
-            let (dir, a, b) = two_documents();
-            let mut app = PdfApp::open(&a);
-            let mut st = ui::State::new();
-            sync_fixture(&mut app, &mut st);
-            annotate(&mut app, &mut st);
-            sync_fixture(&mut app, &mut st);
-            assert!(!app.annotations.is_empty());
+            const OPEN: ui::tilo_resource::ActionRef<crate::PdfViewer, Option<String>> =
+                ui::tilo_resource::ActionRef::new("open", &["path"]);
+            let (_dir, a, b) = two_documents();
+            let mut app = launched(&a);
+            app.invoke(highlight_on_first_page())
+                .expect("the owner annotates");
+            let a_record = app.record().clone();
 
-            for other in [b, dir.path().join("not-a-pdf.pdf")] {
-                app.open_chosen(&other, &st.doc);
-                assert!(
-                    app.open_elsewhere.take().is_some(),
-                    "{other:?} goes to the desktop"
-                );
-                assert_eq!(app.doc_name, "a.pdf", "the open document stays");
-                assert!(!app.annotations.is_empty(), "and keeps its markup");
-                assert!(app.load_error.is_none());
-            }
-            // The document already shown is not opened twice.
-            app.open_chosen(&a, &st.doc);
-            assert!(app.open_elsewhere.is_none());
+            app.invoke_confirmed(OPEN.with(Some(b.display().to_string())))
+                .expect("the app opens another document");
+            app.harness().relayout();
+            assert_ne!(
+                app.record(),
+                &a_record,
+                "b.pdf shows on a record of its own"
+            );
+            assert!(app.state().annotations.is_empty(), "without a.pdf's markup");
+            assert_eq!(
+                app.state().source.map(|source| source.name),
+                Some("b.pdf".to_string())
+            );
+            let b_record = app.record().clone();
+
+            app.invoke_confirmed(OPEN.with(Some(a.display().to_string())))
+                .expect("and back");
+            app.harness().relayout();
+            assert_eq!(app.record(), &a_record);
+            assert_eq!(app.state().annotations.len(), 1, "a.pdf kept its markup");
+
+            // A bare window opening a file marks it up on the file's own
+            // record, the one a launch on the file opens.
+            let mut bare = app.relaunch(&[]).expect("a bare window");
+            bare.invoke_confirmed(OPEN.with(Some(b.display().to_string())))
+                .expect("the bare window opens b.pdf");
+            bare.harness().relayout();
+            assert_eq!(bare.record(), &b_record);
         }
 
-        eprintln!("phase an_empty_window_opens_the_chosen_document_itself");
+        eprintln!("phase the_reader_on_its_own_opens_the_chosen_document_itself");
         {
             let (_dir, a, _b) = two_documents();
             let mut app = PdfApp::empty();
@@ -6239,7 +6234,6 @@ mod tests {
             app.open_chosen(&a, &st.doc);
             sync_fixture(&mut app, &mut st);
             assert!(app.has_document);
-            assert!(app.open_elsewhere.is_none());
             assert_eq!(
                 PdfDoc::source(&st.doc).map(|(hash, ..)| hash),
                 app.source_blob.as_ref().map(|(hash, _)| hash.clone()),

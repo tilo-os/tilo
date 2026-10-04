@@ -196,8 +196,9 @@ pub enum CodeEditorAction {
         id: String,
         text: String,
     },
-    /// Create the embedded terminal's object if this project does not have one.
-    EnsureTerminalPanel,
+    /// A change to the embedded terminal's session, which the project keeps
+    /// under its terminal panel.
+    Terminal(terminal::resource::TerminalAction),
     /// Record a file or folder of the project's folder on disk, the first
     /// time the editor reads it. A file's text is read when it is opened
     /// ([`Self::EnsureBuffer`]). An entry that is already recorded, or whose
@@ -283,15 +284,14 @@ impl Action for CodeEditorAction {
                 kind,
                 expected_revision,
             } => apply_delete(doc, id, *kind, *expected_revision),
-            Self::EnsureTerminalPanel => {
-                if matches!(
-                    doc.get(automerge::ROOT, "terminal_panel")?,
-                    Some((automerge::Value::Object(automerge::ObjType::Map), _))
-                ) {
-                    return Ok(());
-                }
-                doc.put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)?;
-                Ok(())
+            Self::Terminal(action) => {
+                let panel = match doc.get(automerge::ROOT, "terminal_panel")? {
+                    Some((automerge::Value::Object(automerge::ObjType::Map), panel)) => panel,
+                    _ => {
+                        doc.put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)?
+                    }
+                };
+                action.apply_under(doc, &panel)
             }
             Self::ReplaceText { id, text } => apply_replace_text(doc, id, text),
             Self::ImportEntry {
@@ -311,7 +311,7 @@ impl Action for CodeEditorAction {
 
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         match self {
-            Self::EnsureTerminalPanel => tilo_actions::ChangeKind::Housekeeping,
+            Self::Terminal(action) => action.change_kind(),
             // What is on disk is content from outside: it syncs, but nobody
             // takes it back with an undo.
             Self::ImportEntry { .. } | Self::EnsureBuffer { .. } => {
@@ -1211,17 +1211,31 @@ mod tests {
     }
 
     #[test]
-    fn ensure_terminal_panel_creates_one_map() {
+    fn the_terminal_session_lives_in_one_panel_of_the_project() {
+        use terminal::resource::{Terminal, TerminalAction};
         let mut doc = AutoCommit::new();
         assert!(EditorDoc::terminal_panel(&doc).is_none());
-        CodeEditorAction::EnsureTerminalPanel
-            .apply(&mut doc)
-            .unwrap();
-        let first = EditorDoc::terminal_panel(&doc).expect("terminal map");
-        CodeEditorAction::EnsureTerminalPanel
-            .apply(&mut doc)
-            .unwrap();
-        assert_eq!(EditorDoc::terminal_panel(&doc), Some(first));
+        CodeEditorAction::Terminal(TerminalAction::SetTitle {
+            title: "build".into(),
+        })
+        .apply(&mut doc)
+        .unwrap();
+        let panel = EditorDoc::terminal_panel(&doc).expect("terminal map");
+        CodeEditorAction::Terminal(TerminalAction::ClaimPane {
+            pane_id: "0b5c6a3e-2d4f-4c4b-9a7e-6f1d2c3b4a59".into(),
+        })
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(EditorDoc::terminal_panel(&doc), Some(panel.clone()));
+        let session = Terminal::read_under(&doc, &panel);
+        assert_eq!(session.title, "build");
+        assert_eq!(session.pane_id, "0b5c6a3e-2d4f-4c4b-9a7e-6f1d2c3b4a59");
+        assert!(
+            doc.get(automerge::ROOT, "terminal_title")
+                .unwrap()
+                .is_none(),
+            "nothing of the session is written beside the project's files"
+        );
     }
 
     /// Dispatch an action through the executor, as the on-screen affordance path

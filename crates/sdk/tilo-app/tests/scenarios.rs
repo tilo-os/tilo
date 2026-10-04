@@ -92,6 +92,9 @@ impl ResourceApp for PlaylistApp {
                     })
                     .with_id("dialog"),
                 ))
+                .push(Box::new(Text::from_state(&cx.save_status(), |status| {
+                    format!("Record {status:?}")
+                })))
                 .push(cx.surface(Staged::default())),
         )
     }
@@ -312,6 +315,8 @@ fn scenarios_stage_the_resource_then_the_views_deterministically() {
         );
         // View state is not resource state: only the actions were written.
         assert_eq!(app.state().songs.len(), 4);
+        // The staged edits are saved by the time the frame is taken.
+        assert!(frame.contains("Record Saved"), "{frame}");
     }
     // phase: a_plain_capture_stages_with_no_scenario
     {

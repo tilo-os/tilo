@@ -91,8 +91,9 @@ pub trait ResourceApp: 'static {
     /// Whether the app opens private windows (`--private`): a window on a
     /// profile of its own that is thrown away with the process — its record,
     /// settings and files never reach the person's — and that attaches to
-    /// no runtime, so nothing it shows syncs or is shared. Its view tells
-    /// with [`ViewCx::is_private`].
+    /// no runtime, so nothing it shows syncs or is shared. It holds none of
+    /// the person's own records ([`ViewCx::person`] answers `None`), and its
+    /// view tells with [`ViewCx::is_private`].
     const PRIVATE_WINDOWS: bool = false;
     /// The history of a file of the mounted filesystem the app shows (the
     /// file selected in a file manager), a History scope beside the
@@ -463,6 +464,15 @@ fn create<A: ResourceApp>(
     let options = context.take_launch_options();
     let capture = context.capture().is_some();
     let file_history = A::FILE_HISTORY.map(|_| FileHistorySource::default());
+    // A window someone uses can open another record in its place; a
+    // capture shows the one it staged.
+    let opener = (!capture).then(|| {
+        let reopener = context.reopener();
+        super::launch::OpenHere::new(move |arguments| {
+            open_in_place::<A>(&reopener, arguments);
+            Ok(())
+        })
+    });
     let run = match context.capture().cloned() {
         Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
         None => Run::live(context.content().cloned()).in_private(context.is_private()),
@@ -471,13 +481,16 @@ fn create<A: ResourceApp>(
         file.report_opened(<A::Resource as Resource>::KIND);
     }
     let handoff = context.take_handoff();
+    let lent = super::scenario::Lent::new(context.take_lent());
     let run = run
         .launched(Launched {
             arguments,
             options,
             file,
             handoff,
+            lent,
         })
+        .opening_with(opener)
         .showing_file_history(
             file_history
                 .clone()
@@ -498,7 +511,11 @@ fn create<A: ResourceApp>(
         },
         context.storage(),
         super::settings::Hosted {
-            person: context.person_records().cloned(),
+            // A private window keeps nothing of the person's: their own
+            // records are not even opened.
+            person: (!context.is_private())
+                .then(|| context.person_records().cloned())
+                .flatten(),
             device: Some(context.device_id().to_owned()),
         },
     );
@@ -694,20 +711,60 @@ pub(crate) fn hand_launch(
     arguments: &[String],
     prepared: &mut PreparedComponentInputs,
 ) -> Result<(), LaunchError> {
+    hand_launch_to(definition, arguments, &mut prepared.context)
+}
+
+/// Hand `context` what a launch naming `arguments` names: the arguments,
+/// and on a device with paths the file the first one names when the app
+/// opens its type.
+///
+/// # Errors
+/// A file of a type the app opens that cannot be read.
+fn hand_launch_to(
+    definition: &ApplicationDefinition,
+    arguments: &[String],
+    context: &mut HostContext,
+) -> Result<(), LaunchError> {
     // A URL (`https://…`, `file://…`) is an argument for the app to resolve,
     // not a path on this device.
+    #[cfg(tilo_native_runner)]
     if let Some(path) = arguments
         .first()
         .filter(|argument| !argument.contains("://"))
         .map(std::path::Path::new)
         && let Some(file) = launched_file(definition, path)?
     {
-        prepared.context.provide_open_file(file);
+        context.provide_open_file(file);
     }
-    prepared
-        .context
-        .provide_launch_arguments(arguments.to_vec());
+    #[cfg(not(tilo_native_runner))]
+    let _ = definition;
+    context.provide_launch_arguments(arguments.to_vec());
     Ok(())
+}
+
+/// Open, in the window `reopener` belongs to, what a launch of `A` naming
+/// `arguments` opens ([`ResourceApp::launch_record`], [`ResourceApp::launch`]):
+/// the component built for that record takes the window, its own record and
+/// history with it. The store's refusal of the record, an unreadable file
+/// or the app's refusal to build leaves the window as it is.
+fn open_in_place<A: ResourceApp>(
+    reopener: &ui_core::application::Reopener,
+    arguments: Vec<String>,
+) {
+    // Built when the host takes it: the record store is busy while the
+    // asking view handles the event or operation that asked.
+    reopener.replace_with(move |reopener| {
+        let definition = definition::<A>();
+        let record =
+            A::launch_record(&LaunchInput::new(&arguments, None)).unwrap_or_else(RecordId::minted);
+        let (mut context, target) = reopener.prepare(definition, record)?;
+        hand_launch_to(definition, &arguments, &mut context)?;
+        let component = definition.instantiate(context, target, RestoreInput::None)?;
+        Ok(ui_core::application::ComponentReplacement {
+            component,
+            arguments,
+        })
+    });
 }
 
 /// The file at `path` to hand the component, when `definition` opens its

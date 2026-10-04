@@ -601,6 +601,11 @@ impl BrowserTabs {
         self.active()
     }
 
+    /// The page the person is looking at, to act on.
+    pub(crate) fn active_page_mut(&mut self) -> &mut BrowserWidget {
+        self.active_mut()
+    }
+
     /// Stage a screenshot scenario: the tab strip's, or the active page's.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         if scenario == Some("tabs") {
@@ -1409,18 +1414,6 @@ impl Widget for BrowserTabs {
         self.active_mut()
             .draw_overlay(scene, transform, tr, theme, presence);
         self.tab_menu.draw(scene, transform, tr, theme, presence);
-    }
-    fn poll_resource_operation(
-        &mut self,
-        invocation: ui::tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<ui::tilo_actions::InvocationUpdate> {
-        self.tabs.iter_mut().find_map(|tab| {
-            tab.widget
-                .poll_resource_operation(invocation, cancellation_requested, doc, path)
-        })
     }
     fn children(&self) -> Vec<&dyn Widget> {
         if let Some(recovery) = self.recovery.as_ref() {
@@ -3019,6 +3012,7 @@ mod tests {
             }
 
             let mut tabs = workspace();
+            tabs.attach_dispatcher(&ui::framework::testing::dispatcher("so.tilo.browser"));
             let mut tree = TaffyTree::new();
             let root = tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
             tabs.open(None, false).unwrap();
@@ -3151,21 +3145,20 @@ mod tests {
                 serde_json::from_value(serde_json::json!({"url": "https://one.test"})).unwrap();
             let encoded = navigate.build_json(&args).unwrap();
             let invocation = ui::tilo_actions::InvocationId::new();
-            tabs.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    navigate.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                ),
-                &mut doc,
-                &root,
-            )
-            .unwrap();
+            tabs.active_page_mut()
+                .admit(invocation, {
+                    use ui::tilo_resource::Effect as _;
+                    crate::effects::BrowserEffect::from_payload(&encoded.payload)
+                        .unwrap()
+                        .operation()
+                })
+                .unwrap();
             tabs.open(None, false).unwrap();
             tabs.sync(&mut doc, &root);
             assert!(matches!(
-                tabs.poll_resource_operation(invocation, false, &doc, &root),
+                tabs.tabs
+                    .iter_mut()
+                    .find_map(|tab| tab.widget.poll_invocation(invocation)),
                 Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
             ));
         }
@@ -3234,23 +3227,18 @@ mod tests {
                 .iter()
                 .find(|r| r.id.0 == "browser.page")
                 .unwrap();
-            let pip = page
-                .actions
-                .iter()
-                .find(|action| action.id == "picture-in-picture")
-                .unwrap();
+            assert!(
+                page.actions
+                    .iter()
+                    .any(|action| action.id == "picture-in-picture")
+            );
             let invocation = ui::tilo_actions::InvocationId::new();
-            tabs.start_operation(
-                &ui::widget::ResourceOperation::local(
+            tabs.active_page_mut()
+                .admit(
                     invocation,
-                    pip.kind,
-                    pip.operation_type.as_deref().unwrap(),
-                    br#"{"operation":"toggle-picture-in-picture"}"#,
-                ),
-                &mut doc,
-                &root,
-            )
-            .unwrap();
+                    crate::browser_widget::BrowserOperation::TogglePictureInPicture,
+                )
+                .unwrap();
             tabs.open(None, false).unwrap();
             tabs.sync(&mut doc, &root);
             let request = tabs
@@ -3258,7 +3246,9 @@ mod tests {
                 .expect("background tab request is delivered");
             assert_eq!(request.id, "browser.media-pip.1");
             assert!(matches!(
-                tabs.poll_resource_operation(invocation, false, &doc, &root),
+                tabs.tabs
+                    .iter_mut()
+                    .find_map(|tab| tab.widget.poll_invocation(invocation)),
                 Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
             ));
         }

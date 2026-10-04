@@ -53,6 +53,7 @@ pub mod compositor;
 mod credentials;
 mod daily_controls;
 pub mod downloads;
+pub mod effects;
 pub mod extensions;
 pub mod history;
 pub mod library;

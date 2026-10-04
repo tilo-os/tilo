@@ -107,10 +107,14 @@ pub struct HostContext {
     /// The file areas the host gave it ([`Self::provide_files`]); the
     /// person's own otherwise.
     files: Option<crate::storage::AppFiles>,
+    /// The component the app built to show another record in this one's
+    /// place, waiting for the host to swap it in ([`Reopener`]).
+    replacement: Rc<RefCell<Option<PendingReplacement>>>,
     launch_arguments: Vec<String>,
     handoff: Option<PlaybackHandoff>,
     launch_options: Vec<LaunchOption>,
     private: bool,
+    lent: Vec<Box<dyn std::any::Any>>,
 }
 
 /// Where playback stood on the device or app that handed the launch's media
@@ -186,7 +190,171 @@ pub struct PreparedComponentInputs {
     pub runner_inputs: ComponentRunnerInputs,
 }
 
+/// A component an app built to show another record in the place of the one
+/// it shows now, and the launch that names that record (the path a person
+/// chose to open). The host closes the current component and mounts this
+/// one in the same window ([`AppComponent::take_replacement`]).
+pub struct ComponentReplacement {
+    pub component: AppComponent,
+    pub arguments: Vec<String>,
+}
+
+/// A replacement asked for, built now or when the host takes it.
+enum PendingReplacement {
+    Built(ComponentReplacement),
+    /// Built when the host takes it, outside the frame that asked: the
+    /// record store the request opens is busy while the asking component
+    /// handles an event or an operation.
+    Deferred(Box<dyn FnOnce() -> Result<ComponentReplacement, LaunchError>>),
+}
+
+impl PendingReplacement {
+    fn take(self) -> Option<ComponentReplacement> {
+        match self {
+            Self::Built(replacement) => Some(replacement),
+            Self::Deferred(build) => match build() {
+                Ok(replacement) => Some(replacement),
+                Err(error) => {
+                    tracing::warn!(%error, "the record asked for could not be opened");
+                    None
+                }
+            },
+        }
+    }
+
+    fn discard(self) {
+        if let Self::Built(mut replacement) = self {
+            let _ = replacement.component.close();
+        }
+    }
+}
+
+/// What a component needs to open another record of its app in its own
+/// window: the same store, identity, authority and services as the record
+/// it shows, for another record. Taken from the [`HostContext`] before the
+/// factory consumes it ([`HostContext::reopener`]).
+#[derive(Clone)]
+pub struct Reopener {
+    records: RecordStore,
+    views: Rc<InstanceViewStore>,
+    device_id: String,
+    instance_id: InstanceId,
+    permissions: Rc<RefCell<PermissionContext>>,
+    author: UserId,
+    action_context: tilo_actions::ActionContext,
+    writes_as_author: bool,
+    services: crate::host::HostServices,
+    content: Option<tilo_content::ContentStore>,
+    settings: crate::storage::SettingsDocument,
+    person: Option<crate::record::person::PersonRecords>,
+    files: Option<crate::storage::AppFiles>,
+    private: bool,
+    replacement: Rc<RefCell<Option<PendingReplacement>>>,
+}
+
+impl Reopener {
+    /// A context for `record` of `definition`'s kind, opened when it exists
+    /// and reserved when it does not, with the target the factory builds it
+    /// for.
+    ///
+    /// # Errors
+    /// Rejects foreign kinds, contested writers, corrupt records and denied
+    /// authority.
+    pub fn prepare(
+        &self,
+        definition: &ApplicationDefinition,
+        record: RecordId,
+    ) -> Result<(HostContext, LaunchTarget), LaunchError> {
+        let checkout = RecordCheckout::new(record.clone(), definition.record_kind.clone());
+        let (target, new_record) = match self.records.try_open_record(&checkout) {
+            Ok(_) => (
+                LaunchTarget::Record {
+                    checkout,
+                    reveal: None,
+                },
+                None,
+            ),
+            Err(crate::record::RecordOpenError::MissingRecord) => (LaunchTarget::New, Some(record)),
+            Err(error) => return Err(LaunchError::Record(error)),
+        };
+        let mut context = HostContext::prepare_scoped(
+            definition,
+            HostContextInputs {
+                records: self.records.clone(),
+                views: Rc::clone(&self.views),
+                device_id: self.device_id.clone(),
+                instance_id: self.instance_id,
+                permissions: Rc::clone(&self.permissions),
+                author: self.author.clone(),
+                action_context: self.action_context.clone(),
+            },
+            &target,
+            new_record,
+        )?;
+        context.writes_as_author = self.writes_as_author;
+        context.services = self.services.clone();
+        context.content.clone_from(&self.content);
+        context.settings = self.settings.clone();
+        context.person.clone_from(&self.person);
+        context.files.clone_from(&self.files);
+        context.private = self.private;
+        Ok((context, target))
+    }
+
+    /// Ask the host to show `component` in this one's place. A request the
+    /// host has not taken yet is replaced, and its component closed.
+    pub fn replace(&self, component: AppComponent, arguments: Vec<String>) {
+        self.request(PendingReplacement::Built(ComponentReplacement {
+            component,
+            arguments,
+        }));
+    }
+
+    /// Ask the host to show the component `build` makes in this one's
+    /// place, built when the host takes the request: what a component asks
+    /// while it handles an event or an operation, when the store its own
+    /// record lives in is busy.
+    pub fn replace_with(
+        &self,
+        build: impl FnOnce(&Self) -> Result<ComponentReplacement, LaunchError> + 'static,
+    ) {
+        let reopener = self.clone();
+        self.request(PendingReplacement::Deferred(Box::new(move || {
+            build(&reopener)
+        })));
+    }
+
+    fn request(&self, pending: PendingReplacement) {
+        let previous = self.replacement.borrow_mut().replace(pending);
+        if let Some(previous) = previous {
+            previous.discard();
+        }
+    }
+}
+
 impl HostContext {
+    /// What the component needs to open another record of its app in its
+    /// window later ([`Reopener`]).
+    pub fn reopener(&self) -> Reopener {
+        Reopener {
+            records: self.records.clone(),
+            views: Rc::clone(&self.views),
+            device_id: self.device_id.clone(),
+            instance_id: self.instance_id,
+            permissions: Rc::clone(&self.permissions),
+            author: self.author.clone(),
+            action_context: self.action_context.clone(),
+            writes_as_author: self.writes_as_author,
+            services: self.services.clone(),
+            content: self.content.clone(),
+            settings: self.settings.clone(),
+            person: self.person.clone(),
+            files: self.files.clone(),
+            private: self.private,
+            replacement: Rc::clone(&self.replacement),
+        }
+    }
+
     fn retire_semantic_mount(&self) {
         if let Some(retirement) = &self.retirement {
             retirement.retire();
@@ -332,10 +500,12 @@ impl HostContext {
             settings: crate::storage::SettingsDocument::Session,
             person: None,
             files: None,
+            replacement: Rc::default(),
             launch_arguments: Vec::new(),
             handoff: None,
             launch_options: Vec::new(),
             private: false,
+            lent: Vec::new(),
         })
     }
     /// Commit this instance's edits to its record under an actor of its
@@ -394,6 +564,17 @@ impl HostContext {
     /// The playback handoff the host handed over, once.
     pub fn take_handoff(&mut self) -> Option<PlaybackHandoff> {
         self.handoff.take()
+    }
+    /// Lend the component a service of the host that mounts it in its own
+    /// process: a connection to the session's process supervisor for a
+    /// terminal the shell hosts. The component takes it by type; a host
+    /// that lends nothing leaves the app on its own services.
+    pub fn lend<T: std::any::Any>(&mut self, service: T) {
+        self.lent.push(Box::new(service));
+    }
+    /// The services the host lent, once.
+    pub fn take_lent(&mut self) -> Vec<Box<dyn std::any::Any>> {
+        std::mem::take(&mut self.lent)
     }
     /// Hand the component the options of its own that its launch named
     /// (`--purpose number`). The host has already checked that the
@@ -829,6 +1010,17 @@ pub struct AppComponent {
     providers: Rc<RefCell<ProviderPayloads>>,
 }
 impl AppComponent {
+    /// The component the app built to show another record in this one's
+    /// place, once: the host closes this component and mounts that one.
+    pub fn take_replacement(&mut self) -> Option<ComponentReplacement> {
+        let pending = self.context.replacement.borrow_mut().take()?;
+        pending.take()
+    }
+    /// What this component's app would open another record with.
+    #[cfg(test)]
+    pub(crate) fn reopener(&self) -> Reopener {
+        self.context.reopener()
+    }
     /// Set how the hosting window treats this component's tree.
     pub const fn set_behaviour(&mut self, behaviour: ComponentBehaviour) {
         self.behaviour = behaviour;
