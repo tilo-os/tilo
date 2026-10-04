@@ -514,6 +514,7 @@ host-session-action-blocked = Session action blocked
 host-action-started = Started “{ $title }”
 host-action-admitted = Action job { $job } was admitted
 host-action-cannot-run = Can't run “{ $title }”
+launchpad-action-unanswered = The app never answered
 host-search-placeholder = Search…
 host-search-in = Search in { $scope }…
 host-search-in-resource-fallback = resource
