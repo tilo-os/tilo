@@ -1549,6 +1549,7 @@ dependencies = [
  "i_overlay",
  "image",
  "png",
+ "rayon",
  "runtime-dylib",
  "serde",
  "serde_json",
