@@ -15698,6 +15698,7 @@ name = "tilo-image-codec"
 version = "0.1.0"
 dependencies = [
  "image",
+ "workspace-hack",
 ]
 
 [[package]]
