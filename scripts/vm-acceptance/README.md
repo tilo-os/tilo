@@ -51,9 +51,11 @@ a run needs no laptop memory:
 
 ```bash
 fgj workflow run vm-acceptance.yml -r main                       # every check on main
-fgj workflow run vm-acceptance.yml -r main -f ref=my-branch -f only=B06,A13 \
-  -f swap=default -f outputs=1920x1080@1,1280x800@1.25 -f gl=off
+fgj workflow run vm-acceptance.yml -r main -f ref=my-branch -f only=window -f gl=off
 ```
+
+`fgj -f` splits values on commas, so a list (`only=B06,A13`, `swap=shell,app:notes`,
+`outputs`) goes through the forge's "Run workflow" form or its dispatch API instead.
 
 It also runs nightly on main, and on pull requests that change this directory: with only
 the checks of the changed check modules (and of the modules importing from them), just
