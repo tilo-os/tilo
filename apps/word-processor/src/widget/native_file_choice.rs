@@ -69,7 +69,7 @@ pub(super) struct FileChoice {
     emitters: [ui::widget::ActionEmitter<()>; 2],
     focus: usize,
     pointer: Option<Point>,
-    layout: Option<ui::widget::modal_frame::ModalLayout>,
+    layout: Option<ui::widget::modal_dialog::ModalLayout>,
 }
 impl WordProcessorWidget {
     pub fn retain_file_history(&mut self, reader: ui::record::FileHistoryReader) {
@@ -259,7 +259,7 @@ impl FileChoice {
         }
     }
     pub(super) fn event(&mut self, event: &WindowEvent, scale: f64) {
-        use ui::widget::modal_frame::ModalHit;
+        use ui::widget::modal_dialog::ModalHit;
         use winit::event::{ElementState, MouseButton};
         use winit::keyboard::{Key, NamedKey};
         match event {
@@ -297,7 +297,7 @@ impl FileChoice {
         theme: &Theme,
         viewport: Rect,
     ) {
-        use ui::widget::modal_frame::{ModalAction, ModalFrame, ModalSpec};
+        use ui::widget::modal_dialog::{self, ModalAction, ModalSpec};
         let title = t("file-choice-title");
         let body = t("file-choice-body");
         let labels = [t("file-choice-keep"), t("file-choice-use")];
@@ -313,22 +313,22 @@ impl FileChoice {
                 .is_some_and(ui::widget::ActionEmitter::is_available);
         }
         let spec = ModalSpec::new(&title).closable(false).actions(&actions);
-        let preliminary = ModalFrame::layout(viewport, &spec, tr, theme);
+        let preliminary = modal_dialog::layout(viewport, &spec, tr, theme);
         let width = crate::num::f32_of_f64(preliminary.body.width().max(1.0));
-        let size = (theme.tokens.typography.scale.sm / theme.text_scale).max(12.0);
-        let (_, height) = tr.measure(&body, size, Some(width));
-        let spec = spec.body_height(f64::from(height) / f64::from(theme.text_scale) + 8.0);
-        let layout = ModalFrame::layout(viewport, &spec, tr, theme);
-        ModalFrame::paint_backdrop(scene, transform, tr, theme, &layout, &spec);
-        tr.draw_text(
+        let style = theme.text(ui::tokens::TextRole::Body);
+        let (_, height) = tr.measure_style(&body, Some(width), &style);
+        let spec = spec.body_height(f64::from(height));
+        let layout = modal_dialog::layout(viewport, &spec, tr, theme);
+        modal_dialog::paint_backdrop(scene, transform, tr, theme, &layout, &spec);
+        tr.draw_style(
             scene,
             &body,
-            size,
-            ModalFrame::ink(theme).0,
+            modal_dialog::ink(theme).0,
             transform * Affine::translate((layout.body.x0, layout.body.y0)),
             Some(width),
+            &style,
         );
-        ModalFrame::paint_actions(scene, transform, tr, theme, &layout, &spec);
+        modal_dialog::paint_actions(scene, transform, tr, theme, &layout, &spec);
         self.layout = Some(layout);
     }
     pub(super) fn accessibility(&self) -> ui::a11y::AccessNode {
