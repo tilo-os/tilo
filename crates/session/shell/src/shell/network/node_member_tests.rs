@@ -130,6 +130,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         "Ada's browser",
         DeviceCapabilities::member(),
     );
+    let browser_device = browser.device_public_key;
     let relay_state = dir.path().join("relay");
     let relay = runtime
         .block_on(tilo_relay::daemon::Relay::start(
@@ -380,6 +381,34 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         }
     });
     assert_eq!(seen, DocumentMutation::Snapshot(reply));
+
+    // The browser announces no identity to the session, yet its actions
+    // reach it as the room's governance admitted it: asking for the
+    // workspace's catalogue (the node's applications among it).
+    let ask = tilo_actions::remote::RemoteActionFrame::new(
+        tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+            correlation: 7,
+            query: tilo_actions::remote::CatalogueQuery::default(),
+        },
+    )
+    .encode()
+    .unwrap();
+    ada.send_remote_action(acme.workspace_id, session_cert.device_public_key, ask)
+        .unwrap();
+    let actions = net.inbound_remote_actions_handle();
+    let request = until("the browser's action to reach the session", || {
+        net.tick();
+        actions.lock().unwrap().pop()
+    });
+    assert!(matches!(
+        request.message,
+        tilo_actions::remote::RemoteActionMessage::CatalogueRequest { correlation: 7, .. }
+    ));
+    assert_eq!(
+        request.from.as_bytes(),
+        &browser_device,
+        "answered to the device the relay authenticated"
+    );
 
     // The relay carried both only as ciphertext.
     assert!(!holds(&relay_state, PLAN.as_bytes()));
