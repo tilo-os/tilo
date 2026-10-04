@@ -152,6 +152,25 @@ fn timezone_map_from_tab(zones: &[String], table: &str) -> Vec<TimeZonePoint> {
     points
 }
 
+/// How a zone id reads in the selector: "Berlin, Europe" for
+/// `Europe/Berlin`, the way the map's caption names it. An id without a
+/// region (`UTC`) reads as itself.
+fn zone_label(id: &str) -> String {
+    match id.split_once('/') {
+        Some((region, city)) => t_args(
+            "time-map-place",
+            &[
+                (
+                    "city",
+                    ArgValue::from(city.replace('_', " ").replace('/', ", ").as_str()),
+                ),
+                ("region", ArgValue::from(region.replace('_', " ").as_str())),
+            ],
+        ),
+        None => id.replace('_', " "),
+    }
+}
+
 /// Parse the compact ISO 6709 latitude+longitude form used by tzdata:
 /// `+DDMM+DDDMM` or `+DDMMSS+DDDMMSS` (and negative equivalents).
 fn parse_iso6709_coordinate(value: &str) -> Option<(i32, i32)> {
@@ -899,15 +918,22 @@ impl TimeDatePane {
                 ),
                 choice_row(
                     &t("time-timezone"),
-                    Box::new(
-                        Dropdown::from_state(
+                    Box::new({
+                        let mut zones = Dropdown::from_state(
                             self.timezones.clone(),
                             &ui::LocalState::new(self.last_timezone.clone()),
                         )
                         .on_action(time_text_action("timezone"))
                         .with_id("time.timezone")
-                        .with_placeholder(&self.timezone),
-                    ),
+                        .with_placeholder(&zone_label(&self.timezone));
+                        zones.set_value_options(
+                            self.timezones
+                                .iter()
+                                .map(|id| (id.clone(), zone_label(id)))
+                                .collect(),
+                        );
+                        zones
+                    }),
                 ),
                 value_row(&t("time-current-time"), &now),
                 value_row(&t("time-current-date"), &today),

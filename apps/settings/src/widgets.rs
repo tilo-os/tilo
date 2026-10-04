@@ -318,7 +318,13 @@ pub fn compact_control_w(width: f32, control: El) -> El {
         Container::new()
             .with_no_padding()
             .with_width(width)
-            .with_child(control),
+            .with_child(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_align_items(taffy::AlignItems::Center)
+                    .with_justify(taffy::JustifyContent::FlexEnd)
+                    .push(control),
+            )),
     )
 }
 

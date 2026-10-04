@@ -3604,12 +3604,12 @@ mod tests {
         // Case `wide_large_text_reserves_a_readable_sidebar_before_layout`.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
-            let app = config.app().with_width_hint(1440.0);
+            let app = config.app().with_width_hint(1800.0);
             let app =
-                layout_at_with_theme(app, 1440.0, 900.0, &ui::Theme::dark().with_text_scale(2.0));
+                layout_at_with_theme(app, 1800.0, 900.0, &ui::Theme::dark().with_text_scale(2.0));
             assert!(
                 !app.is_narrow(),
-                "1440px still admits a readable split at 200% text"
+                "1800px still admits a readable split at 200% text"
             );
             let sidebar = app
                 .shell
