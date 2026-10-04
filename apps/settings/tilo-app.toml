@@ -7,9 +7,10 @@
 #
 # The image, not this manifest, grants it the system it controls (the
 # launcher's `system_authority`): read+exec on the host bin dirs, read on
-# /etc, the system bus filtered to the named authorities, and the
-# PipeWire and CUPS sockets. The launcher also binds the shared
-# `~/.config/tilo` tree, including the account store and credential vault.
+# /etc, the system bus filtered to the named authorities, the PipeWire
+# socket and the compositor's runtime state. Printing stays behind the
+# Print portal. The launcher also binds the shared `~/.config/tilo` tree,
+# including the account store and credential vault.
 #
 
 

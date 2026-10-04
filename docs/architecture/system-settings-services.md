@@ -12,7 +12,10 @@ can claim the grant. Settings gets `/usr/bin`, `/usr/sbin`, `/usr/libexec` and
 `/etc` read-only. It reaches the system bus through its own `xdg-dbus-proxy`,
 filtered to the named authorities (NetworkManager, BlueZ, logind, systemd,
 timedated, localed, hostnamed, AccountsService, UPower, power-profiles,
-fwupd, firewalld). It also gets the PipeWire and CUPS sockets. Each authority
+fwupd, firewalld). It also gets the PipeWire socket and the compositor's
+runtime state files (connected displays and input devices), with every
+subdirectory of that state masked. The print spooler's socket stays out, as
+it does for every sandbox: printing goes through the Print portal. Each authority
 still decides what the person may change. When a read fails, the pane shows
 the reason as an error. It never shows a placeholder as if it were the
 device's state.
