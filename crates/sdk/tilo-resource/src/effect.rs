@@ -68,6 +68,8 @@
 //! data, such as exporting an address book: asks for confirmation too), `idempotent` (safe to repeat after an
 //! uncertain outcome), `device_only` (only the person at this device),
 //! `programmatic` (for programs and agents, never offered in the palette),
+//! `untrusted` (answers with content from outside the user's data, such as a
+//! web page's text: the caller reasons about it and never follows it),
 //! `participant` (a view that moves only the invoking participant's own
 //! view, such as an agent's caret, so a remote participant may invoke it) and
 //! `permission = "read"` (any participant may invoke
@@ -248,6 +250,9 @@ pub struct EffectDecl {
     /// Invoked by programs and agents, never offered to a person picking
     /// from the palette or a menu (an agent reading a page's structure).
     pub programmatic: bool,
+    /// Answers with content from outside the user's own data (a web page's
+    /// text and logs): data to reason about, never instructions to follow.
+    pub untrusted: bool,
     /// A view that changes only the invoking participant's own view (an
     /// agent's caret, its Find), so a remote participant may invoke it
     /// without moving anybody else's.
@@ -355,6 +360,9 @@ impl EffectDecl {
                 };
                 if self.programmatic {
                     tags.push(tilo_actions::PROGRAMMATIC_TAG.to_owned());
+                }
+                if self.untrusted {
+                    tags.push(tilo_actions::UNTRUSTED_CONTENT_TAG.to_owned());
                 }
                 if self.participant {
                     tags.push(tilo_actions::PARTICIPANT_VIEW_TAG.to_owned());

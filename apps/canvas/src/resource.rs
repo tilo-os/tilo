@@ -929,6 +929,7 @@ impl ui::tilo_resource::Effect for ViewOp {
                 device_only: false,
                 risk_of: None,
                 programmatic: false,
+                untrusted: false,
                 participant: false,
             })
             .collect()
