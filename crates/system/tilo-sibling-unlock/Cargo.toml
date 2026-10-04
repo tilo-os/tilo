@@ -20,14 +20,20 @@ path = "src/main.rs"
 # libcryptsetup or a TPM stack adds nothing to the image or the build host.
 anyhow.workspace = true
 base64.workspace = true
-blake3.workspace = true
 clap.workspace = true
-getrandom.workspace = true
+ed25519-dalek.workspace = true
+futures.workspace = true
 hex.workspace = true
+# The peer network: a sibling is reached directly or through a relay.
+iroh.workspace = true
+iroh-base.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
 tempfile.workspace = true
+tilo-seal = { path = "../tilo-seal" }
+tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tokio = { workspace = true, features = ["macros", "rt", "signal", "time"] }
 zeroize.workspace = true
 workspace-hack = { version = "0.1" }

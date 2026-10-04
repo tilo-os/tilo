@@ -26,7 +26,7 @@ pub struct Ask {
     pub id: String,
     pub socket: PathBuf,
     pub pid: Option<u32>,
-    /// CLOCK_MONOTONIC deadline in microseconds; 0 when there is none.
+    /// `CLOCK_MONOTONIC` deadline in microseconds; 0 when there is none.
     pub not_after: u64,
 }
 
@@ -132,7 +132,7 @@ pub fn pending(dir: &Path, device: &Path) -> Vec<Ask> {
 /// # Errors
 /// When the request's socket is gone or refuses the datagram.
 pub fn answer(ask: &Ask, passphrase: &str) -> Result<()> {
-    let mut reply = Zeroizing::new(Vec::with_capacity(passphrase.len() + 1));
+    let mut reply = Zeroizing::new(Vec::with_capacity(passphrase.len().saturating_add(1)));
     reply.push(b'+');
     reply.extend_from_slice(passphrase.as_bytes());
     let socket = UnixDatagram::unbound().context("no datagram socket")?;

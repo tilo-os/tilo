@@ -7,14 +7,17 @@
 //! network; one releases it for this boot alone after the owner approves.
 //!
 //! * [`token`]: what the volume's LUKS2 header carries for it.
-//! * [`material`]: the device half, the boot key and the unlock networks, and
-//!   the passphrase derivation.
+//! * [`material`]: the device half, the boot key and the unlock networks.
 //! * [`seal`]: sealing the material to the TPM where there is one.
 //! * [`unlock`]: one early-boot attempt; [`askpass`] answers the prompt with
 //!   the result and [`network`] brings up the links to get it.
+//! * [`exchange`]: the exchange with a sibling over the peer network.
+//! * [`enrol`]: adding the factor to a volume and registering it.
 //! * [`luks`]: the volume's slots and token, through cryptsetup.
 
 pub mod askpass;
+pub mod enrol;
+pub mod exchange;
 pub mod exec;
 pub mod luks;
 pub mod material;
