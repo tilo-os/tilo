@@ -38,12 +38,13 @@ pub mod actions;
 pub mod framework_history;
 mod graphics;
 pub mod resource;
+pub mod target;
 
 pub use graphics::TerminalImagePlacement;
 
 pub use crate::inner::{
-    Attr, CellColor, GridPos, Selection, TermModes, TerminalBackend, TerminalPerformer,
-    TerminalWidget, resolve_login_shell,
+    Attr, CellColor, GridPos, OpenError, Requester, Selection, TermModes, TerminalBackend,
+    TerminalPerformer, TerminalWidget, parse_target_argument, resolve_login_shell,
 };
 
 /// Re-exported so hosts can build a command for [`TerminalWidget::spawn_command`]
@@ -53,7 +54,10 @@ pub use portable_pty::CommandBuilder;
 // Keep the large implementation private while exposing the stable types above.
 mod inner {
     include!("main_body.rs");
+    include!("target_ui.rs");
 }
+
+pub mod sessions;
 
 mod app_widget_impl;
 
@@ -76,6 +80,8 @@ pub fn demo_session_input() -> &'static str {
 #[cfg(test)]
 mod framework_history_tests;
 #[cfg(test)]
+mod target_tests;
+#[cfg(test)]
 pub(crate) mod tests;
 
 /// Process connections explicitly granted to one hosted Terminal instance.
@@ -96,6 +102,48 @@ impl Default for HostedProcessServices {
 
 #[cfg(unix)]
 impl HostedProcessServices {
+    /// Whether the host handed over the `ush` supervisor.
+    pub fn has_ush(&self) -> bool {
+        self.ush.is_some()
+    }
+
+    /// Open a session on `target` over `first`, or over a fresh connection
+    /// to the session's supervisor once the first has been used.
+    ///
+    /// # Errors
+    /// Returns why the session did not open.
+    pub(crate) fn open_session(
+        first: Option<Self>,
+        target: &target::SessionTarget,
+        requested_by: Requester,
+    ) -> Result<TerminalBackend, OpenError> {
+        let stream = first
+            .and_then(|services| services.ush)
+            .or_else(|| Self::default().ush)
+            .ok_or_else(|| OpenError::Unavailable("the shell runtime is not running".into()))?;
+        crate::inner::ush_backend_on(&stream, &[], target, requested_by)
+    }
+
+    /// One request to the session's supervisor over a fresh connection;
+    /// returns its one-line answer.
+    ///
+    /// # Errors
+    /// Returns why the supervisor could not be asked.
+    pub(crate) fn ask(request: &serde_json::Value) -> Result<String, String> {
+        use std::io::{BufRead, Write};
+        let stream = Self::default()
+            .ush
+            .ok_or_else(|| "the shell runtime is not running".to_string())?;
+        let mut line = serde_json::to_vec(request).map_err(|e| e.to_string())?;
+        line.push(b'\n');
+        (&stream).write_all(&line).map_err(|e| e.to_string())?;
+        let mut reply = String::new();
+        std::io::BufReader::new(&stream)
+            .read_line(&mut reply)
+            .map_err(|e| e.to_string())?;
+        Ok(reply)
+    }
+
     /// Discover the session-owned `ush` supervisor below one runtime directory.
     ///
     /// This stays crate-visible so the socket lookup can be tested without
@@ -325,3 +373,26 @@ impl std::fmt::Display for HostedTerminalError {
 }
 impl std::error::Error for HostedTerminalError {}
 pub use resource::{Terminal, TerminalShell};
+
+/// Without a hosted process-service transport nothing opens here.
+#[cfg(not(unix))]
+impl HostedProcessServices {
+    /// Whether the host handed over the `ush` supervisor: never, here.
+    pub fn has_ush(&self) -> bool {
+        false
+    }
+
+    pub(crate) fn open_session(
+        _first: Option<Self>,
+        _target: &target::SessionTarget,
+        _requested_by: Requester,
+    ) -> Result<TerminalBackend, OpenError> {
+        Err(OpenError::Unavailable(
+            "Tilo hosted terminal service transport is unavailable here".into(),
+        ))
+    }
+
+    pub(crate) fn ask(_request: &serde_json::Value) -> Result<String, String> {
+        Err("environments are managed through Tilo's shell runtime".into())
+    }
+}
