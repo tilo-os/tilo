@@ -24,14 +24,11 @@ jobs:
     container:
       image: ${{ needs.builder.outputs.image }}
     env:
-      CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: "0"
       RUST_BACKTRACE: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
       # cargo-fuzz needs nightly sanitizer instrumentation. Tool and compiler
@@ -57,8 +54,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Check complete workspace formatting
         # Workspace members only: --all also formats path dependencies, and
@@ -84,7 +79,6 @@ jobs:
       # Advance this digest together with dev-visual-baselines.yml.
       image: registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
     env:
-      CARGO_HOME: /cargo-home
       # Both disk-class slots have the memory for four compiler processes;
       # one left the aarch64 workspace build alone at 130 minutes.
       CARGO_BUILD_JOBS: "4"
@@ -112,8 +106,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Read the shared test filters
         run: python3 tools/ci/nextest_filters.py >> "$GITHUB_ENV"
@@ -292,7 +284,7 @@ jobs:
       - name: Save test results
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: nextest-junit-nightly-${{ matrix.arch }}
           path: target/ci/junit
@@ -304,8 +296,5 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
+          path: ${{ steps.rust-build.outputs.cargo-cache-paths }}
           key: cargo-deps-${{ hashFiles('Cargo.lock') }}

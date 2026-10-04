@@ -5,9 +5,12 @@
 set -euo pipefail
 
 mode=${1:-}
+usage="usage: $0 {oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|clipboard-is TEXT|clipboard-keeps TEXT SECRET|desktop|established|lock|auth}"
 case "$mode" in
-  oobe|oobe-actions|desktop|established|lock) ;;
-  *) echo "usage: $0 {oobe|oobe-actions|desktop|established|lock}" >&2; exit 2 ;;
+  oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|desktop|established|lock|auth) ;;
+  clipboard-is) (($# == 2)) || { echo "$usage" >&2; exit 2; } ;;
+  clipboard-keeps) (($# == 3)) || { echo "$usage" >&2; exit 2; } ;;
+  *) echo "$usage" >&2; exit 2 ;;
 esac
 
 command -v busctl >/dev/null
@@ -114,6 +117,16 @@ collect_tree() {
       | grep -Eo '/org/a11y/atspi/accessible/[0-9/]+' || true)
   done
   ((${#node_names[@]} > 0))
+}
+
+# One complete walk, retried while a tree transaction is in flight.
+collect_settled_tree() {
+  for _ in $(seq 1 400); do
+    collect_tree && return 0
+    sleep 0.05
+  done
+  echo "AT-SPI $mode tree never settled" >&2
+  return 1
 }
 
 node_named() {
@@ -279,6 +292,18 @@ wait_for_text() {
   return 1
 }
 
+wait_for_absent() {
+  local expected=$1
+  for _ in $(seq 1 400); do
+    if collect_tree && ! node_named "$expected" >/dev/null; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  echo "AT-SPI $mode tree still exposes '$expected'" >&2
+  return 1
+}
+
 # A lock field must be identified as a password to the actual AT-SPI client,
 # not merely be a TextInput whose value happens to be blank. This platform
 # role tells readers and braille displays to suppress credential echo while
@@ -299,32 +324,100 @@ assert_password_role() {
   }
 }
 
-case "$mode" in
-  oobe|oobe-actions)
-    wait_for_names "Use existing" "Create identity"
-    if [[ $mode == oobe-actions ]]; then
-      # Prove the complete external-reader contract before making the
-      # irreversible identity choice. The disposable Connect branch gives us
-      # a visible, non-secret editable field: focus and write it solely over
-      # AT-SPI, observe the value through that same bus, then return to Intro.
-      click_named "Use existing"
-      wait_for_names "Identity backup file" "Back"
-      focus_named "Identity backup file"
-      set_text_named "Identity backup file" "tilo-atspi-edit-probe"
-      click_named "Back"
-      wait_for_names "Use existing" "Create identity"
+# The session's clipboard as a clipboard manager sees it: through the
+# compositor's privileged socket, where data-control is offered. A sentinel
+# put there first tells "nothing was copied" apart from an empty clipboard.
+clipboard_socket="tilo-privileged-$shell_pid"
+clipboard_seed() {
+  WAYLAND_DISPLAY=$clipboard_socket wl-copy -- "$1" </dev/null >/dev/null 2>&1
+}
+clipboard_read() {
+  WAYLAND_DISPLAY=$clipboard_socket wl-paste "$@" --no-newline 2>/dev/null || true
+}
+clipboard_sentinel=tilo-clipboard-sentinel
 
-      # Each remaining transition is made through org.a11y.atspi.Action, then
-      # observed back through the live AT-SPI tree. It catches a provider that
-      # advertises controls but drops ActionRequest messages before the
-      # compositor's widget dispatcher.
-      click_named "Create identity"
-      wait_for_names \
-        "I understand that losing this device without a backup means losing this identity." \
-        "Create local identity"
-      click_named "I understand that losing this device without a backup means losing this identity."
-      wait_for_names "Create local identity"
-      click_named "Create local identity"
+# Walk the disposable Connect branch to its non-secret field and focus it.
+# Proves the complete external-reader contract before the irreversible
+# identity choice: focus and write the field solely over AT-SPI and observe
+# the value through that same bus.
+oobe_to_connect_field() {
+  wait_for_names "Use existing" "Create identity"
+  click_named "Use existing"
+  wait_for_names "Identity backup file" "Back"
+  focus_named "Identity backup file"
+  set_text_named "Identity backup file" "tilo-atspi-edit-probe"
+}
+
+# From Intro (or the Connect branch) to the backup step, where the identity
+# exists and the backup passphrase is a secret field. Each transition is made
+# through org.a11y.atspi.Action, then observed back through the live AT-SPI
+# tree. It catches a provider that advertises controls but drops
+# ActionRequest messages before the compositor's widget dispatcher.
+oobe_to_backup() {
+  if node_named "Back" >/dev/null && node_named "Identity backup file" >/dev/null; then
+    click_named "Back"
+  fi
+  wait_for_names "Use existing" "Create identity"
+  click_named "Create identity"
+  wait_for_names \
+    "I understand that losing this device without a backup means losing this identity." \
+    "Create local identity"
+  click_named "I understand that losing this device without a backup means losing this identity."
+  wait_for_names "Create local identity"
+  click_named "Create local identity"
+  wait_for_names \
+    "I understand that without an encrypted backup, losing this device means losing this identity." \
+    "Continue without backup"
+}
+
+case "$mode" in
+  oobe-copy-plain)
+    # The control for `oobe-copy-secret`: keys typed and copied in an
+    # ordinary chrome field do reach the clipboard this script reads.
+    oobe_to_connect_field
+    set_text_named "Identity backup file" ""
+    clipboard_seed "$clipboard_sentinel"
+    ;;
+  oobe-copy-secret)
+    wait_for_names "Identity backup file" "Back"
+    oobe_to_backup
+    focus_named "New backup passphrase"
+    clipboard_seed "$clipboard_sentinel"
+    ;;
+  clipboard-is)
+    for _ in $(seq 1 100); do
+      [[ $(clipboard_read) == "$2" ]] && break
+      sleep 0.05
+    done
+    copied=$(clipboard_read)
+    [[ $copied == "$2" ]] || {
+      echo "the clipboard holds '$copied', not the copied '$2'" >&2
+      exit 1
+    }
+    ;;
+  clipboard-keeps)
+    # Give a copy that should not have happened time to land first.
+    sleep 1
+    copied=$(clipboard_read)
+    primary=$(clipboard_read --primary)
+    [[ $copied != *"$3"* && $primary != *"$3"* ]] || {
+      echo "a password field's value reached the clipboard" >&2
+      exit 1
+    }
+    [[ $copied == "$2" ]] || {
+      echo "the clipboard changed while copying from a password field: '$copied'" >&2
+      exit 1
+    }
+    ;;
+  oobe|oobe-actions)
+    collect_settled_tree
+    if [[ $mode == oobe-actions ]] && ! node_named "Continue without backup" >/dev/null; then
+      oobe_to_connect_field
+      oobe_to_backup
+    elif [[ $mode == oobe ]]; then
+      wait_for_names "Use existing" "Create identity"
+    fi
+    if [[ $mode == oobe-actions ]]; then
       # No backup in a disposable release VM; say so explicitly, as a person
       # skipping it would.
       wait_for_names \
@@ -364,6 +457,55 @@ case "$mode" in
   lock)
     wait_for_names "Tilo lock screen" "Password" "Type your password and press Enter"
     assert_password_role "Password"
+    ;;
+  auth)
+    # Ask polkit for an administrator action on behalf of the graphical
+    # session, exactly as pkexec from a terminal in it would. polkit hands
+    # the request to the agent that session registered — the compositor —
+    # which draws the system authentication sheet. The sheet must be fully
+    # operable by an external reader: password text that takes focus and
+    # input without publishing it, and a Cancel that answers polkit.
+    session=$(loginctl show-user "$(id -un)" -p Display --value)
+    [[ -n "$session" ]] || { echo "no graphical login session" >&2; exit 1; }
+    answer=$(mktemp)
+    checker=""
+    trap 'rm -f "$answer"; [[ -z "$checker" ]] || kill "$checker" 2>/dev/null || true' EXIT
+    gdbus call --system --timeout 120 \
+      --dest org.freedesktop.PolicyKit1 \
+      --object-path /org/freedesktop/PolicyKit1/Authority \
+      --method org.freedesktop.PolicyKit1.Authority.CheckAuthorization \
+      "('unix-session', {'session-id': <'$session'>})" \
+      org.freedesktop.policykit.exec '{}' 1 '' >"$answer" 2>&1 &
+    checker=$!
+    wait_for_names "Administrator access" "Password" "Authenticate" "Cancel"
+    assert_password_role "Password"
+    focus_named "Password"
+    path=$(editable_node_named "Password")
+    result=$(gdbus call --address "$atspi_address" \
+      --dest "$app_bus" \
+      --object-path "$path" \
+      --method org.a11y.atspi.EditableText.SetTextContents "not-the-password")
+    [[ ${result//[[:space:]]/} == '(true,)' ]] || {
+      echo "AT-SPI text update on the password was rejected: $result" >&2
+      exit 1
+    }
+    text=$(gdbus call --address "$atspi_address" \
+      --dest "$app_bus" \
+      --object-path "$path" \
+      --method org.a11y.atspi.Text.GetText -- 0 -1 2>&1 || true)
+    [[ $text != *not-the-password* ]] || {
+      echo "the password field published what was typed: $text" >&2
+      exit 1
+    }
+    click_named "Cancel"
+    wait "$checker" || true
+    checker=""
+    grep -q '((false,' "$answer" || {
+      echo "polkit did not see the sheet dismissed:" >&2
+      cat "$answer" >&2
+      exit 1
+    }
+    wait_for_absent "Administrator access"
     ;;
 esac
 

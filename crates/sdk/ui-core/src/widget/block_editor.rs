@@ -516,6 +516,8 @@ pub struct BlockEditor {
     focused: Option<usize>,
     /// Decoupled from `focused` so the index survives blur/refocus.
     is_focused: bool,
+    /// Escape releases the next Tab to the host; editing or refocusing resumes nesting.
+    tab_navigation: bool,
     caret_paint_suppressed: bool,
     rect: Rect,
     /// Current accessibility text scale, retained for prefix and gutter
@@ -701,6 +703,7 @@ impl BlockEditor {
             blocks: Vec::new(),
             focused: None,
             is_focused: false,
+            tab_navigation: false,
             caret_paint_suppressed: false,
             rect: Rect::ZERO,
             text_scale: 1.0,
@@ -1075,6 +1078,9 @@ impl BlockEditor {
     }
 
     pub fn set_focus(&mut self, focused: bool) {
+        if focused != self.is_focused {
+            self.tab_navigation = false;
+        }
         if focused && self.read_only {
             return;
         }
@@ -1283,7 +1289,10 @@ impl BlockEditor {
             return;
         };
         let caret = block.line.cursor_pos().min(block.line.value().len());
-        let start = clamp_char_boundary(block.line.value(), caret.saturating_sub(bytes));
+        let start = block
+            .line
+            .value()
+            .floor_char_boundary(caret.saturating_sub(bytes));
         block.line.inner_mut().set_selection(start, caret);
         self.dirty = true;
     }
@@ -1310,8 +1319,8 @@ impl BlockEditor {
                 (at, at)
             });
         let (start, end) = (
-            clamp_char_boundary(&value, start),
-            clamp_char_boundary(&value, end.max(start)),
+            value.floor_char_boundary(start),
+            value.floor_char_boundary(end.max(start)),
         );
         let mut next = value;
         next.replace_range(start..end, &format!("{text}{after}"));
@@ -1636,7 +1645,7 @@ impl BlockEditor {
             let index = self.blocks.iter().position(|block| &block.id == id)?;
             Some(DocumentPosition {
                 block: index,
-                byte: clamp_char_boundary(self.blocks[index].text(), position.byte),
+                byte: self.blocks[index].text().floor_char_boundary(position.byte),
             })
         };
         self.document_selection = self.document_selection.and_then(|selection| {
@@ -2148,6 +2157,7 @@ impl BlockEditor {
     }
 
     pub fn focus_block(&mut self, idx: usize, cursor_at: CursorPlacement) {
+        self.tab_navigation = false;
         for table in self.table_editors.values_mut() {
             table.blur_projection();
         }
@@ -2214,7 +2224,7 @@ impl BlockEditor {
         let cur_kind = block.kind.clone();
         let text = block.line.value().to_string();
         let split = split_at.min(text.len());
-        let split = clamp_char_boundary(&text, split);
+        let split = text.floor_char_boundary(split);
         let (prefix, suffix) = text.split_at(split);
         let prefix_marks = marks_before(block.line.marks(), split);
         let suffix_marks = marks_after(block.line.marks(), split);
@@ -2262,8 +2272,16 @@ impl BlockEditor {
         };
         let join_at = prev_text.len();
         let merged = format!("{prev_text}{cur_text}");
+        let mut marks = self.blocks[prev_idx].line.marks().to_vec();
+        marks.extend(self.blocks[idx].line.marks().iter().map(|span| {
+            MarkSpan::new(
+                span.range.start.saturating_add(join_at)..span.range.end.saturating_add(join_at),
+                span.mark.clone(),
+            )
+        }));
         if let Some(b) = self.blocks.get_mut(prev_idx) {
             b.line.set_text(&merged);
+            b.line.set_marks(marks);
         }
         self.blocks.remove(idx);
         self.structure_dirty = true;
@@ -2517,37 +2535,71 @@ impl BlockEditor {
     /// depths. Clamp the entire operation rather than flattening deep children.
     pub fn try_indent(&mut self, idx: usize, delta: i8) -> bool {
         let (idx, last) = self.fenced_code_run(idx).unwrap_or((idx, idx));
-        let Some(parent) = self.blocks.get(idx) else {
-            return false;
+        self.indent_blocks(idx..self.list_subtree_end(last), delta)
+    }
+
+    /// Selected roots and their descendants shift once, including entire code
+    /// fences. A selection ending at column zero does not include that block.
+    fn try_indent_selection(&mut self, delta: i8) -> bool {
+        let Some(selection) = self.document_selection else {
+            return self
+                .focused
+                .is_some_and(|index| self.try_indent(index, delta));
         };
-        if !parent.kind.supports_indent() && parent.indent() == 0 {
-            let can_join_outline = idx
-                .checked_sub(1)
-                .and_then(|idx| self.blocks.get(idx))
-                .is_some_and(|previous| previous.indent() > 0 || previous.kind.supports_indent());
-            if !can_join_outline {
-                return false;
-            }
+        let (first, last) = selection.ordered();
+        let last = if last.byte == 0 && last.block > first.block {
+            last.block.saturating_sub(1)
+        } else {
+            last.block
+        };
+        let start = self
+            .fenced_code_run(first.block)
+            .map_or(first.block, |(start, _)| start);
+        let last = self.fenced_code_run(last).map_or(last, |(_, end)| end);
+        // Walk selected roots, skipping each expanded subtree. Extending only
+        // the last selected child's subtree would leave its siblings behind
+        // even when their parent is also selected.
+        let mut end = start;
+        while end <= last && end < self.blocks.len() {
+            let row = self.fenced_code_run(end).map_or(end, |(_, end)| end);
+            end = self.list_subtree_end(row);
         }
-        let depth = parent.indent();
-        let end = self.list_subtree_end(last);
-        let Some(subtree) = self.blocks.get(idx..end) else {
+        self.indent_blocks(start..end, delta)
+    }
+
+    fn indent_blocks(&mut self, range: std::ops::Range<usize>, delta: i8) -> bool {
+        if self.read_only {
+            return false;
+        }
+        let Some(parent) = self.blocks.get(range.start) else {
             return false;
         };
-        let deepest = subtree.iter().map(Block::indent).max().unwrap_or(depth);
-        let minimum_shift = i8::try_from(depth).unwrap_or(i8::MAX).saturating_neg();
+        // Prose can nest under preceding prose as well as lists. Preserve the
+        // established first-list-item indentation, but never orphan first prose.
+        if !parent.kind.supports_indent() && parent.indent() == 0 && range.start == 0 {
+            return false;
+        }
+        let Some(subtree) = self.blocks.get(range.clone()) else {
+            return false;
+        };
+        let shallowest = subtree.iter().map(Block::indent).min().unwrap_or(0);
+        let deepest = subtree.iter().map(Block::indent).max().unwrap_or(0);
+        let minimum_shift = i8::try_from(shallowest).unwrap_or(i8::MAX).saturating_neg();
         let maximum_shift =
             i8::try_from(MAX_LIST_INDENT.saturating_sub(deepest)).unwrap_or(i8::MAX);
         let shift = delta.max(minimum_shift).min(maximum_shift);
         if shift == 0 {
             return false;
         }
-        let Some(subtree) = self.blocks.get_mut(idx..end) else {
+        let Some(subtree) = self.blocks.get_mut(range) else {
             return false;
         };
         for block in subtree {
             block.set_indent(clamp_indent(block.indent(), shift));
         }
+        // Backspace is normally classified as local typing. An outdent may
+        // touch arbitrarily many descendants, all of which must be committed.
+        self.note_edit_anywhere();
         self.structure_dirty = true;
         self.doc_structure_dirty = true;
         self.dirty = true;
@@ -3789,14 +3841,6 @@ fn is_heading_prefix(s: &str) -> bool {
     heading_markdown_prefix(s).is_some_and(|(_, len)| len == s.len())
 }
 
-fn clamp_char_boundary(text: &str, byte: usize) -> usize {
-    let mut b = byte.min(text.len());
-    while b > 0 && !text.is_char_boundary(b) {
-        b = b.saturating_sub(1);
-    }
-    b
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "the ordered block diff is kept together so move/insert/delete precedence remains explicit"
@@ -3937,7 +3981,9 @@ fn semantic_text_splice(before: &str, after: &str) -> (usize, usize, String) {
     {
         start = start.saturating_add(1);
     }
-    start = clamp_char_boundary(before, start).min(clamp_char_boundary(after, start));
+    start = before
+        .floor_char_boundary(start)
+        .min(after.floor_char_boundary(start));
     let mut old_end = before.len();
     let mut new_end = after.len();
     while old_end > start
@@ -3948,24 +3994,13 @@ fn semantic_text_splice(before: &str, after: &str) -> (usize, usize, String) {
         old_end = old_end.saturating_sub(1);
         new_end = new_end.saturating_sub(1);
     }
-    old_end = ceil_char_boundary(before, old_end);
-    new_end = ceil_char_boundary(after, new_end);
+    old_end = before.ceil_char_boundary(old_end);
+    new_end = after.ceil_char_boundary(new_end);
     (
         start,
         old_end,
         after.get(start..new_end).unwrap_or_default().to_string(),
     )
-}
-
-/// Rounds a byte offset *up* to the next char boundary — the mirror of
-/// [`clamp_char_boundary`]'s round-down. Used where growing a matched
-/// region (rather than shrinking it) is what keeps a replacement exact.
-fn ceil_char_boundary(text: &str, byte: usize) -> usize {
-    let mut b = byte.min(text.len());
-    while b < text.len() && !text.is_char_boundary(b) {
-        b = b.saturating_add(1);
-    }
-    b
 }
 
 /// Two spaces per indent level (Notion/Obsidian style, not GFM's four);
@@ -5331,8 +5366,8 @@ fn push_text_diff(state: &mut AutoCommit, text_obj: &ObjId, local: &str) {
     // already-identical bytes it needlessly re-touches. Without this, a
     // diff that happens to split a multi-byte character (e.g. between
     // "café" and "cafe\u{301}") would panic on the slice below.
-    let start = clamp_char_boundary(&cur, at_byte);
-    let removed_end = ceil_char_boundary(&cur, raw_removed_end);
+    let start = cur.floor_char_boundary(at_byte);
+    let removed_end = cur.ceil_char_boundary(raw_removed_end);
     let shift = removed_end.saturating_sub(raw_removed_end);
     let inserted_end = raw_inserted_end.saturating_add(shift).min(local.len());
 
@@ -5413,14 +5448,14 @@ impl BlockEditor {
         let Some(anchor_byte) = self
             .blocks
             .get(anchor_block)
-            .map(|b| clamp_char_boundary(b.line.value(), anchor.byte))
+            .map(|b| b.line.value().floor_char_boundary(anchor.byte))
         else {
             return;
         };
         let Some(cursor_byte) = self
             .blocks
             .get(cursor_block)
-            .map(|b| clamp_char_boundary(b.line.value(), cursor.byte))
+            .map(|b| b.line.value().floor_char_boundary(cursor.byte))
         else {
             return;
         };
@@ -5446,12 +5481,12 @@ impl BlockEditor {
             };
             let text = block.line.value();
             let from = if block_idx == start.block {
-                clamp_char_boundary(text, start.byte)
+                text.floor_char_boundary(start.byte)
             } else {
                 0
             };
             let to = if block_idx == end.block {
-                clamp_char_boundary(text, end.byte)
+                text.floor_char_boundary(end.byte)
             } else {
                 text.len()
             };
@@ -5493,8 +5528,8 @@ impl BlockEditor {
         ) else {
             return false;
         };
-        let start_byte = clamp_char_boundary(&start_text, start.byte);
-        let end_byte = clamp_char_boundary(&end_text, end.byte);
+        let start_byte = start_text.floor_char_boundary(start.byte);
+        let end_byte = end_text.floor_char_boundary(end.byte);
         let prefix_marks = self
             .blocks
             .get(start.block)
@@ -8009,9 +8044,8 @@ impl Widget for BlockEditor {
     }
 
     fn wants_tab_input(&self) -> bool {
-        // Both prose/list nesting and code indentation belong to this editor;
-        // the host must route Tab here before traversing other controls.
-        true
+        // Escape then Tab is the keyboard route back to surrounding controls.
+        !self.read_only && !self.tab_navigation
     }
 
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
@@ -8524,7 +8558,8 @@ impl Widget for BlockEditor {
                         .with_state(AccessState::new().focusable(true)),
                 );
             }
-            AccessNode::new(Role::Group)
+            let level = usize::from(block.indent()).saturating_add(1);
+            let group = AccessNode::new(Role::Group)
                 .with_name(format!(
                     "{} block {position}",
                     accessible_kind_name(&block.kind)
@@ -8532,9 +8567,16 @@ impl Widget for BlockEditor {
                 .with_semantic_key(format!("notes.block:{}", block.id))
                 .with_hashed_key(format!("notes.block:group:{}", block.id))
                 .with_position(position, total)
-                .with_level(usize::from(block.indent()) + 1)
+                .with_level(level)
                 .with_bounds(block.line.get_rect())
-                .with_children(block_children)
+                .with_children(block_children);
+            // Also in words, which every screen reader reads: the platform
+            // bridge does not carry a group's level.
+            if level > 1 {
+                group.with_description(format!("Level {level}"))
+            } else {
+                group
+            }
         }));
         if let Some(mut menu) = Widget::accessibility(&self.slash_menu) {
             fn namespace_targets(node: &mut AccessNode) {
@@ -8553,7 +8595,7 @@ impl Widget for BlockEditor {
         Some(
             AccessNode::new(Role::Document)
                 .with_description(
-                    "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block.",
+                    "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; press Escape, then Tab, to leave the editor.",
                 )
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
@@ -9496,7 +9538,7 @@ impl BlockEditor {
         let Some(focused_idx) = self.focused else {
             return false;
         };
-        if !self.is_focused || ctx.modifiers.state().alt_key() {
+        if !self.is_focused || self.tab_navigation || ctx.modifiers.state().alt_key() {
             return false;
         }
         let command = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
@@ -9505,12 +9547,13 @@ impl BlockEditor {
             Key::Character(key) if command && key == "[" => -1,
             Key::Named(NamedKey::Tab)
                 if !command
-                    && self.blocks.get(focused_idx).is_some_and(|b| {
-                        !matches!(
-                            b.kind,
-                            BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
-                        )
-                    }) =>
+                    && (self.document_selection.is_some()
+                        || self.blocks.get(focused_idx).is_some_and(|b| {
+                            !matches!(
+                                b.kind,
+                                BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
+                            )
+                        })) =>
             {
                 if ctx.modifiers.state().shift_key() {
                     -1
@@ -9520,7 +9563,7 @@ impl BlockEditor {
             }
             _ => return false,
         };
-        self.try_indent(focused_idx, delta);
+        self.try_indent_selection(delta);
         *ctx.handled = true;
         true
     }
@@ -9996,7 +10039,7 @@ impl BlockEditor {
                     let at = if whole_lines {
                         0
                     } else {
-                        clamp_char_boundary(&text, old_cursor)
+                        text.floor_char_boundary(old_cursor)
                     };
                     text.insert_str(at, "    ");
                     (at, 0, 4)
@@ -10598,6 +10641,19 @@ impl BlockEditor {
                 }
             }
             LineSignal::BackspaceAtStart => {
+                if self.blocks.get(idx).is_some_and(|block| block.indent() > 0) {
+                    self.try_indent(idx, -1);
+                    return;
+                }
+                if self.blocks.get(idx).is_some_and(|block| {
+                    matches!(block.kind, BlockKind::Heading(_) | BlockKind::Quote)
+                        || block.kind.supports_indent()
+                }) {
+                    self.try_convert_to(idx, BlockKind::Paragraph);
+                    self.edit_pending = true;
+                    self.commit_pending = true;
+                    return;
+                }
                 if idx == 0 {
                     return;
                 }
@@ -10653,7 +10709,7 @@ impl BlockEditor {
             return false;
         };
         let text = block.text();
-        let split = clamp_char_boundary(text, split.min(text.len()));
+        let split = text.floor_char_boundary(split);
         let indent: String = text
             .get(..split)
             .unwrap_or_default()
@@ -10743,7 +10799,7 @@ impl BlockEditor {
             return false;
         }
         let source = block.text();
-        let split_at = clamp_char_boundary(source, split_at.min(source.len()));
+        let split_at = source.floor_char_boundary(split_at);
         let Some((before, after)) = source.split_at_checked(split_at) else {
             return false;
         };
@@ -10830,6 +10886,19 @@ impl BlockEditor {
 
     fn handle_event_unscoped(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         use winit::event::{ElementState, MouseButton};
+
+        // The IME owns candidate-selection keys until it commits/cancels.
+        // Do not let Enter, Tab, or Backspace become structural document edits.
+        if self.is_focused
+            && matches!(event, WindowEvent::KeyboardInput { .. })
+            && self
+                .focused
+                .and_then(|index| self.blocks.get(index))
+                .is_some_and(|block| block.line.inner().is_composing())
+        {
+            *ctx.handled = true;
+            return;
+        }
 
         if self.handle_find_event(event, ctx) {
             return;
@@ -10933,6 +11002,31 @@ impl BlockEditor {
             self.cross_block_drag_start = None;
         }
         self.handle_cursor_moved(event, ctx.scale_factor);
+
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == ElementState::Pressed
+            && self.is_focused
+        {
+            if event.logical_key == Key::Named(NamedKey::Escape) {
+                self.tab_navigation = true;
+                *ctx.handled = true;
+                return;
+            }
+            if !matches!(
+                event.logical_key,
+                Key::Named(
+                    NamedKey::Tab
+                        | NamedKey::Shift
+                        | NamedKey::Control
+                        | NamedKey::Alt
+                        | NamedKey::AltGraph
+                        | NamedKey::Super
+                        | NamedKey::Meta
+                )
+            ) {
+                self.tab_navigation = false;
+            }
+        }
 
         // TextInput does NOT handle Tab, but intercept anyway so future
         // TextInput changes don't break the contract.

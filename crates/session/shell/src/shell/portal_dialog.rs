@@ -35,6 +35,8 @@ use crate::portal::desktop_services::{
 use crate::shell::app_action_consent::{AppActionConsent, AppActionConsentRequest};
 use crate::shell::i18n::{t, t_args};
 
+pub mod accessibility;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewRequest {
     pub handle: String,
@@ -2343,6 +2345,17 @@ impl PortalDialogController {
     /// The network-secrets sheet's fields, in order.
     pub fn secret_fields(&self) -> &[TextInput] {
         &self.entries
+    }
+
+    /// Whether the sheet up now asks for a secret: administrator
+    /// authentication, network secrets, or any sheet whose field is a
+    /// secret, such as a shortcut step's masked answer.
+    pub fn holds_secret(&self) -> bool {
+        matches!(
+            self.view(),
+            Some(DialogView::Authentication { .. } | DialogView::NetworkSecrets { .. })
+        ) || self.text_field().is_some_and(TextInput::is_secret)
+            || self.entries.iter().any(TextInput::is_secret)
     }
 
     fn forget_secret(&mut self) {

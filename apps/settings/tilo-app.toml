@@ -5,10 +5,12 @@
 # Display, Power, Users and Date & Time panes read. Still no egress of
 # its own: every network action is delegated to nmcli.
 #
-# Beyond the system read profile it needs, as consented capabilities:
-# read+exec on the host bin dirs, read on the host inventory files
-# under /proc and /etc, and read+write on the shared `~/.config/tilo`
-# tree including the account store and credential vault.
+# The image, not this manifest, grants it the system it controls (the
+# launcher's `system_authority`): read+exec on the host bin dirs, read on
+# /etc, the system bus filtered to the named authorities, the PipeWire
+# socket and the compositor's runtime state. Printing stays behind the
+# Print portal. The launcher also binds the shared `~/.config/tilo` tree,
+# including the account store and credential vault.
 #
 
 

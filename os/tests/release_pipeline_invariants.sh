@@ -18,6 +18,7 @@ fi
 
 desktop="$workflows/release-desktop.yml"
 apps="$workflows/release-apps.yml"
+apps_publish="$repo/tools/apps/publish-collections.sh"
 os="$workflows/build-image.yml"
 imager="$workflows/release-imager.yml"
 
@@ -358,6 +359,8 @@ if ! grep -q '^  pull_request:' "$os" \
   && ! grep -Fq '  schedule:' "$os" \
   && grep -Fq '  workflow_dispatch:' "$os" \
   && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
+  && grep -Fq 'native-atspi-smoke.sh auth' "$os" \
+  && grep -Fq 'org.freedesktop.PolicyKit1.Authority.CheckAuthorization' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'installed-atspi-apps.sh' "$os" \
   && grep -Fq 'org.a11y.atspi.Action.GetActions' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.Action.DoAction 0' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
@@ -385,12 +388,12 @@ grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager"
 grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && grep -Fq 'cancel-in-progress: false' "$apps" \
   && ! grep -Eq '^  pull_request(_target)?:' "$apps" \
-  && grep -Fq '$package_api/tilo-app-collections/$VERSION/' "$apps" \
-  && grep -Fq '$package_api/tilo-app-$name/$VERSION/$file' "$apps" \
+  && grep -Fq '$package_api/tilo-app-collections/$VERSION/' "$apps" "$apps_publish" \
+  && grep -Fq '$package_api/tilo-app-$name/$VERSION/$file' "$apps" "$apps_publish" \
   && grep -Fq 'PRIOR_X86_URL' "$apps" \
   && grep -Fq 'if [[ $GITHUB_REF == refs/heads/main ]]; then' "$apps" \
   && grep -Fq 'dist/app-release/runtime/**' "$apps" \
-  && grep -Fq 'update_variable TILO_APP_COLLECTION_URL' "$apps" \
+  && grep -Fq 'update_variable TILO_APP_COLLECTION_URL' "$apps" "$apps_publish" \
   && grep -Fq '$GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main' "$apps" \
   && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$apps" \
   && grep -Fq 'REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}' "$apps" \
@@ -400,16 +403,16 @@ grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  build:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '    needs: [plan, authorize-publish]' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  build:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '      image: ${{ needs.plan.outputs.builder_image }}' >/dev/null \
-  && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
+  && grep -Fq 'actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e' "$apps" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
   && grep -Fq 'TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}' "$apps" \
-  && grep -Fq 'bundle_url="$package_public_api/tilo-app-collections/' "$apps" \
-  && grep -Fq 'bundle_upload_url="$package_api/tilo-app-collections/' "$apps" \
-  && ! grep -Fq 'channel_url=$bundle_upload_url' "$apps" \
-  && grep -Fq 'tools/upload_immutable_packages.sh "$upload_manifest"' "$apps" \
-  && grep -Fq 'tools/reuse_prior_app_collection.sh' "$apps" \
-  && grep -Fq 'audience=$MAIN_AUDIENCE' "$apps" \
-  && ! grep -Fq 'TILO_APP_RELEASE_TAG_AUDIENCE' "$apps" \
+  && grep -Fq 'bundle_url="$package_public_api/tilo-app-collections/' "$apps" "$apps_publish" \
+  && grep -Fq 'bundle_upload_url="$package_api/tilo-app-collections/' "$apps" "$apps_publish" \
+  && ! grep -Fq 'channel_url=$bundle_upload_url' "$apps" "$apps_publish" \
+  && grep -Fq 'tools/upload_immutable_packages.sh "$upload_manifest"' "$apps" "$apps_publish" \
+  && grep -Fq 'tools/reuse_prior_app_collection.sh' "$apps" "$apps_publish" \
+  && grep -Fq 'audience=$MAIN_AUDIENCE' "$apps" "$apps_publish" \
+  && ! grep -Fq 'TILO_APP_RELEASE_TAG_AUDIENCE' "$apps" "$apps_publish" \
   && awk '{sub(/\r$/, "")} /^  qualify-collection:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  qualify-collection:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  publish:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}' >/dev/null \
@@ -433,7 +436,7 @@ grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'RUNTIME_BUNDLE_IDENTITY_FILE' "$repo/dist/apps/package-apps.sh" \
   && grep -Fq -- '-C codegen-units=1' "$repo/tools/ci/rustc-thin-app-wrapper.sh" \
   && ! grep -Fq -- '--icf=all' "$repo/tools/ci/rustc-thin-app-wrapper.sh" \
-  && grep -Fq 'tools/reuse_prior_app_collection.sh' "$apps" \
+  && grep -Fq 'tools/reuse_prior_app_collection.sh' "$apps" "$apps_publish" \
   && grep -Fq 'shared runtime changed; the full collection must be rebuilt' \
        "$repo/tools/reuse_prior_app_collection.sh" \
   && ok 'OS builds consume OIDC-authenticated pinned app and desktop inputs without rebuilding them' \
