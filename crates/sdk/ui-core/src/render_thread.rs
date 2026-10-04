@@ -151,6 +151,9 @@ impl PreparedRenderer {
 #[path = "render_retry.rs"]
 pub(crate) mod retry;
 
+#[path = "render_bump_recovery.rs"]
+mod bump_recovery;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameOutcome {
     Presented,
@@ -181,6 +184,9 @@ pub struct RenderThreadHandle {
     pub(crate) buffers: BufferPool<(Scene, Vec<Rect>)>,
     pub frame_complete: Receiver<FrameOutcome>,
     pub(crate) retry: retry::RenderRetryState,
+    /// Set by the worker when presented pixels lost geometry to a Vello bump
+    /// overflow; the next frame main submits must repaint everything.
+    full_repaint: Arc<AtomicBool>,
     join: Option<JoinHandle<Option<PreparedRenderer>>>,
 }
 
@@ -300,6 +306,14 @@ struct DamageCache {
 }
 
 impl RenderThreadHandle {
+    /// Whether the worker asked for a whole-surface repaint since the last
+    /// call. It wakes the window when it asks, so the request does not wait
+    /// for an unrelated event.
+    #[cfg(feature = "native")]
+    pub(crate) fn take_full_repaint(&self) -> bool {
+        self.full_repaint.swap(false, Ordering::SeqCst)
+    }
+
     /// Idempotent: a second call is a no-op (the `JoinHandle` is taken on
     /// the first). The worker drops its `RenderSurface` before this
     /// returns — it must die before the `Window` it was created against,
@@ -345,6 +359,8 @@ pub fn spawn_render_thread(
     let (pool_tx, pool_rx) = mpsc::sync_channel(2);
     let (outcome_tx, frame_complete) = mpsc::sync_channel::<FrameOutcome>(8);
     let waiting = Arc::new(AtomicBool::new(false));
+    let full_repaint = Arc::new(AtomicBool::new(false));
+    let worker_full_repaint = full_repaint.clone();
     let buffers = BufferPool::new(pool_rx, waiting.clone());
     let _ = pool_tx.send((Scene::new(), Vec::with_capacity(8)));
     let _ = pool_tx.send((Scene::new(), Vec::with_capacity(8)));
@@ -372,14 +388,37 @@ pub fn spawn_render_thread(
                 ..DamageCache::default()
             };
             let mut target_valid = false;
+            let mut bump_recovery = bump_recovery::BumpRecovery::default();
             let mut handoff = native_timing.map(|_| timing::handoff::Recorder::default());
             let mut keep_renderer = false;
             loop {
+                let wait = bump_recovery.wait();
                 let (message, receive_bounds) =
-                    timing::around(native_timing.is_some(), || rx.recv());
+                    timing::around(native_timing.is_some(), || match wait {
+                        Some(timeout) => rx.recv_timeout(timeout),
+                        None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                    });
                 let before_receive = receive_bounds.and_then(|bounds| bounds.before);
                 let received = receive_bounds.and_then(|bounds| bounds.after);
-                let Ok(msg) = message else { break };
+                let msg = match message {
+                    Ok(msg) => msg,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if poll_bump_recovery(
+                            &mut bump_recovery,
+                            &mut renderer,
+                            &render_cx,
+                            &surface,
+                        ) {
+                            request_full_repaint(
+                                &mut target_valid,
+                                &worker_full_repaint,
+                                wake.as_ref(),
+                            );
+                        }
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
                 if frame_ix == 0 {
                     tilo_startup_metrics::mark("render-worker-first-frame-received");
                 }
@@ -477,6 +516,11 @@ pub fn spawn_render_thread(
                     }
                 }
 
+                let full_redraw = full_redraw || !target_valid;
+                if full_redraw {
+                    // Any whole-surface frame answers a pending overflow repaint.
+                    worker_full_repaint.store(false, Ordering::SeqCst);
+                }
                 let render_start = present_dbg.then(crate::time::now);
                 let render_host_start = native_timing.and_then(|_| timing::capture());
                 let outcome = render_one_frame(
@@ -490,7 +534,7 @@ pub fn spawn_render_thread(
                         height,
                         base_color,
                         damage_regions: &damage_regions,
-                        full_redraw: full_redraw || !target_valid,
+                        full_redraw,
                     },
                     FramePresentation {
                         frame_ix,
@@ -566,6 +610,11 @@ pub fn spawn_render_thread(
                     );
                     break;
                 }
+                // After the outcome is published, so main's per-frame
+                // accounting is untouched: a repaint is a later, ordinary frame.
+                if poll_bump_recovery(&mut bump_recovery, &mut renderer, &render_cx, &surface) {
+                    request_full_repaint(&mut target_valid, &worker_full_repaint, wake.as_ref());
+                }
             }
             // Publish disconnection before waking a deferred redraw, including
             // the early resize-failure path that cannot recycle its scene.
@@ -594,8 +643,30 @@ pub fn spawn_render_thread(
         buffers,
         frame_complete,
         retry: retry::RenderRetryState::default(),
+        full_repaint,
         join: Some(join),
     })
+}
+
+/// Collect finished bump counters; `true` when presented pixels lost geometry.
+fn poll_bump_recovery(
+    recovery: &mut bump_recovery::BumpRecovery,
+    renderer: &mut Renderer,
+    render_cx: &RenderContext,
+    surface: &RenderSurface<'static>,
+) -> bool {
+    let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
+        return false;
+    };
+    recovery.poll(renderer, &device_handle.device) == bump_recovery::BumpStep::Repaint
+}
+
+/// The retained target is no longer a faithful frame: the next one repaints
+/// everything, and main is woken to submit it even if nothing else changed.
+fn request_full_repaint(target_valid: &mut bool, full_repaint: &AtomicBool, wake: &dyn Fn()) {
+    *target_valid = false;
+    full_repaint.store(true, Ordering::SeqCst);
+    wake();
 }
 
 /// Opt-in worker timing for every consumed frame, including early exits that
@@ -1734,6 +1805,168 @@ mod retained_damage_tests {
                 (self.next() % n) as f64
             }
         }
+    }
+
+    /// Marching ants around a fur selection: thousands of dashes over the
+    /// whole surface, far more than a fresh bump reservation holds.
+    fn marching_ants() -> Scene {
+        let mut scene = scene_of(&[]);
+        let mut rng = Lcg(0xa17);
+        let stroke = Stroke::new(1.0).with_dashes(0.0, [2.0, 2.0]);
+        for _ in 0..160 {
+            let mut path = vello::kurbo::BezPath::new();
+            path.move_to((rng.below(u64::from(WIDTH)), rng.below(u64::from(HEIGHT))));
+            for _ in 0..48 {
+                path.line_to((rng.below(u64::from(WIDTH)), rng.below(u64::from(HEIGHT))));
+            }
+            path.close_path();
+            scene.stroke(&stroke, Affine::IDENTITY, Color::WHITE, None, &path);
+            scene.stroke(
+                &Stroke::new(1.0).with_dashes(2.0, [2.0, 2.0]),
+                Affine::IDENTITY,
+                Color::BLACK,
+                None,
+                &path,
+            );
+        }
+        scene
+    }
+
+    fn content<'a>(
+        scene: &'a Scene,
+        base_color: Color,
+        damage_regions: &'a [Rect],
+        full_redraw: bool,
+    ) -> FrameContent<'a> {
+        FrameContent {
+            scene,
+            width: WIDTH,
+            height: HEIGHT,
+            base_color,
+            damage_regions,
+            full_redraw,
+        }
+    }
+
+    /// A frame that overflowed Vello's bump buffers was presented without
+    /// some of its geometry. The worker must notice from the counters alone
+    /// and repaint the whole surface; later damage-only frames, or none at
+    /// all for an idle window, never touch most of the missing pixels.
+    #[test]
+    fn an_overflowed_frame_is_repainted_whole() {
+        let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let options = || vello::RendererOptions {
+            use_cpu: false,
+            antialiasing_support: vello::AaSupport::area_only(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        };
+        let base_color = Color::from_rgb8(10, 10, 12);
+        let scene = marching_ants();
+        let corner = [Rect::new(0.0, 0.0, 24.0, 24.0)];
+
+        // What a renderer that already knows this scene presents.
+        let mut oracle = Renderer::new(device, options()).unwrap();
+        let (oracle_texture, oracle_view) = target(device);
+        let mut oracle_cache = DamageCache::default();
+        let mut fitted = false;
+        for _ in 0..8 {
+            rasterize_damage(
+                (device, queue),
+                RetainedTarget {
+                    texture: &oracle_texture,
+                    view: &oracle_view,
+                },
+                &mut oracle,
+                &mut oracle_cache,
+                &content(&scene, base_color, &[], true),
+            )
+            .unwrap();
+            if !oracle.settle_bump_budget(device) {
+                fitted = true;
+                break;
+            }
+        }
+        assert!(fitted, "the oracle must converge to a complete frame");
+        let expected = read(device, queue, &oracle_texture);
+
+        let mut renderer = Renderer::new(device, options()).unwrap();
+        let (retained_texture, retained_view) = target(device);
+        let retained = RetainedTarget {
+            texture: &retained_texture,
+            view: &retained_view,
+        };
+        let mut cache = DamageCache::default();
+        let mut recovery = bump_recovery::BumpRecovery::default();
+        // The selection appears: one full frame on a fresh reservation,
+        // then the ants crawl in a small corner, as damage-only frames do.
+        rasterize_damage(
+            (device, queue),
+            retained,
+            &mut renderer,
+            &mut cache,
+            &content(&scene, base_color, &[], true),
+        )
+        .unwrap();
+        rasterize_damage(
+            (device, queue),
+            retained,
+            &mut renderer,
+            &mut cache,
+            &content(&scene, base_color, &corner, false),
+        )
+        .unwrap();
+
+        let garbled = crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+            &read(device, queue, &retained_texture),
+            &expected,
+        );
+        assert!(
+            garbled > 0,
+            "the overflowed frame must visibly lack geometry, or this test proves nothing"
+        );
+
+        // The idle worker: poll on its receive timeout and repaint whenever
+        // asked, exactly as main answers `take_full_repaint`.
+        let mut repaints = 0;
+        loop {
+            let step = recovery.poll(&mut renderer, device);
+            match step {
+                bump_recovery::BumpStep::Pending => {
+                    assert_eq!(recovery.wait(), Some(bump_recovery::POLL_INTERVAL));
+                    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+                }
+                bump_recovery::BumpStep::Repaint => {
+                    repaints += 1;
+                    assert!(
+                        repaints <= usize::from(bump_recovery::MAX_REPAINTS),
+                        "repaints are bounded"
+                    );
+                    rasterize_damage(
+                        (device, queue),
+                        retained,
+                        &mut renderer,
+                        &mut cache,
+                        &content(&scene, base_color, &[], true),
+                    )
+                    .unwrap();
+                }
+                bump_recovery::BumpStep::Settled => break,
+            }
+        }
+        assert!(
+            repaints > 0,
+            "the scene must overflow a fresh reservation, or this test proves nothing"
+        );
+        let presented = read(device, queue, &retained_texture);
+        let differing =
+            crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(&presented, &expected);
+        assert_eq!(
+            differing, 0,
+            "after {repaints} repaint(s) the presented frame still lacks {differing} pixels"
+        );
     }
 
     #[test]
