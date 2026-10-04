@@ -191,9 +191,11 @@ class Vm:
             "-qmp", f"unix:{self.qmp_path},server=on,wait=off",
         ])
         for _ in range(100):
-            if self.qmp_path.exists():
+            if self.qmp_path.exists() or self.qemu.poll() is not None:
                 break
             time.sleep(0.1)
+        if self.qemu.poll() is not None:
+            raise Fail(f"QEMU exited at start with status {self.qemu.returncode}")
         self.qmp = Qmp(self.qmp_path)
 
     def _seed(self) -> None:
@@ -375,8 +377,9 @@ def run_test(args) -> int:
     image = fetch_image(Path(args.image_cache).resolve())
     apps = [a for a in APPS if not args.apps or a[1] in args.apps.split(",")]
 
-    vm = Vm(work, image, args.memory, args.cpus)
+    vm = None
     try:
+        vm = Vm(work, image, args.memory, args.cpus)
         log("booting Fedora 44 Cloud")
         vm.wait_ssh(600)
         vm.ssh("mkdir -p /var/tmp/tilo-e2e/rpms")
@@ -473,15 +476,17 @@ def run_test(args) -> int:
         report.add("H00", "The test ran to completion", False, str(error))
         return 1
     finally:
-        try:
-            if vm.alive():
-                vm.guest("collect", "/var/tmp/tilo-e2e/evidence", check=False, timeout=300)
-                vm.scp_from("/var/tmp/tilo-e2e/evidence", out)
-        except (Fail, subprocess.SubprocessError, OSError) as error:
-            log(f"collecting guest evidence failed: {error}")
-        vm.stop()
-        if vm.serial.exists():
-            shutil.copy(vm.serial, out / "serial.log")
+        if vm is not None:
+            try:
+                if vm.alive():
+                    vm.guest("collect", "/var/tmp/tilo-e2e/evidence", check=False, timeout=300)
+                    vm.scp_from("/var/tmp/tilo-e2e/evidence", out)
+            except (Fail, subprocess.SubprocessError, OSError) as error:
+                log(f"collecting guest evidence failed: {error}")
+            vm.stop()
+        serial = work / "serial.log"
+        if serial.exists():
+            shutil.copy(serial, out / "serial.log")
         meta["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         report.write()
 

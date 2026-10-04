@@ -82,7 +82,8 @@ jobs:
         run: |
           set -euo pipefail
           dnf --setopt=retries=3 install -y \
-            qemu-system-x86-core qemu-img openssh-clients xorriso python3 curl
+            qemu-system-x86-core qemu-device-display-virtio-vga qemu-device-display-virtio-gpu \
+            qemu-img openssh-clients xorriso python3 curl
           command -v qemu-system-x86_64 qemu-img ssh scp ssh-keygen xorriso >/dev/null
 
       - name: Require a native x86-64 runner with KVM
