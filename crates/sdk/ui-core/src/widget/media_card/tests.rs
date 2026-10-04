@@ -34,7 +34,11 @@ fn justified_rows_span_the_width_and_keep_aspect() {
         }
     }
     let last = rows.last().unwrap();
-    assert!((last[0].height() - 200.0).abs() < 0.01 || last.last().unwrap().x1 >= 899.5);
+    let above = rows[rows.len() - 2][0].height();
+    assert!(
+        (last[0].height() - 200.0_f64.min(above)).abs() < 0.01 || last.last().unwrap().x1 >= 899.5,
+        "a short last row is no taller than the row above it"
+    );
     for pair in rows.windows(2) {
         assert!(pair[1][0].y0 >= pair[0][0].y1 + 3.99);
     }
@@ -157,5 +161,5 @@ fn placeholders_and_badges_paint_without_seams() {
     assert_eq!(gradients, 1);
     let node = face.accessibility(Rect::new(0.0, 0.0, width, height));
     assert_eq!(node.name.as_deref(), Some("Building a compositor in Rust"));
-    assert!(node.value.as_deref().unwrap().contains("40% watched"));
+    assert!(node.value.as_deref().unwrap().contains("40% played"));
 }

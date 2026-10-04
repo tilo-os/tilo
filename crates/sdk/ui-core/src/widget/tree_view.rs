@@ -47,7 +47,7 @@ mod nav;
 
 pub use affordances::{TreeHeadingAction, TreeRowAction};
 pub use editing::TreeMove;
-pub(crate) use nav::{NavPresentation, NavRowSpec};
+pub(crate) use nav::{NavItemSpec, NavPresentation, NavRowSpec, NavStatus};
 
 pub type NodeId = u64;
 
@@ -928,6 +928,12 @@ pub struct TreeView<T, M = TreeNode<T>> {
     drawn_signature: Option<u64>,
     /// Set by `NavList`: rows paint as navigation rows.
     nav: Option<NavPresentation<M>>,
+    /// The tree has been laid out at least once. Until then it has no rows
+    /// on screen to move from, so model changes do not animate.
+    laid_out: bool,
+    /// A drag staged for a capture, applied once rows have geometry: the
+    /// dragged row and the row it hovers before.
+    staged_drag: Option<(NodeId, NodeId)>,
 }
 
 /// Matches `theme.tokens.spacing.s4` (16.0); also the per-depth indent unit.
@@ -1142,6 +1148,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
             paint_dirty: true,
             drawn_signature: None,
             nav: None,
+            laid_out: false,
+            staged_drag: None,
         };
         view.refresh_anchor();
         view.refresh_transition_snapshot();
@@ -1290,7 +1298,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
         if self.fill {
             self.fit_viewport_to_rect();
         }
+        self.laid_out = true;
         self.refresh_anchor();
+        self.apply_staged_drag();
     }
 
     /// Replace the expanded set without firing [`Self::on_expand`] — for a
@@ -1572,6 +1582,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.reorder.is_active()
     }
 
+    /// Whether rows are moving between geometries now.
+    #[cfg(test)]
+    pub(crate) fn transitions_active(&self) -> bool {
+        self.transitions.is_active(crate::time::now())
+    }
+
     fn reconcile_model_state(&mut self, anchor: Option<&SparseAnchor<TreeRowKey>>) {
         let anchor = anchor.map(|anchor| self.normalize_anchor(anchor.clone()));
         // A node that accepts children stays expanded while it has none, so
@@ -1836,14 +1852,19 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.index = next;
         self.refresh_nav_heights();
         let new_snapshot = self.capture_transition_snapshot();
-        self.transitions.reconcile(
-            &old_snapshot,
-            &new_snapshot,
-            crate::time::now(),
-            self.transition_duration,
-            crate::animation::Curve::EaseInOut,
-            self.reduce_motion,
-        );
+        if self.laid_out {
+            self.transitions.reconcile(
+                &old_snapshot,
+                &new_snapshot,
+                crate::time::now(),
+                self.transition_duration,
+                crate::animation::Curve::EaseInOut,
+                self.reduce_motion,
+            );
+        } else {
+            // Nothing is on screen yet, so nothing moves.
+            self.transitions.clear();
+        }
         self.transition_snapshot = new_snapshot;
         self.mark_delegate_window_dirty();
         self.refresh_anchor();
@@ -2205,6 +2226,36 @@ impl<T, M: TreeModel> TreeView<T, M> {
         changed
     }
 
+    /// Stage a drag of `source` hovering just before `before`, for a
+    /// capture: the row lifts and follows a pointer resting on the seam
+    /// above `before`, the drop line shows, and nothing is committed unless
+    /// a real release follows (Escape cancels it). Staged before the first
+    /// layout, it applies once the rows have geometry.
+    pub fn stage_reorder(&mut self, source: NodeId, before: NodeId) {
+        self.staged_drag = Some((source, before));
+        self.apply_staged_drag();
+    }
+
+    fn apply_staged_drag(&mut self) {
+        let Some((source, before)) = self.staged_drag else {
+            return;
+        };
+        if !self.laid_out {
+            return;
+        }
+        let (Some(from), Some(to)) = (self.row_rect(source), self.row_rect(before)) else {
+            return;
+        };
+        self.staged_drag = None;
+        self.reorder.begin(source, from.center());
+        // Inside the top quarter of `before`: the seam above it.
+        let at = Point::new(to.center().x, to.y0 + to.height() * 0.1);
+        self.last_cursor = Some(at);
+        self.hovered = None;
+        self.update_reorder_pointer(at, crate::time::now());
+        self.paint_dirty = true;
+    }
+
     fn reveal_focus(&mut self) {
         if let Some(index) = self
             .focused
@@ -2289,6 +2340,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 };
                 if is_branch && on_disclosure {
                     self.toggle_expand(id);
+                } else if self.toggle_nav_check(id) {
+                    // The whole row is the checkbox's target.
                 } else if self.rename_on_double_click
                     && !toggle
                     && !extend
@@ -2466,6 +2519,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
                             .saturating_add(1)
                             .min(self.index.len().saturating_sub(1))
                     });
+                let index = self.skip_nav_captions(index, true);
                 let moved = self.focus_at(index);
                 if moved
                     && extend
@@ -2480,6 +2534,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
                     .focused
                     .and_then(|key| self.index.index_of_key(&self.model, key))
                     .map_or(0, |index| index.saturating_sub(1));
+                let index = self.skip_nav_captions(index, false);
                 let moved = self.focus_at(index);
                 if moved
                     && extend
@@ -2518,6 +2573,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             return false;
         };
         match key {
+            TreeRowKey::Node(id) if self.toggle_nav_check(id) => true,
             TreeRowKey::Node(id) if !self.model.is_selectable(id) => {
                 // A header row: Enter and Space open or close it.
                 if !self.model.is_branch(id) {
@@ -2893,7 +2949,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             self.delegate_layout_dirty = false;
             self.refresh_anchor();
         }
+        self.laid_out = true;
+        // A rail's tiles wrap their captions to the width it was given.
+        if self.nav.as_ref().is_some_and(|nav| nav.rail) {
+            self.refresh_nav_heights();
+        }
         self.refresh_transition_snapshot();
+        self.apply_staged_drag();
     }
 
     #[allow(
@@ -2911,6 +2973,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.request_visible_rows();
         let tokens = &theme.tokens;
         let text_style = tokens.typography.style(LABEL_ROLE);
+        self.transitions.settle(crate::time::now());
         // Every label and disclosure glyph is one line of this style, so one
         // measured line box centres every row identically.
         let (_, line_h) = text_renderer.measure_style("Tree", None, &text_style);
@@ -3359,6 +3422,8 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 .input
                 .draw(scene, transform, text_renderer, theme, presence);
         }
+        // The lifted row floats beside the pointer; the drop line marks
+        // where it lands, over the lifted row, so the copy never hides it.
         self.paint_drag_ghost(scene, transform, text_renderer, theme, &text_style, line_h);
         if let Some(preview) = self.reorder.preview() {
             let color = if self
@@ -3672,6 +3737,14 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     item = item.with_description(description.clone());
                 }
                 if let TreeRowKey::Node(id) = key
+                    && let Some((description, checked)) = self.nav_semantics(id)
+                {
+                    if let Some(description) = description {
+                        item = item.with_description(description);
+                    }
+                    item.state.checked = checked;
+                }
+                if let TreeRowKey::Node(id) = key
                     && let Some(semantic) = self.model.semantic_key(id)
                 {
                     item.key = Some(crate::a11y::hash_key(&semantic));
@@ -3967,7 +4040,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } if self.context_menu_items.is_some() => {
+            } if self.context_menu_items.is_some() || self.nav_offers_menu() => {
                 if let Some(cursor) = self.last_cursor
                     && self.rect.contains(cursor)
                 {
@@ -4042,7 +4115,8 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
                     && (self.reorder.cancel() || self.drag_scroll.cancel())
                 {
                     *handled = true;
-                } else if menu_key && self.context_menu_items.is_some() {
+                } else if menu_key && (self.context_menu_items.is_some() || self.nav_offers_menu())
+                {
                     *handled = self.open_menu_from_keyboard();
                 } else if *logical_key == Key::Named(NamedKey::F2) && self.on_rename.is_some() {
                     *handled = self.command_node().is_some_and(|id| self.begin_rename(id));

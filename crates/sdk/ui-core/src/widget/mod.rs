@@ -2224,7 +2224,7 @@ pub use nav_shell::{
     InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, SidebarPlacement,
 };
 mod nav_list;
-pub use nav_list::{NavAction, NavDrop, NavItem, NavList, NavSection};
+pub use nav_list::{NavAction, NavDrop, NavItem, NavItemStatus, NavList, NavSection};
 mod document_viewport;
 pub use document_viewport::{
     ContentDraw, DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM, DEFAULT_PADDING, DEFAULT_PAN_STEP,
@@ -2347,7 +2347,7 @@ pub mod file_picker;
 pub use file_picker::{FilePicker, FilePickerEntry, FilePickerMode, FilePickerOutcome};
 
 pub mod progress_bar;
-pub use progress_bar::ProgressBar;
+pub use progress_bar::{ProgressBar, ProgressBarFace};
 pub mod page_preview;
 pub use page_preview::PagePreview;
 pub mod spinner;
@@ -2378,11 +2378,11 @@ pub use undo_button::UndoButton;
 pub mod breadcrumb;
 pub use breadcrumb::Breadcrumb;
 pub mod avatar;
-pub use avatar::{Avatar, AvatarFace, AvatarSize, initials_for_name};
+pub use avatar::{Avatar, AvatarFace, AvatarSize, PresenceStatus, initials_for_name};
 pub mod badge;
 pub use badge::{Badge, BadgeContent, BadgeFace};
 pub mod icon;
-pub use icon::IconWidget;
+pub use icon::{IconSize, IconWidget};
 pub mod chart;
 pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
@@ -2438,7 +2438,7 @@ pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStage, FunnelStyle};
 pub mod gauge;
 pub use gauge::{
     BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, ProgressRing, ProgressRingFace,
-    ProgressRingSize,
+    ProgressRingSize, RingReading,
 };
 pub mod function_plane;
 pub use function_plane::FunctionPlane;
@@ -2462,9 +2462,11 @@ mod activation;
 pub use activation::{Interaction, paint_focus_ring};
 pub mod media_card;
 pub use media_card::{
-    MediaArt, MediaAspect, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize, MediaSource,
-    OwnedBadge, justified_rows,
+    ArtPainter, MediaArt, MediaAspect, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize,
+    MediaSource, OwnedBadge, justified_rows,
 };
+pub mod capture_button;
+pub use capture_button::{CaptureButtonFace, CaptureKind};
 pub mod drop_zone;
 pub use drop_zone::{DropZone, DropZoneFace};
 pub mod skeleton;
@@ -2493,7 +2495,7 @@ pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_color
 // entry point for apps that render straight to a `Scene` rather than a
 // widget tree.
 pub mod empty_state;
-pub use empty_state::{EmptyState, EmptyStateContent};
+pub use empty_state::{EmptyState, EmptyStateContent, EmptyStateLayout};
 pub mod find_bar;
 pub use find_bar::{
     FindBar, FindMatch, FindMode, FindOptions, FindScope, Findable, paint_find_match, with_findable,
@@ -2505,7 +2507,7 @@ pub use search_results::SearchResultsView;
 pub mod stat_tile;
 pub use stat_tile::{StatGroup, StatTile, StatTileFace, Trend};
 pub mod banner;
-pub use banner::{Banner, BannerContent, BannerKind};
+pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice};
 pub mod chip;
 pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
 pub mod card;

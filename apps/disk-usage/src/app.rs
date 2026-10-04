@@ -22,7 +22,7 @@ use ui::vello::Scene;
 use ui::vello::kurbo::Affine;
 use ui::widget::{
     Button, Column, Container, Element, EmptyState, ListRow, PieChart, PieSlice, Row, Scrollable,
-    Section, SectionHeader, Spinner, Text, Widget,
+    Section, SectionHeader, Text, Widget,
 };
 
 use crate::doc::DiskUsageDoc;
@@ -220,7 +220,8 @@ impl SliceChart {
                     theme.text_tertiary
                 };
                 let slice = PieSlice::new(&row.id, &row.label, row.bytes as f64, colour)
-                    .with_detail(row.detail());
+                    .with_detail(row.detail())
+                    .with_legend_detail(bytes_si(row.bytes));
                 if row.interactive {
                     slice
                 } else {
@@ -640,19 +641,8 @@ impl DiskUsageApp {
     }
 
     fn loading_view(&self, path: &std::path::Path) -> Element {
-        let spinner = Rc::new(RefCell::new(Spinner::new()));
-        let busy =
-            EmptyState::new("Calculating folder sizes").with_illustration(move |ctx, slot| {
-                let mut spinner = spinner.borrow_mut();
-                spinner.set_rect(slot);
-                spinner.draw(
-                    ctx.scene,
-                    ctx.transform,
-                    ctx.text,
-                    ctx.theme,
-                    &PresenceCtx::empty(),
-                );
-            });
+        // The empty state's own spinner keeps itself moving.
+        let busy = EmptyState::new("Calculating folder sizes").busy();
         Box::new(
             Column::new()
                 .push(Box::new(self.header(path)))

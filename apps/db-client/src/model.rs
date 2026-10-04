@@ -138,6 +138,22 @@ impl ConnectionProfile {
         }
     }
 
+    /// Where the connection goes, as the sidebar's second line: `host:port`
+    /// for a network engine, the file's name for `SQLite`, nothing for the
+    /// bundled sample.
+    pub fn address(&self) -> String {
+        match self.engine {
+            Engine::Sqlite if self.is_sample || self.file_path == ":memory:" => String::new(),
+            Engine::Sqlite => std::path::Path::new(&self.file_path)
+                .file_name()
+                .map_or_else(
+                    || self.file_path.clone(),
+                    |name| name.to_string_lossy().into_owned(),
+                ),
+            Engine::Postgres | Engine::MySql => format!("{}:{}", self.host, self.port),
+        }
+    }
+
     /// Network engines need a sandbox grant before a live handle can open.
     pub fn is_remote(&self) -> bool {
         !matches!(self.engine, Engine::Sqlite)

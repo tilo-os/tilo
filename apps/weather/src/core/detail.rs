@@ -28,9 +28,8 @@ use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
-    Banner, BannerContent, BannerKind, Button, ButtonFace, ControlSize, EmptyState,
-    EmptyStateContent, PressOutcome, ScrollMetrics, StatTileFace, Trend, card_column_width,
-    card_columns,
+    Banner, BannerContent, BannerKind, EmptyState, EmptyStateContent, PressOutcome, ScrollMetrics,
+    StatTileFace, Trend, card_column_width, card_columns,
 };
 
 use super::{Core, ForecastNotice, SunArc, scroll_track, wheel_dx, wheel_dy, wheel_step};
@@ -533,96 +532,42 @@ fn section_heading(ctx: &mut PaintCtx<'_>, title: &str, at: Point) {
     ctx.text_role(title, TextRole::Heading, ctx.theme.text_primary, at, None);
 }
 
-/// The lasting problem with the forecast on screen, above it: a banner, and
-/// beside it the Retry button when trying again can fix it.
+/// The lasting problem with the forecast on screen, above it: a banner
+/// that holds the Retry action when trying again can fix it.
 struct Notice {
     kind: ForecastNotice,
-    /// The Retry button's width, or `None` when the notice offers none.
-    retry_w: Option<f64>,
     height: f64,
 }
 
-/// The label of the button that fetches the forecast again.
+/// The label of the action that fetches the forecast again.
 const RETRY: &str = "Retry";
 
-/// The Retry button's key among the forecast's accessible children.
+/// The Retry action's key among the forecast's accessible children.
 pub const RETRY_KEY: &str = "weather.retry";
 
 impl Notice {
     fn new(ctx: &mut PaintCtx<'_>, kind: ForecastNotice, width: f64) -> Self {
-        let theme = ctx.theme;
-        let retry_w = matches!(kind, ForecastNotice::UpdateFailed).then(|| {
-            ButtonFace::new(Rect::ZERO, RETRY)
-                .control_size(ControlSize::Regular)
-                .intrinsic_width(ctx.text, theme)
-                .ceil()
-        });
-        let mut notice = Self {
-            kind,
-            retry_w,
-            height: 0.0,
-        };
-        let banner_w = notice.banner_width(width, theme);
-        notice.height = banner_height(ctx, &notice.content(), banner_w)
-            .max(ButtonFace::height(ControlSize::Regular, theme));
-        notice
+        let height = Banner::height(&Self::content_for(kind), width, ctx.text, ctx.theme);
+        Self { kind, height }
     }
 
-    /// The banner's width in a row `width` wide: all of it, less the Retry
-    /// button and the gap before it.
-    fn banner_width(&self, width: f64, theme: &Theme) -> f64 {
-        self.retry_w.map_or(width, |button| {
-            (width - button - f64::from(theme.tokens.spacing.s3)).max(1.0)
-        })
-    }
-
-    fn content(&self) -> BannerContent<'static> {
-        match self.kind {
+    fn content_for(kind: ForecastNotice) -> BannerContent<'static> {
+        match kind {
             ForecastNotice::UpdateFailed => {
                 BannerContent::new(BannerKind::Error, "Couldn't update the forecast")
                     .with_message(Some("Check your connection and try again."))
+                    .action(RETRY)
             }
             ForecastNotice::Offline => BannerContent::new(BannerKind::Warning, "You're offline")
                 .with_message(Some("This is the last forecast saved on this device.")),
         }
     }
 
-    /// Paint the banner and its Retry button into `r`. Returns where the
-    /// button takes a pointer, when it shows.
+    /// Paint the banner into `r`. Returns where its Retry action takes a
+    /// pointer, when it offers one.
     fn paint(&self, ctx: &mut PaintCtx<'_>, r: Rect, pointer: Point) -> Option<Rect> {
-        let theme = ctx.theme;
-        let banner = Rect::new(r.x0, r.y0, r.x0 + self.banner_width(r.width(), theme), r.y1);
-        Banner::paint(ctx, banner, &self.content(), pointer);
-        let width = self.retry_w?;
-        let height = ButtonFace::height(ControlSize::Regular, theme);
-        let top = r.center().y - height / 2.0;
-        let rect = Rect::new(r.x1 - width, top, r.x1, top + height);
-        let face = ButtonFace::new(rect, RETRY).control_size(ControlSize::Regular);
-        let hit = face.hit_rect(theme);
-        let face = face.hovered(hit.contains(pointer));
-        Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
-        Some(hit)
+        Banner::paint(ctx, r, &Self::content_for(self.kind), pointer).action
     }
-}
-
-/// The height a banner with `content` takes at `width`: its title and
-/// message lines with the banner's padding, never below a panel row.
-fn banner_height(ctx: &mut PaintCtx<'_>, content: &BannerContent<'_>, width: f64) -> f64 {
-    let theme = ctx.theme;
-    let t = &theme.tokens;
-    let pad_x = f64::from(t.spacing.s4);
-    let pad_y = f64::from(t.spacing.s3);
-    let text_w = (width - 2.0 * pad_x - f64::from(t.metrics.icon_md) - f64::from(t.spacing.s3))
-        .max(1.0) as f32;
-    let title = ctx
-        .measure_role(content.title, TextRole::Body, Some(text_w))
-        .height;
-    let message = content.message.map_or(0.0, |m| {
-        ctx.measure_role(m, TextRole::Caption, Some(text_w)).height + f64::from(t.spacing.s1)
-    });
-    (title + message + 2.0 * pad_y)
-        .max(f64::from(t.metrics.panel_row_height))
-        .ceil()
 }
 
 // ---- hero -------------------------------------------------------------

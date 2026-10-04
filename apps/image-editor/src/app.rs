@@ -166,7 +166,9 @@ fn build_toolbar(
             &t(ToolbarCommand::Fit.label_key()),
             sink(ToolbarCommand::Fit),
         )
-        .push_toggle(
+        // Before and after side by side.
+        .push_icon_toggle(
+            ui::icons::Icon::Columns2,
             &t(ToolbarCommand::Compare.label_key()),
             compare,
             sink(ToolbarCommand::Compare),
