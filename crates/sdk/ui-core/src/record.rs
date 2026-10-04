@@ -2830,6 +2830,31 @@ impl RecordStore {
             .and_then(app_state::DocWriter::last_error)
     }
 
+    /// Offer one serviced canonical record without awaiting host ACK or
+    /// touching another record. Accepted bytes remain Saving until durable.
+    pub(crate) fn offer_record(&self, id: &RecordId) -> Result<(), String> {
+        let mut set = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| "record store is busy".to_owned())?;
+        if set.portable.is_some() {
+            return set.offer_portable_record(id);
+        }
+        let slot = set
+            .open
+            .get_mut(id)
+            .ok_or_else(|| format!("{id}: record is not open"))?;
+        let doc = slot
+            .doc
+            .as_mut()
+            .ok_or_else(|| format!("{id}: record is busy"))?;
+        let Some(saver) = &mut slot.autosave else {
+            return Ok(());
+        };
+        slot.action_state.commit_for_save(doc);
+        saver.offer(doc)
+    }
+
     /// Close/retry one actual owner without settling another record's edit.
     pub(crate) fn try_flush_record(&self, id: &RecordId) -> Result<(), String> {
         let mut set = self
@@ -3459,6 +3484,13 @@ impl RecordStore {
         )
         .map_err(|error| match error {
             crate::bound_dispatch::BoundDispatchError::Record(error) => error,
+            crate::bound_dispatch::BoundDispatchError::Persistence(message) => {
+                durable_store::StoreError::Failed {
+                    context: "owner model persistence offer".to_owned(),
+                    message,
+                }
+                .into()
+            }
             crate::bound_dispatch::BoundDispatchError::MissingNode
             | crate::bound_dispatch::BoundDispatchError::ClosedLifetime
             | crate::bound_dispatch::BoundDispatchError::CrossRecordReentry => {

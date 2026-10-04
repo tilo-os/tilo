@@ -509,6 +509,8 @@ pub struct FrameHarness {
     system_search: system_search::SystemSearch,
     component_wake: Option<ComponentRunnerWakeState>,
     owner_wake_queue: Option<crate::owner_wake::OwnerWakeQueue>,
+    owner_service_layout_retired: bool,
+    layout_requested: bool,
     state: State,
     root: Box<dyn Widget>,
     history: Option<Box<crate::history_mode::host::HistoryHost>>,
@@ -798,7 +800,8 @@ impl FrameHarness {
             binding: binding.clone(),
             dirty: std::cell::Cell::new(false),
         };
-        if let Err(error) = component.mount(move |event| {
+        let owner_queue = crate::owner_wake::OwnerWakeQueue::default();
+        if let Err(error) = component.mount_with_owner_queue(&owner_queue, move |event| {
             if sender.send((generation, event)).is_ok() {
                 notify();
             }
@@ -823,6 +826,7 @@ impl FrameHarness {
             || binding.author,
             Some(wake),
         );
+        harness.owner_wake_queue = Some(owner_queue);
         if let Some(registration) = history
             && let Err(error) = harness.install_history(registration)
         {
@@ -888,7 +892,59 @@ impl FrameHarness {
     pub fn service_pending_owner_models(
         &mut self,
     ) -> Result<usize, crate::bound_dispatch::BoundDispatchError> {
-        Ok(0)
+        let report = self.service_pending_owner_models_report();
+        report.result.map(|()| report.completed)
+    }
+
+    /// Scheduling progress from the actual taken snapshot, including a
+    /// returned partial failure. This receipt grants no owner/map authority.
+    pub fn service_pending_owner_models_report(
+        &mut self,
+    ) -> crate::owner_wake::OwnerModelServiceReport {
+        let mut attempted = false;
+        let mut completed = 0;
+        let result = self.service_owner_model_batch(&mut attempted, &mut completed);
+        crate::owner_wake::OwnerModelServiceReport {
+            attempted,
+            completed,
+            result,
+        }
+    }
+
+    /// Queue presence is scheduling metadata, never a service/authority proof.
+    pub fn has_pending_owner_models(&self) -> bool {
+        self.owner_wake_queue
+            .as_ref()
+            .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending)
+    }
+
+    fn service_owner_model_batch(
+        &mut self,
+        attempted: &mut bool,
+        completed: &mut usize,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        let Some(queue) = self.owner_wake_queue.clone() else {
+            return Ok(());
+        };
+        let mut batch = queue.take_batch();
+        if batch.front().is_some() {
+            // An unknown visitor can replace descendants before it locates the
+            // target. Retire physical maps BEFORE the first arbitrary callback.
+            *attempted = true;
+            self.discard_layout_tree();
+            self.last_layout_viewport = None;
+            self.owner_service_layout_retired = true;
+        }
+        while let Some(work) = batch.front() {
+            crate::bound_dispatch::service_retained_owner_model(
+                self.root.as_mut(),
+                &mut self.state.doc,
+                work,
+            )?;
+            batch.complete_front();
+            *completed += 1;
+        }
+        Ok(())
     }
 
     fn drain_component_wakes(&self) {
@@ -896,7 +952,22 @@ impl FrameHarness {
             wake.drain();
         }
     }
+    fn readmit_owner_service_layout(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        if self.owner_service_layout_retired {
+            self.try_relayout()?;
+        }
+        Ok(())
+    }
     fn pump_component_wakes(&mut self) {
+        if let Err(error) = self.pump_component_wakes_checked() {
+            tracing::warn!(
+                ?error,
+                "headless: owner layout readmission refused; retry remains pending"
+            );
+        }
+    }
+    fn pump_component_wakes_checked(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        self.readmit_owner_service_layout()?;
         self.drain_component_wakes();
         if self
             .component_wake
@@ -905,6 +976,7 @@ impl FrameHarness {
         {
             self.relayout();
         }
+        self.readmit_owner_service_layout()
     }
 
     /// Capture/close embedded components while the host still owns their trees.
@@ -1347,6 +1419,8 @@ impl FrameHarness {
             system_search: Default::default(),
             component_wake,
             owner_wake_queue: None,
+            owner_service_layout_retired: false,
+            layout_requested: false,
             state,
             root,
             taffy: TaffyTree::new(),
@@ -1581,6 +1655,16 @@ impl FrameHarness {
         event: &WindowEvent,
         modifiers: &winit::event::Modifiers,
     ) -> RootDispatch {
+        if let Err(error) = self.readmit_owner_service_layout() {
+            tracing::warn!(
+                ?error,
+                "headless: root input refused before owner layout readmission"
+            );
+            return RootDispatch {
+                handled: false,
+                focus_target: None,
+            };
+        }
         let mut handled = false;
         let mut focus_target = None;
         self.root.handle_event(
@@ -1707,7 +1791,9 @@ impl FrameHarness {
     /// [`UndoButton`](crate::widget::UndoButton) both arrive here, so a
     /// scenario cannot pass against a path the user never takes.
     pub fn perform_undo(&mut self) -> bool {
-        self.pump_component_wakes();
+        if self.pump_component_wakes_checked().is_err() {
+            return false;
+        }
         if crate::history_mode::embedded::keyboard_captured(
             self.root.as_ref(),
             self.focused,
@@ -1753,7 +1839,9 @@ impl FrameHarness {
 
     /// Redo the last undone action. The mirror of [`Self::perform_undo`].
     pub fn perform_redo(&mut self) -> bool {
-        self.pump_component_wakes();
+        if self.pump_component_wakes_checked().is_err() {
+            return false;
+        }
         if crate::history_mode::embedded::keyboard_captured(
             self.root.as_ref(),
             self.focused,
@@ -1800,7 +1888,9 @@ impl FrameHarness {
     /// History selected by the focused component, or the outer history when unbound.
     /// Widget publication remains specific to each widget's own component binding.
     pub fn undo_status(&mut self) -> crate::undo::UndoStatus {
-        self.pump_component_wakes();
+        if self.pump_component_wakes_checked().is_err() {
+            return crate::undo::UndoStatus::default();
+        }
         if let Some(binding) = self
             .focused
             .and_then(|node| self.bindings.binding_for(node))
@@ -1987,10 +2077,26 @@ impl FrameHarness {
         self.platform
     }
 
+    /// Request deferred full composition without changing the viewport.
+    /// No callbacks run synchronously. Requests coalesce and survive failed
+    /// composition or postponed host presentation until the original pipeline
+    /// completes. A caller must still retire maps before replacing widgets;
+    /// this scheduling request does not establish topology validity.
+    pub fn request_layout(&mut self) {
+        self.layout_requested = true;
+        self.last_layout_viewport = None;
+    }
+
     /// Read wake demand without materializing document text or semantic nodes.
     pub fn frame_schedule(&self) -> FrameSchedule {
         self.drain_component_wakes();
-        let queued_work = self.presence_redraw
+        let queued_work = self.layout_requested
+            || self.owner_service_layout_retired
+            || self
+                .owner_wake_queue
+                .as_ref()
+                .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending)
+            || self.presence_redraw
             || !self.bound_invocations.is_empty()
             || !self.pending_control_invocations.is_empty()
             || self
@@ -2395,6 +2501,47 @@ impl FrameHarness {
         reason = "exclusive headless frame lifecycle with f32 logical pixel sizes"
     )]
     fn try_relayout(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        if self.layout_requested {
+            // A deferred request permits a full original composition, not
+            // stale target access. Retire BEFORE its arbitrary callbacks; a
+            // partial/error/unwind frame remains pending fresh readmission.
+            self.discard_layout_tree();
+            self.owner_service_layout_retired = true;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let result = if self.owner_service_layout_retired {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.try_relayout_content()
+            })) {
+                Ok(result) => result,
+                Err(payload) => {
+                    self.discard_layout_tree();
+                    self.last_layout_viewport = None;
+                    std::panic::resume_unwind(payload);
+                }
+            }
+        } else {
+            self.try_relayout_content()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let result = self.try_relayout_content();
+        if result.is_ok() {
+            self.owner_service_layout_retired = false;
+            // This exclusive &mut frame completed the entire original
+            // composition/draw/focus pipeline. Host reentry cannot acquire it.
+            self.layout_requested = false;
+        } else {
+            if self.owner_service_layout_retired {
+                self.discard_layout_tree();
+            }
+            if self.owner_service_layout_retired || self.layout_requested {
+                self.last_layout_viewport = None;
+            }
+        }
+        result
+    }
+
+    fn try_relayout_content(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
         use crate::widget::layout::{
             CompositionFocus, composition_geometry, settle_widget_composition,
         };
@@ -2408,9 +2555,11 @@ impl FrameHarness {
         // own focus until the fresh map below recovers it.
         let structure_changed = self.take_composition_dirty();
         let focus = if self.node_map.is_empty() {
-            // The first frame has no previous layout focus to transfer. A
-            // component's restored application view owns its initial focus.
-            None
+            // Only the CURRENT live controls can preserve logical caret/focus
+            // after arbitrary model service; no pre-callback pointer is reused.
+            self.owner_service_layout_retired
+                .then(|| CompositionFocus::capture_live(self.root.as_ref()))
+                .flatten()
         } else if structure_changed {
             CompositionFocus::capture_live(self.root.as_ref())
         } else {
@@ -3153,6 +3302,9 @@ impl FrameHarness {
     /// Reject external activation while a modal owns input. Search acceptance
     /// calls this only after its overlay has closed and its intent was taken.
     pub fn check_app_activation(&self) -> Result<(), String> {
+        if self.owner_service_layout_retired {
+            return Err("Current owner layout awaits readmission before app activation".into());
+        }
         if self.root.modal_capture().is_some()
             || self.focus_trap_active
             || self.caller_palette.palette.is_some()
@@ -3237,18 +3389,27 @@ impl FrameHarness {
     /// Resolve focus only in the selected, live app instance. A missing control
     /// is an authoritative no-owner result; layout cannot revive another app.
     pub fn prepare_app_activation(&mut self, instance: crate::application::InstanceId) {
+        if self.readmit_owner_service_layout().is_err() {
+            return;
+        }
         self.remember_app_focus();
         // Clear an unfinished preedit in its original bound owner, without commit.
         self.send(&WindowEvent::Ime(winit::event::Ime::Preedit(
             String::new(),
             None,
         )));
+        if self.readmit_owner_service_layout().is_err() {
+            return;
+        }
         self.modifiers = winit::event::Modifiers::default();
         self.active_input_instance = Some(instance);
         self.set_focused(None);
     }
 
     pub fn activate_app_focus(&mut self, instance: crate::application::InstanceId) {
+        if self.readmit_owner_service_layout().is_err() {
+            return;
+        }
         let order: Vec<_> = self
             .focus_order()
             .into_iter()
@@ -3754,7 +3915,8 @@ impl FrameHarness {
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
         use crate::accesskit_bridge::A11yTarget;
-        self.pump_component_wakes();
+        self.pump_component_wakes_checked()
+            .map_err(|error| format!("owner layout readmission refused: {error:?}"))?;
         if self.global_search_query().is_some() {
             let handled = self.perform_system_search_a11y(target, action);
             self.finish_system_search();
@@ -3976,7 +4138,8 @@ impl FrameHarness {
         name: &str,
         action: &crate::a11y::Action,
     ) -> Result<(), String> {
-        self.pump_component_wakes();
+        self.pump_component_wakes_checked()
+            .map_err(|error| format!("owner layout readmission refused: {error:?}"))?;
         self.perform_semantic_named(name, None, action)
     }
 
@@ -3995,7 +4158,8 @@ impl FrameHarness {
     ) -> Result<(), String> {
         use crate::a11y::Action as SemanticAction;
         use automerge::transaction::Transactable;
-        self.pump_component_wakes();
+        self.pump_component_wakes_checked()
+            .map_err(|error| format!("owner layout readmission refused: {error:?}"))?;
         if name == "action-palette" {
             let target = semantic_target
                 .ok_or_else(|| "palette action needs a published semantic target".to_owned())?;
@@ -4589,6 +4753,9 @@ impl FrameHarness {
     /// Deliver platform input including host keyboard policy. Browser/native adapters
     /// forward real events here; synthetic helpers use the same path.
     pub fn send_host_event(&mut self, event: &WindowEvent) {
+        if self.pump_component_wakes_checked().is_err() {
+            return;
+        }
         // A pen's sample is no event of its own: widgets read it while they
         // handle the pointer event it precedes.
         let Some(_pen) = self.pen.route(event) else {
@@ -4694,6 +4861,9 @@ impl FrameHarness {
 
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
+        if self.pump_component_wakes_checked().is_err() {
+            return;
+        }
         let Some(_pen) = self.pen.route(event) else {
             return;
         };
@@ -5004,6 +5174,11 @@ impl FrameHarness {
     /// 3. **Undo/redo the tree asked for** runs last, so an action performed in
     ///    the same tick is already on the stack and is what gets reverted.
     fn idle_control_tick(&mut self) {
+        // This original action sweep dereferences the mapped tree. Standalone
+        // model work leaves it unavailable until fresh composition admission.
+        if self.owner_service_layout_retired {
+            return;
+        }
         self.dispatch_control_invocations();
         self.poll_control_invocations();
         let author = self.author.clone();
@@ -5021,6 +5196,13 @@ impl FrameHarness {
     }
 
     fn host_tick(&mut self) {
+        if let Err(error) = self.readmit_owner_service_layout() {
+            tracing::warn!(
+                ?error,
+                "headless: host input refused before owner layout readmission"
+            );
+            return;
+        }
         self.idle_control_tick();
         let author = self.author.clone();
         if crate::undo::needs_commit(self.root.as_ref()) {
@@ -6380,7 +6562,9 @@ impl FrameHarness {
     /// than physical-key handling. It models a completed input-method
     /// composition without manufacturing a rendered frame for every character.
     pub fn commit_text(&mut self, text: &str) {
-        self.pump_component_wakes();
+        if self.pump_component_wakes_checked().is_err() {
+            return;
+        }
         self.send(&WindowEvent::Ime(winit::event::Ime::Commit(text.into())));
     }
 
@@ -12986,3 +13170,18 @@ mod framed_tests {
 #[cfg(test)]
 #[path = "headless/owner_fifo_tests.rs"]
 mod owner_fifo_tests;
+
+#[cfg(test)]
+#[path = "headless/owner_layout_custody_tests.rs"]
+mod owner_layout_custody_tests;
+
+#[cfg(test)]
+#[path = "headless/owner_layout_demand_tests.rs"]
+mod owner_layout_demand_tests;
+
+#[cfg(test)]
+#[path = "../../../browser/tilo-browser-runtime/src/background_work.rs"]
+mod owner_background_work;
+#[cfg(test)]
+#[path = "../../../browser/tilo-browser-runtime/src/mount_service_custody.rs"]
+mod owner_mount_service_custody;

@@ -2079,6 +2079,69 @@ pub(crate) struct ComponentRequest<'a> {
     pub(crate) visit: &'a mut ComponentVisitor<'a>,
 }
 
+/// One original ordinary model pass for the current retained owner. No callback
+/// is omitted from a wake reason, document frontier or presentation state.
+pub(crate) fn service_retained_owner_model(
+    root: &mut dyn Widget,
+    outer: &mut AutoCommit,
+    work: &crate::owner_wake::OwnerWakeRequest,
+) -> Result<(), BoundDispatchError> {
+    let captured = work.binding();
+    let _entry = captured.enter()?;
+    let mut result = None;
+    let mut visit = |current: &CallbackBinding,
+                     owner: &mut dyn crate::widget::AppWidget,
+                     _: &tilo_actions::ActionRegistry| {
+        if current.same_component(captured) {
+            let updated = current
+                .with_document(outer, |document, record_root| {
+                    owner.update(document, record_root);
+                    current.drain_owned_tree(owner, document).map(|_| ())
+                })
+                .and_then(|result| result);
+            // Preserve the original separate update and sync admissions/actor
+            // restoration, rather than holding a canonical loan across both.
+            let synced = current
+                .with_document(outer, |document, record_root| {
+                    owner.sync(document, record_root);
+                    current.drain_owned_tree(owner, document).map(|_| ())
+                })
+                .and_then(|result| result);
+            // The original host attempts sync after a nonpanic update/drain
+            // refusal. Retain its first error without omitting the fresh door.
+            let admitted = updated.and(synced);
+            // Original status projection follows the canonical loan, including
+            // refusal. No application callback runs under a record-store loan.
+            let projected = current.enter().and_then(|_entry| {
+                current
+                    .records
+                    .save_status(&current.checkout.id)
+                    .map_err(BoundDispatchError::Record)
+                    .map(|status| owner.record_save_status(status))
+            });
+            // Offer only this admitted record, after both canonical loans.
+            // Pending host acknowledgement is accepted, not a model retry.
+            let offered = current.enter().and_then(|_entry| {
+                current
+                    .records
+                    .offer_record(&current.checkout.id)
+                    .map_err(BoundDispatchError::Persistence)
+            });
+            result = Some(admitted.and(projected).and(offered));
+        }
+        None
+    };
+    let mut request = ComponentRequest {
+        target: Some(captured),
+        found: false,
+        visit: &mut visit,
+    };
+    root.visit_retained_components(&mut RetainedComponentRequest {
+        inner: &mut request,
+    })?;
+    result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
+}
+
 /// SDK-owned retained component traversal, separate from public callback reach.
 pub struct RetainedComponentRequest<'a, 'b> {
     inner: &'a mut ComponentRequest<'b>,
@@ -2103,6 +2166,7 @@ pub enum BoundDispatchError {
     ClosedLifetime,
     CrossRecordReentry,
     Record(RecordOpenError),
+    Persistence(String),
 }
 
 /// Logical typing ownership survives physical commits made when an opaque
@@ -3060,6 +3124,8 @@ impl CallbackBinding {
         outer: &mut AutoCommit,
         callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
     ) -> Result<R, BoundDispatchError> {
+        #[cfg(test)]
+        document_admission_probe::record(self);
         self.with_record_frame(outer, true, callback)
     }
     /// Restore only through the already owned record frame. Unlike ordinary
@@ -3994,3 +4060,46 @@ mod author_writer_tests;
 #[cfg(test)]
 #[path = "bound_dispatch/device_actor_tests.rs"]
 mod device_actor_tests;
+
+#[cfg(test)]
+pub(crate) mod document_admission_probe {
+    use super::*;
+    struct Observation {
+        owner: std::rc::Weak<Cell<bool>>,
+        closing: Rc<RefCell<Vec<bool>>>,
+    }
+    thread_local! { static CURRENT: RefCell<Option<Observation>> = const { RefCell::new(None) }; }
+    pub(crate) struct Probe {
+        previous: Option<Observation>,
+        closing: Rc<RefCell<Vec<bool>>>,
+    }
+    impl Probe {
+        pub(crate) fn new(binding: &CallbackBinding) -> Self {
+            let closing = Rc::new(RefCell::new(Vec::new()));
+            let previous = CURRENT.with_borrow_mut(|current| {
+                current.replace(Observation {
+                    owner: Rc::downgrade(&binding.closing),
+                    closing: closing.clone(),
+                })
+            });
+            Self { previous, closing }
+        }
+        pub(crate) fn attempts(&self) -> Vec<bool> {
+            self.closing.borrow().clone()
+        }
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            CURRENT.with_borrow_mut(|current| *current = self.previous.take());
+        }
+    }
+    pub(super) fn record(binding: &CallbackBinding) {
+        CURRENT.with_borrow(|current| {
+            if let Some(current) = current
+                && std::rc::Weak::ptr_eq(&current.owner, &Rc::downgrade(&binding.closing))
+            {
+                current.closing.borrow_mut().push(binding.closing.get());
+            }
+        });
+    }
+}

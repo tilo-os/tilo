@@ -733,6 +733,16 @@ impl Widget for BrowserShell {
         vec![&self.backdrop, &self.bar, &self.area, &self.overview]
     }
 
+    fn visit_retained_components(
+        &mut self,
+        request: &mut ui::bound_dispatch::RetainedComponentRequest<'_, '_>,
+    ) -> Result<(), ui::bound_dispatch::BoundDispatchError> {
+        for child in self.children_mut() {
+            request.visit(child)?;
+        }
+        Ok(())
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![
             &mut self.backdrop,
