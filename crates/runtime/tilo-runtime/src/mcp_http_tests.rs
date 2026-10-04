@@ -27,6 +27,7 @@ mod schema_rows {
 
 #[derive(Clone, Default)]
 struct StubHost {
+    room: Option<String>,
     invoked: Arc<StdMutex<Vec<InvokeRequest>>>,
     callers: Arc<StdMutex<Vec<Caller>>>,
     confirmation: tilo_actions::ConfirmationPolicy,
@@ -83,7 +84,7 @@ impl ActionHost for StubHost {
         page.providers = vec![CatalogueProvider {
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
-            room: "room".into(),
+            room: self.room.clone().unwrap_or_else(|| "room".into()),
             record_id: String::new(),
             browsable: true,
         }];
@@ -574,8 +575,11 @@ fn explicit_mcp_room_is_only_a_canonical_room_identifier() {
 
 #[test]
 fn client_metadata_cannot_replace_the_host_selected_mcp_audience() {
-    let host = StubHost::default();
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let host = StubHost {
+        room: Some(room.into()),
+        ..Default::default()
+    };
     let endpoint = Endpoint::new(
         host.clone(),
         room.into(),
@@ -601,8 +605,9 @@ fn client_metadata_cannot_replace_the_host_selected_mcp_audience() {
             .to_str()
             .unwrap()
             .to_owned();
-        let _ = invoke(&endpoint, &session).await;
-        let callers = host.callers.lock().unwrap();
+        let result = invoke(&endpoint, &session).await;
+        assert_ne!(result["result"]["isError"], true, "{result}");
+        let callers = host.callers.lock().unwrap().clone();
         assert_eq!(callers.len(), 1);
         assert_eq!(callers[0].room(), Some(room));
         assert_eq!(
