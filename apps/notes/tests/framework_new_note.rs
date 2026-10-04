@@ -5,9 +5,9 @@
 
 use notes::actions::new_page_action;
 use notes::doc::NotesDoc;
-use notes::{Notebook, NotesShell, PageId};
+use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
-use ui::tilo_resource::{Invoke, Resource};
+use ui::tilo_resource::Invoke;
 
 fn fresh() -> TestApp<NotesShell> {
     ui::i18n::I18nManager::init("en-US");
@@ -61,14 +61,19 @@ fn the_sidebar_plus_creates_a_root_note() {
 }
 
 #[test]
-fn a_notebook_with_pages_publishes_a_valid_surface() {
+fn the_published_surface_validates_as_the_host_checks_it() {
     let mut app = fresh();
-    app.invoke(Invoke::apply(&new_page_action(PageId::new_v4(), None, 0, "First")).unwrap())
+    let empty = app.harness().component_contract_violations();
+    assert!(empty.is_empty(), "empty notebook: {empty:#?}");
+    // New note opens the note in the editor, which publishes its body and
+    // the edits bound to where the caret is.
+    app.harness().click_named("notes.first_note").unwrap();
+    app.harness().type_text("Groceries");
+    app.settle();
+    let open = app.harness().component_contract_violations();
+    assert!(open.is_empty(), "a note open for editing: {open:#?}");
+    app.invoke(Invoke::apply(&new_page_action(PageId::new_v4(), None, 1, "Second")).unwrap())
         .unwrap();
-    let resources = app.harness().bound_resources(None).unwrap();
-    let handlers = app.harness().root_widget().resource_operation_handlers();
-    let mut registry = tilo_actions::ActionRegistry::new();
-    Notebook::register(&mut registry);
-    let violations = tilo_actions::validate_surface(&resources, &registry, &handlers);
-    assert!(violations.is_empty(), "{violations:#?}");
+    let two = app.harness().component_contract_violations();
+    assert!(two.is_empty(), "notebook with two notes: {two:#?}");
 }

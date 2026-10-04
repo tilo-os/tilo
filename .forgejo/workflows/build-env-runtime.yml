@@ -207,7 +207,6 @@ jobs:
     container:
       image: ${{ needs.builder.outputs.image }}
     env:
-      CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: "0"
       TILO_SCCACHE_KEY_PREFIX: tilo/env-runtime/v1/x86_64
     steps:

@@ -18,6 +18,8 @@ mod e2e_smoke;
 mod framework_body;
 #[path = "framework_new_note.rs"]
 mod framework_new_note;
+#[path = "framework_save_status.rs"]
+mod framework_save_status;
 #[path = "interaction_event_path.rs"]
 mod interaction_event_path;
 #[path = "launch_cli.rs"]
@@ -52,6 +54,8 @@ mod sidebar_collab_growth;
 mod sidebar_dnd;
 #[path = "slash_menu_focus.rs"]
 mod slash_menu_focus;
+#[path = "tab_nesting.rs"]
+mod tab_nesting;
 #[path = "tree_operations.rs"]
 mod tree_operations;
 #[path = "two_peer_sync.rs"]

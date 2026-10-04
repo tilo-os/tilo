@@ -575,9 +575,14 @@ mod tests {
     #[test]
     fn single_record_snapshot_names_its_record_and_caret() {
         let key = writer_block("2@5f3a9c01d2e4b6a8");
-        let snapshot = record_snapshot_json(
-            "so.tilo.writer",
-            "",
+        let layout = LiveLayout {
+            focused_tab: Some(1),
+            ..LiveLayout::default()
+        };
+        let records = BTreeMap::from([(1, ("so.tilo.writer".to_string(), String::new()))]);
+        let snapshot = snapshot_json(
+            &layout,
+            &records,
             Some((key.clone(), PresencePayload::Caret { pos: 4 })),
         );
         assert_eq!(
@@ -588,7 +593,8 @@ mod tests {
         let anchor = unhex(snapshot["selection"]["anchor"].as_str().unwrap()).unwrap();
         let head = unhex(snapshot["selection"]["head"].as_str().unwrap()).unwrap();
         assert_eq!(decode_selection(&anchor, &head), Some((key, 4, 4)));
-        assert!(record_snapshot_json("", "r", None)["focus"].is_null());
+        let invalid_records = BTreeMap::from([(1, (String::new(), "r".to_string()))]);
+        assert!(snapshot_json(&layout, &invalid_records, None)["focus"].is_null());
     }
 
     /// Notes names blocks by their stable UUID; both its caret key and its

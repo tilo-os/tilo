@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use tilo_user_identity::home_peer_registry_path;
+
 /// Durable registry record written after enrollment acknowledgement completes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +29,24 @@ pub struct HomePeerRegistration {
     pub device_cert: Option<tilo_user_identity::DeviceCert>,
     /// Relay room shards this peer was last configured to retain.
     pub relay_workspace_ids: Vec<u64>,
+    /// What the peer last said it runs for environments: whether a worker
+    /// hosts environment sessions, and whether one runs legacy apps. A
+    /// device refreshes it from the peer's management status; a relay
+    /// with no environment worker is not offered as a place to run one.
+    #[serde(default)]
+    pub environments: RelayEnvironments,
+}
+
+/// What a relay currently runs for environments, from its workers' live
+/// advertisements.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayEnvironments {
+    /// A worker hosts interactive environment sessions now.
+    #[serde(default)]
+    pub sessions: bool,
+    /// A worker advertising `kvm` runs legacy apps now.
+    #[serde(default)]
+    pub legacy_apps: bool,
 }
 
 impl HomePeerRegistration {

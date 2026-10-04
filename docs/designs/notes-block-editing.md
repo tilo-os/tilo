@@ -272,3 +272,16 @@ qualifications in the matrix. No schema migration or Notion parity is claimed.
 - IME follow-up validation: strict all-target Clippy and shell test compilation
   pass. The actual Notes WASM app passes seven synthetic Chrome checks, including
   committing over selected text and immediately using Enter; no browser errors.
+
+- Main integration `5901bfbbfd`: 10 Notes selection tests, 35 rich-text tests,
+  59 SDK block-editor tests, the exact Chat IME caller, and the exact Notes
+  navigation/overlay capture that failed CI all pass locally. Notes/rich-text
+  strict all-target Clippy passes. The rebuilt WASM app passes all seven Chrome
+  checks with no browser errors. Independent review of the TextCore integration
+  has no findings. CI confirmation on the pushed head is still required.
+- The shared two-undo History reproducer still fails after this integration;
+  the PR remains held. The required shell test compile also now fails in main's
+  `compositor/gpu_import.rs` on Darwin (Linux-only `smithay` imports and `dev_t`
+  type mismatches). Restoring every candidate source to unchanged `5901bfbbfd`
+  reproduces the same compile errors; all feature files were restored afterward.
+  This is a verified main portability blocker, not a successful shell check.

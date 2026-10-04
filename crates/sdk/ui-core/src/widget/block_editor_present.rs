@@ -132,7 +132,7 @@ fn carry_byte(old: &str, new: &str, at: usize) -> usize {
     } else {
         new.len().saturating_sub(suffix)
     };
-    super::clamp_char_boundary(new, carried)
+    new.floor_char_boundary(carried)
 }
 
 fn line_for(kind: &BlockKind, text: &str) -> RichTextLine {
@@ -333,7 +333,7 @@ impl BlockEditor {
             let index = blocks.iter().position(|block| &block.id == id)?;
             Some(DocumentPosition {
                 block: index,
-                byte: super::clamp_char_boundary(blocks.get(index)?.text(), position.byte),
+                byte: blocks.get(index)?.text().floor_char_boundary(position.byte),
             })
         };
         self.document_selection = self.document_selection.and_then(|selection| {
@@ -429,7 +429,7 @@ impl BlockEditor {
         let blocks = &self.blocks;
         let clamp = |position: DocumentPosition| DocumentPosition {
             byte: blocks.get(position.block).map_or(position.byte, |block| {
-                super::clamp_char_boundary(block.text(), position.byte)
+                block.text().floor_char_boundary(position.byte)
             }),
             ..position
         };

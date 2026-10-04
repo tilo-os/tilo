@@ -120,38 +120,58 @@ impl ResourceApp for App {
         ))
     }
 
-    /// A saved artwork, handed over by Files or named on the command line.
-    const OPENS: &'static [&'static str] = &[document::MEDIA_TYPE];
+    /// A saved artwork, handed over by Files or named on the command
+    /// line; and pictures, which open as an artwork the size of the
+    /// picture.
+    const OPENS: &'static [&'static str] = &[
+        document::MEDIA_TYPE,
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+    ];
     const ARGUMENTS: usize = 1;
 
-    /// An artwork file named on the command line opens as its own record,
-    /// the same one each time it is opened.
+    /// A file named on the command line opens a record of its own, the
+    /// same one each time: an artwork file is that record; a picture gets
+    /// an artwork derived from it, edits and all.
     fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
         let path = std::path::Path::new(input.argument()?);
-        let artwork = path
+        let extension = path
             .extension()
             .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case(document::EXTENSION));
-        artwork.then(|| RecordId::identify_file(path))
+            .map(str::to_ascii_lowercase)?;
+        if extension == document::EXTENSION {
+            return Some(RecordId::identify_file(path));
+        }
+        matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "webp")
+            .then(|| RecordId::derived("artwork", &RecordId::identify_file(path)))
     }
 
-    /// The file's artwork, in the record it opened: a record made for the
-    /// file starts as it; a file handed to the window's artwork replaces it
-    /// as one step, Undo away from what was there.
+    /// The file, in the record it opened: an artwork file is that artwork,
+    /// a picture a new artwork sized to it with the picture its first mark.
+    /// A record made for the file starts as it; opened again, it is as it
+    /// was left. A file handed to the window's artwork (no path) replaces
+    /// it as one step, Undo away from what was there.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<ArtworkResource>> {
         let Some(file) = input.file() else {
             return Vec::new();
         };
         if !created && input.argument().is_some() {
-            // The file's own record, opened again: it is the artwork.
             return Vec::new();
         }
-        let Ok(text) = std::str::from_utf8(file.bytes()) else {
-            return Vec::new();
+        let open = if file.media_type() == document::MEDIA_TYPE {
+            let Ok(text) = std::str::from_utf8(file.bytes()) else {
+                return Vec::new();
+            };
+            CanvasAction::OpenArtwork(actions::OpenArtwork {
+                file: text.to_owned(),
+            })
+        } else {
+            match resource::open_picture(file.name(), file.bytes()) {
+                Ok(open) => open,
+                Err(_) => return Vec::new(),
+            }
         };
-        let open = CanvasAction::OpenArtwork(actions::OpenArtwork {
-            file: text.to_owned(),
-        });
         Invoke::apply(&open).into_iter().collect()
     }
 

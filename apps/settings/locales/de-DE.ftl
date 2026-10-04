@@ -795,7 +795,6 @@ a11y-thick-caret-desc = Breitere Einfügemarke in Tilo-Anwendungen
 a11y-typing-title = Eingabe
 a11y-osk = Bildschirmtastatur
 a11y-osk-desc = Automatisch erscheint sie bei Textfeldern, wenn Sie per Berührung ohne Tastatur tippen
-a11y-osk-missing = Nicht installiert — das signierte Systempaket so.tilo.osk hinzufügen
 a11y-sticky-keys = Einrastfunktion
 a11y-sticky-keys-desc = Tastenkürzel nacheinander statt als Akkord tippen
 a11y-slow-keys = Verzögertasten
