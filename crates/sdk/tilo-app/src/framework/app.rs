@@ -246,6 +246,11 @@ impl SeedCx<'_> {
         &self.context.author().0
     }
 
+    /// The device creating the record.
+    pub fn device(&self) -> &str {
+        self.context.device_id()
+    }
+
     /// The app's host on this device.
     pub fn host(&self) -> &HostContext {
         self.context
@@ -329,7 +334,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     reader: Reader<A::Resource>,
     editing: Editing,
     storage: AppStorage,
-    person: Option<ui_core::record::person::PersonRecords>,
+    hosted: super::settings::Hosted,
 ) -> ResourceRoot<A::Resource> {
     let scope = write_scope::<A>();
     let (permissions, read_only, me, run) = match editing {
@@ -349,8 +354,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     let live = Live::new(reader);
     let alive = Rc::new(());
     let dispatch = Dispatcher::new(A::ID, resource_id, read_only, me.as_deref());
-    let person = person.map(|records| super::person::PersonState::new(records, A::ID, A::TITLE));
-    let storage = super::settings::ViewStorage::new(storage, person);
+    let storage = super::settings::ViewStorage::new(storage, hosted.attach(A::ID, A::TITLE));
     // Effects and projection drains run in a window someone uses only:
     // History shows a past version, and a capture reaches nothing outside.
     let effects = (permissions.is_some() && run.mode.is_live())
@@ -486,7 +490,10 @@ fn create<A: ResourceApp>(
             run,
         },
         context.storage(),
-        context.person_records().cloned(),
+        super::settings::Hosted {
+            person: context.person_records().cloned(),
+            device: Some(context.device_id().to_owned()),
+        },
     );
     // A capture launched on nothing is staged by its scenario alone: what a
     // launch on nothing takes reads from this device (a library, the last
@@ -758,7 +765,7 @@ fn prepare_named(
             .tempdir()
             .map_err(operation)?;
         let root = profile.path().join("state");
-        let settings = profile.path().join("settings.json");
+        let profile_root = profile.path().to_path_buf();
         let content = profile_content(profile.path());
         let mut host = ApplicationHost::new_with_profile_lifetime(
             root,
@@ -781,7 +788,11 @@ fn prepare_named(
         if private {
             prepared.context.provide_private();
         }
-        return Ok(super::testing::with_settings_file(prepared, settings));
+        return Ok(super::testing::in_profile(
+            prepared,
+            &profile_root,
+            definition.app_id,
+        ));
     }
     if let Some(directory) = args.value("--data-dir") {
         let author = ui_core::collaboration::local_user_id();
@@ -795,9 +806,10 @@ fn prepare_named(
                 prepared
                     .context
                     .provide_content(super::testing::data_dir_content(directory.as_ref()));
-                super::testing::with_settings_file(
+                super::testing::in_profile(
                     prepared,
-                    super::testing::data_dir_settings(directory.as_ref()),
+                    &super::testing::data_dir_root(directory.as_ref()),
+                    definition.app_id,
                 )
             },
         );

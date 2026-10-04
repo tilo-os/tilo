@@ -39,16 +39,30 @@ enum Profile {
     DataDir(PathBuf),
 }
 
-/// A component prepared on a private or explicit profile keeps its settings
-/// in that profile too, never in the person's session document.
-pub(crate) fn with_settings_file(
+/// A component prepared on a private or explicit profile at `root` keeps
+/// its settings and its files in that profile too, never in the person's
+/// session document or file areas.
+pub(crate) fn in_profile(
     mut prepared: PreparedComponentInputs,
-    file: std::path::PathBuf,
+    root: &std::path::Path,
+    app_id: &str,
 ) -> PreparedComponentInputs {
     prepared
         .context
-        .provide_settings(ui_core::storage::SettingsDocument::File(file));
+        .provide_settings(ui_core::storage::SettingsDocument::File(
+            root.join("settings.json"),
+        ));
     prepared
+        .context
+        .provide_files(ui_core::storage::AppFiles::at(
+            ui_core::storage::AppPaths::under(root.join("files"), app_id),
+        ));
+    prepared
+}
+
+/// The root of a `--data-dir` profile.
+pub(crate) fn data_dir_root(directory: &std::path::Path) -> std::path::PathBuf {
+    std::path::absolute(directory).unwrap_or_else(|_| directory.to_path_buf())
 }
 
 /// The content store of a `--data-dir` profile.
@@ -58,20 +72,18 @@ pub(crate) fn data_dir_content(directory: &std::path::Path) -> tilo_content::Con
     )
 }
 
-/// The settings document of a `--data-dir` profile.
-pub(crate) fn data_dir_settings(directory: &std::path::Path) -> std::path::PathBuf {
-    std::path::absolute(directory)
-        .unwrap_or_else(|_| directory.to_path_buf())
-        .join("settings.json")
-}
-
 impl Profile {
     /// The profile's settings document, which the app's typed settings use
     /// instead of the person's.
     fn settings(&self) -> PathBuf {
+        self.root().join("settings.json")
+    }
+
+    /// The directory the profile keeps everything in.
+    fn root(&self) -> PathBuf {
         match self {
-            Self::Temporary(directory) => directory.path().join("settings.json"),
-            Self::DataDir(directory) => data_dir_settings(directory),
+            Self::Temporary(directory) => directory.path().to_path_buf(),
+            Self::DataDir(directory) => data_dir_root(directory),
         }
     }
 
@@ -356,7 +368,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None => A::shot_viewport(None),
         };
         prepared.context.provide_content(profile.content());
-        let prepared = with_settings_file(prepared, profile.settings());
+        let prepared = in_profile(prepared, &profile.root(), A::ID);
         let component =
             definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
         let mut harness =
@@ -394,6 +406,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
             permissions,
             marker: std::marker::PhantomData,
         })
+    }
+
+    /// The app's file areas in this profile, which the running app writes
+    /// instead of the person's.
+    pub fn files(&self) -> ui_core::storage::AppFiles {
+        ui_core::storage::AppFiles::at(ui_core::storage::AppPaths::under(
+            self.profile.root().join("files"),
+            A::ID,
+        ))
     }
 
     /// The app's typed settings in this profile's settings document, which
