@@ -154,8 +154,13 @@ impl Resource for Chat {
     }
 
     /// Starting a call is local presentation plus the native voice service,
-    /// never a document action, so it rides the root as an Effect.
-    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
+    /// never a document action, so it rides the root as an Effect — once
+    /// there is a conversation to call in. A chat holding nothing yet offers
+    /// nothing to do in it.
+    fn bound_actions(state: &ChatState) -> Vec<tilo_actions::ActionSpec> {
+        if state.workspaces.is_empty() {
+            return Vec::new();
+        }
         actions::start_call_operations()
     }
 
@@ -400,6 +405,19 @@ mod tests {
             }
         );
         assert!(actions::video_call_unavailable_reason().contains("voice-only"));
+
+        let empty = ui::tilo_resource::publish::<Chat>(
+            Chat::KIND,
+            "Chat",
+            &Chat::read(&AutoCommit::new()).expect("empty chat state"),
+        );
+        assert!(
+            !empty
+                .actions
+                .iter()
+                .any(|action| action.id.starts_with("start-")),
+            "a chat with no conversation yet offers no call to start"
+        );
     }
 
     #[test]
