@@ -10,14 +10,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use taffy::{NodeId, Position, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use ui::TextRole;
 use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    AppModel, Banner, Button, Column, ControlSize, Element, EmptyState, ModalDialog, ModelPath,
-    Row, SegmentedStyle, Spacer, Text, ToggleGroup, Widget,
+    AppModel, Banner, Button, Column, ControlSize, Element, EmptyState, ModelPath, Row,
+    SegmentedStyle, Spacer, Text, ToggleGroup, Widget,
 };
 
 use crate::connect_modal::{confirm_dialog, connect_dialog};
@@ -96,39 +96,6 @@ impl ui::widget::Decorator for Placeholder {
 
     fn name(&self) -> &'static str {
         "Placeholder"
-    }
-}
-
-/// A dialog that paints over the window and takes no room in the flow.
-struct Floating<W: Widget>(W);
-
-impl<W: Widget> ui::widget::Decorator for Floating<W> {
-    type Inner = W;
-
-    fn inner(&self) -> &W {
-        &self.0
-    }
-
-    fn inner_mut(&mut self) -> &mut W {
-        &mut self.0
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = self.0.build_layout(taffy, theme, node_map);
-        if let Ok(mut style) = taffy.style(node).cloned() {
-            style.position = Position::Absolute;
-            let _ = taffy.set_style(node, style);
-        }
-        node
-    }
-
-    fn name(&self) -> &'static str {
-        "Floating"
     }
 }
 
@@ -491,10 +458,8 @@ impl Workspace {
             Part::NoTable(_) => Box::new(Placeholder::no_table(
                 "Choose a table to see its structure.",
             )),
-            Part::Dialog(Dialog::Connect) => Box::new(Floating(connect_dialog(link))),
-            Part::Dialog(Dialog::ConfirmRun) => {
-                Box::new(Floating::<ModalDialog<Column>>(confirm_dialog(link)))
-            }
+            Part::Dialog(Dialog::Connect) => Box::new(connect_dialog(link)),
+            Part::Dialog(Dialog::ConfirmRun) => Box::new(confirm_dialog(link)),
         }
     }
 
