@@ -75,6 +75,8 @@ containerfile="$repo/os/Containerfile"
 # The user-tmpfiles.d snippets live in /usr/share, the only system path
 # systemd-tmpfiles --user reads.
 # The native runtime host at /usr/bin/tilo-runtime-mcp is a deliberate addition.
+# /usr/bin/bootc from bootc-builder, the base's release patched to find this
+# system's ESP on a disk it shares, and its licence notice are deliberate.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
@@ -88,10 +90,11 @@ containerfile="$repo/os/Containerfile"
 # The extension-manifest public key ships beside the helper.
 # The release gate's greetd session-context check ships beside the other
 # booted-guest checks in /usr/libexec/tilo.
+# The release gate's input hotplug check ships beside them.
 # The WPE engine overlay and /usr/bin/browser are deliberate removals: the
 # Browser is a tapp in the app store and its Chromium engine a signed runtime
 # bundle under /usr/lib/tilo-runtime, both already copied.
-expected_contract=b7718bc438e4a1180deef2fc8a05beae6d0effeebe3e3a4a4c42c221204c3051
+expected_contract=b7405b0f71e226da905b34819a678fa341348f5c41f557471e6fda0b16d1493c
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

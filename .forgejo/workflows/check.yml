@@ -60,8 +60,6 @@ jobs:
     steps:
       - name: Checkout public-trust context fixture
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Resolve the CI builder before starting job containers
         id: resolve
         env:
@@ -109,7 +107,6 @@ jobs:
       - name: Checkout head for change selection
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
           filter: ${{ github.event_name != 'pull_request' && 'blob:none' || '' }}
 
@@ -176,8 +173,6 @@ jobs:
     steps:
       - name: Checkout security boundary inputs
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Merge onto the tested main
         uses: ./.forgejo/actions/merge-main
@@ -211,7 +206,6 @@ jobs:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
       - name: Merge onto the tested main
@@ -261,7 +255,6 @@ jobs:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
       - name: Merge onto the tested main
@@ -405,7 +398,7 @@ jobs:
       - name: Save test results of shard ${{ matrix.shard }}
         if: always() && (matrix.test_packages != '' || matrix.scoped_tests != '')
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: nextest-junit-${{ matrix.arch }}-${{ matrix.shard }}
           path: target/nextest/ci/junit.xml
@@ -429,7 +422,6 @@ jobs:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
       - name: Merge onto the tested main
@@ -477,7 +469,7 @@ jobs:
       - name: Save observed compiler inputs
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: compiler-inputs-${{ matrix.arch }}-${{ matrix.shard }}
           path: target/ci/compiler-inputs.json
@@ -501,7 +493,6 @@ jobs:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
       - name: Merge onto the tested main
@@ -550,7 +541,7 @@ jobs:
       - name: Save observed Clippy inputs
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: clippy-inputs-${{ matrix.arch }}-${{ matrix.shard }}
           path: target/ci/clippy-*-inputs.json
@@ -594,7 +585,6 @@ jobs:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
       - name: Merge onto the tested main
@@ -642,7 +632,6 @@ jobs:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
       - name: Merge onto the tested main
@@ -694,8 +683,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Merge onto the tested main
         uses: ./.forgejo/actions/merge-main
@@ -838,6 +825,9 @@ jobs:
         continue-on-error: true
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # The receipt step pushes a git note with these credentials, so this
+          # checkout keeps the write-capable repository token. Every other
+          # checkout reads this public repository with the job token.
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
           filter: blob:none

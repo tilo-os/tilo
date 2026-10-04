@@ -1,13 +1,13 @@
-//! The Backups app's exported **actions** and the **resource tree** it publishes
-//! to Ctrl+K.
+//! The Backups app's exported **actions**, **effects** and the **live rows** it
+//! publishes beside its resource.
 //!
 //! Backups keeps almost all of its state *outside* the shared document: the
 //! catalog of sources, snapshots and destinations is projected live from the
-//! storage backend, and running/verifying/restoring a snapshot are external
-//! side effects, not CRDT mutations. The one thing that must replicate, undo
-//! and replay byte-identically is the **retention policy**, so that is the
-//! whole action surface: a single [`BackupsAction::SetRetention`] that sets one
-//! policy field to an absolute, pre-resolved count. The exact same
+//! storage backend on this device, and running/verifying/restoring a snapshot
+//! are [`BackupsEffect`]s, not CRDT mutations. The one thing that must
+//! replicate, undo and replay byte-identically is the **retention policy**, so
+//! that is the whole action surface: a single [`BackupsAction::SetRetention`]
+//! that sets one policy field to an absolute, pre-resolved count. The exact same
 //! [`EncodedAction`] the on-screen +/- affordance dispatches is what Ctrl+K
 //! dispatches, keeping one source of truth and one replay path.
 //!
@@ -16,13 +16,15 @@
 //! that would change nothing is a no-op (see the change-guard in
 //! [`BackupsAction::apply`]).
 
-use automerge::{AutoCommit, ROOT};
+use automerge::ROOT;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, Resource, RetryPolicy,
+    ExecutionLocus, Resource, RetryPolicy,
 };
+use ui::framework::{Effect, LiveRow};
+use ui::tilo_resource;
 
 use crate::doc::{BackupsDoc, PolicyField};
 use crate::model::RetentionPolicy;
@@ -30,86 +32,64 @@ use crate::model::{Catalog, Snapshot};
 
 /// Registry `type_id` for every backups action.
 pub const BACKUPS_ACTION_TYPE: &str = "backups.action";
-/// Protocol for local, deliberately non-replicated filesystem operations.
-/// Paths and credentials never cross this boundary: operations address the
-/// already-published catalog by opaque snapshot id only.
+/// Protocol of the effects: local, deliberately non-replicated filesystem
+/// operations. Paths and credentials never cross this boundary: effects
+/// address the already-published catalog by opaque id only.
 pub const BACKUPS_OPERATION_TYPE: &str = "backups.operation";
 
-/// The safe, agent-drivable side-effect surface.  These are intentionally
-/// effects rather than document actions: a peer must never replay a backup or
-/// restore against a different machine's filesystem merely because it received
-/// a collaborative document change.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BackupOperation {
+/// The safe, agent-drivable side-effect surface. These are effects rather
+/// than document actions: a peer must never replay a backup or restore
+/// against a different machine's filesystem merely because it received a
+/// collaborative document change. The `Show…` views change only what this
+/// window shows; their ids are stable catalog identities, never paths or
+/// display labels, so search and agents can target a concrete item.
+#[derive(Clone, Debug, PartialEq, Eq, ui::framework::Effect)]
+#[effect(operation = "backups.operation")]
+pub enum BackupsEffect {
+    /// Create one new checksummed local snapshot, then keep only what the
+    /// retention policy keeps.
+    #[effect(job, label = "Run backup now")]
     BackupNow,
-    Verify {
-        snapshot_id: String,
-    },
-    Restore {
-        snapshot_id: String,
-    },
+    /// Choose a local source and a destination outside it.
+    #[effect(job, label = "Set up backups")]
     Setup,
-    /// Local navigation only. These IDs are stable catalog identities, never
-    /// paths or display labels, so search/agents can target a concrete item.
-    OpenSource {
+    /// Read every file in this stored snapshot and verify its checksum.
+    #[effect(job, permission = "read", label = "Verify snapshot")]
+    Verify {
+        #[param("Id of the stored snapshot")]
+        snapshot_id: String,
+    },
+    /// Choose a new or empty local folder, then restore and verify the whole
+    /// snapshot.
+    #[effect(job, label = "Restore snapshot into a new or empty folder…")]
+    RestoreSnapshot {
+        #[param("Id of the stored snapshot")]
+        snapshot_id: String,
+    },
+    /// Show one backup source.
+    #[effect(view, label = "Show source")]
+    ShowSource {
+        #[param("Id of the source")]
         source_id: String,
     },
-    OpenDestination {
+    /// Show one backup destination.
+    #[effect(view, label = "Show destination")]
+    ShowDestination {
+        #[param("Id of the destination")]
         destination_id: String,
     },
-    OpenSnapshot {
+    /// Show one stored snapshot in the timeline.
+    #[effect(view, label = "Show snapshot")]
+    ShowSnapshot {
+        #[param("Id of the stored snapshot")]
         snapshot_id: String,
     },
-    OpenSchedule {
+    /// Show the retention policy a source's snapshots follow.
+    #[effect(view, label = "Show global retention policy")]
+    ShowSchedule {
+        #[param("Id of the source")]
         source_id: String,
     },
-}
-
-/// # Errors
-///
-/// Returns an explanatory refusal when the payload is not a valid operation.
-pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<BackupOperation>, String> {
-    if type_id != BACKUPS_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| format!("invalid Backups operation: {error}"))
-}
-
-fn operation_spec(
-    id: &str,
-    label: &str,
-    kind: OperationKind,
-    operation: &BackupOperation,
-) -> Option<ActionSpec> {
-    let spec = ActionSpec::operation(id, label, kind, BACKUPS_OPERATION_TYPE, operation).ok()?;
-    // A backup is deliberately local to this device.  Its contract must say
-    // more than "effect": agents need to know which calls can be retried and
-    // which one crosses the user's recovery-folder boundary.
-    Some(match operation {
-        BackupOperation::Setup => spec
-            .with_description("Choose a local source and a destination outside it.")
-            .retry_policy(RetryPolicy::AtMostOnce),
-        BackupOperation::BackupNow => spec
-            .with_description("Create one new checksummed local snapshot.")
-            .requiring(tilo_actions::PermissionRequirement::Write)
-            .retry_policy(RetryPolicy::AtMostOnce),
-        BackupOperation::Verify { .. } => spec
-            .with_description("Read every file in this stored snapshot and verify its checksum.")
-            .requiring(tilo_actions::PermissionRequirement::Read)
-            .retry_policy(RetryPolicy::Idempotent),
-        BackupOperation::Restore { .. } => spec
-            .with_description(
-                "Choose a new or empty local folder, then restore and verify the whole snapshot.",
-            )
-            .requiring(tilo_actions::PermissionRequirement::Write)
-            .retry_policy(RetryPolicy::AtMostOnce),
-        BackupOperation::OpenSource { .. }
-        | BackupOperation::OpenDestination { .. }
-        | BackupOperation::OpenSnapshot { .. }
-        | BackupOperation::OpenSchedule { .. } => spec,
-    })
 }
 
 /// Every collaborative operation the Backups app exports on its stored
@@ -230,15 +210,10 @@ fn policy_contract() -> ActionContract {
     }
 }
 
-/// Stable id for the published workspace root ([`tilo_resource::publish`]).
-pub const BACKUPS_RESOURCE_ID: &str = "backups";
-
-const DEFAULT_UNAVAILABLE: &str = "Choose a source and destination before running a backup";
-
 /// Retention-policy Document tree: one child per class with set / increase /
 /// decrease — the same actions the on-screen affordances dispatch. Rides
-/// [`crate::resource::Backups::children`] so hosted palette traffic goes through
-/// [`tilo_resource::publish`], never a second hand-built `backups.policy` root.
+/// [`crate::resource::Backups::children`], so palette traffic goes through
+/// [`tilo_resource::publish`].
 pub(crate) fn publish_policy_document(policy: &RetentionPolicy) -> Resource {
     let mut root = Resource::new("backups.policy", "backups.policy", "Retention policy");
 
@@ -284,56 +259,37 @@ pub(crate) fn publish_policy_document(policy: &RetentionPolicy) -> Resource {
     root
 }
 
-/// Workspace View / Effect ops that are not document state (run backup, set up).
-/// Published via [`crate::resource::Backups::local_operations`].
-pub(crate) fn workspace_effect_specs(
-    configured: bool,
-    unavailable_reason: &str,
-) -> Vec<ActionSpec> {
-    let mut specs = Vec::new();
-    if let Some(spec) = operation_spec(
-        "backup-now",
-        "Run backup now",
-        OperationKind::Effect,
-        &BackupOperation::BackupNow,
-    ) {
-        specs.push(if configured {
-            spec
-        } else {
-            spec.unavailable("not_configured", unavailable_reason)
-        });
-    }
-    if let Some(spec) = operation_spec(
-        "setup",
-        "Set up backups",
-        OperationKind::Effect,
-        &BackupOperation::Setup,
-    ) {
-        specs.push(spec);
-    }
-    specs
+// ===========================================================================
+// Live rows: the catalog on this device
+// ===========================================================================
+
+/// Why the repository effects cannot run on this device right now, for
+/// programs (`code`) and people (`reason`); `None` when they can.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Blocked {
+    pub(crate) code: &'static str,
+    pub(crate) reason: String,
 }
 
-fn catalog_source_set(catalog: &Catalog) -> Resource {
-    let mut sources = Resource::new("backups.sources", "backups.source-set", "Backup sources");
+/// `effect` as the row `id` offers it, unavailable while `blocked`.
+fn offer(id: &str, effect: &BackupsEffect, blocked: Option<&Blocked>) -> ActionSpec {
+    let mut spec = effect.bound();
+    id.clone_into(&mut spec.id);
+    match blocked {
+        Some(blocked) => spec.unavailable(blocked.code, blocked.reason.clone()),
+        None => spec,
+    }
+}
+
+fn labelled(mut spec: ActionSpec, label: &str) -> ActionSpec {
+    label.clone_into(&mut spec.label);
+    spec
+}
+
+fn source_rows(catalog: &Catalog) -> LiveRow {
+    let mut sources = LiveRow::new("backups.sources", "backups.source-set", "Backup sources");
     for source in &catalog.sources {
-        let source_id = source.id.clone();
-        let mut source_resource = Resource::new(
-            format!("backups.source:{}", source.id),
-            "backups.source",
-            format!("{} · {}", source.kind.label(), source.cadence.label()),
-        );
-        if let Some(spec) = operation_spec(
-            "open",
-            "Show source",
-            OperationKind::View,
-            &BackupOperation::OpenSource {
-                source_id: source_id.clone(),
-            },
-        ) {
-            source_resource = source_resource.with_action(spec);
-        }
-        let mut schedule = Resource::new(
+        let schedule = LiveRow::new(
             format!("backups.schedule:{}", source.id),
             "backups.schedule",
             format!(
@@ -341,165 +297,81 @@ fn catalog_source_set(catalog: &Catalog) -> Resource {
                 source.kind.label(),
                 source.cadence.label()
             ),
-        );
-        if let Some(spec) = operation_spec(
+        )
+        .operation(offer(
             "open",
-            "Show global retention policy",
-            OperationKind::View,
-            &BackupOperation::OpenSchedule { source_id },
-        ) {
-            schedule = schedule.with_action(spec);
-        }
-        sources = sources.with_child(source_resource.with_child(schedule));
+            &BackupsEffect::ShowSchedule {
+                source_id: source.id.clone(),
+            },
+            None,
+        ));
+        sources = sources.row(
+            LiveRow::new(
+                format!("backups.source:{}", source.id),
+                "backups.source",
+                format!("{} · {}", source.kind.label(), source.cadence.label()),
+            )
+            .operation(offer(
+                "open",
+                &BackupsEffect::ShowSource {
+                    source_id: source.id.clone(),
+                },
+                None,
+            ))
+            .row(schedule),
+        );
     }
     sources
 }
 
-fn catalog_destination_set(catalog: &Catalog) -> Resource {
-    let mut destinations = Resource::new(
+fn destination_rows(catalog: &Catalog) -> LiveRow {
+    let mut destinations = LiveRow::new(
         "backups.destinations",
         "backups.destination-set",
         "Backup destinations",
     );
     for destination in &catalog.destinations {
-        let mut destination_resource = Resource::new(
-            format!("backups.destination:{}", destination.id),
-            "backups.destination",
-            format!("{} · {}", destination.name, destination.kind.label()),
+        destinations = destinations.row(
+            LiveRow::new(
+                format!("backups.destination:{}", destination.id),
+                "backups.destination",
+                format!("{} · {}", destination.name, destination.kind.label()),
+            )
+            .operation(offer(
+                "open",
+                &BackupsEffect::ShowDestination {
+                    destination_id: destination.id.clone(),
+                },
+                None,
+            )),
         );
-        if let Some(spec) = operation_spec(
-            "open",
-            "Show destination",
-            OperationKind::View,
-            &BackupOperation::OpenDestination {
-                destination_id: destination.id.clone(),
-            },
-        ) {
-            destination_resource = destination_resource.with_action(spec);
-        }
-        destinations = destinations.with_child(destination_resource);
     }
     destinations
 }
 
-fn catalog_snapshot_set(catalog: &Catalog, configured: bool, unavailable_reason: &str) -> Resource {
-    let mut snapshots = Resource::new(
+/// How many recent snapshots the published tree lists; older ones resolve
+/// by id ([`live_row`]) and are found through search.
+const SNAPSHOT_PAGE: usize = 128;
+
+/// The live catalog as rows beneath the resource: sources with their
+/// schedules, destinations, and the recent page of stored snapshots with the
+/// effects each offers on this device.
+pub(crate) fn live_rows(catalog: &Catalog, blocked: Option<&Blocked>) -> Vec<LiveRow> {
+    let mut snapshots = LiveRow::new(
         "backups.snapshots",
         "backups.snapshot-set",
         "Snapshot versions and runs · recent page",
     );
-    for snapshot in catalog.snapshots.iter().take(128) {
-        snapshots =
-            snapshots.with_child(snapshot_resource(snapshot, configured, unavailable_reason));
+    for snapshot in catalog.snapshots.iter().take(SNAPSHOT_PAGE) {
+        snapshots = snapshots.row(snapshot_row(snapshot, blocked));
     }
-    snapshots
+    vec![source_rows(catalog), destination_rows(catalog), snapshots]
 }
 
-/// Live catalog Views/Effects that are not document state. Hosted
-/// [`PublishesResources`] returns these beside [`tilo_resource::publish`] —
-/// never a second `backups.policy` / `backups` Document door.
-pub(crate) fn live_catalog_extras(
-    catalog: &Catalog,
-    configured: bool,
-    unavailable_reason: Option<&str>,
-) -> Vec<Resource> {
-    let reason = unavailable_reason.unwrap_or(DEFAULT_UNAVAILABLE);
-    vec![
-        catalog_source_set(catalog),
-        catalog_destination_set(catalog),
-        catalog_snapshot_set(catalog, configured, reason),
-    ]
-}
-
-/// The resource tree Backups publishes standalone / `--shots` / unit tests:
-/// retention policy Document ops plus the safe backup automation catalog.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the complete stable resource hierarchy is intentionally visible together"
-)]
-pub fn provide_resources(
-    policy: &RetentionPolicy,
-    catalog: &Catalog,
-    configured: bool,
-) -> Vec<Resource> {
-    provide_resources_with_unavailable_reason(policy, catalog, configured, None)
-}
-
-/// As [`provide_resources`], but lets a live local backend surface the reason
-/// an otherwise-saved configuration is unavailable. The public three-argument
-/// form keeps deterministic callers and tests independent of host-only paths.
-pub fn provide_resources_with_unavailable_reason(
-    policy: &RetentionPolicy,
-    catalog: &Catalog,
-    configured: bool,
-    unavailable_reason: Option<&str>,
-) -> Vec<Resource> {
-    let unavailable_reason = unavailable_reason.unwrap_or(DEFAULT_UNAVAILABLE);
-    let state = crate::resource::BackupsState { policy: *policy };
-    let mut backups = ui::tilo_resource::publish::<crate::resource::Backups>(
-        BACKUPS_RESOURCE_ID,
-        "Backups",
-        &state,
-    );
-    let mut extra = Vec::new();
-    for spec in workspace_effect_specs(configured, unavailable_reason) {
-        if let Some(existing) = backups
-            .actions
-            .iter_mut()
-            .find(|action| action.id == spec.id)
-        {
-            *existing = spec;
-        } else {
-            extra.push(spec);
-        }
-    }
-    for spec in extra {
-        backups = backups.with_action(spec);
-    }
-    backups = backups
-        .with_child(catalog_source_set(catalog))
-        .with_child(catalog_destination_set(catalog))
-        .with_child(catalog_snapshot_set(
-            catalog,
-            configured,
-            unavailable_reason,
-        ));
-
-    vec![backups]
-}
-
-/// Resolve one stable resource without requiring it to be in the contextual
-/// recent-history page. Search result addresses use these ids, so an older
-/// recovery point remains agent-invokable with the same Verify/Restore tree.
-pub fn resource(
-    policy: &RetentionPolicy,
-    catalog: &Catalog,
-    configured: bool,
-    id: &str,
-) -> Option<Resource> {
-    resource_with_unavailable_reason(policy, catalog, configured, id, None)
-}
-
-/// Resolve one resource with the live backend's current unavailable reason.
-/// This keeps a search result's individually-materialized action tree in sync
-/// with the contextual resource page.
-pub fn resource_with_unavailable_reason(
-    policy: &RetentionPolicy,
-    catalog: &Catalog,
-    configured: bool,
-    id: &str,
-    unavailable_reason: Option<&str>,
-) -> Option<Resource> {
-    if id == "backups.policy" || id == "backups" {
-        return provide_resources_with_unavailable_reason(
-            policy,
-            catalog,
-            configured,
-            unavailable_reason,
-        )
-        .into_iter()
-        .find(|resource| resource.id.as_str() == id);
-    }
+/// The live row `id`, also for a snapshot outside the recent page: search
+/// result addresses use these ids, so an older recovery point stays
+/// invokable with the same Verify/Restore operations.
+pub(crate) fn live_row(catalog: &Catalog, blocked: Option<&Blocked>, id: &str) -> Option<LiveRow> {
     let snapshot_id = id
         .strip_prefix("backups.snapshot:")
         .or_else(|| id.strip_prefix("backups.run:"))
@@ -508,34 +380,23 @@ pub fn resource_with_unavailable_reason(
         .snapshots
         .iter()
         .find(|snapshot| snapshot.id == snapshot_id)?;
-    let snapshot_resource = snapshot_resource(
-        snapshot,
-        configured,
-        unavailable_reason.unwrap_or("This local repository is not configured on this device"),
-    );
     if id.starts_with("backups.snapshot:") {
-        return Some(snapshot_resource);
+        return Some(snapshot_row(snapshot, blocked));
     }
-    snapshot_resource
-        .children
-        .into_iter()
-        .find(|child| child.id.as_str() == id)
+    let (run, target) = snapshot_children(snapshot, blocked);
+    Some(if id.starts_with("backups.run:") {
+        run
+    } else {
+        target
+    })
 }
 
-fn find_backup(resources: &[Resource], id: &str) -> Option<Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_backup(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn snapshot_resource(snapshot: &Snapshot, configured: bool, unavailable_reason: &str) -> Resource {
-    let mut resource = Resource::new(
+fn snapshot_row(snapshot: &Snapshot, blocked: Option<&Blocked>) -> LiveRow {
+    let restore = BackupsEffect::RestoreSnapshot {
+        snapshot_id: snapshot.id.clone(),
+    };
+    let (run, target) = snapshot_children(snapshot, blocked);
+    LiveRow::new(
         format!("backups.snapshot:{}", snapshot.id),
         "backups.snapshot",
         format!(
@@ -544,46 +405,32 @@ fn snapshot_resource(snapshot: &Snapshot, configured: bool, unavailable_reason: 
             snapshot.kind.label(),
             ui::format::bytes(snapshot.size_bytes)
         ),
-    );
-    if let Some(spec) = operation_spec(
+    )
+    .operation(offer(
         "open",
-        "Show snapshot",
-        OperationKind::View,
-        &BackupOperation::OpenSnapshot {
+        &BackupsEffect::ShowSnapshot {
             snapshot_id: snapshot.id.clone(),
         },
-    ) {
-        resource = resource.with_action(spec);
-    }
-    if let Some(spec) = operation_spec(
+        None,
+    ))
+    .operation(offer(
         "verify",
-        "Verify snapshot",
-        OperationKind::Effect,
-        &BackupOperation::Verify {
+        &BackupsEffect::Verify {
             snapshot_id: snapshot.id.clone(),
         },
-    ) {
-        resource = resource.with_action(if configured {
-            spec
-        } else {
-            spec.unavailable("not_configured", unavailable_reason)
-        });
-    }
-    if let Some(spec) = operation_spec(
-        "restore",
-        "Restore snapshot into a new or empty folder…",
-        OperationKind::Effect,
-        &BackupOperation::Restore {
-            snapshot_id: snapshot.id.clone(),
-        },
-    ) {
-        resource = resource.with_action(if configured {
-            spec
-        } else {
-            spec.unavailable("not_configured", unavailable_reason)
-        });
-    }
-    let mut run = Resource::new(
+        blocked,
+    ))
+    .operation(offer("restore", &restore, blocked))
+    .row(run)
+    .row(target)
+}
+
+/// A stored snapshot's completed run, and the folder a restore writes to:
+/// an explicit child rather than an unspoken side effect of Restore, so
+/// palette and agent users get the same "new or empty folder" contract the
+/// restore sheet shows.
+fn snapshot_children(snapshot: &Snapshot, blocked: Option<&Blocked>) -> (LiveRow, LiveRow) {
+    let run = LiveRow::new(
         format!("backups.run:{}", snapshot.id),
         "backups.run",
         format!(
@@ -591,79 +438,43 @@ fn snapshot_resource(snapshot: &Snapshot, configured: bool, unavailable_reason: 
             snapshot.kind.label(),
             snapshot.time
         ),
-    );
-    if let Some(spec) = operation_spec(
-        "open",
+    )
+    .operation(labelled(
+        offer(
+            "open",
+            &BackupsEffect::ShowSnapshot {
+                snapshot_id: snapshot.id.clone(),
+            },
+            None,
+        ),
         "Show run result",
-        OperationKind::View,
-        &BackupOperation::OpenSnapshot {
-            snapshot_id: snapshot.id.clone(),
-        },
-    ) {
-        run = run.with_action(spec);
-    }
-    resource = resource.with_child(run);
-    // The selected folder is an explicit child resource rather than an
-    // unspoken side effect of Restore.  This gives palette/agent users the
-    // same truthful "new or empty folder" contract the restore sheet shows.
-    let mut restore_target = Resource::new(
+    ));
+    let target = LiveRow::new(
         format!("backups.restore-target:{}", snapshot.id),
         "backups.restore-target",
         "Restore target · choose a new or empty local folder",
-    );
-    if let Some(spec) = operation_spec(
-        "restore",
+    )
+    .operation(labelled(
+        offer(
+            "restore",
+            &BackupsEffect::RestoreSnapshot {
+                snapshot_id: snapshot.id.clone(),
+            },
+            blocked,
+        ),
         "Restore into a new or empty folder…",
-        OperationKind::Effect,
-        &BackupOperation::Restore {
-            snapshot_id: snapshot.id.clone(),
-        },
-    ) {
-        restore_target = restore_target.with_action(if configured {
-            spec
-        } else {
-            spec.unavailable("not_configured", unavailable_reason)
-        });
-    }
-    resource = resource.with_child(restore_target);
-    resource
-}
-
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::BackupsApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        // Level-triggered: recomputed each frame from the document, the source of
-        // truth every action reads and writes.
-        provide_resources_with_unavailable_reason(
-            &BackupsDoc::policy(doc, &ROOT),
-            self.resource_catalog(),
-            self.is_configured(),
-            self.unavailable_reason(),
-        )
-    }
-
-    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if let Some(found) = find_backup(&self.publish_resources(doc), id) {
-            return Some(found);
-        }
-        // A snapshot outside the recent page stays addressable.
-        resource_with_unavailable_reason(
-            &BackupsDoc::policy(doc, &ROOT),
-            self.resource_catalog(),
-            self.is_configured(),
-            id,
-            self.unavailable_reason(),
-        )
-    }
+    ));
+    (run, target)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::BackupsApp;
     use crate::model::Catalog;
-    use tilo_actions::{Availability, LocalTransport};
-    use ui::widget::Widget;
+    use crate::resource::Backups;
+    use automerge::AutoCommit;
+    use tilo_actions::{Availability, LocalTransport, OperationKind};
+    use ui::tilo_resource::Resource as _;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -671,24 +482,22 @@ mod tests {
         r
     }
 
-    /// `sync` seeds the default retention policy, so this is ready for actions
-    /// to read.
-    fn seeded() -> (BackupsApp, AutoCommit) {
-        let mut app = BackupsApp::new();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        (app, doc)
+    /// The resource as the framework publishes it for `doc`.
+    fn published(doc: &AutoCommit) -> Vec<Resource> {
+        let state = Backups::read(doc).expect("a backups record reads");
+        vec![tilo_resource::publish::<Backups>(
+            Backups::KIND,
+            "Backups",
+            &state,
+        )]
     }
 
     fn field_resource(root: &Resource, field: PolicyField) -> &Resource {
-        let policy = if root.kind == "backups.policy" {
-            root
-        } else {
-            root.children
-                .iter()
-                .find(|resource| resource.kind == "backups.policy")
-                .unwrap_or(root)
-        };
+        let policy = root
+            .children
+            .iter()
+            .find(|resource| resource.kind == "backups.policy")
+            .expect("retention-policy child");
         let id = format!("backups.retention:{}", field.key());
         policy
             .children
@@ -697,66 +506,74 @@ mod tests {
             .unwrap_or_else(|| panic!("a resource for {id}"))
     }
 
-    /// The exported resource tree: the retention classes and catalog hierarchy,
-    /// bounded steppers, unavailable-repository reasons and honest effect
-    /// contracts; each case builds its own resources.
-    #[test]
-    fn resource_tree_publishes_retention_catalog_and_honest_contracts() {
-        ctrl_k_publishes_the_retention_tree();
-        bounded_fields_omit_the_impossible_move();
-        unavailable_repository_reason_reaches_the_canonical_backup_action();
-        local_effects_publish_honest_retry_risk_and_restore_target_contracts();
+    fn row_tree(catalog: &Catalog, blocked: Option<&Blocked>) -> Vec<Resource> {
+        live_rows(catalog, blocked)
+            .into_iter()
+            .map(LiveRow::into_resource)
+            .collect()
     }
 
-    /// Drives the real resource hook and the real palette, not a mock tree.
-    /// Case of `resource_tree_publishes_retention_catalog_and_honest_contracts`.
-    fn ctrl_k_publishes_the_retention_tree() {
-        let (app, doc) = seeded();
-        let resources = ui::resources::resources(&app, &doc);
-        assert_eq!(
-            resources.len(),
-            1,
-            "the workspace publishes the policy and the backup catalog"
-        );
+    /// The published retention tree: one child per class, bounded steppers,
+    /// and only the resource's own action at the root.
+    #[test]
+    fn the_resource_publishes_the_retention_tree_with_bounded_steppers() {
+        let mut doc = AutoCommit::new();
+        let resources = published(&doc);
         let workspace = &resources[0];
         assert_eq!(workspace.kind, "backups.workspace");
-        let root = workspace
-            .children
-            .iter()
-            .find(|resource| resource.kind == "backups.policy")
-            .expect("retention-policy child");
-        assert_eq!(root.kind, "backups.policy");
-        assert_eq!(root.children.len(), 4, "one child per retention class");
-
-        let daily = field_resource(root, PolicyField::Daily);
+        assert!(
+            workspace
+                .actions
+                .iter()
+                .filter(|action| action.kind == OperationKind::Document)
+                .all(|action| action.id == "apply" || action.id == "group"),
+            "retention edits ride their class, not the root"
+        );
+        let daily = field_resource(workspace, PolicyField::Daily);
         assert_eq!(daily.kind, "backups.retention");
-        let d_actions: Vec<&str> = daily.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(d_actions.contains(&"set"), "{d_actions:?}");
-        assert!(d_actions.contains(&"increment"), "{d_actions:?}");
-        assert!(d_actions.contains(&"decrement"), "{d_actions:?}");
+        let ids: Vec<&str> = daily.actions.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["set", "increment", "decrement"]);
 
-        // The flattened tree exports every action across all four classes.
-        let flat: Vec<&str> = tilo_actions::flatten(&resources)
-            .iter()
-            .map(|f| f.action.label.as_str())
-            .collect();
-        assert!(flat.contains(&"Increase by one"), "{flat:?}");
-        assert!(flat.iter().any(|l| l.starts_with("Set daily")), "{flat:?}");
+        BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Weekly, 0);
+        BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Monthly, 999);
+        let resources = published(&doc);
+        let weekly = field_resource(&resources[0], PolicyField::Weekly);
+        assert!(
+            !weekly.actions.iter().any(|a| a.id == "decrement"),
+            "a 0-count field can't decrement"
+        );
+        let monthly = field_resource(&resources[0], PolicyField::Monthly);
+        assert!(
+            !monthly.actions.iter().any(|a| a.id == "increment"),
+            "a 999-count field can't increment"
+        );
+        assert!(
+            resources[0]
+                .children
+                .iter()
+                .flat_map(|resource| &resource.children)
+                .flat_map(|resource| &resource.actions)
+                .all(|action| action.contract.reversible
+                    && action.contract.retry == RetryPolicy::Idempotent)
+        );
+    }
 
-        let catalog_resources =
-            provide_resources(&BackupsDoc::policy(&doc, &ROOT), &Catalog::sample(), false);
-        let workspace = catalog_resources
-            .iter()
-            .find(|resource| resource.kind == "backups.workspace")
-            .expect("backup workspace root");
-        let source = workspace
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "backups.sources")
-            .expect("sources root")
-            .children
-            .first()
-            .expect("a source");
+    /// The catalog's rows carry each item's effects with its id bound, and
+    /// the reason this device cannot run them.
+    #[test]
+    fn live_rows_bind_each_items_effects_and_say_why_they_are_unavailable() {
+        let catalog = Catalog::sample();
+        let rows = row_tree(&catalog, None);
+        let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "backups.sources",
+                "backups.destinations",
+                "backups.snapshots"
+            ]
+        );
+        let source = &rows[0].children[0];
         assert!(source.id.as_str().starts_with("backups.source:"));
         assert!(
             source.children[0]
@@ -764,122 +581,37 @@ mod tests {
                 .as_str()
                 .starts_with("backups.schedule:")
         );
-        let destination = workspace
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "backups.destinations")
-            .expect("destinations root")
-            .children
-            .first()
-            .expect("a destination");
-        assert!(destination.id.as_str().starts_with("backups.destination:"));
-        let snapshot = workspace
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "backups.snapshots")
-            .expect("snapshots root")
-            .children
-            .first()
-            .expect("a snapshot");
-        assert!(snapshot.id.as_str().starts_with("backups.snapshot:"));
-    }
-
-    /// Case of `resource_tree_publishes_retention_catalog_and_honest_contracts`.
-    fn bounded_fields_omit_the_impossible_move() {
-        let (_app, mut doc) = seeded();
-        BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Weekly, 0);
-        BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Monthly, 999);
-        let resources =
-            provide_resources(&BackupsDoc::policy(&doc, &ROOT), &Catalog::empty(), false);
         assert!(
-            resources
-                .iter()
-                .flat_map(|resource| &resource.children)
-                .flat_map(|resource| &resource.actions)
-                .all(|action| action.contract.reversible
-                    && action.contract.retry == RetryPolicy::Idempotent)
+            rows[1].children[0]
+                .id
+                .as_str()
+                .starts_with("backups.destination:")
         );
-        let root = &resources[0];
 
-        let weekly = field_resource(root, PolicyField::Weekly);
-        let w_actions: Vec<&str> = weekly.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(
-            !w_actions.contains(&"decrement"),
-            "a 0-count field can't decrement: {w_actions:?}"
-        );
-        assert!(w_actions.contains(&"increment"), "{w_actions:?}");
-
-        let monthly = field_resource(root, PolicyField::Monthly);
-        let m_actions: Vec<&str> = monthly.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(
-            !m_actions.contains(&"increment"),
-            "a 999-count field can't increment: {m_actions:?}"
-        );
-        assert!(m_actions.contains(&"decrement"), "{m_actions:?}");
-    }
-
-    /// Case of `resource_tree_publishes_retention_catalog_and_honest_contracts`.
-    fn unavailable_repository_reason_reaches_the_canonical_backup_action() {
-        let reason = "The saved backup location is unavailable. Choose another location.";
-        let resources = provide_resources_with_unavailable_reason(
-            &RetentionPolicy::default(),
-            &Catalog::empty(),
-            false,
-            Some(reason),
-        );
-        let workspace = resources
-            .iter()
-            .find(|resource| resource.id.as_str() == "backups")
-            .expect("backups workspace resource");
-        let backup = workspace
-            .actions
-            .iter()
-            .find(|action| action.id == "backup-now")
-            .expect("backup action");
-        assert!(matches!(
-            &backup.contract.availability,
-            Availability::Unavailable { reason: actual, .. } if actual == reason
-        ));
-    }
-
-    /// Case of `resource_tree_publishes_retention_catalog_and_honest_contracts`.
-    fn local_effects_publish_honest_retry_risk_and_restore_target_contracts() {
-        let resources = provide_resources(&RetentionPolicy::default(), &Catalog::sample(), true);
-        let workspace = resources
-            .iter()
-            .find(|resource| resource.kind == "backups.workspace")
-            .expect("backup workspace root");
-        let snapshots = workspace
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "backups.snapshots")
-            .expect("snapshot collection");
-        let backup_now = workspace
-            .actions
-            .iter()
-            .find(|action| action.id == "backup-now")
-            .expect("backup action");
+        let first = &catalog.snapshots[0];
+        let snapshot = &rows[2].children[0];
         assert_eq!(
-            backup_now.contract.permission,
-            tilo_actions::PermissionRequirement::Write
+            snapshot.id.as_str(),
+            format!("backups.snapshot:{}", first.id)
         );
-        let snapshot = snapshots.children.first().expect("sample snapshot");
-        let verify = snapshot
-            .actions
-            .iter()
-            .find(|action| action.id == "verify")
-            .expect("verify action");
-        assert_eq!(verify.contract.retry, RetryPolicy::Idempotent);
+        let action = |id: &str| snapshot.actions.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(action("open").kind, OperationKind::View);
+        let verify = action("verify");
+        assert_eq!(verify.kind, OperationKind::Effect);
         assert_eq!(
             verify.contract.permission,
             tilo_actions::PermissionRequirement::Read
         );
-        let restore = snapshot
-            .actions
-            .iter()
-            .find(|action| action.id == "restore")
-            .expect("restore action");
-        assert_eq!(restore.contract.risk, tilo_actions::RiskLevel::Low);
+        // Invoking the row's action hands the handler this snapshot.
+        let encoded = verify.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(encoded.type_id, BACKUPS_OPERATION_TYPE);
+        assert_eq!(
+            BackupsEffect::from_payload(&encoded.payload).unwrap(),
+            BackupsEffect::Verify {
+                snapshot_id: first.id.clone()
+            }
+        );
+        let restore = action("restore");
         assert_eq!(
             restore.contract.permission,
             tilo_actions::PermissionRequirement::Write
@@ -892,7 +624,7 @@ mod tests {
             .children
             .iter()
             .find(|child| child.kind == "backups.restore-target")
-            .expect("explicit restore target resource");
+            .expect("explicit restore target row");
         assert!(target.label.contains("new or empty"));
         assert_eq!(target.actions.len(), 1);
         assert!(
@@ -900,21 +632,60 @@ mod tests {
                 .children
                 .iter()
                 .any(|child| child.kind == "backups.run"),
-            "every stored version exposes its completed run in the history tree"
+            "every stored version exposes its completed run"
         );
+
+        let blocked = Blocked {
+            code: "not_configured",
+            reason: "The saved backup location is unavailable.".into(),
+        };
+        let rows = row_tree(&catalog, Some(&blocked));
+        let snapshot = &rows[2].children[0];
+        for id in ["verify", "restore"] {
+            let action = snapshot.actions.iter().find(|a| a.id == id).unwrap();
+            assert!(matches!(
+                &action.contract.availability,
+                Availability::Unavailable { code, reason }
+                    if code == "not_configured" && *reason == blocked.reason
+            ));
+        }
+        let open = snapshot.actions.iter().find(|a| a.id == "open").unwrap();
+        assert_eq!(open.contract.availability, Availability::Available);
     }
 
-    /// The on-screen +/- control dispatches the same action as the palette, and
-    /// an unchanged set is a no-op; each case uses a fresh seeded app.
+    /// An older snapshot outside the published page still resolves by the id
+    /// its search result names.
     #[test]
-    fn retention_controls_dispatch_the_palette_action_and_skip_no_ops() {
-        redundant_action_is_a_no_op();
-        bump_button_dispatches_the_palette_action();
+    fn snapshots_beyond_the_page_resolve_by_id() {
+        let mut catalog = Catalog::sample();
+        let template = catalog.snapshots[0].clone();
+        catalog.snapshots = (0..SNAPSHOT_PAGE + 5)
+            .map(|n| {
+                let mut snapshot = template.clone();
+                snapshot.id = format!("snap-{n}");
+                snapshot
+            })
+            .collect();
+        let rows = row_tree(&catalog, None);
+        assert_eq!(rows[2].children.len(), SNAPSHOT_PAGE);
+        let last = format!("snap-{}", SNAPSHOT_PAGE + 4);
+        for prefix in [
+            "backups.snapshot:",
+            "backups.run:",
+            "backups.restore-target:",
+        ] {
+            let id = format!("{prefix}{last}");
+            let row = live_row(&catalog, None, &id)
+                .expect("resolves")
+                .into_resource();
+            assert_eq!(row.id.as_str(), id);
+        }
+        assert!(live_row(&catalog, None, "backups.snapshot:missing").is_none());
     }
 
-    /// Case of `retention_controls_dispatch_the_palette_action_and_skip_no_ops`.
-    fn redundant_action_is_a_no_op() {
-        let (_app, mut doc) = seeded();
+    #[test]
+    fn a_set_to_the_stored_count_changes_nothing() {
+        let mut doc = AutoCommit::new();
         doc.commit();
         let before = doc.get_heads();
         let cur = BackupsDoc::retention(&doc, &ROOT, PolicyField::Hourly);
@@ -933,10 +704,10 @@ mod tests {
     }
 
     ui::action_contract_tests! {
-        seed: seeded().1,
+        seed: AutoCommit::new(),
         registry: registry(),
-        resources: |doc| ui::resources::resources(&BackupsApp::new(), doc),
-        palette: ["Set daily retention", "Increase by one", "Decrease by one", "Set up backups"],
+        resources: |doc| published(doc),
+        palette: ["Set daily retention", "Increase by one", "Decrease by one"],
         replay: [
             set_monthly => |doc| encode(&set_retention_action(
                 PolicyField::Monthly,
@@ -957,40 +728,5 @@ mod tests {
                 encode(&set_retention_action(PolicyField::Daily, 42))
             }),
         ],
-    }
-
-    /// `bump_retention` is what both the mouse hit and the keyboard arrow/`+`/`-`
-    /// handlers funnel through.
-    /// Case of `retention_controls_dispatch_the_palette_action_and_skip_no_ops`.
-    fn bump_button_dispatches_the_palette_action() {
-        let (mut app, mut doc) = seeded();
-
-        // The palette spec for Daily's increment, captured before we mutate.
-        let (cur, spec_encoded) = {
-            let resources = ui::resources::resources(&app, &doc);
-            let daily = field_resource(&resources[0], PolicyField::Daily);
-            let spec = daily.actions.iter().find(|a| a.id == "increment").unwrap();
-            (
-                BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily),
-                ui::testing::action_contract::spec_encoding(spec, None),
-            )
-        };
-
-        // Drive the real on-screen affordance.
-        app.bump_retention(&mut doc, &ROOT, PolicyField::Daily, 1);
-
-        let dispatched = app
-            .last_dispatched()
-            .expect("the real +/- control dispatched an action");
-        assert_eq!(dispatched.type_id, spec_encoded.type_id);
-        assert_eq!(
-            dispatched.payload, spec_encoded.payload,
-            "the +/- control and the palette are one action"
-        );
-        // And it actually moved the stored policy.
-        assert_eq!(
-            BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily),
-            cur + 1
-        );
     }
 }

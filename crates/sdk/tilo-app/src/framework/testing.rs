@@ -434,7 +434,12 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
         effect: &E,
     ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
-        self.effect_as(effect, false)
+        self.effect_as(
+            <A::Resource as Resource>::KIND,
+            effect.id(),
+            &effect.arguments(),
+            false,
+        )
     }
 
     /// [`Self::effect`] after the caller confirmed it, as the host's
@@ -446,7 +451,38 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
         effect: &E,
     ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
-        self.effect_as(effect, true)
+        self.effect_as(
+            <A::Resource as Resource>::KIND,
+            effect.id(),
+            &effect.arguments(),
+            true,
+        )
+    }
+
+    /// [`Self::effect`] as the published child or live row `row` offers it,
+    /// bound to its arguments ([`Effect::bound`]): the caller names only the
+    /// row and the effect, as the palette or an agent does on an item.
+    ///
+    /// # Errors
+    /// As [`Self::effect`].
+    pub fn effect_on<E: Effect>(
+        &mut self,
+        row: &str,
+        effect: &E,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        self.effect_as(row, effect.id(), &serde_json::Map::new(), false)
+    }
+
+    /// [`Self::effect_on`] after the caller confirmed it.
+    ///
+    /// # Errors
+    /// As [`Self::effect`].
+    pub fn effect_on_confirmed<E: Effect>(
+        &mut self,
+        row: &str,
+        effect: &E,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        self.effect_as(row, effect.id(), &serde_json::Map::new(), true)
     }
 
     /// What the job of the last [`Self::effect`] reported, in order: its
@@ -458,18 +494,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.harness().job_updates(invocation).to_vec()
     }
 
-    fn effect_as<E: Effect>(
+    fn effect_as(
         &mut self,
-        effect: &E,
+        resource: &str,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
     ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
         let address = BoundActionAddress {
             instance_id: self.instance,
-            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, effect.id()),
+            address: tilo_actions::ActionAddress::new(resource, id),
         };
-        let (invocation, started) =
-            self.harness()
-                .start_bound_job(&address, &effect.arguments(), confirmed)?;
+        let (invocation, started) = self
+            .harness()
+            .start_bound_job(&address, arguments, confirmed)?;
         self.last_effect = Some(invocation);
         let harness = self.harness();
         if let Some(output) = started.completed() {
@@ -493,8 +531,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             }
             Some(_) => Err(tilo_actions::DoorError::Failed("cancelled".into())),
             None => Err(tilo_actions::DoorError::Failed(format!(
-                "`{}` did not finish",
-                effect.id()
+                "`{id}` did not finish"
             ))),
         }
     }
