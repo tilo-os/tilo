@@ -2,9 +2,10 @@
 //! configured follow them to every device they sign in on, never to a
 //! collaborator.
 //!
-//! [`PersonAccounts`] is a resource kept in the person's own room. Its owner
-//! app ([`ACCOUNTS_OWNER`], Settings) edits it through its actions; every
-//! other app reads it. It holds what an account *is* — its type, its name,
+//! [`PersonAccounts`] is a resource kept in the person's own room, a
+//! [`SharedRecord`]: its owner app ([`ACCOUNTS_OWNER`], Settings) and Mail,
+//! whose provider sign-in adds mail accounts, edit it through its actions;
+//! every other app reads it. Each app keeps its copy of the one record. It holds what an account *is* — its type, its name,
 //! its connection settings — and never a credential: secrets stay in this
 //! device's [`SecretVault`](crate::SecretVault) under the account's id, so a
 //! device that has not been signed in yet shows the account and asks for its
@@ -12,19 +13,25 @@
 //!
 //! Services that run outside any app (the storage daemon, the credential
 //! custodian, the file manager's remote places) read this device's
-//! [`AccountStore`] file. The owner keeps that file a projection of the
-//! record ([`PersonAccounts::project_in`]); it is never edited directly.
+//! [`AccountStore`] file. The editors keep that file a projection of the
+//! record ([`PersonAccounts::project_in`]); it is never edited directly. A
+//! file that is not a projection yet holds accounts configured on this
+//! device before the record kept them: the first editor to open takes them
+//! in once ([`PersonAccounts::taking_in`]).
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use tilo_resource::{Collection, Id, Invoke, Json, Model, Refusal, resource};
+use tilo_resource::{Collection, Id, Invoke, Json, Model, Refusal, SharedRecord, resource};
 
 use crate::{Account, AccountId, AccountStore, AccountTypeId};
 
-/// The app that owns the person's accounts: the only one whose edits the
-/// record takes.
+/// The app that keeps the person's accounts.
 pub const ACCOUNTS_OWNER: &str = "so.tilo.settings";
+
+/// The other apps that change the person's accounts: Mail adds the mail
+/// accounts its provider sign-in sets up.
+pub const ACCOUNTS_EDITORS: &[&str] = &["so.tilo.mail"];
 
 /// One account of the person's, without its secret.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -122,7 +129,40 @@ impl PersonAccounts {
     }
 }
 
+impl SharedRecord for PersonAccounts {
+    const OWNER: &'static str = ACCOUNTS_OWNER;
+    const EDITORS: &'static [&'static str] = ACCOUNTS_EDITORS;
+}
+
 impl PersonAccounts {
+    /// The edits that take in the accounts of `device`, a store this device
+    /// kept before the record did: each account the record lacks, and the
+    /// active one of a type the record has none of. Once the file is the
+    /// record's projection it brings nothing back — an account removed on
+    /// another device stays removed — except into a copy of the record that
+    /// holds no account yet, which takes what this device shows.
+    #[must_use]
+    pub fn taking_in(&self, device: &AccountStore) -> Vec<Invoke<Self>> {
+        if device.is_projection() && !self.accounts.is_empty() {
+            return Vec::new();
+        }
+        let mut edits = Vec::new();
+        for account in device.all() {
+            if !self.accounts.contains(&Id::from_raw(account.id.0.clone())) {
+                edits.push(Self::saving(account));
+            }
+        }
+        for account in device.all() {
+            let type_id = account.type_id.as_str();
+            if !self.active.contains_key(type_id)
+                && device.active_id(&account.type_id) == Some(&account.id)
+            {
+                edits.push(Self::SET_ACTIVE_ACCOUNT.with(Id::from_raw(account.id.0.clone())));
+            }
+        }
+        edits
+    }
+
     /// The accounts as the device's [`AccountStore`] holds them: what
     /// readers that work with the store's types take.
     #[must_use]
@@ -145,17 +185,24 @@ impl PersonAccounts {
                 &AccountId::new(id.clone()),
             );
         }
-        store
+        store.as_projection()
     }
 
     /// The edit that saves `account` as it is.
     #[must_use]
     pub fn saving(account: &Account) -> Invoke<Self> {
+        // An account without connection settings is saved with none: the
+        // door refuses a missing value.
+        let config = if account.config.is_null() {
+            serde_json::json!({})
+        } else {
+            account.config.clone()
+        };
         Self::SAVE_ACCOUNT.with((
             account.id.0.clone(),
             account.type_id.0.clone(),
             account.display_name.clone(),
-            account.config.clone(),
+            config,
             account.enabled,
             account.tint,
         ))
@@ -276,5 +323,36 @@ mod tests {
             replica.state().unwrap().store().get(&"cal-1".into()),
             Some(&account)
         );
+    }
+
+    #[test]
+    fn a_device_file_is_taken_in_once_then_follows_the_record() {
+        let mut replica = Replica::<PersonAccounts>::new();
+        save(&mut replica, "roamed", "caldav", "dav.example");
+        let mut device = AccountStore::new();
+        device.upsert(Account::new("local@x.example", "email"));
+        device.upsert(Account::new("roamed", "caldav"));
+        for edit in replica.state().unwrap().taking_in(&device) {
+            replica.apply(edit).unwrap();
+        }
+        let person = replica.state().unwrap().store();
+        assert!(person.get(&"local@x.example".into()).is_some(), "taken in");
+        assert_eq!(
+            person.active(&"email".into()).unwrap().id,
+            "local@x.example".into()
+        );
+        assert_eq!(
+            person.get(&"roamed".into()).unwrap().config["host"],
+            "dav.example",
+            "the record's own account is kept as it is"
+        );
+
+        // Removed on another device: the projected file never brings it back.
+        replica
+            .apply(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw("local@x.example")))
+            .unwrap();
+        let projected = person;
+        assert!(projected.is_projection());
+        assert!(replica.state().unwrap().taking_in(&projected).is_empty());
     }
 }
