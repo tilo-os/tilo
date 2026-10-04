@@ -12,6 +12,11 @@ client does not import the UI crate or inspect an in-process AccessKit tree.
 ``open APP_NAME`` performs only the session launch and prints the app's
 AT-SPI bus name and process id, for gates with their own checks.
 
+``page`` opens Browser the same way and serves a page from this machine. Once
+the address field is on the bus it prints ``ready URL``; the caller types that
+address on the real keyboard. The check passes when Browser's engine fetched
+the page and Browser names the loaded document after its title.
+
 The small ``[accessibility.atspi_acceptance]`` section in a signed app
 manifest is the certification data.  Adding an app is data, not another
 one-off screen-reader script.  Scenarios are intentionally limited to a safe
@@ -22,6 +27,8 @@ network journeys remain product-specific acceptance work.
 from __future__ import annotations
 
 import argparse
+import html
+import http.server
 import os
 from pathlib import Path
 import re
@@ -29,6 +36,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 from dataclasses import dataclass
@@ -45,6 +53,10 @@ SHELL_TREE_NODE_LIMIT = 1024
 SHELL_BUS_NAME = "org.freedesktop.impl.portal.desktop.tilo"
 OPEN_APP_ACTION = "Open an app"
 LAUNCH_TIMEOUT_SECONDS = 120
+PAGE_TITLE = "Tilo browser engine check"
+# Typing the address and starting the engine, under emulation on some lanes.
+PAGE_TIMEOUT_SECONDS = 300
+BROWSER_TREE_NODE_LIMIT = 512
 
 
 class GateError(RuntimeError):
@@ -461,6 +473,74 @@ def exercise(scenario: Scenario, address: str) -> None:
     print(f"AT-SPI external client passed: {scenario.app_id} ({scenario.action} action round trip)")
 
 
+def serve_page(title: str) -> tuple[http.server.ThreadingHTTPServer, str, list[str]]:
+    """Serve one page on loopback; return the server, its URL and the paths requested."""
+    escaped = html.escape(title)
+    body = (
+        f"<!doctype html><html><head><meta charset=utf-8><title>{escaped}</title></head>"
+        f"<body><h1>{escaped}</h1><p>Served from this machine.</p></body></html>"
+    ).encode()
+    requests: list[str] = []
+
+    class Page(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - the stdlib's handler name
+            requests.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Page)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}/", requests
+
+
+def wait_for_names(client: AtspiClient, names: tuple[str, ...], timeout: float) -> dict[str, str]:
+    deadline = time.monotonic() + timeout
+    latest: dict[str, str] = {}
+    while time.monotonic() < deadline:
+        try:
+            latest = client.tree(BROWSER_TREE_NODE_LIMIT)
+        except GateError:
+            time.sleep(POLL_SECONDS)
+            continue
+        if all(client.named(latest, name) for name in names):
+            return latest
+        time.sleep(POLL_SECONDS * 4)
+    observed = ", ".join(sorted({value.strip() for value in latest.values() if value.strip()}))
+    raise GateError(f"Browser never exposed {', '.join(names)}; it exposed: {observed}")
+
+
+def load_page(address: str, title: str) -> str:
+    """Open Browser, hand the address to the caller's keyboard, and require the
+    engine to load the page this process serves."""
+    server, url, requests = serve_page(title)
+    try:
+        bus_name, pid = open_in_session(address, "Browser")
+        try:
+            client = AtspiClient(address, bus_name)
+            wait_for_names(client, ("Address and search",), START_TIMEOUT_SECONDS * 3)
+            print(f"ready {url}", flush=True)
+            try:
+                wait_for_names(client, (title,), PAGE_TIMEOUT_SECONDS)
+            except GateError as error:
+                raise GateError(
+                    f"{error}; the page server saw {requests or 'no request'}; "
+                    f"session log: {app_log('Browser')}"
+                ) from error
+            if not requests:
+                raise GateError(f"Browser showed {title!r} without fetching {url}")
+            return url
+        finally:
+            close_app(pid)
+    finally:
+        server.shutdown()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -475,6 +555,10 @@ def main() -> int:
     )
     card.add_argument("card_name")
     card.add_argument("app_name")
+    page = sub.add_parser(
+        "page", help="open Browser, wait for the caller to type the printed address, require the page to load",
+    )
+    page.add_argument("--title", default=PAGE_TITLE)
     args = parser.parse_args()
     for executable in ("busctl", "gdbus"):
         if not shutil.which(executable):
@@ -485,6 +569,10 @@ def main() -> int:
         if args.command == "open":
             bus_name, pid = open_in_session(address, args.app_name)
             print(f"{bus_name} {pid}")
+            return 0
+        if args.command == "page":
+            url = load_page(address, args.title)
+            print(f"AT-SPI external client passed: Browser loaded {url} ({args.title!r})")
             return 0
         if args.command == "card":
             _bus_name, pid = open_from_launchpad_card(address, args.card_name, args.app_name)

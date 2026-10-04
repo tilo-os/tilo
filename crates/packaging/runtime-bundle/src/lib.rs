@@ -129,6 +129,8 @@ pub enum BundleError {
     IncludeMissing { path: PathBuf },
     #[error("extra lib to include has no file name: {path}")]
     IncludeUnnamed { path: PathBuf },
+    #[error("included directory holds something other than files and directories: {path}")]
+    IncludeSpecialFile { path: PathBuf },
 }
 
 /// The set of host source paths for a given target architecture.
@@ -483,8 +485,25 @@ pub fn build_bundle_with(
     // Extra libs (libstd, libruntime_dylib.so) copy verbatim to the TOP
     // of lib/ by file name for soname resolution via LD_LIBRARY_PATH —
     // unlike the loader/libc set, these are explicit absolute paths, not
-    // resolved against host_root.
+    // resolved against host_root. A directory (an engine with its resources)
+    // keeps its tree under lib/<name>/.
     for extra in opts.extra_libs {
+        if extra.is_dir() {
+            let name = extra
+                .file_name()
+                .ok_or_else(|| BundleError::IncludeUnnamed {
+                    path: extra.clone(),
+                })?
+                .to_string_lossy()
+                .to_string();
+            copy_tree(
+                extra,
+                &out.join("lib").join(&name),
+                &format!("lib/{name}"),
+                &mut written,
+            )?;
+            continue;
+        }
         if !extra.exists() {
             return Err(BundleError::IncludeMissing {
                 path: extra.clone(),
@@ -865,6 +884,33 @@ fn hash_file(path: &Path) -> Result<(String, u64), BundleError> {
     Ok((hasher.finalize().to_hex().to_string(), total))
 }
 
+/// Copy the tree at `src` to `dst`, recording each file as `rel`/<path>.
+/// Links and special files are refused: a bundle is plain bytes.
+fn copy_tree(
+    src: &Path,
+    dst: &Path,
+    rel: &str,
+    written: &mut Vec<(String, PathBuf)>,
+) -> Result<(), BundleError> {
+    fs::create_dir_all(dst)?;
+    let mut entries = fs::read_dir(src)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(fs::DirEntry::file_name);
+    for entry in entries {
+        let kind = entry.file_type()?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let (from, to, rel) = (entry.path(), dst.join(&name), format!("{rel}/{name}"));
+        if kind.is_dir() {
+            copy_tree(&from, &to, &rel, written)?;
+        } else if kind.is_file() {
+            copy_file(&from, &to)?;
+            written.push((rel, to));
+        } else {
+            return Err(BundleError::IncludeSpecialFile { path: from });
+        }
+    }
+    Ok(())
+}
+
 fn copy_file(src: &Path, dst: &Path) -> Result<(), BundleError> {
     // `fs::copy` follows symlinks (intentional): the bundle must capture
     // actual bytes so a sandbox mount doesn't depend on the symlink
@@ -1082,6 +1128,56 @@ mod tests {
             // Full verify roundtrips — proves the extras are part of the
             // content-addressed set, not loose files verify would reject.
             verify_bundle(out.path()).expect("verify with extras");
+        }
+        // phase: an_included_directory_keeps_its_tree
+        {
+            let host = tempfile::tempdir().unwrap();
+            fake_x86_64_host(host.path());
+            let engine = tempfile::tempdir().unwrap();
+            let engine_dir = engine.path().join("chromium");
+            std::fs::create_dir_all(engine_dir.join("locales")).unwrap();
+            std::fs::write(engine_dir.join("tilo-chromium-host"), b"host").unwrap();
+            std::fs::write(engine_dir.join("locales/en-US.pak"), b"pak").unwrap();
+            let out = tempfile::tempdir().unwrap();
+            let manifest = build_bundle_with(
+                out.path(),
+                "2026.10.0-engine",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: None,
+                    extra_libs: std::slice::from_ref(&engine_dir),
+                },
+            )
+            .expect("build with a directory");
+            let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+            assert!(
+                paths.contains(&"lib/chromium/tilo-chromium-host"),
+                "{paths:?}"
+            );
+            assert!(
+                paths.contains(&"lib/chromium/locales/en-US.pak"),
+                "{paths:?}"
+            );
+            verify_bundle(out.path()).expect("verify with a directory");
+
+            #[cfg(unix)]
+            {
+                std::os::unix::fs::symlink("tilo-chromium-host", engine_dir.join("link")).unwrap();
+                let out = tempfile::tempdir().unwrap();
+                let err = build_bundle_with(
+                    out.path(),
+                    "2026.10.0-engine",
+                    &BuildOptions {
+                        from: Some(host.path()),
+                        arch: Some("x86_64"),
+                        identity: None,
+                        extra_libs: std::slice::from_ref(&engine_dir),
+                    },
+                )
+                .unwrap_err();
+                assert!(matches!(err, BundleError::IncludeSpecialFile { .. }));
+            }
         }
         // phase: missing_extra_lib_is_an_error
         {

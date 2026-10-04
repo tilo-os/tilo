@@ -286,9 +286,15 @@ enum BrowserOperation {
     Forward,
     Reload,
     Stop,
-    Navigate { url: String },
-    ShowLibrary { section: LibrarySection },
-    SetLibraryFilter { query: String },
+    Navigate {
+        url: String,
+    },
+    ShowLibrary {
+        section: LibrarySection,
+    },
+    SetLibraryFilter {
+        query: String,
+    },
     ClearLibraryFilter,
     ShowSettings,
     ShowPage,
@@ -296,12 +302,24 @@ enum BrowserOperation {
     RequestWebsiteDataClear,
     TogglePictureInPicture,
     ToggleHistoryPause,
-    StartDownload { url: String },
-    CancelDownload { id: String },
-    RetryDownload { id: String },
-    OpenDownload { id: String },
-    RevealDownload { id: String },
+    StartDownload {
+        url: String,
+    },
+    CancelDownload {
+        id: String,
+    },
+    RetryDownload {
+        id: String,
+    },
+    OpenDownload {
+        id: String,
+    },
+    RevealDownload {
+        id: String,
+    },
     Page(PageRequest),
+    /// Offer the engine runtime's install through the Store.
+    InstallEngine,
 }
 
 fn page_operation_payload(request: &PageRequest) -> serde_json::Value {
@@ -433,6 +451,7 @@ fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value 
             serde_json::json!({ "operation": "reveal-download", "id": id })
         }
         BrowserOperation::Page(request) => page_operation_payload(request),
+        BrowserOperation::InstallEngine => serde_json::json!({ "operation": "install-engine" }),
     }
 }
 
@@ -452,6 +471,7 @@ fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> 
         Some("back") => Ok(BrowserOperation::Back),
         Some("forward") => Ok(BrowserOperation::Forward),
         Some("reload") => Ok(BrowserOperation::Reload),
+        Some("install-engine") => Ok(BrowserOperation::InstallEngine),
         Some("stop") => Ok(BrowserOperation::Stop),
         Some("navigate") => value
             .get("url")
@@ -992,6 +1012,9 @@ pub struct BrowserWidget {
     fact_label_w: Option<f32>,
     motion_reduced: bool,
     pending_controls: std::collections::VecDeque<ControlInvocation>,
+    /// Set when live browsing has no running engine; the page area explains
+    /// it instead of showing a blank page.
+    engine_problem: Option<EngineProblem>,
 }
 
 /// A library remove queued before the document is in hand still tombstones
@@ -1007,14 +1030,17 @@ fn bookmark_remove_with_observed_tags(doc: &AutoCommit, action: BrowserAction) -
 }
 
 impl BrowserWidget {
-    /// Live-mode widget with the default engine (WPE `WebKit` where the
-    /// backend is available, the deterministic test engine otherwise).
+    /// Live-mode widget on the Chromium engine runtime. Without the runtime
+    /// the page area offers to install it.
     pub fn new() -> Self {
         Self::new_with_mode(BrowsingMode::Normal)
     }
 
     pub fn new_with_mode(mode: BrowsingMode) -> Self {
-        Self::with_engine_mode(default_engine(mode), false, mode)
+        let (engine, problem) = default_engine(mode);
+        let mut widget = Self::with_engine_mode(engine, false, mode);
+        widget.engine_problem = problem;
+        widget
     }
 
     /// Headless widget for `--shots`: test engine, pre-navigated to a
@@ -1385,6 +1411,7 @@ impl BrowserWidget {
             fact_label_w: None,
             motion_reduced: false,
             pending_controls: std::collections::VecDeque::new(),
+            engine_problem: None,
         }
     }
 
@@ -1664,12 +1691,6 @@ impl BrowserWidget {
         self.begin_pip_probe();
     }
 
-    /// Handle to the live `WebView` content rect (window fractions), for the
-    /// zero-copy compositor. Updated every layout.
-    pub fn content_rect_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>> {
-        self.content_rect.clone()
-    }
-
     /// Perform a browser operation and report inputs that the Browser is not
     /// permitted to hand to the web engine.  In particular, a browser window
     /// is not a file picker: its package declares only the web schemes, and
@@ -1838,6 +1859,12 @@ impl BrowserWidget {
             }
             BrowserOperation::Page(_) => {
                 return Err("page actions report their result; start them as an invocation".into());
+            }
+            BrowserOperation::InstallEngine => {
+                if self.engine_problem != Some(EngineProblem::NotInstalled) {
+                    return Err("the browser engine is already installed".into());
+                }
+                ui::portal::open_uri_detached(ENGINE_INSTALL_URI);
             }
         }
         Ok(())
@@ -2992,6 +3019,8 @@ impl BrowserWidget {
             )
         } else if self.show_library {
             self.build_library_composition(theme)
+        } else if let Some(problem) = self.engine_problem {
+            engine_problem_state(problem, self.unit_binding("browser.page", "install-engine"))
         } else if let Some(error) = &self.load_error {
             let recovery = EmptyState::new("Couldn’t open this page")
                 .with_icon(Icon::Wifi)
@@ -3017,9 +3046,17 @@ impl BrowserWidget {
                     .push(recovery),
             )
         } else {
+            // Assistive technology reads the document by its title, as in
+            // any browser; an untitled page keeps the generic name.
+            let page_name = if self.title.trim().is_empty() {
+                "Web content".to_owned()
+            } else {
+                self.title.clone()
+            };
             Box::new(
                 WebView::new(self.engine.clone())
                     .with_scale_factor(self.window_scale)
+                    .with_accessible_name(page_name)
                     .with_test_id("browser.surface"),
             )
         };
@@ -4089,6 +4126,8 @@ impl BrowserWidget {
                 WebViewEvent::TitleChanged(title)
                     if !self.forced_load_error && !self.forced_loading =>
                 {
+                    // The page surface is named after its title.
+                    self.structure_dirty |= self.title != title;
                     self.title = title;
                 }
                 WebViewEvent::FaviconChanged {
@@ -4759,8 +4798,8 @@ impl BrowserWidget {
         self.composed.as_ref().and_then(|c| walk(c.as_ref(), id))
     }
 
-    /// Publish the `WebView` surface rect as window fractions for the
-    /// zero-copy compositor.
+    /// Record the `WebView` surface rect as window fractions, the page
+    /// region picture in picture floats.
     fn publish_content_rect(&self) {
         let full = self.rect;
         if full.width() <= 0.0 || full.height() <= 0.0 {
@@ -4787,59 +4826,113 @@ impl Default for BrowserWidget {
     }
 }
 
-/// Live browsing always uses a real engine. WPE is an explicit migration
-/// option; deterministic rendering is confined to `new_headless`.
-fn default_engine(mode: BrowsingMode) -> SharedEngine {
-    #[cfg(feature = "wpe")]
-    if std::env::var("TILO_BROWSER_ENGINE").as_deref() == Ok("wpe") {
-        if mode.is_private() {
-            return engine_or_error(
-                crate::storage::explicit_root()
-                    .ok_or_else(|| "Private browser root was not configured".to_string())
-                    .and_then(|root| {
-                        ui::webview::chromium::UnavailableEngine::new_with_private_root(
-                            "Private windows require the Chromium engine; WPE private storage is unavailable."
-                                .into(),
-                            root,
-                        )
-                    })
-                    .map(|engine| engine as SharedEngine),
-            );
-        }
-        return engine_or_error(
-            ui::webview::wpe::WpeEngine::new().map(|engine| engine as SharedEngine),
+/// Why live browsing has no running engine, in the terms the page area
+/// shows a person. What a developer needs goes to the log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EngineProblem {
+    /// The Chromium engine runtime is not installed.
+    NotInstalled,
+    /// The engine is installed but did not start.
+    Failed,
+}
+
+/// Where the engine runtime is offered for install: its Store page, the
+/// same consented route every package takes.
+pub(crate) const ENGINE_INSTALL_URI: &str = "tilo-store:app/so.tilo.browser-engine";
+
+/// Live browsing runs the Chromium engine runtime
+/// ([`ui::webview::chromium::runtime`]); there is no other engine and no
+/// simulated page. Deterministic rendering is confined to `new_headless`.
+fn default_engine(mode: BrowsingMode) -> (SharedEngine, Option<EngineProblem>) {
+    if let Err(missing) = ui::webview::chromium::runtime::locate() {
+        tracing::warn!(hint = %missing.developer_hint(), "browser engine is not installed");
+        return (
+            unavailable_engine(mode, EngineProblem::NotInstalled),
+            Some(EngineProblem::NotInstalled),
         );
     }
-    if mode.is_private() {
-        return engine_or_error(
-            crate::storage::explicit_root()
-                .ok_or_else(|| "Private browser root was not configured".to_string())
-                .and_then(ui::webview::chromium::ChromiumEngine::new_private)
-                .map(|engine| engine as SharedEngine),
-        );
-    }
-    if let Some(root) = crate::storage::explicit_root() {
-        return engine_or_error(
-            ui::webview::chromium::ChromiumEngine::with_profile_extensions(
-                &root.join("chromium"),
-                &crate::extensions::approved_paths(),
-            )
-            .map(|engine| engine as SharedEngine),
-        );
-    }
-    engine_or_error(
+    let started = if mode.is_private() {
+        crate::storage::explicit_root()
+            .ok_or_else(|| "Private browser root was not configured".to_string())
+            .and_then(ui::webview::chromium::ChromiumEngine::new_private)
+            .map(|engine| engine as SharedEngine)
+    } else if let Some(root) = crate::storage::explicit_root() {
+        ui::webview::chromium::ChromiumEngine::with_profile_extensions(
+            &root.join("chromium"),
+            &crate::extensions::approved_paths(),
+        )
+        .map(|engine| engine as SharedEngine)
+    } else {
         ui::webview::chromium::ChromiumEngine::new_with_extensions(
             &crate::extensions::approved_paths(),
         )
-        .map(|engine| engine as SharedEngine),
-    )
+        .map(|engine| engine as SharedEngine)
+    };
+    engine_or_error(started)
 }
 
-fn engine_or_error(result: Result<SharedEngine, String>) -> SharedEngine {
-    result.unwrap_or_else(|error| {
-        tracing::error!(%error, "browser engine unavailable");
-        ui::webview::chromium::UnavailableEngine::new(error)
-    })
+fn engine_or_error(result: Result<SharedEngine, String>) -> (SharedEngine, Option<EngineProblem>) {
+    match result {
+        Ok(engine) => (engine, None),
+        Err(error) => {
+            tracing::error!(%error, "browser engine failed to start");
+            (
+                ui::webview::chromium::UnavailableEngine::new(user_message(EngineProblem::Failed)),
+                Some(EngineProblem::Failed),
+            )
+        }
+    }
+}
+
+/// An engine that renders nothing and answers navigation with the problem.
+/// A private window's disposable root is released at once: nothing will
+/// ever write to it.
+fn unavailable_engine(mode: BrowsingMode, problem: EngineProblem) -> SharedEngine {
+    if mode.is_private()
+        && let Some(root) = crate::storage::explicit_root()
+    {
+        ui::webview::chromium::release_private_root(&root);
+    }
+    ui::webview::chromium::UnavailableEngine::new(user_message(problem))
+}
+
+fn user_message(problem: EngineProblem) -> String {
+    match problem {
+        EngineProblem::NotInstalled => ui::webview::chromium::runtime::NOT_INSTALLED_MESSAGE,
+        EngineProblem::Failed => ui::webview::chromium::runtime::FAILED_MESSAGE,
+    }
+    .to_owned()
+}
+
+/// The page area while the engine is missing or stopped: what happened,
+/// and the one thing a person can do about it.
+fn engine_problem_state(
+    problem: EngineProblem,
+    install: Option<ActionBinding<()>>,
+) -> Box<dyn Widget> {
+    let state = match problem {
+        EngineProblem::NotInstalled => {
+            let state = EmptyState::new(ui::webview::chromium::runtime::NOT_INSTALLED_MESSAGE)
+                .with_icon(Icon::Download)
+                .with_message("Install it to open web pages.")
+                .with_action("Install")
+                .with_action_id("browser.install-engine");
+            match install {
+                Some(binding) => state.on_action(binding),
+                None => state,
+            }
+        }
+        EngineProblem::Failed => EmptyState::new(ui::webview::chromium::runtime::FAILED_MESSAGE)
+            .with_icon(Icon::Info)
+            .with_message("Close Browser and open it again."),
+    };
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_gap(0.0)
+            .with_fill_remaining_height()
+            .push(Box::new(state)),
+    )
 }
 
 fn address_state(widget: &dyn Widget) -> Option<(String, String)> {
@@ -6038,6 +6131,18 @@ impl ui::resources::PublishesResources for BrowserWidget {
                 } else {
                     spec.unavailable("history_boundary", reason)
                 });
+            }
+        }
+        if self.engine_problem == Some(EngineProblem::NotInstalled) {
+            let payload = browser_operation_payload(&BrowserOperation::InstallEngine);
+            if let Ok(spec) = ActionSpec::operation(
+                "install-engine",
+                "Install the browser engine",
+                OperationKind::Effect,
+                BROWSER_OPERATION_TYPE,
+                &payload,
+            ) {
+                page.actions.push(spec);
             }
         }
         page.actions.push(
@@ -9851,12 +9956,104 @@ mod tests {
 
         // Phase `default_engine_failure_never_becomes_a_simulated_page`.
         {
-            let engine: SharedEngine = engine_or_error(Err("Chromium unavailable".into()));
+            let (engine, problem) =
+                engine_or_error(Err("Could not start Chromium at /x: denied".into()));
+            assert_eq!(problem, Some(EngineProblem::Failed));
             let _clone: SharedEngine = Arc::clone(&engine);
             engine.send(WebViewCommand::Navigate("https://tilo.so".into()));
             assert!(engine.frames().lock().unwrap().is_none());
+            // The person reads what happened; the cause stays in the log.
             assert!(engine.drain_events().iter().any(|event| matches!(event,
-                WebViewEvent::LoadFailed { error, .. } if error == "Chromium unavailable")));
+                WebViewEvent::LoadFailed { error, .. }
+                    if error == ui::webview::chromium::runtime::FAILED_MESSAGE)));
+        }
+
+        // Phase `the_page_surface_is_named_after_the_page_title`.
+        {
+            let mut w = BrowserWidget::new_headless();
+            layout_at(&mut w, 900.0, 600.0);
+            layout_at(&mut w, 900.0, 600.0);
+            fn surface_name(widget: &dyn Widget) -> Option<String> {
+                if widget.test_id() == Some("browser.surface") {
+                    return widget.accessibility().and_then(|node| node.name);
+                }
+                widget
+                    .children()
+                    .iter()
+                    .find_map(|child| surface_name(*child))
+            }
+            let composed = w.composed.as_ref().expect("composed browser");
+            assert_eq!(
+                surface_name(composed.as_ref()).as_deref(),
+                Some(format!("{SHOTS_URL} — test page").as_str()),
+                "assistive technology reads the loaded page by its title"
+            );
+        }
+
+        // Phase `a_missing_engine_offers_its_install_instead_of_instructions`.
+        {
+            let engine = unavailable_engine(BrowsingMode::Normal, EngineProblem::NotInstalled);
+            engine.send(WebViewCommand::Navigate("https://tilo.so".into()));
+            let message = engine
+                .drain_events()
+                .into_iter()
+                .find_map(|event| match event {
+                    WebViewEvent::LoadFailed { error, .. } => Some(error),
+                    _ => None,
+                })
+                .expect("navigation answers with the problem");
+            assert_eq!(
+                message,
+                ui::webview::chromium::runtime::NOT_INSTALLED_MESSAGE
+            );
+            for developer_word in ["build-host", "TILO_", "python", "Chromium"] {
+                assert!(!message.contains(developer_word), "{message}");
+            }
+
+            let mut w = BrowserWidget::with_engine(engine, false);
+            w.engine_problem = Some(EngineProblem::NotInstalled);
+            let (doc, _root) = synced(&mut w);
+            let resources = ui::resources::resources(&w, &doc);
+            let page = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "browser.page")
+                .unwrap();
+            let install = page
+                .actions
+                .iter()
+                .find(|action| action.id == "install-engine")
+                .expect("the install is an action on the page");
+            assert_eq!(install.kind, OperationKind::Effect);
+            assert!(matches!(
+                install.contract.availability,
+                ui::tilo_actions::Availability::Available
+            ));
+            let _state = engine_problem_state(
+                EngineProblem::NotInstalled,
+                w.unit_binding("browser.page", "install-engine"),
+            );
+
+            // Once the engine runs there is nothing to install.
+            let mut running = BrowserWidget::with_engine(TestEngine::new(), true);
+            let (doc, _root) = synced(&mut running);
+            let resources = ui::resources::resources(&running, &doc);
+            let page = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.0 == "browser.page")
+                .unwrap();
+            assert!(
+                !page
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "install-engine")
+            );
+            assert!(
+                running
+                    .perform_browser_operation(BrowserOperation::InstallEngine)
+                    .is_err()
+            );
         }
 
         // Phase `resource_surface_binds_typed_navigation_and_reports_history_availability`.

@@ -277,8 +277,6 @@ fn private_engines_own_and_remove_their_disposable_roots() {
     // phase: private_packaged_helper_discovery_failure_removes_root
     {
         let fixture = tempfile::tempdir().unwrap();
-        let isolated_executable = fixture.path().join("isolated/bin/browser-test");
-        std::fs::create_dir_all(isolated_executable.parent().unwrap()).unwrap();
         let root = private_root();
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -286,8 +284,8 @@ fn private_engines_own_and_remove_their_disposable_roots() {
                 "webview::chromium::tests::private_packaged_helper_discovery_failure_child",
                 "--ignored",
             ])
-            .env_remove("TILO_CHROMIUM_HOST")
-            .env("TILO_TEST_CHROMIUM_DISCOVERY_EXE", isolated_executable)
+            .env_remove(runtime::HOST_OVERRIDE_ENV)
+            .env(runtime::RUNTIME_DIR_ENV, fixture.path())
             .env("TILO_TEST_PRIVATE_ROOT", &root)
             .status()
             .unwrap();
@@ -322,16 +320,6 @@ fn private_engines_own_and_remove_their_disposable_roots() {
             .unwrap();
         assert!(result.success());
         assert!(!root.exists(), "root must be absent when the child exits");
-    }
-    // phase: unavailable_private_engine_owns_its_disposable_root
-    {
-        let root = private_root();
-        let engine =
-            UnavailableEngine::new_with_private_root("Private backend unavailable".into(), &root)
-                .unwrap();
-        assert!(root.exists());
-        drop(engine);
-        assert!(!root.exists());
     }
 }
 

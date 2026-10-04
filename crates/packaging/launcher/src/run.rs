@@ -627,6 +627,21 @@ pub fn resolve_runtime_test_helper(
     resolve_runtime(manifest, opts)
 }
 
+/// The launch argv after [`splice_optional_runtimes`] ran on a bare `entry`
+/// token, and the mounts it returned for Landlock.
+///
+/// # Errors
+///
+/// As [`splice_optional_runtimes`].
+pub fn optional_runtimes_test_helper(
+    manifest: &crate::manifest::MinimalManifest,
+    opts: &RunOptions,
+) -> Result<(Vec<String>, Vec<String>), RunError> {
+    let mut argv = vec!["entry".to_string()];
+    let mounts = splice_optional_runtimes(&mut argv, manifest, opts)?;
+    Ok((argv, mounts))
+}
+
 /// Resolve/create/migrate the one directory this launch may write to,
 /// keyed by `opts.workspace_id` — no list to walk.
 fn resolve_app_dir(manifest: &MinimalManifest, opts: &RunOptions) -> Result<PathBuf, RunError> {
@@ -768,26 +783,9 @@ pub fn resolve_runtime(
     let Some(raw) = manifest.runtime.as_deref() else {
         return Ok(None);
     };
-    let (_, version) = raw
-        .split_once('/')
-        .ok_or_else(|| RunError::RuntimeReferenceMalformed(raw.to_string()))?;
-    // Look up: the configured/user root first, then the immutable system
-    // fallback. A developer build honours TILO_RUNTIME_BUNDLE_DIR; developer
-    // sessions use it to keep the runtime matched to an overlaid
-    // registry/payload set instead of silently binding the installed `/usr`
-    // runtime. A release build ignores it (see `crate::dev_env`).
-    let per_user = runtime_bundle::default_bundle_path_from(
-        crate::dev_env::dev_override(runtime_bundle::RUNTIME_DIR_ENV),
-        version,
-    )
-    .ok();
-    let system = runtime_bundle::system_bundle_path(version);
-    let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
-    for cand in &candidates {
-        if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
-            enforce_bundle_policy(cand, opts, cand == &system)?;
-            return Ok(Some((cand.clone(), version.to_string())));
-        }
+    let (found, candidates) = find_runtime_bundle(raw, opts)?;
+    if found.is_some() {
+        return Ok(found);
     }
     if opts.allow_missing_runtime {
         tracing::warn!(
@@ -801,6 +799,89 @@ pub fn resolve_runtime(
         runtime: raw.to_string(),
         paths: candidates,
     })
+}
+
+/// Look `raw` (`<name>/<version>`) up where runtime bundles are installed —
+/// the configured/user root first, then the immutable system fallback — and
+/// verify the first bundle found. Returns the bundle and its version, plus
+/// every directory checked.
+///
+/// A developer build honours `TILO_RUNTIME_BUNDLE_DIR`; developer sessions
+/// use it to keep the runtime matched to an overlaid registry/payload set
+/// instead of silently binding the installed `/usr` runtime. A release build
+/// ignores it (see `crate::dev_env`).
+#[allow(
+    clippy::type_complexity,
+    reason = "the found bundle and the searched directories travel together"
+)]
+fn find_runtime_bundle(
+    raw: &str,
+    opts: &RunOptions,
+) -> Result<(Option<(PathBuf, String)>, Vec<PathBuf>), RunError> {
+    let (_, version) = raw
+        .split_once('/')
+        .filter(|(name, version)| !name.is_empty() && valid_runtime_version(version))
+        .ok_or_else(|| RunError::RuntimeReferenceMalformed(raw.to_string()))?;
+    let per_user = runtime_bundle::default_bundle_path_from(
+        crate::dev_env::dev_override(runtime_bundle::RUNTIME_DIR_ENV),
+        version,
+    )
+    .ok();
+    let system = runtime_bundle::system_bundle_path(version);
+    let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
+    for cand in &candidates {
+        if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
+            enforce_bundle_policy(cand, opts, cand == &system)?;
+            return Ok((Some((cand.clone(), version.to_string())), candidates));
+        }
+    }
+    Ok((None, candidates))
+}
+
+/// A version names a directory under the runtime roots and the sandbox's
+/// `/run/tilo-runtime`, so it is one plain path component.
+fn valid_runtime_version(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= 64
+        && version != "."
+        && version != ".."
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'_'))
+}
+
+/// Mount every installed, verified bundle the manifest lists in
+/// `[package].optional-runtimes` read-only at its runtime mount, before the
+/// trailing entrypoint token. A missing bundle is skipped and one that fails
+/// verification is refused, so the app sees either as not installed and
+/// offers to install it. Returns the sandbox paths Landlock must let it read.
+fn splice_optional_runtimes(
+    argv: &mut Vec<String>,
+    manifest: &crate::manifest::MinimalManifest,
+    opts: &RunOptions,
+) -> Result<Vec<String>, RunError> {
+    let mut mounts = Vec::new();
+    for raw in &manifest.optional_runtimes {
+        match find_runtime_bundle(raw, opts) {
+            Ok((Some((root, version)), _)) => {
+                let entry = pop_entry(argv)?;
+                let mount = crate::sandbox::push_optional_runtime(argv, &root, &version);
+                argv.push(entry);
+                mounts.push(mount.display().to_string());
+            }
+            Ok((None, searched)) => tracing::info!(
+                runtime = %raw,
+                searched = ?searched,
+                "optional runtime is not installed"
+            ),
+            Err(error) => tracing::warn!(
+                runtime = %raw,
+                %error,
+                "optional runtime refused; launching without it"
+            ),
+        }
+    }
+    Ok(mounts)
 }
 
 /// Verify the bundle at `path` against the signature policy. Unless
@@ -2229,7 +2310,8 @@ fn run_with_context(
         )?;
     }
     splice_game_ntsync(&mut argv, latency_sensitive)?;
-    let extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
+    let mut extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
+    extra_ro_paths.extend(splice_optional_runtimes(&mut argv, manifest, opts)?);
     splice_workspace_id_bind(&mut argv, opts)?;
     if enrolled.is_none() {
         splice_tool_context(&mut argv)?;
@@ -2814,7 +2896,8 @@ fn run_with_capture_spawn<T>(
         &capabilities,
     )?;
     splice_cli_setenv(&mut argv, extra_setenv)?;
-    let extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
+    let mut extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
+    extra_ro_paths.extend(splice_optional_runtimes(&mut argv, manifest, opts)?);
     splice_tool_context(&mut argv)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
     splice_workspace_id_bind(&mut argv, opts)?;

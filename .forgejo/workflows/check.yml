@@ -526,8 +526,8 @@ jobs:
       # must remain fast enough to keep their formatting, secret, and
       # staged-diff checks useful. The release-app workflow separately
       # compiles the shipped thin-app feature; `--all-features` is
-      # deliberately invalid here because it also selects ui/webview-wpe,
-      # whose native SDK exists only in the OS image builder.
+      # deliberately invalid here because some features link native SDKs
+      # that exist only in the OS image builder.
       - name: Clippy shard ${{ matrix.shard }}
         if: matrix.arch == 'x86_64'
         env:

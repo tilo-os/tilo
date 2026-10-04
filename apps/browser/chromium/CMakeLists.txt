@@ -71,6 +71,9 @@ if(APPLE)
   endforeach()
   add_custom_command(TARGET tilo-chromium-host POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory "${TILO_APP}/Contents/Frameworks/Browser Engine Helper.app/Contents/Resources" COMMAND codesign --force --deep --sign - "${TILO_APP}" VERBATIM)
 elseif(UNIX)
+  # The host renders offscreen and calls no X11 API; libcef.so carries its own
+  # X11 dependency. Not linking it keeps libX11-devel out of the build.
+  list(REMOVE_ITEM CEF_STANDARD_LIBS X11)
   ADD_LOGICAL_TARGET(libcef_lib "${CEF_LIB_DEBUG}" "${CEF_LIB_RELEASE}")
   add_executable(tilo-chromium-host src/host.cc src/renderer.cc src/main_linux.cc)
   tilo_target(tilo-chromium-host)

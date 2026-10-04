@@ -1,4 +1,4 @@
-//! Shared scenario registry and command-line dispatcher for the four UI
+//! Shared scenario registry and command-line dispatcher for the three UI
 //! example surfaces.
 
 #![allow(dead_code)] // Each binary intentionally compiles one surface subset.
@@ -8,7 +8,6 @@ pub enum Surface {
     Lab,
     Shots,
     Perf,
-    Wpe,
 }
 
 impl Surface {
@@ -17,7 +16,6 @@ impl Surface {
             Self::Lab => "ui-lab",
             Self::Shots => "ui-shots",
             Self::Perf => "ui-perf",
-            Self::Wpe => "ui-wpe",
         }
     }
 }
@@ -118,18 +116,12 @@ const PERF_SOURCES: &[&str] = &[
     "perf_scenario.rs",
     "widget_perf_bench.rs",
 ];
-const WPE_SOURCES: &[&str] = &[
-    "wpe_dmabuf_probe.rs",
-    "wpe_latency_bench.rs",
-    "wpe_scroll_repro.rs",
-];
 
 fn expected(surface: Surface) -> &'static [&'static str] {
     match surface {
         Surface::Lab => LAB_SOURCES,
         Surface::Shots => SHOT_SOURCES,
         Surface::Perf => PERF_SOURCES,
-        Surface::Wpe => WPE_SOURCES,
     }
 }
 
@@ -304,7 +296,7 @@ mod tests {
                 .then_some(name)
             })
             .collect();
-        let catalogued: BTreeSet<String> = [LAB_SOURCES, SHOT_SOURCES, PERF_SOURCES, WPE_SOURCES]
+        let catalogued: BTreeSet<String> = [LAB_SOURCES, SHOT_SOURCES, PERF_SOURCES]
             .into_iter()
             .flatten()
             .map(|source| (*source).to_owned())
