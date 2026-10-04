@@ -47,22 +47,9 @@ use crate::resource::{ApiTester, Workspace};
 /// Registry `type_id` for every API Tester action.
 pub const API_TESTER_ACTION_TYPE: &str = "api_tester.action";
 
-/// Operation type of the builder's contextual menus.
-pub const API_TESTER_OPERATION_TYPE: &str = "api_tester.operation";
-
 /// How many deep records (saved requests, variables, history rows) the
 /// workspace publishes at once; the rest resolve by id.
 pub const PUBLISHED_RECORDS: usize = 256;
-
-/// The builder's contextual menus: they open a form in this window and
-/// change nothing in the document.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum ApiTesterOperation {
-    /// Open one of the request builder's visible contextual workflows.
-    RequestMenu { action: String },
-    /// Open one of the active environment's visible contextual workflows.
-    EnvironmentMenu { action: String },
-}
 
 pub const REQUEST_MENU_CHOICES: &[&str] = &["Save request…", "Rename request…", "Delete request…"];
 pub const ENVIRONMENT_MENU_CHOICES: &[&str] =
@@ -93,6 +80,18 @@ pub enum ApiTesterEffect {
         #[param("The value, kept on this device")]
         value: String,
     },
+    /// Request actions
+    #[effect(view, row, idempotent)]
+    RequestMenu {
+        #[param("Request actions", choices = REQUEST_MENU_CHOICES.iter().copied())]
+        action: String,
+    },
+    /// Environment actions
+    #[effect(view, row, idempotent)]
+    EnvironmentMenu {
+        #[param("Environment actions", choices = ENVIRONMENT_MENU_CHOICES.iter().copied())]
+        action: String,
+    },
 }
 
 /// The rows of the request builder.
@@ -113,55 +112,28 @@ impl RowSection {
     }
 }
 
-#[allow(
-    clippy::expect_used,
-    reason = "menu payloads contain only strings, whose JSON serialization is infallible"
-)]
-fn menu_resource(
-    id: &str,
-    label: &str,
-    action_id: &str,
-    choices: &'static [&'static str],
-    operation: fn(String) -> ApiTesterOperation,
-) -> Resource {
-    let spec = ActionSpec::typed_operation(
-        action_id,
-        label,
-        "Choose an action",
-        OperationKind::View,
-        API_TESTER_OPERATION_TYPE,
-        vec![
-            ActionParam::required_owned("action", ParamType::Text, label.to_string())
-                .with_choices(choices.iter().copied()),
-        ],
-        move |args| {
-            EncodedAction::encode_operation(
-                API_TESTER_OPERATION_TYPE,
-                &operation(args.text("action").unwrap_or_default().to_string()),
-            )
-            .expect("API Tester menu operations contain only serializable strings")
-        },
-    );
-    Resource::new(id, id, label).with_action(spec)
+/// A contextual menu of the builder: a child offering its effect, whose
+/// choice opens a form in this window and changes nothing in the document.
+fn menu_resource(id: &str, label: &str, effect: &str) -> Resource {
+    let mut resource = Resource::new(id, id, label);
+    if let Some(menu) = ApiTesterEffect::declarations()
+        .into_iter()
+        .find(|decl| decl.id == effect)
+    {
+        resource = resource.with_action(menu.spec(ApiTesterEffect::OPERATION));
+    }
+    resource
 }
 
 pub fn request_menu_resource() -> Resource {
-    menu_resource(
-        "api_tester.request_menu",
-        "Request actions",
-        "open",
-        REQUEST_MENU_CHOICES,
-        |action| ApiTesterOperation::RequestMenu { action },
-    )
+    menu_resource("api_tester.request_menu", "Request actions", "request-menu")
 }
 
 pub fn environment_menu_resource() -> Resource {
     menu_resource(
         "api_tester.environment_menu",
         "Environment actions",
-        "open",
-        ENVIRONMENT_MENU_CHOICES,
-        |action| ApiTesterOperation::EnvironmentMenu { action },
+        "environment-menu",
     )
 }
 
