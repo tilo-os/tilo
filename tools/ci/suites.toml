@@ -891,6 +891,11 @@ reason = "requires a native ARM KVM host and QEMU"
 workflow = "build-image.yml"
 
 [[unrequired]]
+suite = "os/dev/test-joined-device-startup.sh"
+reason = "boots the installed OS image in a VM and signs in"
+workflow = "build-image.yml"
+
+[[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
 reason = "boots VMs (KVM) from a built installer image"
 workflow = "release-imager.yml"
