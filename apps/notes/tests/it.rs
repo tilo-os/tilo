@@ -40,8 +40,6 @@ mod peer_caret_visual;
 mod responsive_drawer;
 #[path = "save_failure_status.rs"]
 mod save_failure_status;
-#[path = "screenshot_critique.rs"]
-mod screenshot_critique;
 #[path = "sidebar_collab_growth.rs"]
 mod sidebar_collab_growth;
 #[path = "sidebar_dnd.rs"]
@@ -57,18 +55,10 @@ mod welcome_page_renders_all_block_kinds;
 #[path = "workspace_persistence.rs"]
 mod workspace_persistence;
 
-#[path = "canonical_import.rs"]
-mod canonical_import;
-
 #[path = "canonical_component.rs"]
 mod canonical_component;
-#[path = "support/captures.rs"]
-mod captures;
 #[path = "support/component.rs"]
 mod component_support;
-
-#[path = "framework_history.rs"]
-mod framework_history;
 
 #[path = "canonical_actions.rs"]
 mod canonical_actions;
@@ -102,11 +92,11 @@ mod code_groups;
 #[path = "format_preservation.rs"]
 mod format_preservation;
 
-#[path = "hosting.rs"]
-mod hosting;
-
 #[path = "capture_runtime.rs"]
 mod capture_runtime;
+
+#[path = "scenarios.rs"]
+mod scenarios;
 
 #[path = "continuation_discovery.rs"]
 mod continuation_discovery;

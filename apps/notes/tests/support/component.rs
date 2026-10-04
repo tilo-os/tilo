@@ -1,7 +1,7 @@
 //! Explicit temporary canonical records and controlled runner fonts.
 #[path = "canonical.rs"]
 pub mod canonical;
-pub use canonical::LegacyFixture;
+pub use canonical::NotebookFixture;
 use std::rc::Rc;
 use ui::application::{AppComponent, HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 use ui::application_view::InstanceViewStore;
@@ -13,11 +13,11 @@ pub fn existing(checkout: &RecordCheckout) -> LaunchTarget {
         reveal: None,
     }
 }
-pub fn component(f: &LegacyFixture, instance: u64, target: LaunchTarget) -> AppComponent {
+pub fn component(f: &NotebookFixture, instance: u64, target: LaunchTarget) -> AppComponent {
     restored_component(f, instance, target, RestoreInput::None)
 }
 pub fn restored_component(
-    f: &LegacyFixture,
+    f: &NotebookFixture,
     instance: u64,
     target: LaunchTarget,
     restore: RestoreInput,
@@ -25,7 +25,7 @@ pub fn restored_component(
     try_restored_component(f, instance, target, restore).unwrap()
 }
 pub fn try_restored_component(
-    f: &LegacyFixture,
+    f: &NotebookFixture,
     instance: u64,
     target: LaunchTarget,
     restore: RestoreInput,
@@ -95,10 +95,9 @@ pub fn runner_inputs() -> ui::application::ComponentRunnerInputs {
         text_renderer: renderer(),
     }
 }
-pub fn imported(f: &LegacyFixture) -> ui::record::RecordCheckout {
-    notes::legacy_import::import_legacy(&f.records, &f.source, f.key)
-        .unwrap()
-        .checkout
+/// Write the fixture's notebook into its record.
+pub fn notebook(f: &NotebookFixture) -> ui::record::RecordCheckout {
+    f.write_notebook()
 }
 
 pub fn assert_closed(report: &ui::application::ComponentCloseReport) {
@@ -126,7 +125,11 @@ pub fn close_widget(widget: &mut dyn ui::Widget) {
     }
 }
 
-pub fn driver(f: &LegacyFixture, instance: u64, checkout: &RecordCheckout) -> ui::headless::Driver {
+pub fn driver(
+    f: &NotebookFixture,
+    instance: u64,
+    checkout: &RecordCheckout,
+) -> ui::headless::Driver {
     let mut driver = ui::headless::Driver::from_component(
         component(f, instance, existing(checkout)),
         (1000, 700),
@@ -228,7 +231,7 @@ pub fn kind_at(doc: &automerge::AutoCommit, page: notes::PageId, index: usize) -
         .stored()
 }
 
-pub fn revision(f: &LegacyFixture, checkout: &RecordCheckout) -> u64 {
+pub fn revision(f: &NotebookFixture, checkout: &RecordCheckout) -> u64 {
     f.records
         .read_history(&checkout.id, |_, history| history.revision())
         .unwrap()
@@ -274,6 +277,10 @@ impl BoundNotes {
             widget.children().into_iter().find_map(editor)
         }
         let mut tile = Box::new(ui::widget::TileHost::from_component(component));
+        // A host syncs a mounted component before laying it out: the
+        // notebook surface binds its open note's editor then.
+        let mut outer = automerge::AutoCommit::new();
+        tile.sync(&mut outer, &automerge::ROOT);
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = std::collections::HashMap::new();
         let layout = tile.build_layout(&mut tree, &ui::Theme::dark(), &mut nodes);
@@ -296,7 +303,7 @@ impl BoundNotes {
             nodes,
             node: matching[0],
             tree,
-            outer: automerge::AutoCommit::new(),
+            outer,
         }
     }
     pub fn pending_edit(
