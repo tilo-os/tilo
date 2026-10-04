@@ -181,6 +181,7 @@ async fn a_legacy_window_streams_between_two_devices_at_interactive_latency() {
     let codec = session.chosen_codec().wire_label().to_string();
 
     // The host: announce, then encode each damaged frame as the app paints.
+    let start_sent = Instant::now();
     host_cmd
         .send(NetCmd::PublishSurfaceTo {
             ws: WS,
@@ -227,6 +228,9 @@ async fn a_legacy_window_streams_between_two_devices_at_interactive_latency() {
     let mut arrivals = Vec::new();
     let mut announced_tab = None;
     let mut before_keyframe = 0_u32;
+    let mut first_picture = None;
+    let mut early: Vec<(Vec<u8>, u64, Instant)> = Vec::new();
+    let mut pending: Vec<(Vec<u8>, u64, Instant)> = Vec::new();
     let receive_until = Instant::now() + DAMAGE_INTERVAL * FRAMES + Duration::from_secs(2);
     while Instant::now() < receive_until {
         let Ok(Some(event)) =
@@ -255,6 +259,9 @@ async fn a_legacy_window_streams_between_two_devices_at_interactive_latency() {
                 let mut fresh = PeerView::new_with_metrics(SURFACE, viewer_peer, metrics.clone());
                 fresh.restart_stream(&codec, Some((width, height)));
                 view = Some(fresh);
+                // Frames that overtook the start are decoded now, as the
+                // shell does with the ones it held.
+                pending.append(&mut early);
             }
             NeighbourMsg::SurfaceFrame {
                 surface,
@@ -262,28 +269,36 @@ async fn a_legacy_window_streams_between_two_devices_at_interactive_latency() {
                 ts,
                 ..
             } if surface == SURFACE => {
-                let Some(view) = view.as_mut() else {
-                    continue;
-                };
-                let arrived = Instant::now();
-                let captured = origin + Duration::from_nanos(ts);
-                let outcome = view.push_encoded_with_latency(&encoded_h264, None);
-                // The start and the first frames take different routes; a
-                // viewer that saw a frame before the start joins at the
-                // next keyframe. From then on every frame decodes.
-                if latencies.is_empty() && outcome == PushOutcome::DecodeFailed {
-                    before_keyframe += 1;
-                    continue;
+                let frame = (encoded_h264, ts, Instant::now());
+                if view.is_none() {
+                    early.push(frame);
+                } else {
+                    pending.push(frame);
                 }
-                assert!(
-                    matches!(outcome, PushOutcome::Decoded | PushOutcome::DroppedOldest),
-                    "the viewer decodes every frame once it has a keyframe"
-                );
-                view.mark_drawn();
-                arrivals.push(arrived);
-                latencies.push(captured.elapsed());
             }
             _ => {}
+        }
+        let Some(view) = view.as_mut() else {
+            continue;
+        };
+        for (encoded, ts, arrived) in std::mem::take(&mut pending) {
+            let captured = origin + Duration::from_nanos(ts);
+            let outcome = view.push_encoded_with_latency(&encoded, None);
+            // The first frame is the keyframe the host forced for this
+            // viewer; one that fails to decode means the viewer had to
+            // wait for the next keyframe.
+            if latencies.is_empty() && outcome == PushOutcome::DecodeFailed {
+                before_keyframe += 1;
+                continue;
+            }
+            assert!(
+                matches!(outcome, PushOutcome::Decoded | PushOutcome::DroppedOldest),
+                "the viewer decodes every frame once it has a keyframe"
+            );
+            view.mark_drawn();
+            first_picture.get_or_insert_with(|| start_sent.elapsed());
+            arrivals.push(arrived);
+            latencies.push(captured.elapsed());
         }
     }
     let (sent, mut encode_times) = producer.join().unwrap();
@@ -348,11 +363,13 @@ async fn a_legacy_window_streams_between_two_devices_at_interactive_latency() {
     let fps = f64::from(received.saturating_sub(1)) / span.as_secs_f64().max(f64::EPSILON);
     eprintln!(
         "legacy-window encoder={encoder} codec={codec} size={WIDTH}x{HEIGHT} sent={sent} \
-         received={received} before_keyframe={before_keyframe} fps={fps:.1} \
+         received={received} before_keyframe={before_keyframe} \
+         first_picture_ms={:.2} fps={fps:.1} \
          encode_ms(p50={:.2} p95={:.2}) \
          glass_ms(p50={:.2} p95={:.2} max={:.2}) \
          frame_gap_ms(p50={:.2} p95={:.2} max={:.2}) \
          input_ms(p50={:.2} p95={:.2} max={:.2})",
+        millis(first_picture.unwrap_or_default()),
         millis(percentile(&encode_times, 50)),
         millis(percentile(&encode_times, 95)),
         millis(percentile(&latencies, 50)),
@@ -405,6 +422,14 @@ async fn a_legacy_window_streams_between_two_devices_at_interactive_latency() {
         (received + before_keyframe) * 10 >= sent * 9,
         "the direct route delivers nearly every encoded frame: {received} of {sent}"
     );
+    assert_eq!(
+        before_keyframe, 0,
+        "the first frame the viewer gets is its keyframe"
+    );
+    assert!(
+        first_picture.is_some_and(|wait| wait < Duration::from_millis(500)),
+        "the first picture follows the start at once, not a keyframe interval later: {first_picture:?}"
+    );
     assert!(
         fps >= 15.0,
         "a damaged window streams at an interactive rate, got {fps:.1} fps"
@@ -419,4 +444,91 @@ async fn a_legacy_window_streams_between_two_devices_at_interactive_latency() {
         "input p95 stays below 50 ms: {:?}",
         percentile(&input_latencies, 95)
     );
+}
+
+/// A board whose hardware decoder stops at 1280x720 watches a 1920x1080
+/// window: the host scales it down before encoding, so every frame the board
+/// receives fits its decoder, and the first one is a keyframe.
+#[test]
+fn a_board_viewer_receives_only_pictures_its_hardware_decoder_takes() {
+    let board = media::realtime::CodecCapabilities {
+        hardware_decode: [media::StreamCodec::H264].into(),
+        hardware_decode_max: [(media::StreamCodec::H264, (1280, 720))].into(),
+        software_decode: [media::StreamCodec::H264].into(),
+        ..media::realtime::CodecCapabilities::default()
+    };
+    let session = SharedFlatpakSession::start_with_metrics(
+        0xA,
+        APP,
+        SURFACE,
+        1920,
+        1080,
+        &FlatpakShareConfig {
+            max_bitrate_kbps: 8000,
+            target_fps: 30,
+            encoder: EncoderChoice::Auto,
+            hdr: None,
+        },
+        std::slice::from_ref(&board),
+        None,
+    )
+    .expect("an encoder for the window");
+    assert_eq!(session.chosen_codec(), media::StreamCodec::H264);
+    assert_eq!(
+        session.dimensions(),
+        (1920, 1080),
+        "captured at the window's size"
+    );
+    assert_eq!(session.encoded_dimensions(), (1280, 720));
+    let NeighbourMsg::SurfaceStreamStart { width, height, .. } = session.stream_start_msg() else {
+        panic!("a stream start");
+    };
+    assert_eq!(
+        (width, height),
+        (1280, 720),
+        "the viewer is told the encoded size"
+    );
+
+    session.add_viewer(0xB, false);
+    let mut view = PeerView::new_with_metrics(SURFACE, 0xB, PeerSurfaceMetrics::default());
+    view.restart_stream("h264", Some((width, height)));
+    let picture = window_frame_sized(1920, 1080, 3);
+    let mut decoded = 0;
+    let mut now = Instant::now();
+    for _ in 0..5 {
+        session.deposit_captured_rgba(picture.clone());
+        now += Duration::from_millis(40);
+        let Some(frame) = session.encode_next_frame(now) else {
+            continue;
+        };
+        let NeighbourMsg::SurfaceFrame { encoded_h264, .. } = frame.into_neighbour_msg() else {
+            panic!("a frame");
+        };
+        assert_eq!(
+            view.push_encoded_with_latency(&encoded_h264, None),
+            PushOutcome::Decoded,
+            "every frame decodes, the first one too"
+        );
+        view.mark_drawn();
+        let latest = view.latest_frame().expect("a decoded picture");
+        assert!((latest.width, latest.height) <= (1280, 720));
+        decoded += 1;
+    }
+    assert!(decoded >= 3);
+}
+
+fn window_frame_sized(width: u32, height: u32, index: u32) -> Vec<u8> {
+    let caret = index.saturating_mul(7).checked_rem(width).unwrap_or(0);
+    let mut rgba = Vec::new();
+    for y in 0..height {
+        for x in 0..width {
+            let shade: u8 = if x.abs_diff(caret) < 3 || (y / 24) % 2 == 0 && x % 97 < 80 {
+                40
+            } else {
+                230
+            };
+            rgba.extend_from_slice(&[shade, shade, shade, 255]);
+        }
+    }
+    rgba
 }

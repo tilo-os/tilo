@@ -562,6 +562,11 @@ pub struct State {
     /// A streamed window the person focused from another device. It holds
     /// this seat's keyboard until they use this device's own input again.
     personal_keyboard_focus: Option<SurfaceId>,
+    /// Another device of the person last moved this seat's pointer, to a
+    /// window it shows. That moves no cursor here: the host's cursor stays
+    /// where its own input left it and keeps its own image, and its next
+    /// input takes the pointer back.
+    personal_pointer_hold: bool,
     /// The themed placeholder colour a protected window is streamed as —
     /// see [`crate::shell::capture_protection`]. Kept current by the frame
     /// loop, which owns the theme.
@@ -1138,6 +1143,7 @@ impl State {
             legacy_stream_routes: HashMap::new(),
             personal_stream_viewers: std::collections::HashSet::new(),
             personal_keyboard_focus: None,
+            personal_pointer_hold: false,
             capture_placeholder_fill: crate::shell::capture_protection::placeholder_fill_rgba8(
                 &ui::theme::Theme::default(),
             ),
@@ -1876,6 +1882,12 @@ impl State {
         self.personal_keyboard_focus = None;
     }
 
+    /// Whether another device of the person holds this seat's pointer, and
+    /// end that hold: local input is about to take it back.
+    pub(crate) fn take_personal_pointer_hold(&mut self) -> bool {
+        std::mem::take(&mut self.personal_pointer_hold)
+    }
+
     /// Where input from the person's other devices lands on a streamed
     /// window no tile here shows: a rect the size they show it at, beyond
     /// every output, so nothing local covers it and the local pointer never
@@ -1925,7 +1937,7 @@ impl State {
         let Some((width, height)) = self
             .active_sessions
             .get(&surface)
-            .map(|session| session.dimensions())
+            .map(|session| session.encoded_dimensions())
             .filter(|(width, height)| *width > 0 && *height > 0)
         else {
             return event;
@@ -2175,6 +2187,7 @@ impl State {
                 app_id,
                 tab,
                 viewers: recipients,
+                decode_limits,
             } = share;
             let recipients = recipients
                 .iter()
@@ -2193,7 +2206,14 @@ impl State {
             // advertised is treated as H.264-only.
             let receivers = recipients
                 .iter()
-                .map(|peer| crate::network::media_caps::capabilities(*peer))
+                .map(|peer| {
+                    let mut caps = crate::network::media_caps::capabilities(*peer);
+                    if let Some(limits) = decode_limits.get(peer) {
+                        caps.hardware_decode.extend(limits.keys().copied());
+                        caps.hardware_decode_max.clone_from(limits);
+                    }
+                    caps
+                })
                 .collect::<Vec<_>>();
             let reusable = self.active_sessions.get(&surface).is_some_and(|session| {
                 session.app_id == *app_id
@@ -2505,6 +2525,15 @@ impl State {
             self.release_remote_focus_for_surface(peer, surface);
         }
         let event = if self.personal_stream_viewers.contains(&(peer, surface)) {
+            if matches!(
+                event,
+                InputEvent::PointerMotion { .. }
+                    | InputEvent::PointerButton { .. }
+                    | InputEvent::PointerAxis { .. }
+                    | InputEvent::PointerEnter { .. }
+            ) {
+                self.personal_pointer_hold = true;
+            }
             if let InputEvent::KeyboardFocus { focused, .. } = event {
                 if focused {
                     self.personal_keyboard_focus = Some(surface);
@@ -3210,6 +3239,10 @@ pub struct LegacyShare {
     pub app_id: String,
     pub tab: u64,
     pub viewers: std::collections::HashSet<MsgPeerId>,
+    /// The largest picture each viewer's hardware decoders take, by codec,
+    /// where the viewer said: the stream is encoded no larger.
+    pub decode_limits:
+        HashMap<MsgPeerId, std::collections::BTreeMap<media::StreamCodec, (u32, u32)>>,
 }
 
 impl State {
@@ -5293,6 +5326,11 @@ impl SeatHandler for State {
         _seat: &Seat<Self>,
         image: smithay::input::pointer::CursorImageStatus,
     ) {
+        // A window another device of the person points at shapes that
+        // device's cursor, not this one's.
+        if self.personal_pointer_hold {
+            return;
+        }
         let scale = self.scale;
         self.client_cursor.set(image, scale);
     }

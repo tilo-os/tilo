@@ -1777,8 +1777,8 @@ impl DeviceFabricRuntime {
                         action,
                     );
                 }
-                PersonalFabricAction::WindowViews { views } => {
-                    window_views::record(envelope.source, views);
+                PersonalFabricAction::WindowViews { views, decode } => {
+                    window_views::record(envelope.source, views, &decode);
                 }
                 action => handle_spatial_action(envelope.source, &envelope.target, action),
             }

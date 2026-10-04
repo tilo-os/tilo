@@ -4163,6 +4163,12 @@ impl ShellOverlayHost {
         false
     }
 
+    /// Whether a view shows the stream of `surface_id` from `source_peer`.
+    pub fn has_peer_stream(&self, source_peer: u64, surface_id: u64) -> bool {
+        self.peer_stream_tabs
+            .contains_key(&(source_peer, surface_id))
+    }
+
     /// Drop a session-local peer decoder and restore the persisted
     /// peer-window card underneath it.
     pub fn unmount_peer_stream(&mut self, source_peer: u64, surface_id: u64) -> bool {
