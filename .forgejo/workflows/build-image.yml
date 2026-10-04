@@ -2716,6 +2716,10 @@ jobs:
           # AT-SPI client. Per-app evidence comes from their installed manifest;
           # this is distinct from the compositor and Files-depth smokes below.
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh
+          # The sandboxed Settings reads the device's network through the
+          # system authorities it is granted: its Network pane must say what
+          # nmcli says on the same booted, connected VM, and show no read error.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh settings-network
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
           # The greetd login left the display manager's SELinux domain: the
           # compositor and the apps it launched run as the user, in the
