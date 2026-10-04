@@ -408,7 +408,6 @@ fn a_person_typing_and_the_agent_working_both_land() {
         // there is no half-typed line here to wait out.
         settle: Duration::ZERO,
         await_document: Duration::ZERO,
-        directory: None,
         permissions: granted("Scribe"),
         content: ContentStore::memory(),
     };
