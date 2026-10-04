@@ -3781,7 +3781,7 @@ fn field_kinds_set_their_text_kind_while_typing() {
         (TextInputKind::Search, TextKind::Prose),
         (TextInputKind::Username, TextKind::Identifier),
         (TextInputKind::Email, TextKind::Identifier),
-        (TextInputKind::Url, TextKind::Identifier),
+        (TextInputKind::Url, TextKind::Url),
         (TextInputKind::Number, TextKind::Numeric),
         (TextInputKind::Code, TextKind::Code),
         (TextInputKind::Password, TextKind::Secret),

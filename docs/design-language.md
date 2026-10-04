@@ -166,8 +166,18 @@ the font catalog.
 - Sizes derive from one base (Body = base); text scale changes everything at once.
 - Modifiers keep the role: `.strong()`, `.numeric()` (tabular figures), `.italic()`.
 - Apps never pick OpenType features: text says what it is (numeric, secret,
-  identifier, code) and the toolkit applies what the face supports
+  identifier, link, code) and the toolkit applies what the face supports
   (`docs/typography.md`, Text kinds).
+- **Confusable letters.** Prose and labels keep the face's character. Names
+  people must not mistake — usernames, handles, email addresses, invite
+  codes, room names, other people's file names — get a distinct I and l,
+  also when they appear inside a message, note or mail, where the toolkit
+  finds them itself. Codes and secrets (TOTP and recovery codes, revealed
+  passwords, keys, hashes, IDs) and links add the slashed zero. Permission
+  prompts, review sheets, invite and join confirmations and identity
+  verification set every look-alike apart. "Always distinguish similar
+  letters" (Appearance and Accessibility; on with Hyperlegible) does so
+  everywhere.
 - **No all-caps or letter-spaced labels.** Section headers are sentence case
   in `Subheading` or `Heading`.
 - Hierarchy comes from size and weight contrast plus ink tier, never from
@@ -211,8 +221,9 @@ distribution, user, workspace and accessibility layers. A theme can set:
 - **Presence:** lightness and chroma of the presence palette (hues stay evenly
   spaced so participants remain equal).
 - **Shape:** the window radius; every other radius derives concentrically.
-- **Density, type and motion:** spacing scale, UI face, reading face and
-  base size, and spring character.
+- **Density, type and motion:** spacing scale, UI face, reading face,
+  base size and whether similar letters are always distinguished, and spring
+  character.
 - **Material:** blur strength and tint opacity of floating chrome.
 
 A theme cannot set colours of individual widgets, remove the lift or focus

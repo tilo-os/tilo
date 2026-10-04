@@ -306,6 +306,13 @@ pub struct Typography {
     pub(crate) scale: TypeScale,
     /// The ground the theme's content is set on, carried by every role.
     pub(crate) ground: TextGround,
+    /// "Always distinguish similar letters", resolved: every look-alike (I,
+    /// l, 1 and 0, O) set apart in all text, not only in identifiers, codes
+    /// and links. From the theme's type role
+    /// ([`crate::theme::ThemeType::distinguishes_letters`]) and the
+    /// accessibility layer; the renderer applies it
+    /// ([`crate::text_render::TextRenderer::set_distinct_letters`]).
+    pub distinct_letters: bool,
 }
 
 impl Default for Typography {
@@ -316,6 +323,7 @@ impl Default for Typography {
             mono_family: crate::text_render::UI_MONOSPACE_FAMILY.into(),
             scale: TypeScale::default(),
             ground: TextGround::Light,
+            distinct_letters: false,
         }
     }
 }

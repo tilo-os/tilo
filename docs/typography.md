@@ -127,7 +127,8 @@ set in, applying only what that face has and leaving out the rest silently.
 | `Prose` (default) | Running text; numbers in sentences stay proportional | none (the `Reading` role's own old-style figures stay) |
 | `Numeric` | Times, dates, durations, counts in tables and lists, prices, sizes, progress, clocks, table numeric columns, stat values, timestamps in rows | tabular lining figures (`tnum`, `lnum`), in place of any figure style the role set |
 | `Secret` | Verification and recovery codes, TOTP, API keys, hashes, IDs, revealed passwords, Wi-Fi and licence keys | tabular figures, slashed or dotted zero (`zero`), distinct I and l |
-| `Identifier` | Usernames, handles, email addresses, invite codes, room names shown for verification, other people's file names, URLs in permission prompts and link previews | distinct I and l |
+| `Identifier` | Usernames, handles, email addresses, invite codes, room names, other people's file names | distinct I and l |
+| `Url` | Web and other links (`https://…`, `www.…`, `mailto:…`) | slashed or dotted zero (`zero`), distinct I and l |
 | `Code` | Source and terminal text | none; set in the mono face |
 
 "Distinct I and l" is whatever stylistic set or character variant of the face
@@ -138,13 +139,74 @@ has one (`ss13`, with `cv01` and `cv02` for each letter alone) and a slashed
 `zero`, but the shipped build holds all four back until review approves
 them, so identifiers in the default face are unchanged today and pick them
 up when a build with them ships; Hyperlegible's letterforms are distinct by
-design.
+design. Prose and UI labels keep the face's own shapes: in running text,
+words tell I and l apart, and a serifed I in every sentence would change the
+face's character. A link gets the zero as well because a look-alike domain
+(`paypa1.com`, `g00gle.com`) is a phishing vector.
+
+### Identifiers found in text
+
+Nobody marks the link in a chat message or the address in a mail body.
+Before shaping, every `Prose` run is scanned (`ui::text_detect`) and the
+identifiers in it become spans of their own kind, in every shaping path
+(`Text`, `TextInput`, rich text, wrapped and single-line):
+
+| Found | Example | Kind |
+|---|---|---|
+| A link: a scheme, `www.`, a host with a path or port, or a bare host with a common top-level domain | `https://paypa1.com/I0l`, `www.tilo.so`, `example.org/docs` | `Url` |
+| An email address | `Il0@example.org` | `Identifier` |
+| A mention | `@lena_l1`, `@ilya:tilo.so` | `Identifier` |
+| A room address (a bare `#tag` is not one) | `#general:tilo.so` | `Identifier` |
+
+Punctuation the sentence wraps a word in (brackets, quotes, a closing full
+stop) stays outside the span, and `file.txt` or `node.js` in a sentence stays
+prose. A run that says what it is keeps its kind: a rich-text mention mark is
+an `Identifier` and an external link mark a `Url` whatever its label reads,
+and a `Link` that shows its own address is a `Url`. An app that acts on the
+same spans (opening a link, resolving a mention) calls
+`ui::text_detect::identifier_spans(text)` and gets exactly the ranges the
+text is drawn with.
+
+### Security surfaces
+
+Where a person decides whether to trust something, every look-alike is set
+apart in all text, prose included, whatever the setting: the permission
+prompt, the shell's portal review sheets, every identity-flow sheet (create
+identity, pair and add a device, invite and join, recovery share and
+verify). Toolkit surfaces mark themselves; the origin the browser's site
+controls and credential sheet name is a `Url`. A custom surface of this kind (a link preview, a verification
+screen) draws and measures inside `TextRenderer::security_surface`, or marks
+its styles with `TextStyle::on_security_surface()`:
+
+```rust
+text_renderer.security_surface(|text_renderer| {
+    text_renderer.draw_style(scene, "so.tilo.Files wants ~/Documents", ink, transform, None, &style);
+});
+let style = theme.text(TextRole::Body).on_security_surface();
+```
+
+### Always distinguish similar letters
+
+The person's setting "Always distinguish similar letters" (Settings,
+Appearance and Accessibility) applies the distinct I and l and the slashed
+zero to all text. It is a theme type role, `type.distinct_letters`, and an
+accessibility-layer flag; absent from both, it follows the face: on with
+Hyperlegible, off otherwise. The resolved value is
+`Typography::distinct_letters`; `App` and the headless harness hand it to
+the renderer with the face (`TextRenderer::apply_typography`), and a host
+with its own renderer calls `TextRenderer::set_distinct_letters`. Like a
+kind, it is part of the shaped style, so measurement and painting agree.
+
+| Setting | Prose, labels | Identifiers | Links | Codes, secrets | Security surfaces |
+|---|---|---|---|---|---|
+| Off | face's shapes | I, l | I, l, 0 | I, l, 0 | I, l, 0 |
+| On | I, l, 0 | I, l, 0 | I, l, 0 | I, l, 0 | I, l, 0 |
 
 Widgets whose content is inherently one kind set it themselves: `StatTile`
 values, the status-bar clock, gauge and badge counts, the pairing code in the
 identity flow (`Secret`), conflict timestamps, and a `TextInput` from its
-`TextInputKind` (`Username`, `Email`, `Url` and `Path` are `Identifier`,
-`Number` is `Numeric`, `Code` is `Code`, `Password` and `Secret` are
+`TextInputKind` (`Username`, `Email` and `Path` are `Identifier`, `Url` is
+`Url`, `Number` is `Numeric`, `Code` is `Code`, `Password` and `Secret` are
 `Secret`), applied while typing. Declare a kind only where a widget cannot
 know it:
 
@@ -211,7 +273,10 @@ the face whose letterforms are designed to be told apart at low vision.
 `ui::UiFace` lists the built-in faces; `Typography::set_face("Hyperlegible")`
 selects one by the name a theme document stores, and `face_name()` reports
 it back. Any other value is taken as a family name. The accessibility layer's
-`hyperlegible` flag sets the Hyperlegible face over whatever the theme chose.
+`hyperlegible` flag sets the Hyperlegible face over whatever the theme chose,
+and with it turns on [Always distinguish similar
+letters](#always-distinguish-similar-letters) unless the person turned that
+off.
 Every role, and text built on the generic sans family (inputs, toolkit
 internals), follows the theme's UI face; reading and code keep their faces,
 and the legibility floors apply unchanged.

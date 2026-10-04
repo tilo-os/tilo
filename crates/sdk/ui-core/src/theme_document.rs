@@ -66,6 +66,12 @@ pub struct ThemeType {
     /// The Reading role's face ([`crate::tokens::ReadingFace`]), by name.
     pub reading: String,
     pub base_size: f32,
+    /// "Always distinguish similar letters": set I, l, 1 and 0, O apart in
+    /// all text, not only in identifiers, codes and links. `None` follows
+    /// the face: on with Hyperlegible, off otherwise
+    /// ([`Self::distinguishes_letters`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distinct_letters: Option<bool>,
 }
 
 impl ThemeType {
@@ -80,6 +86,17 @@ impl ThemeType {
     #[must_use]
     pub fn default_reading() -> String {
         crate::tokens::ReadingFace::Default.name().into()
+    }
+
+    /// Whether this type sets every look-alike letter apart: the
+    /// document's own choice, else on exactly when the face is Hyperlegible
+    /// — the face people choose to tell letters apart.
+    #[must_use]
+    pub fn distinguishes_letters(&self) -> bool {
+        self.distinct_letters.unwrap_or_else(|| {
+            crate::tokens::UiFace::from_name(&self.face)
+                == Some(crate::tokens::UiFace::Hyperlegible)
+        })
     }
 }
 
@@ -166,6 +183,7 @@ impl ThemeDocument {
                 face: crate::text_render::UI_SANS_FAMILY.into(),
                 reading: ThemeType::default_reading(),
                 base_size: ThemeType::BASE_SIZE,
+                distinct_letters: None,
             },
             motion: ThemeMotion { character: 1.0 },
             material: ThemeMaterial {
