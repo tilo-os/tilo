@@ -533,6 +533,10 @@ pub struct HostServices {
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
     pub speakers: Option<Arc<dyn SpeakerServices>>,
+    /// The session's settings, of which each app reaches its own entries
+    /// and the shared sections (`settings_store::app_scope`). Without it
+    /// apps have no settings beyond their own process.
+    pub settings: Option<Arc<dyn settings_store::SettingsSource>>,
     pub wifi_continuity: Option<Arc<dyn WifiContinuityServices>>,
     pub nearby_transfer: Option<Arc<dyn NearbyTransferServices>>,
     /// What each application declared it may do on the action door under

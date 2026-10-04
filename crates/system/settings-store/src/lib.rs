@@ -28,7 +28,9 @@
 //! the device's record ([`SessionSettings`]), reads and writes them through
 //! the installed [`SettingsSource`], and rewrites `settings.json` after every
 //! change for the processes that read it instead. Their section writes keep
-//! working: the session takes them in from the copy.
+//! working: the session takes them in from the copy. A sandboxed app sees
+//! neither: it asks the shell, which answers with the part of the records
+//! [`app_scope`] gives that app.
 //!
 //! # Reading is always forgiving
 //!
@@ -53,6 +55,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+pub mod app_scope;
 pub mod continuity;
 pub mod day_schedule;
 pub mod display_identify;
