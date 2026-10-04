@@ -1634,6 +1634,67 @@ impl WasmPeer {
         receipt.await.map_err(|_| js_error("peer session closed"))
     }
 
+    /// Open semantic activity for an explicitly allowed app/record, using the
+    /// authenticated carrier publisher (never a publisher claimed by payload).
+    /// Options are `{room, app, record, publisher}`; publisher is device hex.
+    /// Returns no receipt without current exact-record authority. The caller
+    /// must still recheck subscription/mount generations after this await.
+    ///
+    /// # Errors
+    /// Rejects malformed options or a closed session.
+    #[wasm_bindgen(js_name = openSemanticLive)]
+    pub async fn open_semantic_live(
+        &self,
+        options: String,
+        frame: Vec<u8>,
+    ) -> Result<Option<String>, JsError> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Options {
+            room: String,
+            app: String,
+            record: String,
+            publisher: String,
+        }
+        let options: Options = serde_json::from_str(&options).map_err(js_error)?;
+        let _ = workspace(&options.room)?;
+        let publisher = device_key(&options.publisher)?;
+        let route = DocumentRoute {
+            app_id: options.app,
+            cluster_id: options.room,
+            record: options.record,
+        };
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .open_semantic_live_then(
+                route,
+                publisher,
+                frame,
+                Box::new(move |opened| {
+                    let _ = reply.send(opened);
+                }),
+            )
+            .map_err(js_error)?;
+        let Some(opened) = receipt.await.map_err(|_| js_error("peer session closed"))? else {
+            return Ok(None);
+        };
+        let LiveFrame::Ops(OpsFrame::Semantic { record, event }) =
+            LiveFrame::decode(&opened.frame).map_err(js_error)?
+        else {
+            return Ok(None);
+        };
+        let interaction: serde_json::Value =
+            serde_json::from_str(&event.interaction_json).map_err(js_error)?;
+        serde_json::to_string(
+            &serde_json::json!({"kind":"semantic", "publisher":hex::encode(opened.publisher),
+            "principal":hex::encode(opened.user), "membershipEpoch":opened.epoch, "record":record,
+            "version":event.version,"sequence":event.seq,"sourceTimeMs":event.sent_at_ms,
+            "execution":event.execution,"peer":event.peer,"interaction":interaction}),
+        )
+        .map(Some)
+        .map_err(js_error)
+    }
+
     /// Ask the host for `room`'s calls; the answer is a `calls` event of
     /// [`Self::take_voice_events`].
     ///

@@ -290,6 +290,7 @@ enum Command {
     Live(u64, Vec<u8>),
     SealLive(u64, Vec<u8>, LiveCompletion),
     OpenLive(u64, Vec<u8>, LiveCompletion),
+    OpenSemantic(DocumentRoute, [u8; 32], Vec<u8>, SemanticLiveCompletion),
     RemoteAction(u64, [u8; 32], Vec<u8>),
     Barrier(Completion),
     LiveGrant(u64, Option<String>, GrantCompletion),
@@ -337,6 +338,23 @@ pub type GrantCompletion =
 /// keys, or `None` when this device holds none; see
 /// [`PeerHandle::seal_live_then`] and [`PeerHandle::open_live_then`].
 pub type LiveCompletion = Box<dyn FnOnce(Option<Vec<u8>>) + Send>;
+/// A semantic frame opened under current exact-record membership and known
+/// certificate/revocation evidence. This does not prove app mutation or that a
+/// publisher ran a model. The carrier must authenticate `publisher` separately.
+#[derive(Clone, Debug)]
+pub struct VerifiedSemanticLive {
+    /// Device identity supplied by the authenticated carrier.
+    pub publisher: [u8; 32],
+    /// Root that certified the current publisher.
+    pub user: [u8; 32],
+    /// Current exact-record MLS membership epoch.
+    pub epoch: u64,
+    /// Canonical bounded semantic frame, with actor checked against this root.
+    pub frame: Vec<u8>,
+}
+/// Called once; missing authority yields no frame and never requests access.
+pub type SemanticLiveCompletion = Box<dyn FnOnce(Option<VerifiedSemanticLive>) + Send>;
+
 /// Called once with whether the host took a legacy window's input, see
 /// [`PeerHandle::legacy_input_then`].
 pub type InputCompletion = Box<dyn FnOnce(Result<bool, String>) + Send>;
@@ -448,49 +466,7 @@ impl PeerHandle {
         }));
         let events: Queue = Arc::new(Mutex::new(VecDeque::new()));
         lock(&shared).queues.push(Arc::downgrade(&events));
-        let record = store.load().unwrap_or_default();
-        let mut channels = crate::channels::Channels::new(
-            config.cert.device_public_key,
-            config.cert.user_public_key,
-            store.channel_vault().unwrap_or_else(rand::random),
-        );
-        channels.govern_by_host(&config.host_cert);
-        let saved = store
-            .load_channels()
-            .and_then(|bytes| SavedPeerChannels::decode(&bytes))
-            .unwrap_or_default();
-        match saved.channels {
-            StoredChannels::Current(saved) => channels.restore(saved),
-            StoredChannels::Legacy(legacy) => channels.restore_legacy(legacy),
-        }
-        let task = Task {
-            config,
-            signer,
-            store,
-            shared: shared.clone(),
-            rooms: BTreeSet::new(),
-            live: BTreeSet::new(),
-            outbox: record.outbox.iter().cloned().collect(),
-            record,
-            ciphers: Ciphers::new(),
-            channels,
-            channel_changes: crate::channels::Changes::default(),
-            opened: BTreeMap::new(),
-            refused: (0, String::new()),
-            held_inbound: BTreeMap::new(),
-            held_live: crate::held_live::HeldLive::new(),
-            held_outbound: saved.held.into_iter().collect(),
-            reassembly: Reassembly::default(),
-            positions: BTreeMap::new(),
-            doc_seq: 0,
-            barriers: Vec::new(),
-            held_barriers: Vec::new(),
-            admission_since: None,
-            delivered: BTreeMap::new(),
-            received: BTreeSet::new(),
-            compactions: BTreeMap::new(),
-            voice: crate::voice::Participations::default(),
-        };
+        let task = Task::new(config, signer, store, Arc::clone(&shared));
         task.update(|status| {
             status.outgoing_pending = task.outbox.len();
             for entry in &task.outbox {
@@ -639,6 +615,22 @@ impl PeerHandle {
         done: LiveCompletion,
     ) -> Result<(), String> {
         self.send(Command::OpenLive(workspace_id, frame, done))
+    }
+
+    /// Open semantic activity from an authenticated carrier publisher for an
+    /// explicitly allowed exact record. Drops while disconnected or unadmitted;
+    /// never retains activity to replay after keys/admission arrive.
+    ///
+    /// # Errors
+    /// Returns an error once the session is closed.
+    pub fn open_semantic_live_then(
+        &self,
+        route: DocumentRoute,
+        publisher: [u8; 32],
+        frame: Vec<u8>,
+        done: SemanticLiveCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::OpenSemantic(route, publisher, frame, done))
     }
 
     /// Send one remote-action frame to device `to` of the room (the host's
@@ -980,6 +972,9 @@ struct Task {
     ciphers: Ciphers,
     /// This device's membership of the rooms' encrypted channels.
     channels: crate::channels::Channels,
+    semantic_storage_ready: bool,
+    /// Corrupt saved authority requires explicit recovery, never an ordinary save.
+    semantic_storage_trusted: bool,
     /// What channel state changed since the session last acted on it.
     channel_changes: crate::channels::Changes,
     /// Documents opened per route, and those refused with the last reason,
@@ -1031,6 +1026,60 @@ const MAX_DELIVERED_ENTRIES: usize = 1 << 17;
 const MAX_COMPACTIONS: usize = 16;
 
 impl Task {
+    fn new(
+        config: PeerConfig,
+        signer: Arc<dyn DeviceSigner>,
+        store: Arc<dyn PeerStore>,
+        shared: Arc<Mutex<Shared>>,
+    ) -> Self {
+        let record = store.load().unwrap_or_default();
+        let mut channels = crate::channels::Channels::new(
+            config.cert.device_public_key,
+            config.cert.user_public_key,
+            store.channel_vault().unwrap_or_else(rand::random),
+        );
+        channels.govern_by_host(&config.host_cert);
+        channels.note_revocations(config.revocations.iter());
+        let stored = store.load_channels();
+        let decoded = stored.as_deref().and_then(SavedPeerChannels::decode);
+        let semantic_storage_trusted = stored.is_none() || decoded.is_some();
+        let saved = decoded.unwrap_or_default();
+        match saved.channels {
+            StoredChannels::Current(saved) => channels.restore(saved),
+            StoredChannels::Legacy(legacy) => channels.restore_legacy(legacy),
+        }
+        Self {
+            config,
+            signer,
+            store,
+            shared,
+            rooms: BTreeSet::new(),
+            live: BTreeSet::new(),
+            outbox: record.outbox.iter().cloned().collect(),
+            record,
+            ciphers: Ciphers::new(),
+            channels,
+            semantic_storage_ready: true,
+            semantic_storage_trusted,
+            channel_changes: crate::channels::Changes::default(),
+            opened: BTreeMap::new(),
+            refused: (0, String::new()),
+            held_inbound: BTreeMap::new(),
+            held_live: crate::held_live::HeldLive::new(),
+            held_outbound: saved.held.into_iter().collect(),
+            reassembly: Reassembly::default(),
+            positions: BTreeMap::new(),
+            doc_seq: 0,
+            barriers: Vec::new(),
+            held_barriers: Vec::new(),
+            admission_since: None,
+            delivered: BTreeMap::new(),
+            received: BTreeSet::new(),
+            compactions: BTreeMap::new(),
+            voice: crate::voice::Participations::default(),
+        }
+    }
+
     fn note_delivered(&mut self, route: &DocumentRoute, entries: &[[u8; 32]]) {
         let known = self.delivered.entry(route.clone()).or_default();
         for entry in entries {
@@ -1529,6 +1578,10 @@ impl Task {
                 self.apply_live(command, client);
                 true
             }
+            Command::OpenSemantic(route, publisher, frame, done) => {
+                done(self.open_semantic_live(&route, publisher, &frame, client.is_some()));
+                true
+            }
             Command::RemoteAction(workspace_id, to, frame) => {
                 if let Some(client) = client {
                     let _ = client.send(Envelope::RemoteAction {
@@ -1951,6 +2004,30 @@ impl Task {
             .map_or(Opening::Dropped, Opening::Opened)
     }
 
+    fn open_semantic_live(
+        &mut self,
+        route: &DocumentRoute,
+        publisher: [u8; 32],
+        bytes: &[u8],
+        connected: bool,
+    ) -> Option<VerifiedSemanticLive> {
+        let ready = self.semantic_storage_trusted
+            && self.semantic_storage_ready
+            && connected
+            && route.workspace_id().ok().is_some_and(|workspace| {
+                let shared = lock(&self.shared);
+                shared.status.phase == TransportPhase::Connected
+                    && shared.status.rooms.get(&workspace) == Some(&true)
+            });
+        if !ready {
+            return None;
+        }
+        let now_ns = crate::clock::now_ms().checked_mul(1_000_000)?;
+        let cipher = self.ciphers.get_mut(route)?;
+        self.channels
+            .open_semantic(route, publisher, bytes, now_ns, cipher.as_mut())
+    }
+
     async fn publish(
         &mut self,
         route: DocumentRoute,
@@ -2037,17 +2114,25 @@ impl Task {
         }
     }
 
+    fn set_room_admission(&self, workspace: u64, ready: bool) {
+        self.update(|status| {
+            status.rooms.insert(workspace, ready);
+        });
+    }
+
     fn inbound(&mut self, envelope: Envelope) {
         let now = crate::clock::now_ms();
         self.update(|status| status.last_contact_at_ms = Some(now));
         match envelope {
             Envelope::Ready { workspace_id, .. } => {
-                self.update(|status| {
-                    status.rooms.insert(workspace_id, true);
-                });
+                self.set_room_admission(workspace_id, true);
                 self.emit(&PeerEvent::Ready { workspace_id });
             }
-            Envelope::NotAuthorised { reason, .. } => {
+            Envelope::NotAuthorised {
+                workspace_id,
+                reason,
+            } => {
+                self.set_room_admission(workspace_id, false);
                 self.fail("permission-required", reason);
             }
             Envelope::Delta {
@@ -2140,7 +2225,10 @@ impl Task {
     fn inbound_body(&mut self, body: Vec<u8>, author: [u8; 32]) {
         let now = crate::clock::now_ms();
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
-            Ok(neighbour_wire::NeighbourMsg::IdentityHello { cert, .. }) => {
+            Ok(neighbour_wire::NeighbourMsg::IdentityHello {
+                cert, revocations, ..
+            }) => {
+                self.channels.note_revocations(&revocations);
                 let changes = self.channels.note_cert(author, *cert, now);
                 self.absorb(changes);
             }
@@ -2233,6 +2321,14 @@ impl Task {
     /// Store channel state and held edits when either changed, so a
     /// reloaded page keeps its access and what it wrote before the keys.
     fn persist_channels(&mut self, held_changed: bool) {
+        if !self.semantic_storage_trusted {
+            self.fail_on(
+                FailureSubject::Storage,
+                "storage-authority-corrupt",
+                "Saved channel authority is unreadable; explicit recovery is required",
+            );
+            return;
+        }
         let Some(channels) = self.channels.export_if_changed().or_else(|| {
             held_changed.then(|| {
                 self.channels.mark_changed();
@@ -2252,7 +2348,9 @@ impl Task {
         let result = saved
             .encode()
             .and_then(|bytes| self.store.save_channels(&bytes));
+        self.semantic_storage_ready = result.is_ok();
         if let Err(error) = result {
+            self.channels.mark_changed();
             self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
         }
     }
@@ -2366,7 +2464,13 @@ struct LoadedChannels {
 /// Opens stored channel state that keeps its vault apart. State stored
 /// before starts with 32 random vault bytes instead, which match this only
 /// by a 2^-192 chance.
-const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v2";
+const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v3";
+const SAVED_CHANNELS_V2_TAG: &[u8] = b"tilo.browser-channels.v2";
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedPeerChannelsV2 {
+    channels: crate::channels::SavedChannelsV2,
+    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
+}
 
 impl SavedPeerChannels {
     fn encode(&self) -> Result<Vec<u8>, String> {
@@ -2380,6 +2484,13 @@ impl SavedPeerChannels {
             let saved: Self = postcard::from_bytes(current).ok()?;
             return Some(LoadedChannels {
                 channels: StoredChannels::Current(saved.channels),
+                held: saved.held,
+            });
+        }
+        if let Some(previous) = bytes.strip_prefix(SAVED_CHANNELS_V2_TAG) {
+            let saved: SavedPeerChannelsV2 = postcard::from_bytes(previous).ok()?;
+            return Some(LoadedChannels {
+                channels: StoredChannels::Current(saved.channels.into()),
                 held: saved.held,
             });
         }
@@ -2676,7 +2787,7 @@ async fn live_grant(
 mod tests {
     use super::*;
 
-    fn status(rooms: &[(u64, bool)]) -> PeerStatus {
+    pub(super) fn status(rooms: &[(u64, bool)]) -> PeerStatus {
         PeerStatus {
             phase: TransportPhase::Connected,
             authenticated: true,
@@ -2786,3 +2897,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "session/semantic_tests.rs"]
+mod semantic_tests;
