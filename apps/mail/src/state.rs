@@ -23,7 +23,7 @@ use crate::actions::{
     MailAction, move_action, purge_action, save_draft_action, set_read_action, set_starred_action,
 };
 use crate::engine::EngineRequest;
-use crate::model::{Draft, Folder, Mailbox, Message, MessageId, Thread};
+use crate::model::{Draft, Folder, Mailbox, MessageId, Thread};
 use crate::resource::Mail;
 
 /// Cheap-to-clone handle every pane holds.
@@ -326,6 +326,12 @@ impl MailState {
         }
     }
 
+    /// Record content from outside — what a mail server reported or
+    /// confirmed — as one document action.
+    pub(crate) fn dispatch_external(&self, doc: &mut AutoCommit, action: &MailAction) {
+        self.dispatch_action(doc, action);
+    }
+
     /// Record server baselines as one document action
     /// ([`MailAction::IngestBaselines`](crate::actions::MailAction::IngestBaselines)).
     /// Existing flags win, so a later fetch cannot overwrite a `MailAction`.
@@ -339,6 +345,28 @@ impl MailState {
                 messages: messages
                     .iter()
                     .map(crate::actions::IngestBaseline::from_message)
+                    .collect(),
+            },
+        );
+    }
+
+    /// Record what `account`'s server reported for `messages`: where each
+    /// lives there and its flags ([`IngestBaseline::fetched`](crate::actions::IngestBaseline::fetched)).
+    pub(crate) fn ingest_fetched(
+        &self,
+        doc: &mut AutoCommit,
+        account: &str,
+        messages: &[crate::model::Message],
+    ) {
+        if messages.is_empty() {
+            return;
+        }
+        self.dispatch_action(
+            doc,
+            &crate::actions::MailAction::IngestBaselines {
+                messages: messages
+                    .iter()
+                    .map(|message| crate::actions::IngestBaseline::fetched(message, account))
                     .collect(),
             },
         );
@@ -462,55 +490,6 @@ impl MailState {
     /// [`Self::open_message`].
     pub fn select_message(&mut self, doc: &mut AutoCommit, id: MessageId) {
         let _ = self.open_message(doc, id);
-    }
-
-    /// Push a live-path request to mirror a message's flags to the server
-    /// (`UID STORE`). A no-op under the offline stub backend, but it means the
-    /// mark-read/star state genuinely reaches IMAP in the `live` build. Called
-    /// after the local flag mutation so the pushed message carries the new
-    /// state (and its current, source folder for the `SELECT`).
-    fn sync_flag_to_server(&mut self, id: MessageId) {
-        let Some(msg) = self.mailbox.get(id).cloned() else {
-            return;
-        };
-        let account = self.accounts.active_config();
-        if account.email.is_empty() {
-            return;
-        }
-        self.push_intent(Intent::Engine(EngineRequest::store_flag(
-            account,
-            Box::new(msg),
-        )));
-    }
-
-    /// Push a live-path request to move a message to another folder
-    /// (`UID MOVE`). A no-op under the offline stub backend. `source` is the
-    /// message as it was **before** the local move, so the live backend can
-    /// `SELECT` its origin mailbox and locate it by `Message-ID`.
-    fn sync_move_to_server(&mut self, source: Message, to: Folder) {
-        let account = self.accounts.active_config();
-        if account.email.is_empty() {
-            return;
-        }
-        self.push_intent(Intent::Engine(EngineRequest::move_message(
-            account,
-            Box::new(source),
-            to,
-        )));
-    }
-
-    /// Ask the live backend to permanently remove exactly this server message.
-    /// The source snapshot is retained because the local corpus is removed
-    /// immediately and the engine still needs its mailbox and Message-ID.
-    fn sync_purge_to_server(&mut self, source: Message) {
-        let account = self.accounts.active_config();
-        if account.email.is_empty() {
-            return;
-        }
-        self.push_intent(Intent::Engine(EngineRequest::purge(
-            account,
-            Box::new(source),
-        )));
     }
 
     /// Select a device-local account. Account identity/credentials live in the
@@ -669,23 +648,13 @@ impl MailState {
                     self.mailbox.mark_read(*id, read);
                 }
                 self.dispatch_action(doc, &set_read_action(encoded_ids, read));
-                for id in &ids {
-                    self.sync_flag_to_server(*id);
-                }
                 ids.len()
             }
             BulkAction::Archive => {
-                let sources: Vec<Message> = ids
-                    .iter()
-                    .filter_map(|id| self.mailbox.get(*id).cloned())
-                    .collect();
                 for id in &ids {
                     self.mailbox.move_to(*id, Folder::Archive);
                 }
                 self.dispatch_action(doc, &move_action(encoded_ids, Folder::Archive));
-                for source in sources {
-                    self.sync_move_to_server(source, Folder::Archive);
-                }
                 self.bulk_selection.clear();
                 self.reselect_after_remove(doc);
                 ids.len()
@@ -706,10 +675,6 @@ impl MailState {
                             .is_some_and(|mail| mail.folder != Folder::Trash)
                     })
                     .collect();
-                let sources: Vec<Message> = move_to_trash
-                    .iter()
-                    .filter_map(|id| self.mailbox.get(*id).cloned())
-                    .collect();
                 if !move_to_trash.is_empty() {
                     for id in &move_to_trash {
                         self.mailbox.move_to(*id, Folder::Trash);
@@ -722,9 +687,6 @@ impl MailState {
                         ),
                     );
                 }
-                for source in sources {
-                    self.sync_move_to_server(source, Folder::Trash);
-                }
                 self.bulk_selection.clear();
                 self.reselect_after_remove(doc);
                 move_to_trash.len()
@@ -733,17 +695,10 @@ impl MailState {
                 // `ids` passed the all-Trash preflight above. The action
                 // reducer repeats it against the document to cover a stale
                 // remotely-authored envelope.
-                let sources: Vec<Message> = ids
-                    .iter()
-                    .filter_map(|id| self.mailbox.get(*id).cloned())
-                    .collect();
                 for id in &ids {
                     self.mailbox.purge(*id);
                 }
                 self.dispatch_action(doc, &purge_action(encoded_ids));
-                for source in sources {
-                    self.sync_purge_to_server(source);
-                }
                 self.bulk_selection.clear();
                 self.reselect_after_remove(doc);
                 ids.len()
@@ -787,8 +742,8 @@ impl MailState {
     // Each mutates the in-memory mailbox for immediate feedback AND dispatches
     // the matching [`MailAction`] through the framework host, so the flag change
     // is one undo boundary, replays byte-identically on peers, and is the same
-    // action the Ctrl+K palette dispatches. The `sync_*_to_server` hooks remain
-    // an *external* effect (IMAP UID STORE/MOVE), separate from the CRDT action.
+    // action the Ctrl+K palette dispatches. The mail server learns of it from
+    // the document, as it does of a change the palette or a peer made.
 
     /// Set a message's read flag through the action path.
     pub fn set_read(&mut self, doc: &mut AutoCommit, id: MessageId, read: bool) {
@@ -798,7 +753,6 @@ impl MailState {
         self.register_loaded_target(doc, id);
         self.mailbox.mark_read(id, read);
         self.dispatch_action(doc, &set_read_action(vec![id.to_string()], read));
-        self.sync_flag_to_server(id);
         self.dirty = true;
     }
 
@@ -810,19 +764,17 @@ impl MailState {
         self.register_loaded_target(doc, id);
         self.mailbox.toggle_star(id);
         self.dispatch_action(doc, &set_starred_action(vec![id.to_string()], target));
-        self.sync_flag_to_server(id);
         self.dirty = true;
     }
 
     /// Move a message to `folder` through the action path.
     pub fn move_message(&mut self, doc: &mut AutoCommit, id: MessageId, folder: Folder) {
-        let Some(source) = self.mailbox.get(id).cloned() else {
+        if self.mailbox.get(id).is_none() {
             return;
-        };
+        }
         self.register_loaded_target(doc, id);
         self.mailbox.move_to(id, folder);
         self.dispatch_action(doc, &move_action(vec![id.to_string()], folder));
-        self.sync_move_to_server(source, folder);
     }
 
     /// Apply a message action. Reply/forward raise an intent (the app owns the
@@ -846,28 +798,19 @@ impl MailState {
             }
             CtxAction::Delete => {
                 let was_selected = self.selected == Some(id);
-                // Snapshot the source before the local move so a live UID MOVE
-                // can find it in its origin mailbox.
-                let source = self.mailbox.get(id).cloned();
                 // Move to Trash, or purge if it was already there. Both are
-                // replayable actions; the live server effect remains a separate
-                // request carrying the pre-mutation message locator.
-                let purging = source
-                    .as_ref()
+                // replayable actions the server learns of from the document.
+                let purging = self
+                    .mailbox
+                    .get(id)
                     .is_some_and(|message| message.folder == Folder::Trash);
                 self.register_loaded_target(doc, id);
                 self.mailbox.delete(id);
                 let moved_to = self.mailbox.get(id).map(|m| m.folder);
                 if let Some(to) = moved_to {
                     self.dispatch_action(doc, &move_action(vec![id.to_string()], to));
-                    if let Some(src) = source {
-                        self.sync_move_to_server(src, to);
-                    }
                 } else if purging {
                     self.dispatch_action(doc, &purge_action(vec![id.to_string()]));
-                    if let Some(src) = source {
-                        self.sync_purge_to_server(src);
-                    }
                 }
                 self.after_remove(doc, was_selected);
             }
@@ -940,7 +883,6 @@ pub fn now_minutes() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::EngineRequest;
     use automerge::ReadDoc;
 
     fn state() -> MailState {
@@ -1049,77 +991,75 @@ mod tests {
         }
     }
 
+    /// `id` as `you@example.test`'s server reported it.
+    fn fetch(st: &mut MailState, doc: &mut AutoCommit, id: MessageId) {
+        let message = st.mailbox.get_mut(id).expect("loaded message");
+        message.rfc_message_id = Some(format!("{id}@example.test"));
+        let message = message.clone();
+        st.ingest_fetched(doc, "you@example.test", std::slice::from_ref(&message));
+    }
+
+    /// A triage control posts nothing to the engine itself: it changes the
+    /// document, and what the server has to be told follows from that.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn message_actions_emit_exact_server_operations() {
-        // Phase `star_action_emits_server_store_flag`.
-        {
-            let mut st = state();
-            let mut doc = AutoCommit::new();
-            let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
-            st.apply_message_action(&mut doc, id, CtxAction::ToggleStar);
-            let intents = st.take_intents();
+    fn message_actions_reach_the_server_through_the_document() {
+        use crate::actions::ServerUpdate;
+        let posts_nothing = |st: &mut MailState| {
             assert!(
-                intents
+                !st.take_intents()
                     .iter()
-                    .any(|i| matches!(i, Intent::Engine(EngineRequest::StoreFlag { .. }))),
-                "starring must post a StoreFlag to the engine (UID STORE in the live build)"
+                    .any(|intent| matches!(intent, Intent::Engine(_))),
+                "a control never talks to the engine itself"
             );
-        }
+        };
 
-        // Phase `archive_action_emits_server_move_to_archive`.
-        {
-            let mut st = state();
-            let mut doc = AutoCommit::new();
-            let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
-            st.apply_message_action(&mut doc, id, CtxAction::Archive);
-            let intents = st.take_intents();
-            assert!(
-                intents.iter().any(|i| matches!(
-                    i,
-                    Intent::Engine(EngineRequest::Move {
-                        to: Folder::Archive,
-                        ..
-                    })
-                )),
-                "archiving must post a Move to Archive to the engine (UID MOVE in live)"
-            );
-        }
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
+        fetch(&mut st, &mut doc, id);
+        st.apply_message_action(&mut doc, id, CtxAction::ToggleStar);
+        posts_nothing(&mut st);
+        assert!(matches!(
+            crate::doc::MailDoc::server_updates(&doc).as_slice(),
+            [ServerUpdate::Flags {
+                starred: true,
+                folder: Folder::Inbox,
+                ..
+            }]
+        ));
 
-        // Phase `junk_action_emits_server_move_to_junk`.
-        {
-            let mut st = state();
-            let mut doc = AutoCommit::new();
-            let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
-            st.apply_message_action(&mut doc, id, CtxAction::Junk);
-            let intents = st.take_intents();
-            assert!(intents.iter().any(|i| matches!(
-                i,
-                Intent::Engine(EngineRequest::Move {
-                    to: Folder::Junk,
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
+        fetch(&mut st, &mut doc, id);
+        st.apply_message_action(&mut doc, id, CtxAction::Archive);
+        posts_nothing(&mut st);
+        assert!(matches!(
+            crate::doc::MailDoc::server_updates(&doc).as_slice(),
+            [ServerUpdate::Move {
+                from: Folder::Inbox,
+                to: Folder::Archive,
+                ..
+            }]
+        ));
+
+        let mut st = state();
+        let mut doc = AutoCommit::new();
+        let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
+        fetch(&mut st, &mut doc, id);
+        st.apply_message_action(&mut doc, id, CtxAction::Delete);
+        st.apply_message_action(&mut doc, id, CtxAction::Delete);
+        posts_nothing(&mut st);
+        assert!(
+            matches!(
+                crate::doc::MailDoc::server_updates(&doc).as_slice(),
+                [ServerUpdate::Remove {
+                    folder: Folder::Inbox,
                     ..
-                })
-            )));
-        }
-
-        // Phase `permanent_delete_emits_an_exact_server_purge`.
-        {
-            let mut st = state();
-            let mut doc = AutoCommit::new();
-            let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
-            st.apply_message_action(&mut doc, id, CtxAction::Delete);
-            st.take_intents();
-
-            st.apply_message_action(&mut doc, id, CtxAction::Delete);
-            let intents = st.take_intents();
-            assert!(intents.iter().any(|intent| matches!(
-                intent,
-                Intent::Engine(EngineRequest::Purge { message, .. }) if message.id == id
-            )));
-        }
+                }]
+            ),
+            "a message deleted for good is removed from where the server has it"
+        );
     }
 
     #[test]
