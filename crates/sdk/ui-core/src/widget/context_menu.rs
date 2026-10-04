@@ -638,16 +638,24 @@ impl ContextMenu {
             }
             let below = floating_surface::anchored_room(anchor, PopoverSide::Below, gap, viewport);
             let above = floating_surface::anchored_room(anchor, PopoverSide::Above, gap, viewport);
-            // Taller than the room on its side, the menu takes the side with
-            // more room and scrolls its rows. Where neither side holds a
-            // row, it covers its anchor inside the viewport instead.
+            // Taller than the room on its side, a menu opened from a control
+            // takes the side with more room and scrolls its rows, so the
+            // control stays in view. A menu opened at the pointer has no
+            // control to keep clear: where neither side holds all of it, it
+            // covers the point and takes as much of the viewport as it needs,
+            // as it does when neither side holds a row.
             let room = if below >= full {
                 below
             } else {
                 below.max(above)
             };
             let one_row = (self.row_height + PADDING * 2.0).min(full);
-            let rect = if room >= one_row {
+            let beside = if gap > 0.0 {
+                room >= one_row
+            } else {
+                room >= full
+            };
+            let rect = if beside {
                 let height = full.min(room).min(viewport.height().max(0.0));
                 floating_surface::place_aligned(
                     anchor,
