@@ -649,6 +649,9 @@ mod component_adapter {
             dyn crate::component_lifecycle::ComponentLifecycle,
             dyn crate::undo::UndoPoints
         );
+        fn as_any(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
 
         // A component's diagnostic probe observes its own record, the
         // document its widgets actually render, not the runner's outer one.

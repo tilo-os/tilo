@@ -873,6 +873,17 @@ impl App {
         if len == 0 {
             return false;
         }
+        // Shown inside a host whose focus order continues past the app, Tab
+        // from the last control (Shift+Tab from the first) leaves the app.
+        if self.input.tab_order_continues_in_host {
+            let at = self
+                .focused_node
+                .and_then(|id| self.focusable_order.iter().position(|&n| n == id));
+            if at == Some(if shift { 0 } else { len - 1 }) {
+                self.set_focused_node(None);
+                return false;
+            }
+        }
         let Some(next_idx) =
             crate::focus_navigation::tab_index(&self.focusable_order, self.focused_node, shift)
         else {

@@ -86,6 +86,10 @@ mod surface;
 pub(crate) use native_runner::prepare_native_renderer;
 #[cfg(feature = "native")]
 pub use surface::AppSurface;
+#[cfg(feature = "native")]
+mod embedded;
+#[cfg(feature = "native")]
+pub use embedded::EmbeddedApp;
 
 /// Main-thread-only state behind an opaque `ActionDirectory` cursor. Search
 /// providers own their retained indexes; this retains just the provider slot
