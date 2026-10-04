@@ -262,12 +262,9 @@ fn assets_map(doc: &AutoCommit) -> Result<Option<ObjId>, String> {
 
 /// One image asset as the notebook stores it.
 ///
-/// Notebooks written before images moved into the content store carry the
-/// bytes inline; they stay readable, and
-/// [`NotesAction::MoveAssetsToContentStore`](crate::actions::NotesAction::MoveAssetsToContentStore)
-/// replaces them with references. A reference is a small map
-/// `{len, mime}` under the content digest; the bytes are in the app's
-/// content store ([`content`]).
+/// A process without a shared content store keeps the bytes inline. A
+/// reference is a small map `{len, mime}` under the content digest; the
+/// bytes are in the app's content store ([`content`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoredAsset {
     Inline(Vec<u8>),
@@ -404,7 +401,6 @@ pub fn validate_asset_payload(digest: &str, bytes: &[u8]) -> Result<(), String> 
 /// A process whose content store is not shared (one started outside the
 /// launcher) keeps the bytes inline instead, as notebooks did before: a
 /// reference to bytes only this device holds would dangle for collaborators.
-/// [`move_inline_assets`] moves them once a shared content store is available.
 ///
 /// # Errors
 /// Returns an error when validation fails, the content store refuses the
@@ -503,77 +499,6 @@ fn write_reference(
     doc.put(&reference, "len", bytes.len() as u64)
         .map_err(|e| e.to_string())?;
     doc.put(&reference, "mime", mime).map_err(|e| e.to_string())
-}
-
-/// Digests of images the notebook still carries inline.
-///
-/// # Errors
-/// Returns an error when the asset map is malformed.
-pub fn inline_asset_digests(doc: &AutoCommit) -> Result<Vec<String>, String> {
-    let Some(assets) = assets_map(doc)? else {
-        return Ok(Vec::new());
-    };
-    let mut digests = Vec::new();
-    for key in doc.keys(&assets) {
-        if asset_digest(&key).is_some()
-            && matches!(stored_asset(doc, &assets, &key)?, StoredAsset::Inline(_))
-        {
-            digests.push(key);
-        }
-    }
-    digests.sort();
-    Ok(digests)
-}
-
-/// Move inline images named by `digests` into the content store and replace
-/// them with references. Idempotent: references and unknown digests are left
-/// alone, so replaying the move, or moving concurrently on two devices,
-/// converges on the same references.
-///
-/// # Errors
-/// Returns an error when an inline payload is invalid or the content store
-/// refuses it; nothing is rewritten in that case.
-pub fn move_inline_assets(doc: &mut AutoCommit, digests: &[String]) -> Result<usize, String> {
-    move_inline_assets_in(content(), doc, digests)
-}
-
-/// [`move_inline_assets`] against an explicit store.
-///
-/// # Errors
-/// As [`move_inline_assets`], and when `store` is local to this process.
-pub fn move_inline_assets_in(
-    store: &tilo_content::ContentStore,
-    doc: &mut AutoCommit,
-    digests: &[String],
-) -> Result<usize, String> {
-    if !store.shared() {
-        return Err("images stay inline until a content store is available".into());
-    }
-    let Some(assets) = assets_map(doc)? else {
-        return Ok(0);
-    };
-    let mut moves = Vec::new();
-    for digest in digests {
-        let Some(digest) = asset_digest(digest) else {
-            return Err(format!("invalid asset digest {digest}"));
-        };
-        if doc
-            .get_all(&assets, digest)
-            .map_err(|e| e.to_string())?
-            .is_empty()
-        {
-            continue;
-        }
-        if let StoredAsset::Inline(bytes) = stored_asset(doc, &assets, digest)? {
-            validate_asset_payload(digest, &bytes)?;
-            store_asset_bytes(store, digest, &bytes)?;
-            moves.push((digest.to_owned(), bytes));
-        }
-    }
-    for (digest, bytes) in &moves {
-        write_reference(doc, &assets, digest, bytes)?;
-    }
-    Ok(moves.len())
 }
 
 /// Snapshot the image assets whose bytes are readable now, using their
@@ -879,8 +804,6 @@ mod tests {
         }
     }
 
-    use tilo_automerge::ApplyIncoming as _;
-
     /// A content backend standing in for the device store behind the
     /// launcher's capability: shared beyond this process, optionally refusing.
     #[derive(Default)]
@@ -927,121 +850,7 @@ mod tests {
         bytes
     }
 
-    /// A notebook as it was written before images moved to the content
-    /// store: bytes inline under their digest, referenced from a block.
-    fn inline_notebook(images: &[Vec<u8>]) -> (AutoCommit, Vec<String>) {
-        let mut doc = AutoCommit::new();
-        initialize_empty(&mut doc).unwrap();
-        let assets = assets_map(&doc).unwrap().unwrap();
-        let digests = images
-            .iter()
-            .map(|bytes| {
-                let digest = blake3::hash(bytes).to_hex().to_string();
-                doc.put(&assets, &digest, ScalarValue::Bytes(bytes.clone()))
-                    .unwrap();
-                digest
-            })
-            .collect::<Vec<_>>();
-        doc.commit();
-        (doc, digests)
-    }
-
     fn stored(doc: &AutoCommit, digest: &str) -> StoredAsset {
         stored_asset(doc, &assets_map(doc).unwrap().unwrap(), digest).unwrap()
-    }
-
-    #[test]
-    fn inline_images_move_to_the_content_store_convergently_or_stay_inline() {
-        eprintln!(
-            "phase inline_images_move_to_the_content_store_and_the_notebook_keeps_references"
-        );
-        {
-            let images = [png(1), png(2)];
-            let (mut doc, digests) = inline_notebook(&images);
-            validate(&doc).expect("an old notebook with inline images stays loadable");
-            assert_eq!(inline_asset_digests(&doc).unwrap(), {
-                let mut sorted = digests.clone();
-                sorted.sort();
-                sorted
-            });
-
-            let store = device_store(false);
-            assert_eq!(
-                move_inline_assets_in(&store, &mut doc, &digests).unwrap(),
-                2
-            );
-            doc.commit();
-            for (digest, bytes) in digests.iter().zip(&images) {
-                assert_eq!(
-                    stored(&doc, digest),
-                    StoredAsset::Reference {
-                        len: bytes.len() as u64,
-                        mime: "image/png".into(),
-                    }
-                );
-                assert_eq!(store.read(digest).as_ref(), Some(bytes));
-            }
-            assert!(inline_asset_digests(&doc).unwrap().is_empty());
-
-            // Round trip: the saved notebook reopens with references and every
-            // image readable through the store.
-            let reopened = AutoCommit::load(&doc.save()).unwrap();
-            validate(&reopened).unwrap();
-            let snapshot = asset_snapshot_with(&reopened, |hash| store.read(hash)).unwrap();
-            for (digest, bytes) in digests.iter().zip(&images) {
-                assert_eq!(snapshot.get(&format!("asset:{digest}")), Some(bytes));
-            }
-            assert!(assets_complete(&reopened, &snapshot).unwrap());
-            // Before a collaborator's bytes arrive, the image is simply absent.
-            let waiting = asset_snapshot_with(&reopened, |_| None).unwrap();
-            assert!(waiting.is_empty());
-            assert!(!assets_complete(&reopened, &waiting).unwrap());
-
-            // Idempotent: a second move changes nothing.
-            let mut again = reopened;
-            let heads = again.get_heads();
-            assert_eq!(
-                move_inline_assets_in(&store, &mut again, &digests).unwrap(),
-                0
-            );
-            again.commit();
-            assert_eq!(again.get_heads(), heads);
-        }
-
-        eprintln!("phase two_devices_moving_the_same_images_converge");
-        {
-            let images = [png(3)];
-            let (mut doc, digests) = inline_notebook(&images);
-            let mut a = doc.fork();
-            let mut b = doc.fork();
-            let store = device_store(false);
-            move_inline_assets_in(&store, &mut a, &digests).unwrap();
-            move_inline_assets_in(&store, &mut b, &digests).unwrap();
-            a.merge_incoming(&mut b).unwrap();
-            validate(&a).unwrap();
-            assert!(matches!(
-                stored(&a, &digests[0]),
-                StoredAsset::Reference { .. }
-            ));
-        }
-
-        eprintln!("phase a_refused_move_leaves_the_images_inline");
-        {
-            let images = [png(4)];
-            let (mut doc, digests) = inline_notebook(&images);
-            let refusing = device_store(true);
-            assert!(move_inline_assets_in(&refusing, &mut doc, &digests).is_err());
-            assert_eq!(
-                stored(&doc, &digests[0]),
-                StoredAsset::Inline(images[0].clone())
-            );
-            // A process-local store never receives the only copy.
-            let local = tilo_content::ContentStore::memory();
-            assert!(move_inline_assets_in(&local, &mut doc, &digests).is_err());
-            assert_eq!(
-                stored(&doc, &digests[0]),
-                StoredAsset::Inline(images[0].clone())
-            );
-        }
     }
 }
