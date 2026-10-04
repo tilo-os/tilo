@@ -828,18 +828,10 @@ pub struct PdfApp {
     reader_markup_hidden: bool,
 }
 
-/// The content store an app constructed without one uses: the app's own
-/// store, or an in-memory one under unit test so tests never write to the
-/// user's data directory.
+/// The content store an app constructed without one uses, where no host
+/// lent the window one: kept in memory.
 pub(crate) fn default_content() -> ContentStore {
-    #[cfg(test)]
-    {
-        ContentStore::memory()
-    }
-    #[cfg(not(test))]
-    {
-        ContentStore::for_app()
-    }
+    ContentStore::memory()
 }
 
 impl PdfApp {

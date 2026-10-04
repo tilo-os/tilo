@@ -144,7 +144,12 @@ impl ResourceApp for CameraShell {
     /// shows sample frames and reaches nothing.
     fn view(cx: &mut ViewCx<Camera>) -> Element {
         if cx.mode().is_live() {
-            cx.surface(CameraApp::disk())
+            let app = CameraApp::disk();
+            let app = match cx.content() {
+                Some(content) => app.with_content(content),
+                None => app,
+            };
+            cx.surface(app)
         } else {
             cx.surface(CameraApp::sample())
         }

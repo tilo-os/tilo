@@ -514,6 +514,14 @@ impl CameraApp {
         Self::with(Storage::Disk(library::resolve_dir()), Screen::Camera)
     }
 
+    /// Keep captures in `content`: the store the host lends the window,
+    /// which carries them on the camera record's route.
+    #[must_use]
+    pub fn with_content(mut self, content: tilo_content::ContentStore) -> Self {
+        self.content = content;
+        self
+    }
+
     /// The hermetic app used by `--shots` and tests: self-contained sample
     /// content, no disk or device access.
     pub fn sample() -> Self {
@@ -531,13 +539,10 @@ impl CameraApp {
         let selected_scanner = scanner_devices
             .first()
             .map(|scanner| scanner.device.clone());
-        // The hermetic sample keeps its bytes in memory, like everything else it does, and so do
-        // unit tests that capture to a scratch library: they must not write the user's store.
-        let content = match &storage {
-            Storage::Sample => tilo_content::ContentStore::memory(),
-            Storage::Disk(_) if cfg!(test) => tilo_content::ContentStore::memory(),
-            Storage::Disk(_) => tilo_content::ContentStore::for_app(),
-        };
+        // Captures are kept in memory until the host lends the window its
+        // store ([`Self::with_content`]); the hermetic sample and unit tests
+        // never write the user's.
+        let content = tilo_content::ContentStore::memory();
         // Previews follow the same rule: the sample and tests keep them in memory.
         let thumb_service = match &storage {
             Storage::Disk(_) if !cfg!(test) => thumbnail::ThumbnailService::open_default(1)

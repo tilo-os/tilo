@@ -530,10 +530,7 @@ pub fn save(
     art: &Artwork,
     save: &crate::resource::SaveArtwork,
 ) -> Result<serde_json::Value, String> {
-    let (bytes, missing) = pack(
-        &ArtworkFile::of(art),
-        &tilo_content::ContentStore::for_app(),
-    )?;
+    let (bytes, missing) = pack(&ArtworkFile::of(art), &crate::content::store())?;
     let size = bytes.len();
     let mut answer = match &save.path {
         None => serde_json::json!({"content": crate::resource::store(&bytes)?, "bytes": size}),
@@ -602,5 +599,5 @@ pub fn write(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
 /// Says why it cannot be read or is not an artwork.
 pub fn read(path: &std::path::Path) -> Result<ArtworkFile, String> {
     let bytes = crate::resource::read_file(&path.display().to_string(), MAX_FILE_BYTES)?;
-    unpack(&bytes, &tilo_content::ContentStore::for_app())
+    unpack(&bytes, &crate::content::store())
 }

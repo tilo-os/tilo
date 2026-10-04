@@ -75,7 +75,7 @@ pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
 /// The picture behind a content address, from the app's content store.
 pub fn bytes_of(address: &str) -> Option<Vec<u8>> {
     let hash = ui::tilo_actions::content_hash(address)?;
-    tilo_content::ContentStore::for_app().read(hash)
+    crate::content::store().read(hash)
 }
 
 /// The frame, crop and turn of an image mark.
