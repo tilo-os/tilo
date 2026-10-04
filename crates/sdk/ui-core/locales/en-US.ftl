@@ -256,6 +256,8 @@ terminal-target-host = This device (unconfined)
 terminal-target-default = Default environment
 terminal-target-legacy = legacy VM
 terminal-target-manage = Manage environments…
+terminal-run-on = Run on:
+terminal-run-on-this-device = This device
 terminal-host-awaiting-allow = Waiting for you to allow this device's own shell
 terminal-host-denied = This device's own shell was not allowed
 terminal-env-title = Environments
@@ -303,6 +305,10 @@ tree-move-up = Move up
 tree-move-down = Move down
 tree-move-indent = Move into the item above
 tree-move-outdent = Move out of the parent item
+
+# The show/hide control inside every password field.
+text-input-show-password = Show password
+text-input-hide-password = Hide password
 
 # Authentication surfaces share the system theme and catalog.
 greeter-welcome-back = Welcome back to Tilo

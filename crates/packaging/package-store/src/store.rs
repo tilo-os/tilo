@@ -71,6 +71,9 @@ pub struct Admission {
     pub attested_by: String,
     /// Where the bytes came from, recorded for provenance.
     pub source: String,
+    /// Keep this version in front of a newer one the system image ships;
+    /// see [`InstalledPackage::held`].
+    pub held: bool,
 }
 
 /// The result of an install.
@@ -716,6 +719,7 @@ impl PackageStore {
                 .unwrap_or_default(),
             runtime: meta.manifest.package.runtime.clone().unwrap_or_default(),
             source: admission.source,
+            held: admission.held,
             system: false,
         }
     }

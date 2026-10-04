@@ -292,6 +292,59 @@ pub fn installed_ids() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// One installed app as `app list` shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledApp {
+    pub package_id: String,
+    pub version: String,
+    /// Where the running copy came from: `image` (the system image installed
+    /// it), `user` (installed or updated since), or `held` (rolled back
+    /// below the image's version on purpose).
+    pub from: String,
+}
+
+/// Every installed app, the system image's included, as the copy that runs.
+///
+/// # Errors
+///
+/// Returns an error if the installed-app registry cannot be read.
+pub fn installed_apps() -> Result<Vec<InstalledApp>, String> {
+    let entries = package_store::list_installed()
+        .map_err(|error| format!("could not read the installed app registry: {error}"))?;
+    Ok(entries
+        .into_iter()
+        .map(|entry| InstalledApp {
+            version: installed_manifest_version(&entry.manifest_path)
+                .unwrap_or_else(|| entry.version.clone()),
+            from: if entry.system {
+                "image"
+            } else if entry.held {
+                "held"
+            } else {
+                "user"
+            }
+            .into(),
+            package_id: entry.id,
+        })
+        .collect())
+}
+
+/// The version of `package_id` the system image ships, when the user's copy
+/// shadows it — the version removing that copy goes back to.
+///
+/// # Errors
+///
+/// Returns an error if either store's registry cannot be read.
+pub fn image_version_beneath(package_id: &str) -> Result<Option<String>, String> {
+    let layers = package_store::Catalog::from_env()
+        .and_then(|catalog| catalog.layers(package_id))
+        .map_err(|error| format!("could not read the installed app registry: {error}"))?;
+    Ok(match (layers.user, layers.image) {
+        (Some(_), Some(image)) => Some(image.version),
+        _ => None,
+    })
+}
+
 /// Version recorded by an installed app's manifest, when readable.
 ///
 /// # Errors

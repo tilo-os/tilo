@@ -893,6 +893,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
             semantics
                 .children
                 .iter()
+                .filter(|node| node.live.is_none())
                 .filter_map(|node| node.name.as_deref())
                 .collect::<Vec<_>>(),
             [
@@ -1512,7 +1513,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         h.host.begin_wifi_password("Tilo test network");
         assert!(pump(
             &mut h,
-            &key_press(Key::Character("a".into())),
+            &crate::shell::test_support::typed_key_event(Key::Character("a".into())),
             Modifiers::default()
         ));
 
@@ -1534,17 +1535,13 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         assert!(!h.host.capture_studio.is_open());
         assert!(pump(
             &mut h,
-            &key_press(Key::Character("b".into())),
+            &crate::shell::test_support::typed_key_event(Key::Character("b".into())),
             Modifiers::default()
         ));
+        assert!(h.chrome.borrow().quick_settings.wifi_password.is_some());
         assert_eq!(
-            h.chrome
-                .borrow()
-                .quick_settings
-                .wifi_password
-                .as_ref()
-                .map(|prompt| prompt.password.as_str()),
-            Some("ab"),
+            h.host.wifi_password_input.value(),
+            "ab",
             "after capture closes, the original credential field must regain its text focus and selection"
         );
 
