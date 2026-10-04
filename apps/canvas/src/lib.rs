@@ -127,6 +127,41 @@ impl ResourceApp for App {
             .collect()
     }
 
+    /// Pictures open as a new artwork the size of the picture.
+    const OPENS: &'static [&'static str] = &["image/png", "image/jpeg", "image/webp"];
+    const ARGUMENTS: usize = 1;
+
+    /// A picture opened from the desktop gets an artwork of its own, the
+    /// same one each time it is opened again, edits and all.
+    fn launch_record(input: &ui::framework::LaunchInput<'_>) -> Option<ui::record::RecordId> {
+        let path = input.argument()?;
+        Some(ui::record::RecordId::derived(
+            "artwork",
+            &ui::record::RecordId::identify_file(path),
+        ))
+    }
+
+    /// A picture handed over becomes the artwork: a new one sized to it.
+    /// Opened again, its artwork is as it was left. A picture handed over
+    /// without a path (dropped from elsewhere) replaces the open artwork,
+    /// which undo brings back.
+    fn launch(
+        input: &ui::framework::LaunchInput<'_>,
+        created: bool,
+    ) -> Vec<Invoke<ArtworkResource>> {
+        let Some(file) = input.file() else {
+            return Vec::new();
+        };
+        if input.argument().is_some() && !created {
+            return Vec::new();
+        }
+        resource::open_picture(file.name(), file.bytes())
+            .ok()
+            .and_then(|open| Invoke::apply(&open).ok())
+            .into_iter()
+            .collect()
+    }
+
     fn label(art: &Artwork) -> String {
         if art.title.is_empty() {
             APP_TITLE.to_owned()
