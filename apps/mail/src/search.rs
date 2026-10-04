@@ -7,7 +7,7 @@
 //! search source the framework keeps for the app, so a query never reaches
 //! the IMAP engine: the live server search stays in Mail's own search field.
 
-use ui::tilo_resource::SearchEntry;
+use ui::tilo_resource::{SearchEntry, SearchWeight};
 
 use crate::model::{Folder, Mailbox, Message};
 
@@ -72,13 +72,11 @@ fn message_entry(message: &Message) -> SearchEntry {
     } else {
         message.subject.clone()
     };
-    let text = [
-        message.from.email.as_str(),
-        &message.labels.join(" "),
-        message.body.as_str(),
-    ]
-    .join("\n");
-    SearchEntry::new(title, text)
+    // Ranked as the mailbox ranks them: the subject first, then who sent
+    // it, the address typed verbatim, the labels, and the body last.
+    SearchEntry::new(title, message.body.clone())
+        .field(message.from.email.clone(), SearchWeight::Identity)
+        .field(message.labels.join(" "), SearchWeight::Metadata)
         .anchored(format!("mail.message:{}", message.id))
         .invoking(tilo_actions::ActionAddress::new(
             format!("mail.message:{}", message.id),
