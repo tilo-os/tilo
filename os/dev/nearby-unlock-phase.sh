@@ -2,8 +2,8 @@
 # The --unlock phase of os/dev/test-nearby-pairing.sh, sourced once B has
 # joined A's identity and both are signed in: B's encrypted root opens at boot
 # with A's consent (docs/device-reach.md, "Unlocking it after a reboot"). It
-# uses that script's vm_a/vm_b/sudo_a/sudo_b/die/note, $out, $device (B's
-# device id), $mac_b and $TILO_PASS.
+# uses that script's vm_a/vm_b/sudo_b/die/note, $out, $run_b and $TILO_USER.
+# A created the identity, so it holds the person's root and can release.
 #
 #   8. B's root moves onto a LUKS2 volume (online, with btrfs replace) whose
 #      passphrase the harness knows, and `tilo-disk-encrypt enrol --sibling`
@@ -222,7 +222,16 @@ note "an uncertified boot key leaves B at the prompt"
 
 # --- 10d. B removed from the fleet --------------------------------------------------
 removed_before="$(a_history removed)"
-control_a actions invoke continuity.devices "device.remove.$device" --args-json '{"confirm":true}' \
+# Action ids never carry device keys; B's removal is the one titled
+# "Remove <B> from your devices".
+control_a actions enumerate > "$out/unlock-remove-actions.txt" 2>&1 || true
+remove_id="$(grep -oE 'device\.remove\.[A-Za-z0-9_.-]+' "$out/unlock-remove-actions.txt" | sort -u)"
+[ "$(wc -l <<<"$remove_id")" = 1 ] && [ -n "$remove_id" ] \
+  || die "A does not offer exactly one device to remove: $remove_id"
+grep -F "$remove_id" "$out/unlock-remove-actions.txt" | grep -q 'from your devices' \
+  || grep -A3 -F "$remove_id" "$out/unlock-remove-actions.txt" | grep -q 'from your devices' \
+  || die "A's $remove_id is not the removal of a device"
+control_a actions invoke continuity.devices "$remove_id" --args-json '{"confirm":true}' \
   > "$out/unlock-remove.txt" 2>&1 || { cat "$out/unlock-remove.txt" >&2; die "A could not remove B"; }
 await_history removed "$removed_before" revoke
 refused_before="$(a_history refused reason=Revoked)"
