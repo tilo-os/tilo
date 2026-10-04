@@ -1,5 +1,2 @@
 # Audited ceilings of apps/video-editor (tools/policy/check_app_resource_action_contract.py).
 # Each count may only go down; the target is an empty file.
-
-[ratchets.widget_owned_document]
-"apps/video-editor/src/project_file.rs" = 2
