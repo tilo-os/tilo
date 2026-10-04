@@ -5,7 +5,7 @@
 //! an application could imitate.
 //!
 //! The decisions all live in [`crate::onboarding::Onboarding`]; this
-//! file is only the composition, built from shared `ui` widgets (`Card`,
+//! file is only the composition, built from shared `ui` widgets (`Section`,
 //! `Banner`, `Text`, `Button`, `Checkbox`) so the ceremony inherits the
 //! system theme, focus order and accessibility like the rest of the desktop.
 //!
@@ -2106,7 +2106,7 @@ impl OnboardingView {
                 theme,
             ));
         }
-        Box::new(body.push(Box::new(Card::new(Box::new(list)))))
+        Box::new(body.push(Box::new(Section::new(vec![Box::new(list)]))))
     }
 
     #[allow(
@@ -2199,17 +2199,17 @@ impl OnboardingView {
                 theme,
             ))
             .push(paragraph(&body, theme))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-done-next-title"),
-                paragraph(&t("onboarding-done-next-body"), theme),
+                vec![paragraph(&t("onboarding-done-next-body"), theme)],
             )))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 if self.backup_was_verified {
                     t("onboarding-done-backup-verified")
                 } else {
                     t("onboarding-done-backup-recommended")
                 },
-                paragraph_with_id(
+                vec![paragraph_with_id(
                     &if self.backup_was_verified {
                         t("onboarding-done-backup-verified-body")
                     } else {
@@ -2217,13 +2217,13 @@ impl OnboardingView {
                     },
                     theme,
                     "onboarding.done.backup-guidance",
-                ),
+                )],
             )));
 
         if self.context == OnboardingContext::FullSystem {
-            page = page.push(Box::new(Card::titled(
+            page = page.push(Box::new(Section::titled(
                 t("onboarding-done-system-care-title"),
-                paragraph(&t("onboarding-done-system-care-body"), theme),
+                vec![paragraph(&t("onboarding-done-system-care-body"), theme)],
             )));
         }
         Box::new(page)
@@ -2272,13 +2272,17 @@ impl OnboardingView {
                 theme,
                 "onboarding.codecs.body",
             ))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-codecs-enables-title"),
-                Box::new(enables),
+                vec![Box::new(enables)],
             )))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-codecs-source-title"),
-                paragraph_with_id(&codecs_source(), theme, "onboarding.codecs.source"),
+                vec![paragraph_with_id(
+                    &codecs_source(),
+                    theme,
+                    "onboarding.codecs.source",
+                )],
             )));
         Box::new(page)
     }
