@@ -15,12 +15,11 @@ use ui::LocalState;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::TextRole;
-use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Banner, Button, ButtonRole, Column, Container, ControlSize, Element, EmptyState, Field,
-    FormSection, ListRow, ModalDialog, NavItem, NavList, NavSection, NumberInput, ProgressBar,
-    ProgressRing, ProgressRingSize, Property, PropertyList, Row, Scrollable, Section,
-    SectionHeader, Spacer, StatGroup, StatTile, Text, ToggleGroup, Tone, TreeNode,
+    Banner, Button, ButtonRole, ChipStyle, Column, Container, ControlSize, Dropdown, Element,
+    EmptyState, Field, FormSection, ListRow, ModalDialog, NavItem, NavList, NavSection,
+    NumberInput, ProgressBar, ProgressRing, ProgressRingSize, Property, PropertyList, Row,
+    Scrollable, Section, SectionHeader, Spacer, StatGroup, StatTile, Text, Tone, TreeNode,
     TreeRowDecoration, TreeRowTone, TreeView, Widget,
 };
 
@@ -442,19 +441,24 @@ fn timeline_heading(current: Order, intents: &Intents) -> Row {
         ))
         .push(Box::new(Spacer::new()))
         .push(Box::new(
-            ToggleGroup::new(
-                vec![
-                    Segment::new("Newest first").short("Newest"),
-                    Segment::new("Oldest first").short("Oldest"),
-                ],
-                usize::from(current == Order::OldestFirst),
+            Dropdown::from_state(
+                vec!["Newest first".to_owned(), "Oldest first".to_owned()],
+                &LocalState::new(
+                    match current {
+                        Order::NewestFirst => "Newest first",
+                        Order::OldestFirst => "Oldest first",
+                    }
+                    .to_owned(),
+                ),
             )
+            .with_id("backups-order")
+            .with_accessible_name("Order of snapshots")
             .control_size(ControlSize::Small)
-            .on_view("backups-order", move |index| {
-                order.push(Intent::SetOrder(if index == 0 {
-                    Order::NewestFirst
-                } else {
+            .on_change(move |choice| {
+                order.push(Intent::SetOrder(if choice == "Oldest first" {
                     Order::OldestFirst
+                } else {
+                    Order::NewestFirst
                 }));
             }),
         ))
@@ -723,6 +727,16 @@ fn snapshot_row(
     if let Some(source) = source {
         row = row.icon(source_icon(source.kind));
     }
+    let mut tags: Vec<(&str, ChipStyle)> = Vec::new();
+    if snapshot.kind == SnapType::Manual {
+        tags.push(("Manual", ChipStyle::Neutral));
+    }
+    if snapshot.retention == Retention::Keep {
+        tags.push(("Kept", ChipStyle::Neutral));
+    }
+    if !tags.is_empty() {
+        row = row.tags(&tags);
+    }
     match snapshot.status {
         SnapStatus::Complete => row,
         SnapStatus::Verifying => row.active(),
@@ -892,7 +906,7 @@ pub fn restore_dialog(
         .on_dismiss(move || dismiss.push(Intent::CloseRestore))
 }
 
-/// The snapshot's file index as a tree, its top level open, sizes trailing.
+/// The snapshot's file index as a tree, every folder open, sizes trailing.
 fn file_tree(files: &[SnapFile]) -> Option<Element> {
     // Build the forest from the depth-ordered index.
     let mut stack: Vec<TreeNode<Option<u64>>> = Vec::new();
@@ -930,7 +944,8 @@ fn file_tree(files: &[SnapFile]) -> Option<Element> {
         1 => roots.pop()?,
         _ => TreeNode::branch(0, "Snapshot", None, roots),
     };
-    let root_id = root.id;
+    let mut branches = Vec::new();
+    open_branches(&root, &mut branches);
     let mut tree = TreeView::new(root)
         .with_id("backups-restore-contents")
         .with_row_decoration(|model: &TreeNode<Option<u64>>, row, theme| {
@@ -948,8 +963,18 @@ fn file_tree(files: &[SnapFile]) -> Option<Element> {
             }
             face.tone(TreeRowTone::Primary)
         });
-    tree.restore_expanded([root_id]);
+    tree.restore_expanded(branches);
     Some(Box::new(tree))
+}
+
+/// The id of every folder under and including `node`.
+fn open_branches(node: &TreeNode<Option<u64>>, out: &mut Vec<u64>) {
+    if node.is_branch() {
+        out.push(node.id);
+        for child in &node.children {
+            open_branches(child, out);
+        }
+    }
 }
 
 // ---- first run and recovery -----------------------------------------------
