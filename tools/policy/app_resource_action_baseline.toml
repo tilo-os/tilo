@@ -32,7 +32,6 @@
 "apps/chat/src/main.rs" = 1
 "apps/imager/src/main.rs" = 1
 "apps/music/src/lib.rs" = 2
-"apps/photos/src/lib.rs" = 2
 "apps/settings/src/main.rs" = 1
 
 [ratchets.direct_document_api]
@@ -47,7 +46,6 @@
 "apps/music/src/doc.rs" = 1
 "apps/notes/src/search_provider.rs" = 1
 "apps/notes/src/storage.rs" = 2
-"apps/photos/src/framework_history.rs" = 2
 "apps/settings/src/actions/mod.rs" = 17
 "apps/settings/src/panes/agent_models.rs" = 1
 "apps/settings/src/panes/audio.rs" = 2
