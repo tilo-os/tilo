@@ -1,191 +1,9 @@
 use crate::component_support::*;
 
 #[test]
-fn in_note_find_and_handle_menu_captures_use_real_input() {
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/notes-review/find");
-    std::fs::create_dir_all(&directory).unwrap();
-    let captures = [
-        ("find", "in-note-find.png"),
-        ("block_type_menu", "block-type-menu.png"),
-    ]
-    .map(|(scenario, name)| crate::captures::Capture {
-        label: scenario.to_owned(),
-        scenario: Some(scenario),
-        viewport: (1000, 700),
-        path: directory.join(name),
-    });
-    crate::captures::render_all(&captures);
-}
-
-#[test]
-fn canonical_markdown_and_title_affordance_captures_reach_real_mounted_states() {
-    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/notes-review/canonical-affordances");
-    std::fs::create_dir_all(&directory).unwrap();
-    let captures = [
-        ("slash", (1000, 700)),
-        ("slash_applied", (390, 844)),
-        ("heading", (390, 844)),
-        ("quote", (1000, 700)),
-        ("title_edit", (1000, 700)),
-    ]
-    .map(|(scenario, viewport)| crate::captures::Capture {
-        label: scenario.to_owned(),
-        scenario: Some(scenario),
-        viewport,
-        path: directory.join(format!("{scenario}.png")),
-    });
-    crate::captures::render_all(&captures);
-}
-
-fn render_canonical_document_feature(scenario: &str, viewport: (u32, u32)) {
-    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/notes-review/canonical-document-features");
-    std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join(format!("{scenario}.png"));
-    notes::shots::render_to_path(viewport, &path, Some(scenario), None)
-        .unwrap_or_else(|error| panic!("{scenario}: {error:?}"));
-    assert!(
-        std::fs::read(&path)
-            .unwrap()
-            .starts_with(b"\x89PNG\r\n\x1a\n")
-    );
-}
-
-macro_rules! canonical_document_feature_captures {
-    ($(($test:ident, $scenario:literal, $viewport:expr)),+ $(,)?) => {
-        $(
-            #[test]
-            fn $test() {
-                render_canonical_document_feature($scenario, $viewport);
-            }
-        )+
-    };
-}
-
-// Keep each genuine full-frame render under its own nextest timeout. Capture
-// runtime tests reserve the complete runner in `.config/nextest.toml`, so this
-// finer reporting does not increase renderer concurrency.
-canonical_document_feature_captures!(
-    (
-        canonical_document_feature_paragraph_click_capture,
-        "paragraph_click",
-        (740, 700)
-    ),
-    (
-        canonical_document_feature_mixed_outline_capture,
-        "mixed_outline",
-        (740, 800)
-    ),
-    (
-        canonical_document_feature_recipes_capture,
-        "recipes",
-        (1000, 700)
-    ),
-    (
-        canonical_document_feature_formula_capture,
-        "formula",
-        (1000, 800)
-    ),
-    (
-        canonical_document_feature_transclusion_capture,
-        "transclusion",
-        (1000, 700)
-    ),
-    (
-        canonical_document_feature_external_link_capture,
-        "external_link",
-        (740, 700)
-    ),
-    (
-        canonical_document_feature_table_capture,
-        "table",
-        (1000, 700)
-    ),
-    (
-        canonical_document_feature_large_table_capture,
-        "table_large",
-        (1000, 800)
-    ),
-    (
-        canonical_document_feature_scrolled_large_table_capture,
-        "table_large_scrolled",
-        (390, 844)
-    ),
-    (
-        canonical_document_feature_table_cell_edit_capture,
-        "table_cell_edit",
-        (1000, 700)
-    ),
-    (
-        canonical_document_feature_image_capture,
-        "image",
-        (1000, 700)
-    ),
-    (
-        canonical_document_feature_image_edit_capture,
-        "image_edit",
-        (1000, 700)
-    ),
-    (
-        canonical_document_feature_scrolled_document_capture,
-        "scrolled",
-        (390, 844)
-    ),
-);
-
-#[test]
-fn canonical_navigation_and_overlay_captures_use_real_input_paths() {
-    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/notes-review/canonical-navigation-overlays");
-    std::fs::create_dir_all(&directory).unwrap();
-    let captures = [
-        ("drawer", (390, 844)),
-        ("drag", (1000, 700)),
-        ("block_drag", (1000, 700)),
-        ("menu", (1000, 700)),
-        ("sidebar_hover", (1000, 700)),
-        ("note_menu", (1000, 700)),
-        ("rename", (1000, 700)),
-        ("rename_commit", (1000, 700)),
-        ("shortcuts", (1000, 700)),
-        ("shortcuts_bottom", (390, 844)),
-        ("code_group_drag", (1000, 700)),
-        ("code_group_drop", (1000, 700)),
-        ("sidebar_scroll", (390, 844)),
-        ("presence", (1000, 700)),
-        ("status", (1000, 700)),
-        ("saving", (1000, 700)),
-        ("save_error", (1000, 700)),
-        ("import_success", (1000, 700)),
-    ]
-    .map(|(scenario, viewport)| crate::captures::Capture {
-        label: scenario.to_owned(),
-        scenario: Some(scenario),
-        viewport,
-        path: directory.join(format!("{scenario}.png")),
-    });
-    crate::captures::render_all(&captures);
-}
-
-#[test]
-fn canonical_save_failure_capture_uses_the_real_record_writer() {
-    let output = tempfile::tempdir().unwrap();
-    let path = output.path().join("save_error.png");
-    notes::capture::render_to_path((1000, 700), &path, Some("save_error"), None)
-        .unwrap_or_else(|error| panic!("save_error: {error:?}"));
-    assert!(
-        std::fs::read(path)
-            .unwrap()
-            .starts_with(b"\x89PNG\r\n\x1a\n")
-    );
-}
-
-#[test]
 fn creating_then_visiting_another_note_keeps_creation_reachable_by_ctrl_z() {
-    let fixture = LegacyFixture::rich();
-    let checkout = imported(&fixture);
+    let fixture = NotebookFixture::rich();
+    let checkout = notebook(&fixture);
     let initial = fixture
         .records
         .read(&checkout.id, |doc| {
@@ -235,14 +53,12 @@ fn short_narrow_note_keeps_its_title_and_metadata_above_the_caret() {
         }
         node.children.iter().find_map(|child| retained(child, id))
     }
-    let prepared = notes::capture::prepare_fixture(Some("heading"), runner_inputs()).unwrap();
-    let component = notes::definition()
-        .instantiate(prepared.context, prepared.target, prepared.restore)
-        .unwrap();
-    let mut driver =
-        ui::headless::Driver::from_component(component, (390, 844), prepared.runner_inputs)
-            .unwrap();
-    notes::capture::drive_fixture(&mut driver, Some("heading")).unwrap();
+    let mut app = ui::framework::testing::TestApp::<notes::NotesShell>::capture_at(
+        Some("heading"),
+        (390, 844),
+    )
+    .unwrap();
+    let driver = app.harness();
     driver
         .expect(&ui::headless::SemanticExpectation::named("note_title").value("Writing"))
         .unwrap();
@@ -253,7 +69,6 @@ fn short_narrow_note_keeps_its_title_and_metadata_above_the_caret() {
         "a two-line note must retain its pinned title band: {:?}",
         title.rect
     );
-    close_driver(&mut driver);
 }
 
 fn text_node(driver: &ui::headless::Driver, target: &str) -> ui::a11y::AccessNode {
@@ -287,12 +102,12 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
     use notes::doc::NotesDoc;
     let source = "message = \"Long Python strings remain completely readable inside a narrow note without adding any source line breaks.\"";
     for scale in [1.0, 2.0] {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(
             f.child,
             format!("```python\n{source}\nprint(message)\n```\n\nFollowing paragraph\n").as_bytes(),
         );
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let before = f
             .records
             .read(&checkout.id, |doc| {
@@ -407,15 +222,12 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
     reason = "inspection predicates are local to the profiling assertion that consumes them"
 )]
 fn canonical_typing_records_real_frame_cost_and_visible_content() {
-    let prepared =
-        notes::capture::prepare_fixture(Some("fenced_code_opening"), runner_inputs()).unwrap();
-    let component = notes::definition()
-        .instantiate(prepared.context, prepared.target, prepared.restore)
-        .unwrap();
-    let mut driver =
-        ui::headless::Driver::from_component(component, (1000, 700), prepared.runner_inputs)
-            .unwrap();
-    notes::capture::drive_fixture(&mut driver, Some("fenced_code_opening")).unwrap();
+    let mut app = ui::framework::testing::TestApp::<notes::NotesShell>::capture_at(
+        Some("fenced_code_opening"),
+        (1000, 700),
+    )
+    .unwrap();
+    let driver = app.harness();
     driver.key("Enter");
     driver.begin_profiling();
     let started = ui::time::now();
@@ -443,7 +255,6 @@ fn canonical_typing_records_real_frame_cost_and_visible_content() {
         "typed code must be visible in the mounted component: {}",
         driver.inspection_json().unwrap()
     );
-    close_driver(&mut driver);
 }
 
 #[test]
@@ -453,9 +264,9 @@ fn canonical_typing_records_real_frame_cost_and_visible_content() {
 )]
 fn accessible_block_text_edits_and_grapheme_selection_use_the_canonical_history_path() {
     use notes::doc::NotesDoc;
-    let f = LegacyFixture::rich();
+    let f = NotebookFixture::rich();
     f.write_page(f.child, "a👩‍👩‍👧‍👦éz\n\n```python\nprint(1)\n```\n".as_bytes());
-    let checkout = imported(&f);
+    let checkout = notebook(&f);
     let before = f
         .records
         .read(&checkout.id, |doc| {

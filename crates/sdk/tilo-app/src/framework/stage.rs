@@ -12,7 +12,11 @@
 //! laid out: every [`ViewCx::on_stage`](super::ViewCx::on_stage) callback
 //! runs, and every hosted [`ResourceSurface`](super::ResourceSurface) gets
 //! [`stage`](super::ResourceSurface::stage) on its next sync, where it has
-//! its document. Then the capture waits for the frame to settle: a surface
+//! its document. What a person does in the scene — text typed, a drag held
+//! over its target — is input
+//! ([`ResourceApp::scenario_input`](super::ResourceApp::scenario_input)),
+//! driven through the window's event path after that. Then the capture
+//! waits for the frame to settle: a surface
 //! still decoding, rendering a page or reading a fixture says so with the
 //! toolkit's `Widget::has_pending_visual_work`.
 //!
@@ -109,6 +113,15 @@ pub fn stage<A: ResourceApp>(
             true
         });
     }
+    // The surfaces stage on this sync; the input meets the staged scene.
+    harness.relayout();
+    A::scenario_input(scenario, harness).map_err(|error| {
+        LaunchError::Operation(format!(
+            "{} scenario {:?} input failed: {error}",
+            A::TITLE,
+            scenario.unwrap_or("default")
+        ))
+    })?;
     harness
         .wait_for_visuals(SETTLE)
         .map_err(|error| match scenario {

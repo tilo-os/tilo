@@ -36,7 +36,7 @@ use super::effect::Effects;
 use super::launch::{Command, LaunchInput};
 use super::live::Live;
 use super::root::ResourceRoot;
-use super::scenario::{Fixture, Run};
+use super::scenario::{Fixture, Launched, Run};
 use super::view::ViewCx;
 
 /// A framework app: one resource type and a view of it.
@@ -157,6 +157,23 @@ pub trait ResourceApp: 'static {
     fn scenario(name: Option<&str>) -> Vec<Invoke<Self::Resource>> {
         let _ = name;
         Vec::new()
+    }
+
+    /// What a person does in the scene that the scenario's actions and
+    /// staged view state cannot show: text typed into an editor, a drag
+    /// held over its drop target, a menu opened with a right click. Driven
+    /// on `input` through the window's own event path after the actions
+    /// and staging, so the frame shows the app's real answer to that input.
+    /// Must be deterministic, like the rest of the scenario.
+    ///
+    /// # Errors
+    /// Returns why the input could not be given (its target is missing).
+    fn scenario_input(
+        name: Option<&str>,
+        input: &mut ui_core::headless::FrameHarness,
+    ) -> Result<(), String> {
+        let _ = (name, input);
+        Ok(())
     }
 
     /// What a brand-new record starts with that depends on who creates it or
@@ -392,8 +409,11 @@ fn create<A: ResourceApp>(
     let run = match context.capture().cloned() {
         Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
         None => Run::live(context.content().cloned()),
+    };
+    if let Some(file) = &file {
+        file.report_opened(<A::Resource as Resource>::KIND);
     }
-    .launched_on(&arguments);
+    let run = run.launched(Launched { arguments, file });
     let permissions = context.live_permissions();
     let reader = context
         .read_record(Reader::<A::Resource>::read)
@@ -409,10 +429,7 @@ fn create<A: ResourceApp>(
         },
         context.storage(),
     );
-    if let Some(file) = &file {
-        file.report_opened(<A::Resource as Resource>::KIND);
-    }
-    for invoke in A::launch(&LaunchInput::new(&arguments, file.as_ref()), created) {
+    for invoke in A::launch(&root.launch(), created) {
         root.dispatcher().invoke(invoke);
     }
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());

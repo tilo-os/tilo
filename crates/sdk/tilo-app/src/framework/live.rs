@@ -54,6 +54,12 @@ impl<R: Resource> Live<R> {
         self.inner.borrow().revision()
     }
 
+    /// Whether the state is `doc` as it stands: no change arrived since the
+    /// framework last synced it.
+    pub fn follows(&self, doc: &Doc) -> bool {
+        self.inner.borrow().follows(doc)
+    }
+
     /// Show the parts of a large resource `demand` names, reading those not
     /// read yet from `doc` — the document the view was synced with, which in
     /// History mode is the past version on screen. Returns whether the state
