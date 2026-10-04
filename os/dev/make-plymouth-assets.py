@@ -129,6 +129,12 @@ def main(directory):
              "Enter your disk passphrase or recovery key", 18, (158, 163, 186))
     text_png(os.path.join(directory, "unlock-retry.png"),
              "Unlock unsuccessful. Please try again.", 18, (244, 169, 154))
+    text_png(os.path.join(directory, "starting-tilo.png"), "Starting Tilo", 26,
+             (240, 240, 250), "SemiBold")
+    text_png(os.path.join(directory, "shutting-down.png"), "Shutting down", 26,
+             (240, 240, 250), "SemiBold")
+    text_png(os.path.join(directory, "startup-help.png"),
+             "Press Esc to view startup messages", 16, (158, 163, 186))
     png(os.path.join(directory, "progress-background.png"), 280, 4,
         progress_pixel(280, (54, 57, 75), (54, 57, 75)))
     png(os.path.join(directory, "progress-fill.png"), 280, 4,
