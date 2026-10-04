@@ -31,8 +31,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
-    Button, ButtonRole, ContextMenu, Element, MenuItem, NavItem, NavList, NavPane, NavSection,
-    NavShell, TaffyTreeExt, Toolbar, Widget,
+    Button, ButtonRole, ContextMenu, ControlSize, Dropdown, Element, MenuItem, NavItem, NavList,
+    NavPane, NavSection, NavShell, Row, TaffyTreeExt, Widget,
 };
 
 use crate::doc::ContactsDoc;
@@ -42,7 +42,9 @@ use crate::model::{
     sample_contacts,
 };
 use crate::vcard::VCardVersion;
-use crate::view::{Bridge, ContactList, EmptyPane, ListEntry, Request, Shared, queue};
+use crate::view::{
+    Bridge, Compact, ContactList, EmptyPane, ListEntry, Overview, Request, Shared, queue,
+};
 
 mod dialogs;
 mod files;
@@ -219,7 +221,6 @@ enum MoreAction {
     Import,
     Export,
     ReviewDuplicate,
-    Sort(SortKey),
 }
 
 /// Which menu is open, and the rows it shows in order (`None` for a
@@ -302,6 +303,8 @@ pub struct ContactsApp {
     shared: Shared,
     /// The sidebar's selection: a destination id.
     destination: LocalState<Option<String>>,
+    /// The list's order, as the sort control shows it.
+    sort_choice: LocalState<String>,
     /// The sidebar rows last handed to the shell.
     sidebar_shown: Vec<(String, String, u32)>,
     content_shown: Option<ContentKey>,
@@ -386,6 +389,48 @@ fn overview_actions(shared: &Shared) -> Vec<Element> {
     ]
 }
 
+/// The list's orders: the control's value, its label, and the key.
+const SORTS: &[(&str, &str, SortKey)] = &[
+    ("name", "Sort by name", SortKey::Name),
+    ("organization", "Sort by organization", SortKey::Org),
+];
+
+fn sort_value(sort: SortKey) -> &'static str {
+    SORTS
+        .iter()
+        .find(|(_, _, key)| *key == sort)
+        .map_or("name", |(value, ..)| value)
+}
+
+/// The overview column: the list's order above the people in it.
+fn overview(shared: &Shared, sort_choice: &LocalState<String>) -> Element {
+    let labels: Vec<String> = SORTS
+        .iter()
+        .map(|(_, label, _)| (*label).to_owned())
+        .collect();
+    let chosen = std::rc::Rc::clone(shared);
+    let mut sort = Dropdown::from_state(labels.clone(), sort_choice)
+        .with_id("contacts.sort")
+        .with_accessible_name("Sort contacts")
+        .on_change(move |value| {
+            if let Some((.., key)) = SORTS.iter().find(|(v, ..)| *v == value) {
+                chosen.borrow_mut().push(Request::Sort(*key));
+            }
+        });
+    sort.set_value_options(
+        SORTS
+            .iter()
+            .map(|(value, label, _)| ((*value).to_owned(), (*label).to_owned()))
+            .collect(),
+    );
+    Box::new(Overview::new(
+        Row::new()
+            .no_wrap()
+            .push(Box::new(Compact::new(sort, labels, ControlSize::Small))),
+        ContactList::new(std::rc::Rc::clone(shared)),
+    ))
+}
+
 /// The first widget in `root`'s tree with `id`, depth first.
 fn find_rect(root: &dyn Widget, id: &str) -> Option<Rect> {
     if root.test_id() == Some(id) {
@@ -421,10 +466,11 @@ impl ContactsApp {
         let store = ContactStore::new();
         let shared: Shared = std::rc::Rc::new(std::cell::RefCell::new(Bridge::default()));
         let destination = LocalState::new(Some(ALL_DESTINATION.to_owned()));
+        let sort_choice = LocalState::new(sort_value(SortKey::Name).to_owned());
         let shell = NavShell::new()
             .with_id("contacts.shell")
             .sidebar(Box::new(Self::sidebar_list(&[], &destination)))
-            .overview(Box::new(ContactList::new(std::rc::Rc::clone(&shared))))
+            .overview(overview(&shared, &sort_choice))
             .content(Box::new(EmptyPane::new(
                 std::rc::Rc::clone(&shared),
                 "No contact selected",
@@ -462,6 +508,7 @@ impl ContactsApp {
             shell,
             shared,
             destination,
+            sort_choice,
             sidebar_shown: Vec::new(),
             content_shown: None,
             header_shown: None,
@@ -1363,10 +1410,6 @@ impl ContactsApp {
                 Ok(_) => {}
                 Err(error) => self.show_toast(format!("Couldn't open the review: {error}")),
             },
-            MoreAction::Sort(sort) => {
-                self.sort = sort;
-                self.list_stale = true;
-            }
         }
         self.dirty = true;
     }
@@ -1473,15 +1516,22 @@ impl ContactsApp {
         match key {
             HeaderKey::Empty => ("", Vec::new()),
             HeaderKey::View { favorite } => {
-                let commands = Toolbar::new(ui::widget::toolbar::Orientation::Horizontal)
-                    .push_toggle("Favorite", favorite, queue(shared, Request::ToggleFavorite))
-                    .push_button("Edit", queue(shared, Request::EditSelected))
-                    .push_icon(
-                        Icon::Trash2,
-                        "Delete contact",
-                        queue(shared, Request::DeleteSelected),
-                    );
-                ("", vec![Box::new(commands)])
+                let commands: Vec<Element> = vec![
+                    Box::new(
+                        Button::icon_only("contacts.favorite", Icon::Star, "Favorite")
+                            .toggled(favorite)
+                            .on_view(queue(shared, Request::ToggleFavorite)),
+                    ),
+                    Box::new(
+                        Button::new("contacts.edit", "Edit", None)
+                            .on_view(queue(shared, Request::EditSelected)),
+                    ),
+                    Box::new(
+                        Button::icon_only("contacts.delete", Icon::Trash2, "Delete contact")
+                            .on_view(queue(shared, Request::DeleteSelected)),
+                    ),
+                ];
+                ("", commands)
             }
             HeaderKey::Edit => (
                 "",
@@ -1666,11 +1716,6 @@ impl ContactsApp {
                 if self.duplicate_candidate.is_some() {
                     rows.push(Some(MoreAction::ReviewDuplicate));
                 }
-                rows.extend([
-                    None,
-                    Some(MoreAction::Sort(SortKey::Name)),
-                    Some(MoreAction::Sort(SortKey::Org)),
-                ]);
                 for row in &rows {
                     built.push(match row {
                         Some(MoreAction::Import) => MenuItem::selection(if importing {
@@ -1684,11 +1729,6 @@ impl ContactsApp {
                         Some(MoreAction::ReviewDuplicate) => {
                             MenuItem::selection("Review possible duplicate")
                         }
-                        Some(MoreAction::Sort(key)) => MenuItem::selection(match key {
-                            SortKey::Name => "Sort by name",
-                            SortKey::Org => "Sort by organization",
-                        })
-                        .with_checked(self.sort == *key),
                         None => MenuItem::separator(),
                     });
                 }
@@ -1712,8 +1752,11 @@ impl ContactsApp {
                 .iter()
                 .find(|(row, _)| *row == id)
                 .map(|(_, row)| {
+                    // Under the row (above it near the bottom of the
+                    // window), starting where its name does, so the row
+                    // stays readable while its actions are open.
                     let x = row.x0 + row.height();
-                    Rect::new(x, row.center().y, x, row.center().y)
+                    Rect::new(x, row.y0, x, row.y1)
                 }),
             PendingMenu::More => find_rect(&self.shell, "contacts.more")
                 .filter(|rect| rect.width() > 0.0)
@@ -1766,10 +1809,24 @@ impl ContactsApp {
                     return;
                 }
                 self.selected = Some(id);
-                self.open_menu_at(
-                    PendingMenu::Contact(id),
-                    Rect::new(point.x, point.y, point.x, point.y),
-                );
+                if let Some(point) = point {
+                    self.open_menu_at(
+                        PendingMenu::Contact(id),
+                        Rect::new(point.x, point.y, point.x, point.y),
+                    );
+                } else {
+                    self.shared.borrow_mut().reveal = Some(id);
+                    self.pending_menu = Some(PendingMenu::Contact(id));
+                }
+            }
+            Request::Sort(sort) => {
+                if self.sort != sort {
+                    self.sort = sort;
+                    self.list_stale = true;
+                }
+                if self.sort_choice.with(|value| value != sort_value(sort)) {
+                    self.sort_choice.set(sort_value(sort).to_owned());
+                }
             }
             Request::NewContact => self.begin_new_contact(),
             Request::More => match self.menu_anchor(PendingMenu::More) {
