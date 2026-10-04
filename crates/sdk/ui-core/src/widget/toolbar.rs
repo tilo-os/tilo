@@ -1625,8 +1625,38 @@ impl Widget for Toolbar {
             }
             return;
         }
-        // Hosted controls first: each answers for its own rect and focus.
-        let elements = self.element_nodes(ctx.taffy, ctx.node_id);
+        // Hosted controls first: each answers for its own rect and focus. A
+        // painted host lays the toolbar out itself (`lay_out_in`), so its
+        // controls live in their own trees and the host's node is not ours.
+        let painted = !self.detached.is_empty();
+        if painted {
+            for (item, content) in self.items.iter_mut().zip(&self.detached) {
+                let (ToolbarItem::Element(element), Some(content)) = (item, content) else {
+                    continue;
+                };
+                element.handle_event(
+                    event,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: ctx.scale_factor,
+                        modifiers: ctx.modifiers,
+                        state: &mut *ctx.state,
+                        path: ctx.path,
+                        handled: &mut *ctx.handled,
+                        focus_target: &mut *ctx.focus_target,
+                        node_id: content.node,
+                        taffy: &content.taffy,
+                    },
+                );
+                if *ctx.handled {
+                    return;
+                }
+            }
+        }
+        let elements = if painted || !self.has_elements() {
+            Vec::new()
+        } else {
+            self.element_nodes(ctx.taffy, ctx.node_id)
+        };
         for (index, child) in elements {
             if let Some(ToolbarItem::Element(element)) = self.items.get_mut(index) {
                 element.handle_event(event, &mut ctx.reborrow(ctx.path, child));
