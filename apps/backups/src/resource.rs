@@ -1,24 +1,25 @@
-//! Backups as a [`tilo_resource::Resource`]: retention policy is document
-//! state; backup/restore runs are Effects in [`Resource::local_operations`].
-//!
-//! Document mutations (set / bump retention) live on this resource via
-//! [`Resource::children`]. Hosted [`PublishesResources::resources`] returns
-//! only live catalog extras — never a second hand-built `backups.policy` /
-//! `backups` Document door beside [`tilo_resource::publish`].
+//! Backups as a [`tilo_resource::Resource`]: the retention policy is document
+//! state; where this device backs up from and to is a device-local setting;
+//! backing up, verifying and restoring are the surface's [`BackupsEffect`]s,
+//! and the catalog on this device is published as live rows beside the
+//! resource.
 
-use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource as PublishedResource};
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
+    SurfaceCx, ViewCx,
+};
+use ui::storage::{Scope, SettingsSchema};
+use ui::tilo_actions::Resource as PublishedResource;
 use ui::tilo_resource::{Doc, ModelError, Resource};
 use ui::widget::Element;
 
-use crate::actions::{
-    BACKUPS_ACTION_TYPE, BACKUPS_RESOURCE_ID, BackupsAction, live_catalog_extras,
-    publish_policy_document, register, workspace_effect_specs,
-};
+use crate::actions::{BACKUPS_ACTION_TYPE, BackupsAction, BackupsEffect, publish_policy_document};
 use crate::app::BackupsApp;
 use crate::doc::BackupsDoc;
-use crate::model::RetentionPolicy;
+use crate::model::{Catalog, RetentionPolicy};
 
 /// Retention policy projection from the shared document.
 #[derive(Clone, Debug, Default)]
@@ -38,7 +39,7 @@ impl Resource for Backups {
     type Action = BackupsAction;
 
     fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
+        crate::actions::register(registry);
     }
 
     fn read(doc: &Doc) -> Result<BackupsState, ModelError> {
@@ -50,28 +51,42 @@ impl Resource for Backups {
     fn children(state: &BackupsState) -> Vec<PublishedResource> {
         vec![publish_policy_document(&state.policy)]
     }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        workspace_effect_specs(
-            false,
-            "Choose a source and destination before running a backup",
-        )
-        .into_iter()
-        .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-        .collect()
-    }
 }
 
-/// Hosted-only extras that are not document state: the live catalog of
-/// sources, destinations and snapshots. Policy Document ops stay on
-/// [`tilo_resource::publish`].
-pub(crate) fn live_extras(app: &BackupsApp) -> Vec<PublishedResource> {
-    live_catalog_extras(
-        app.resource_catalog(),
-        app.is_configured(),
-        app.unavailable_reason(),
-    )
+/// The folder this device protects and the location its backups go to.
+/// Absolute paths mean nothing on another device, so they never leave this
+/// one; the retention policy, which does, is the document's.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupLocation {
+    pub source: Option<PathBuf>,
+    pub destination: Option<PathBuf>,
 }
+
+impl SettingsSchema for BackupLocation {
+    const SCOPE: Scope = Scope::DeviceLocal;
+}
+
+/// What a screenshot shows in place of this device's repository.
+#[derive(Clone, Debug)]
+pub struct DemoRepository {
+    pub catalog: Catalog,
+    pub location: BackupLocation,
+    /// Why the saved location could not be read, for the recovery screen.
+    pub error: Option<String>,
+}
+
+const SCENARIOS: &[&str] = &[
+    "empty",
+    "status",
+    "progress",
+    "failure",
+    "restore",
+    "sources",
+    "destinations",
+    "schedules",
+    "unavailable",
+    "rail",
+];
 
 /// Framework app.
 pub struct BackupsShell;
@@ -81,279 +96,76 @@ impl ResourceApp for BackupsShell {
     const ID: &'static str = "so.tilo.backups";
     const TITLE: &'static str = "Backups";
     const ICON: Option<&'static str> = Some("backups");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
 
     fn view(cx: &mut ViewCx<Backups>) -> Element {
         cx.surface(BackupsApp::new())
     }
 
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        if scenario == Some("rail") {
+            (390, 844)
+        } else {
+            (1280, 800)
+        }
+    }
+
     fn scenarios() -> &'static [&'static str] {
-        &[
-            "status",
-            "progress",
-            "failure",
-            "restore",
-            "sources",
-            "destinations",
-            "schedules",
-            "unavailable",
-        ]
+        SCENARIOS
+    }
+
+    /// Every capture but first-run onboarding (`empty`) shows the sample
+    /// catalog; `unavailable` shows a saved location whose drive is gone.
+    fn fixture(fixture: &mut Fixture<Backups>) {
+        let demo = match fixture.scenario() {
+            Some("empty") => return,
+            Some("unavailable") => DemoRepository {
+                catalog: Catalog::empty(),
+                location: BackupLocation {
+                    source: Some(PathBuf::from("/home/you/Documents")),
+                    destination: Some(PathBuf::from("/media/backup-drive")),
+                },
+                error: Some(
+                    "Couldn’t read the saved backup location: the drive is unavailable.".into(),
+                ),
+            },
+            _ => DemoRepository {
+                catalog: Catalog::sample(),
+                location: BackupLocation::default(),
+                error: None,
+            },
+        };
+        fixture.provide(demo);
     }
 }
 
-impl ResourceSurface<Backups> for BackupsApp {
+impl ResourceSurface<Backups, BackupsEffect> for BackupsApp {
     fn present(&mut self, state: &std::rc::Rc<BackupsState>) {
-        // Adopt shared policy only — never wipe unpublished local retention.
-        self.adopt_resource_state(state);
+        self.present_policy(state.policy);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Backups>) {
-        self.attach_framework(cx.dispatcher());
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<Backups>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Backups>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
+        self.attach_framework(&cx);
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &BackupsAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(crate::actions::encode(action));
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => self
-                .local
-                .dispatch_with_context(doc, type_id, action, context),
+    fn stage(&mut self, scenario: Option<&str>) {
+        if let Some(scenario) = scenario {
+            self.stage_scenario(scenario);
         }
     }
 
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
+    fn effect(&mut self, effect: BackupsEffect, cx: &mut EffectCx<Backups, Self>) -> EffectAnswer {
+        self.answer_effect(effect, cx)
     }
 
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
     }
 
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+    fn live_rows(&self) -> Vec<LiveRow> {
+        crate::actions::live_rows(self.resource_catalog(), self.blocked().as_ref())
     }
-}
 
-/// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`] plus
-/// the live catalog extras that stay on the widget when hosted.
-pub fn provide_framework_door(state: &BackupsState) -> Vec<PublishedResource> {
-    let mut door = vec![ui::tilo_resource::publish::<Backups>(
-        BACKUPS_RESOURCE_ID,
-        "Backups",
-        state,
-    )];
-    door.extend(live_catalog_extras(
-        &crate::model::Catalog::empty(),
-        false,
-        None,
-    ));
-    door
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::doc::PolicyField;
-    use ui::widget::Widget;
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one assertion covers publish ownership, hosted extras, and empty adopt"
-    )]
-    fn resource_publish_owns_policy_document_ops_and_hosted_keeps_no_second_door() {
-        let mut doc = AutoCommit::new();
-        BackupsDoc::seed(&mut doc, &automerge::ROOT);
-        BackupsDoc::set_retention(&mut doc, &automerge::ROOT, PolicyField::Daily, 11);
-        doc.commit();
-
-        let state = Backups::read(&doc).expect("seeded backups state");
-        let published =
-            ui::tilo_resource::publish::<Backups>(BACKUPS_RESOURCE_ID, "Backups", &state);
-        assert_eq!(published.kind, "backups.workspace");
-        for id in ["backup-now", "setup"] {
-            assert!(
-                published.actions.iter().any(|action| action.id == id),
-                "{id} Effect must be on the framework workspace resource"
-            );
-        }
-        assert!(
-            published
-                .actions
-                .iter()
-                .filter(|action| action.kind == OperationKind::Document)
-                .all(|action| action.id == "apply" || action.id == "group"),
-            "retention Document ops must not sit as root actions: {:?}",
-            published
-                .actions
-                .iter()
-                .filter(|action| action.kind == OperationKind::Document)
-                .map(|action| action.id.as_str())
-                .collect::<Vec<_>>()
-        );
-        let policy = published
-            .children
-            .iter()
-            .find(|child| child.kind == "backups.policy")
-            .expect("policy child on the published door");
-        assert_eq!(policy.children.len(), 4, "one child per retention class");
-        let daily = policy
-            .children
-            .iter()
-            .find(|child| child.id.as_str() == "backups.retention:ret_daily")
-            .expect("daily retention child");
-        for id in ["set", "increment", "decrement"] {
-            assert!(
-                daily
-                    .actions
-                    .iter()
-                    .any(|action| action.id == id && action.kind == OperationKind::Document),
-                "{id} Document op must ride the retention child"
-            );
-        }
-
-        let mut app = BackupsApp::new();
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &automerge::ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        let daily_id = "backups.retention:ret_daily";
-        let on_tree = {
-            fn find<'a>(
-                resources: &'a [PublishedResource],
-                id: &str,
-            ) -> Option<&'a PublishedResource> {
-                for resource in resources {
-                    if resource.id.as_str() == id {
-                        return Some(resource);
-                    }
-                    if let Some(found) = find(&resource.children, id) {
-                        return Some(found);
-                    }
-                }
-                None
-            }
-            find(&standalone, daily_id).expect("daily retention is on the published tree")
-        };
-        let looked_up = app
-            .publish_resource(&seeded, daily_id)
-            .expect("daily retention resolves");
-        assert_eq!(
-            looked_up
-                .actions
-                .iter()
-                .map(|action| action.id.as_str())
-                .collect::<Vec<_>>(),
-            on_tree
-                .actions
-                .iter()
-                .map(|action| action.id.as_str())
-                .collect::<Vec<_>>(),
-            "an eager retention row is the published row"
-        );
-        let workspace = standalone
-            .iter()
-            .find(|resource| resource.kind == "backups.workspace")
-            .expect("standalone keeps the workspace door");
-        let policy = workspace
-            .children
-            .iter()
-            .find(|child| child.kind == "backups.policy")
-            .expect("standalone keeps the policy on the workspace");
-        assert!(
-            policy.children.iter().any(|child| {
-                child.id.as_str() == "backups.retention:ret_daily"
-                    && child.actions.iter().any(|action| action.id == "increment")
-            }),
-            "standalone policy keeps Document steppers"
-        );
-
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "backups.policy"
-                    && resource.kind != "backups.workspace"),
-            "hosted must not republish backups.policy/workspace beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
-        assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "backups.source-set"),
-            "hosted still surfaces the live catalog extras"
-        );
-
-        let door = provide_framework_door(&state);
-        assert_eq!(door[0].kind, "backups.workspace");
-        assert!(
-            door[0]
-                .children
-                .iter()
-                .any(|child| child.kind == "backups.policy"),
-            "publish children carry retention Document ops"
-        );
-
-        // Empty present must not wipe unpublished local policy.
-        let mut local = BackupsApp::new();
-        local.ui_policy_mut().daily = 42;
-        assert_ne!(*local.ui_policy(), RetentionPolicy::default());
-        local.adopt_resource_state(&BackupsState::default());
-        assert_eq!(
-            local.ui_policy().daily,
-            42,
-            "adopting an empty projection must not clear unpublished retention"
-        );
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        crate::actions::live_row(self.resource_catalog(), self.blocked().as_ref(), id)
     }
 }
