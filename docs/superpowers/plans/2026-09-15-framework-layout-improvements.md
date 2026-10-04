@@ -15,7 +15,6 @@
 ## Global Constraints
 
 - Do not modify any file under `apps/store/`.
-- Preserve existing unrelated worktree changes; stage/commit only task-owned changes.
 - Preserve fully manual layout and standard widget behavior; do not seal off raw APIs or impose a strict design profile.
 - Each task needs focused red/green behavioral tests, independent review, and an unchanged-Store capture or explicit evidence that the task has no visible effect there.
 - Notify the user after each completed change with before/after evidence. Give their review time to arrive before beginning the next behavioral change; independent investigation and preparation can continue.
@@ -120,4 +119,4 @@
 
 ## Final acceptance
 
-All seven tasks complete through `7bebe26b6`. See the [acceptance evidence matrix](/Users/user/dev/tilo-macos-shell/docs/superpowers/audits/framework-layout-verification/final-acceptance-matrix.md), [visual evidence](/Users/user/dev/tilo-macos-shell/docs/superpowers/audits/2026-09-15-framework-layout-evidence.md), and [implementation progress](/Users/user/dev/tilo-macos-shell/docs/superpowers/audits/2026-09-15-framework-layout-progress.md). Work is committed locally; no push or merge was requested.
+All seven tasks complete through `7bebe26b6`.

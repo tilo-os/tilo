@@ -218,9 +218,10 @@ fn point_of(point: &[f64]) -> (f64, f64, f64) {
 
 /// `points` with the hand's wobble taken out. The stroke is first laid
 /// along its smooth curve at an even spacing, so a stroke of a few points
-/// keeps its shape; then each pass pulls every point toward its
-/// neighbours, the ends staying put. `amount` 1 evens out wobble about six
-/// units across; a half, about three.
+/// keeps its shape; then the wobble is blurred out of it, the ends staying
+/// put, while curves much rounder than the wobble keep their size.
+/// `amount` 1 evens out wobble up to about ten units across; a half, about
+/// five.
 pub fn smoothed(points: &[Vec<f64>], amount: f64) -> Vec<Vec<f64>> {
     // Passes of a [1, 2, 1] kernel blur by about the square root of half
     // their number, in steps: 72 passes is six.
@@ -272,12 +273,43 @@ pub fn smoothed(points: &[Vec<f64>], amount: f64) -> Vec<Vec<f64>> {
         // The curve ends where the stroke does, not a step short of it.
         *last = (f64::from(end.x), f64::from(end.y), f64::from(end.pressure));
     }
-    for _ in 0..passes {
-        if points.len() <= 2 {
-            break;
+    if points.len() <= 2 {
+        return points
+            .into_iter()
+            .map(|(x, y, pressure)| vec![x, y, pressure])
+            .collect();
+    }
+    // A blur alone pulls a tight curve in toward its chord as it evens the
+    // wobble out. What the blur took is blurred too and given back
+    // (`1 - (1 - B)^2`, Tukey's twicing): wobble a few units across still
+    // goes, a curve many units round keeps its size.
+    let mut detail: Vec<(f64, f64, f64)> = points.clone();
+    for _ in 0..2 {
+        let blurred = blur(&detail, passes);
+        for (value, smooth) in detail.iter_mut().zip(&blurred) {
+            value.0 -= smooth.0;
+            value.1 -= smooth.1;
+            value.2 -= smooth.2;
         }
-        let before = points.clone();
-        for (index, point) in points.iter_mut().enumerate().skip(1) {
+    }
+    for (point, residue) in points.iter_mut().zip(&detail) {
+        point.0 -= residue.0;
+        point.1 -= residue.1;
+        point.2 -= residue.2;
+    }
+    points
+        .into_iter()
+        .map(|(x, y, pressure)| vec![x, y, pressure])
+        .collect()
+}
+
+/// `values` blurred by `passes` of a `[1, 2, 1]` kernel, the ends held.
+fn blur(values: &[(f64, f64, f64)], passes: usize) -> Vec<(f64, f64, f64)> {
+    let mut values = values.to_vec();
+    let mut before = values.clone();
+    for _ in 0..passes {
+        before.clone_from(&values);
+        for (index, point) in values.iter_mut().enumerate().skip(1) {
             let (Some(previous), Some(next)) = (
                 before.get(index.wrapping_sub(1)),
                 before.get(index.saturating_add(1)),
@@ -289,10 +321,7 @@ pub fn smoothed(points: &[Vec<f64>], amount: f64) -> Vec<Vec<f64>> {
             point.2 = 0.25 * previous.2 + 0.5 * point.2 + 0.25 * next.2;
         }
     }
-    points
-        .into_iter()
-        .map(|(x, y, pressure)| vec![x, y, pressure])
-        .collect()
+    values
 }
 
 /// `points` with every point dropped that lies within `tolerance` units of
@@ -403,13 +432,58 @@ fn width_of(preset: Preset, p: f64) -> f64 {
     }
 }
 
+/// `points` without a last or first point that barely steps on from its
+/// neighbour, far less than the step before (a hand's tiny hook as it
+/// lifts, a repeated point), which would turn the brush at its very end;
+/// the end keeps that point's pressure. `size` is the brush's.
+pub fn steady_ends(points: &[Vec<f64>], size: f64) -> Vec<Vec<f64>> {
+    let reach = (size * 0.2).clamp(0.5, 3.0);
+    let step = |a: &[f64], b: &[f64]| {
+        let (a, b) = (point_of(a), point_of(b));
+        (b.0 - a.0).hypot(b.1 - a.1)
+    };
+    // An end step shorter than the brush's reach and than half the step
+    // before it.
+    let stub = |end: &[f64], next: &[f64], after: &[f64]| {
+        let last = step(end, next);
+        last < reach && last < 0.5 * step(next, after)
+    };
+    let mut points = points.to_vec();
+    let n = points.len();
+    if n > 3
+        && let (Some(end), Some(before), Some(earlier)) =
+            (points.get(n - 1), points.get(n - 2), points.get(n - 3))
+        && stub(end, before, earlier)
+    {
+        let lift = point_of(end).2;
+        points.pop();
+        if let Some(end) = points.last_mut() {
+            let (x, y, _) = point_of(end);
+            *end = vec![x, y, lift];
+        }
+    }
+    if points.len() > 3
+        && let (Some(start), Some(after), Some(later)) =
+            (points.first(), points.get(1), points.get(2))
+        && stub(start, after, later)
+    {
+        let land = point_of(start).2;
+        points.remove(0);
+        if let Some(start) = points.first_mut() {
+            let (x, y, _) = point_of(start);
+            *start = vec![x, y, land];
+        }
+    }
+    points
+}
+
 fn lay(points: &[Vec<f64>], size: f64, preset: Preset, dynamics: &Dynamics) -> Laid {
     let spacing = if preset.dabbed(dynamics) {
         (dynamics.spacing.max(0.02) * size).max(0.2)
     } else {
         (size * 0.08).clamp(0.2, 2.0)
     };
-    let samples = samples(points, spacing, dynamics.smoothing);
+    let samples = samples(&steady_ends(points, size), spacing, dynamics.smoothing);
     let total = samples.last().map_or(0.0, |last| f64::from(last.distance));
     let half = samples
         .iter()
@@ -430,7 +504,7 @@ fn lay(points: &[Vec<f64>], size: f64, preset: Preset, dynamics: &Dynamics) -> L
 fn outline(samples: &[Sample], half: &[f64]) -> BezPath {
     let mut path = BezPath::new();
     let radius = |index: usize| half.get(index).copied().unwrap_or(0.5);
-    let (Some(first), Some(last)) = (samples.first(), samples.last()) else {
+    let Some(first) = samples.first() else {
         return path;
     };
     if samples.len() == 1 {
@@ -439,21 +513,25 @@ fn outline(samples: &[Sample], half: &[f64]) -> BezPath {
             0.1,
         );
     }
-    let normal = |sample: &Sample| (-f64::from(sample.ty), f64::from(sample.tx));
+    let normals = normals(samples, half);
+    let normal_at = |index: usize| normals.get(index).copied().unwrap_or((0.0, 1.0));
     let side = |sign: f64| {
         samples
             .iter()
             .enumerate()
-            .map(move |(index, sample)| {
-                let (nx, ny) = normal(sample);
+            .map(|(index, sample)| {
+                let (nx, ny) = normal_at(index);
                 sample_point(sample) + (nx * sign * radius(index), ny * sign * radius(index))
             })
             .collect::<Vec<Point>>()
     };
     let left = side(1.0);
     let right = side(-1.0);
-    let cap = |sample: &Sample, r: f64, from_left: bool| -> Vec<Point> {
-        let (nx, ny) = normal(sample);
+    let cap = |index: usize, r: f64, from_left: bool| -> Vec<Point> {
+        let Some(sample) = samples.get(index) else {
+            return Vec::new();
+        };
+        let (nx, ny) = normal_at(index);
         // Around the end from one side to the other, the long way round
         // the front of the stroke.
         let base = ny.atan2(nx) + if from_left { 0.0 } else { std::f64::consts::PI };
@@ -465,9 +543,9 @@ fn outline(samples: &[Sample], half: &[f64]) -> BezPath {
             .collect()
     };
     let mut ring: Vec<Point> = left;
-    ring.extend(cap(last, radius(samples.len() - 1), true));
+    ring.extend(cap(samples.len() - 1, radius(samples.len() - 1), true));
     ring.extend(right.into_iter().rev());
-    ring.extend(cap(first, radius(0), false));
+    ring.extend(cap(0, radius(0), false));
     for (index, point) in ring.into_iter().enumerate() {
         if index == 0 {
             path.move_to(point);
@@ -477,6 +555,45 @@ fn outline(samples: &[Sample], half: &[f64]) -> BezPath {
     }
     path.close_path();
     path
+}
+
+/// The unit normal at each sample, its direction taken across as much of
+/// the path as the line is wide there: a hand's last tiny hook or a near
+/// repeated point at the lift would otherwise turn the line's end edge-on
+/// and kink its outline.
+fn normals(samples: &[Sample], half: &[f64]) -> Vec<(f64, f64)> {
+    let last = samples.len().saturating_sub(1);
+    let spacing = samples
+        .get(1)
+        .map_or(1.0, |second| f64::from(second.distance).max(1e-3));
+    // A tapered end still turns as the full line does.
+    let widest = half.iter().copied().fold(0.0, f64::max);
+    samples
+        .iter()
+        .enumerate()
+        .map(|(index, sample)| {
+            let width = half.get(index).copied().unwrap_or(0.5).max(widest * 0.5);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to 1..=24 before the cast"
+            )]
+            let reach = (width / spacing).ceil().clamp(1.0, 24.0) as usize;
+            let (Some(from), Some(to)) = (
+                samples.get(index.saturating_sub(reach)),
+                samples.get((index + reach).min(last)),
+            ) else {
+                return (-f64::from(sample.ty), f64::from(sample.tx));
+            };
+            let along = sample_point(to) - sample_point(from);
+            let length = along.hypot();
+            if length > 1e-9 {
+                (-along.y / length, along.x / length)
+            } else {
+                (-f64::from(sample.ty), f64::from(sample.tx))
+            }
+        })
+        .collect()
 }
 
 /// A broad nib held at `angle` degrees dragged along the stroke: a quad
@@ -539,15 +656,20 @@ fn wound_positive(path: BezPath) -> BezPath {
 
 /// The outline a stroke drawn with an outline preset fills, in the mark's
 /// own units; for a dabbed preset, the region its dabs cover.
-pub fn silhouette(points: &[Vec<f64>], size: f64, style: &Style) -> BezPath {
+pub fn silhouette(pieces: &[Piece], style: &Style) -> BezPath {
     let preset = Preset::of(style);
     let dynamics = Dynamics::of(preset, &style.params);
-    let laid = lay(points, size, preset, &dynamics);
-    if preset == Preset::Calligraphy {
-        nib(&laid, style.angle.unwrap_or(45.0), size)
-    } else {
-        outline(&laid.samples, &laid.half)
+    let mut path = BezPath::new();
+    for (points, size) in pieces {
+        let laid = lay(points, *size, preset, &dynamics);
+        let piece = if preset == Preset::Calligraphy {
+            nib(&laid, style.angle.unwrap_or(45.0), *size)
+        } else {
+            wound_positive(outline(&laid.samples, &laid.half))
+        };
+        path.extend(piece.elements().iter().copied());
     }
+    path
 }
 
 /// How see-through a preset's outline is laid, before the mark's opacity:
@@ -583,8 +705,8 @@ const MAX_PIXELS: f64 = 6.0e6;
 
 /// What a dabbed stroke is laid with.
 pub struct DabInput<'a> {
-    pub points: &'a [Vec<f64>],
-    pub size: f64,
+    /// The lines the stroke is laid as ([`pieces`]).
+    pub pieces: &'a [Piece],
     pub style: &'a Style,
     /// Pixels per unit wanted.
     pub scale: f64,
@@ -600,12 +722,18 @@ pub struct DabInput<'a> {
 pub fn dab(input: &DabInput<'_>) -> Option<Dabs> {
     let preset = Preset::of(input.style);
     let dynamics = Dynamics::of(preset, &input.style.params);
-    let laid = lay(input.points, input.size, preset, &dynamics);
-    let reach = laid.half.iter().copied().fold(0.0, f64::max) + 1.0;
+    let laid: Vec<Laid> = input
+        .pieces
+        .iter()
+        .map(|(points, size)| lay(points, *size, preset, &dynamics))
+        .collect();
     let mut bounds: Option<Rect> = None;
-    for sample in &laid.samples {
-        let around = Rect::from_center_size(sample_point(sample), (reach * 2.0, reach * 2.0));
-        bounds = Some(bounds.map_or(around, |bounds| bounds.union(around)));
+    for piece in &laid {
+        let reach = piece.half.iter().copied().fold(0.0, f64::max) + 1.0;
+        for sample in &piece.samples {
+            let around = Rect::from_center_size(sample_point(sample), (reach * 2.0, reach * 2.0));
+            bounds = Some(bounds.map_or(around, |bounds| bounds.union(around)));
+        }
     }
     let bounds = bounds?;
     let scale = input
@@ -622,16 +750,18 @@ pub fn dab(input: &DabInput<'_>) -> Option<Dabs> {
         },
         spray: preset == Preset::Airbrush,
     };
-    for (index, sample) in laid.samples.iter().enumerate() {
-        let p = f64::from(sample.pressure).clamp(0.0, 1.0);
-        let flow = match preset {
-            Preset::Pencil => dynamics.flow * p.powf(1.4),
-            Preset::Charcoal => dynamics.flow * (0.35 + 0.65 * p),
-            Preset::Airbrush => dynamics.flow * (0.2 + 0.8 * p),
-            _ => dynamics.flow,
-        };
-        let half = laid.half.get(index).copied().unwrap_or(0.5);
-        grid.stamp(sample, half, flow, &tip);
+    for piece in &laid {
+        for (index, sample) in piece.samples.iter().enumerate() {
+            let p = f64::from(sample.pressure).clamp(0.0, 1.0);
+            let flow = match preset {
+                Preset::Pencil => dynamics.flow * p.powf(1.4),
+                Preset::Charcoal => dynamics.flow * (0.35 + 0.65 * p),
+                Preset::Airbrush => dynamics.flow * (0.2 + 0.8 * p),
+                _ => dynamics.flow,
+            };
+            let half = piece.half.get(index).copied().unwrap_or(0.5);
+            grid.stamp(sample, half, flow, &tip);
+        }
     }
     let pixels = grid.coloured(preset, input);
     Some(Dabs {
@@ -794,6 +924,82 @@ fn noise(x: f64, y: f64, seed: u64) -> f64 {
     top + (bottom - top) * ty
 }
 
+/// One line a stroke is laid as: its points and its size.
+pub type Piece = (Vec<Vec<f64>>, f64);
+
+/// The lines a stroke mark is laid as: itself, or every twig its `forks`
+/// grow or dab its `dabs` scatter into, grown from the mark's id as a
+/// painted layer grows them. Every preset lays each the way it lays a
+/// stroke. A calligraphy nib's `angle` is the nib's, so its dabs follow
+/// the path.
+pub fn pieces(mark: &Mark) -> Vec<Piece> {
+    let Some((points, size)) = stroke_of(mark) else {
+        return Vec::new();
+    };
+    let angle = mark
+        .style
+        .angle
+        .filter(|_| Preset::of(&mark.style) != Preset::Calligraphy);
+    let Some(form) = mark.shape.form(angle) else {
+        return vec![(points.to_vec(), size)];
+    };
+    let stroke = tilo_wet_media::engine::Stroke {
+        points: points
+            .iter()
+            .map(|point| {
+                let (x, y, pressure) = point_of(point);
+                WetPoint::new(narrow(x), narrow(y), narrow(pressure))
+            })
+            .collect(),
+        size: narrow(size),
+        paint: tilo_wet_media::Paint {
+            colour: tilo_wet_media::Rgb::WHITE,
+            alpha: 1.0,
+            granulation: 0.0,
+            strength: 1.0,
+        },
+        opacity: 1.0,
+        wet: false,
+        params: BTreeMap::new(),
+        form: Some(form),
+        clip: Vec::new(),
+    };
+    stroke
+        .pieces(tilo_wet_media::painter::seed_of(&mark.id))
+        .into_iter()
+        .map(|(piece, _)| {
+            let points = piece
+                .points
+                .iter()
+                .map(|point| {
+                    vec![
+                        f64::from(point.x),
+                        f64::from(point.y),
+                        f64::from(point.pressure),
+                    ]
+                })
+                .collect();
+            (points, f64::from(piece.size))
+        })
+        .collect()
+}
+
+/// The path a stroke's brush follows, after its smoothing, in the stroke's
+/// own units: the line every preset lays its width along, and what the
+/// point editor shows between the points.
+pub fn centreline(points: &[Vec<f64>], size: f64, smoothing: f64) -> BezPath {
+    let mut path = BezPath::new();
+    let points = steady_ends(points, size);
+    for (index, sample) in samples(&points, 0.5, smoothing).iter().enumerate() {
+        if index == 0 {
+            path.move_to(sample_point(sample));
+        } else {
+            path.line_to(sample_point(sample));
+        }
+    }
+    path
+}
+
 /// The stroke `points` of a stroke mark, with its size.
 pub fn stroke_of(mark: &Mark) -> Option<(&[Vec<f64>], f64)> {
     match &mark.shape {
@@ -836,8 +1042,7 @@ mod tests {
         let points = line(pressure);
         let style = style(brush);
         dab(&DabInput {
-            points: &points,
-            size: 6.0,
+            pieces: &[(points, 6.0)],
             style: &style,
             scale: 2.0,
             rgb: [20, 20, 20],
@@ -872,8 +1077,8 @@ mod tests {
 
     #[test]
     fn pen_pressure_sets_width() {
-        let thin = silhouette(&line(0.1), 8.0, &style("pen"));
-        let wide = silhouette(&line(1.0), 8.0, &style("pen"));
+        let thin = silhouette(&[(line(0.1), 8.0)], &style("pen"));
+        let wide = silhouette(&[(line(1.0), 8.0)], &style("pen"));
         assert!(wide.bounding_box().height() > thin.bounding_box().height() * 1.8);
     }
 
@@ -892,10 +1097,12 @@ mod tests {
             angle: Some(0.0),
             ..style("calligraphy")
         };
-        let thick = silhouette(&line(1.0), 10.0, &across)
+        let thick = silhouette(&[(line(1.0), 10.0)], &across)
             .bounding_box()
             .height();
-        let thin = silhouette(&line(1.0), 10.0, &along).bounding_box().height();
+        let thin = silhouette(&[(line(1.0), 10.0)], &along)
+            .bounding_box()
+            .height();
         assert!(thick > thin * 3.0, "{thick} vs {thin}");
     }
 
@@ -918,5 +1125,111 @@ mod tests {
         let fewer = simplified(&smooth, 1.5);
         assert!(fewer.len() < 12, "{}", fewer.len());
         assert_eq!(fewer.last(), smooth.last());
+    }
+    #[test]
+    fn smoothing_keeps_a_tight_curve_its_size() {
+        // Most of a circle 12 units round, a point every 15 degrees.
+        let arc: Vec<Vec<f64>> = (0..=20)
+            .map(|step| {
+                let angle = f64::from(step) * 15_f64.to_radians();
+                vec![100.0 + 12.0 * angle.cos(), 100.0 + 12.0 * angle.sin(), 1.0]
+            })
+            .collect();
+        let smooth = smoothed(&arc, 1.0);
+        let middle = &smooth[smooth.len() / 4..smooth.len() * 3 / 4];
+        for point in middle {
+            let radius = (point[0] - 100.0).hypot(point[1] - 100.0);
+            assert!((radius - 12.0).abs() < 0.36, "radius {radius}");
+        }
+    }
+
+    #[test]
+    fn a_hook_at_the_lift_does_not_turn_the_lines_end() {
+        // A pen line whose last point steps back a little across it, as a
+        // hand's lift often does.
+        let mut points = line(0.8);
+        points.push(vec![199.7, 50.6, 0.35]);
+        let dynamics = Dynamics::of(Preset::Pen, &BTreeMap::new());
+        let laid = lay(&points, 8.0, Preset::Pen, &dynamics);
+        for (nx, ny) in normals(&laid.samples, &laid.half) {
+            assert!(ny.abs() > 0.94 && nx.abs() < 0.35, "normal ({nx}, {ny})");
+        }
+        // Its outline stays as tall as the line, no notch or spike at the end.
+        let outline = silhouette(&[(points, 8.0)], &style("pen"));
+        let bounds = outline.bounding_box();
+        assert!(
+            bounds.max_x() < 205.0 && bounds.height() < 9.0,
+            "{bounds:?}"
+        );
+    }
+
+    #[test]
+    fn the_editor_shows_the_curve_the_brush_follows() {
+        // Three points: the line bows through the middle one, it does not
+        // run straight to it.
+        let points = vec![vec![0.0, 0.0], vec![50.0, 30.0], vec![100.0, 0.0]];
+        let curve = centreline(&points, 2.0, 0.0);
+        let at_quarter = curve
+            .elements()
+            .iter()
+            .filter_map(ui::vello::kurbo::PathEl::end_point)
+            .min_by(|a, b| (a.x - 25.0).abs().total_cmp(&(b.x - 25.0).abs()))
+            .unwrap();
+        // A straight segment would be at y 15 there; the spline is higher.
+        assert!(at_quarter.y > 18.0, "{at_quarter:?}");
+        // It is the same line a pen lays its width along.
+        let pen = silhouette(&[(points, 2.0)], &style("pen")).bounding_box();
+        assert!((pen.max_y() - curve.bounding_box().max_y()).abs() < 1.6);
+    }
+
+    #[test]
+    fn every_preset_grows_forks_and_dabs() {
+        let mark = |brush: &str, forks: Option<u32>, dabs: Option<u32>| Mark {
+            id: "tree".into(),
+            layer: "l".into(),
+            order: "a".into(),
+            name: String::new(),
+            shape: Shape::Stroke {
+                points: vec![vec![100.0, 200.0], vec![100.0, 100.0]],
+                size: 8.0,
+                forks,
+                spread: None,
+                dabs,
+                scatter: Some(30.0),
+                dab_length: None,
+            },
+            style: style(brush),
+            transform: None,
+            group: String::new(),
+            clip: String::new(),
+        };
+        for preset in ["pen", "marker", "calligraphy"] {
+            let plain = silhouette(&pieces(&mark(preset, None, None)), &style(preset));
+            let tree = silhouette(&pieces(&mark(preset, Some(3), None)), &style(preset));
+            let leaves = silhouette(&pieces(&mark(preset, None, Some(40))), &style(preset));
+            assert!(
+                tree.bounding_box().width() > plain.bounding_box().width() * 2.0,
+                "{preset} forks"
+            );
+            assert!(
+                leaves.bounding_box().width() > plain.bounding_box().width() * 2.0,
+                "{preset} dabs"
+            );
+        }
+        for preset in ["pencil", "airbrush", "charcoal"] {
+            let laid = |forks| {
+                let mark = mark(preset, forks, None);
+                dab(&DabInput {
+                    pieces: &pieces(&mark),
+                    style: &mark.style,
+                    scale: 1.0,
+                    rgb: [20, 20, 20],
+                    tooth: &flat,
+                    to_artwork: ui::vello::kurbo::Affine::IDENTITY,
+                })
+                .expect("laid")
+            };
+            assert!(laid(Some(3)).width > laid(None).width * 2, "{preset} forks");
+        }
     }
 }

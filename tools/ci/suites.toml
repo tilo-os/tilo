@@ -203,6 +203,14 @@ inputs = ["os/", ".forgejo/workflows/build-rpms.yml", "dist/ci/install-build-dep
 suites = ["os/tests/test_no_cisco_openh264.py"]
 
 [[group]]
+name = "mount-source-cache-keys"
+# A RUN that bind-mounts a pulled image's alias stage (the frozen RPM snapshot,
+# the kernel, a toolchain) keys its layer on that image's reference, so a local
+# Buildah build never reuses a layer installed from a previous snapshot.
+inputs = ["os/"]
+suites = ["os/tests/test_mount_source_cache_keys.py"]
+
+[[group]]
 name = "dev-feature-targets"
 # The dev features os/components.toml names, against the packages' manifests:
 # `pkg/feature` must reach the package, not a dependency of it named pkg.
@@ -418,6 +426,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs",
   "crates/browser/tilo-browser-runtime/web/membership.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs",
   "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",

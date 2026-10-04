@@ -167,3 +167,94 @@ pub fn device_tool_builder() -> std::sync::Arc<dyn tilo_environment::ToolBuilder
         ))),
     }
 }
+
+/// Tools kept as plain trees beside their runtime, `<root>/<hex id>/` — the
+/// layout `ush` reads fixture images from (`TILO_USH_IMAGES`). Each tool is
+/// still sealed (with a throwaway key) so its id is a real image id.
+#[derive(Debug, Clone)]
+pub struct DirImageTools {
+    root: PathBuf,
+    arch: Arch,
+}
+
+impl DirImageTools {
+    /// # Errors
+    ///
+    /// On an architecture images aren't built for.
+    pub fn at(root: impl Into<PathBuf>) -> anyhow::Result<Self> {
+        Ok(Self {
+            root: root.into(),
+            arch: image::host_arch()?,
+        })
+    }
+}
+
+impl ToolStore for DirImageTools {
+    fn runtime_tree(&self, runtime: &PackageId) -> anyhow::Result<PathBuf> {
+        let tree = self.root.join(runtime.to_hex());
+        anyhow::ensure!(
+            tree.is_dir(),
+            "image {runtime} is not under {}",
+            self.root.display()
+        );
+        Ok(tree)
+    }
+
+    fn has(&self, tool: &PackageId) -> bool {
+        self.root.join(tool.to_hex()).is_dir()
+    }
+
+    fn store_tool(
+        &self,
+        tree: &Path,
+        key: &CacheKey,
+        requested: &[String],
+    ) -> anyhow::Result<PackageId> {
+        let packed = image::seal_tool(
+            tree,
+            key,
+            requested,
+            self.arch,
+            &SigningIdentity::generate(),
+        )?;
+        let id = packed.id();
+        let dest = self.root.join(id.to_hex());
+        match std::fs::rename(tree, &dest) {
+            Err(e) if e.raw_os_error() == Some(libc::EXDEV) => copy_tree(tree, &dest)?,
+            other => other?,
+        }
+        Ok(id)
+    }
+}
+
+/// Copy a sealed tree — directories, regular files with their modes, and
+/// symlinks — to `dest`, which must not exist.
+fn copy_tree(src: &Path, dest: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(dest)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_tree(&from, &to)?;
+        } else if kind.is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(&from)?, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// The tool builder over [`DirImageTools`] at `root`, its state in
+/// `TILO_ENV_TOOLS_STATE` or `<root>/.env-tools`.
+pub fn dir_tool_builder(root: &Path) -> std::sync::Arc<dyn tilo_environment::ToolBuilder> {
+    let state = std::env::var_os("TILO_ENV_TOOLS_STATE")
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| root.join(".env-tools"), PathBuf::from);
+    match DirImageTools::at(root) {
+        Ok(tools) => std::sync::Arc::new(Builder::new(tools, crate::NoCatalog, state)),
+        Err(error) => std::sync::Arc::new(crate::environment::Unavailable(error.to_string())),
+    }
+}

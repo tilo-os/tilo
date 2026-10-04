@@ -92,6 +92,10 @@ class HardwareProfileTest(unittest.TestCase):
         self.system_firmware = self.root / "usr/lib/firmware/qcom/a740_sqe.fw.xz"
         self.system_firmware.parent.mkdir(parents=True)
         self.system_firmware.write_bytes(b"distro firmware fixture")
+        for name in ("gen70500_sqe.fw", "gen70500_gmu.bin", "x1e80100/gen70500_zap.mbn"):
+            path = self.system_firmware.parent / (name + ".xz")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"GPU firmware fixture")
         for name in NAMES:
             (self.firmware / name).write_bytes(f"firmware fixture: {name}".encode())
         self.manifest = {
@@ -156,7 +160,10 @@ class HardwareProfileTest(unittest.TestCase):
             install_line = dracut.read_text().splitlines()[1]
             self.assertEqual(install_line, 'install_items+=" ' + " ".join(
                 f"/usr/lib/firmware/qcom/x1e80100/LENOVO/83ED/{name}" for name in NAMES
-            ) + ' /usr/lib/firmware/qcom/a740_sqe.fw.xz "')
+            ) + ' /usr/lib/firmware/qcom/a740_sqe.fw.xz'
+              ' /usr/lib/firmware/qcom/gen70500_sqe.fw.xz'
+              ' /usr/lib/firmware/qcom/gen70500_gmu.bin.xz'
+              ' /usr/lib/firmware/qcom/x1e80100/gen70500_zap.mbn.xz "')
             parser = self.root / prepare.PARSER_PATH
             self.assertIn(b"FIELDS_V2", parser.read_bytes())
             self.assertNotIn(b"\r", parser.read_bytes())
