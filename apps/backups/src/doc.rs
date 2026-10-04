@@ -122,15 +122,6 @@ impl PolicyField {
             PolicyField::Monthly => "Monthly",
         }
     }
-
-    pub fn unit(self) -> &'static str {
-        match self {
-            PolicyField::Hourly => "last 24 hours",
-            PolicyField::Daily => "past days",
-            PolicyField::Weekly => "past weeks",
-            PolicyField::Monthly => "past months",
-        }
-    }
 }
 
 #[cfg(test)]
