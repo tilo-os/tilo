@@ -2016,19 +2016,22 @@ jobs:
           export TILO_SPLASH_LOG="$RUNNER_TEMP/tilo-boot-splash.log"
           rm -f "$TILO_SPLASH_LOG" "$TILO_SPLASH_LOG.status"
           echo "TILO_SPLASH_LOG=$TILO_SPLASH_LOG" >> "$GITHUB_ENV"
+          # The packages install before the film starts: a package manager
+          # running in the background holds the dpkg lock against the steps
+          # below that install their own (the Lenovo firmware import).
+          if command -v apt-get >/dev/null; then
+            if [[ $ARCH == x86_64 ]]; then firmware="ovmf qemu-system-x86"; else firmware="qemu-efi-aarch64 qemu-system-arm"; fi
+            sudo -n apt-get update -qq
+            sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+              cryptsetup-bin dosfstools fdisk mtools skopeo zstd $firmware >/dev/null
+          else
+            if [[ $ARCH == x86_64 ]]; then firmware="edk2-ovmf qemu-system-x86-core qemu-device-display-virtio-vga"; else firmware="edk2-aarch64 qemu-system-aarch64-core qemu-device-display-virtio-gpu-pci"; fi
+            sudo -n dnf -y -q install cryptsetup dosfstools mtools skopeo util-linux zstd \
+              qemu-device-display-virtio-gpu $firmware >/dev/null
+          fi
           setsid nohup bash -c '
             set -euo pipefail
             trap '\''echo "$?" > "$TILO_SPLASH_LOG.status"'\'' EXIT
-            if command -v apt-get >/dev/null; then
-              if [[ $ARCH == x86_64 ]]; then firmware="ovmf qemu-system-x86"; else firmware="qemu-efi-aarch64 qemu-system-arm"; fi
-              sudo -n apt-get update -qq
-              sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-                cryptsetup-bin dosfstools fdisk mtools skopeo zstd $firmware >/dev/null
-            else
-              if [[ $ARCH == x86_64 ]]; then firmware="edk2-ovmf qemu-system-x86-core qemu-device-display-virtio-vga"; else firmware="edk2-aarch64 qemu-system-aarch64-core qemu-device-display-virtio-gpu-pci"; fi
-              sudo -n dnf -y -q install cryptsetup dosfstools mtools skopeo util-linux zstd \
-                qemu-device-display-virtio-gpu $firmware >/dev/null
-            fi
             rm -rf -- "$SPLASH_FRAMES"
             timeout 45m python3 os/dev/check-boot-splash.py --arch "$ARCH" --out "$SPLASH_FRAMES" \
               "docker://registry.tilo.so/tilo/tilo-ci@$IMAGE_DIGEST"' > "$TILO_SPLASH_LOG" 2>&1 < /dev/null &
