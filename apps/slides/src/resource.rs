@@ -3,7 +3,11 @@
 
 use std::rc::Rc;
 
-use ui::framework::{Fixture, LaunchInput, ResourceApp, ResourceSurface, ViewCx};
+use ui::framework::{
+    EffectAnswer, EffectCx, Fixture, LaunchInput, ResourceApp, ResourceSurface, ViewCx,
+};
+
+use crate::effects::SlidesEffect;
 use ui::record::RecordId;
 use ui::tilo_resource::{ActionDecl, Invoke};
 use ui::widget::Element;
@@ -155,13 +159,21 @@ fn replace_deck(deck: &Deck) -> Option<Invoke<SlidesDeck>> {
     Invoke::apply(&action).ok()
 }
 
-impl ResourceSurface<SlidesDeck> for SlidesApp {
+impl ResourceSurface<SlidesDeck, SlidesEffect> for SlidesApp {
     fn present(&mut self, state: &Rc<SlidesResourceCtx>) {
         self.adopt_resource_state(state);
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
+    }
+
+    fn effect(
+        &mut self,
+        effect: SlidesEffect,
+        cx: &mut EffectCx<SlidesDeck, Self>,
+    ) -> EffectAnswer {
+        self.answer_effect(effect, cx)
     }
 
     fn bound_declarations(&self) -> Vec<ActionDecl<SlidesDeck>> {
@@ -285,6 +297,42 @@ mod tests {
         );
     }
 
+    /// The editor's effects — showing, presenting, files, reading — are
+    /// published on the deck beside its actions, and each slide offers to
+    /// open itself.
+    #[test]
+    fn the_editors_effects_are_published_on_the_deck() {
+        let mut app = TestApp::<SlidesShell>::new().unwrap();
+        let surface = app.agent_surface();
+        let rows = surface.as_array().unwrap();
+        let on = |resource: &str, action: &str| {
+            rows.iter()
+                .any(|row| row["resource"] == resource && row["action"] == action)
+        };
+        for effect in [
+            "editor",
+            "overview",
+            "present",
+            "present-largest-external",
+            "present-primary-external",
+            "end-presentation",
+            "open",
+            "save-as",
+            "read",
+        ] {
+            assert!(
+                on("slides.deck", effect),
+                "`{effect}` is published: {surface}"
+            );
+        }
+        let slide = app.state().slides[0].data.id.clone();
+        assert!(on(&crate::actions::slide_resource_id(&slide), "open-slide"));
+        assert!(
+            !on("slides.deck", "open-slide"),
+            "revealing a slide is offered on the slide itself"
+        );
+    }
+
     #[test]
     fn the_deck_publish_includes_add_slide_and_theme_ops() {
         let ctx = SlidesResourceCtx::from_deck(&seed_deck());
@@ -319,9 +367,6 @@ mod tests {
             "theme-emerald",
             ui::tilo_resource::APPLY,
             ui::tilo_resource::GROUP,
-            "present",
-            "editor",
-            "overview",
         ] {
             assert!(
                 ids.contains(&expected),
