@@ -4,8 +4,6 @@
 //! read and write the same keys; the zoom steps, their labels and the toggle's memory live
 //! here so the three cannot disagree about what "3×" or "zoom in" means.
 
-use std::path::Path;
-
 use serde_json::{Map, Value};
 
 /// The section holding the magnifier keys.
@@ -168,21 +166,30 @@ pub fn step(zoom: u8, remembered: u8, step: MagnifierStep) -> (u8, u8) {
     (next, remembered)
 }
 
-/// Apply `step` to the settings file at `path` and return the new zoom.
+/// Apply `step` to the session's settings ([`crate::update_section`]) and
+/// return the new zoom.
 ///
 /// # Errors
 ///
 /// Returns the I/O error when the updated section cannot be written.
-pub fn apply_step_at(path: &Path, magnifier_step: MagnifierStep) -> std::io::Result<u8> {
-    let section = crate::load_section_at(path, SECTION);
-    let zoom = zoom_in_section(&section, ZOOM_KEY).unwrap_or(OFF);
-    let remembered = zoom_in_section(&section, LAST_ZOOM_KEY).unwrap_or(DEFAULT_ZOOM);
+pub fn apply_step(magnifier_step: MagnifierStep) -> std::io::Result<u8> {
+    let (values, next) = stepped(&crate::load_section(SECTION), magnifier_step);
+    crate::update_section(SECTION, values)?;
+    Ok(next)
+}
+
+/// The keys `step` writes into the accessibility `section`, and the new zoom.
+fn stepped(
+    section: &Map<String, Value>,
+    magnifier_step: MagnifierStep,
+) -> (Map<String, Value>, u8) {
+    let zoom = zoom_in_section(section, ZOOM_KEY).unwrap_or(OFF);
+    let remembered = zoom_in_section(section, LAST_ZOOM_KEY).unwrap_or(DEFAULT_ZOOM);
     let (next, remembered) = step(zoom, remembered, magnifier_step);
     let mut values = Map::new();
     values.insert(ZOOM_KEY.into(), Value::from(next));
     values.insert(LAST_ZOOM_KEY.into(), Value::from(remembered));
-    crate::update_section_at(path, SECTION, values)?;
-    Ok(next)
+    (values, next)
 }
 
 #[cfg(test)]
@@ -224,24 +231,19 @@ mod tests {
     }
 
     #[test]
-    fn a_step_persists_the_zoom_and_what_the_toggle_remembers() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(
-            &path,
-            r#"{"accessibility":{"magnifier_zoom":4,"cursor_crosshair":true}}"#,
-        )
-        .unwrap();
-        assert_eq!(apply_step_at(&path, MagnifierStep::Toggle).unwrap(), OFF);
-        assert_eq!(apply_step_at(&path, MagnifierStep::Toggle).unwrap(), 4);
-        assert_eq!(apply_step_at(&path, MagnifierStep::ZoomOut).unwrap(), 3);
-        let section = crate::load_section_at(&path, SECTION);
+    fn a_step_writes_the_zoom_and_what_the_toggle_remembers() {
+        let mut section = Map::new();
+        section.insert(ZOOM_KEY.into(), Value::from(4));
+        let mut apply = |magnifier_step| {
+            let (values, next) = stepped(&section, magnifier_step);
+            section.extend(values);
+            next
+        };
+        assert_eq!(apply(MagnifierStep::Toggle), OFF);
+        assert_eq!(apply(MagnifierStep::Toggle), 4);
+        assert_eq!(apply(MagnifierStep::ZoomOut), 3);
         assert_eq!(MagnifierState::from_section(&section).zoom, 3);
-        assert_eq!(
-            section.get("cursor_crosshair"),
-            Some(&Value::Bool(true)),
-            "other accessibility settings survive"
-        );
+        assert_eq!(section.get(LAST_ZOOM_KEY), Some(&Value::from(3)));
     }
 
     #[test]

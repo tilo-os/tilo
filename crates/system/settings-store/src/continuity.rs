@@ -188,14 +188,6 @@ policies! {
         "tilo.display_transaction.candidate",
         "tilo.display_transaction.deadline_unix_ms",
         "tilo.display_transaction.message",
-        // Local portal grants and physical-key bindings must not escape the
-        // device on which they were granted/configured.
-        "tilo.ebook_local_library.books",
-        "tilo.ebook_local_library.watched_folders",
-        "tilo.ebook_local_library.shortcuts",
-        "tilo.video_player.autoplay",
-        "tilo.video_player.loop_enabled",
-        "tilo.video_player.recent_history",
         // Provider records can name loopback endpoints and device-vault
         // locators. The secret bytes live elsewhere, but this aggregate
         // cannot safely roam until it is split into portable/local records.
@@ -512,9 +504,7 @@ mod tests {
                 },
                 "agent_providers": {"config": {}},
                 "collaboration": {"status_sharing": "automatic", "manual_status": null},
-                "history": {"seen_frontiers": {}},
-                "ebook_local_library": {"books": {}, "watched_folders": [], "shortcuts": {}},
-                "video_player": {"autoplay": true, "loop_enabled": false, "recent_history": []}
+                "history": {"seen_frontiers": {}}
             });
             assert_eq!(
                 unclassified_leaves(document.as_object().unwrap()),
