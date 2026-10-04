@@ -8,13 +8,6 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 PINS_FILE = ROOT / 'tools/ci/images.toml'
-# Workflows not yet moved onto the shared pins. Only shrink this set.
-PENDING = {
-    ('os-dev.yml', 'ci-fast'),
-    ('os-dev-arm.yml', 'ci-fast'),
-}
-
-
 def load_pins():
     with PINS_FILE.open('rb') as stream:
         return tomllib.load(stream)
@@ -40,9 +33,6 @@ class CiImagePins(unittest.TestCase):
         seen = set()
         for path in sources:
             for repository, digest in reference.findall(path.read_text()):
-                key = (path.name, repository)
-                if key in PENDING:
-                    continue
                 with self.subTest(workflow=path.name, image=repository):
                     self.assertIn(repository, pins, 'add the image to tools/ci/images.toml')
                     self.assertEqual(digest, pins[repository], 'pin it in tools/ci/images.toml')
