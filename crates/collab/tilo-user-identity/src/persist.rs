@@ -451,7 +451,7 @@ fn create_public_dir(path: &Path) -> io::Result<()> {
 }
 
 /// Read a 32-byte Ed25519 signing key from disk, enforcing 0600
-/// [`PUBLIC_FILE_MODE`].
+/// permissions.
 ///
 /// Windows validates ownership and a user-only DACL on the opened handle,
 /// refusing reparse points rather than following a substituted secret path.
