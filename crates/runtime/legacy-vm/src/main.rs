@@ -20,7 +20,7 @@ use legacy_vm::supervisor::Supervisor;
 use legacy_vm::{confine, image, virtiofs};
 
 const USAGE: &str = "\
-usage: tilo-legacy [--guest linux] [--image QCOW2] <command>
+usage: tilo-legacy [--guest linux] [--image QCOW2] [--idle-suspend SECONDS] <command>
 
   launch <app> [--cwd DIR] [--share-cwd] [ARG…]
                          run an installed app; its windows open in the current strip
@@ -42,6 +42,8 @@ usage: tilo-legacy [--guest linux] [--image QCOW2] <command>
 struct Options {
     guest: GuestOs,
     image: Option<PathBuf>,
+    /// How long the VM may sit with nothing running before it is saved to disk.
+    idle_suspend: Option<Duration>,
 }
 
 fn main() -> ExitCode {
@@ -49,6 +51,7 @@ fn main() -> ExitCode {
     let mut options = Options {
         guest: GuestOs::Linux,
         image: None,
+        idle_suspend: None,
     };
     while let [flag, value, ..] = args.as_slice() {
         match flag.as_str() {
@@ -59,6 +62,12 @@ fn main() -> ExitCode {
                 options.guest = guest;
             }
             "--image" => options.image = Some(PathBuf::from(value)),
+            "--idle-suspend" => {
+                let Ok(seconds) = value.parse::<u64>() else {
+                    return fail(&format!("--idle-suspend takes seconds, not {value:?}"));
+                };
+                options.idle_suspend = Some(Duration::from_secs(seconds.max(1)));
+            }
             _ => break,
         }
         args.drain(..2);
@@ -111,11 +120,15 @@ fn fail(message: &str) -> ExitCode {
 }
 
 fn config(options: &Options, paths: Paths) -> VmConfig {
-    VmConfig::new(
+    let mut config = VmConfig::new(
         options.guest,
         options.image.clone().unwrap_or_default(),
         paths,
-    )
+    );
+    if let Some(idle) = options.idle_suspend {
+        config.idle_suspend = idle;
+    }
+    config
 }
 
 /// Ask the supervisor to wake the VM, starting one when none runs.
@@ -148,6 +161,11 @@ fn spawn_supervisor(options: &Options, paths: &Paths) -> Result<(), String> {
     command.args(["--guest", options.guest.as_str()]);
     if let Some(image) = &options.image {
         command.arg("--image").arg(image);
+    }
+    if let Some(idle) = options.idle_suspend {
+        command
+            .arg("--idle-suspend")
+            .arg(idle.as_secs().to_string());
     }
     command
         .arg("serve")
