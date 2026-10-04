@@ -145,9 +145,6 @@ impl Chrome {
         .role(ButtonRole::Primary)
         .control_size(ControlSize::Small)
         .on_effect(self.request(Command::Open));
-        // The window then draws no History bar of its own.
-        let mut history = ui::widget::history_button().control_size(ControlSize::Small);
-        history.set_compact_toolbar_presentation(compact);
         Box::new(
             Row::new()
                 .no_wrap()
@@ -165,8 +162,7 @@ impl Chrome {
                     Command::Next,
                 )))
                 .push(Box::new(sample))
-                .push(Box::new(open))
-                .push(Box::new(history)),
+                .push(Box::new(open)),
         )
     }
 }
