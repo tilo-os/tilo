@@ -433,6 +433,76 @@ impl<S: RichTextSource> RichTextSurface<S> {
         self.editor.is_composing()
     }
 
+    fn move_selected_blocks(&mut self, doc: &mut AutoCommit, up: bool) -> bool {
+        if self.source.read_only() || self.is_composing() {
+            return false;
+        }
+        self.commit(doc);
+        self.source.sync(doc);
+        if self.source.revision() != self.revision {
+            self.present_state(None);
+        }
+        let Some((range, boundary)) = self.editor.selected_block_move(up) else {
+            return false;
+        };
+        let blocks = self.editor.blocks();
+        let Some(selected) = blocks.get(range) else {
+            return false;
+        };
+        let ids: Vec<String> = selected.iter().map(|block| block.id.clone()).collect();
+        let selection = self.editor.document_selection();
+        let reverse = selection.is_some_and(|selection| selection.anchor > selection.cursor);
+        let after = boundary
+            .checked_sub(1)
+            .and_then(|index| blocks.get(index))
+            .map(|block| block.id.clone());
+        let action = RichTextAction::MoveBlocks {
+            blocks: ids.clone(),
+            after,
+        };
+        if let Err(error) = self.source.apply(doc, &action) {
+            tracing::debug!(%error, "block movement refused");
+            return false;
+        }
+        self.source.sync(doc);
+        self.present_state(None);
+        if selection.is_some() {
+            self.editor.retain_block_selection(ids, reverse);
+        }
+        true
+    }
+
+    fn move_key(
+        &self,
+        event: &WindowEvent,
+        modifiers: ui::winit::event::Modifiers,
+    ) -> Option<bool> {
+        use ui::winit::{
+            event::ElementState,
+            keyboard::{Key, NamedKey},
+        };
+        let held = modifiers.state();
+        if !self.editor.is_focused()
+            || self.editor.has_open_popup()
+            || self.is_composing()
+            || !held.alt_key()
+            || held.control_key()
+            || held.super_key()
+        {
+            return None;
+        }
+        match event {
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                match event.logical_key {
+                    Key::Named(NamedKey::ArrowUp) => Some(true),
+                    Key::Named(NamedKey::ArrowDown) => Some(false),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn duplicate_blocks(&mut self, doc: &mut AutoCommit, target: Option<&str>) -> bool {
         if self.source.read_only() || self.is_composing() {
             return false;
@@ -705,6 +775,11 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             *ctx.handled = true;
             return;
         }
+        if let Some(up) = self.move_key(event, *ctx.modifiers) {
+            self.move_selected_blocks(ctx.state, up);
+            *ctx.handled = true;
+            return;
+        }
         self.editor.handle_event(event, ctx);
         self.commit(ctx.state);
     }
@@ -728,12 +803,34 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             duplicate.bounds = row.bounds;
             row.children.push(duplicate);
         }
+        let selection_disabled = disabled || self.editor.selected_block_range().is_none();
         let mut duplicate = AccessNode::new(Role::Button)
             .with_name(ui::i18n!("widget-block-duplicate-selection"))
             .with_action_target("notes.editor:duplicate")
-            .with_state(AccessState::new().focusable(!disabled).disabled(disabled));
+            .with_state(
+                AccessState::new()
+                    .focusable(!selection_disabled)
+                    .disabled(selection_disabled),
+            );
         duplicate.bounds = tree.bounds;
         tree.children.push(duplicate);
+        for up in [true, false] {
+            let disabled = disabled || self.editor.selected_block_move(up).is_none();
+            let mut movement = AccessNode::new(Role::Button)
+                .with_name(if up {
+                    ui::i18n!("widget-block-move-selection-up")
+                } else {
+                    ui::i18n!("widget-block-move-selection-down")
+                })
+                .with_action_target(if up {
+                    "notes.editor:move-up"
+                } else {
+                    "notes.editor:move-down"
+                })
+                .with_state(AccessState::new().focusable(!disabled).disabled(disabled));
+            movement.bounds = tree.bounds;
+            tree.children.push(movement);
+        }
         Some(tree)
     }
 
@@ -744,6 +841,13 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        if matches!(target, "notes.editor:move-up" | "notes.editor:move-down") {
+            if !matches!(action, ui::a11y::Action::Activate) {
+                return false;
+            }
+            let (state, _) = ui::doc::document(state, path);
+            return self.move_selected_blocks(state, target.ends_with(":move-up"));
+        }
         if target == "notes.editor:duplicate" {
             if !matches!(action, ui::a11y::Action::Activate) {
                 return false;

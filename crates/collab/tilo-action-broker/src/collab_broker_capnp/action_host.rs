@@ -25,14 +25,26 @@ use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, In
 use super::launchable::{is_launchable_provider, launchable_provider};
 use super::{
     ActionDirectoryBridgeError, ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse,
-    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, InvocationInputs,
-    InvocationOwner, LaunchScope, PublishedAction, PublishedInput, PublishedSurface, ResourceRef,
-    Verb, confirmation_satisfied, permission_verb, published_directory_action,
-    validate_directory_target_input,
+    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, DIRECTORY_MAX_PARAMS_BYTES,
+    InvocationInputs, InvocationOwner, LaunchScope, PublishedAction, PublishedInput,
+    PublishedSurface, ResourceRef, Verb, confirmation_satisfied, permission_verb,
+    published_directory_action, validate_directory_target_input,
 };
 use crate::automation;
 use crate::collab_broker::CrdtRoute;
 use tilo_automation::SHORTCUTS_APP_ID;
+
+/// Why an action's arguments are too large to pass, in words a caller can
+/// act on: how large they are, the most one action takes, and to split.
+fn oversized_argument(argument: &str) -> Option<String> {
+    (argument.len() > DIRECTORY_MAX_PARAMS_BYTES).then(|| {
+        format!(
+            "the arguments are {} bytes, over the {} one action takes: split them over several calls of the action",
+            argument.len(),
+            DIRECTORY_MAX_PARAMS_BYTES
+        )
+    })
+}
 
 impl BrokerActor {
     /// The broker actor a caller is admitted as.
@@ -1184,6 +1196,9 @@ impl CapnpBrokerState {
         };
         let argument = request.argument.to_slot();
         let address = &request.target.address;
+        if let Some(reason) = argument.as_deref().and_then(oversized_argument) {
+            return Pending::ready(Err(ActionHostError::InvalidRequest { reason }));
+        }
         if validate_directory_target_input(
             &root.cluster_id,
             &revision,
@@ -2462,5 +2477,23 @@ mod app_close_tests {
         let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(room);
         assert!(app_actions(&state, &stranger).is_empty());
         assert!(launcher.closed.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod argument_size_tests {
+    use super::*;
+
+    #[test]
+    fn an_oversized_argument_says_its_size_and_the_limit() {
+        assert_eq!(oversized_argument("{}"), None);
+        let big = "x".repeat(DIRECTORY_MAX_PARAMS_BYTES + 1);
+        let reason = oversized_argument(&big).unwrap_or_default();
+        assert!(reason.contains(&big.len().to_string()), "{reason}");
+        assert!(
+            reason.contains(&DIRECTORY_MAX_PARAMS_BYTES.to_string()),
+            "{reason}"
+        );
+        assert!(reason.contains("split"), "{reason}");
     }
 }

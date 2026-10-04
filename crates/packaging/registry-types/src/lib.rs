@@ -67,6 +67,7 @@ pub mod handshake;
 pub mod moderation;
 pub mod namespace;
 pub mod pending;
+pub mod retention;
 pub mod snapshot;
 pub mod target;
 pub mod upload;
