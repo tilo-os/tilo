@@ -96,6 +96,9 @@ char_key() {
     '#') echo shift-3;; '*') echo shift-8;; '&') echo shift-7;;
     '(') echo shift-9;; ')') echo shift-0;; '!') echo shift-1;;
     '"') echo shift-apostrophe;; "'") echo apostrophe;;
+    '?') echo shift-slash;;
+    # A capital is its letter's key with Shift held, as on a real keyboard.
+    [[:upper:]]) echo "shift-$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')";;
     *) echo "$1";;
   esac
 }

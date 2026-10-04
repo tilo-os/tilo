@@ -76,6 +76,8 @@ containerfile="$repo/os/Containerfile"
 # The user-tmpfiles.d snippets live in /usr/share, the only system path
 # systemd-tmpfiles --user reads.
 # The native runtime host at /usr/bin/tilo-runtime-mcp is a deliberate addition.
+# /usr/bin/bootc from bootc-builder, the base's release patched to find this
+# system's ESP on a disk it shares, and its licence notice are deliberate.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
@@ -90,7 +92,7 @@ containerfile="$repo/os/Containerfile"
 # The release gate's greetd session-context check ships beside the other
 # booted-guest checks in /usr/libexec/tilo, and so does the device admin's
 # action-model check.
-expected_contract=0e41d67598a866697f635288f9271135e04a5d06a5a2a2c98246b2caabe06254
+expected_contract=823b26fe2c16203475952cc5a7cc7bda7509816586a6337b9b5f93806d39808e
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
