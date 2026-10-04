@@ -4,6 +4,8 @@
     reason = "native host runner: the Chromium helper process is supervised by threads"
 )]
 mod protocol;
+mod shared;
+pub use shared::serve_shared_until_idle;
 
 use crate::time::Duration;
 use std::collections::{HashMap, VecDeque};
@@ -26,6 +28,9 @@ struct Shared {
     uri: Mutex<String>,
     stopping: AtomicBool,
     failed: AtomicBool,
+    /// Set on the owner for another process's tab: its host events and
+    /// frames go to that process instead of this endpoint.
+    remote: Option<Arc<shared::Outbox>>,
 }
 
 impl Shared {
@@ -200,10 +205,46 @@ struct Runtime {
     routes: Routes,
     next_tab: AtomicU32,
     download_events: Arc<Mutex<VecDeque<WebViewEvent>>>,
+    /// The profile socket this process serves its host on.
+    server: std::sync::OnceLock<Arc<shared::Server>>,
+    /// Set when another process's host runs this profile.
+    link: Option<shared::ClientLink>,
+}
+impl Runtime {
+    /// Reserves a tab within the host's shared capacity and asks the host to
+    /// create it. `announce` runs before any host event for the tab can be
+    /// routed.
+    fn admit_tab(&self, shared: &Arc<Shared>, announce: impl FnOnce(u32)) -> Result<u32, String> {
+        let mut routes = self.routes.lock().map_err(|_| "Tab routes unavailable")?;
+        if routes.len() >= 32 {
+            return Err("At most 32 tabs can be open".into());
+        }
+        let tab = self.next_tab.fetch_add(1, Ordering::Relaxed);
+        if tab > i32::MAX as u32 {
+            return Err("Tab identity exhausted".into());
+        }
+        routes.insert(tab, Arc::downgrade(shared));
+        if let Err(error) = self.tx.push(json!({"op":"create_tab","tab":tab})) {
+            routes.remove(&tab);
+            return Err(error.into());
+        }
+        announce(tab);
+        drop(routes);
+        Ok(tab)
+    }
 }
 impl Drop for Runtime {
     fn drop(&mut self) {
         self.process.stopping.store(true, Ordering::Release);
+        if self.link.is_some() {
+            // The command writer sends what is queued, then hangs up; the
+            // owner closes whatever this process left open.
+            self.tx.close();
+            return;
+        }
+        if let Some(server) = self.server.get() {
+            server.stop();
+        }
         let _ = self.tx.push(json!({"op":"shutdown"}));
         self.tx.close();
         if let Some(supervisor) = self
@@ -248,6 +289,18 @@ fn fail_routes(routes: &Routes, message: &str) {
 fn route(routes: &Routes, id: u32) -> Option<Arc<Shared>> {
     routes.lock().ok()?.get(&id)?.upgrade()
 }
+fn deliver_frame(routes: &Routes, tab: u32, frame: super::Frame) {
+    if let Some(shared) = route(routes, tab) {
+        if let Some(outbox) = &shared.remote {
+            outbox.frame(tab, frame);
+            return;
+        }
+        if let Ok(mut slot) = shared.frames.lock() {
+            *slot = Some(frame);
+        }
+        shared.wake();
+    }
+}
 
 /// Error-only surface used when a real engine cannot start. It never renders a
 /// page and repeats the diagnostic on navigation so the browser's normal error
@@ -285,6 +338,7 @@ impl UnavailableEngine {
                 uri: Mutex::new(String::new()),
                 stopping: AtomicBool::new(false),
                 failed: AtomicBool::new(false),
+                remote: None,
             },
             _private_root: PrivateRootCleanup(private_root),
         })
@@ -353,27 +407,40 @@ fn host_path() -> Result<PathBuf, String> {
     Err("Chromium runtime is missing. Run python3 scripts/browser/build-host.py, or set TILO_CHROMIUM_HOST to its executable.".into())
 }
 
+/// Every thread the Chromium transport runs is named and spawned here.
+fn spawn_named(
+    name: &str,
+    work: impl FnOnce() + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new().name(name.into()).spawn(work)
+}
+
+/// The profile directory, created and canonicalized: the host requires an
+/// absolute profile, and every process must name one profile identically.
+fn prepare_profile(profile: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(profile).map_err(|error| format!("Chromium profile: {error}"))?;
+    profile.canonicalize().map_err(|error| error.to_string())
+}
+
 fn spawn_command_writer(
     stdin: std::process::ChildStdin,
     rx: Arc<CommandQueue>,
     writer_shared: Arc<Shared>,
     writer_routes: Routes,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
-    std::thread::Builder::new()
-        .name("chromium-commands".into())
-        .spawn(move || {
-            let mut writer = stdin;
-            while let Some(command) = rx.pop() {
-                if let Err(error) = protocol::write_json(&mut writer, &command) {
-                    writer_shared.fail(format!("Chromium command channel closed: {error}"));
-                    fail_routes(
-                        &writer_routes,
-                        &format!("Chromium command channel closed: {error}"),
-                    );
-                    break;
-                }
+    spawn_named("chromium-commands", move || {
+        let mut writer = stdin;
+        while let Some(command) = rx.pop() {
+            if let Err(error) = protocol::write_json(&mut writer, &command) {
+                writer_shared.fail(format!("Chromium command channel closed: {error}"));
+                fail_routes(
+                    &writer_routes,
+                    &format!("Chromium command channel closed: {error}"),
+                );
+                break;
             }
-        })
+        }
+    })
 }
 
 fn spawn_frame_reader(
@@ -382,58 +449,54 @@ fn spawn_frame_reader(
     reader_routes: Routes,
     download_events: Arc<Mutex<VecDeque<WebViewEvent>>>,
     ready_tx: std::sync::mpsc::SyncSender<()>,
+    hub: Arc<shared::Hub>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
-    std::thread::Builder::new()
-        .name("chromium-frames".into())
-        .spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            loop {
-                match protocol::read_packet(&mut reader) {
-                    Ok(Some(protocol::Packet::Frame(frame))) => {
-                        if let Some(shared) = route(&reader_routes, 1) {
-                            if let Ok(mut slot) = shared.frames.lock() {
-                                *slot = Some(frame);
-                            }
-                            shared.wake();
-                        }
-                    }
-                    Ok(Some(protocol::Packet::TabFrame(tab, frame))) => {
-                        if let Some(shared) = route(&reader_routes, tab) {
-                            if let Ok(mut slot) = shared.frames.lock() {
-                                *slot = Some(frame);
-                            }
-                            shared.wake();
-                        }
-                    }
-                    Ok(Some(protocol::Packet::Json(value))) => {
-                        if let Err(error) =
-                            route_native_event(&value, &reader_routes, &download_events, &ready_tx)
-                        {
-                            reader_shared.fail(format!("Invalid Chromium event: {error}"));
-                            break;
-                        }
-                    }
-                    Ok(None) => {
-                        reader_shared.fail("Chromium engine disconnected".into());
+    spawn_named("chromium-frames", move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            match protocol::read_packet(&mut reader) {
+                Ok(Some(protocol::Packet::Frame(frame))) => {
+                    deliver_frame(&reader_routes, 1, frame);
+                }
+                Ok(Some(protocol::Packet::TabFrame(tab, frame))) => {
+                    deliver_frame(&reader_routes, tab, frame);
+                }
+                Ok(Some(protocol::Packet::Json(value))) => {
+                    if let Err(error) =
+                        route_native_event(&value, &reader_routes, &download_events, &ready_tx)
+                    {
+                        reader_shared.fail(format!("Invalid Chromium event: {error}"));
                         break;
                     }
-                    Err(error) => {
-                        reader_shared.fail(format!("Invalid Chromium output: {error}"));
-                        break;
+                    if matches!(
+                        value.get("event").and_then(Value::as_str),
+                        Some("download_prompt" | "download" | "download_runtime" | "ready")
+                    ) {
+                        hub.broadcast(&value);
                     }
                 }
+                Ok(None) => {
+                    reader_shared.fail("Chromium engine disconnected".into());
+                    break;
+                }
+                Err(error) => {
+                    reader_shared.fail(format!("Invalid Chromium output: {error}"));
+                    break;
+                }
             }
-            queue_download_event(
-                &download_events,
-                WebViewEvent::DownloadRuntime {
-                    admitted: 0,
-                    detached: 0,
-                    accepting: false,
-                    error: "Chromium engine disconnected".into(),
-                },
-            );
-            fail_routes(&reader_routes, "Chromium engine disconnected");
-        })
+        }
+        queue_download_event(
+            &download_events,
+            WebViewEvent::DownloadRuntime {
+                admitted: 0,
+                detached: 0,
+                accepting: false,
+                error: "Chromium engine disconnected".into(),
+            },
+        );
+        fail_routes(&reader_routes, "Chromium engine disconnected");
+        hub.close_all();
+    })
 }
 
 fn take_supervisor_child(slot: &Mutex<Option<std::process::Child>>) -> Option<std::process::Child> {
@@ -508,8 +571,6 @@ fn launch_host(
     extensions: &[String],
     private_root: Option<&Path>,
 ) -> Result<std::process::Child, String> {
-    std::fs::create_dir_all(profile).map_err(|error| format!("Chromium profile: {error}"))?;
-    let profile = profile.canonicalize().map_err(|error| error.to_string())?;
     let mut command = Command::new(host);
     if private_root.is_some() {
         command.arg("--private");
@@ -636,6 +697,22 @@ impl ChromiumEngine {
     ) -> Result<Arc<Self>, String> {
         let extensions = validated_extension_paths(extensions)?;
         let mut cleanup_on_error = PrivateRootCleanup(private_root.clone());
+        // A host needs its profile to itself: join the host already running
+        // it, or become the process that runs it.
+        let profile = &prepare_profile(profile)?;
+        let claim = match shared::claim(profile)? {
+            shared::Role::Owner(claim) => Some(claim),
+            shared::Role::Alone => None,
+            shared::Role::Client(stream) => {
+                cleanup_on_error.disarm();
+                return shared::connect(stream);
+            }
+            shared::Role::Busy(error) => {
+                // Another process may still be using the private root.
+                cleanup_on_error.disarm();
+                return Err(error);
+            }
+        };
         let mut child = launch_host(host, profile, &extensions, private_root.as_deref())?;
         let Some(stdin) = child.stdin.take() else {
             let _ = child.kill();
@@ -647,15 +724,7 @@ impl ChromiumEngine {
             let _ = child.wait();
             return Err("Chromium stdout unavailable".into());
         };
-        let shared = Arc::new(Shared {
-            open_tabs: Mutex::default(),
-            frames: Arc::new(Mutex::new(None)),
-            events: Mutex::new(VecDeque::new()),
-            waker: Mutex::new(None),
-            uri: Mutex::new(String::new()),
-            stopping: AtomicBool::new(false),
-            failed: AtomicBool::new(false),
-        });
+        let shared = Arc::new(Shared::default());
         let tx = Arc::new(CommandQueue::default());
         let routes: Routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
         let download_events = Arc::new(Mutex::new(VecDeque::new()));
@@ -666,7 +735,10 @@ impl ChromiumEngine {
             routes: routes.clone(),
             next_tab: AtomicU32::new(2),
             download_events: download_events.clone(),
+            server: std::sync::OnceLock::new(),
+            link: None,
         });
+        let hub = Arc::new(shared::Hub::default());
         let rx = tx.clone();
         let (ready_tx, ready_rx) = sync_channel(1);
         let writer_shared = shared.clone();
@@ -685,6 +757,7 @@ impl ChromiumEngine {
             reader_routes,
             download_events,
             ready_tx,
+            hub.clone(),
         ) {
             tx.close();
             let _ = child.kill();
@@ -698,27 +771,47 @@ impl ChromiumEngine {
             let _ = child.wait();
             return Err(format!("Chromium did not initialize: {error}"));
         }
+        let served = claim
+            .as_ref()
+            .map(|claim| claim.serve(Arc::downgrade(&runtime), &hub))
+            .transpose();
+        let server = match served {
+            Ok(server) => {
+                if let Some(server) = &server {
+                    let _ = runtime.server.set(server.clone());
+                }
+                server
+            }
+            Err(error) => {
+                shared.stopping.store(true, Ordering::Release);
+                tx.close();
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
         let child = Arc::new(Mutex::new(Some(child)));
         let supervisor_child = child.clone();
         let supervisor_shared = shared.clone();
         let supervisor_queue = tx.clone();
         let wait_for_private_cleanup = private_root.is_some();
         let supervisor_private_root = private_root;
-        let supervisor = std::thread::Builder::new()
-            .name("chromium-supervisor".into())
-            .spawn(move || {
-                let Some(child) = take_supervisor_child(&supervisor_child) else {
-                    supervisor_shared.fail("Chromium supervisor lost process ownership".into());
-                    supervisor_queue.close();
-                    return;
-                };
-                supervise_child(
-                    child,
-                    &supervisor_shared,
-                    &supervisor_queue,
-                    supervisor_private_root.as_deref(),
-                );
-            });
+        let supervisor = spawn_named("chromium-supervisor", move || {
+            let Some(child) = take_supervisor_child(&supervisor_child) else {
+                supervisor_shared.fail("Chromium supervisor lost process ownership".into());
+                supervisor_queue.close();
+                return;
+            };
+            supervise_child(
+                child,
+                &supervisor_shared,
+                &supervisor_queue,
+                supervisor_private_root.as_deref(),
+            );
+            if let Some(claim) = claim {
+                claim.release_after_exit(server.as_ref());
+            }
+        });
         let supervisor = match supervisor {
             Ok(supervisor) => supervisor,
             Err(error) => {
@@ -754,28 +847,14 @@ impl WebViewEngine for ChromiumEngine {
             .lock()
             .map_err(|_| "Tab wake callback unavailable")?
             .clone();
-        let mut routes = self
-            .runtime
-            .routes
-            .lock()
-            .map_err(|_| "Tab routes unavailable")?;
-        if routes.len() >= 32 {
-            return Err("At most 32 tabs can be open".into());
-        }
-        let tab = self.runtime.next_tab.fetch_add(1, Ordering::Relaxed);
-        if tab > i32::MAX as u32 {
-            return Err("Tab identity exhausted".into());
-        }
         let shared = Arc::new(Shared {
             waker: Mutex::new(waker),
             ..Shared::default()
         });
-        routes.insert(tab, Arc::downgrade(&shared));
-        if let Err(error) = self.tx.push(json!({"op":"create_tab","tab":tab})) {
-            routes.remove(&tab);
-            return Err(error.into());
-        }
-        drop(routes);
+        let tab = match &self.runtime.link {
+            Some(link) => link.create_tab(&self.tx, shared.clone())?,
+            None => self.runtime.admit_tab(&shared, |_| {})?,
+        };
         Ok(Arc::new(Self {
             tx: self.tx.clone(),
             shared,
@@ -987,6 +1066,10 @@ fn route_native_event(
         }
     };
     if let Some(shared) = endpoint {
+        if let Some(outbox) = &shared.remote {
+            outbox.event(value.clone());
+            return Ok(());
+        }
         if event_name == "open_tab"
             && let Some(url) = value.get("url").and_then(Value::as_str)
         {

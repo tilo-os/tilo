@@ -34,6 +34,36 @@ pub(super) fn write_json(writer: &mut impl Write, value: &serde_json::Value) -> 
     writer.flush()
 }
 
+/// Writes `frame` as the host would: a routed frame packet carrying BGRA.
+pub(super) fn write_tab_frame(writer: &mut impl Write, tab: u32, frame: &Frame) -> io::Result<()> {
+    let size = frame
+        .width
+        .checked_mul(frame.height)
+        .and_then(|pixels| pixels.checked_mul(4));
+    if size.and_then(|size| usize::try_from(size).ok()) != Some(frame.rgba.len()) {
+        return Err(invalid("Frame size does not match its dimensions"));
+    }
+    let prefix = frame
+        .rgba
+        .len()
+        .checked_add(13)
+        .and_then(|len| FRAMING.encode_prefix(len).ok())
+        .ok_or_else(|| invalid("Chromium frame exceeds packet limit"))?;
+    writer.write_all(&prefix)?;
+    writer.write_all(&[3])?;
+    writer.write_all(&tab.to_le_bytes())?;
+    writer.write_all(&frame.width.to_le_bytes())?;
+    writer.write_all(&frame.height.to_le_bytes())?;
+    let mut bgra = Vec::with_capacity(frame.rgba.len());
+    for pixel in frame.rgba.chunks_exact(4) {
+        if let &[red, green, blue, alpha] = pixel {
+            bgra.extend_from_slice(&[blue, green, red, alpha]);
+        }
+    }
+    writer.write_all(&bgra)?;
+    writer.flush()
+}
+
 pub(super) fn read_packet(reader: &mut impl Read) -> io::Result<Option<Packet>> {
     let Some(length) = FRAMING.read_len(reader)? else {
         return Ok(None);

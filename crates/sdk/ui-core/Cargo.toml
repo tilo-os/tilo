@@ -108,6 +108,8 @@ tilo-host-search = { version = "0.1.0", path = "../../platform/tilo-host-search"
 # Test builds bound the pairing broker exchange with the shared hang bound.
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
+# Browser processes on one profile meet at one Chromium host (`webview::chromium`).
+tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 # The content store a host lends a component (`HostContext::content`), in every
 # build; the unix `native` build adds the launcher's device store below.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }

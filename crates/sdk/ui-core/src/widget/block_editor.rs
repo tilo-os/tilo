@@ -1289,7 +1289,10 @@ impl BlockEditor {
             return;
         };
         let caret = block.line.cursor_pos().min(block.line.value().len());
-        let start = clamp_char_boundary(block.line.value(), caret.saturating_sub(bytes));
+        let start = block
+            .line
+            .value()
+            .floor_char_boundary(caret.saturating_sub(bytes));
         block.line.inner_mut().set_selection(start, caret);
         self.dirty = true;
     }
@@ -1316,8 +1319,8 @@ impl BlockEditor {
                 (at, at)
             });
         let (start, end) = (
-            clamp_char_boundary(&value, start),
-            clamp_char_boundary(&value, end.max(start)),
+            value.floor_char_boundary(start),
+            value.floor_char_boundary(end.max(start)),
         );
         let mut next = value;
         next.replace_range(start..end, &format!("{text}{after}"));
@@ -1642,7 +1645,7 @@ impl BlockEditor {
             let index = self.blocks.iter().position(|block| &block.id == id)?;
             Some(DocumentPosition {
                 block: index,
-                byte: clamp_char_boundary(self.blocks[index].text(), position.byte),
+                byte: self.blocks[index].text().floor_char_boundary(position.byte),
             })
         };
         self.document_selection = self.document_selection.and_then(|selection| {
@@ -2221,7 +2224,7 @@ impl BlockEditor {
         let cur_kind = block.kind.clone();
         let text = block.line.value().to_string();
         let split = split_at.min(text.len());
-        let split = clamp_char_boundary(&text, split);
+        let split = text.floor_char_boundary(split);
         let (prefix, suffix) = text.split_at(split);
         let prefix_marks = marks_before(block.line.marks(), split);
         let suffix_marks = marks_after(block.line.marks(), split);
@@ -3838,14 +3841,6 @@ fn is_heading_prefix(s: &str) -> bool {
     heading_markdown_prefix(s).is_some_and(|(_, len)| len == s.len())
 }
 
-fn clamp_char_boundary(text: &str, byte: usize) -> usize {
-    let mut b = byte.min(text.len());
-    while b > 0 && !text.is_char_boundary(b) {
-        b = b.saturating_sub(1);
-    }
-    b
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "the ordered block diff is kept together so move/insert/delete precedence remains explicit"
@@ -3986,7 +3981,9 @@ fn semantic_text_splice(before: &str, after: &str) -> (usize, usize, String) {
     {
         start = start.saturating_add(1);
     }
-    start = clamp_char_boundary(before, start).min(clamp_char_boundary(after, start));
+    start = before
+        .floor_char_boundary(start)
+        .min(after.floor_char_boundary(start));
     let mut old_end = before.len();
     let mut new_end = after.len();
     while old_end > start
@@ -3997,24 +3994,13 @@ fn semantic_text_splice(before: &str, after: &str) -> (usize, usize, String) {
         old_end = old_end.saturating_sub(1);
         new_end = new_end.saturating_sub(1);
     }
-    old_end = ceil_char_boundary(before, old_end);
-    new_end = ceil_char_boundary(after, new_end);
+    old_end = before.ceil_char_boundary(old_end);
+    new_end = after.ceil_char_boundary(new_end);
     (
         start,
         old_end,
         after.get(start..new_end).unwrap_or_default().to_string(),
     )
-}
-
-/// Rounds a byte offset *up* to the next char boundary — the mirror of
-/// [`clamp_char_boundary`]'s round-down. Used where growing a matched
-/// region (rather than shrinking it) is what keeps a replacement exact.
-fn ceil_char_boundary(text: &str, byte: usize) -> usize {
-    let mut b = byte.min(text.len());
-    while b < text.len() && !text.is_char_boundary(b) {
-        b = b.saturating_add(1);
-    }
-    b
 }
 
 /// Two spaces per indent level (Notion/Obsidian style, not GFM's four);
@@ -5380,8 +5366,8 @@ fn push_text_diff(state: &mut AutoCommit, text_obj: &ObjId, local: &str) {
     // already-identical bytes it needlessly re-touches. Without this, a
     // diff that happens to split a multi-byte character (e.g. between
     // "café" and "cafe\u{301}") would panic on the slice below.
-    let start = clamp_char_boundary(&cur, at_byte);
-    let removed_end = ceil_char_boundary(&cur, raw_removed_end);
+    let start = cur.floor_char_boundary(at_byte);
+    let removed_end = cur.ceil_char_boundary(raw_removed_end);
     let shift = removed_end.saturating_sub(raw_removed_end);
     let inserted_end = raw_inserted_end.saturating_add(shift).min(local.len());
 
@@ -5462,14 +5448,14 @@ impl BlockEditor {
         let Some(anchor_byte) = self
             .blocks
             .get(anchor_block)
-            .map(|b| clamp_char_boundary(b.line.value(), anchor.byte))
+            .map(|b| b.line.value().floor_char_boundary(anchor.byte))
         else {
             return;
         };
         let Some(cursor_byte) = self
             .blocks
             .get(cursor_block)
-            .map(|b| clamp_char_boundary(b.line.value(), cursor.byte))
+            .map(|b| b.line.value().floor_char_boundary(cursor.byte))
         else {
             return;
         };
@@ -5495,12 +5481,12 @@ impl BlockEditor {
             };
             let text = block.line.value();
             let from = if block_idx == start.block {
-                clamp_char_boundary(text, start.byte)
+                text.floor_char_boundary(start.byte)
             } else {
                 0
             };
             let to = if block_idx == end.block {
-                clamp_char_boundary(text, end.byte)
+                text.floor_char_boundary(end.byte)
             } else {
                 text.len()
             };
@@ -5542,8 +5528,8 @@ impl BlockEditor {
         ) else {
             return false;
         };
-        let start_byte = clamp_char_boundary(&start_text, start.byte);
-        let end_byte = clamp_char_boundary(&end_text, end.byte);
+        let start_byte = start_text.floor_char_boundary(start.byte);
+        let end_byte = end_text.floor_char_boundary(end.byte);
         let prefix_marks = self
             .blocks
             .get(start.block)
@@ -10053,7 +10039,7 @@ impl BlockEditor {
                     let at = if whole_lines {
                         0
                     } else {
-                        clamp_char_boundary(&text, old_cursor)
+                        text.floor_char_boundary(old_cursor)
                     };
                     text.insert_str(at, "    ");
                     (at, 0, 4)
@@ -10723,7 +10709,7 @@ impl BlockEditor {
             return false;
         };
         let text = block.text();
-        let split = clamp_char_boundary(text, split.min(text.len()));
+        let split = text.floor_char_boundary(split);
         let indent: String = text
             .get(..split)
             .unwrap_or_default()
@@ -10813,7 +10799,7 @@ impl BlockEditor {
             return false;
         }
         let source = block.text();
-        let split_at = clamp_char_boundary(source, split_at.min(source.len()));
+        let split_at = source.floor_char_boundary(split_at);
         let Some((before, after)) = source.split_at_checked(split_at) else {
             return false;
         };

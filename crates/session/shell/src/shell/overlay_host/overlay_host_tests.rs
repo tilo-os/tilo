@@ -893,6 +893,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
             semantics
                 .children
                 .iter()
+                .filter(|node| node.live.is_none())
                 .filter_map(|node| node.name.as_deref())
                 .collect::<Vec<_>>(),
             [
