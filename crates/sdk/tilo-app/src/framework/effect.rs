@@ -860,7 +860,10 @@ impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
             return Some(Polled::Finished(Some(answered)));
         };
         let mut cx = EffectCx::new(env.clone(), invocation);
-        let answer = then(host, value, &mut cx);
+        let answer = {
+            let _acting = ActingFor::enter(invocation);
+            then(host, value, &mut cx)
+        };
         Some(match (answer, cx.started.take()) {
             (Ok(Effected::Pending), Some(next)) => {
                 self.insert(key.clone(), next);
@@ -883,6 +886,35 @@ impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
                 ))
             }
         })
+    }
+}
+
+thread_local! {
+    /// The effect invocation whose handler or completion runs on this
+    /// thread now.
+    static ACTING_FOR: Cell<Option<InvocationId>> = const { Cell::new(None) };
+}
+
+/// The effect invocation whose handler or completion is running: what a
+/// dispatcher queues now continues it, so the host applies it for the
+/// effect's invoker.
+pub(crate) fn acting_for() -> Option<InvocationId> {
+    ACTING_FOR.get()
+}
+
+/// Marks an effect invocation's handler or completion as running, until
+/// dropped.
+struct ActingFor(Option<InvocationId>);
+
+impl ActingFor {
+    fn enter(invocation: Option<InvocationId>) -> Self {
+        Self(ACTING_FOR.replace(invocation))
+    }
+}
+
+impl Drop for ActingFor {
+    fn drop(&mut self) {
+        ACTING_FOR.set(self.0);
     }
 }
 
@@ -947,7 +979,10 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         }
         let job = declaration.is_some_and(|decl| decl.is_job());
         let mut cx = EffectCx::new(self.env.clone(), Some(request.invocation));
-        let answer = handle(host, effect, &mut cx);
+        let answer = {
+            let _acting = ActingFor::enter(Some(request.invocation));
+            handle(host, effect, &mut cx)
+        };
         let started = cx.started.take();
         match (answer?, started, job) {
             (Effected::Done(output), started, false) => {
@@ -1443,13 +1478,61 @@ mod tests {
     }
 
     fn runner() -> EffectRunner<Probe, (), Work> {
+        runner_on(Dispatcher::new("test", Probe::KIND, false, None))
+    }
+
+    fn runner_on(dispatch: Dispatcher<Probe>) -> EffectRunner<Probe, (), Work> {
         let mut doc = tilo_resource::Doc::new();
         Probe::initialize(&mut doc).unwrap();
         EffectRunner::new(EffectEnv {
-            dispatch: Dispatcher::new("test", Probe::KIND, false, None),
+            dispatch,
             live: Live::new(Reader::<Probe>::read(&doc).unwrap()),
             wake: WakeHandle::detached(),
         })
+    }
+
+    #[test]
+    fn what_an_effect_submits_continues_its_invocation() {
+        let dispatch = Dispatcher::new("test", Probe::KIND, false, None);
+        let mut runner = runner_on(dispatch.clone());
+        let invocation = InvocationId::new();
+        let payload = payload(&Work::Count);
+        let op = ResourceOperation::local(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            Work::OPERATION,
+            &payload,
+        );
+        runner
+            .start(&op, &mut (), |(), _, cx| {
+                cx.dispatcher().effect(&Work::Ping);
+                Ok(cx.thread(
+                    |_| (),
+                    |(), (), cx| {
+                        cx.dispatcher().effect(&Work::Ping);
+                        Ok(Effected::done())
+                    },
+                ))
+            })
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !runner
+            .poll(invocation, false, &mut ())
+            .is_some_and(|update| update.is_terminal())
+        {
+            assert!(std::time::Instant::now() < deadline, "the job finishes");
+            std::thread::yield_now();
+        }
+        dispatch.effect(&Work::Ping);
+        let continues = std::iter::from_fn(|| dispatch.take_attributed())
+            .map(|(_, on_behalf_of)| on_behalf_of)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            continues,
+            [Some(invocation), Some(invocation), None],
+            "the handler's and the completion's continue the invocation; \
+             the app's own continues nothing"
+        );
     }
 
     fn payload(effect: &Work) -> Vec<u8> {

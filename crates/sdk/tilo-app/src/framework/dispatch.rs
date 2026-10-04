@@ -14,6 +14,7 @@ use tilo_resource::{Doc, Effect, Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::automerge::ChangeHash;
 use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
+use ui_core::widget::controls::AttributedControlInvocation;
 
 /// Submits a view's edits. Cloneable; clones share one queue.
 ///
@@ -58,7 +59,9 @@ pub struct Dispatcher<R: Resource> {
     resource_id: Rc<str>,
     /// Who edits through this dispatcher; `None` in a view of a past version.
     me: Option<Rc<str>>,
-    queue: Rc<RefCell<VecDeque<ControlInvocation>>>,
+    /// Each queued invocation with the effect invocation it continues,
+    /// when an effect's handler or completion queued it.
+    queue: Rc<RefCell<VecDeque<AttributedControlInvocation>>>,
     /// The invocations of the open group, and how many groups are open.
     group: Rc<RefCell<(usize, Vec<Invoke<R>>)>>,
     read_only: LocalState<bool>,
@@ -301,10 +304,13 @@ impl<R: Resource> Dispatcher<R> {
     /// checked, then its handler runs. A participant who may only view still
     /// invokes the effects declared `permission = "read"`.
     pub fn effect<E: Effect>(&self, effect: &E) {
-        self.queue.borrow_mut().push_back(ControlInvocation {
-            address: ActionAddress::new(self.resource_id.as_ref(), effect.id()),
-            arguments: effect.arguments(),
-        });
+        self.queue.borrow_mut().push_back((
+            ControlInvocation {
+                address: ActionAddress::new(self.resource_id.as_ref(), effect.id()),
+                arguments: effect.arguments(),
+            },
+            super::effect::acting_for(),
+        ));
     }
 
     /// Invoke `effect` as the live row `row` offers it
@@ -312,10 +318,13 @@ impl<R: Resource> Dispatcher<R> {
     /// contract, so a confirmation the row asks for (typing the name of the
     /// device it erases) is asked here too.
     pub fn effect_on<E: Effect>(&self, row: &str, effect: &E) {
-        self.queue.borrow_mut().push_back(ControlInvocation {
-            address: ActionAddress::new(row, effect.id()),
-            arguments: serde_json::Map::new(),
-        });
+        self.queue.borrow_mut().push_back((
+            ControlInvocation {
+                address: ActionAddress::new(row, effect.id()),
+                arguments: serde_json::Map::new(),
+            },
+            super::effect::acting_for(),
+        ));
     }
 
     /// Invoke a declared action (`dispatcher.invoke(Note::EDIT.with(text))`),
@@ -341,10 +350,13 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     fn submit(&self, invoke: Invoke<R>) {
-        self.queue.borrow_mut().push_back(ControlInvocation {
-            address: ActionAddress::new(self.resource_id.as_ref(), invoke.id),
-            arguments: invoke.arguments,
-        });
+        self.queue.borrow_mut().push_back((
+            ControlInvocation {
+                address: ActionAddress::new(self.resource_id.as_ref(), invoke.id),
+                arguments: invoke.arguments,
+            },
+            super::effect::acting_for(),
+        ));
     }
 
     /// Whether the participant may take `invoke`: what its declaration, or
@@ -375,9 +387,10 @@ impl<R: Resource> Dispatcher<R> {
         if self.read_only() {
             return;
         }
-        self.queue
-            .borrow_mut()
-            .push_back(ControlInvocation { address, arguments });
+        self.queue.borrow_mut().push_back((
+            ControlInvocation { address, arguments },
+            super::effect::acting_for(),
+        ));
     }
 
     /// Submit one typed action value — an edit with no named declaration,
@@ -566,6 +579,11 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     pub(crate) fn take(&self) -> Option<ControlInvocation> {
+        self.take_attributed().map(|(invocation, _)| invocation)
+    }
+
+    /// The next queued invocation, with the effect invocation it continues.
+    pub(crate) fn take_attributed(&self) -> Option<AttributedControlInvocation> {
         self.queue.borrow_mut().pop_front()
     }
 
