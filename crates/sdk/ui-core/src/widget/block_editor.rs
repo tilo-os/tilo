@@ -8572,7 +8572,8 @@ impl Widget for BlockEditor {
                         .with_state(AccessState::new().focusable(true)),
                 );
             }
-            AccessNode::new(Role::Group)
+            let level = usize::from(block.indent()).saturating_add(1);
+            let group = AccessNode::new(Role::Group)
                 .with_name(format!(
                     "{} block {position}",
                     accessible_kind_name(&block.kind)
@@ -8580,9 +8581,16 @@ impl Widget for BlockEditor {
                 .with_semantic_key(format!("notes.block:{}", block.id))
                 .with_hashed_key(format!("notes.block:group:{}", block.id))
                 .with_position(position, total)
-                .with_level(usize::from(block.indent()) + 1)
+                .with_level(level)
                 .with_bounds(block.line.get_rect())
-                .with_children(block_children)
+                .with_children(block_children);
+            // Also in words, which every screen reader reads: the platform
+            // bridge does not carry a group's level.
+            if level > 1 {
+                group.with_description(format!("Level {level}"))
+            } else {
+                group
+            }
         }));
         if let Some(mut menu) = Widget::accessibility(&self.slash_menu) {
             fn namespace_targets(node: &mut AccessNode) {
@@ -8601,7 +8609,7 @@ impl Widget for BlockEditor {
         Some(
             AccessNode::new(Role::Document)
                 .with_description(
-                    "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block.",
+                    "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; press Escape, then Tab, to leave the editor.",
                 )
                 .with_state(AccessState {
                     focusable: self.is_focusable(),

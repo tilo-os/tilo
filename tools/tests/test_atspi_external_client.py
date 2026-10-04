@@ -103,6 +103,12 @@ class TypedTextTests(unittest.TestCase):
         self.assertEqual(CLIENT.text_reply("('it\\'s, twice!',)"), "it's, twice!")
         self.assertIsNone(CLIENT.text_reply("Error: GDBus.Error"))
 
+    def test_property_replies_read_back_exactly(self):
+        self.assertEqual(CLIENT.property_text("(<'Level 2'>,)\n"), "Level 2")
+        self.assertEqual(CLIENT.property_text("(< 'Level 2' >,)"), "Level 2")
+        self.assertEqual(CLIENT.property_text("(<''>,)"), "")
+        self.assertIsNone(CLIENT.property_text("Error: GDBus.Error"))
+
 
 class LaunchpadCardTests(unittest.TestCase):
     def run_card(self, opened_root: str) -> tuple[str, int]:
