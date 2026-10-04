@@ -179,7 +179,7 @@ fn control_icon(hit: &Hit, muted: bool) -> Icon {
         Hit::CallMute if muted => Icon::MicOff,
         Hit::CallMute => Icon::Mic,
         Hit::CallExpand => Icon::Minimize2,
-        Hit::CallLeave => Icon::X,
+        Hit::CallLeave => Icon::PhoneOff,
         _ => Icon::MoreHorizontal,
     }
 }
@@ -677,7 +677,12 @@ impl ChatApp {
                 ButtonRole::Secondary,
                 Hit::CallExpand,
             ),
-            ("Leave", Icon::X, ButtonRole::Destructive, Hit::CallLeave),
+            (
+                "Leave",
+                Icon::PhoneOff,
+                ButtonRole::Destructive,
+                Hit::CallLeave,
+            ),
         ];
         let share = |n: usize| {
             let n = n as f64;

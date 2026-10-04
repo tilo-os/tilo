@@ -73,6 +73,12 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
     tokens.spacing = crate::tokens::Spacing::BASE
         .scaled(clamp_to(document.density.spacing, &ThemeDensity::USABLE));
     tokens.typography.set_face(&document.type_.face);
+    tokens.typography.set_reading_face(&document.type_.reading);
+    tokens
+        .typography
+        .set_ground(crate::text_render::TextGround::of(
+            tokens.colors.surfaces.content,
+        ));
     tokens.typography.distinct_letters = document.type_.distinguishes_letters();
     let size = clamp_to(document.type_.base_size, &ThemeType::USABLE) / ThemeType::BASE_SIZE;
     tokens.typography.scale = tokens.typography.scale.scaled(size);
@@ -305,6 +311,10 @@ impl Theme {
         c.text_tertiary = on.ink_tertiary;
         c.intent.selection = c.lift_on(ground, 1.0);
         c.intent.selection_hover = c.lift_on(ground, 0.5);
+        theme
+            .tokens
+            .typography
+            .set_ground(crate::text_render::TextGround::of(ground));
         theme.refresh_colour_shortcuts();
         theme
     }

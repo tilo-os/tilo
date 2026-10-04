@@ -652,15 +652,8 @@ pub struct MonitorApp {
     shell: NavShell,
     shared: Shared,
     shown_tab: Rc<std::cell::Cell<Tab>>,
-    /// The machine, tab, cadence and width class the header was built for.
-    header_shown: Option<(String, Tab, Cadence, bool)>,
-    /// The window is narrower than the compact breakpoint: the header's
-    /// cadence control shows its icon alone.
-    header_compact: bool,
-    /// The compact breakpoint of the last layout's theme.
-    compact_below: f64,
-    /// The inspector's row inset in the last layout's theme.
-    detail_inset: f32,
+    /// The machine, tab and cadence the header was built for.
+    header_shown: Option<(String, Tab, Cadence)>,
     /// The sampling cadence menu under the header's button.
     cadence_menu: Popover,
     /// Model or view state changed since the panes were last told.
@@ -753,9 +746,6 @@ impl MonitorApp {
             shared,
             shown_tab,
             header_shown: None,
-            header_compact: false,
-            compact_below: 0.0,
-            detail_inset: 0.0,
             cadence_menu: Popover::new().with_label("Update frequency"),
             stale: true,
             metrics_revision: 0,
@@ -1488,7 +1478,7 @@ impl MonitorApp {
     /// follow it.
     fn show_header(&mut self) {
         let host = self.model.metrics.host.clone();
-        let shown = (host.clone(), self.tab, self.cadence(), self.header_compact);
+        let shown = (host.clone(), self.tab, self.cadence());
         if self.header_shown.as_ref() == Some(&shown) {
             return;
         }
@@ -1515,35 +1505,27 @@ impl MonitorApp {
         };
         let cadence = {
             let requests = Rc::clone(&self.shared);
-            let button = if self.header_compact {
-                let name = format!("Update frequency: {}", self.cadence().label());
-                Button::icon_only(CADENCE_BUTTON_ID, Icon::Timer, &name)
-            } else {
-                Button::new(CADENCE_BUTTON_ID, &self.cadence().short_label(), None)
-                    .with_icon(Icon::Timer)
-                    .role(ButtonRole::Plain)
-                    .control_size(ControlSize::Small)
-                    .tooltip("Update frequency")
-            };
-            button.on_view(move || requests.borrow_mut().push(Request::ChooseCadence))
+            // A short row shows its icon alone, named for the frequency.
+            Button::new(CADENCE_BUTTON_ID, &self.cadence().short_label(), None)
+                .with_icon(Icon::Timer)
+                .role(ButtonRole::Plain)
+                .control_size(ControlSize::Small)
+                .with_accessible_name(&format!("Update frequency: {}", self.cadence().label()))
+                .tooltip("Update frequency")
+                .on_view(move || requests.borrow_mut().push(Request::ChooseCadence))
         };
         let door = processes_door();
         let mut refresh = Button::icon_only("monitor.refresh", Icon::Refresh, "Refresh");
         if let Ok(binding) = ActionBinding::unit_for(&door, "refresh") {
             refresh = refresh.on_action(binding);
         }
-        let actions: Vec<Element> = vec![Box::new(tabs), Box::new(cadence), Box::new(refresh)];
+        let actions: Vec<Element> = vec![Box::new(cadence), Box::new(refresh)];
         // The content is this machine's activity, so the column is titled
-        // with the machine's name; the window's History control follows the
-        // actions at the trailing edge. A compact window gives the row to
-        // the controls.
-        let title = if self.header_compact {
-            String::new()
-        } else {
-            host
-        };
-        let shell = std::mem::take(&mut self.shell);
-        self.shell = shell.content_header(title, actions);
+        // with the machine's name and the tabs follow it; the window's
+        // History control follows the actions at the trailing edge. A short
+        // row shows the actions' icons, then moves them into More.
+        self.shell.set_content_header(host, actions);
+        self.shell.set_content_header_leading(Some(Box::new(tabs)));
     }
 
     /// The inspector follows the selection on the Processes tab; it is gone
@@ -1564,8 +1546,7 @@ impl MonitorApp {
                 self.inspected = Inspected::Nothing;
                 self.shell
                     .set_inspector(Some(crate::view::process_detail(None)));
-                let shell = std::mem::take(&mut self.shell);
-                self.shell = shell.inspector_header("", Vec::new());
+                self.shell.set_inspector_title("");
             }
             return;
         };
@@ -1600,7 +1581,6 @@ impl MonitorApp {
             with_children
                 .map(|(cpu, memory)| (cpu.to_bits(), memory))
                 .hash(&mut hasher);
-            self.detail_inset.to_bits().hash(&mut hasher);
             for sample in &history {
                 sample.to_bits().hash(&mut hasher);
             }
@@ -1615,13 +1595,11 @@ impl MonitorApp {
             parent,
             cpu_history: history,
             with_children,
-            inset: self.detail_inset,
             resource: monitor_process_resource(&process),
         };
         self.shell
             .set_inspector(Some(crate::view::process_detail(Some(&detail))));
-        let shell = std::mem::take(&mut self.shell);
-        self.shell = shell.inspector_header(process.name.clone(), Vec::new());
+        self.shell.set_inspector_title(process.name.clone());
     }
 
     /// Open the inspector where it is a closed drawer, so choosing a process
@@ -1657,7 +1635,6 @@ impl MonitorApp {
                         self.reveal_inspector();
                     }
                 }
-                Request::ToggleExpand(pid) => self.toggle_expand(pid),
                 Request::SetExpanded(pid, open) => self.set_expanded(pid, open),
                 Request::TreeMode(tree) => self.commit_tree_mode(doc, tree),
                 Request::SumChildren(sum) => {
@@ -1885,16 +1862,8 @@ impl Widget for MonitorApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The inspector's tiles and buttons line up with its property list,
-        // whose rows the theme insets.
-        let inset = theme.tokens.spacing.s2;
-        if (inset - self.detail_inset).abs() > f32::EPSILON {
-            self.detail_inset = inset;
-            self.stale = true;
-        }
         self.publish();
         self.layout_dirty = false;
-        self.compact_below = f64::from(theme.tokens.metrics.compact_breakpoint);
         let shell = self.shell.build_layout(taffy, theme, node_map);
         let node = fill_node(taffy, shell);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -1916,13 +1885,6 @@ impl Widget for MonitorApp {
                 .apply_layout(taffy, shell, Point::new(self.rect.x0, self.rect.y0));
         }
         self.layouts = self.layouts.saturating_add(1);
-        let compact = self.rect.width() < self.compact_below;
-        if compact != self.header_compact {
-            // The header is rebuilt with the next frame's tree, never while
-            // this one is in use.
-            self.header_compact = compact;
-            self.stale = true;
-        }
         if self.cadence_menu_seed && self.shell.geometry().content_column.width() > 0.0 {
             self.cadence_menu_seed = false;
             self.open_cadence_menu();
@@ -2416,7 +2378,7 @@ mod tests {
         let push = |a: &MonitorApp, request: Request| a.shared.borrow_mut().push(request);
 
         push(&a, Request::Sort(SortKey::Mem));
-        push(&a, Request::ToggleExpand(shell));
+        push(&a, Request::SetExpanded(shell, true));
         push(&a, Request::KernelThreads(true));
         a.apply_requests(&mut doc);
         assert_eq!(a.sort_key, SortKey::Mem);

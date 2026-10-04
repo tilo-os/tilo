@@ -177,7 +177,8 @@ pub struct RichTextLine {
 impl RichTextLine {
     pub fn new() -> Self {
         // Block-editor cells render as document copy, not a form field.
-        let inner = TextInput::local().with_plain_chrome();
+        let mut inner = TextInput::local().with_plain_chrome();
+        inner.keep_document_inset();
         Self {
             inner,
             signal: None,

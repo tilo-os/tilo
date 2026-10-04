@@ -1302,12 +1302,12 @@ impl PdfApp {
         let Some(EditTarget::FreeText(id)) = self.editing.as_ref().map(|e| e.target.clone()) else {
             return None;
         };
-        let (page, rect) =
+        let (page, rect, size) =
             self.annotations
                 .iter()
                 .find(|a| a.id == id)
                 .and_then(|a| match &a.kind {
-                    AnnoKind::FreeText { rect, .. } => Some((a.page, *rect)),
+                    AnnoKind::FreeText { rect, size, .. } => Some((a.page, *rect, *size)),
                     _ => None,
                 })?;
         let origins = self.page_origins();
@@ -1326,6 +1326,13 @@ impl PdfApp {
             ..
         }) = self.editing.as_mut()
         {
+            // The note is edited in place at its own size on the page, so
+            // the text does not jump when the edit ends.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a note's on-screen type size is far inside f32"
+            )]
+            input.set_content_size(Some((size * z) as f32));
             draw_inline_editor(input, scene, base, tr, theme, r);
         }
         Some(r)

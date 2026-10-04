@@ -17,7 +17,7 @@ use std::sync::Arc;
 use crate::widget::TaffyTreeExt;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{
     BlendMode, Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
 };
@@ -235,6 +235,9 @@ pub struct VideoPlayer {
     decoder_codec: Option<media::StreamCodec>,
     /// Shared render cache for both the engine and push paths.
     latest_frame: Option<PenikoImage>,
+    /// What shows before the first frame: a still of the video.
+    poster: Option<crate::widget::MediaSource>,
+    poster_image: Option<PenikoImage>,
     /// So engine-mode `sync` only rebuilds the peniko image when the
     /// picture actually changed.
     last_frame_pts: Option<u64>,
@@ -368,6 +371,8 @@ impl VideoPlayer {
             decoder: None,
             decoder_codec: None,
             latest_frame: None,
+            poster: None,
+            poster_image: None,
             last_frame_pts: None,
             state: PlaybackState::Paused,
             position_ms: 0,
@@ -407,6 +412,36 @@ impl VideoPlayer {
             now_playing: NowPlaying::default(),
             mpris: crate::mpris::MprisHandle::disabled(),
             fullscreen_target: crate::fullscreen::FullscreenTarget::Largest,
+        }
+    }
+
+    /// A still that shows, contain-fitted on the letterbox, until the first
+    /// frame arrives. A [`MediaSource::Url`](crate::widget::MediaSource) loads
+    /// in the background.
+    #[must_use]
+    pub fn with_poster(mut self, poster: crate::widget::MediaSource) -> Self {
+        self.set_poster(Some(poster));
+        self
+    }
+
+    /// Replace or clear the poster.
+    pub fn set_poster(&mut self, poster: Option<crate::widget::MediaSource>) {
+        self.poster_image = match &poster {
+            Some(crate::widget::MediaSource::Image(image)) => Some(image.clone()),
+            _ => None,
+        };
+        self.poster = poster;
+        self.resolve_poster();
+        self.dirty = true;
+    }
+
+    fn resolve_poster(&mut self) {
+        if self.poster_image.is_none()
+            && let Some(crate::widget::MediaSource::Url { store, url }) = &self.poster
+            && let Some(image) = store.get(url)
+        {
+            self.poster_image = Some(image);
+            self.dirty = true;
         }
     }
 
@@ -1025,8 +1060,12 @@ impl VideoPlayer {
             &self.rect,
         );
 
-        // Latest frame, contain-fit — or a placeholder when nothing is loaded.
-        if let Some(img) = self.latest_frame.clone() {
+        // Latest frame, contain-fit; before it, the poster; else nothing.
+        if let Some(img) = self
+            .latest_frame
+            .clone()
+            .or_else(|| self.poster_image.clone())
+        {
             let iw = f64::from(img.width);
             let ih = f64::from(img.height);
             let rw = self.rect.width();
@@ -2156,24 +2195,32 @@ impl VideoPlayer {
     /// ever painted under that text.
     fn paint_empty_placeholder(&self, _scene: &mut Scene, _transform: Affine, _theme: &Theme) {}
 
+    /// Play and pause are solid marks, each inside the same square glyph box
+    /// as every other transport glyph, inset alike on every side.
     fn draw_play_glyph(&self, scene: &mut Scene, transform: Affine, r: Rect, color: Color) {
-        let cx = r.center().x;
-        let cy = r.center().y;
-        let s = r.height().min(r.width()) * 0.5;
+        let side = r.width().min(r.height());
+        if side <= 0.0 {
+            return;
+        }
+        let glyph = Rect::from_center_size(r.center(), (side, side)).inset(-side * 0.18);
         if self.is_playing() {
-            let bw = s * 0.34;
-            let gap = s * 0.30;
-            let bar1 = Rect::new(cx - gap - bw, cy - s * 0.6, cx - gap, cy + s * 0.6);
-            let bar2 = Rect::new(cx + gap, cy - s * 0.6, cx + gap + bw, cy + s * 0.6);
-            scene.fill(Fill::NonZero, transform, color, None, &bar1);
-            scene.fill(Fill::NonZero, transform, color, None, &bar2);
+            let bar = glyph.width() * 0.32;
+            for x0 in [glyph.x0, glyph.x1 - bar] {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    color,
+                    None,
+                    &RoundedRect::new(x0, glyph.y0, x0 + bar, glyph.y1, bar * 0.25),
+                );
+            }
         } else {
-            let mut p = BezPath::new();
-            p.move_to((cx - s * 0.5, cy - s * 0.7));
-            p.line_to((cx + s * 0.7, cy));
-            p.line_to((cx - s * 0.5, cy + s * 0.7));
-            p.close_path();
-            scene.fill(Fill::NonZero, transform, color, None, &p);
+            let mut path = vello::kurbo::BezPath::new();
+            path.move_to((glyph.x0, glyph.y0));
+            path.line_to((glyph.x1, glyph.center().y));
+            path.line_to((glyph.x0, glyph.y1));
+            path.close_path();
+            scene.fill(Fill::NonZero, transform, color, None, &path);
         }
     }
 
@@ -2230,56 +2277,26 @@ fn rgba_image(width: u32, height: u32, rgba: Arc<Vec<u8>>) -> PenikoImage {
     }
 }
 
-fn draw_speaker_glyph(scene: &mut Scene, transform: Affine, r: Rect, color: Color, muted: bool) {
-    let s = r.height();
-    let x0 = r.x0;
-    let cy = r.center().y;
-    let mut body = BezPath::new();
-    body.move_to((x0, cy - s * 0.18));
-    body.line_to((x0 + s * 0.22, cy - s * 0.18));
-    body.line_to((x0 + s * 0.5, cy - s * 0.42));
-    body.line_to((x0 + s * 0.5, cy + s * 0.42));
-    body.line_to((x0 + s * 0.22, cy + s * 0.18));
-    body.line_to((x0, cy + s * 0.18));
-    body.close_path();
-    scene.fill(Fill::NonZero, transform, color, None, &body);
-    if muted {
-        let x1 = x0 + s * 0.62;
-        let x2 = x0 + s * 0.9;
-        scene.stroke(
-            &Stroke::new(1.6),
-            transform,
-            color,
-            None,
-            &Line::new((x1, cy - s * 0.2), (x2, cy + s * 0.2)),
-        );
-        scene.stroke(
-            &Stroke::new(1.6),
-            transform,
-            color,
-            None,
-            &Line::new((x1, cy + s * 0.2), (x2, cy - s * 0.2)),
-        );
-    } else {
-        let wx = x0 + s * 0.6;
-        scene.stroke(
-            &Stroke::new(1.6),
-            transform,
-            color,
-            None,
-            &Line::new((wx, cy - s * 0.22), (wx + s * 0.12, cy)),
-        );
-        scene.stroke(
-            &Stroke::new(1.6),
-            transform,
-            color,
-            None,
-            &Line::new((wx + s * 0.12, cy), (wx, cy + s * 0.22)),
-        );
+/// Every transport glyph is a `ui::icons` icon in one square box, centred
+/// in the control's rect so its insets are the same on every side.
+fn transport_glyph(scene: &mut Scene, transform: Affine, r: Rect, icon: Icon, color: Color) {
+    let side = r.width().min(r.height());
+    if side <= 0.0 {
+        return;
     }
+    icon.draw(
+        scene,
+        transform,
+        Rect::from_center_size(r.center(), (side, side)),
+        color,
+    );
 }
 
-/// Kept vector so it never depends on a glyph being in the font.
+fn draw_speaker_glyph(scene: &mut Scene, transform: Affine, r: Rect, color: Color, muted: bool) {
+    let icon = if muted { Icon::VolumeX } else { Icon::Volume2 };
+    transport_glyph(scene, transform, r, icon, color);
+}
+
 fn draw_fullscreen_glyph(
     scene: &mut Scene,
     transform: Affine,
@@ -2287,36 +2304,12 @@ fn draw_fullscreen_glyph(
     color: Color,
     active: bool,
 ) {
-    let stroke = Stroke::new(1.8);
-    let m = r.height() * 0.28;
-    let corners = [
-        (r.x0, r.y0, 1.0, 1.0),
-        (r.x1, r.y0, -1.0, 1.0),
-        (r.x0, r.y1, 1.0, -1.0),
-        (r.x1, r.y1, -1.0, -1.0),
-    ];
-    for (x, y, sx, sy) in corners {
-        let (ax, ay) = if active {
-            (x + sx * m, y + sy * m)
-        } else {
-            (x, y)
-        };
-        let dir = if active { -1.0 } else { 1.0 };
-        scene.stroke(
-            &stroke,
-            transform,
-            color,
-            None,
-            &Line::new((ax, ay), (ax + sx * m * dir, ay)),
-        );
-        scene.stroke(
-            &stroke,
-            transform,
-            color,
-            None,
-            &Line::new((ax, ay), (ax, ay + sy * m * dir)),
-        );
-    }
+    let icon = if active {
+        Icon::Minimize2
+    } else {
+        Icon::Maximize2
+    };
+    transport_glyph(scene, transform, r, icon, color);
 }
 
 fn format_ms(ms: u64) -> String {
@@ -2357,6 +2350,7 @@ impl Widget for VideoPlayer {
     crate::provides!(dyn crate::widget::FullscreenProvider);
 
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+        self.resolve_poster();
         self.pump_engine();
     }
 

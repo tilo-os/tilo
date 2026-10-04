@@ -25,6 +25,15 @@
 //!   control at the trailing edge of the header row.
 //! - `mail-1280-history-open-{dark,light}.png` — History showing beside the
 //!   app, its control reading as on.
+//! - `mail-800-drawer-history-{dark,light}.png` — the drawer open under the
+//!   header row: the columns stay under the scrim, History stays reachable.
+//! - `mail-800-history-open-{dark,light}.png` — History showing at 800 × 600.
+//! - `actions-{1280,800,520}-{dark,light}.png` — labelled actions, then
+//!   their icons, then the More menu, as the row narrows.
+//! - `pages-back-{dark,light}.png` — the shell's Back for an app's page
+//!   stack, with a count after the title.
+//! - `files-path-{dark,light}.png` — a path bar as the content header's
+//!   leading fill.
 //!
 //! Run: `cargo run -p ui-examples --example ui-shots -- nav_shell_shots [OUT_DIR]`
 
@@ -191,6 +200,57 @@ fn rail() -> NavShell {
         .content_header("Home", Vec::new())
 }
 
+fn labelled(id: &str, label: &str, icon: Icon) -> Element {
+    Box::new(Button::new(id, label, None).with_icon(icon).on_view(|| {}))
+}
+
+/// A message view whose labelled actions collapse to icons, then into More.
+fn message_actions() -> NavShell {
+    NavShell::new()
+        .sidebar(Box::new(mailboxes()))
+        .content(message())
+        .sidebar_header("Mail", Vec::new())
+        .content_header(
+            "Design review moved to Thursday",
+            vec![
+                labelled("reply", "Reply", Icon::Reply),
+                labelled("forward", "Forward", Icon::Send),
+                labelled("archive", "Archive", Icon::Archive),
+                labelled("delete", "Delete", Icon::Trash2),
+            ],
+        )
+        .content_count(3)
+}
+
+/// A drill-down page stack: the shell's Back pops it.
+fn pages() -> NavShell {
+    let stack = tilo_ui::LocalState::new(tilo_ui::NavStack::new("Dashboard"));
+    stack.update(|pages| pages.push("Print queue"));
+    NavShell::new()
+        .content(message())
+        .content_header(
+            "Print queue",
+            vec![icon_button("pause", Icon::Pause, "Pause all")],
+        )
+        .content_count(4)
+        .with_back(&stack)
+}
+
+/// A path bar as the content header's leading fill.
+fn files() -> NavShell {
+    NavShell::new()
+        .sidebar(Box::new(mailboxes()))
+        .content(message())
+        .sidebar_header("Places", Vec::new())
+        .content_header(
+            "",
+            vec![icon_button("new-folder", Icon::FolderPlus, "New folder")],
+        )
+        .content_header_leading(Box::new(
+            Text::new("Home  ›  Documents  ›  Taxes 2026").with_role(TextRole::Label),
+        ))
+}
+
 fn shoot(
     shell: NavShell,
     theme: &Theme,
@@ -214,8 +274,17 @@ fn shoot(
 /// The mail window over a document with a few changes, with the window's
 /// History control in its header row, and History showing when `open`.
 fn shoot_history(theme: &Theme, open: bool, out: &Path) {
+    shoot_history_at(theme, open, (1280, 800), |_| {}, out);
+}
+
+fn shoot_history_at(
+    theme: &Theme,
+    open: bool,
+    size: (u32, u32),
+    set: impl Fn(&mut NavShell),
+    out: &Path,
+) {
     use automerge::transaction::Transactable;
-    let size = (1280, 800);
     let mut state = State::new();
     for subject in [
         "Design review",
@@ -232,6 +301,7 @@ fn shoot_history(theme: &Theme, open: bool, out: &Path) {
         std::process::exit(1);
     }
     for _ in 0..2 {
+        set(harness.root_mut::<NavShell>());
         harness.root_mut::<NavShell>().snap();
         if let Err(error) = harness.relayout_at(size) {
             eprintln!("nav_shell_shots: layout failed: {error}");
@@ -337,6 +407,55 @@ pub fn run(args: &[String]) {
             &theme,
             true,
             &dir.join(format!("mail-1280-history-open-{name}.png")),
+        );
+        shoot_header_row(&theme, name, &dir);
+    }
+}
+
+/// The header row's capabilities in `theme`: an open drawer under the row,
+/// History at 800 px, actions narrowing into More, an app's page stack and
+/// a leading path bar.
+fn shoot_header_row(theme: &Theme, name: &str, dir: &Path) {
+    {
+        let theme = theme.clone();
+        // An open drawer under the header row: History stays reachable, the
+        // columns stay under the scrim.
+        shoot_history_at(
+            &theme,
+            false,
+            (800, 600),
+            NavShell::open_sidebar,
+            &dir.join(format!("mail-800-drawer-history-{name}.png")),
+        );
+        shoot_history_at(
+            &theme,
+            true,
+            (800, 600),
+            |_| {},
+            &dir.join(format!("mail-800-history-open-{name}.png")),
+        );
+        for (width, label) in [(1280, "1280"), (800, "800"), (520, "520")] {
+            shoot(
+                message_actions(),
+                &theme,
+                (width, 600),
+                &dir.join(format!("actions-{label}-{name}.png")),
+                |_| {},
+            );
+        }
+        shoot(
+            pages(),
+            &theme,
+            (1024, 700),
+            &dir.join(format!("pages-back-{name}.png")),
+            |_| {},
+        );
+        shoot(
+            files(),
+            &theme,
+            (1280, 800),
+            &dir.join(format!("files-path-{name}.png")),
+            |_| {},
         );
     }
 }

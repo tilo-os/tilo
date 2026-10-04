@@ -168,7 +168,7 @@ struct Stale {
 
 /// The slots of the view the app replaces in place.
 struct Slots {
-    sidebar: SwapHandle,
+    sidebar: sidebar::NavHandle,
     request: SwapHandle,
     tab_panel: Option<SwapHandle>,
     panel_inner: Option<SwapHandle>,
@@ -303,19 +303,20 @@ impl ApiTesterApp {
             &env_state,
             &sink,
         ));
-        let (lists_slot, sidebar_lists) = Swap::new(sidebar::lists(
+        let (lists_slot, sidebar_lists) = sidebar::lists(
             &SidebarView {
                 collections: &model.collections,
                 history: &model.history,
                 selected,
             },
             &sink,
-        ));
+        );
 
         let content = Self::content(request_slot, response_slot, dialog_slot, &env_vars, &sink);
         let nav = NavShell::new()
             .with_id("api.shell")
             .sidebar(sidebar::frame(Box::new(env_slot), Box::new(lists_slot)))
+            .sidebar_header("", vec![sidebar::new_collection(&sink)])
             .content(content)
             .content_header(
                 model.request.name.clone(),
@@ -617,14 +618,11 @@ impl ApiTesterApp {
     /// Replace the parts of the view whose model changed.
     fn refresh_views(&mut self) {
         if std::mem::take(&mut self.stale.sidebar) {
-            self.slots.sidebar.set(sidebar::lists(
-                &SidebarView {
-                    collections: &self.collections,
-                    history: &self.history,
-                    selected: self.selected,
-                },
-                &self.sink,
-            ));
+            self.slots.sidebar.set(&SidebarView {
+                collections: &self.collections,
+                history: &self.history,
+                selected: self.selected,
+            });
         }
         if std::mem::take(&mut self.stale.header) {
             self.nav.set_content_title(self.request.name.clone());

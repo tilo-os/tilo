@@ -76,6 +76,7 @@ impl Theme {
             },
             type_: ThemeType {
                 face: self.face.clone(),
+                reading: ThemeType::default_reading(),
                 base_size: self.base_size,
                 distinct_letters: self.distinct_letters.0,
             },

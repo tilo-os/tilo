@@ -552,14 +552,17 @@ impl ReadMode {
 }
 
 /// Which font *class* a registered face resolves to. `Default` is the reader's
-/// proportional face (also used for EPUB-specified text); `Serif` / `Mono` are
-/// the other generic classes; `Named` targets a specific installed family the
-/// reader picked from the system font list.
+/// proportional face (also used for EPUB-specified text); `Serif` is the
+/// system's reading face and `Mono` the monospace class; `Reading` is one of
+/// the other reading faces the system ships, by its name
+/// ([`ui::ReadingFace::name`]); `Named` targets a specific installed family
+/// the reader picked from the system font list.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FontKind {
     Default,
     Serif,
     Mono,
+    Reading(String),
     Named(String),
 }
 
@@ -570,12 +573,16 @@ impl FontKind {
             FontKind::Default => "default".to_string(),
             FontKind::Serif => "serif".to_string(),
             FontKind::Mono => "mono".to_string(),
+            FontKind::Reading(name) => format!("reading:{name}"),
             FontKind::Named(n) => format!("named:{n}"),
         }
     }
     pub fn from_code(s: &str) -> Self {
         if let Some(n) = s.strip_prefix("named:") {
             return FontKind::Named(n.to_string());
+        }
+        if let Some(name) = s.strip_prefix("reading:") {
+            return FontKind::Reading(name.to_string());
         }
         match s {
             "serif" => FontKind::Serif,
@@ -620,15 +627,55 @@ impl FontEntry {
     }
 }
 
-/// The built-in font registry: the reader's default proportional face plus a
-/// serif book face and a monospace face. A fresh library starts here; the font
-/// manager can add installed families, rename, retune size, or hide any of them.
+/// The built-in font registry: the reader's default proportional face, the
+/// system's reading face (New Computer Modern), the other reading faces the
+/// system ships, and a monospace face. A fresh library starts here; the font
+/// manager can add installed families, rename, retune size, or hide any of
+/// them.
 pub fn default_fonts() -> Vec<FontEntry> {
-    vec![
+    let mut fonts = vec![
         FontEntry::new("default", FontKind::Default, "Default", 1.0, true),
-        FontEntry::new("serif", FontKind::Serif, "Serif", 1.05, true),
-        FontEntry::new("mono", FontKind::Mono, "Mono", 0.96, true),
-    ]
+        FontEntry::new(
+            "serif",
+            FontKind::Serif,
+            ui::ReadingFace::Default.name(),
+            1.05,
+            true,
+        ),
+    ];
+    fonts.extend(
+        ui::ReadingFace::ALL
+            .into_iter()
+            .filter(|face| *face != ui::ReadingFace::Default)
+            .map(|face| {
+                let name = face.name();
+                FontEntry::new(
+                    &format!("reading-{}", name.to_lowercase().replace(' ', "-")),
+                    FontKind::Reading(name.to_owned()),
+                    name,
+                    reading_size_mult(face),
+                    true,
+                )
+            }),
+    );
+    fonts.push(FontEntry::new("mono", FontKind::Mono, "Mono", 0.96, true));
+    fonts
+}
+
+/// The size multiplier that sets a reading face at New Computer Modern's
+/// apparent size: its x-height over theirs, so switching faces does not
+/// change how large the page reads.
+fn reading_size_mult(face: ui::ReadingFace) -> f32 {
+    match face {
+        // x-heights in em: New Computer Modern Book 0.431, Libertinus 0.429.
+        ui::ReadingFace::Default | ui::ReadingFace::Libertinus => 1.05,
+        // 0.507
+        ui::ReadingFace::Literata => 0.9,
+        // 0.400
+        ui::ReadingFace::Garamond => 1.12,
+        // 0.475
+        ui::ReadingFace::SourceSerif => 0.96,
+    }
 }
 
 // ===========================================================================
@@ -1007,6 +1054,7 @@ mod tests {
                 FontKind::Default,
                 FontKind::Serif,
                 FontKind::Mono,
+                FontKind::Reading(ui::ReadingFace::Libertinus.name().into()),
                 FontKind::Named("Literata".into()),
             ] {
                 assert_eq!(FontKind::from_code(&k.as_code()), k);

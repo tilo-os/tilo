@@ -44,7 +44,6 @@ use crate::backend::{
     PlaylistPage, SearchBundle, SearchTop, TrackHit,
 };
 use crate::doc::{self, LiveTrack};
-use crate::icon;
 use crate::lyrics::{self, LyricsLine, LyricsWorker, TrackMeta};
 use crate::model::{Album, Artist, CacheState, Library, Playback, RepeatMode, Track};
 use crate::mpris::{MprisCommand, MprisHandle, PlaybackStatus, PlayerSnapshot};
@@ -489,9 +488,6 @@ pub struct MusicApp {
     staged_menu_track: Option<String>,
     /// Open the narrow transport's More menu once the bar is laid out.
     staged_player_menu: bool,
-    /// A staged sidebar state, snapped once the drawer knows the window's
-    /// size class (docked or floating each remember their own state).
-    staged_sidebar: Option<bool>,
 
     // ---- real artwork + live content -------------------------------------
     /// Async remote-image cache: real album/artist/playlist covers fetched off
@@ -762,7 +758,6 @@ impl MusicApp {
             shot_stage: None,
             staged_menu_track: None,
             staged_player_menu: false,
-            staged_sidebar: None,
             images: ImageStore::new(&image_fetcher()),
             art_urls: HashMap::new(),
             home: None,
@@ -3846,8 +3841,11 @@ impl MusicApp {
 
     /// Stage the sidebar for a deterministic `--shots` frame (no event loop to
     /// drive the reveal animation). `open` snaps it fully revealed.
+    /// Before the first layout the drawer keeps the snap until it knows the
+    /// window's size class.
     pub fn snap_sidebar(&mut self, open: bool) {
-        self.staged_sidebar = Some(open);
+        self.drawer.snap(open);
+        self.dirty = true;
     }
 
     /// Stage a track context menu open for a `--shots` frame. Deferred to the

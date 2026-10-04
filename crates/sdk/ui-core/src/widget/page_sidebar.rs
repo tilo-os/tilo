@@ -266,6 +266,10 @@ pub struct PageSidebar {
     pending: Vec<PageSidebarEvent>,
     /// Pages that carry a mark (annotations, comments).
     marked: Vec<usize>,
+    /// A reader's rail: pages select, never move, copy or go.
+    read_only: bool,
+    /// Something droppable (a file, a page from elsewhere) is over the rail.
+    drop_armed: bool,
 }
 
 /// The hairline that seats a page thumbnail on the rail.
@@ -298,7 +302,34 @@ impl PageSidebar {
             menu: None,
             pending: Vec::new(),
             marked: Vec::new(),
+            read_only: false,
+            drop_armed: false,
         }
+    }
+
+    /// A reader's rail (a PDF, a received deck): a page is selected by a
+    /// click, and there is no drag to reorder, no page menu and no add.
+    #[must_use]
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self.show_add = false;
+        self
+    }
+
+    /// Whether the rail is a reader's ([`Self::read_only`]).
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Show that a drop over the rail would land (a file dragged in from
+    /// outside): the list is ringed in your colour while armed.
+    pub fn set_drop_target_armed(&mut self, armed: bool) {
+        self.drop_armed = armed;
+    }
+
+    /// Whether the rail shows itself as a drop target.
+    pub fn is_drop_target_armed(&self) -> bool {
+        self.drop_armed
     }
 
     /// The pages that carry a mark (annotations, comments): a dot inside
@@ -317,7 +348,7 @@ impl PageSidebar {
     #[must_use]
     pub fn with_add(mut self, label: impl Into<String>) -> Self {
         self.add_label = label.into();
-        self.show_add = true;
+        self.show_add = !self.read_only;
         self
     }
 
@@ -526,8 +557,10 @@ impl PageSidebar {
         if let Some(i) = self.thumb_at(p) {
             self.press_idx = Some(i);
             self.pending.push(PageSidebarEvent::Select(i));
-            let grab = p.y - self.list_metrics().slot_lead(i);
-            self.drag.begin(i, i, grab, p);
+            if !self.read_only {
+                let grab = p.y - self.list_metrics().slot_lead(i);
+                self.drag.begin(i, i, grab, p);
+            }
             return true;
         }
 
@@ -544,7 +577,9 @@ impl PageSidebar {
             return self.list_vp.contains(p);
         };
         self.pending.push(PageSidebarEvent::Select(i));
-        self.open_menu(i, p);
+        if !self.read_only {
+            self.open_menu(i, p);
+        }
         true
     }
 
@@ -773,6 +808,20 @@ impl PageSidebar {
         }
 
         self.draw_scrollbar(scene, base, theme);
+
+        if self.drop_armed {
+            // Armed for a drop: the list is ringed in your colour, as every
+            // drop and insertion indicator is.
+            let inset = f64::from(theme.tokens.spacing.s1);
+            let radius = f64::from(theme.tokens.radii.control);
+            scene.stroke(
+                &Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px) * 2.0),
+                base,
+                theme.tokens.colors.intent.you,
+                None,
+                &RoundedRect::from_rect(self.list_vp.inset(-inset), radius),
+            );
+        }
 
         if self.show_add {
             self.draw_add_button(scene, base, tr, theme);

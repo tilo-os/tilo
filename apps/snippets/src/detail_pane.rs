@@ -27,7 +27,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::app::{Action, Core, Requests, Shared};
-use crate::model::{Language, SnippetId};
+use crate::model::{Language, Selection, SnippetId};
 use crate::tr;
 
 /// What the content column shows. A change rebuilds the column.
@@ -94,13 +94,35 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         part: Part::Language,
         shown: None,
     }));
+    // The folder and each tag open the library at them.
     if !folder.is_empty() {
+        let requests = Rc::clone(requests);
+        let place = folder.clone();
         facts = facts.push(Box::new(
-            Chip::new(folder).with_lead(ChipLead::Glyph(Icon::Folder)),
+            Chip::new(folder.clone())
+                .with_id(format!("snippets.snippet:{id}.folder"))
+                .with_lead(ChipLead::Glyph(Icon::Folder))
+                .with_accessible_name(format!("Folder: {folder}"))
+                .on_click(move || {
+                    requests
+                        .borrow_mut()
+                        .push(Action::Select(Selection::Folder(place.clone())));
+                }),
         ));
     }
     for tag in tags {
-        facts = facts.push(Box::new(Chip::new(tag)));
+        let requests = Rc::clone(requests);
+        let place = tag.clone();
+        facts = facts.push(Box::new(
+            Chip::new(tag.clone())
+                .with_id(format!("snippets.snippet:{id}.tag:{tag}"))
+                .with_accessible_name(format!("Tag: {tag}"))
+                .on_click(move || {
+                    requests
+                        .borrow_mut()
+                        .push(Action::Select(Selection::Tag(place.clone())));
+                }),
+        ));
     }
     let mut about = Column::new()
         .with_no_padding()

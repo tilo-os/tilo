@@ -199,6 +199,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// Open the menu on a row the way a right click does: the row becomes
     /// the selection and the focus first.
     pub(super) fn open_row_menu(&mut self, id: NodeId, at: Point) -> bool {
+        if self.open_nav_menu(id, at) {
+            return true;
+        }
         if self.context_menu_items.is_none() {
             return false;
         }
@@ -510,12 +513,31 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let height = self
             .row_rect(source)
             .map_or(self.viewport.estimated_height(), |row| row.height());
+        // The lifted copy hangs below and beside the pointer, clear of the
+        // seam the pointer is on, so the drop line it is aiming at shows.
+        let offset = f64::from(tokens.spacing.s4);
+        let top = cursor.y + f64::from(tokens.spacing.s2);
+        if self.paint_nav_drag_ghost(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            source,
+            Rect::new(
+                self.rect.x0 + offset,
+                top,
+                self.rect.x1 + offset,
+                top + height,
+            ),
+        ) {
+            return;
+        }
         let inset = f64::from(tokens.spacing.s1);
         let ghost = Rect::new(
-            self.rect.x0 + inset,
-            cursor.y - height / 2.0,
-            self.rect.x1 - inset,
-            cursor.y + height / 2.0,
+            self.rect.x0 + inset + offset,
+            top,
+            self.rect.x1 - inset + offset,
+            top + height,
         );
         let radius = f64::from(tokens.radii.detail);
         crate::surface::shadow(scene, transform, ghost, radius, &tokens.elevation.floating);
@@ -615,6 +637,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
         {
             return Some((rect, action.tooltip.clone()));
         }
+        if let Some(tooltip) = self.nav_tooltip(id, row) {
+            return Some(tooltip);
+        }
         let hint = self.row_hint.as_ref()?;
         let label = self.model.label(id)?;
         Some((row, format!("{label}\n{hint}")))
@@ -651,7 +676,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
             input.bounds = Some(field.input.get_rect().into());
             children.push(input.with_action_target(format!("rename:{id}")));
         }
-        if let Some(row) = row {
+        if let Some(node) = self.nav_section_action_node(id, label, row) {
+            children.push(node);
+        }
+        if let Some(row) = row.filter(|_| self.model.shows_row_actions(id)) {
             for (index, (action, rect)) in self
                 .row_actions
                 .iter()
@@ -741,6 +769,15 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 return Some(false);
             }
             return Some(self.trigger_row_action(id, index));
+        }
+        if let Some(id) = target.strip_prefix("section-action:") {
+            let Ok(id) = id.parse::<NodeId>() else {
+                return Some(false);
+            };
+            if !matches!(action, Action::Activate) {
+                return Some(false);
+            }
+            return Some(self.trigger_nav_section_action(id));
         }
         if let Some(rest) = target.strip_prefix("move:") {
             let (movement, id) = rest.split_once(':')?;
