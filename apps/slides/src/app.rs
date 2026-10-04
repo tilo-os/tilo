@@ -45,7 +45,7 @@ use crate::doc::SlidesDoc;
 use crate::help_overlay::HelpOverlay;
 use crate::model::{
     Background, Deck, Element, ElementKind, FILL_ROLES, Id, Layout, Palette, PaletteKind, SLIDE_H,
-    SLIDE_W, STROKE_ROLES, Slide, TextAlign, new_id, seed_deck, starter_deck,
+    SLIDE_W, STROKE_ROLES, Slide, TextAlign, new_id, starter_deck,
 };
 use crate::overview_grid::{OverviewGrid, scroll_from_thumb_drag, scrollbar_rects};
 use crate::presentation::{Blank, Command as PresentCommand, Presentation, PresentationFrame};
@@ -1022,51 +1022,20 @@ enum DemoMenu {
     Slide,
 }
 
-/// The content store an app constructed without one uses: the app's own
-/// store, or an in-memory one under unit test so tests never write to the
-/// user's data directory.
-fn default_content() -> ContentStore {
-    #[cfg(test)]
-    {
-        ContentStore::memory()
-    }
-    #[cfg(not(test))]
-    {
-        ContentStore::for_app()
-    }
-}
-
-impl Default for SlidesApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl SlidesApp {
-    /// A live launch opens on a single blank starter slide — the deck's real
-    /// source of truth is the shared CRDT document, which persists across
-    /// sessions. We deliberately do NOT auto-populate a fabricated multi-slide
-    /// deck here; the rich sample deck is reserved for [`SlidesApp::demo`]
-    /// (the `--shots` capture path and tests).
-    pub fn new() -> Self {
-        Self::build(starter_deck())
+    /// The editor over the deck its resource presents, keeping pictures in
+    /// `content`. It shows a blank starter slide until the deck arrives.
+    pub fn new(content: ContentStore) -> Self {
+        Self::build(starter_deck(), content)
     }
 
-    /// Root pre-loaded with the hermetic sample deck, optionally jumped to a
-    /// named screen (`overview` / `present` / `presenter` / `help` / …). Used
-    /// only by the `--shots` capture path and tests, so a live launch never
-    /// shows fabricated content.
-    pub fn demo(scenario: Option<&str>) -> Self {
-        let mut app = Self::build(seed_deck());
-        let env = std::env::var("SLIDES_SHOT").ok();
-        if let Some(s) = scenario.or(env.as_deref()) {
-            app.apply_scenario(s);
-        }
-        app
+    /// The editor over the sample deck, for tests.
+    #[cfg(test)]
+    pub(crate) fn sample() -> Self {
+        Self::build(crate::model::seed_deck(), crate::assets::app_content())
     }
 
-    fn build(deck: Deck) -> Self {
-        let content = default_content();
+    fn build(deck: Deck, content: ContentStore) -> Self {
         let search_provider = crate::search_provider::SlideSearchProvider::new(&deck);
         let (document_worker, document_worker_error) = match DocumentWorker::new(content.clone()) {
             Ok(worker) => (Some(worker), None),
@@ -1156,21 +1125,21 @@ impl SlidesApp {
         }
     }
 
-    /// Jump the (sample) app to a named screen for a headless `--shots`
-    /// capture. No effect on a normal launch — only [`SlidesApp::demo`] and
-    /// the `--scenario` flag call this.
-    fn apply_scenario(&mut self, shot: &str) {
-        self.apply_scenario_layout(shot);
-        self.apply_scenario_content(shot);
-        // Scenarios may deliberately swap or extend the in-memory deck before
-        // the first CRDT seed. Keep Ctrl+K's cached durable index truthful to
-        // the exact screen the capture (and accessibility harness) sees.
-        self.search_provider.refresh(&self.deck);
+    /// Stage the view state of a screenshot scenario over the deck its
+    /// actions opened ([`crate::resource::SlidesShell::scenario`]): a mode, a
+    /// selection, an open menu, an edit or a drag in flight. Flaps take
+    /// their staged state at once rather than sliding into it.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        let Some(shot) = scenario else {
+            return;
+        };
+        self.flap_uninitialised = true;
+        self.stage_layout(shot);
+        self.stage_content(shot);
     }
 
-    /// The `--shots` scenarios that only pick a mode / viewport preference —
-    /// no deck or selection change.
-    fn apply_scenario_layout(&mut self, shot: &str) {
+    /// The scenarios that pick a mode or a panel.
+    fn stage_layout(&mut self, shot: &str) {
         match shot {
             "overview" => self.mode = Mode::Overview,
             "present" => {
@@ -1197,14 +1166,13 @@ impl SlidesApp {
                 self.presentation.set_blank(Blank::White);
             }
             "help" => self.help_overlay.show(),
-            // A long deck so the rail overflows its viewport — proves the rail
-            // scrolls (scrolled to the end here) and the pinned Add/Dup/Del row
-            // is never overlapped by thumbnails.
-            "many" => self.fill_long_deck(),
-            // Same long deck, but with the rail summoned open, so the scrolling
-            // thumbnail list is visible at a narrow (overlay-flap) width.
+            // The long deck rests on its last slide with the rail scrolled to
+            // its end: the rail scrolls, and the pinned Add/Dup/Del row is
+            // never overlapped by thumbnails.
+            "many" => self.rest_on_last_slide(),
+            // The same, with the rail summoned open at a narrow width.
             "many_rail" => {
-                self.fill_long_deck();
+                self.rest_on_last_slide();
                 self.rail_flap.open();
             }
             // Overview scrolled to its end, proving the last slide is reachable.
@@ -1212,18 +1180,10 @@ impl SlidesApp {
                 self.mode = Mode::Overview;
                 self.overview.set_scroll(1.0e6);
             }
-            // Narrow-layout captures (rendered at a phone-ish viewport, so the
-            // panels resolve to overlay flaps from the width). We only record a
-            // *preference* here and leave `flap_uninitialised` set, so the
-            // first-frame snap still resolves the OTHER flap to its default —
-            // otherwise it would show a one-frame half-open transient.
             "narrow" => self.rail_flap.open(),
             "narrow_closed" => self.rail_flap.close(),
-            // Narrow layout with the inspector flap summoned open.
             "inspector" => self.inspector_flap.open(),
-            // "edit" (and anything unknown) keeps the default editor screen.
             "empty" => {
-                self.deck = starter_deck();
                 self.cur_slide = 0;
                 self.sel = None;
                 self.bootstrapped = true;
@@ -1232,178 +1192,111 @@ impl SlidesApp {
         }
     }
 
-    /// The `--shots` scenarios that seed deck content, selection or an
-    /// in-progress edit/menu/drag so the capture shows something a bare mode
-    /// switch can't.
-    fn apply_scenario_content(&mut self, shot: &str) {
+    /// The scenarios that select something or show an edit, a menu or a
+    /// drag in progress.
+    fn stage_content(&mut self, shot: &str) {
         match shot {
-            // The inline deck-title rename in progress (title focused, caret in
-            // the toolbar title field).
+            // The inline deck-title rename in progress, with a live
+            // selection in the title field.
             "rename" => {
                 self.cur_slide = 1;
                 self.begin_title_edit();
-                // Show a live selection so the capture proves the TextInput's
-                // real text selection (double-click word / Shift+Arrow / drag).
                 self.title_input.set_selection(0, 9);
                 self.bootstrapped = true;
             }
-            // The speaker-notes editor focused, with the caret shown in the
-            // notes field (previously no caret was rendered at all).
+            // The speaker-notes editor focused, its caret shown.
             "notes_edit" => {
                 self.cur_slide = 1;
                 self.sel = None;
                 self.editing_notes = true;
                 self.bootstrapped = true;
             }
-            // The docked, nothing-selected inspector (slide-level properties:
-            // layout, background, and the deck-theme pills). Captures the pills
-            // at the default width to prove every theme name stays readable.
+            // The nothing-selected inspector: layout, background and every
+            // deck theme pill readable at the default width.
             "slide_props" => {
                 self.cur_slide = 1;
                 self.sel = None;
                 self.bootstrapped = true;
             }
-            // The toolbar overflow ("More") menu, opened — proves every insert
-            // tool stays pointer-reachable even when the bar can't show them all.
+            // The toolbar overflow ("More") menu, opened: every insert tool
+            // stays reachable even when the bar can't show them all.
             "toolbar_menu" => {
                 self.toolbar_tools.set_open(true);
                 self.sel = None;
                 self.bootstrapped = true;
             }
-            // The image-insert tool now defers to the host portal chooser
-            // (HIG §5) — there is no in-app picker surface to capture, so this
-            // scenario just requests it (a no-op in a headless shot with no
-            // portal running) and otherwise shows the plain editor.
-            "picker" => self.request_image_open(),
-            // A slide carrying a real decoded raster, to prove the image
-            // pipeline in a headless screenshot.
-            "image" => self.apply_scenario_image(),
-            // The first frame after image insertion has an intentional loading
-            // placeholder while decoding runs off-thread; it is a real editor
-            // state, captured here without pretending a bitmap is ready.
-            "image_loading" => self.apply_scenario_loading_image(),
-            // This is the same concise failure toast `drain_doc_portal` shows
-            // after a decoder rejects a user-selected presentation.
+            // The picture on the last slide, decoded.
+            "image" => {
+                self.rest_on_picture();
+                for src in self.picture_sources() {
+                    self.images.load_blocking(&src);
+                }
+            }
+            // The first frames after a picture is placed, while its bytes
+            // are still on their way.
+            "image_loading" => {
+                self.rest_on_picture();
+                for src in self.picture_sources() {
+                    self.images.hold_loading(&src);
+                }
+            }
+            // The failure toast a presentation the decoder rejects shows.
             "open_error" => {
                 self.io_toast = Some((tr("slides-toast-open-failed"), ToastKind::Error));
             }
-            // Right-click context menus (opened on the first drawn frame once
-            // the layout rect is known — see `draw`).
-            "element_menu" => self.apply_scenario_element_menu(),
+            // Context menus open once the layout is known (see `draw`).
+            "element_menu" => {
+                self.cur_slide = 1;
+                self.sel = self
+                    .deck
+                    .slides
+                    .get(1)
+                    .and_then(|s| s.elements.first().map(|e| e.id.clone()));
+                self.demo_menu = Some(DemoMenu::Element);
+                self.bootstrapped = true;
+            }
             "slide_menu" => {
                 self.cur_slide = 1;
                 self.sel = None;
                 self.demo_menu = Some(DemoMenu::Slide);
                 self.bootstrapped = true;
             }
-            // A live thumbnail reorder drag mid-flight — the grabbed slide
-            // lifted out as a floating ghost with the list reflowed to open the
-            // drop gap. Staged on the first drawn frame (see `draw`).
+            // A thumbnail reorder drag mid-flight: the grabbed slide lifted
+            // out as a floating ghost, the list reflowed to open the gap.
             "reorder" => {
                 self.cur_slide = 0;
                 self.sel = None;
                 self.demo_reorder = true;
                 self.bootstrapped = true;
             }
-            // An on-canvas text box in edit mode with a live selection over the
-            // first word — proves the shared caret / selection core.
-            "edit_text" => self.apply_scenario_edit_text(),
-            // A slide thumbnail dragged onto the red dashed delete zone at the
-            // foot of the rail (armed) — proves the drag-to-delete affordance.
-            // Staged on the first drawn frame (see `draw`).
+            // An on-canvas text box in edit mode with its first word
+            // selected.
+            "edit_text" => {
+                self.select_first_text_on_second_slide();
+                self.begin_text_edit(true);
+                self.bootstrapped = true;
+            }
+            // A thumbnail dragged onto the armed delete zone.
             "delete_zone" => {
                 self.cur_slide = 0;
                 self.sel = None;
                 self.demo_delete_zone = true;
                 self.bootstrapped = true;
             }
-            // The inspector with the font-size NumberInput (text selected) and
-            // the fill ColorPicker popover open — the two adopted primitives.
-            "inspector_widgets" => self.apply_scenario_inspector_widgets(),
-            // "edit" (and anything unknown) keeps the default editor screen.
+            // The font-size field (text selected) and the fill colour
+            // picker popover open.
+            "inspector_widgets" => {
+                self.select_first_text_on_second_slide();
+                self.inspector_flap.open();
+                self.fill_picker_open = true;
+                self.fill_picker_needs_init = true;
+                self.bootstrapped = true;
+            }
             _ => {}
         }
     }
 
-    /// `element_menu` scenario body: select slide 2's first element and stage
-    /// its context menu.
-    fn apply_scenario_element_menu(&mut self) {
-        self.cur_slide = 1;
-        self.sel = self
-            .deck
-            .slides
-            .get(1)
-            .and_then(|s| s.elements.first().map(|e| e.id.clone()));
-        self.demo_menu = Some(DemoMenu::Element);
-        self.bootstrapped = true;
-    }
-
-    /// `inspector_widgets` scenario body: select slide 2's first text element
-    /// and open the fill colour picker popover.
-    fn apply_scenario_inspector_widgets(&mut self) {
-        self.cur_slide = 1;
-        self.inspector_flap.open();
-        self.sel = self.deck.slides.get(1).and_then(|s| {
-            s.elements
-                .iter()
-                .find(|e| e.kind == ElementKind::Text)
-                .map(|e| e.id.clone())
-        });
-        self.fill_picker_open = true;
-        self.fill_picker_needs_init = true;
-        self.bootstrapped = true;
-    }
-
-    /// `image` scenario body: write a temp raster, decode it synchronously
-    /// (the single offscreen frame has no worker-pump), then place it on a
-    /// dedicated slide.
-    fn apply_scenario_image(&mut self) {
-        if let Some(path) = write_demo_image() {
-            let Some(src) = crate::assets::import_asset_file(&self.content, &path) else {
-                return;
-            };
-            self.images.load_blocking(&src);
-            let mut s = Slide::new(Layout::TitleContent);
-            s.add(
-                Element::text("Site photo", 96.0, 70.0, 1088.0, 90.0, 56.0).with(|e| e.bold = true),
-            );
-            s.add(
-                Element::shape(ElementKind::Rect, 96.0, 168.0, 150.0, 8.0).with(|e| {
-                    e.fill = "accent".into();
-                    e.radius = 4.0;
-                }),
-            );
-            s.add(Element::image(&src, 96.0, 200.0, 1088.0, 420.0));
-            self.deck.slides.push(s);
-            self.cur_slide = self.deck.slides.len() - 1;
-            self.sel = None;
-            // Keep this slide selected — skip the slide-2 view bootstrap.
-            self.bootstrapped = true;
-        }
-    }
-
-    fn apply_scenario_loading_image(&mut self) {
-        let mut slide = Slide::new(Layout::TitleContent);
-        slide.add(
-            Element::text("Importing photo", 96.0, 70.0, 1088.0, 90.0, 56.0)
-                .with(|element| element.bold = true),
-        );
-        slide.add(Element::image(
-            "asset:blake3:0000000000000000000000000000000000000000000000000000000000000000",
-            96.0,
-            200.0,
-            1088.0,
-            420.0,
-        ));
-        self.deck.slides.push(slide);
-        self.cur_slide = self.deck.slides.len() - 1;
-        self.sel = None;
-        self.bootstrapped = true;
-    }
-
-    /// `edit_text` scenario body: select the first text element on slide 2
-    /// and put it in edit mode with a live selection over its first word.
-    fn apply_scenario_edit_text(&mut self) {
+    fn select_first_text_on_second_slide(&mut self) {
         self.cur_slide = 1;
         self.sel = self.deck.slides.get(1).and_then(|s| {
             s.elements
@@ -1411,35 +1304,35 @@ impl SlidesApp {
                 .find(|e| e.kind == ElementKind::Text)
                 .map(|e| e.id.clone())
         });
-        self.begin_text_edit(true);
-        self.bootstrapped = true;
     }
 
-    /// Grow the sample deck to 12 slides (cloning the seed slides with fresh
-    /// ids) and rest scrolled to its end, so the rail overflows its viewport.
-    /// Shared by the `many` / `many_rail` capture scenarios and the rail-scroll
-    /// reachability tests. Never runs on a live launch.
-    fn fill_long_deck(&mut self) {
-        let base = self.deck.slides.clone();
-        'fill: while self.deck.slides.len() < 12 {
-            for s in &base {
-                if self.deck.slides.len() >= 12 {
-                    break 'fill;
-                }
-                let mut c = s.clone();
-                c.id = new_id();
-                for e in &mut c.elements {
-                    e.id = new_id();
-                }
-                self.deck.slides.push(c);
-            }
-        }
-        self.cur_slide = self.deck.slides.len() - 1;
-        // Clamped to `max_scroll` at layout → the rail rests scrolled to its
-        // end (the case that used to overrun the pinned buttons).
+    /// Show the last slide with the rail scrolled to its end (clamped to
+    /// the overflow at layout).
+    fn rest_on_last_slide(&mut self) {
+        self.cur_slide = self.deck.slides.len().saturating_sub(1);
         self.rail_scroll = 1.0e6;
         self.sel = None;
         self.bootstrapped = true;
+    }
+
+    fn rest_on_picture(&mut self) {
+        self.cur_slide = self.deck.slides.len().saturating_sub(1);
+        self.sel = None;
+        self.bootstrapped = true;
+    }
+
+    /// The pictures on the current slide.
+    fn picture_sources(&self) -> Vec<String> {
+        self.slide()
+            .map(|slide| {
+                slide
+                    .elements
+                    .iter()
+                    .filter(|element| element.kind == ElementKind::Image)
+                    .map(|element| element.src.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The rail layout resolved from the current allocated width. Overview and
@@ -5352,32 +5245,6 @@ fn on_accent(c: &ui::tokens::Colors, pal: &Palette) -> Color {
     )
 }
 
-/// Write a small, unmistakably-photographic test raster to a temp PNG and
-/// return its path. Used only by the `image` `--shots` scenario so a headless
-/// screenshot can show the real decode path; never called on a live launch.
-fn write_demo_image() -> Option<PathBuf> {
-    use image::{Rgb, RgbImage};
-    let (w, h) = (640u32, 400u32);
-    let mut img = RgbImage::new(w, h);
-    let cx = w as f32 / 2.0;
-    let cy = h as f32 / 2.0;
-    for (x, y, px) in img.enumerate_pixels_mut() {
-        let dx = x as f32 - cx;
-        let dy = y as f32 - cy;
-        let r = (dx * dx + dy * dy).sqrt();
-        // Concentric warm rings over a cool field — clearly a raster picture,
-        // not a flat UI gradient.
-        let ring = (r * 0.06).sin() * 0.5 + 0.5;
-        let red = (40.0 + 200.0 * ring) as u8;
-        let green = (70.0 + 90.0 * ring) as u8;
-        let blue = (120.0 + 60.0 * (1.0 - ring)) as u8;
-        *px = Rgb([red, green, blue]);
-    }
-    let path = tilo_paths::temp_dir()?.join("slides-demo-image.png");
-    img.save(&path).ok()?;
-    Some(path)
-}
-
 impl SlidesApp {
     fn semantic_target(&self, hit: &Hit) -> String {
         match hit {
@@ -5697,7 +5564,6 @@ impl Widget for SlidesApp {
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::AudiencePresentationProvider,
         dyn ui::undo::CommittedActions,
-        dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource,
         dyn ui::undo::UndoPoints
@@ -6466,12 +6332,6 @@ impl ui::resources::PublishesResources for SlidesApp {
     }
 }
 
-impl ui::history_mode::capability::DocumentHistory for SlidesApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-}
-
 impl ui::undo::CommittedActions for SlidesApp {
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its slides action, so it records one undo boundary for it (see
@@ -6744,7 +6604,7 @@ impl SlidesApp {
     /// Stage the three `--shots`-only demo interactions (a popped context
     /// menu, a live reorder drag, a thumbnail dropped on the delete zone)
     /// now that the layout rect is known. No-op on a live launch — the
-    /// staging flags are never set outside [`SlidesApp::apply_scenario`].
+    /// staging flags are never set outside [`SlidesApp::stage_scenario`].
     fn stage_shots_demo(&mut self) {
         // `--shots`-only: pop a context menu now that the layout rect is known.
         if let Some(kind) = self.demo_menu.take() {
@@ -6798,6 +6658,12 @@ impl SlidesApp {
                 let _ = self.page_sidebar.take_events();
             }
         }
+    }
+
+    /// Whether the picture `src` is decoded and ready to paint.
+    #[cfg(test)]
+    pub(crate) fn picture_ready(&self, src: &str) -> bool {
+        matches!(self.images.get(src), crate::assets::ImageState::Ready(_))
     }
 
     /// The index of the slide currently shown. Lets a test observe where a
@@ -8196,7 +8062,7 @@ mod tests {
     }
 
     fn app_with(slide: Slide) -> SlidesApp {
-        let mut a = SlidesApp::new();
+        let mut a = SlidesApp::new(crate::assets::app_content());
         a.deck = Deck {
             title: "t".into(),
             palette: PaletteKind::Indigo,
@@ -8238,7 +8104,7 @@ mod tests {
 
         // Case `present_clock_formats_minutes_seconds`.
         {
-            let app = SlidesApp::new();
+            let app = SlidesApp::new(crate::assets::app_content());
             // No presentation started → 0:00.
             assert_eq!(app.presentation.clock(), "0:00");
         }
@@ -8248,7 +8114,7 @@ mod tests {
 
     /// A presenting app over a 5-slide deck, starting on slide 0.
     fn presenting_app() -> SlidesApp {
-        let mut a = SlidesApp::new();
+        let mut a = SlidesApp::new(crate::assets::app_content());
         a.deck = crate::model::seed_deck();
         a.bootstrapped = true;
         a.cur_slide = 0;
@@ -8291,7 +8157,7 @@ mod tests {
         {
             // The primary edit path: a keypress mutates the shared Automerge doc and
             // the in-memory mirror reflects it — not a local-only cache.
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             let mut doc = AutoCommit::new();
             crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
             app.reload(&doc);
@@ -8583,7 +8449,7 @@ mod tests {
         // Case `fullscreen_intent_tracks_present_mode`.
         {
             // `Widget` is in scope via `use super::*`.
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             // Editor: no fullscreen request.
             assert_eq!(FullscreenProvider::fullscreen_intent(&app), Some(false));
             // Present: request true fullscreen.
@@ -8651,7 +8517,7 @@ mod tests {
 
         // Case `presentation_output_resource_policy_is_local_and_selects_primary_external`.
         {
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             let mut doc = AutoCommit::new();
             let payload =
                 serde_json::to_vec(&crate::actions::SlidesOperation::StartPresentationOn {
@@ -8721,7 +8587,7 @@ mod tests {
 
         // Case `entering_present_does_not_request_fullscreen_until_presenting`.
         {
-            let app = SlidesApp::new();
+            let app = SlidesApp::new(crate::assets::app_content());
             assert!(!app.wants_fullscreen(), "editor mode is not fullscreen");
         }
     }
@@ -9070,7 +8936,7 @@ mod tests {
 
         // Case `large_text_chrome_keeps_hidden_tools_on_discoverable_routes`.
         {
-            let mut app = SlidesApp::demo(None);
+            let mut app = SlidesApp::sample();
             sized(&mut app, 1440.0, 960.0);
             app.text_scale = 2.0;
             let chrome = app.compute_chrome();
@@ -9452,7 +9318,7 @@ mod tests {
             s.add(Element::text("slide", 96.0, 90.0, 1000.0, 100.0, 40.0));
             slides.push(s);
         }
-        let mut a = SlidesApp::new();
+        let mut a = SlidesApp::new(crate::assets::app_content());
         a.deck = Deck {
             title: "t".into(),
             palette: PaletteKind::Indigo,
@@ -9508,7 +9374,7 @@ mod tests {
 
         // Case `wheel_scrolls_overview_and_last_slide_becomes_reachable`.
         {
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             app.deck = crate::model::seed_deck();
             app.bootstrapped = true;
             app.mode = Mode::Overview;
@@ -9546,7 +9412,7 @@ mod tests {
 
         // Case `overview_scrollbar_thumb_drag_scrolls_the_grid`.
         {
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             app.deck = crate::model::seed_deck();
             app.bootstrapped = true;
             app.mode = Mode::Overview;
@@ -9882,7 +9748,7 @@ mod tests {
 
         // Case `image_tool_requests_the_host_portal_then_a_pick_inserts_a_real_image`.
         {
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             let mut doc = AutoCommit::new();
             crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
             app.reload(&doc);
@@ -9949,7 +9815,7 @@ mod tests {
         // Case `a_cancelled_portal_pick_inserts_nothing`.
         {
             // Dismissing the host chooser must not fabricate a placeholder element.
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             let mut doc = AutoCommit::new();
             crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
             app.reload(&doc);
@@ -9988,7 +9854,7 @@ mod tests {
 
     /// A 5-slide editor seeded into a doc, sized so the whole rail fits.
     fn reorder_app() -> (SlidesApp, AutoCommit) {
-        let mut app = SlidesApp::new();
+        let mut app = SlidesApp::new(crate::assets::app_content());
         app.deck = crate::model::seed_deck();
         let mut doc = AutoCommit::new();
         crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
@@ -10199,12 +10065,12 @@ mod tests {
     fn document_open_save_and_worker_outcomes() {
         // Case `app_saves_and_reloads_an_odp`.
         {
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             app.deck = crate::model::seed_deck();
             let path = std::env::temp_dir().join("slides-app-odp-roundtrip.odp");
             assert!(app.save_odp(&path), "deck saves to .odp");
 
-            let mut app2 = SlidesApp::new();
+            let mut app2 = SlidesApp::new(crate::assets::app_content());
             let mut doc2 = AutoCommit::new();
             crate::doc::SlidesDoc::seed(&mut doc2, &app2.deck);
             app2.reload(&doc2);
@@ -10219,12 +10085,12 @@ mod tests {
 
         // Case `app_routes_powerpoint_and_explains_its_fidelity_boundary`.
         {
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             app.deck = crate::model::seed_deck();
             let path = std::env::temp_dir().join("slides-app-pptx-roundtrip.pptx");
             assert!(app.save_presentation(&path), "deck saves to .pptx");
 
-            let mut opened = SlidesApp::new();
+            let mut opened = SlidesApp::new(crate::assets::app_content());
             let mut doc = AutoCommit::new();
             crate::doc::SlidesDoc::seed(&mut doc, &opened.deck);
             let (services, recorder) = ui::host::HostServices::recording();
@@ -10248,7 +10114,7 @@ mod tests {
             let path = std::env::temp_dir().join("slides-drain-open.odp");
             std::fs::write(&path, &bytes).unwrap();
 
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             let mut doc = AutoCommit::new();
             crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
             app.reload(&doc);
@@ -10275,7 +10141,7 @@ mod tests {
 
         // Case `failed_open_is_visible_instead_of_silent`.
         {
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             let mut doc = AutoCommit::new();
             crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
             let (services, recorder) = ui::host::HostServices::recording();
@@ -10300,7 +10166,7 @@ mod tests {
                 crate::odp::write_odp(&imported, &ContentStore::memory()).unwrap(),
             )
             .unwrap();
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             let original = app.deck.title.clone();
             let mut doc = AutoCommit::new();
             crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
@@ -10318,7 +10184,7 @@ mod tests {
 
         // Case `disconnected_document_worker_settles_the_accepted_resource_operation`.
         {
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             let mut doc = AutoCommit::new();
             crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
             // Keep a sender for future queue attempts, but give the app a result
@@ -10355,7 +10221,7 @@ mod tests {
                 .unwrap();
             let path = std::env::temp_dir()
                 .join(format!("slides-idle-save-{}.pptx", uuid::Uuid::new_v4()));
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             let mut doc = AutoCommit::new();
             crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
             app.resource_invocation = Some(tilo_actions::InvocationId::new());
@@ -10448,7 +10314,7 @@ mod tests {
         // Right-clicking a slide thumbnail selects that slide and opens the shared
         // rail's own duplicate / move / delete menu; choosing Delete removes it.
         {
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             app.deck = crate::model::seed_deck();
             let mut doc = AutoCommit::new();
             crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
@@ -10560,6 +10426,14 @@ mod tests {
 
     /// A one-slide deck seeded into a shared doc; `slide` becomes slide 0 and
     /// the mirror is reloaded from the document.
+    /// Restore the deck as it was at `selected`, as History's restore
+    /// writes it: the past deck over the live one.
+    pub(super) fn restore_deck(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
+        let past = doc.fork_at(selected).unwrap();
+        let deck = SlidesDoc::load(&past).unwrap();
+        tilo_actions::Action::apply(&crate::actions::replace_deck_action(&deck), doc).unwrap();
+    }
+
     fn app_doc(slide: Slide) -> (SlidesApp, AutoCommit) {
         let mut app = app_with(slide);
         let mut doc = AutoCommit::new();
@@ -10811,7 +10685,7 @@ mod tests {
         {
             use ui::widget::Widget as _;
 
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             let tree = app.accessibility().expect("presentation semantics");
@@ -10836,7 +10710,7 @@ mod tests {
         {
             use ui::widget::Widget as _;
 
-            let mut app = SlidesApp::demo(None);
+            let mut app = SlidesApp::sample();
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             let target_id = app.deck.slides[3].id.clone();
@@ -11135,7 +11009,7 @@ mod tests {
             .id
             .clone();
         // Where the box is drawn: the deck's surface below the host's bar.
-        let mut geometry = SlidesApp::new();
+        let mut geometry = SlidesApp::new(crate::assets::app_content());
         geometry.deck = deck;
         geometry.bootstrapped = true;
         geometry.rect = app.harness().targets()["BoundComponent"];
@@ -11260,7 +11134,7 @@ mod tests {
     fn slide_ops_and_keyboard_edits_update_the_deck() {
         // Case `slide_ops_via_hit_handlers_update_the_deck_and_current_slide`.
         {
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             app.deck = crate::model::seed_deck();
             let mut doc = AutoCommit::new();
             crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
@@ -11360,7 +11234,7 @@ mod tests {
 
         // Case `clicking_an_overview_card_opens_that_slide_in_the_editor`.
         {
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             app.deck = crate::model::seed_deck();
             app.bootstrapped = true;
             app.mode = Mode::Overview;
@@ -11398,7 +11272,7 @@ mod tests {
         {
             use ui::widget::Widget as _;
 
-            let mut app = SlidesApp::demo(None);
+            let mut app = SlidesApp::sample();
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             let slide_index = 2;
@@ -11456,15 +11330,7 @@ mod tests {
             app.reload(&doc);
             app.begin_notes_edit(&mut doc);
             let old_obj = app.notes_input.bound_obj().unwrap().clone();
-            let heads = doc.get_heads();
-            let plan = ui::history_mode::restore::prepare_content_restore(
-                &doc,
-                &crate::framework_history::SCHEMA,
-                &heads,
-                &selected,
-            )
-            .unwrap();
-            ui::history_mode::restore::apply_prepared_content_restore(&mut doc, &plan).unwrap();
+            restore_deck(&mut doc, &selected);
             app_dispatch(&mut app, &mut doc, &char_ev("!"));
             assert_eq!(
                 SlidesDoc::load(&doc).unwrap().slides[0].notes,
@@ -11480,7 +11346,7 @@ mod history_reconcile_tests {
     use super::*;
     #[test]
     fn canonical_update_interrupts_drag_before_sync_can_write_stale_cache() {
-        let mut app = SlidesApp::new();
+        let mut app = SlidesApp::new(crate::assets::app_content());
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         doc.get_heads();
@@ -11503,17 +11369,10 @@ mod history_reconcile_tests {
 #[cfg(test)]
 mod history_interruption_tests {
     use super::*;
+    use crate::model::seed_deck;
 
     fn restore(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
-        let heads = doc.get_heads();
-        let plan = ui::history_mode::restore::prepare_content_restore(
-            doc,
-            &crate::framework_history::SCHEMA,
-            &heads,
-            selected,
-        )
-        .unwrap();
-        ui::history_mode::restore::apply_prepared_content_restore(doc, &plan).unwrap();
+        super::tests::restore_deck(doc, selected);
     }
     fn assert_save_settlement(
         app: &mut SlidesApp,
@@ -11578,7 +11437,7 @@ mod history_interruption_tests {
         SlidesDoc::seed(&mut doc, &deck);
         let selected = doc.get_heads();
         SlidesDoc::set_title(&mut doc, "Authorized export snapshot");
-        let mut app = SlidesApp::new();
+        let mut app = SlidesApp::new(crate::assets::app_content());
         app.sync(&mut doc, &automerge::ROOT);
         let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::SlidesOperation::SaveAs {
@@ -11695,7 +11554,7 @@ mod history_interruption_tests {
             let selected = doc.get_heads();
             SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "LIVE ");
             doc.get_heads();
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             app.sync(&mut doc, &automerge::ROOT);
             app.cur_slide = 0;
             app.begin_notes_edit(&mut doc);
@@ -11763,7 +11622,7 @@ mod history_interruption_tests {
             deck.slides.push(extra);
             SlidesDoc::seed(&mut doc, &deck);
             doc.get_heads();
-            let mut app = SlidesApp::new();
+            let mut app = SlidesApp::new(crate::assets::app_content());
             app.sync(&mut doc, &automerge::ROOT);
             app.cur_slide = 1;
             app.begin_notes_edit(&mut doc);

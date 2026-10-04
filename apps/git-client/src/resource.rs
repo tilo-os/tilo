@@ -6,16 +6,17 @@
 use std::rc::Rc;
 
 use ui::framework::{
-    Command, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
+    Command, EffectAnswer, EffectCx, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface,
+    SurfaceCx, ViewCx,
 };
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_actions::{ActionSpec, OperationKind, Resource as PublishedResource};
+use ui::tilo_actions::{ActionSpec, Resource as PublishedResource};
 use ui::tilo_resource::{Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
-    GIT_CLIENT_ACTION_TYPE, GitClientAction, document_bound_actions, document_children, register,
-    resolve_child, root_local_operations,
+    GIT_CLIENT_ACTION_TYPE, GitClientAction, GitClientEffect, document_bound_actions,
+    document_children, register, resolve_child,
 };
 use crate::app::GitClientApp;
 use crate::doc::GitClientState;
@@ -53,15 +54,6 @@ impl Resource for GitClient {
 
     fn child(state: &GitClientState, id: &str) -> Option<PublishedResource> {
         resolve_child(&state.repo, id)
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        // View navigation and working-tree / branch / stash Effects. Per-remote
-        // fetch/pull/push ride remote children from [`children`].
-        root_local_operations()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
     }
 }
 
@@ -177,7 +169,7 @@ fn stage_and_commit(message: &str) -> Result<(), String> {
     Ok(())
 }
 
-impl ResourceSurface<GitClient> for GitClientApp {
+impl ResourceSurface<GitClient, GitClientEffect> for GitClientApp {
     fn present(&mut self, state: &Rc<GitClientState>) {
         self.present_state(state);
     }
@@ -189,6 +181,14 @@ impl ResourceSurface<GitClient> for GitClientApp {
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
+    }
+
+    fn effect(
+        &mut self,
+        effect: GitClientEffect,
+        cx: &mut EffectCx<GitClient, Self>,
+    ) -> EffectAnswer {
+        self.answer_effect(effect, cx)
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {
@@ -230,9 +230,9 @@ mod tests {
         (dir, path)
     }
 
-    /// The repository door carries the preferences, the views and Effects,
-    /// and the projection's history, branches and remotes; the working tree
-    /// is not document state.
+    /// The repository door carries the preferences and the projection's
+    /// history, branches and remotes with their item effects; the working
+    /// tree is not document state.
     #[test]
     fn the_repository_door_publishes_the_shared_projection() {
         let (model, _) = crate::sample::model();
@@ -245,7 +245,7 @@ mod tests {
         let published =
             ui::tilo_resource::publish::<GitClient>("git_client.repo", "renderer", &state);
         assert_eq!(published.kind, "git_client.repo");
-        for id in ["diff-layout", "show-changes", "commit", "stage-all"] {
+        for id in ["diff-layout", "syntax-highlight"] {
             assert!(
                 published.actions.iter().any(|action| action.id == id),
                 "{id} is on the repository"
@@ -306,7 +306,7 @@ mod tests {
                 .all(|row| row["operation"] == "View" || row["operation"] == "Effect"),
             "{rows:#?}"
         );
-        assert!(rows.iter().any(|row| row["action"] == "stage"));
+        assert!(rows.iter().any(|row| row["action"] == "stage-file"));
 
         let split = TestApp::<GitClientShell>::capture(Some("split")).unwrap();
         assert_eq!(split.state().settings.diff_layout, DiffLayout::SideBySide);
@@ -373,6 +373,111 @@ mod tests {
             shown.contains("new.txt"),
             "the record reopens its repository"
         );
+    }
+
+    /// The client's effects are published on the repository and on the
+    /// items they act on, and every one reaches the repository on disk:
+    /// staging a changed file through its row, committing, creating and
+    /// checking out a branch, and deleting one only once confirmed.
+    #[test]
+    fn effects_reach_the_repository_on_disk() {
+        use crate::actions::{GitClientEffect, branch_resource_id, change_resource_id};
+        use crate::model::ChangeArea;
+
+        let (_dir, path) = scratch_repository("effects-repo");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.settle();
+        let surface = app.agent_surface();
+        let offered = |resource: &str, action: &str| {
+            surface
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["resource"] == resource && row["action"] == action)
+        };
+        for id in [
+            "show-changes",
+            "show-history",
+            "show-branches",
+            "stage-all",
+            "unstage-all",
+            "commit",
+            "create-branch",
+            "save-stash",
+        ] {
+            assert!(offered("git_client.repo", id), "{id}: {surface:#}");
+        }
+        let untracked = change_resource_id(ChangeArea::Untracked, "new.txt");
+        for id in ["open-change", "stage-file", "discard-file"] {
+            assert!(offered(&untracked, id), "{id}: {surface:#}");
+            assert!(
+                !offered("git_client.repo", id),
+                "{id} is offered only bound"
+            );
+        }
+
+        app.effect_on(
+            &untracked,
+            &GitClientEffect::StageFile {
+                path: "new.txt".into(),
+            },
+        )
+        .unwrap();
+        let repo = git2::Repository::open(&path).unwrap();
+        assert!(
+            repo.index()
+                .unwrap()
+                .get_path(std::path::Path::new("new.txt"), 0)
+                .is_some(),
+            "the row's effect staged the file"
+        );
+
+        app.effect(&GitClientEffect::Commit {
+            message: "Add new file".into(),
+        })
+        .unwrap();
+        let head = repo.head().unwrap();
+        let first = head.shorthand().unwrap().to_owned();
+        assert_eq!(
+            head.peel_to_commit().unwrap().summary().unwrap(),
+            Some("Add new file")
+        );
+        assert!(
+            app.effect(&GitClientEffect::Commit {
+                message: "Nothing staged".into(),
+            })
+            .is_err(),
+            "a commit with nothing staged fails its caller"
+        );
+
+        app.effect(&GitClientEffect::CreateBranch {
+            name: "topic".into(),
+        })
+        .unwrap();
+        assert_eq!(repo.head().unwrap().shorthand().unwrap(), "topic");
+        app.settle();
+        let first_row = branch_resource_id(&first);
+        app.effect_on(
+            &first_row,
+            &GitClientEffect::CheckoutBranch {
+                name: first.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(repo.head().unwrap().shorthand().unwrap(), first);
+
+        app.settle();
+        let topic = branch_resource_id("topic");
+        let delete = GitClientEffect::DeleteBranch {
+            name: "topic".into(),
+        };
+        assert!(
+            app.effect_on(&topic, &delete).is_err(),
+            "deleting a branch asks first"
+        );
+        assert!(repo.find_branch("topic", git2::BranchType::Local).is_ok());
+        app.effect_on_confirmed(&topic, &delete).unwrap();
+        assert!(repo.find_branch("topic", git2::BranchType::Local).is_err());
     }
 
     /// The app-bar layout control submits the preference action the

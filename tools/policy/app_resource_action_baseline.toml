@@ -30,20 +30,14 @@
 "apps/settings/src/resource.rs" = 2
 "apps/slides/src/app.rs" = 1
 "apps/video-editor/src/resource.rs" = 1
-"apps/video-player/src/resource.rs" = 2
 
 [ratchets.standalone_launch]
 "apps/chat/src/main.rs" = 1
 "apps/imager/src/main.rs" = 1
 "apps/music/src/lib.rs" = 2
 "apps/osk/src/main.rs" = 1
-"apps/pdf-viewer/src/lib.rs" = 2
-"apps/pdf-viewer/src/main.rs" = 3
 "apps/photos/src/lib.rs" = 2
 "apps/settings/src/main.rs" = 1
-"apps/slides/src/lib.rs" = 2
-"apps/slides/src/main.rs" = 1
-"apps/word-processor/src/main.rs" = 3
 
 [ratchets.direct_document_api]
 "apps/word-processor/src/actions/editing.rs" = 1
@@ -59,7 +53,6 @@
 "apps/notes/src/search_provider.rs" = 1
 "apps/notes/src/storage.rs" = 2
 "apps/osk/src/framework_history.rs" = 1
-"apps/pdf-viewer/src/main.rs" = 1
 "apps/photos/src/framework_history.rs" = 2
 "apps/settings/src/actions/mod.rs" = 17
 "apps/settings/src/panes/agent_models.rs" = 1
@@ -71,10 +64,7 @@
 "apps/settings/src/panes/storage.rs" = 1
 "apps/settings/src/panes/users.rs" = 1
 "apps/settings/src/resource.rs" = 1
-"apps/slides/src/framework_history.rs" = 2
 "apps/video-editor/src/project_file.rs" = 2
-"apps/video-player/src/actions.rs" = 1
-"apps/video-player/src/resource.rs" = 1
 "apps/word-processor/src/actions/editing.rs" = 1
 "apps/word-processor/src/actions.rs" = 1
 

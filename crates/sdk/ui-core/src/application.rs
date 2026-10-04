@@ -101,6 +101,22 @@ pub struct HostContext {
     /// the host keeps them ([`Self::provide_person_records`]).
     person: Option<crate::record::person::PersonRecords>,
     launch_arguments: Vec<String>,
+    handoff: Option<PlaybackHandoff>,
+}
+
+/// Where playback stood on the device or app that handed the launch's media
+/// over: the launch continues it from there. The media itself is what the
+/// launch names (its argument or file); this is the transport and the name
+/// it played under.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlaybackHandoff {
+    /// The position to continue from.
+    pub position_ms: u64,
+    /// Whether playback was running and continues running here.
+    pub resume_playing: bool,
+    /// What the media was called where it played, when the launch's
+    /// argument alone does not say (a stream's URL).
+    pub title: Option<String>,
 }
 
 /// What a host prepares an instance for when it renders a screenshot
@@ -297,6 +313,7 @@ impl HostContext {
             settings: crate::storage::SettingsDocument::Session,
             person: None,
             launch_arguments: Vec::new(),
+            handoff: None,
         })
     }
     /// Commit this instance's edits to its record under an actor of its
@@ -346,6 +363,15 @@ impl HostContext {
     /// The launch arguments the host handed over, once.
     pub fn take_launch_arguments(&mut self) -> Vec<String> {
         std::mem::take(&mut self.launch_arguments)
+    }
+    /// Hand the component the playback another device or app handed over
+    /// with the media its launch names.
+    pub fn provide_handoff(&mut self, handoff: PlaybackHandoff) {
+        self.handoff = Some(handoff);
+    }
+    /// The playback handoff the host handed over, once.
+    pub fn take_handoff(&mut self) -> Option<PlaybackHandoff> {
+        self.handoff.take()
     }
     /// Explicit owner-bound producer capability, available before factory work.
     pub fn control_domain(&self) -> crate::ControlDomain {

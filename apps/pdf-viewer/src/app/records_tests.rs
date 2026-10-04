@@ -146,8 +146,8 @@ fn concurrent_markup_edits_converge_across_replicas() {
     }
 
     {
-        let mut app = PdfApp::sample();
-        let mut state = ui::State::new();
+        let mut app = crate::scenarios::sample_reader();
+        let mut state = crate::scenarios::sample_state();
         app.sync(&mut state.doc, &state.root);
         let base = state.doc.save();
         let mut other = AutoCommit::load(&base).expect("collaborator replica");
@@ -278,8 +278,8 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
     );
 
     {
-        let mut app = PdfApp::sample();
-        let mut state = ui::State::new();
+        let mut app = crate::scenarios::sample_reader();
+        let mut state = crate::scenarios::sample_state();
         app.sync(&mut state.doc, &state.root);
         let author = ui::collaboration::local_user_id();
         let root: *mut dyn Widget = &mut app;
@@ -332,8 +332,8 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
 
     {
         use ui::permissions::{Actor, Role};
-        let mut app = PdfApp::sample();
-        let mut state = ui::State::new();
+        let mut app = crate::scenarios::sample_reader();
+        let mut state = crate::scenarios::sample_state();
         app.sync(&mut state.doc, &state.root);
         let before = PdfDoc::list_annotations_with_hidden(&state.doc).len();
 
@@ -414,8 +414,6 @@ fn exports_are_deterministic_and_carry_page_operations() {
             break 'phase;
         }
         let mut state = ui::State::new();
-        let checkout = ui::record::capability::record_intent(&app).expect("a markup record");
-        ui::RecordSet::in_memory().checkout(&mut state, None, &checkout);
         app.sync(&mut state.doc, &state.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
@@ -528,8 +526,6 @@ fn exports_are_deterministic_and_carry_page_operations() {
             break 'phase;
         }
         let mut state = ui::State::new();
-        let checkout = ui::record::capability::record_intent(&app).expect("a markup record");
-        ui::RecordSet::in_memory().checkout(&mut state, None, &checkout);
         app.sync(&mut state.doc, &state.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
