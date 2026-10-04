@@ -1688,20 +1688,8 @@ fn splice_sandbox_shim(
         argv.push("--rw".to_string());
         argv.push(bind.sandbox_socket.display().to_string());
     }
-    // GPU selection is only real if Landlock agrees: loader manifests need
-    // read, the render node needs read+write (opened O_RDWR) — read-only
-    // looks like no GPU present.
     if let Some(sel) = ctx.gpu {
-        for file in sel.manifest_files() {
-            argv.push("--ro".to_string());
-            argv.push(file.display().to_string());
-        }
-        argv.push("--rw".to_string());
-        argv.push(sel.node.display().to_string());
-        if sel.pipeline_seed.is_some() {
-            argv.push("--ro".to_string());
-            argv.push(crate::gpu::SANDBOX_PIPELINE_SEED_DIR.to_string());
-        }
+        crate::sandbox::push_gpu_landlock_rules(argv, sel);
     }
     // The app's own directory, named by its in-sandbox path — the host path
     // isn't reachable from inside, so a rule on it would match nothing.
