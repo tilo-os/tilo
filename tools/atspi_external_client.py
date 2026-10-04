@@ -12,6 +12,10 @@ client does not import the UI crate or inspect an in-process AccessKit tree.
 ``open APP_NAME`` performs only the session launch and prints the app's
 AT-SPI bus name and process id, for gates with their own checks.
 
+``settings-network`` opens Settings' Network pane and requires what it reads
+out to match ``nmcli`` on the same device: the connected Wi-Fi network, the
+wired link, NetworkManager's connectivity verdict, and no read error.
+
 The small ``[accessibility.atspi_acceptance]`` section in a signed app
 manifest is the certification data.  Adding an app is data, not another
 one-off screen-reader script.  Scenarios are intentionally limited to a safe
@@ -461,6 +465,232 @@ def exercise(scenario: Scenario, address: str) -> None:
     print(f"AT-SPI external client passed: {scenario.app_id} ({scenario.action} action round trip)")
 
 
+# Settings' English labels for NetworkManager's connectivity verdicts.
+CONNECTIVITY_LABELS = {
+    "full": "Connected to the internet",
+    "limited": "Limited connectivity",
+    "portal": "Sign-in required",
+    "none": "Offline",
+    "unknown": "Connectivity not checked",
+}
+SETTINGS_APP_NAME = "Personal Settings"
+NETWORK_PANE = "Network"
+NETWORK_TIMEOUT_SECONDS = 45
+# Settings words a failed host read "Can't …"; none may appear when nmcli
+# itself answers on the same device.
+READ_ERROR_MARKERS = ("Can't", "Can\u2019t")
+
+
+def split_terse(line: str) -> list[str]:
+    """Split one ``nmcli -t`` row on unescaped colons."""
+    fields, current, escaped = [], [], False
+    for char in line:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == ":":
+            fields.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    fields.append("".join(current))
+    return fields
+
+
+@dataclass(frozen=True)
+class NetworkExpectation:
+    connectivity: str
+    wifi: str | None
+    wired: bool
+
+
+def network_expectation(devices: str, connectivity: str) -> NetworkExpectation:
+    """What Settings must show, from ``nmcli -t -f TYPE,STATE,CONNECTION
+    device status`` and ``nmcli -t networking connectivity``."""
+    wifi = None
+    wired = False
+    for line in devices.splitlines():
+        fields = split_terse(line)
+        if len(fields) < 3 or fields[1] != "connected":
+            continue
+        if fields[0] == "wifi" and wifi is None and fields[2] not in ("", "--"):
+            wifi = f"Connected to {fields[2]}"
+        elif fields[0] == "ethernet":
+            wired = True
+    verdict = connectivity.strip().lower()
+    if verdict not in CONNECTIVITY_LABELS:
+        raise GateError(f"nmcli reported an unknown connectivity verdict {verdict!r}")
+    if wifi is None and not wired:
+        raise GateError(
+            "nmcli reports no connected Wi-Fi or wired link; "
+            f"the network check needs one:\n{devices}"
+        )
+    return NetworkExpectation(CONNECTIVITY_LABELS[verdict], wifi, wired)
+
+
+def network_mismatches(names: list[str], expected: NetworkExpectation) -> list[str]:
+    """What the Network pane's AT-SPI names lack or wrongly contain."""
+    # gdbus quotes a name with single quotes, or double quotes when the
+    # name itself holds an apostrophe.
+    texts = [
+        single or double
+        for name in names
+        for single, double in re.findall(r"'([^']*)'|\"([^\"]*)\"", name)
+    ]
+    problems = []
+    if expected.connectivity not in texts:
+        problems.append(f"connectivity {expected.connectivity!r}")
+    if expected.wifi and expected.wifi not in texts:
+        problems.append(f"Wi-Fi status {expected.wifi!r}")
+    if expected.wired and not any(
+        text == "Connected" or text.startswith("Connected · ") for text in texts
+    ):
+        problems.append("a connected wired status")
+    errors = [text for text in texts if text.startswith(READ_ERROR_MARKERS)]
+    if errors:
+        problems.append(f"no read error, but it shows {errors!r}")
+    return problems
+
+
+def settings_network(address: str) -> None:
+    devices = command("nmcli", "-t", "-f", "TYPE,STATE,CONNECTION", "device", "status")
+    connectivity = command("nmcli", "-t", "networking", "connectivity")
+    expected = network_expectation(devices, connectivity)
+    bus_name, pid = open_in_session(address, SETTINGS_APP_NAME)
+    try:
+        client = AtspiClient(address, bus_name)
+        deadline = time.monotonic() + START_TIMEOUT_SECONDS
+        while True:
+            try:
+                tree = client.tree(SHELL_TREE_NODE_LIMIT)
+                client.click(tree, NETWORK_PANE)
+                break
+            except GateError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(POLL_SECONDS * 4)
+        deadline = time.monotonic() + NETWORK_TIMEOUT_SECONDS
+        problems: list[str] = ["the pane was never read"]
+        names: list[str] = []
+        while time.monotonic() < deadline:
+            try:
+                names = list(client.tree(SHELL_TREE_NODE_LIMIT).values())
+            except GateError:
+                time.sleep(POLL_SECONDS * 4)
+                continue
+            problems = network_mismatches(names, expected)
+            if not problems:
+                break
+            time.sleep(POLL_SECONDS * 10)
+        if problems:
+            observed = "\n".join(sorted({name.strip() for name in names if name.strip()}))
+            raise GateError(
+                f"Settings' Network pane disagrees with nmcli ({expected}): it lacks "
+                f"{'; '.join(problems)}; observed AT-SPI names:\n{observed}\n"
+                f"session log: {app_log(SETTINGS_APP_NAME)}"
+            )
+    finally:
+        close_app(pid)
+    print(f"Settings network status matches nmcli: {expected}")
+
+
+FOCUSED_STATE_BIT = 1 << 12
+TYPING_TIMEOUT_SECONDS = 30
+TYPING_TREE_NODE_LIMIT = 512
+
+
+def text_reply(reply: str) -> str | None:
+    """The string in a gdbus `Text.GetText` reply such as `('hi',)`."""
+    match = re.match(r"\('(.*)',\)\s*$", reply.strip(), re.S)
+    if not match:
+        return None
+    return match.group(1).replace("\\'", "'").replace("\\\\", "\\")
+
+
+def text_nodes(client: AtspiClient) -> dict[str, str]:
+    """Every node exposing AT-SPI Text, with its whole current text."""
+    texts: dict[str, str] = {}
+    for path in client.tree(TYPING_TREE_NODE_LIMIT):
+        if "org.a11y.atspi.Text" not in client.interfaces(path):
+            continue
+        reply = client.call(path, "org.a11y.atspi.Text.GetText", "--", "0", "-1", check=False)
+        text = text_reply(reply)
+        if text is not None:
+            texts[path] = text
+    return texts
+
+
+def prepare_typing(address: str, app_name: str, create: str, state: Path) -> None:
+    """Open APP_NAME, activate CREATE (its new-document action) and give the
+    document keyboard focus, so the next real key presses type into it. The
+    app's bus, pid and document node are written to STATE for `typed`."""
+    bus_name, pid = open_in_session(address, app_name)
+    client = AtspiClient(address, bus_name)
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    while True:
+        try:
+            tree = client.tree(TYPING_TREE_NODE_LIMIT)
+            client.click(tree, create)
+            break
+        except GateError:
+            if time.monotonic() >= deadline:
+                close_app(pid)
+                raise
+            time.sleep(POLL_SECONDS * 4)
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    document = None
+    while document is None:
+        for path in client.tree(TYPING_TREE_NODE_LIMIT):
+            role = client.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
+            if "document" in role and "Component" in client.interfaces(path):
+                document = path
+                break
+        else:
+            if time.monotonic() >= deadline:
+                close_app(pid)
+                raise GateError(f"{app_name}: {create!r} opened no document to type into")
+            time.sleep(POLL_SECONDS * 4)
+    client.call(document, "org.a11y.atspi.Component.GrabFocus")
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    while True:
+        reply = client.call(document, "org.a11y.atspi.Accessible.GetState", check=False)
+        word = re.search(r"uint32\s+(\d+)", reply)
+        if word and int(word.group(1)) & FOCUSED_STATE_BIT:
+            break
+        if time.monotonic() >= deadline:
+            close_app(pid)
+            raise GateError(f"{app_name}: the document never took keyboard focus")
+        time.sleep(POLL_SECONDS)
+    state.write_text(f"{bus_name} {pid}\n")
+    print(f"{app_name}: a new document has keyboard focus; type into it now")
+
+
+def check_typed(address: str, state: Path, expected: str) -> None:
+    """The document opened by `prepare_typing` holds exactly EXPECTED."""
+    bus_name, pid_text = state.read_text().split()
+    pid = int(pid_text)
+    client = AtspiClient(address, bus_name)
+    deadline = time.monotonic() + TYPING_TIMEOUT_SECONDS
+    texts: dict[str, str] = {}
+    try:
+        while time.monotonic() < deadline:
+            try:
+                texts = text_nodes(client)
+            except GateError:
+                texts = {}
+            if expected in texts.values():
+                print(f"typed text reads back exactly: {expected!r}")
+                return
+            time.sleep(POLL_SECONDS * 4)
+        seen = sorted({text for text in texts.values() if text})
+        raise GateError(f"typed {expected!r}, but the document's text nodes hold {seen!r}")
+    finally:
+        close_app(pid)
+        state.unlink(missing_ok=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -470,6 +700,20 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command")
     opener = sub.add_parser("open", help="open an installed app in the session; print its AT-SPI bus and pid")
     opener.add_argument("app_name")
+    sub.add_parser(
+        "settings-network",
+        help="require Settings' Network pane to show what nmcli reports on this device",
+    )
+    typing = sub.add_parser(
+        "type-into",
+        help="open an installed app, start a new document and focus it for real keyboard input",
+    )
+    typing.add_argument("app_name")
+    typing.add_argument("create", help="the accessible name of the app's new-document action")
+    typing.add_argument("--state", type=Path, required=True)
+    typed = sub.add_parser("typed", help="check the document `type-into` opened holds exactly TEXT")
+    typed.add_argument("text")
+    typed.add_argument("--state", type=Path, required=True)
     card = sub.add_parser(
         "card", help="activate a launchpad card on the empty workspace; require that it opens its app",
     )
@@ -485,6 +729,15 @@ def main() -> int:
         if args.command == "open":
             bus_name, pid = open_in_session(address, args.app_name)
             print(f"{bus_name} {pid}")
+            return 0
+        if args.command == "settings-network":
+            settings_network(address)
+            return 0
+        if args.command == "type-into":
+            prepare_typing(address, args.app_name, args.create, args.state)
+            return 0
+        if args.command == "typed":
+            check_typed(address, args.state, args.text)
             return 0
         if args.command == "card":
             _bus_name, pid = open_from_launchpad_card(address, args.card_name, args.app_name)

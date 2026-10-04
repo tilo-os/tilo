@@ -2185,6 +2185,23 @@ impl NotesApp {
         Ok(())
     }
 
+    /// The published resource `id` a direct affordance acts through. Hosted
+    /// by the framework, the notebook itself is the framework root's door,
+    /// published from the [`Notebook`](crate::resource::Notebook) resource
+    /// over the state it presents; its pages stay this widget's.
+    fn acted_on_resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        use crate::resource::Notebook;
+        use ui::tilo_resource::Resource as _;
+        if self.actions.is_hosted() && id == Notebook::KIND {
+            return Some(ui::tilo_resource::publish::<Notebook>(
+                id,
+                Notebook::LABEL,
+                &self.workspace,
+            ));
+        }
+        ui::resources::resource(self, doc, id)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one flat dispatch over every canonical Notes event kind"
@@ -2263,7 +2280,8 @@ impl NotesApp {
             _ => None,
         };
         if let Some((resource_id, action_id)) = resource_action {
-            let resource = ui::resources::resource(self, doc, &resource_id)
+            let resource = self
+                .acted_on_resource(doc, &resource_id)
                 .ok_or("page action resource no longer exists")?;
             ui::ActionHost::authorize_resource_action(doc, &resource, action_id)?;
         }
@@ -7526,6 +7544,34 @@ mod tests {
                 .map(crate::actions::InlineMarkSpan::from_ui)
                 .collect::<Vec<_>>();
             assert_eq!(restored, marks);
+        }
+
+        eprintln!("phase rebinding_the_open_note_keeps_the_caret_where_it_was");
+        {
+            let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
+            let (index, block, end) = {
+                let editor = app.main.editor();
+                let index = editor.blocks().len().saturating_sub(1);
+                let block = &editor.blocks()[index];
+                (index, block.id.clone(), block.text().len())
+            };
+            assert!(end > 0);
+            app.main
+                .editor_mut()
+                .focus_block(index, ui::widget::CursorPlacement::End);
+            app.bound_page = None;
+            app.sync(&mut state.doc, &state.root);
+            let editor = app.main.editor();
+            let focused = editor
+                .focused_index()
+                .and_then(|focused| editor.blocks().get(focused))
+                .expect("the rebound editor keeps a focused block");
+            assert_eq!(focused.id, block, "the caret stays in its block");
+            assert_eq!(
+                focused.line.cursor_pos(),
+                end,
+                "the next letter is typed after the last one, not at the start"
+            );
         }
 
         eprintln!("phase mark_only_dirty_edge_dispatches_the_canonical_action");
