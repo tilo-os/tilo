@@ -1903,7 +1903,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
             .find(|entry| entry.title.contains('夏'))
             .expect("the photograph is a search entry");
         let address = entry.action.expect("a hit opens what it found");
-        assert_eq!(address.action, "open");
+        assert_eq!(address.action, "view");
         assert!(
             PhotosResources
                 .publish_resources(&doc)
@@ -2310,11 +2310,8 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         );
     }
 
-    eprintln!("phase folder_status_pointer_and_semantic_stop_share_cancellation");
+    eprintln!("phase folder_status_effect_and_semantic_stop_share_cancellation");
     {
-        use winit::dpi::PhysicalPosition;
-        use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
-
         let mut app = test_app();
         app.canvas_rect = Rect::new(0.0, 48.0, 1_000.0, 720.0);
         app.rect = Rect::new(0.0, 0.0, 1_000.0, 768.0);
@@ -2331,70 +2328,12 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         assert!(stop.width() >= 44.0 && stop.height() >= 40.0);
 
         let mut doc = AutoCommit::new();
-        let mut tree = TaffyTree::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-        let mut focus = None;
-        let modifiers = winit::event::Modifiers::default();
-        for event in [
-            WindowEvent::CursorMoved {
-                device_id: DeviceId::dummy(),
-                position: PhysicalPosition::new(stop.center().x, stop.center().y),
-            },
-            WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-        ] {
-            // The host creates a fresh propagation flag for every window event.
-            // Reusing the flag across this synthetic sequence makes the initial
-            // cursor move suppress the later press/release and never exercises
-            // the stop action at all.
-            let mut handled = false;
-            app.handle_event(
-                &event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: &mut doc,
-                    path: &ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
-        }
-        let invocation = ui::widget::controls::take_control_invocation(&mut app)
-            .expect("pointer stop is exported through the host action door");
-        assert_eq!(
-            invocation.address.resource,
-            "tilo.control:photos-directory-stop"
-        );
-        assert_eq!(invocation.address.action, "invoke");
-        let payload = serde_json::to_vec("photos-directory-stop").unwrap();
-        let started = app
-            .start_operation(
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    &payload,
-                ),
-                &mut doc,
-                &ROOT,
-            )
-            .expect("host dispatches the retained button")
-            .expect("retained button accepts its operation");
-        assert!(matches!(
-            started,
-            ui::widget::ResourceOperationStart::Completed(_)
-        ));
+        app.answer_effect(
+            PhotosEffect::StopImport,
+            tilo_actions::InvocationId::new(),
+            &PhotosDoc::library(&doc),
+        )
+        .expect("the stop effect is answered");
         app.sync(&mut doc, &ROOT);
         let job = app
             .directory_import

@@ -4263,7 +4263,21 @@ impl FrameHarness {
     }
 
     fn expect_now(&self, expected: &SemanticExpectation) -> Result<(), String> {
-        let node = self.access_node_named(&expected.target, expected.semantic_target.as_deref())?;
+        // A control a widget paints and publishes as a semantic child is
+        // named by its own target, as performing it is.
+        let owner = if expected.semantic_target.is_none()
+            && !self.named_target_nodes().contains_key(&expected.target)
+        {
+            self.semantic_target_owner(&expected.target)?
+        } else {
+            None
+        };
+        let node = match &owner {
+            Some(owner) => self.access_node_named(owner, Some(&expected.target))?,
+            None => {
+                self.access_node_named(&expected.target, expected.semantic_target.as_deref())?
+            }
+        };
         let mut mismatches = Vec::new();
         let actual_role = role_name(node.role);
         if let Some(role) = expected.role.as_deref()

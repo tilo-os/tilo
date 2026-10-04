@@ -4170,7 +4170,7 @@ mod tests {
             let socket = dir.path().join("collab.sock");
             let _broker = peer::spawn_with_agent_actions(
                 &socket,
-                &[(PHOTOS, PRODUCE), (PHOTOS, "open"), (WRITER, "place-image")],
+                &[(PHOTOS, PRODUCE), (PHOTOS, "view"), (WRITER, "place-image")],
             );
             let mut photo = automerge::AutoCommit::new();
             let source = photos::pixels::encode_png(&photos::shots_pattern(3, 2)).unwrap();
@@ -4227,7 +4227,7 @@ mod tests {
                             resource.children.clear();
                             resource
                                 .actions
-                                .retain(|action| action.id == PRODUCE || action.id == "open");
+                                .retain(|action| action.id == PRODUCE || action.id == "view");
                             for action in &mut resource.actions {
                                 if action.id == PRODUCE {
                                     action.contract.result = result.clone();
@@ -4378,7 +4378,7 @@ mod tests {
                     &session.broker_catalogue,
                     &session.cfg.permissions,
                 );
-                if [PRODUCE, "open", "place-image"]
+                if [PRODUCE, "view", "place-image"]
                     .iter()
                     .all(|id| offers.iter().any(|offer| offer.address().action == *id))
                 {
@@ -4403,7 +4403,7 @@ mod tests {
             let mut steps = vec![producer.clone()];
             match between {
                 Between::Nothing => {}
-                Between::BrokerView => steps.push(bound_step("open", serde_json::Map::new())),
+                Between::BrokerView => steps.push(bound_step("view", serde_json::Map::new())),
                 Between::Duplicate => steps.push(producer),
                 Between::LocalRotate => steps.push(plan::Step::own(Instruction::Perform {
                     id: surface::encode_address(&tilo_actions::ActionAddress::new(
@@ -4570,7 +4570,7 @@ mod tests {
                     Between::BrokerView,
                     false,
                 );
-                assert_no_consumer(&observed, &[PRODUCE, "open"]);
+                assert_no_consumer(&observed, &[PRODUCE, "view"]);
             }
 
             // Case `run_plan_invalidates_content_after_a_skipped_duplicate`.

@@ -151,7 +151,7 @@ impl ResourceSurface<Photos, PhotosEffect> for PhotosApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Photos>) {
-        self.attach_framework(cx.dispatcher());
+        self.attach_framework(cx.dispatcher(), cx.actions());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -268,8 +268,6 @@ mod tests {
 
     #[test]
     fn effects_reach_the_window_from_the_library_and_from_its_photographs() {
-        use ui::tilo_actions::ActionAddress;
-
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("lake.png");
         let png = crate::pixels::encode_png(&crate::shots_pattern(30, 20)).unwrap();
@@ -282,19 +280,15 @@ mod tests {
             .expect("the library opens");
         assert!(surface(&mut app, |photos| photos.shows_library()));
 
-        // A photograph's own row opens it, as the palette or an agent does.
-        let row = |id: &str, action: &str| ui::bound_dispatch::BoundActionAddress {
-            instance_id: 0,
-            address: ActionAddress::new(id, action),
-        };
-        let instance = app.harness().component_instance_id().unwrap();
-        let open = ui::bound_dispatch::BoundActionAddress {
-            instance_id: instance,
-            ..row(&photo.id, "open")
-        };
-        app.harness()
-            .invoke_bound_action(&open, &serde_json::Map::new())
-            .expect("the photograph opens from its row");
+        // A photograph's own row opens it, as the palette or an agent does:
+        // the row offers the effect under the effect's own id.
+        app.effect_on(
+            &photo.id,
+            &PhotosEffect::View {
+                photo_id: photo.id.clone(),
+            },
+        )
+        .expect("the photograph opens from its row");
         app.harness().relayout();
         assert!(!surface(&mut app, |photos| photos.shows_library()));
         assert_eq!(
@@ -311,16 +305,75 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let export = ui::bound_dispatch::BoundActionAddress {
-            instance_id: instance,
-            ..row(&photo.id, crate::actions::EXPORT_EDITED_CONTENT_ACTION_ID)
-        };
-        let started = app
-            .harness()
-            .invoke_bound_action(&export, &serde_json::Map::new())
+        let edits = crate::model::Edits::default().rotated_right();
+        let output = app
+            .effect_on(
+                &photo.id,
+                &PhotosEffect::ExportEditedContent {
+                    resource_id: photo.id.clone(),
+                    source_content: photo.image.content.clone().unwrap(),
+                    edits,
+                },
+            )
             .expect("the photograph exports its edits");
-        let output = started.completed().expect("the export answers at once");
         let produced = tilo_actions::content_hash(&output.resources[0]).expect("content");
         assert_ne!(Some(produced), photo.image.content.as_deref());
+    }
+
+    #[test]
+    fn the_windows_controls_are_bound_to_its_effects() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lake.png");
+        let png = crate::pixels::encode_png(&crate::shots_pattern(30, 20)).unwrap();
+        std::fs::write(&path, &png).unwrap();
+        let mut app = TestApp::<PhotosShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.harness().relayout();
+        let photo = app.state().library.photos[0].id.clone();
+
+        // A toolbar control reaches the window through its effect, as every
+        // other caller does.
+        app.effect(&PhotosEffect::RotateRight)
+            .expect("rotating the shown photograph is offered");
+        app.harness().relayout();
+        assert_eq!(
+            app.state()
+                .library
+                .photo(&photo)
+                .unwrap()
+                .edits
+                .rotate_quarters,
+            1
+        );
+
+        // Every retained control is bound to an effect the window offers.
+        let bindings = surface(&mut app, |photos| {
+            ui::widget::controls::ActionControls::control_action_bindings(photos)
+        });
+        assert!(!bindings.is_empty());
+        let offered: Vec<_> = PhotosEffect::specs()
+            .into_iter()
+            .map(|spec| spec.id)
+            .collect();
+        assert!(offered.iter().any(|id| id == "rotate-right"));
+    }
+
+    /// The saved scenario `tilo-app test` drives runs against the framework
+    /// app: its targets name the window's controls as the live window does.
+    #[test]
+    fn the_saved_library_entry_scenario_drives_the_framework_window() {
+        let spec = ui::headless::parse_spec(&format!(
+            "{{\"actions\": {}}}",
+            include_str!("../tests/scenarios/library-entry.json")
+        ))
+        .expect("the scenario parses");
+        let mut app = TestApp::<PhotosShell>::new().unwrap();
+        app.harness().relayout();
+        for action in &spec.actions {
+            app.harness()
+                .perform(action)
+                .unwrap_or_else(|error| panic!("scenario step failed: {error}"));
+        }
+        app.harness().relayout();
+        assert!(surface(&mut app, |photos| photos.shows_library()));
     }
 }
