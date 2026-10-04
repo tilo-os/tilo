@@ -1573,8 +1573,9 @@ collaboration channel (`runtime-collab`):
   (`ui_core::collaboration::record_content::RecordContent`): `put` also offers
   the bytes on the window's route, a read of a missing hash asks for it and
   reads as `ContentState::Pending` until it is here, and arriving bytes are
-  verified and kept. Apps reach it as `cx.content()`; a store an app opens
-  itself (`ContentStore::for_app()`) bypasses the route.
+  verified and kept. Apps reach it as `cx.content()`. A store an app opens
+  itself (`ContentStore::for_app()`) would bypass the route, so only the
+  hosts that lend the store call it (`tools/policy/check_app_content_store.py`).
 - *Host side.* Every host that runs the broker implements the verbs with one
   service, `tilo_action_broker::record_content::RouteContent`, over two
   things the host supplies: its *shelf* — the device content store, read and
@@ -1601,9 +1602,9 @@ collaboration channel (`runtime-collab`):
   One reference names at most 64 MiB; bigger content belongs in a file
   record. Content is kept per room and app, not per record, until the
   reverse index from content to referencing records (§14) replaces the
-  per-room reachability tags; the filesystem daemon's own room-scoped peer
-  fetch (`tilo-fs-media/0`) still serves apps that read a store they opened
-  themselves, and goes once every app reads through `cx.content()`.
+  per-room reachability tags. This is the only way content moves between
+  devices: the filesystem daemon serves what this device keeps and fetches
+  nothing itself.
 
 ### 13.5 Files and format-aware files
 
