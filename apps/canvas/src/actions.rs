@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use ui::tilo_actions::{self, ActionError};
 use ui::tilo_resource::{self, Doc, JsonSchema, order};
+use ui::vello::kurbo::BezPath;
 
 use crate::doc;
 use crate::media::{self, MediumSpec};
@@ -168,8 +169,8 @@ pub struct NewMark {
     /// A group id: edits naming it change the members as one; `a/b`
     /// nests group b in a.
     pub group: Option<String>,
-    /// Cut to this mark's or group's shape (opacity 0 hides it), or
-    /// `selection`.
+    /// Cut to this mark's or group's shape (opacity 0 hides it), to
+    /// `selection` (its area now) or to an area's SVG path data.
     pub clip: Option<String>,
     /// An affine `[a, b, c, d, e, f]` on the geometry, as `inspect` shows.
     pub transform: Option<[f64; 6]>,
@@ -263,7 +264,7 @@ pub struct NewStroke {
     pub angle: Option<f64>,
     /// Keep the paint inside this mark's shape, as a painter cuts in
     /// against an edge: texture a rock or a crown within its silhouette.
-    /// Or `selection`.
+    /// Or `selection` (its area now), or an area's SVG path data.
     pub clip: Option<String>,
 }
 
@@ -302,7 +303,8 @@ pub struct EditMarks {
     pub feather: Option<f64>,
     /// Put into this group (`a/b` nests b in a); empty takes out of any.
     pub group: Option<String>,
-    /// Cut to this mark's or group's shape; empty uncuts.
+    /// Cut to this mark's or group's shape, `selection` or an area's SVG
+    /// path data; empty uncuts.
     pub clip: Option<String>,
     /// A colour (replacing a gradient), or `none`.
     pub fill: Option<String>,
@@ -817,26 +819,37 @@ pub(crate) fn placed(id: String, name: String, shape: Shape, style: Style) -> Ma
         transform: None,
         group: String::new(),
         clip: String::new(),
+        area: String::new(),
     }
 }
 
-/// The clip a new mark names: `selection` is a mark of the selection's
-/// shape, made on `layer` when first used.
-fn clip_named(
-    doc: &mut Doc,
-    art: &mut Artwork,
-    layer: &str,
-    clip: Option<&String>,
-) -> Result<String, ActionError> {
-    match clip.map(String::as_str) {
+/// What a new mark's `clip` names, as the mark keeps it: the mark it is
+/// cut to, or the area it is kept inside (`selection` is the selection's
+/// area as it is now; SVG path data is an area of its own).
+pub(crate) fn clip_named(
+    art: &Artwork,
+    clip: Option<&str>,
+) -> Result<(String, String), ActionError> {
+    match clip {
+        None | Some("") => Ok((String::new(), String::new())),
         Some(SELECTION_CLIP) => {
-            let cut = crate::selection::selection_cut(doc, art, layer)?;
-            if art.mark(&cut).is_none() {
-                *art = doc::read(doc);
-            }
-            Ok(cut)
+            let selection = art.selection.as_ref().ok_or_else(|| {
+                refuse("clip \"selection\" keeps the mark inside the selection, but nothing is selected; select first")
+            })?;
+            Ok((String::new(), selection.d.clone()))
         }
-        clip => Ok(clip.unwrap_or_default().to_owned()),
+        Some(clip) if art.mark(clip).is_none() && !valid_id(clip) => {
+            let area = BezPath::from_svg(clip).map_err(|_| {
+                refuse(format!(
+                    "clip {clip:?} is neither a mark, \"selection\" nor SVG path data of an area"
+                ))
+            })?;
+            if area.elements().len() < 3 {
+                return Err(refuse(format!("clip {clip:?} encloses no area")));
+            }
+            Ok((String::new(), clip.to_owned()))
+        }
+        Some(clip) => Ok((clip.to_owned(), String::new())),
     }
 }
 
@@ -846,13 +859,11 @@ pub const SELECTION_CLIP: &str = "selection";
 impl Draw {
     fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
         let layer = target_layer(art, self.layer.as_deref())?;
-        let mut art = art.clone();
         let clips = self
             .marks
             .iter()
-            .map(|mark| clip_named(doc, &mut art, &layer, mark.clip.as_ref()))
-            .collect::<Result<Vec<String>, ActionError>>()?;
-        let art = &art;
+            .map(|mark| clip_named(art, mark.clip.as_deref()))
+            .collect::<Result<Vec<(String, String)>, ActionError>>()?;
         let marks = self
             .marks
             .iter()
@@ -901,9 +912,10 @@ impl Draw {
                 } else {
                     style
                 };
-                Mark {
+                let (clip, area) = clips.get(index).cloned().unwrap_or_default();
+                let mut placed = Mark {
                     group: mark.group.clone().unwrap_or_default(),
-                    clip: clips.get(index).cloned().unwrap_or_default(),
+                    clip,
                     transform: mark.transform,
                     ..placed(
                         id,
@@ -911,7 +923,9 @@ impl Draw {
                         mark.shape.clone(),
                         style,
                     )
-                }
+                };
+                placed.keep_inside(&area);
+                placed
             })
             .collect();
         add_marks(doc, art, &layer, marks)
@@ -921,13 +935,11 @@ impl Draw {
 impl Paint {
     fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
         let layer = target_layer(art, self.layer.as_deref())?;
-        let mut art = art.clone();
         let clips = self
             .strokes
             .iter()
-            .map(|stroke| clip_named(doc, &mut art, &layer, stroke.clip.as_ref()))
-            .collect::<Result<Vec<String>, ActionError>>()?;
-        let art = &art;
+            .map(|stroke| clip_named(art, stroke.clip.as_deref()))
+            .collect::<Result<Vec<(String, String)>, ActionError>>()?;
         let marks = self
             .strokes
             .iter()
@@ -956,7 +968,9 @@ impl Paint {
                     dab_length: stroke.dab_length,
                 };
                 let mut mark = placed(id, stroke.name.clone().unwrap_or_default(), shape, style);
-                mark.clip = clips.get(index).cloned().unwrap_or_default();
+                let (clip, area) = clips.get(index).cloned().unwrap_or_default();
+                mark.clip = clip;
+                mark.keep_inside(&area);
                 mark
             })
             .collect::<Vec<Mark>>();
@@ -1085,12 +1099,6 @@ impl EditMarks {
                 if let Some(group) = &self.group {
                     mark.group.clone_from(group);
                 }
-                if let Some(clip) = &self.clip {
-                    if !clip.is_empty() {
-                        check_clip(art, (&mark.id, &mark.group), clip, &[])?;
-                    }
-                    mark.clip.clone_from(clip);
-                }
                 self.restyle(&mut mark);
                 self.reframe(&mut mark, crop)?;
                 self.reshape(&mut mark);
@@ -1103,6 +1111,8 @@ impl EditMarks {
                 if let Some(transform) = self.transform {
                     mark = mark.transformed(ui::vello::kurbo::Affine::new(transform));
                 }
+                // Cut last: the area is where it is now, wherever the mark moved.
+                self.recut(art, &mut mark)?;
                 check_style(art, &mark.layer, &mark.style)
                     .and_then(|()| check_brush(art, &mark.layer, &mark))
                     .map_err(|error| refuse(format!("mark {:?}: {error}", mark.id)))?;
@@ -1165,6 +1175,19 @@ impl EditMarks {
         placement.apply(&mut mark.shape);
         if let Some(problem) = mark.shape.problem() {
             return Err(refuse(format!("mark {:?}: {problem}", mark.id)));
+        }
+        Ok(())
+    }
+
+    /// Cut `mark` to what `clip` names, if it names anything.
+    fn recut(&self, art: &Artwork, mark: &mut Mark) -> Result<(), ActionError> {
+        if let Some(clip) = &self.clip {
+            let (cut, area) = clip_named(art, Some(clip))?;
+            mark.clip = cut;
+            mark.keep_inside(&area);
+            if !mark.clip.is_empty() {
+                check_clip(art, (&mark.id, &mark.group), &mark.clip, &[])?;
+            }
         }
         Ok(())
     }
