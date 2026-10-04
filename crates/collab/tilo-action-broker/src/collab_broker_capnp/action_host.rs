@@ -17,8 +17,8 @@ use tilo_actions::remote::{
     APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX,
     ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
-    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, RowVisibility, pending,
-    workspace_provider, workspace_provider_room,
+    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, RowVisibility,
+    application_provider, pending, workspace_provider, workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
 
@@ -855,7 +855,9 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        if is_launchable_provider(&request.target.provider) {
+        if is_launchable_provider(&request.target.provider)
+            || application_provider(&request.target.provider).is_some()
+        {
             return self.invoke_launchable(caller, request);
         }
         if let Some(root) = self.directory_target(caller, request) {
@@ -948,18 +950,45 @@ impl CapnpBrokerState {
     }
 
     /// Check a launchable invocation before anything starts: the caller may
-    /// launch the app and use the retained action, and carries the
-    /// confirmation its contract asks for, so a refusal never costs a launch.
-    /// Returns the workspace to launch into and the application.
+    /// launch the app and use the action, and carries the confirmation its
+    /// contract asks for, so a refusal never costs a launch. An application
+    /// target names an app that may never have run in the workspace; what it
+    /// offers is then only known once it publishes, and the delivery admits
+    /// the invocation against that. Returns the workspace to launch into and
+    /// the application.
     fn admit_launchable(
         &self,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<(Workspace, String), ActionHostError> {
-        let retained = self
-            .launchable
-            .surface_for(&request.target.provider)
-            .ok_or(ActionHostError::UnknownAction)?;
+        let address = &request.target.address;
+        let (room, app_id, offered) =
+            if let Some((room, app_id)) = application_provider(&request.target.provider) {
+                let offered = self
+                    .published_surfaces()
+                    .into_iter()
+                    .chain(self.launchable.surfaces())
+                    .filter(|surface| surface.app_id == app_id && surface.route.cluster_id == room)
+                    .find_map(|surface| {
+                        surface.actions.into_iter().find(|action| {
+                            action.resource == address.resource && action.action == address.action
+                        })
+                    });
+                (room.to_owned(), app_id.to_owned(), offered)
+            } else {
+                let retained = self
+                    .launchable
+                    .surface_for(&request.target.provider)
+                    .ok_or(ActionHostError::UnknownAction)?;
+                let offered = retained
+                    .actions
+                    .into_iter()
+                    .find(|action| {
+                        action.resource == address.resource && action.action == address.action
+                    })
+                    .ok_or(ActionHostError::UnknownAction)?;
+                (retained.route.cluster_id, retained.app_id, Some(offered))
+            };
         // Only a caller on this machine launches apps on this desktop.
         if caller.room().is_none() {
             return Err(ActionHostError::UnknownAction);
@@ -967,39 +996,31 @@ impl CapnpBrokerState {
         let (workspace, policy, now) = self
             .workspaces_for(caller)
             .into_iter()
-            .find(|(workspace, _, _)| workspace.room.to_string() == retained.route.cluster_id)
+            .find(|(workspace, _, _)| workspace.room.to_string() == room)
             .ok_or(ActionHostError::UnknownAction)?;
-        if workspace.decide_at(
-            &policy,
-            &ResourceRef::App(retained.app_id.clone()),
-            Verb::Write,
-            now,
-        ) != CapDecision::Allow
+        if workspace.decide_at(&policy, &ResourceRef::App(app_id.clone()), Verb::Write, now)
+            != CapDecision::Allow
         {
             return Err(refusal(
                 "the caller is not allowed to launch that application".into(),
             ));
         }
-        let address = &request.target.address;
-        let action = retained
-            .actions
-            .iter()
-            .find(|action| action.resource == address.resource && action.action == address.action)
-            .filter(|action| {
-                Self::allowed(
-                    &workspace,
-                    &policy,
-                    now,
-                    &retained.app_id,
-                    &action.action,
-                    action.contract.permission,
-                )
-            })
-            .ok_or(ActionHostError::UnknownAction)?;
-        if !confirmation_satisfied(action, request.confirmation.as_ref()) {
-            return Err(ActionHostError::ConfirmationRequired);
+        if let Some(action) = offered {
+            if !Self::allowed(
+                &workspace,
+                &policy,
+                now,
+                &app_id,
+                &action.action,
+                action.contract.permission,
+            ) {
+                return Err(ActionHostError::UnknownAction);
+            }
+            if !confirmation_satisfied(&action, request.confirmation.as_ref()) {
+                return Err(ActionHostError::ConfirmationRequired);
+            }
         }
-        Ok((workspace, retained.app_id))
+        Ok((workspace, app_id))
     }
 
     /// Launch `app_id` unless it already publishes the action, then deliver
