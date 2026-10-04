@@ -1571,6 +1571,68 @@ jobs:
           # (run 49176) for a next build that hardly ever has the same sources.
           # The steps below take its results from this builder.
 
+      # The browser engine is its own signed runtime, built above. A
+      # publication also seals it as the registry package that offers it, so
+      # a device installing the Browser from the Store fetches the engine
+      # with it. Built from this builder's results; signed with the app
+      # publisher identity, which never enters a layer.
+      - name: Package the browser engine runtime for the registry
+        id: engine-runtime-package
+        if: steps.release-mode.outputs.publish == 'true' && env.TILO_WITH_BROWSER == '1' && steps.compile-stages.outcome == 'success'
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ secrets.RUNTIME_BUNDLE_SIGNING_KEY }}
+          TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
+        with:
+          context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
+          file: os/Containerfile
+          target: engine-runtime-package
+          push: false
+          outputs: type=local,dest=engine-runtime-package
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            BASE_REF=${{ env.BASE_REF }}
+            RPMS_REF=${{ env.RPMS_REF }}
+            KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
+            TILO_WINDOWS_ARCH=${{ matrix.arch }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
+            TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
+            TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_CARGO_FRESHNESS=${{ env.TILO_CARGO_FRESHNESS }}
+            TILO_BUILD_CACHE_KEY=${{ env.TILO_BUILD_CACHE_KEY }}
+            TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
+            TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
+            TILO_GENERATION=${{ env.TILO_GENERATION }}
+            TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+            ENGINE_RUNTIME_PACKAGE_VERSION=0.1.${{ github.run_number }}+g${{ github.sha }}
+          secret-envs: |
+            browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            tapp_publisher_identity=TAPP_PUBLISHER_IDENTITY
+            ${{ steps.compiler-cache.outputs.secret-envs }}
+          provenance: false
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: steps.engine-runtime-package.outcome == 'success'
+        with:
+          name: engine-runtime-package-${{ needs.plan.outputs.hardware-profile }}-${{ matrix.arch }}
+          path: engine-runtime-package/
+          if-no-files-found: error
+          retention-days: 3
+
       # The rootfs up to the Tilo build outputs: RPMs, initramfs and every
       # slow step. It changes only with os/ inputs, packages and the kernel;
       # the image build below adds the build outputs on top of it.
@@ -3132,6 +3194,65 @@ jobs:
           name: tilo-os-child-${{ matrix.arch }}
           path: release-child/${{ matrix.arch }}.json
           if-no-files-found: error
+
+  # Offers the browser engine runtime each publication sealed in the registry
+  # (tools/apps/publish-runtime-package.sh). Separate from the image build so a
+  # registry refusal is reported without holding back the published image.
+  publish-engine-runtime:
+    needs: [plan, build-and-push]
+    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'generic'
+    runs-on: runner-quality
+    container:
+      image: registry.tilo.so/tilo/tilo-release-tools@sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa
+    timeout-minutes: 60
+    enable-openid-connect: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          pattern: engine-runtime-package-generic-*
+          path: engine
+      - name: Offer the browser engine runtime in the registry
+        env:
+          MAIN_AUDIENCE: ${{ vars.TILO_APP_RELEASE_MAIN_AUDIENCE }}
+          TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
+        run: |
+          set -euo pipefail
+          [[ -n $MAIN_AUDIENCE && -n $TAPP_PUBLISHER_IDENTITY ]]
+          jwt=$(curl --fail --silent --show-error \
+            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$MAIN_AUDIENCE" | jq -er .value)
+          echo "::add-mask::$jwt"
+          identity="$RUNNER_TEMP/tilo-engine-publisher.json"
+          (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$identity")
+          trap 'rm -f "$identity"' EXIT
+          metadata="$RUNNER_TEMP/tilo-engine-metadata.json"
+          jq -n '{name: {en: "Browser engine"},
+                  description: {en: "The Chromium engine the Browser renders web pages with. The Store installs it together with the Browser."},
+                  tagline: {en: "Web engine for the Browser"},
+                  supported_languages: ["en"],
+                  source_url: "https://code.tilo.so/tilo/tilo"}' > "$metadata"
+          host_arch=$(uname -m)
+          found=0
+          for dir in engine/engine-runtime-package-generic-*; do
+            arch=${dir##*-}
+            [[ $arch == x86_64 || $arch == aarch64 ]] || continue
+            found=1
+            cli="engine/engine-runtime-package-generic-$host_arch/bin/tilo-app-package"
+            chmod 0755 "$cli"
+            VERSION="0.0.0-$GITHUB_SHA" TILO_PACKAGE_TOKEN="$jwt" \
+              PACKAGE_API="$GITHUB_SERVER_URL/api/packages/${GITHUB_REPOSITORY%%/*}/generic" \
+              REGISTRY_URL="${TILO_REGISTRY_URL%/}" OWNER="${GITHUB_REPOSITORY%%/*}" \
+              REGISTRY_CLI="$cli" REGISTRY_IDENTITY="$identity" \
+              tools/apps/publish-runtime-package.sh "$dir/package" "$arch" \
+              so.tilo.runtime.chromium tilo-app-runtime-chromium "$metadata"
+          done
+          [[ $found == 1 ]]
 
   promote-multiarch:
     needs: [plan, build-and-push]

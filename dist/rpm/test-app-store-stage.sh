@@ -18,15 +18,15 @@ package="settings-0.1.0-$arch.tapp"
 collection="tilo-apps-$arch.tar.gz"
 
 release=$work/release
-mkdir -p "$release"/{tapp,runtime/tilo-runtime/2026.07,bin}
+mkdir -p "$release"/{tapp,runtime/tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef,bin}
 printf 'fixture package\n' > "$release/tapp/$package"
-printf '\177ELFfixture\n' > "$release/runtime/tilo-runtime/2026.07/libfixture.so"
-cat > "$release/runtime/tilo-runtime/2026.07/bundle.toml" <<'EOF'
-version = "2026.07"
+printf '\177ELFfixture\n' > "$release/runtime/tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef/libfixture.so"
+cat > "$release/runtime/tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef/bundle.toml" <<'EOF'
+version = "2026.07+native.0123456789abcdef0123456789abcdef"
 publisher_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 EOF
 cat > "$release/index.json" <<'EOF'
-{"apps":[{"runtime":"tilo-runtime/2026.07"}]}
+{"apps":[{"runtime":"tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef"}]}
 EOF
 (cd "$release" && find tapp runtime -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS \
     && sha256sum index.json >> SHA256SUMS \
@@ -96,8 +96,8 @@ test ! -e "$stage/usr/lib/tilo-apps/content"
 test ! -e "$stage/usr/lib/tilo-apps/tmp"
 test ! -e "$stage/usr/lib/tilo-apps/.lock"
 test "$(stat -c %a "$stage/usr/share/tilo-apps/registry.toml")" = 644
-test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07/bundle.toml")" = 644
-test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07/libfixture.so")" = 755
+test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef/bundle.toml")" = 644
+test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef/libfixture.so")" = 755
 test -x "$stage/usr/lib/tilo-apps/bin/settings-cli"
 test "$(stat -c %a "$stage/usr/lib/tilo-apps/bin/settings-cli.tilo-shim")" = 644
 grep -Fqx '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \

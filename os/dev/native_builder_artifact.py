@@ -126,7 +126,8 @@ def inventory(root, inputs):
     for name in ('runtime-bundle-publisher.hex', 'app-publisher.hex'):
         require(re.fullmatch(rb'[0-9a-f]{64}\n?', tools.read_bounded(root / 'out' / name, 128)),
                 'builder publisher identity missing')
-    require((root / 'usr/lib/tilo-runtime' / inputs['runtime_version']).is_dir()
+    # The runtime is baked under its release and ABI digest.
+    require(len(list((root / 'usr/lib/tilo-runtime').glob(inputs['runtime_version'] + '+native.*'))) == 1
             and (root / 'usr/share/tilo-apps/registry.toml').is_file(), 'runtime or app store missing')
     return result
 

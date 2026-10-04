@@ -1072,6 +1072,7 @@ launch-error-host-app-refused = This app's desktop entry cannot be started.
 launch-failed-launcher-unavailable = The app launcher is unavailable. Open Applications and try again.
 launch-failed-stopped = The app stopped before opening. Open Applications and try again.
 launch-failed-missing-library = The app needs a library this system doesn't have, so it stopped before opening.
+launch-failed-runtime-mismatch = This app was built for a different Tilo runtime. Update or reinstall it to get the runtime it needs.
 launch-failed-sandbox = The app's sandbox could not be set up, so it stopped before opening.
 launch-failed-collaboration = The app couldn't join this workspace's collaboration service, so it stopped before opening. The desktop log says why.
 launch-failed-crashed = The app crashed before opening. Open Applications and try again.
