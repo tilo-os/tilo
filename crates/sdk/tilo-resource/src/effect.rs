@@ -35,13 +35,20 @@
 //! Variant options: `label = "…"` (else the first doc line), `job` (runs in
 //! the background and reports progress, then its result), `cancellable`
 //! (a job the caller may cancel), `returns` (answers with a JSON value),
-//! `destructive` (asks for confirmation) and `permission = "read"` (any
-//! participant may invoke it; the default needs write access). Field
-//! `#[param("…")]` describes a parameter.
+//! `destructive` (asks for confirmation), `view` (changes only what the
+//! invoking window shows — show this snapshot, open that tab — published as
+//! a view operation any reader may invoke) and `permission = "read"` (any
+//! participant may invoke it; the default needs write access, a view's
+//! read access). Field `#[param("…")]` describes a parameter.
+//!
+//! An item a surface lists outside the document (a snapshot on disk, a
+//! connection on this device) offers an effect on itself with its
+//! arguments already bound: [`Effect::bound`], carried by the item's live
+//! row.
 
 use tilo_actions::{
     ActionContract, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, ExecutionMode,
-    OperationKind, PermissionRequirement, ResultSpec, RiskLevel,
+    OperationKind, PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 /// A typed vocabulary of effects. Derive it (`#[derive(Effect)]`); see the
@@ -77,6 +84,49 @@ pub trait Effect: Sized + 'static {
             .collect()
     }
 
+    /// This effect with its arguments bound, as one item offers it: verify
+    /// *this* snapshot, connect *this* profile. The action has the effect's
+    /// declared contract and asks its caller for nothing, so a live row
+    /// carries it beside the item's other operations; the handler receives
+    /// this value.
+    fn bound(&self) -> ActionSpec {
+        let id = self.id();
+        let declared = Self::declarations()
+            .into_iter()
+            .find(|decl| decl.id == id)
+            .map(|decl| decl.spec(Self::OPERATION));
+        let (label, kind) = declared.as_ref().map_or_else(
+            || (id.to_owned(), OperationKind::Effect),
+            |spec| (spec.label.clone(), spec.kind),
+        );
+        let payload = Payload {
+            effect: id.to_owned(),
+            args: self.arguments(),
+        };
+        let operation = Self::OPERATION;
+        let mut spec = ActionSpec::typed_operation(
+            id,
+            label.clone(),
+            label,
+            kind,
+            operation,
+            Vec::new(),
+            move |_| {
+                EncodedAction::encode_operation(operation, &payload).unwrap_or_else(|_| {
+                    EncodedAction {
+                        type_id: operation.to_owned(),
+                        payload: Vec::new(),
+                    }
+                })
+            },
+        );
+        if let Some(declared) = declared {
+            spec.description = declared.description;
+            spec.contract = declared.contract;
+        }
+        spec
+    }
+
     /// Decode one invocation's payload, as the operation's specs encode it.
     ///
     /// # Errors
@@ -106,6 +156,9 @@ pub struct EffectDecl {
     pub answers: Answers,
     /// Asks for confirmation: deletes, overwrites, sends.
     pub destructive: bool,
+    /// Changes only what the invoking window shows: published as a view
+    /// operation rather than an effect on the outside world.
+    pub view: bool,
     pub permission: PermissionRequirement,
 }
 
@@ -124,11 +177,16 @@ impl EffectDecl {
     /// The published action of this effect under `operation`.
     pub fn spec(&self, operation: &'static str) -> ActionSpec {
         let id = self.id;
+        let kind = if self.view {
+            OperationKind::View
+        } else {
+            OperationKind::Effect
+        };
         let mut spec = ActionSpec::typed_operation(
             id,
             self.label,
             self.label,
-            OperationKind::Effect,
+            kind,
             operation,
             self.params.clone(),
             move |args| {
@@ -152,8 +210,15 @@ impl EffectDecl {
             permission: self.permission,
             risk: if self.destructive {
                 RiskLevel::Destructive
+            } else if self.view {
+                RiskLevel::None
             } else {
                 RiskLevel::Low
+            },
+            retry: if self.view {
+                RetryPolicy::Idempotent
+            } else {
+                ActionContract::default().retry
             },
             confirmation: if self.destructive {
                 ConfirmationPolicy::Confirm
@@ -264,13 +329,16 @@ mod tests {
         },
         #[effect(label = "Wipe", job, cancellable, destructive)]
         Wipe { passes: u32 },
+        /// Show one thing.
+        #[effect(view)]
+        Show { thing: String },
     }
 
     #[test]
     fn a_derived_vocabulary_publishes_each_variant_and_round_trips_through_its_spec() {
         let specs = Sample::specs();
         let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(ids, ["reload", "rename-thing", "wipe"]);
+        assert_eq!(ids, ["reload", "rename-thing", "wipe", "show"]);
 
         let rename = &specs[1];
         assert_eq!(rename.label, "Rename a thing");
@@ -313,6 +381,41 @@ mod tests {
         );
         assert!(Sample::decode("wipe", &serde_json::Map::new()).is_err());
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
+    }
+
+    #[test]
+    fn a_view_is_published_as_a_view_any_reader_may_invoke() {
+        let show = &Sample::specs()[3];
+        assert_eq!(show.kind, OperationKind::View);
+        assert_eq!(show.contract.permission, PermissionRequirement::Read);
+        assert_eq!(show.contract.risk, RiskLevel::None);
+        assert_eq!(show.contract.retry, RetryPolicy::Idempotent);
+    }
+
+    #[test]
+    fn a_bound_effect_asks_for_nothing_and_carries_its_value() {
+        let wipe = Sample::Wipe { passes: 3 };
+        let bound = wipe.bound();
+        assert_eq!(bound.id, "wipe");
+        assert_eq!(bound.label, "Wipe");
+        assert_eq!(bound.kind, OperationKind::Effect);
+        assert!(bound.params().is_empty(), "nothing is left to ask");
+        // The declared contract travels with it: still destructive, still a job.
+        assert_eq!(bound.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert_eq!(
+            bound.contract.execution,
+            ExecutionMode::Background { cancellable: true }
+        );
+        let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(encoded.type_id, "test.effects");
+        assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), wipe);
+
+        let show = Sample::Show {
+            thing: "monday".into(),
+        };
+        assert_eq!(show.bound().kind, OperationKind::View);
+        let encoded = show.bound().build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), show);
     }
 
     #[test]

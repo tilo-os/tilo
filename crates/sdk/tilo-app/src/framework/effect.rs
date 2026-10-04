@@ -576,7 +576,11 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         let Some(request) = op.unscoped() else {
             return Ok(None);
         };
-        if request.kind != tilo_actions::OperationKind::Effect || request.type_id != E::OPERATION {
+        let kind = matches!(
+            request.kind,
+            tilo_actions::OperationKind::Effect | tilo_actions::OperationKind::View
+        );
+        if !kind || request.type_id != E::OPERATION {
             return Ok(None);
         }
         let effect = E::from_payload(request.payload)?;
