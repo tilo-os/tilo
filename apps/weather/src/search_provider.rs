@@ -129,7 +129,12 @@ mod tests {
                 11.5756,
                 "Europe/Berlin",
             );
-            let page = CitySearchProvider::new(&[city]).search_page("CHEN", None, 8, 8);
+            let page = CitySearchProvider::new(&[city]).search_page(
+                &ui::search::SearchQuery::new("CHEN"),
+                None,
+                8,
+                8,
+            );
             assert_eq!(page.results.len(), 1);
             assert_eq!(page.results[0].title, "München");
             assert!(page.inspected <= 8);
@@ -152,7 +157,8 @@ mod tests {
                 3_000,
             );
             assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-            let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 4);
+            let page =
+                provider.search_page(&ui::search::SearchQuery::new(LATE_HIT_NEEDLE), None, 4, 4);
             assert_eq!(page.inspected, 1, "rare posting avoids a corpus scan");
             assert_eq!(provider.stats().records, 3_000);
         }
@@ -171,7 +177,12 @@ mod tests {
             let mut cursor = None;
             let mut seen = 0;
             loop {
-                let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+                let page = provider.search_page(
+                    &ui::search::SearchQuery::new("common"),
+                    cursor.as_ref(),
+                    17,
+                    5,
+                );
                 assert!(page.inspected <= 17, "query work must be bounded");
                 assert!(page.results.len() <= 5, "result materialisation is paged");
                 seen += page.results.len();
