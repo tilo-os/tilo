@@ -132,8 +132,17 @@ fn file_uri(path: &Path) -> Option<url::Url> {
 /// URI list, rather than claiming
 /// `application/octet-stream` content a receiver would have to sniff.
 pub fn mime_for_path(path: &Path) -> Option<&'static str> {
-    mime_guess::from_path(path).first_raw()
+    let extension = path.extension().and_then(|extension| extension.to_str());
+    TILO_TYPES
+        .iter()
+        .find(|(known, _)| extension.is_some_and(|extension| extension.eq_ignore_ascii_case(known)))
+        .map(|(_, media_type)| *media_type)
+        .or_else(|| mime_guess::from_path(path).first_raw())
 }
+
+/// The file types Tilo's own apps write, which no general table knows:
+/// their extension and media type.
+const TILO_TYPES: &[(&str, &str)] = &[("artwork", "application/vnd.tilo.artwork+json")];
 
 /// Start a drag carrying `paths`, out of this app and into whatever
 /// application the pointer is released over. Call from a press-and-move
