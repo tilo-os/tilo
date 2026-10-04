@@ -703,15 +703,22 @@ mod tests {
             }
         }
 
+        /// The fixture's system directory is seen through a mount of its
+        /// own, so the view never depends on where the test's temporary
+        /// directory is (a `/tmp` one is sandbox-private, and undecidable).
         fn view(&self, cache: LdCache) -> LoaderView {
             LoaderView::new(
                 vec![
                     (PathBuf::from("/var/tilo-apps/app"), self.payload.clone()),
                     (PathBuf::from("/run/tilo-runtime/1"), self.runtime.clone()),
+                    (
+                        PathBuf::from("/usr/lib/fixture-system"),
+                        self.system.clone(),
+                    ),
                 ],
                 vec![PathBuf::from("/run/tilo-runtime/1/lib")],
                 cache,
-                vec![self.system.join("lib")],
+                vec![PathBuf::from("/usr/lib/fixture-system/lib")],
             )
         }
     }

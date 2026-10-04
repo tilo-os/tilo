@@ -906,7 +906,10 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # closure check then loads every bundled object and thin app the way the
 # launcher does, with only the bundle's lib/ on LD_LIBRARY_PATH.
 RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=/usr/local/libexec/tilo-verify-runtime-bundle-closure.sh,ro \
-    if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
+    --mount=type=bind,source=os/registry-runtime-publisher.hex,target=/usr/local/share/tilo-registry-runtime-publisher.hex,ro \
+    grep -Eqx '[0-9a-f]{64}' /usr/local/share/tilo-registry-runtime-publisher.hex \
+    && cp /usr/local/share/tilo-registry-runtime-publisher.hex /out/registry-runtime-publisher.hex \
+    && if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
       test -s /out/runtime-bundle-publisher.hex \
       && runtime_dirs="$(find /usr/lib/tilo-runtime -mindepth 1 -maxdepth 1 -type d \
            -name "${RUNTIME_RELEASE}+native.*" -printf '%f\n')" \
@@ -2875,15 +2878,16 @@ COPY --from=component-files /image/windows/ /
 # comments. The baked publisher is the only entry by default; operators
 # can extend it via `echo <hex> >> /etc/tilo/runtime-bundle-trusted-publishers.txt`.
 COPY --from=native-builder-payload /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
+# registry-runtime-publisher.hex is the publisher of the runtimes the Tilo
+# registry offers. An app installed or updated from the Store is linked against
+# the release runtime build, which is rarely this image's own bake, and the
+# Store installs that runtime beside it; the launcher mounts it only when its
+# publisher is trusted here.
 COPY --from=native-builder-payload \
     /out/runtime-bundle-publisher.hex \
     /out/browser-runtime-publisher.hex \
+    /out/registry-runtime-publisher.hex \
     /usr/share/tilo/
-# The publisher of the runtimes the Tilo registry offers. An app installed or
-# updated from the Store is linked against the release runtime build, which is
-# rarely this image's own bake, and the Store installs that runtime beside it;
-# the launcher mounts it only when its publisher is trusted here.
-COPY os/registry-runtime-publisher.hex /usr/share/tilo/
 # ---- Preinstalled application store -----------------------------------------
 # The registry + unpacked payloads the builder produced with `tilo-app-package pack` and
 # `tilo-install install`. The launcher reads this store alongside the per-user
