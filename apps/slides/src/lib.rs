@@ -59,7 +59,7 @@ mod presentation;
 pub mod render;
 pub mod resource;
 pub mod sample;
-pub mod search_provider;
+pub mod search;
 pub mod strings;
 mod toolbar_tools;
 

@@ -27,7 +27,51 @@ use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject,
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::Duration;
+use ui::framework::{EffectAnswer, EffectCx, Effected};
+use ui::tilo_resource;
 use ui::widget::{Button, Row, Spacer, Text, Widget};
+
+use crate::host::PaneCx;
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
+
+/// Where Privacy & Security sends the person to change what it reports.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum PermissionsEffect {
+    /// Open the privacy settings of the workspace that owns the grants.
+    #[effect(job, label = "Open workspace privacy")]
+    OpenWorkspacePrivacy,
+}
+
+/// Answer `effect` by opening the tool it names.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "every area answers through the effect vocabulary's one signature"
+)]
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: PermissionsEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    match effect {
+        PermissionsEffect::OpenWorkspacePrivacy => {
+            if !app.host().reaches_devices() {
+                return Err("only a window someone uses opens workspace settings".into());
+            }
+            Ok(cx.thread(
+                move |_| {
+                    os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
+                        route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
+                    })
+                },
+                |_: &mut SettingsApp, opened: Result<(), String>, _| {
+                    opened.map(|()| Effected::done())
+                },
+            ))
+        }
+    }
+}
 
 /// The compositor's persisted workspace tree, beside `settings.json`.
 fn state_path() -> Option<PathBuf> {
@@ -368,8 +412,8 @@ fn app_block(grants: &AppGrants) -> El {
     rows(items)
 }
 
-pub fn build() -> Box<dyn Widget> {
-    build_view(load_text().as_deref())
+pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
+    build_view(cx, load_text().as_deref())
 }
 
 fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> El {
@@ -448,21 +492,16 @@ fn scope_card() -> El {
 }
 
 /// Intro card: what these grants are and where they come from.
-fn workspace_grants_intro_card() -> El {
+fn workspace_grants_intro_card(cx: &PaneCx) -> El {
     let open = t("perm-open-workspace");
     card(
         &t("perm-workspace-intro-title"),
         rows(vec![
             Box::new(Text::new(&t("perm-workspace-intro-body")).with_size(12.0)),
-            Box::new(
-                Button::new("open-workspace-privacy", &open, None)
-                    .content_sized()
-                    .on_effect(|| {
-                        let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
-                            route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
-                        });
-                    }),
-            ),
+            Box::new(cx.bind_invocation(
+                Button::new("open-workspace-privacy", &open, None).content_sized(),
+                PermissionsEffect::OpenWorkspacePrivacy,
+            )),
         ]),
     )
 }
@@ -534,7 +573,7 @@ fn enforcement_card() -> El {
 
 /// Core builder, split from [`build`] so it can be exercised against an
 /// explicit state document in tests without touching the real config dir.
-fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
+fn build_view(cx: &PaneCx, state_json: Option<&str>) -> Box<dyn Widget> {
     let workspace_access = state_json.map(project).transpose();
 
     let mut panel: Vec<El> = Vec::new();
@@ -544,7 +583,7 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
     panel.push(privacy_hardware_card(&privacy));
     panel.push(active_privacy_use_card(&privacy));
     panel.push(device_security_card());
-    panel.push(workspace_grants_intro_card());
+    panel.push(workspace_grants_intro_card(cx));
 
     match workspace_access {
         Ok(Some(all)) if all.is_empty() => panel.push(no_workspace_grants_card()),
@@ -563,6 +602,10 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cx() -> PaneCx {
+        PaneCx::in_file(std::env::temp_dir().join("tilo-settings-permissions-unused.json"))
+    }
     use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     use std::collections::HashMap;
 
@@ -663,7 +706,7 @@ mod tests {
             // The pane still cannot mutate state.json. Its only button asks the
             // shell to reveal the active workspace's authoritative controls.
             for json in [None, Some(sample_state().as_str())] {
-                let mut pane = build_view(json);
+                let mut pane = build_view(&cx(), json);
                 build_layout_of(&mut pane);
                 assert_eq!(count_named(pane.as_ref(), "Button"), 1);
             }
@@ -674,7 +717,7 @@ mod tests {
             // System Settings never pretends it can edit a workspace. The one
             // live control is an explicit route to the current workspace's
             // authoritative access surface.
-            let mut pane = build_view(Some(&sample_state()));
+            let mut pane = build_view(&cx(), Some(&sample_state()));
             build_layout_of(&mut pane);
             let mut labels = Vec::new();
             button_labels(pane.as_ref(), &mut labels);
@@ -738,7 +781,7 @@ mod tests {
         {
             // Two grants → the workspace card carries a kind pill + a lifetime chip
             // for each (4 badges), built from the real projection.
-            let mut pane = build_view(Some(&sample_state()));
+            let mut pane = build_view(&cx(), Some(&sample_state()));
             build_layout_of(&mut pane);
             assert_eq!(
                 count_named(pane.as_ref(), "Badge"),
@@ -779,7 +822,7 @@ mod tests {
         // Case `missing_state_never_claims_that_no_grants_exist`.
         {
             // No state document means the panel cannot make a claim about grants.
-            let mut pane = build_view(None);
+            let mut pane = build_view(&cx(), None);
             build_layout_of(&mut pane);
             assert_eq!(
                 count_named(pane.as_ref(), "Badge"),
@@ -798,7 +841,7 @@ mod tests {
 
         // Case `valid_empty_state_is_the_only_path_that_claims_no_grants`.
         {
-            let mut pane = build_view(Some(r#"{"workspaces":[]}"#));
+            let mut pane = build_view(&cx(), Some(r#"{"workspaces":[]}"#));
             build_layout_of(&mut pane);
             let mut labels = Vec::new();
             text_labels(pane.as_ref(), &mut labels);
@@ -823,7 +866,7 @@ mod tests {
         // Case `malformed_document_is_reported_as_unavailable_not_empty`.
         {
             assert!(project("not json {").is_err());
-            let mut pane = build_view(Some("not json {"));
+            let mut pane = build_view(&cx(), Some("not json {"));
             build_layout_of(&mut pane);
             assert_eq!(count_named(pane.as_ref(), "Badge"), 0);
             let mut labels = Vec::new();

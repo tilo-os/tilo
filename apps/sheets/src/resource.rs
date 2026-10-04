@@ -7,7 +7,7 @@ use std::sync::{Arc, OnceLock};
 
 use automerge::ObjId;
 use tilo_actions::{ActionParam, ActionSpec, OperationKind, ParamType};
-use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{Fixture, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_resource::{ActionDecl, Delta, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
@@ -161,6 +161,20 @@ impl Resource for SheetsWorkbook {
 
     fn register(registry: &mut tilo_actions::ActionRegistry) {
         crate::actions::register(registry);
+    }
+
+    /// Commenting on a cell — a thread, a reply, an edit of one's comment,
+    /// resolving it — needs only the right to comment.
+    fn permission(action: &SheetsAction) -> ui::tilo_resource::PermissionRequirement {
+        match action {
+            SheetsAction::PutComment { .. }
+            | SheetsAction::ReplyComment { .. }
+            | SheetsAction::EditComment { .. }
+            | SheetsAction::SetCommentResolved { .. } => {
+                ui::tilo_resource::PermissionRequirement::Comment
+            }
+            _ => ui::tilo_resource::PermissionRequirement::Write,
+        }
     }
 
     fn read(doc: &Doc) -> Result<SheetsState, ModelError> {
@@ -437,6 +451,14 @@ const SCENARIOS: &[&str] = &[
     "comments",
 ];
 
+/// When the sample workbook of the annotated scenarios was written.
+const SAMPLE_WRITTEN_MS: i64 = 1_767_225_600_000;
+
+/// Whether `scenario` shows the sample's charts and comments.
+fn annotated(scenario: Option<&str>) -> bool {
+    matches!(scenario, Some("charts" | "comments"))
+}
+
 impl ResourceApp for SheetsShell {
     type Resource = SheetsWorkbook;
     const ID: &'static str = "so.tilo.sheets";
@@ -451,13 +473,33 @@ impl ResourceApp for SheetsShell {
         (1280, 800)
     }
 
-    fn scenario(name: Option<&str>) -> Vec<Invoke<SheetsWorkbook>> {
-        let mut actions = vec![crate::sample::workbook()];
-        match name {
-            Some("charts" | "comments") => actions.extend(crate::sample::charts_and_comments()),
-            Some("fillseries") => actions.push(crate::sample::fill_seeds()),
-            _ => {}
+    /// The annotated scenarios show a workbook other people wrote: Alex
+    /// shared the budget and commented on it, Sam replied.
+    fn fixture(fixture: &mut Fixture<SheetsWorkbook>) {
+        if !annotated(fixture.scenario()) {
+            return;
         }
+        let versions =
+            std::iter::once(("Alex", crate::sample::workbook())).chain(crate::sample::comments());
+        for (at, (author, action)) in (0_i64..).zip(versions) {
+            if let Ok(invoke) = Invoke::apply(&action) {
+                fixture.version(author, SAMPLE_WRITTEN_MS + at * 60_000, invoke);
+            }
+        }
+    }
+
+    fn scenario(name: Option<&str>) -> Vec<Invoke<SheetsWorkbook>> {
+        let actions = if annotated(name) {
+            let mut actions = crate::sample::charts();
+            actions.push(crate::sample::resolve_comment());
+            actions
+        } else {
+            let mut actions = vec![crate::sample::workbook()];
+            if name == Some("fillseries") {
+                actions.push(crate::sample::fill_seeds());
+            }
+            actions
+        };
         actions
             .iter()
             .filter_map(|action| Invoke::apply(action).ok())
@@ -526,6 +568,30 @@ mod tests {
         assert_eq!(budget.charts.len(), 2);
         assert_eq!(budget.comments.len(), 1);
         assert!(budget.comments[0].resolved);
+        assert_eq!(budget.comments[0].author, "Alex", "signed by who wrote it");
+        assert_eq!(budget.comments[0].replies[0].author, "Sam");
+    }
+
+    /// A comment is signed by whoever invokes it, never by a name its
+    /// payload carries.
+    #[test]
+    fn a_comment_is_signed_by_its_invoker() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        let sheet_id = app.state().sheets[0].id.clone();
+        app.invoke(
+            Invoke::apply(&crate::actions::put_comment_action(
+                0,
+                sheet_id,
+                (0, 0),
+                (0, 0),
+                "Looks right",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let comments = &app.state().sheets[0].comments;
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].author, "test-author");
     }
 
     /// The fill-series scenario extends its seeds through the real fill

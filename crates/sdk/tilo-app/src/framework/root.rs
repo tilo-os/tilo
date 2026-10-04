@@ -239,6 +239,9 @@ impl<R: Resource> ResourceRoot<R> {
         permissions: Option<LivePermissions>,
         write: PermissionScope,
     ) -> Self {
+        if let Some(permissions) = &permissions {
+            self.dispatch.follow(permissions.clone());
+        }
         self.permissions = permissions;
         self.write = Some(write);
         self
@@ -607,21 +610,6 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         self.content.as_mut()
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut ui_core::taffy::TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut std::collections::HashMap<ui_core::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui_core::taffy::NodeId {
-        let node = self.content.build_layout(taffy, theme, node_map);
-        let content = (
-            std::ptr::from_ref(self.content.as_ref()).cast::<()>(),
-            self.content.concrete_type_name(),
-        );
-        super::surface::stand_in(node_map, node, content, self);
-        node
-    }
-
     fn record_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
         let mut owners = self.storage.person_owners();
         owners.extend(self.content.record_owners());
@@ -658,6 +646,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             None,
             &self.content.get_rect(),
         );
+        self.run.people.follow(presence);
         self.content.draw(scene, transform, text, theme, presence);
     }
 

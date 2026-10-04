@@ -315,7 +315,17 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         let before = PdfDoc::list_annotations_with_hidden(&state.doc).len();
 
         // The host says the participant may only view.
-        app.set_read_only(true);
+        let as_role = |role| {
+            ui::framework::testing::dispatcher::<crate::PdfViewer>(APP_ID).with_permissions(
+                ui::permissions::LivePermissions::fixed(
+                    ui::permissions::PermissionContext::from_capabilities(
+                        ui::permissions::Actor::person(Some(role), "participant"),
+                        Vec::new(),
+                    ),
+                ),
+            )
+        };
+        app.attach_framework(as_role(ui::permissions::Role::Viewer));
         app.tool = Tool::Highlight;
         app.drag = Some(DragState {
             tool: Tool::Highlight,
@@ -343,6 +353,67 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
                 .as_deref()
                 .is_some_and(|n| n.contains("not change")),
             "the refusal is explained"
+        );
+
+        // A commenter may reply to a thread but still not mark up the page.
+        app.attach_framework(as_role(ui::permissions::Role::Commenter));
+        let thread = PdfDoc::list_comments(&state.doc)
+            .first()
+            .map(|c| c.id.clone())
+            .expect("the sample has a thread");
+        let replies_before = PdfDoc::list_comments(&state.doc)[0].replies.len();
+        app.perform_action(
+            &mut state.doc,
+            &crate::actions::add_reply_action(&thread, "commenter", "A reply"),
+        );
+        assert_eq!(
+            PdfDoc::list_comments(&state.doc)[0].replies.len(),
+            replies_before + 1,
+            "a commenter's reply is added"
+        );
+        app.perform_action(&mut state.doc, &highlight("nope", "source-1", 50.0));
+        assert!(
+            ids(&state.doc).iter().all(|(id, _)| id != "nope"),
+            "a commenter's markup is refused"
+        );
+    }
+
+    // Through the host door too: the comment's reply action needs only the
+    // right to comment.
+    {
+        use ui::framework::testing::TestApp;
+        let mut app = TestApp::<crate::PdfViewerShell>::new().expect("the reader");
+        let plan = PdfViewerAction::EnsurePagePlan {
+            source_page_count: 3,
+        };
+        for action in std::iter::once(plan).chain(crate::scenarios::sample_review()) {
+            app.invoke(ui::tilo_resource::Invoke::apply(&action).unwrap())
+                .expect("the owner reviews");
+        }
+        let thread = crate::scenarios::NOTE_COMMENT;
+        app.call_on(
+            &format!("pdf.comment:{thread}"),
+            "reply",
+            serde_json::json!({ "value": "First" }),
+        )
+        .expect("the owner replies");
+        app.set_role(ui::permissions::Role::Commenter);
+        app.call_on(
+            &format!("pdf.comment:{thread}"),
+            "reply",
+            serde_json::json!({ "value": "Agreed" }),
+        )
+        .expect("a commenter replies");
+        assert!(
+            app.state()
+                .comments
+                .iter()
+                .any(|c| c.id == thread && c.replies.iter().any(|r| r.body == "Agreed"))
+        );
+        assert!(
+            app.invoke(crate::actions::ADD_NOTE.with(("Mine".into(), 1)))
+                .is_err(),
+            "a commenter may not add a note to the page"
         );
     }
 }

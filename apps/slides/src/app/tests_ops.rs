@@ -142,3 +142,77 @@ fn a_viewer_cannot_edit_the_deck() {
     assert_eq!(bench.deck(), before);
     assert_eq!(bench.read(|app| app.deck.slides.len()), before.slides.len());
 }
+
+/// The selected element's delete and restack are published on the deck for
+/// the palette and agents, bound to the selection, and gone without one.
+#[test]
+fn the_selection_publishes_its_bound_edits() {
+    let mut slide = Slide::new(Layout::Blank);
+    let a = slide.add(Element::shape(
+        ElementKind::Rect,
+        200.0,
+        200.0,
+        100.0,
+        100.0,
+    ));
+    let b = slide.add(Element::shape(
+        ElementKind::Ellipse,
+        500.0,
+        400.0,
+        100.0,
+        100.0,
+    ));
+    let mut bench = Bench::open(&deck_of(vec![slide]), super::bench::WINDOW);
+    let published = |bench: &mut Bench| -> Vec<String> {
+        bench
+            .app
+            .agent_surface()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["resource"] == "slides.deck")
+            .filter_map(|row| row["action"].as_str().map(str::to_owned))
+            .collect()
+    };
+    assert!(
+        !published(&mut bench)
+            .iter()
+            .any(|id| id.contains("selection")),
+        "nothing selected, nothing bound"
+    );
+
+    bench.with(|app| app.sel = Some(a.clone()));
+    let ids = published(&mut bench);
+    for id in [
+        "delete-selection",
+        "bring-selection-front",
+        "send-selection-back",
+    ] {
+        assert!(
+            ids.iter().any(|published| published == id),
+            "`{id}` in {ids:?}"
+        );
+    }
+    let instance_id = bench.app.harness().component_instance_id().unwrap();
+    bench
+        .app
+        .harness()
+        .invoke_bound_action(
+            &ui::bound_dispatch::BoundActionAddress {
+                instance_id,
+                address: tilo_actions::ActionAddress::new("slides.deck", "bring-selection-front"),
+            },
+            &serde_json::Map::new(),
+        )
+        .expect("bring to front applies");
+    bench.frame();
+    let deck = bench.deck();
+    let (za, zb) = (
+        deck.slides[0].element(&a).unwrap().z,
+        deck.slides[0].element(&b).unwrap().z,
+    );
+    assert!(
+        za > zb,
+        "the selected element came to the front ({za} vs {zb})"
+    );
+}

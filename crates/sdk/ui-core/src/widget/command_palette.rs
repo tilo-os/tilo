@@ -321,7 +321,9 @@ impl CommandEntry {
 
     /// The row `id` is the flattened composite key, so the host resolves the
     /// selection back to a replayable `tilo_actions::Action`; a
-    /// [`ActionInput::Prompted`] action becomes an argument-collecting row.
+    /// [`ActionInput::Prompted`] action becomes an argument-collecting row
+    /// whose text is the action's primary parameter (its first required one,
+    /// else its first), as the action's own prompt reads it.
     pub fn from_flat_action(fa: &FlatAction<'_>) -> Self {
         let mut entry = CommandEntry::new(
             fa.key.clone(),
@@ -336,8 +338,14 @@ impl CommandEntry {
             ..
         } = &fa.action.input
         {
+            let params = fa.action.params();
+            let primary = params
+                .iter()
+                .find(|param| param.required)
+                .or_else(|| params.first())
+                .map_or(PROMPTED_PARAM, |param| param.name.as_ref());
             entry = entry.with_argument(prompt.clone(), placeholder.clone());
-            entry.action_argument = Some(PROMPTED_PARAM.to_string());
+            entry.action_argument = Some(primary.to_string());
         }
         entry.action_address = Some(ActionAddress::new(&fa.resource_id.0, &fa.action.id));
         entry
@@ -2996,6 +3004,52 @@ mod tests {
             assert_eq!(encoded.type_id, "test.rename");
         }
 
+        fn typed_resource_action_binds_its_primary_parameter() {
+            let spec = tilo_actions::ActionSpec::typed_operation(
+                "go-to-cell",
+                "Go to cell",
+                "Cell reference",
+                tilo_actions::OperationKind::View,
+                "test.go",
+                vec![tilo_actions::ActionParam::required_owned(
+                    "reference",
+                    tilo_actions::ParamType::Text,
+                    "Cell reference",
+                )],
+                |args| {
+                    tilo_actions::EncodedAction::encode_operation(
+                        "test.go",
+                        &args.text("reference").unwrap_or_default(),
+                    )
+                    .unwrap()
+                },
+            );
+            let resources = vec![
+                tilo_actions::Resource::new("document:1", "document", "Document").with_action(spec),
+            ];
+            let flat = tilo_actions::flatten(&resources);
+            let entry = CommandEntry::from_flat_action(&flat[0]);
+            let mut palette = CommandPalette::commands();
+            palette.open_action_argument(entry, Some("B12".into()));
+
+            let mut handled = false;
+            dispatch_h(
+                &mut palette,
+                &key_press(Key::Named(NamedKey::Enter)),
+                Modifiers::default(),
+                &mut handled,
+            );
+            let invocation =
+                crate::widget::controls::take_control_invocation(&mut palette).unwrap();
+            assert_eq!(invocation.arguments["reference"], "B12");
+            let encoded = flat[0].action.build_json(&invocation.arguments).unwrap();
+            assert_eq!(
+                encoded.payload,
+                serde_json::to_vec("B12").unwrap(),
+                "the typed builder reads the text"
+            );
+        }
+
         fn semantic_shortcut_labels_follow_the_palette_platform() {
             use crate::platform::{Platform, PlatformConventions};
 
@@ -3012,6 +3066,7 @@ mod tests {
 
         immediate_resource_action_enqueues_an_address_not_a_private_outcome();
         prompted_resource_action_binds_its_declared_argument();
+        typed_resource_action_binds_its_primary_parameter();
         semantic_shortcut_labels_follow_the_palette_platform();
     }
 

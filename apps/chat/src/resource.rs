@@ -11,7 +11,8 @@ use automerge::{ObjType, ROOT, ReadDoc, Value};
 use tilo_content::ContentStore;
 use tilo_document::RichText;
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, ResourceApp, ResourceSurface, SeedCx, SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, EffectStatus, ResourceApp, ResourceSurface, RunMode, SeedCx, SurfaceCx,
+    ViewCx,
 };
 use ui::tilo_actions::{ActionAddress, Resource as PublishedResource};
 use ui::tilo_resource::{
@@ -255,8 +256,7 @@ fn message_resource(
 }
 
 /// Chat as every host runs and mounts it: the chat widget is the surface
-/// over [`Chat`], kept by the room as its own record
-/// (`ApplicationDefinition::keeps_room_record`).
+/// over [`Chat`], kept by the room as its own record.
 pub struct ChatShell;
 
 /// Every named scenario `--shots --scenario NAME` captures.
@@ -289,6 +289,7 @@ impl ResourceApp for ChatShell {
     const ID: &'static str = "so.tilo.chat";
     const TITLE: &'static str = "Chat";
     const ICON: Option<&'static str> = Some("chat");
+    const ROOM_RECORD: bool = true;
 
     fn view(cx: &mut ViewCx<Chat>) -> Element {
         crate::i18n::ensure();
@@ -305,7 +306,9 @@ impl ResourceApp for ChatShell {
                 ContentStore::memory()
             }
         });
-        let runtime = if native {
+        // A capture shows the app as a device with its services draws it;
+        // nothing it stages reaches them.
+        let runtime = if native || cx.mode() == RunMode::Capture {
             ChatRuntime::Native
         } else {
             ChatRuntime::Unavailable

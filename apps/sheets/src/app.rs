@@ -1025,6 +1025,19 @@ impl SheetsApp {
         self.dispatch = Some(dispatcher);
     }
 
+    /// How a comment's `author` is named to the person reading it: "You"
+    /// for their own.
+    fn author_name(&self, author: &str) -> String {
+        let me = self.dispatch.as_ref().and_then(|dispatch| dispatch.me());
+        if author.is_empty() {
+            "Someone".to_owned()
+        } else if me == Some(author) {
+            "You".to_owned()
+        } else {
+            author.to_owned()
+        }
+    }
+
     /// Follow the person's shared locale defaults.
     pub(crate) fn follow_locale(&mut self, locale: ui::framework::Setting<Locale>) {
         self.locale = Some(locale);
@@ -1155,11 +1168,11 @@ impl SheetsApp {
                             sheet_id.clone(),
                             (c0, r0),
                             (c1, r1),
-                            "You",
                             "New comment",
                         ))
                     },
                 )
+                .requiring(ui::tilo_actions::PermissionRequirement::Comment)
             },
             fixed(
                 "sum-selection",
@@ -4388,7 +4401,7 @@ impl SheetsApp {
         let heading = format!(
             "{} · {}{}",
             range,
-            thread.author,
+            self.author_name(&thread.author),
             if thread.resolved { " · Resolved" } else { "" }
         );
         // Heading and body are elided to the card: a scaled or long line ends
@@ -5712,7 +5725,7 @@ impl Widget for SheetsApp {
                     .chain(self.sheet_comments.iter().map(|thread| {
                         let target = format!("sheets.annotation:comment:{}", thread.id);
                         AccessNode::new(Role::ListItem)
-                            .with_name(format!("Comment by {}", thread.author))
+                            .with_name(format!("Comment by {}", self.author_name(&thread.author)))
                             .with_description(format!(
                                 "{}; {} replies; {}",
                                 thread.body,
@@ -6452,7 +6465,6 @@ impl SheetsApp {
                         self.active_sheet,
                         sheet_id,
                         id,
-                        "You",
                         "Thanks — noted.",
                     ),
                 );

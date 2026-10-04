@@ -72,6 +72,8 @@ pub(crate) struct Run {
     /// app that declares [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY),
     /// and the History scope the root witnesses it under.
     pub(crate) file_history: Option<(FileHistorySource, &'static HistoryDefinition)>,
+    /// The names of the participants, as the host's roster has them.
+    pub(crate) people: super::People,
 }
 
 /// The arguments, the app's own options, the file and the playback handoff
@@ -96,6 +98,7 @@ impl Run {
             launched: Rc::default(),
             private: false,
             file_history: None,
+            people: super::People::new(None),
         }
     }
 
@@ -121,7 +124,14 @@ impl Run {
             launched: Rc::default(),
             private: false,
             file_history: None,
+            people: super::People::new(None),
         }
+    }
+
+    /// The same run, for the participant `me`.
+    pub(crate) fn for_participant(mut self, me: Option<&str>) -> Self {
+        self.people = super::People::new(me);
+        self
     }
 
     /// The same run, opened by a launch that named `launched`.
@@ -271,6 +281,7 @@ impl<R: Resource> Fixture<R> {
             launched: Rc::default(),
             private: false,
             file_history: None,
+            people: super::People::new(None),
         }
     }
 

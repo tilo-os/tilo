@@ -766,13 +766,7 @@ impl FeedsApp {
         if name.is_empty() {
             return;
         }
-        let order = self
-            .store
-            .folders
-            .iter()
-            .map(|folder| folder.order)
-            .max()
-            .map_or(0, |last| last.saturating_add(1));
+        let order = self.store.next_folder_order();
         let folder = crate::model::Folder {
             id: Uuid::new_v4(),
             name: name.to_string(),

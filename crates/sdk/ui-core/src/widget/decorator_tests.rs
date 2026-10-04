@@ -39,7 +39,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
         for accessor in ["inner", "inner_mut"] {
             assert!(decorator.remove(accessor), "Decorator::{accessor} missing");
         }
-        let blanket = block_methods(source, "impl<T: Decorator> Widget for T {");
+        let blanket = block_methods(source, "impl<T: Decorator + 'static> Widget for T {");
         assert!(
             widget.len() > 20,
             "parsed only {} Widget methods",
@@ -131,8 +131,14 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
                 "start_operation",
             ]
         );
-        // The inner widget registered its own node.
+        // The inner widget registered its node; the decorator stands in for
+        // it, so a host reaching the node meets the decorator.
         assert_eq!(nodes.len(), 1);
+        let registered = nodes[&node];
+        // SAFETY: `decorated` is alive and was laid out into `nodes` above.
+        let registered = unsafe { &*registered };
+        assert!(registered.concrete_type_name().ends_with("Named"));
+        assert_eq!(registered.name(), "Named");
     }
 
     /// A decorator's `handle_event` override sees input before its inner widget.

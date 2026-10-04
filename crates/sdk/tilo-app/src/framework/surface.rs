@@ -12,6 +12,7 @@ use ui_core::presence::PresenceKey;
 use ui_core::widget::{Decorator, ResourceOperation, ResourceOperationStart, Widget};
 use ui_core::{PresencePayload, WakeHandle};
 
+use super::controls::Actions;
 use super::dispatch::Dispatcher;
 use super::effect::{
     EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects, Jobs, OwnedJobs, Projection,
@@ -173,32 +174,6 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     }
 }
 
-/// Register `outer`, a decorator, for the layout node its inner widget
-/// registered itself for. A decorator's `children` are its inner widget's,
-/// so a walk of the tree (accessibility, operating a control by its node)
-/// meets the decorator where the inner widget would be and must find the
-/// node under the decorator's address; everything the node is asked still
-/// reaches the inner widget through the decorator. A node the inner widget
-/// handed to a widget of its own (a field it lays out as itself) stays that
-/// widget's.
-pub(crate) fn stand_in(
-    node_map: &mut std::collections::HashMap<ui_core::taffy::NodeId, *mut dyn Widget>,
-    node: ui_core::taffy::NodeId,
-    inner: (*const (), &'static str),
-    outer: &mut (dyn Widget + 'static),
-) {
-    let Some(&registered) = node_map.get(&node) else {
-        return;
-    };
-    // SAFETY: `registered` was put in the map by the build_layout that just
-    // returned, for a widget inside `outer` that lives as long as this frame's
-    // layout; reading its type name neither retains nor mutates it.
-    let registered_type = unsafe { (*registered).concrete_type_name() };
-    if std::ptr::eq(registered.cast::<()>().cast_const(), inner.0) && registered_type == inner.1 {
-        node_map.insert(node, std::ptr::from_mut(outer));
-    }
-}
-
 /// What a hosted surface adds to its resource's publication, as the root
 /// collects it.
 pub(crate) trait SurfacePublication<R: Resource> {
@@ -231,6 +206,7 @@ impl<R: Resource, S: ResourceSurface<R, E>, E: Effect> SurfaceHost<R, S, E> {
 pub struct SurfaceCx<R: Resource> {
     pub(crate) jobs: Jobs<R>,
     pub(crate) dispatch: Dispatcher<R>,
+    pub(crate) actions: Actions<R>,
     pub(crate) live: Live<R>,
     pub(crate) run: Run,
     pub(crate) storage: Rc<ViewStorage>,
@@ -240,6 +216,12 @@ pub struct SurfaceCx<R: Resource> {
 }
 
 impl<R: Resource> SurfaceCx<R> {
+    /// The names of the participants, for showing the ids actions record
+    /// ([`People::name`](super::People::name)).
+    pub fn people(&self) -> super::People {
+        self.run.people.clone()
+    }
+
     pub fn dispatcher(&self) -> Dispatcher<R> {
         self.dispatch.clone()
     }
@@ -249,6 +231,14 @@ impl<R: Resource> SurfaceCx<R> {
     /// Keep the handle. See [`Jobs`].
     pub fn jobs(&self) -> Jobs<R> {
         self.jobs.clone()
+    }
+
+    /// The resource's published actions and the surface's effects, for
+    /// binding the toolkit controls a surface builds itself (a toggle, a
+    /// dropdown, a button deep in its own widget tree) the way a view's
+    /// controls are bound: [`Actions::bind`], [`Actions::bind_effect`].
+    pub fn actions(&self) -> Actions<R> {
+        self.actions.clone()
     }
 
     /// The dispatcher of the resource nested in this one at `id`, whose
@@ -559,21 +549,6 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(&mut self.surface)
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut ui_core::taffy::TaffyTree<()>,
-        theme: &ui_core::Theme,
-        node_map: &mut std::collections::HashMap<ui_core::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui_core::taffy::NodeId {
-        let node = self.surface.build_layout(taffy, theme, node_map);
-        let surface = (
-            std::ptr::from_ref(&self.surface).cast::<()>(),
-            self.surface.concrete_type_name(),
-        );
-        stand_in(node_map, node, surface, self);
-        node
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {

@@ -36,6 +36,10 @@ pub struct ApplicationDefinition {
     /// hands it a file ([`HostContext::take_open_file`]); [`ANY_MEDIA_TYPE`]
     /// for a component that opens every file (a hex editor).
     pub opens: &'static [&'static str],
+    /// The app keeps one record per room, the room's own (a conversation
+    /// everyone in the room shares), rather than a record per window: every
+    /// window of the app in the room opens it, and the first creates it.
+    pub room_record: bool,
     pub create: ComponentFactory,
 }
 
@@ -615,11 +619,10 @@ impl Drop for HostContext {
     }
 }
 impl ApplicationDefinition {
-    /// Whether the app keeps one record per room, its package primary
-    /// (Chat's conversation), rather than a record per window. Definitions
-    /// do not declare this; Chat's record kind names it.
+    /// Whether the app keeps one record per room, its package primary,
+    /// rather than a record per window ([`Self::room_record`]).
     pub fn keeps_room_record(&self) -> bool {
-        self.record_kind.as_str() == "chat.workspace"
+        self.room_record
     }
 
     /// The launch target of an instance with no saved record: a new record
@@ -1752,6 +1755,7 @@ mod bound_lifetime_tests {
             required: vec![],
             optional: vec![],
             opens: &[],
+            room_record: false,
             create: factory,
         };
         let supplied = RecordId::for_tab(55);
@@ -1798,6 +1802,7 @@ mod bound_lifetime_tests {
             required: vec![],
             optional: vec![],
             opens: &[],
+            room_record: false,
             create: factory,
         };
         let prepare = |checkout| {
@@ -1858,6 +1863,7 @@ mod bound_lifetime_tests {
                 required: vec![],
                 optional: vec![],
                 opens: &[],
+                room_record: false,
                 create: factory,
             };
             let prepare = |target: &LaunchTarget| {
@@ -1945,6 +1951,7 @@ mod bound_lifetime_tests {
                 required: vec![],
                 optional: vec![],
                 opens: &[],
+                room_record: false,
                 create: factory,
             };
             let context = HostContext::prepare(

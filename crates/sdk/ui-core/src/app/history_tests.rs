@@ -1214,6 +1214,7 @@ impl RoutedPrimary {
             required: vec![],
             optional: vec![],
             opens: &[],
+            room_record: false,
             create: primary_routed_factory,
         };
         let target = LaunchTarget::PrimaryNew;
