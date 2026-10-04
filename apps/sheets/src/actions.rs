@@ -649,16 +649,6 @@ fn history_resource(action: &SheetsAction) -> HistoryResource {
     }
 }
 
-/// Compatibility wrapper for call sites that already have the document. Every
-/// sheet-scoped action now carries its durable identity in the envelope, so
-/// history never needs to re-resolve an author-time numeric position.
-pub fn history_context_for_doc(
-    _doc: &AutoCommit,
-    action: &SheetsAction,
-) -> tilo_actions::ActionContext {
-    history_context(action)
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "exhaustive action apply stays adjacent to action enum"
@@ -1058,7 +1048,7 @@ fn validate_slot(
     after_sheet_id: Option<&str>,
     excluded_sheet_id: Option<&str>,
 ) -> Result<(), ActionError> {
-    let ids: Vec<String> = (0..SheetsDoc::sheet_count_readonly(doc))
+    let ids: Vec<String> = (0..SheetsDoc::sheet_count(doc))
         .filter_map(|idx| SheetsDoc::sheet_resource_id(doc, idx))
         .filter(|id| Some(id.as_str()) != excluded_sheet_id)
         .collect();
@@ -1086,7 +1076,7 @@ fn resolve_slot(
     excluded_sheet_id: Option<&str>,
 ) -> Result<usize, ActionError> {
     validate_slot(doc, 0, before_sheet_id, after_sheet_id, excluded_sheet_id)?;
-    let ids: Vec<String> = (0..SheetsDoc::sheet_count_readonly(doc))
+    let ids: Vec<String> = (0..SheetsDoc::sheet_count(doc))
         .filter_map(|idx| SheetsDoc::sheet_resource_id(doc, idx))
         .filter(|id| Some(id.as_str()) != excluded_sheet_id)
         .collect();
@@ -1516,7 +1506,7 @@ fn range_area(c0: u32, r0: u32, c1: u32, r1: u32) -> usize {
 }
 
 /// A workbook of one sheet with no cells, formats, charts or comments.
-fn workbook_is_blank(doc: &mut Doc) -> bool {
+fn workbook_is_blank(doc: &Doc) -> bool {
     if SheetsDoc::sheet_count(doc) != 1 {
         return false;
     }
@@ -2605,7 +2595,7 @@ mod tests {
         SheetsDoc::sheet_resource_id(doc, idx).expect("seeded sheet identity")
     }
 
-    fn ctx_from(doc: &mut AutoCommit) -> SheetsResourceCtx {
+    fn ctx_from(doc: &AutoCommit) -> SheetsResourceCtx {
         SheetsResourceCtx {
             sheet_names: SheetsDoc::sheet_names(doc),
             searchable_sheets: (0..SheetsDoc::sheet_count(doc))
@@ -2634,8 +2624,8 @@ mod tests {
         // `sheets.sheet:<idx>` child per sheet, each exporting rename / delete /
         // insert-row / insert-column. Drives the real resource-builder path.
         {
-            let mut doc = seeded();
-            let ctx = ctx_from(&mut doc);
+            let doc = seeded();
+            let ctx = ctx_from(&doc);
             let resources = provide_resources(&ctx, &doc);
             assert_eq!(resources.len(), 1, "one workbook root");
             let wb = &resources[0];
@@ -2720,8 +2710,8 @@ mod tests {
 
         // Case `active_selection_is_a_range_resource_with_canonical_actions`.
         {
-            let mut doc = seeded();
-            let mut ctx = ctx_from(&mut doc);
+            let doc = seeded();
+            let mut ctx = ctx_from(&doc);
             let action = immediate_spec(
                 "format-percent",
                 "Format as percent",
@@ -2753,24 +2743,21 @@ mod tests {
         {
             let mut doc = seeded();
             let stable = SheetsDoc::sheet_resource_id(&doc, 0).expect("stable sheet identity");
-            let before = history_context_for_doc(
-                &doc,
-                &SheetsAction::SetCell {
-                    sheet: 0,
-                    sheet_id: stable.clone(),
-                    col: 1,
-                    row: 4,
-                    raw: "42".into(),
-                    fmt: None,
-                },
-            );
+            let before = history_context(&SheetsAction::SetCell {
+                sheet: 0,
+                sheet_id: stable.clone(),
+                col: 1,
+                row: 4,
+                raw: "42".into(),
+                fmt: None,
+            });
             assert_eq!(
                 before.resource.expect("cell resource").id,
                 format!("sheets.cell:{stable}:1:4")
             );
 
             SheetsDoc::move_sheet(&mut doc, 0, 1);
-            let ctx = ctx_from(&mut doc);
+            let ctx = ctx_from(&doc);
             let resources = provide_resources(&ctx, &doc);
             let moved = resources[0]
                 .children
@@ -2784,8 +2771,8 @@ mod tests {
     /// Hosted surfaces keep only the live selection; sheet tabs come from publish.
     #[test]
     fn hosted_resources_are_selection_extras_beside_publish() {
-        let mut doc = seeded();
-        let mut ctx = ctx_from(&mut doc);
+        let doc = seeded();
+        let mut ctx = ctx_from(&doc);
         let action = immediate_spec(
             "format-percent",
             "Format as percent",
@@ -2845,23 +2832,23 @@ mod tests {
 
         // Deleting row 2, the range's first row, leaves B2:B3 = 2 + 4.
         dispatch(&mut doc, &delete_row_action(0, sheet_id.clone(), 1));
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (3, 0)), "=SUM(B2:B3)");
+        assert_eq!(SheetsDoc::cell_raw(&doc, 0, (3, 0)), "=SUM(B2:B3)");
         assert_eq!(value(&mut doc, (3, 0)), Some(CellValue::Number(6.0)));
         // Deleting its last row leaves just B2.
         dispatch(&mut doc, &delete_row_action(0, sheet_id.clone(), 2));
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (3, 0)), "=SUM(B2:B2)");
+        assert_eq!(SheetsDoc::cell_raw(&doc, 0, (3, 0)), "=SUM(B2:B2)");
         assert_eq!(value(&mut doc, (3, 0)), Some(CellValue::Number(2.0)));
 
         // E1 now reads `=SUM($B2:C$2)`; deleting column C, its last
         // column, keeps the formula (now in D1) alive on B2 alone.
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (4, 0)), "=SUM($B2:C$2)");
+        assert_eq!(SheetsDoc::cell_raw(&doc, 0, (4, 0)), "=SUM($B2:C$2)");
         dispatch(&mut doc, &delete_column_action(0, sheet_id.clone(), 2));
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (3, 0)), "=SUM($B2:B$2)");
+        assert_eq!(SheetsDoc::cell_raw(&doc, 0, (3, 0)), "=SUM($B2:B$2)");
         assert_eq!(value(&mut doc, (3, 0)), Some(CellValue::Number(2.0)));
 
         // Deleting every row the range covers is the only way to break it.
         dispatch(&mut doc, &delete_row_action(0, sheet_id, 1));
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (2, 0)), "=SUM(#REF!)");
+        assert_eq!(SheetsDoc::cell_raw(&doc, 0, (2, 0)), "=SUM(#REF!)");
     }
 
     /// Cell/chart/row actions write through, keep stable targets and remap formulas.
@@ -2876,8 +2863,8 @@ mod tests {
                 &mut doc,
                 &set_cell_action(0, sheet_id, (0, 1), "=SUM(B1:B3)", Some(CellFormat::Number)),
             );
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 1)), "=SUM(B1:B3)");
-            let snap = SheetsDoc::snapshot_sheet(&mut doc, 0, Currency::USD);
+            assert_eq!(SheetsDoc::cell_raw(&doc, 0, (0, 1)), "=SUM(B1:B3)");
+            let snap = SheetsDoc::snapshot_sheet(&doc, 0, Currency::USD);
             assert_eq!(snap.fmt.get(&(0, 1)).copied(), Some(CellFormat::Number));
         }
 
@@ -2920,10 +2907,10 @@ mod tests {
             dispatch(&mut doc, &action);
 
             assert_eq!(
-                SheetsDoc::cell_raw(&mut doc, 1, (7, 7)),
+                SheetsDoc::cell_raw(&doc, 1, (7, 7)),
                 "on the intended sheet"
             );
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (7, 7)), "");
+            assert_eq!(SheetsDoc::cell_raw(&doc, 0, (7, 7)), "");
         }
 
         // Case `insert_and_delete_row_shift_cells`.
@@ -2933,11 +2920,11 @@ mod tests {
             let sheet_id = stable(&doc, 0);
             // Budget!A1 = "Rent". Insert a row above row 1 (at == 0): it moves to A2.
             dispatch(&mut doc, &insert_row_action(0, sheet_id.clone(), 0));
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 1)), "Rent");
+            assert_eq!(SheetsDoc::cell_raw(&doc, 0, (0, 0)), "");
+            assert_eq!(SheetsDoc::cell_raw(&doc, 0, (0, 1)), "Rent");
             // Delete row 1 again: it shifts back up to A1.
             dispatch(&mut doc, &delete_row_action(0, sheet_id, 0));
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "Rent");
+            assert_eq!(SheetsDoc::cell_raw(&doc, 0, (0, 0)), "Rent");
         }
 
         // Case `row_and_column_actions_remap_formula_relationships`.
@@ -2949,14 +2936,14 @@ mod tests {
 
             dispatch(&mut doc, &insert_row_action(0, sheet_id.clone(), 0));
             assert_eq!(
-                SheetsDoc::cell_raw(&mut doc, 0, (1, 3)),
+                SheetsDoc::cell_raw(&doc, 0, (1, 3)),
                 "=SUM($A$2:A3)",
                 "both anchored and relative formula references follow the inserted row"
             );
 
             dispatch(&mut doc, &delete_column_action(0, sheet_id, 0));
             assert_eq!(
-                SheetsDoc::cell_raw(&mut doc, 0, (0, 3)),
+                SheetsDoc::cell_raw(&doc, 0, (0, 3)),
                 "=SUM(#REF!)",
                 "a deleted referenced column is represented explicitly, never silently retargeted"
             );
@@ -3048,29 +3035,21 @@ mod tests {
                 history_context(&duplicate).resource.unwrap().id,
                 "sheets.sheet:10000000-0000-4000-8000-000000000003"
             );
-            let doc = seeded();
-            assert_eq!(
-                history_context_for_doc(&doc, &duplicate)
-                    .resource
-                    .unwrap()
-                    .id,
-                "sheets.sheet:10000000-0000-4000-8000-000000000003"
-            );
         }
 
         // Case `delete_sheet_action_removes_a_sheet_but_keeps_the_last`.
         // Deleting a sheet through its action removes it; the last sheet is kept.
         {
             let mut doc = seeded();
-            assert_eq!(SheetsDoc::sheet_count(&mut doc), 2);
+            assert_eq!(SheetsDoc::sheet_count(&doc), 2);
             let sheet_id = stable(&doc, 1);
             dispatch(&mut doc, &delete_sheet_action(1, sheet_id));
-            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Budget"]);
+            assert_eq!(SheetsDoc::sheet_names(&doc), vec!["Budget"]);
             // The last sheet cannot be deleted away.
             let sheet_id = stable(&doc, 0);
             dispatch(&mut doc, &delete_sheet_action(0, sheet_id));
             assert_eq!(
-                SheetsDoc::sheet_count(&mut doc),
+                SheetsDoc::sheet_count(&doc),
                 1,
                 "a workbook keeps one sheet"
             );
@@ -3196,8 +3175,8 @@ mod tests {
 
         // Case `interchange_operations_are_typed_background_jobs`.
         {
-            let mut doc = seeded();
-            let ctx = ctx_from(&mut doc);
+            let doc = seeded();
+            let ctx = ctx_from(&doc);
             let resources = provide_resources(&ctx, &doc);
             for id in [
                 "import-csv",
@@ -3226,8 +3205,7 @@ mod tests {
 
     /// Resources exactly as the app publishes them for `doc`.
     fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
-        let mut scratch = doc.clone();
-        provide_resources(&ctx_from(&mut scratch), doc)
+        provide_resources(&ctx_from(doc), doc)
     }
 
     /// `seeded` plus a second row of cells, so a restructure moves several.

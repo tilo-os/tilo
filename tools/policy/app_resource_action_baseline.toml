@@ -34,7 +34,6 @@
 "apps/pdf-viewer/src/resource.rs" = 2
 "apps/photos/src/resource.rs" = 2
 "apps/settings/src/resource.rs" = 2
-"apps/sheets/src/resource.rs" = 1
 "apps/slides/src/app.rs" = 1
 "apps/terminal/src/main_body.rs" = 2
 "apps/tube/src/app.rs" = 2
