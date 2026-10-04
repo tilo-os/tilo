@@ -948,6 +948,10 @@ suite = "os/tests/boot_performance_gate.sh"
 reason = "needs a running installed image"
 
 [[unrequired]]
+suite = "os/tests/boot_units_gate.sh"
+reason = "runs inside a booted guest, as root"
+
+[[unrequired]]
 suite = "os/tests/booted_app_store.sh"
 reason = "needs a booted image (SSH into a VM)"
 

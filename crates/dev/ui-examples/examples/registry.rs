@@ -100,7 +100,6 @@ const SHOT_SOURCES: &[&str] = &[
     "history_cases.rs",
     "nav_shell_shots.rs",
     "perf_hud_shot.rs",
-    "rich_text_editor_shots.rs",
     "scrollbar_shots.rs",
     "search_showcase.rs",
     "soft_shadow_shots.rs",

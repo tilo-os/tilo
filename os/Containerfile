@@ -1088,6 +1088,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-rollback-harden.timer \
     /usr/lib/systemd/system/
 COPY os/tests/rollback-boot-check.sh /usr/libexec/tilo-rollback-boot-check
+COPY os/tests/boot_units_gate.sh /usr/libexec/tilo/boot-units-gate.sh
 
 FROM scratch AS recovery-files
 COPY --from=component-files /image/recovery-files/ /
@@ -2296,6 +2297,7 @@ RUN chmod 0755 /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-conf
         /usr/lib/systemd/system-generators/tilo-root-generator \
         /usr/lib/dracut/modules.d/91tilo-rollback/module-setup.sh \
         /usr/libexec/tilo-rollback-harden /usr/libexec/tilo-rollback-boot-check \
+        /usr/libexec/tilo/boot-units-gate.sh \
  && install -d -m 0755 /usr/share/tilo/pcr-predictions
 
 # ---------------------------------------------------------------------------
