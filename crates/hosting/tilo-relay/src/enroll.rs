@@ -2159,9 +2159,46 @@ fn load_approval_root(options: &ApprovalOptions<'_>) -> anyhow::Result<Box<dyn R
         )
     })?;
     if !identity.is_single_device() {
+        if identity.threshold() == 1 && identity.total_shares() == 1 {
+            bail!(
+                "{}",
+                tilo_user_identity::RootOnly::AdmitDevice.refusal(
+                    root_holders(identity_dir, identity.group_public_key())
+                        .iter()
+                        .map(String::as_str)
+                )
+            );
+        }
         bail!("threshold identity requires the multi-device certificate ceremony");
     }
     Ok(Box::new(identity))
+}
+
+/// Labels of the person's devices that hold the root, from this account's
+/// fleet; empty when it cannot be read.
+fn root_holders(identity_dir: &std::path::Path, user: [u8; 32]) -> Vec<String> {
+    let Ok(bytes) = std::fs::read(fleet_path(identity_dir, user)) else {
+        return Vec::new();
+    };
+    let Ok(fleet) = serde_json::from_slice::<FleetProjection>(&bytes) else {
+        return Vec::new();
+    };
+    let mut revocations = RevocationList::new();
+    for entry in fleet.revocations {
+        let _ = revocations.insert(entry);
+    }
+    let Ok(now) = now_ns() else {
+        return Vec::new();
+    };
+    let mine: Vec<DeviceCert> = fleet
+        .certificates
+        .into_iter()
+        .filter(|cert| cert.user_public_key == user)
+        .collect();
+    tilo_user_identity::root_holder_labels(&mine, &revocations, now)
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
 }
 
 fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<ApprovalIdentity> {

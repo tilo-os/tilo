@@ -515,7 +515,7 @@ pub fn enroll_from_local_identity(
             layout.local_system.clone(),
         )
         .load(&hex::encode(identity.group_public_key()))
-        .map(|fleet| fleet.root_holder_labels(now_ns))
+        .map(|fleet| fleet.root_holder_labels(crate::device_fleet::now_ns()))
         .unwrap_or_default();
         return Err(crate::device_fleet::root_refusal(
             RootOnly::AdmitDevice,
@@ -1644,6 +1644,115 @@ mod tests {
         assert!(persist::joined_device_is_ready(&target_system, now_ns_u64()).unwrap());
         assert!(!target_system.user_privkey.exists());
         assert!(cert.capabilities.can_read_all_workspaces);
+    }
+
+    /// On a device enrolled by another one, approving and revoking devices
+    /// refuse with the device that holds the root, while revocations the
+    /// root signed elsewhere are remembered.
+    #[test]
+    fn a_joined_device_leaves_root_work_to_the_device_holding_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_identity = dir.path().join("local-identity");
+        let local_system = IdentityPaths::under(dir.path().join("local-system"));
+        ensure_collaboration_identity(&local_identity, &local_system).unwrap();
+        let primary = persist::read_device_cert(&local_system.device_cert).unwrap();
+        let identity_id = hex::encode(primary.user_public_key);
+        let layout = JoinedDeviceLayout {
+            target_root: dir.path(),
+            username: "quser",
+            local_identity_dir: &local_identity,
+            local_system: &local_system,
+            local_home_peers: &dir.path().join("missing-home-peers.json"),
+            local_rooms: &dir.path().join("missing-rooms.json"),
+        };
+        let joined = enroll_from_local_identity(&layout, "Quinten", "Board B", 1_000).unwrap();
+        let joined_identity = dir.path().join("var/home/quser/.config/tilo/identity");
+        let joined_system = IdentityPaths::under(dir.path().join("var/lib/tilo"));
+        let joined_store =
+            crate::device_fleet::DeviceFleetStore::at(&joined_identity, joined_system.clone());
+        let local_store =
+            crate::device_fleet::DeviceFleetStore::at(&local_identity, local_system.clone());
+
+        let refusal = joined_store
+            .revoke(
+                &identity_id,
+                primary.device_public_key,
+                tilo_user_identity::RevocationReason::Lost,
+                now_ns_u64(),
+            )
+            .unwrap_err();
+        assert_eq!(refusal.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            refusal.to_string(),
+            "Revoking a device needs the identity's root key, which this device does not \
+             hold; do this on 'Primary device'"
+        );
+        let refusal = enroll_from_local_identity(
+            &JoinedDeviceLayout {
+                target_root: &dir.path().join("third"),
+                local_identity_dir: &joined_identity,
+                local_system: &joined_system,
+                ..layout
+            },
+            "Quinten",
+            "Board C",
+            1_000,
+        )
+        .unwrap_err();
+        assert!(
+            refusal.to_string().ends_with("do this on 'Primary device'"),
+            "{refusal}"
+        );
+        assert!(
+            joined_store
+                .mint_enrollment(&identity_id, DeviceCapabilities::member(), 1, 2)
+                .unwrap_err()
+                .to_string()
+                .ends_with("do this on 'Primary device'")
+        );
+
+        // The primary revokes the board; the board's fleet remembers it once,
+        // and refuses another identity's revocation.
+        let entry = local_store
+            .revoke(
+                &identity_id,
+                joined.device_public_key,
+                tilo_user_identity::RevocationReason::Retired,
+                now_ns_u64(),
+            )
+            .unwrap();
+        assert!(
+            joined_store
+                .remember_revocation(&identity_id, entry.clone())
+                .unwrap()
+        );
+        assert!(
+            !joined_store
+                .remember_revocation(&identity_id, entry)
+                .unwrap()
+        );
+        assert!(
+            joined_store
+                .load(&identity_id)
+                .unwrap()
+                .is_revoked(&joined.device_public_key)
+        );
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
+        let mut foreign = tilo_user_identity::RevocationEntry {
+            user_public_key: stranger.verifying_key().to_bytes(),
+            revoked_device_public_key: primary.device_public_key,
+            revoked_at_ns: 1,
+            reason: tilo_user_identity::RevocationReason::Stolen,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut foreign, &stranger).unwrap();
+        assert_eq!(
+            joined_store
+                .remember_revocation(&identity_id, foreign)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
     }
     fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, io::Error> {
         super::ensure_primary_identity(identity_dir, FILES)

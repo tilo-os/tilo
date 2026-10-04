@@ -189,12 +189,29 @@ impl DeviceFleetStore {
     /// certificate can't be read, or if persisting the updated fleet fails.
     pub fn register_current_device(&self, identity_id: &str) -> io::Result<DeviceFleet> {
         let profile = self.profile(identity_id)?;
-        let cert_path = self
-            .identity_paths
-            .device_cert_for_user(&profile.user_public_key);
-        let cert = tilo_user_identity::persist::read_device_cert(&cert_path)
-            .map_err(|error| io::Error::other(error.to_string()))?;
+        let cert = self.own_certificate(&profile.user_public_key)?;
         self.insert_certificate(identity_id, cert)
+    }
+
+    /// This machine's certificate for `user_public_key`: the identity-keyed
+    /// one, else the system-facing one when it names that identity.
+    fn own_certificate(&self, user_public_key: &[u8; 32]) -> io::Result<DeviceCert> {
+        let keyed = self.identity_paths.device_cert_for_user(user_public_key);
+        let read = |path: &std::path::Path| {
+            tilo_user_identity::persist::read_device_cert(path)
+                .map_err(|error| io::Error::other(error.to_string()))
+        };
+        if keyed.exists() {
+            return read(&keyed);
+        }
+        let cert = read(&self.identity_paths.device_cert)?;
+        if &cert.user_public_key != user_public_key {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "this device holds no certificate for the identity",
+            ));
+        }
+        Ok(cert)
     }
 
     /// Mint a short-lived enrollment token from this already trusted device.
@@ -214,21 +231,22 @@ impl DeviceFleetStore {
         let profile = self.profile(identity_id)?;
         let device = tilo_user_identity::persist::load_device_key(&self.identity_paths)
             .map_err(|error| io::Error::other(error.to_string()))?;
-        let cert_path = self
-            .identity_paths
-            .device_cert_for_user(&profile.user_public_key);
-        let cert = tilo_user_identity::persist::read_device_cert(&cert_path)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        verify_device_cert_at(&cert, issued_at_ns)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        if cert.device_public_key != device.verifying_key().to_bytes()
-            || !cert.capabilities.can_admit_devices
-        {
+        let cert = self.own_certificate(&profile.user_public_key)?;
+        if cert.device_public_key != device.verifying_key().to_bytes() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "this device may not admit another device",
+                "this device's certificate names another device",
             ));
         }
+        if !cert.capabilities.can_admit_devices {
+            let labels = self
+                .load(identity_id)
+                .map(|fleet| fleet.root_holder_labels(now_ns()))
+                .unwrap_or_default();
+            return Err(root_refusal(RootOnly::AdmitDevice, &labels));
+        }
+        verify_device_cert_at(&cert, issued_at_ns)
+            .map_err(|error| io::Error::other(error.to_string()))?;
         let mut nonce = [0_u8; 16];
         UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let token = mint_enrollment_token(
