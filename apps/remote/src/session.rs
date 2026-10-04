@@ -76,9 +76,7 @@ impl TransportReadiness {
                 ConnectionKind::Vnc => "Remote can't open VNC sessions on this device.",
                 _ => "Remote can't open this kind of session on this device.",
             },
-            Self::BackendUnavailable => {
-                "Remote doesn't support RDP. Switch the connection to SSH or VNC to keep using it."
-            }
+            Self::BackendUnavailable => "Remote opens SSH, VNC and Tilo devices, but not RDP.",
             Self::InvalidProfile => {
                 "The saved address or sign-in method doesn't fit this protocol."
             }
