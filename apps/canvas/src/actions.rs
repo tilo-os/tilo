@@ -292,8 +292,12 @@ pub struct NewStroke {
     /// With `dabs`: how long each is, in units (about `size` when absent);
     /// much longer than `size`, each is a flick lifting to a point (grass).
     pub dab_length: Option<f64>,
-    /// With `dabs`: the way they point, in degrees (-90 is up); along the
-    /// path when absent.
+    /// Instead of one line, lines this many units apart across the area
+    /// the points enclose: shading in one stroke; another at a second
+    /// angle cross-hatches.
+    pub hatch: Option<f64>,
+    /// With `dabs`, the way they point in degrees (-90 is up; along the
+    /// path when absent); with `hatch`, the lines' (default 45).
     pub angle: Option<f64>,
     /// Keep the paint inside this mark's shape, as a painter cuts in
     /// against an edge: texture a rock or a crown within its silhouette.
@@ -1001,6 +1005,7 @@ impl Paint {
                     dabs: stroke.dabs,
                     scatter: stroke.scatter,
                     dab_length: stroke.dab_length,
+                    hatch: stroke.hatch,
                 };
                 let mut mark = placed(id, stroke.name.clone().unwrap_or_default(), shape, style);
                 let (clip, area) = clips.get(index).cloned().unwrap_or_default();

@@ -557,12 +557,6 @@ fn secure_record_unlocked(
             )
         })?;
         let provider = secure_store::provider_for(dir, reference)?;
-        if !secure_store::FILE_FALLBACK
-            && provider.protection() == KeyProtection::BrokerFile
-            && preferred.protection() == KeyProtection::SecretService
-        {
-            return move_secret_unlocked(dir, path, provider.as_ref(), preferred.as_ref());
-        }
         let secret = provider.load(&reference.locator)?;
         identity_from_record(record, Some(secret.as_slice()))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -671,48 +665,6 @@ fn secure_record_with_provider_unlocked(
         return Err(error);
     }
     Ok(provider.protection())
-}
-
-/// Move a secured record's secret from `from` into `to`, once: stored there
-/// and read back, the record republished to reference it, and only then
-/// removed from `from`, unless another record still references it there.
-/// Any failure leaves the record on `from`, and is returned.
-fn move_secret_unlocked(
-    dir: &std::path::Path,
-    path: &std::path::Path,
-    from: &dyn SecretProvider,
-    to: &dyn SecretProvider,
-) -> io::Result<KeyProtection> {
-    let mut record = read_record(path)?;
-    let old = record.secret_ref.clone().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "secured identity has no secret reference",
-        )
-    })?;
-    let secret = from.load(&old.locator)?;
-    identity_from_record(read_record(path)?, Some(secret.as_slice()))
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    to.store(&old.locator, secret.as_slice())?;
-    record.secret_ref = Some(SecretReference {
-        backend: to.backend_id().to_string(),
-        locator: old.locator.clone(),
-    });
-    let metadata = serde_json::to_vec_pretty(&record)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    write_private_atomic(path, &metadata)?;
-    let shared = list_identities_unlocked(dir)?.iter().any(|other| {
-        identity_path(dir, &other.id)
-            .ok()
-            .filter(|other_path| other_path != path)
-            .and_then(|other_path| read_record(&other_path).ok())
-            .and_then(|other_record| other_record.secret_ref)
-            .is_some_and(|other_ref| other_ref == old)
-    });
-    if !shared {
-        from.remove(&old.locator)?;
-    }
-    Ok(to.protection())
 }
 
 /// Select which identity the launcher brokers into newly started apps.
@@ -2566,52 +2518,6 @@ mod tests {
             );
             assert_published_identity_keeps_secret(&path, &provider, 71);
         }
-    }
-
-    #[test]
-    fn a_broker_file_secret_moves_into_the_system_store_once_or_not_at_all() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("personal.json");
-        let file = BrokerFileProvider::new(dir.path());
-        write_private_atomic(&path, &record_bytes("Ada", 74)).unwrap();
-        secure_identity_with_provider(dir.path(), "personal", &file).unwrap();
-        let locator = hex::encode(SigningKey::from_bytes(&[74; 32]).verifying_key().to_bytes());
-
-        let refusing = SecretServiceFixture::new(dir.path(), true);
-        assert!(move_secret_unlocked(dir.path(), &path, &file, &refusing).is_err());
-        assert_published_identity_keeps_secret(&path, &file, 74);
-
-        let keyring = SecretServiceFixture::new(dir.path(), false);
-        assert_eq!(
-            move_secret_unlocked(dir.path(), &path, &file, &keyring).unwrap(),
-            KeyProtection::SecretService
-        );
-        assert_published_identity_keeps_secret(&path, &keyring, 74);
-        assert_eq!(
-            file.load(&locator).unwrap_err().kind(),
-            io::ErrorKind::NotFound,
-            "the broker file stayed behind"
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_moves_broker_file_identities_into_the_keychain_when_secured() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("personal.json");
-        let file = BrokerFileProvider::new(dir.path());
-        write_private_atomic(&path, &record_bytes("Ada", 75)).unwrap();
-        secure_identity_with_provider(dir.path(), "personal", &file).unwrap();
-        assert_eq!(
-            with_preferred_secret_service(false, || secure_identity(dir.path(), "personal"))
-                .unwrap(),
-            KeyProtection::SecretService
-        );
-        assert_published_identity_keeps_secret(
-            &path,
-            &SecretServiceFixture::new(dir.path(), false),
-            75,
-        );
     }
 
     #[test]
