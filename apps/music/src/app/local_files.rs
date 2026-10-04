@@ -1,6 +1,7 @@
 use super::{MusicApp, Track};
 #[cfg(all(test, feature = "audio"))]
 use ui::widget::Continuable as _;
+use ui::widget::toast::ToastKind;
 
 impl MusicApp {
     pub(super) fn make_open_file_button() -> ui::widget::Button {
@@ -12,9 +13,12 @@ impl MusicApp {
         )]
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "open-file")
             .expect("canonical Music picker binding");
-        ui::widget::Button::new("music-open-file", "music-open-audio-file", None)
-            .content_sized()
-            .on_action(binding)
+        ui::widget::Button::icon_only(
+            "music-open-file",
+            ui::icons::Icon::FolderOpen,
+            &ui::i18n!("music-open-audio-file"),
+        )
+        .on_action(binding)
     }
 
     pub(super) fn is_local_file(&self, id: &str) -> bool {
@@ -139,7 +143,7 @@ impl MusicApp {
             }
             ui::portal::PortalOutcome::Failed(error) => error,
         };
-        self.toast = Some((error.clone(), ui::time::now()));
+        self.notify(ToastKind::Error, error.clone());
         self.resource_stream_results
             .push(tilo_actions::InvocationUpdate::Failed {
                 invocation,
@@ -235,6 +239,7 @@ impl MusicApp {
         Some(crate::actions::CatalogTrackResource {
             id: file.track.id.clone(),
             label: file.track.title.clone(),
+            artist: String::new(),
             album_id: String::new(),
             artist_id: String::new(),
             offline: false,
@@ -299,14 +304,10 @@ mod tests {
                     &theme,
                 );
                 let rect = app.open_file_button.get_rect();
-                assert!(rect.width() >= 100.0 && rect.height() >= 40.0);
+                let side = ui::widget::ButtonFace::height(ui::widget::ControlSize::Regular, &theme);
+                assert!(rect.width() >= side - 0.5 && rect.height() >= side - 0.5);
                 assert!(app.rect.contains(rect.center()));
-                let (_, text_height) = text.measure(
-                    &ui::i18n!("music-open-audio-file"),
-                    14.0,
-                    Some((rect.width() as f32 - 2.0 * theme.padding_standard).max(0.0)),
-                );
-                assert!(rect.height() >= f64::from(text_height + theme.padding_standard));
+                assert!(rect.y1 <= app.body_rect.y0, "the action sits in the header");
                 assert_eq!(tree.children(node).unwrap().len(), app.children().len());
                 let device_id = unsafe { std::mem::zeroed() };
                 let events = [
@@ -357,7 +358,7 @@ mod tests {
             }
         }
 
-        // Phase `home_picker_is_in_host_focus_order_only_while_visible`.
+        // Phase `header_actions_are_in_host_focus_order_on_every_destination`.
         {
             let mut music = MusicApp::new_for_shot();
             music.set_offline_for_shot();
@@ -370,7 +371,8 @@ mod tests {
             crate::actions::register(host.action_registry_mut());
             host.init_layout();
             host.refresh_semantic_tree();
-            assert_eq!(host.focusable_order.len(), 1);
+            // Open file and search, the header's two actions.
+            assert_eq!(host.focusable_order.len(), 2);
             for destination in ["songs", "home"] {
                 let resource = crate::actions::view_resource_id(destination);
                 let target = ui::accesskit_bridge::resource_action_node_id(&resource, "open");
@@ -378,17 +380,17 @@ mod tests {
                 host.rebuild_structure();
                 host.refresh_focus_order();
                 host.refresh_semantic_tree();
-                let home = destination == "home";
-                assert_eq!(host.focusable_order.len(), usize::from(home));
-                assert_eq!(
+                assert_eq!(host.focusable_order.len(), 2, "{destination}");
+                assert!(
                     host.control_action_coverage()
                         .iter()
                         .any(|entry| entry.binding.control_id == "music-open-file"),
-                    home
+                    "{destination}"
                 );
                 assert_eq!(
                     host.semantic_tree().control_paths("music-open-file").len(),
-                    usize::from(home)
+                    1,
+                    "{destination}"
                 );
             }
             #[cfg(feature = "audio")]
