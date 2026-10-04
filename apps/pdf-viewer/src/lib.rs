@@ -53,7 +53,7 @@ pub mod doc;
 pub mod model;
 pub mod render;
 pub mod resource;
-pub mod search_provider;
+pub mod search;
 pub mod signature;
 pub mod text_layer;
 pub mod tiles;

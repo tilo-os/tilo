@@ -2952,10 +2952,10 @@ fn resource_and_view_actions_target_exact_entities() {
             .name
             .clone();
 
-        let providers = ui::search::capability::search_providers(&app);
-        let provider = providers.first().expect("the editor publishes a provider");
-        let hit = provider
-            .search(&media)
+        let provider = ui::framework::testing::search_source::<crate::resource::VideoProject>(
+            crate::search::project_entries(&app.project),
+        );
+        let hit = ui::search::SearchProvider::search(&provider, &media)
             .into_iter()
             .find(|h| h.action_address() == Some(crate::actions::reveal_clip_address(clip.id)))
             .expect("the exact clip is findable by source name");
@@ -7699,7 +7699,7 @@ fn titles_are_added_written_and_styled() {
 
         app.system_fonts = vec!["Alpha Sans".into(), "Beta Serif".into()];
         app.open_font_picker();
-        let (_, dd, _) = app.font_picker.as_ref().expect("the picker opened");
+        let (_, dd) = app.font_picker.as_ref().expect("the picker opened");
         assert!(dd.is_open());
         assert_eq!(
             dd.selected(),

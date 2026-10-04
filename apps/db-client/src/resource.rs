@@ -491,6 +491,12 @@ impl ResourceSurface<DbClient, DbEffect> for DbClientApp {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.live_row(id)
     }
+
+    /// The open connection's relations, columns, result, transaction and
+    /// local query history: what the live catalog holds, not the document.
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        self.catalog_search_entries()
+    }
 }
 
 #[cfg(test)]

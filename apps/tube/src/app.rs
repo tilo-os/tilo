@@ -2105,11 +2105,16 @@ impl FullscreenProvider for TubeApp {
     }
 }
 
+impl TubeApp {
+    /// The videos, creators, playlists and watch history shown here, as
+    /// search entries.
+    pub(crate) fn search_entries_of_model(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        crate::search_type::model_entries(&self.model)
+    }
+}
+
 impl Widget for TubeApp {
-    ui::provides!(
-        dyn ui::widget::FullscreenProvider,
-        dyn ui::search::capability::SearchSource
-    );
+    ui::provides!(dyn ui::widget::FullscreenProvider);
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if self.follow_history() {
@@ -2594,14 +2599,6 @@ impl Widget for TubeApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-}
-
-impl ui::search::capability::SearchSource for TubeApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_type::TubeSearchProvider::new(
-            &self.model,
-        ))]
     }
 }
 

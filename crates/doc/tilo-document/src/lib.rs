@@ -633,11 +633,6 @@ impl Resource for RichText {
         }
     }
 
-    /// Recording who wrote text is part of the edit that wrote it.
-    fn annotates(action: &RichTextAction) -> bool {
-        matches!(action, RichTextAction::SetMark { name, .. } if name == tilo_doc::schema::MARK_AUTHOR)
-    }
-
     fn register(registry: &mut tilo_actions::ActionRegistry) {
         registry.register::<RichTextAction>(RICH_TEXT_ACTION_TYPE);
         // Old history still carries the word-processor type id.
@@ -770,6 +765,7 @@ impl Resource for RichText {
             title: heading.text.clone(),
             text: heading.text,
             action: None,
+            ..Default::default()
         });
         let mut on_screen: Vec<(usize, &Rc<BlockView>)> = state
             .loaded
@@ -784,6 +780,7 @@ impl Resource for RichText {
                 title: view.text.chars().take(60).collect(),
                 text: view.text.clone(),
                 action: None,
+                ..Default::default()
             }))
             .collect()
     }

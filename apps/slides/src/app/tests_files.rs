@@ -1,28 +1,11 @@
-//! Presentation files and operations from outside the editor: opening and
-//! saving through the host's chooser and the I/O worker, failures and
-//! cancellation, reveals the palette or an agent asks for, and the editor
-//! following a restored or collaborator-changed deck.
+//! Presentation files and effects from outside the editor: opening and
+//! saving through the host's chooser or a path, failures, reveals the
+//! palette or an agent asks for, and the editor following a restored or
+//! collaborator-changed deck.
 
 use super::bench::{Bench, deck_of};
 use super::*;
-
-/// Run frames until the editor's open or save job settled.
-fn wait_for_document_job(bench: &mut Bench) {
-    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
-    loop {
-        bench.frame();
-        let settled = bench
-            .read(|app| app.active_document_generation.is_none() && app.dispatched_save.is_none());
-        if settled {
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "background presentation operation did not settle"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
-}
+use crate::effects::SlidesEffect;
 
 fn write_deck(path: &std::path::Path, deck: &Deck) {
     let bytes = if path.extension().is_some_and(|ext| ext == "pptx") {
@@ -33,49 +16,30 @@ fn write_deck(path: &std::path::Path, deck: &Deck) {
     std::fs::write(path, bytes).unwrap();
 }
 
-/// Open the file the host's chooser answers with, as Ctrl+O does.
-fn open_through_the_chooser(bench: &mut Bench, chosen: PortalOutcome) -> Vec<PickRequest> {
+/// Run `effect` with the host's chooser answering `chosen`, as Ctrl+O and
+/// Ctrl+S do, confirmed where it asks; the chooser's requests and the
+/// effect's answer.
+fn through_the_chooser(
+    bench: &mut Bench,
+    chosen: PortalOutcome,
+    effect: &SlidesEffect,
+) -> (
+    Vec<PickRequest>,
+    Result<tilo_actions::ActionOutput, tilo_actions::DoorError>,
+) {
     let (services, recorder) = ui::host::HostServices::recording();
     recorder.respond_to_pick(chosen);
-    ui::host::scoped(&services, || {
-        bench
-            .app
-            .harness()
-            .with_widget_mut::<SlidesApp, _>(SlidesApp::request_odp_open)
-    });
-    wait_for_document_job(bench);
+    let answer = ui::host::scoped(&services, || bench.app.effect_confirmed(effect));
     bench.frame();
-    recorder.pick_requests()
+    (recorder.pick_requests(), answer)
 }
 
-/// Invoke the deck's operation `id` (`open`, `save-as`, ...) with
-/// `arguments`, as the palette or an agent does.
-fn operate(
-    bench: &mut Bench,
-    resource: &str,
-    id: &str,
-    arguments: &serde_json::Value,
-) -> Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError> {
-    let instance_id = bench.app.harness().component_instance_id().unwrap();
-    let address = ui::bound_dispatch::BoundActionAddress {
-        instance_id,
-        address: tilo_actions::ActionAddress::new(resource, id),
-    };
-    let arguments = arguments.as_object().cloned().unwrap_or_default();
-    bench
-        .app
-        .harness()
-        .invoke_bound_action_confirmed(&address, &arguments)
-}
+const OPEN: SlidesEffect = SlidesEffect::Open { path: None };
 
-/// ODP and `PowerPoint` files open through the chooser and the worker, as one
-/// undoable change; failures, stale results and lost workers are visible.
+/// ODP and `PowerPoint` files open through the chooser as one undoable
+/// change; failures change nothing and are said.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "cases merged from separate tests; each case stays self-contained"
-)]
-fn document_open_save_and_worker_outcomes() {
+fn presentation_files_open_and_save_through_the_chooser() {
     let directory = tempfile::tempdir().unwrap();
 
     // Case `a_saved_odp_opens_as_the_same_deck_in_one_undo_step`.
@@ -85,7 +49,9 @@ fn document_open_save_and_worker_outcomes() {
         save_presentation_to_path(&deck, &path, &ContentStore::memory()).unwrap();
         let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
         let before = bench.deck();
-        let requests = open_through_the_chooser(&mut bench, PortalOutcome::Opened(path));
+        let (requests, answer) =
+            through_the_chooser(&mut bench, PortalOutcome::Opened(path), &OPEN);
+        answer.expect("the file opens");
         assert_eq!(requests[0].title(), tr("slides-open-title"));
         let opened = bench.deck();
         assert_eq!(
@@ -98,19 +64,11 @@ fn document_open_save_and_worker_outcomes() {
             opened,
             "the editor shows it"
         );
-        assert_eq!(
-            bench.read(|app| app.cur_slide),
-            0,
-            "it opens on its first slide"
-        );
         bench.read(|app| {
-            assert!(
-                app.doc_portal_rx.is_none(),
-                "a resolved request clears the channel"
-            );
+            assert_eq!(app.cur_slide, 0, "it opens on its first slide");
             assert!(matches!(
                 app.io_toast.as_ref(),
-                Some((_, ToastKind::Success))
+                Some((message, ToastKind::Success)) if *message == tr("slides-toast-opened")
             ));
         });
         assert!(bench.undo(), "opening a file is one undo step");
@@ -123,86 +81,51 @@ fn document_open_save_and_worker_outcomes() {
         let path = directory.path().join("roundtrip.pptx");
         write_deck(&path, &deck);
         let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
-        open_through_the_chooser(&mut bench, PortalOutcome::Opened(path));
+        through_the_chooser(&mut bench, PortalOutcome::Opened(path), &OPEN)
+            .1
+            .expect("the PowerPoint file opens");
         let opened = bench.deck();
         assert_eq!(opened.title, deck.title);
         assert_eq!(opened.slides.len(), deck.slides.len());
-        assert!(bench.read(|app| matches!(
-            app.io_toast.as_ref(),
-            Some((message, ToastKind::Success)) if *message == tr("slides-toast-opened")
-        )));
     }
 
-    // Case `failed_open_is_visible_instead_of_silent`.
+    // Case `a_cancelled_choice_opens_nothing`.
     {
         let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
         let before = bench.deck();
-        open_through_the_chooser(
-            &mut bench,
-            PortalOutcome::Opened(directory.path().join("missing.odp")),
-        );
+        through_the_chooser(&mut bench, PortalOutcome::Cancelled, &OPEN)
+            .1
+            .expect("a cancel is no failure");
+        assert_eq!(bench.deck(), before);
+    }
+
+    // Case `a_file_that_is_no_presentation_is_said_and_changes_nothing`.
+    {
+        let path = directory.path().join("broken.odp");
+        std::fs::write(&path, b"not a zip").unwrap();
+        let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
+        let before = bench.deck();
+        let (_, answer) = through_the_chooser(&mut bench, PortalOutcome::Opened(path), &OPEN);
+        assert!(answer.is_err(), "the caller hears the open failed");
         assert!(bench.read(|app| matches!(app.io_toast.as_ref(), Some((_, ToastKind::Error)))));
         assert_eq!(bench.deck(), before, "a failed open changes nothing");
     }
 
-    // Case `cancelled_document_job_cannot_apply_a_stale_open_result`.
+    // Case `saving_through_the_chooser_writes_the_deck_as_odp`.
     {
-        let mut imported = crate::model::seed_deck();
-        imported.title = "stale import".into();
-        let path = directory.path().join("stale.odp");
-        write_deck(&path, &imported);
-        let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
-        let original = bench.deck().title;
-        bench.with(|app| {
-            assert!(app.queue_document_open(path.clone()));
-            // What `poll_resource_operation` does when the caller cancels.
-            app.active_document_generation = None;
-        });
-        for _ in 0..50 {
-            bench.frame();
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        assert_eq!(
-            bench.deck().title,
-            original,
-            "a stale parser completion is inert"
-        );
-    }
-
-    // Case `disconnected_document_worker_settles_the_accepted_resource_operation`.
-    Bench::one_slide(Slide::new(Layout::Blank)).with(|app| {
-        // A sender for future jobs, but a result channel whose worker is gone.
-        let (tx, _jobs) = std::sync::mpsc::sync_channel(1);
-        let (results, rx) = std::sync::mpsc::sync_channel(1);
-        drop(results);
-        app.document_worker = Some(DocumentWorker { tx, rx });
-        app.resource_invocation = Some(tilo_actions::InvocationId::new());
-        app.active_document_generation = Some(7);
-        app.drain_document_worker();
-        assert!(app.document_worker.is_none());
-        assert!(app.active_document_generation.is_none());
-        assert!(app.resource_invocation.is_none());
-        assert!(matches!(
-            app.completed_resource_invocation,
-            Some(tilo_actions::InvocationUpdate::Failed { .. })
-        ));
-        assert!(matches!(app.io_toast.as_ref(), Some((_, ToastKind::Error))));
-    });
-
-    // Case `a_save_writes_the_deck_and_settles`.
-    {
-        let path = directory.path().join("saved.pptx");
+        let out = directory.path().join("chosen.odp");
         let mut bench = Bench::sample();
-        let queued = bench.with(|app| {
-            app.resource_invocation = Some(tilo_actions::InvocationId::new());
-            app.queue_document_save(path.clone())
-        });
-        assert!(queued);
-        wait_for_document_job(&mut bench);
-        assert!(bench.read(|app| matches!(app.io_toast.as_ref(), Some((_, ToastKind::Success)))));
-        let saved = crate::pptx::read_pptx(&std::fs::read(&path).unwrap(), &ContentStore::memory())
-            .unwrap();
+        through_the_chooser(
+            &mut bench,
+            PortalOutcome::Opened(out.clone()),
+            &SlidesEffect::SaveAs { path: None },
+        )
+        .1
+        .expect("the deck saves");
+        let saved =
+            crate::odp::read_odp(&std::fs::read(&out).unwrap(), &ContentStore::memory()).unwrap();
         assert_eq!(saved.title, bench.deck().title);
+        assert!(bench.read(|app| matches!(app.io_toast.as_ref(), Some((_, ToastKind::Success)))));
     }
 
     // Case `ensure_odp_ext_appends_when_missing`.
@@ -222,10 +145,10 @@ fn document_open_save_and_worker_outcomes() {
     }
 }
 
-/// The Open operation with a path opens that file through the worker and
-/// answers its caller once the deck is replaced; Save As writes the deck.
+/// Open and Save As with a path reach the files named, as an agent or a
+/// script asks; Read answers with the deck as text.
 #[test]
-fn open_and_save_as_operations_reach_the_files_named() {
+fn open_save_as_and_read_reach_the_files_named() {
     let directory = tempfile::tempdir().unwrap();
     let mut deck = crate::model::seed_deck();
     deck.title = "Named on the call".into();
@@ -233,33 +156,48 @@ fn open_and_save_as_operations_reach_the_files_named() {
     write_deck(&path, &deck);
 
     let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
-    let started = operate(
-        &mut bench,
-        "slides.deck",
-        "open",
-        &serde_json::json!({ "path": path.to_string_lossy() }),
-    )
-    .expect("open is accepted");
-    assert!(matches!(
-        started,
-        ui::widget::ResourceOperationStart::Accepted
-    ));
-    wait_for_document_job(&mut bench);
+    bench
+        .app
+        .effect_confirmed(&SlidesEffect::Open {
+            path: Some(path.to_string_lossy().into_owned()),
+        })
+        .expect("open is answered");
     bench.frame();
     assert_eq!(bench.deck().title, "Named on the call");
 
-    let out = directory.path().join("written.odp");
-    operate(
-        &mut bench,
-        "slides.deck",
-        "save-as",
-        &serde_json::json!({ "path": out.to_string_lossy() }),
-    )
-    .expect("save-as is accepted");
-    wait_for_document_job(&mut bench);
+    let out = directory.path().join("written.pptx");
+    bench
+        .app
+        .effect(&SlidesEffect::SaveAs {
+            path: Some(out.to_string_lossy().into_owned()),
+        })
+        .expect("save-as is answered");
     let written =
-        crate::odp::read_odp(&std::fs::read(&out).unwrap(), &ContentStore::memory()).unwrap();
-    assert_eq!(written.title, "Named on the call");
+        crate::pptx::read_pptx(&std::fs::read(&out).unwrap(), &ContentStore::memory()).unwrap();
+    assert_eq!(
+        written.title, "Named on the call",
+        "a .pptx path writes PowerPoint"
+    );
+
+    let read = bench.app.effect(&SlidesEffect::Read).expect("read answers");
+    let outline = read
+        .value
+        .and_then(|value| value.as_str().map(str::to_owned));
+    assert!(
+        outline.is_some_and(|outline| outline.starts_with("Named on the call")),
+        "read answers with the deck's outline"
+    );
+
+    // Opening replaces the shared deck for everyone: it asks first.
+    assert!(
+        bench
+            .app
+            .effect(&SlidesEffect::Open {
+                path: Some(path.to_string_lossy().into_owned()),
+            })
+            .is_err(),
+        "an unconfirmed open is held for confirmation"
+    );
 }
 
 /// A reveal from the palette or an agent shows the exact slide and element,
@@ -282,14 +220,16 @@ fn a_brokered_text_reveal_restores_the_slide_element_and_selection() {
             element.text.chars().count(),
         )
     };
-    let _ = slide_id;
-    operate(
-        &mut bench,
-        &crate::actions::text_resource_id(&element_id),
-        "open",
-        &serde_json::json!({}),
-    )
-    .expect("the text resource reveals");
+    bench
+        .app
+        .effect_on(
+            &crate::actions::text_resource_id(&element_id),
+            &SlidesEffect::EditText {
+                slide: slide_id,
+                element: element_id.clone(),
+            },
+        )
+        .expect("the text resource reveals");
     bench.frame();
     bench.read(|app| {
         assert_eq!(app.cur_slide, slide_index);

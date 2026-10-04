@@ -2,4 +2,3 @@
 # Each count may only go down; the target is an empty file.
 
 [ratchets.raw_operation_handler]
-"apps/notes/src/app.rs" = 3

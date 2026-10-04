@@ -230,6 +230,13 @@
 //!   Neither rows nor children need to be published whole: a bounded page is
 //!   published and the rest resolve by id (`ResourceSurface::live_row`,
 //!   `Resource::child`).
+//! * **One search source** — what the app's search finds is the resource's
+//!   entries ([`Resource::search`](tilo_resource::Resource::search)) and,
+//!   for what a surface shows that the resource does not hold (a page's
+//!   text, a book's outline, processes), the surface's own
+//!   ([`ResourceSurface::search_entries`]), indexed together. An entry says
+//!   how its hit reads — its result group, subtitle, icon and the action it
+//!   invokes — so the app needs no search provider beside it.
 //! * **One published tree** — the palette, agents and scripts see the
 //!   resource's publication and nothing beside it that changes the document:
 //!   a document action a content widget publishes through its own

@@ -14,7 +14,18 @@ use ui::framework::{EffectAnswer, EffectStatus, Effected};
 use ui::native_media::Command;
 use ui::tilo_resource::{self, Effect};
 
+use automerge::AutoCommit;
+
 use crate::app::{ChatApp, Focus};
+use crate::model::ChannelKind;
+
+/// Why `start-video-call` is unavailable and refused: calls carry
+/// microphone audio only.
+pub(crate) const VIDEO_CALL_UNAVAILABLE: &str = "voice_only";
+
+pub(crate) fn video_call_unavailable_reason() -> String {
+    crate::i18n::t("chat-start-video-call-unavailable")
+}
 
 /// Chat's effects. See the [module docs](self).
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
@@ -73,6 +84,17 @@ pub enum ChatEffect {
     /// Call status
     #[effect(row, idempotent, device_only)]
     CallStatus { channel: String },
+    /// Start a call
+    ///
+    /// Joins the open workspace's voice channel, making one when the
+    /// workspace has none, or reveals the call already running.
+    #[effect(row, idempotent, device_only)]
+    StartCall,
+    /// Start a video call
+    ///
+    /// Refused: calls carry microphone audio only.
+    #[effect(row, idempotent, device_only)]
+    StartVideoCall,
     /// Select microphone
     #[effect(device_only)]
     SelectInput {
@@ -135,6 +157,8 @@ impl ChatApp {
             ChatEffect::CallStatus { channel } => {
                 self.native_voice_command(&channel, Command::Status)?;
             }
+            ChatEffect::StartCall => self.start_call(None)?,
+            ChatEffect::StartVideoCall => return Err(video_call_unavailable_reason()),
             ChatEffect::SelectInput { channel, input } => {
                 self.native_voice_command(
                     &channel,
@@ -147,13 +171,95 @@ impl ChatApp {
         Ok(Effected::done())
     }
 
+    /// Start a call in the open workspace: join its voice channel, making
+    /// one first when it has none so a text-only workspace can still huddle.
+    /// A call already running is revealed, never closed. The channel is
+    /// made through `doc` at once when the caller holds the document (the
+    /// header button), else through the dispatcher, and joined once it is
+    /// there.
+    pub(crate) fn start_call(&mut self, doc: Option<&mut AutoCommit>) -> Result<(), String> {
+        if !self.call_allows(crate::call::CallAction::Join) {
+            return Err("Call action is not permitted".into());
+        }
+        if self.call.active {
+            self.call.expanded = true;
+            self.request_relayout();
+            return Ok(());
+        }
+        if self.active_ws.is_empty() {
+            return Err("No chat workspace is open".into());
+        }
+        let existing = self
+            .ws_channels()
+            .into_iter()
+            .find(|channel| channel.kind == ChannelKind::Voice)
+            .map(|channel| channel.id.clone());
+        let channel = if let Some(existing) = existing {
+            existing
+        } else {
+            if !self.can_participate() {
+                return Err("A room writer must create a voice channel".into());
+            }
+            let id = crate::events::new_channel_id();
+            let create = crate::actions::create_channel_action(
+                &self.active_ws,
+                "",
+                &id,
+                "Voice",
+                ChannelKind::Voice,
+            );
+            let Some(doc) = doc else {
+                let dispatch = self.dispatch.as_ref().ok_or("Chat is open to view only")?;
+                dispatch.apply(&create);
+                self.pending_call = Some(id);
+                return Ok(());
+            };
+            self.apply_action(doc, &create);
+            self.reload(doc);
+            id
+        };
+        self.native_voice_command(
+            &channel,
+            Command::Join {
+                channel_id: channel.clone(),
+            },
+        )
+    }
+
+    /// Join the call a started call is waiting on, once its voice channel
+    /// is in the document.
+    pub(crate) fn join_pending_call(&mut self) {
+        let Some(channel) = self.pending_call.clone() else {
+            return;
+        };
+        if self.channel(&channel).is_none() {
+            return;
+        }
+        self.pending_call = None;
+        if let Err(error) = self.native_voice_command(
+            &channel,
+            Command::Join {
+                channel_id: channel.clone(),
+            },
+        ) {
+            self.media_error = Some(error);
+        }
+    }
+
     /// The effects this window cannot run right now.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
+        let video = EffectStatus::unavailable(
+            ChatEffect::START_VIDEO_CALL,
+            VIDEO_CALL_UNAVAILABLE,
+            video_call_unavailable_reason(),
+        );
         if self.external_services {
-            return Vec::new();
+            return vec![video];
         }
         let reason = "this host has no attachment store or voice service";
         vec![
+            video,
+            EffectStatus::unavailable(ChatEffect::START_CALL, "no_services", reason),
             EffectStatus::unavailable(ChatEffect::ATTACH_FILE, "no_services", reason),
             EffectStatus::unavailable(ChatEffect::JOIN_CALL, "no_services", reason),
             EffectStatus::unavailable(ChatEffect::UNMUTE, "no_services", reason),

@@ -1135,6 +1135,15 @@ pub fn resolve<R: Resource>(
     Ok(applied)
 }
 
+/// The search source the framework builds for `R` from `entries` — its
+/// resource's and its surfaces' — for testing what an app's entries find and
+/// how their hits read without a window.
+pub fn search_source<R: Resource>(
+    entries: Vec<tilo_resource::SearchEntry>,
+) -> impl ui_core::search::SearchProvider {
+    super::root::ResourceSearch::over(R::LABEL, entries)
+}
+
 impl<A: ResourceApp> Drop for HeadlessApp<A> {
     fn drop(&mut self) {
         let _ = self.close();

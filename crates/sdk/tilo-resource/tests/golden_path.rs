@@ -453,3 +453,60 @@ fn hex(bytes: &[u8]) -> String {
         out
     })
 }
+
+#[test]
+fn an_action_without_arguments_is_built_when_it_is_taken() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let takings = Arc::new(AtomicUsize::new(0));
+    let clear = Board::declarations()
+        .into_iter()
+        .find(|decl| decl.id == "clear")
+        .unwrap();
+    let counted = Arc::clone(&takings);
+    let decl = tilo_resource::ActionDecl::<Board>::new("clear", "Clear", Vec::new(), {
+        let clear = Arc::clone(&clear.build);
+        move |args, now| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            clear(args, now)
+        }
+    });
+    let resource = tilo_actions::Resource::new("board", "test.board", "Board")
+        .with_action(tilo_resource::declaration_spec(&decl));
+    assert_eq!(
+        takings.load(Ordering::SeqCst),
+        0,
+        "publishing builds nothing"
+    );
+    assert!(matches!(
+        resource.actions[0].input,
+        tilo_actions::ActionInput::Deferred { .. }
+    ));
+    let address = tilo_actions::ActionAddress::new("board", "clear");
+    for taken in 1..=2 {
+        let encoded =
+            tilo_actions::door::encode(std::slice::from_ref(&resource), &address, None).unwrap();
+        assert_eq!(encoded.type_id, Board::ACTION_TYPE);
+        assert_eq!(
+            takings.load(Ordering::SeqCst),
+            taken,
+            "each taking builds anew"
+        );
+    }
+
+    let refusing =
+        tilo_resource::ActionDecl::<Board>::new("refuse", "Refuse", Vec::new(), |_, _| {
+            Err("nothing to clear".into())
+        });
+    let resource = tilo_actions::Resource::new("board", "test.board", "Board")
+        .with_action(tilo_resource::declaration_spec(&refusing));
+    let refused = tilo_actions::door::encode(
+        std::slice::from_ref(&resource),
+        &tilo_actions::ActionAddress::new("board", "refuse"),
+        None,
+    );
+    assert!(
+        matches!(&refused, Err(tilo_actions::DoorError::InvalidArguments(reason)) if reason == "nothing to clear"),
+        "{refused:?}"
+    );
+}

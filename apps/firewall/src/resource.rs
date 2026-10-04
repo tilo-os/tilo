@@ -68,6 +68,7 @@ impl Resource for Firewall {
                 title: zone.kind.name().to_owned(),
                 text: format!("{} rules", zone.rules.len()),
                 action: None,
+                ..Default::default()
             })
             .collect()
     }
