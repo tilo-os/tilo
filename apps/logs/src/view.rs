@@ -542,12 +542,11 @@ impl Widget for JournalPane {
                     width: percent(1.0_f32),
                     height: Dimension::auto(),
                 },
-                // The table insets its selection lift by `s2`; standing `s1`
-                // in from the pane puts the lift, the header text and the
-                // first column on the filter field's edges.
+                // The columns' text stands on the filter field's edges; the
+                // selection lift bleeds into this padding.
                 padding: taffy::Rect {
-                    left: length(theme.tokens.spacing.s1),
-                    right: length(theme.tokens.spacing.s1),
+                    left: length(theme.tokens.spacing.s3),
+                    right: length(theme.tokens.spacing.s3),
                     top: length(0.0_f32),
                     bottom: length(0.0_f32),
                 },
@@ -850,13 +849,11 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Eleme
                 .numeric()
                 .dimmed(),
         ));
-    // The property list sets its labels in from its own edge; the severity,
-    // time and message start on that same line, at the region's gutter.
-    let inset = spacing.s2;
-    let gutter = spacing.s6 - inset;
+    // The severity, time, message and the property labels all start on the
+    // region's gutter, under the inspector's title.
+    let gutter = spacing.s6;
     let summary = Column::new()
         .with_no_padding()
-        .with_horizontal_padding(inset, inset)
         .with_intrinsic_height()
         .push(Box::new(heading))
         .push(Box::new(

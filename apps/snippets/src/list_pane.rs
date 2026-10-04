@@ -179,10 +179,10 @@ impl Core {
         }
         let spacing = &theme.tokens.spacing;
         let inset = f64::from(spacing.s2);
-        // The rows' text starts on the column's content edge (the shell's
-        // `s3` inset, where the column's title starts); a row's outer rect
-        // is that edge grown by the lift's bleed.
-        let edge = f64::from(spacing.s3) - ui::chrome::row_bleed(theme);
+        // The rows' text starts on the column's content edge, where the
+        // column's title starts; a row's outer rect is that edge grown by
+        // the lift's bleed.
+        let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
         let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
         let column = self.badge_column(text, theme);
 
