@@ -1553,6 +1553,17 @@ fn consume_nonce(
     Ok(())
 }
 
+/// How far a new certificate's validity is started before the issuing
+/// clock's now. A device whose clock runs behind the issuer's (no network
+/// time on either, or a board that set its clock from the image) otherwise
+/// finds its fresh certificate not yet valid.
+const ISSUANCE_SKEW_NS: u64 = 10 * 60 * 1_000_000_000;
+
+/// The `issued_at_ns` of a certificate issued now.
+fn issuance_ns() -> anyhow::Result<u64> {
+    Ok(now_ns()?.saturating_sub(ISSUANCE_SKEW_NS))
+}
+
 fn now_ns() -> anyhow::Result<u64> {
     try_unix_now_ns().context("system clock precedes the Unix epoch")
 }
@@ -2142,8 +2153,8 @@ fn handle_solicitation(
     if selected.is_none() {
         let mut nonce = [0_u8; 16];
         UnwrapErr(SysRng).fill_bytes(&mut nonce);
-        let issued_at_ns = now_ns()?;
-        let expires_at_ns = issued_at_ns.saturating_add(5 * 60 * 1_000_000_000);
+        let issued_at_ns = issuance_ns()?;
+        let expires_at_ns = now_ns()?.saturating_add(5 * 60 * 1_000_000_000);
         let capabilities = match kind {
             EnrollmentKind::HomePeer => DeviceCapabilities::host(),
             EnrollmentKind::PersonalDevice => DeviceCapabilities::joined(),
@@ -2397,7 +2408,7 @@ fn prepare_approval(
         device_public_key: pending.request.device_public_key,
         device_label: pending.request.label.clone(),
         capabilities: pending.token.capabilities.clone(),
-        issued_at_ns: now_ns()?,
+        issued_at_ns: issuance_ns()?,
         expires_at_ns: None,
         signature: [0; 64],
     };
@@ -2628,7 +2639,7 @@ fn certify(
         device_public_key,
         device_label: label.into(),
         capabilities: granted,
-        issued_at_ns: now_ns()?,
+        issued_at_ns: issuance_ns()?,
         expires_at_ns: None,
         signature: [0; 64],
     };
