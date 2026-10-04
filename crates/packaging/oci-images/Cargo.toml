@@ -1,0 +1,30 @@
+[package]
+name = "tilo-oci-images"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Environment images (env-runtime and tool tapps) fetched from the OCI registry CI publishes them to."
+
+[dependencies]
+# The package store's fetcher seam.
+tilo-app-package = { path = "../tilo-app-package" }
+tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
+reqwest.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+# Layer digests, and the gzip'd tar layers that hold the tapps.
+sha2.workspace = true
+flate2.workspace = true
+tar.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+hex.workspace = true
+anyhow.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
