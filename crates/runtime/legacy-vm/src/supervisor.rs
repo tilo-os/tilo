@@ -34,7 +34,7 @@ use crate::{image, virtiofs};
 /// How often a running VM is asked what runs and how much memory it has.
 const POLL: Duration = Duration::from_secs(5);
 /// How long a first boot or restore may take before the agent answers.
-const AGENT_PATIENCE: Duration = Duration::from_secs(180);
+const AGENT_PATIENCE: Duration = Duration::from_secs(300);
 /// A supervisor nobody asked anything exits after this.
 const UNUSED: Duration = Duration::from_secs(60);
 
