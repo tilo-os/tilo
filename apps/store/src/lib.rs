@@ -76,7 +76,7 @@ pub mod model;
 pub mod moderation_client;
 pub mod registry_client;
 pub mod resource;
-pub mod search_provider;
+pub mod search;
 pub mod sources;
 pub mod widgets;
 pub mod worker;

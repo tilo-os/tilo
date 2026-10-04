@@ -556,9 +556,10 @@ pub struct StoreApp {
     worker: Option<StoreWorker>,
     /// Merged item feed.
     items: Vec<StoreItem>,
-    /// Retained global-search projection. It is rebuilt only after a changed
-    /// worker snapshot and resolves palette addresses against live rows.
-    search_index: crate::search_provider::StoreSearchIndex,
+    /// The complete catalogue directory: every app by id and its search
+    /// entries. The worker rebuilds it only after a changed snapshot, and a
+    /// search hit's address resolves against it.
+    directory: crate::search::StoreDirectory,
     /// The items' names and descriptions, indexed while they stay the same.
     item_index: ui::search::ListIndex,
     /// Active source-side filter (`All | Tilo | Flatpak | Installed`). Kept
@@ -568,7 +569,7 @@ pub struct StoreApp {
     active_category: Option<String>,
     /// Current search query, applied to the merged catalogue. Search is
     /// intentionally window-local; resources remain globally searchable via
-    /// `search_index` without making a colleague's catalogue jump around.
+    /// `directory` without making a colleague's catalogue jump around.
     query: String,
     query_state: ui::LocalState<String>,
     source_filter_state: ui::LocalState<String>,
@@ -656,7 +657,7 @@ impl StoreApp {
             dispatcher: None,
             worker: None,
             items: Vec::new(),
-            search_index: crate::search_provider::StoreSearchIndex::default(),
+            directory: crate::search::StoreDirectory::default(),
             item_index: ui::search::ListIndex::default(),
             active_filter: SourceFilter::All,
             active_category: None,
@@ -701,16 +702,19 @@ impl StoreApp {
         self
     }
 
-    /// Share the retained action/search catalogue with the serialized worker.
-    /// The worker updates it before publishing a UI snapshot, which keeps
-    /// refresh indexing out of the render/input path.
+    /// Share the catalogue directory with the serialized worker. The worker
+    /// updates it before publishing a UI snapshot, which keeps rebuilding
+    /// the directory out of the render/input path.
     #[must_use]
-    pub fn with_search_index(
-        mut self,
-        search_index: crate::search_provider::StoreSearchIndex,
-    ) -> Self {
-        self.search_index = search_index;
+    pub fn with_directory(mut self, directory: crate::search::StoreDirectory) -> Self {
+        self.directory = directory;
         self
+    }
+
+    /// Every app of the complete catalogue as a search entry, the ones the
+    /// current filter hides too.
+    pub(crate) fn catalogue_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.directory.entries()
     }
 
     /// Start the worker of a live window: the catalogue loads, and package
@@ -724,7 +728,7 @@ impl StoreApp {
         // The first presented frame is the catalogue chrome ("Loading
         // apps…"), not a cleared swapchain: the worker is already in flight.
         self.set_worker_busy(true);
-        self.worker = Some(StoreWorker::spawn(self.search_index.clone(), wake));
+        self.worker = Some(StoreWorker::spawn(self.directory.clone(), wake));
     }
 
     /// Edit reports through `dispatcher`.
@@ -896,7 +900,7 @@ impl StoreApp {
             self.items.push(detail.clone());
         }
         self.focused_detail = Some(detail.id);
-        self.search_index.sync(&self.items);
+        self.directory.sync(&self.items);
         self.structure_dirty = true;
     }
 
@@ -919,7 +923,7 @@ impl StoreApp {
     /// category chip row from `items` on the next `build_layout`.
     pub fn set_items(&mut self, items: Vec<StoreItem>) {
         self.items = items;
-        self.search_index.sync(&self.items);
+        self.directory.sync(&self.items);
         self.structure_dirty = true;
     }
 
@@ -3329,8 +3333,6 @@ impl StoreApp {
 }
 
 impl Widget for StoreApp {
-    ui::provides!(dyn ui::search::capability::SearchSource);
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.drain_worker();
         if let Some(root) = self.root.as_mut() {
@@ -3528,12 +3530,6 @@ impl Widget for StoreApp {
                 .as_ref()
                 .is_some_and(|images| images.pending() > 0)
             || self.worker.as_ref().is_some_and(StoreWorker::has_pending)
-    }
-}
-
-impl ui::search::capability::SearchSource for StoreApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 }
 
@@ -4117,11 +4113,15 @@ impl StoreApp {
                 let item = self.items.iter().find(|item| item.id == app_id)?;
                 return Some(LiveRow::new(id, "store.review", review_label(item)));
             }
+            // An app the current filter hides is still in the directory, so
+            // a search hit for it resolves.
             return self
                 .items
                 .iter()
                 .find(|item| item.id == rest)
-                .map(|item| app_row(item, self.flatpak_available));
+                .cloned()
+                .or_else(|| self.directory.app(rest))
+                .map(|item| app_row(&item, self.flatpak_available));
         }
         if let Some(key) = id.strip_prefix("publisher:") {
             let item = self.items.iter().find(|item| publisher_of(item).0 == key)?;
@@ -4257,7 +4257,6 @@ mod tests {
     use super::*;
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
     use automerge::{AutoCommit, ReadDoc};
-    use ui::search::SearchProvider;
     use ui::tilo_resource::Resource as _;
 
     fn item(name: &str, source: StoreSource, cat: &str, installed: InstalledState) -> StoreItem {
@@ -4410,8 +4409,8 @@ mod tests {
     fn resource_snapshots_are_bounded_and_resolve_canonically() {
         // Case `worker_snapshot_does_not_reindex_on_the_ui_thread`.
         {
-            let index = crate::search_provider::StoreSearchIndex::default();
-            let mut app = StoreApp::new().with_search_index(index.clone());
+            let directory = crate::search::StoreDirectory::default();
+            let mut app = StoreApp::new().with_directory(directory.clone());
             let indexed = item(
                 "Indexed catalogue row",
                 StoreSource::Flathub,
@@ -4429,13 +4428,22 @@ mod tests {
             // If `set_items_from_worker` ever silently rebuilt it, this assertion
             // would instead find the rendered row and reintroduce refresh work to
             // the frame path.
-            index.sync(&[indexed]);
+            directory.sync(std::slice::from_ref(&indexed));
             app.set_items_from_worker(vec![rendered]);
 
             assert_eq!(app.items()[0].name, "Rendered worker snapshot");
-            let hits = index.provider().search("Indexed catalogue row");
-            assert_eq!(hits.len(), 1);
-            assert_eq!(hits[0].title, "Indexed catalogue row");
+            let titles: Vec<String> = app
+                .catalogue_search_entries()
+                .into_iter()
+                .map(|entry| entry.title)
+                .collect();
+            assert_eq!(titles, ["Indexed catalogue row"]);
+            // The hit resolves to its app though the rendered rows leave it out.
+            let row = app
+                .live_row(&format!("app:{}", indexed.id))
+                .expect("a directory app resolves")
+                .into_resource();
+            assert!(row.actions.iter().any(|action| action.id == "show-details"));
         }
 
         // Case `published_rows_are_bounded_and_omitted_apps_resolve_by_id`.
