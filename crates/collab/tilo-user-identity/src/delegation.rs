@@ -560,7 +560,7 @@ mod tests {
         ));
         // A certificate swapped for another of the person's devices.
         let other = device(&ada, DeviceCapabilities::joined(), None);
-        let mut swapped = signed.clone();
+        let mut swapped = signed;
         swapped.cert = other.cert().clone();
         assert_eq!(
             verify_delegated(&swapped, "tilo.test.edit", b"hello", &ok),
