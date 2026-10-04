@@ -131,6 +131,7 @@ impl LaunchSpec {
                 required: vec![],
                 optional: vec![],
                 opens: &[],
+                room_record: false,
                 create: create_adapted,
             }));
         adapted.insert(
