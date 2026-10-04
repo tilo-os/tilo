@@ -57,9 +57,9 @@ pub(crate) struct ResourceRoot<R: Resource> {
     stages: Stages,
     feeds: super::history::HistoryFeeds,
     /// What the view was built for, and the fixtures a capture's views read.
-    run: Run,
+    pub(crate) run: Run,
     /// The settings the view follows, re-read when their document changes.
-    storage: Rc<super::settings::ViewStorage>,
+    pub(crate) storage: Rc<super::settings::ViewStorage>,
     /// Edits the views bound to their local state.
     bindings: Bindings<R>,
     /// The effect handlers and projection drains the view registered.
@@ -188,19 +188,6 @@ impl<R: Resource> ResourceRoot<R> {
         }
     }
 
-    /// The person's own record of `P`, as the views open it.
-    pub(crate) fn person<P: Resource>(&self) -> Option<super::PersonRecord<P>> {
-        self.storage.person::<P>()
-    }
-
-    /// The person's record of `P` that the app `owner` keeps.
-    pub(crate) fn person_of<P: Resource>(
-        &self,
-        owner: &'static str,
-    ) -> Option<super::PersonRecord<P>> {
-        self.storage.person_of::<P>(owner)
-    }
-
     pub(crate) fn drawing_past(mut self, past: super::preview::DrawPast) -> Self {
         self.past = Some(past);
         self
@@ -216,18 +203,6 @@ impl<R: Resource> ResourceRoot<R> {
     /// hosted surface stages on its next sync.
     /// Stage the views' state for `scenario`, and answer the collaborators
     /// the capture shows as the presence frames their windows would send.
-    /// The first widget of type `T` in the view, whatever wraps it: a
-    /// custom surface is found by its own type.
-    pub(crate) fn find_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        fn find<T: 'static>(widget: &mut dyn Widget) -> Option<&mut T> {
-            if widget.as_any_mut().is_some_and(|any| any.is::<T>()) {
-                return widget.as_any_mut()?.downcast_mut::<T>();
-            }
-            widget.children_mut().into_iter().find_map(find::<T>)
-        }
-        find::<T>(self.content.as_mut())
-    }
-
     pub(crate) fn stage(
         &self,
         scenario: Option<&str>,
@@ -268,20 +243,6 @@ impl<R: Resource> ResourceRoot<R> {
 
     pub(crate) fn live(&self) -> &Live<R> {
         &self.live
-    }
-
-    /// The view the root hosts, for a test reaching a custom surface in it.
-    pub(crate) fn content_mut(&mut self) -> &mut (dyn Widget + 'static) {
-        self.content.as_mut()
-    }
-
-    /// Open what a launch naming `arguments` opens in this window
-    /// ([`ViewCx::open_here`](super::ViewCx::open_here)).
-    pub(crate) fn open_here(
-        &self,
-        arguments: &[String],
-    ) -> Result<ui_core::application::ReplacementOutcome, String> {
-        self.run.open_here(arguments)
     }
 
     /// What the launch that opened the window named.
@@ -602,7 +563,7 @@ impl tilo_search::BodySource for BodyText {
 }
 
 /// A resource's search entries and their index, keyed by position.
-struct IndexedEntries {
+pub(crate) struct IndexedEntries {
     entries: Vec<SearchEntry>,
     index: SearchIndex,
     /// Which build of the entries this is: a page cursor from another build
@@ -611,11 +572,7 @@ struct IndexedEntries {
 }
 
 impl IndexedEntries {
-    fn new(entries: Vec<SearchEntry>) -> Self {
-        Self::built(entries, 0)
-    }
-
-    fn built(entries: Vec<SearchEntry>, generation: u64) -> Self {
+    pub(crate) fn built(entries: Vec<SearchEntry>, generation: u64) -> Self {
         // Entry titles are names a person half remembers: typos match too.
         let mut index = SearchIndex::new(Matching::LOOSE);
         index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
@@ -665,13 +622,10 @@ pub(crate) struct ResourceSearch {
 }
 
 impl ResourceSearch {
-    /// The search source over `entries`, listed under `name` unless an
+    /// The search source over `indexed`, listed under `name` unless an
     /// entry names its own group.
-    pub(crate) fn over(name: &'static str, entries: Vec<SearchEntry>) -> Self {
-        Self {
-            name,
-            indexed: Arc::new(IndexedEntries::new(entries)),
-        }
+    pub(crate) fn new(name: &'static str, indexed: Arc<IndexedEntries>) -> Self {
+        Self { name, indexed }
     }
 }
 
@@ -1076,10 +1030,7 @@ impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> 
         // The app's one search source: what its content widgets show beside
         // the resource reaches it as their surfaces' entries, never as a
         // provider of their own.
-        vec![Box::new(ResourceSearch {
-            name: R::LABEL,
-            indexed,
-        })]
+        vec![Box::new(ResourceSearch::new(R::LABEL, indexed))]
     }
 }
 
@@ -1353,10 +1304,13 @@ mod tests {
         let open = tilo_actions::ActionAddress::new("notes.page:1", "open");
         let search = ResourceSearch {
             name: "Notes",
-            indexed: Arc::new(IndexedEntries::new(vec![
-                SearchEntry::new("Groceries", "milk and eggs").invoking(open.clone()),
-                SearchEntry::new("Garden", "roses").anchored("page:2"),
-            ])),
+            indexed: Arc::new(IndexedEntries::built(
+                vec![
+                    SearchEntry::new("Groceries", "milk and eggs").invoking(open.clone()),
+                    SearchEntry::new("Garden", "roses").anchored("page:2"),
+                ],
+                0,
+            )),
         };
         let groceries = search.search("groceries");
         assert_eq!(groceries.len(), 1);
@@ -1372,15 +1326,18 @@ mod tests {
         let reveal = tilo_actions::ActionAddress::new("video.marker:1", "reveal");
         let search = ResourceSearch {
             name: "Project",
-            indexed: Arc::new(IndexedEntries::new(vec![
-                SearchEntry::new("Sunset", "the last light")
-                    .invoking(reveal)
-                    .grouped("Timeline markers")
-                    .subtitled("0:21 · Drone")
-                    .with_icon("star")
-                    .boosted(5),
-                SearchEntry::new("Sunset take", ""),
-            ])),
+            indexed: Arc::new(IndexedEntries::built(
+                vec![
+                    SearchEntry::new("Sunset", "the last light")
+                        .invoking(reveal)
+                        .grouped("Timeline markers")
+                        .subtitled("0:21 · Drone")
+                        .with_icon("star")
+                        .boosted(5),
+                    SearchEntry::new("Sunset take", ""),
+                ],
+                0,
+            )),
         };
         let hits = search.search("sunset");
         let marker = hits
@@ -1407,11 +1364,14 @@ mod tests {
 
     #[test]
     fn every_entry_stays_findable_page_by_page() {
-        let search = ResourceSearch::over(
+        let search = ResourceSearch::new(
             "Tracks",
-            (0..257)
-                .map(|n| SearchEntry::new(format!("Common track {n}"), ""))
-                .collect(),
+            Arc::new(IndexedEntries::built(
+                (0..257)
+                    .map(|n| SearchEntry::new(format!("Common track {n}"), ""))
+                    .collect(),
+                0,
+            )),
         );
         let mut cursor = None;
         let mut seen = std::collections::HashSet::new();
@@ -1430,11 +1390,14 @@ mod tests {
 
     #[test]
     fn no_caller_materialises_more_than_one_page_at_once() {
-        let search = ResourceSearch::over(
+        let search = ResourceSearch::new(
             "Tables",
-            (0..300)
-                .map(|n| SearchEntry::new(format!("table {n}"), ""))
-                .collect(),
+            Arc::new(IndexedEntries::built(
+                (0..300)
+                    .map(|n| SearchEntry::new(format!("table {n}"), ""))
+                    .collect(),
+                0,
+            )),
         );
         assert_eq!(
             search.search_limited("", usize::MAX).len(),
@@ -1489,14 +1452,17 @@ mod tests {
             "It was a dark and stormy night.",
             "The lighthouse keeper counted the waves.",
         ])));
-        let search = ResourceSearch::over(
+        let search = ResourceSearch::new(
             "Library",
-            vec![
-                SearchEntry::new("Storm Tales", "")
-                    .invoking(tilo_actions::ActionAddress::new("book:1", "open"))
-                    .grouped("Books")
-                    .with_body(body.clone()),
-            ],
+            Arc::new(IndexedEntries::built(
+                vec![
+                    SearchEntry::new("Storm Tales", "")
+                        .invoking(tilo_actions::ActionAddress::new("book:1", "open"))
+                        .grouped("Books")
+                        .with_body(body.clone()),
+                ],
+                0,
+            )),
         );
         let hits = search.search("lighthouse keeper");
         let place = hits
@@ -1521,14 +1487,17 @@ mod tests {
     #[test]
     fn a_field_ranks_by_its_own_weight() {
         use tilo_resource::SearchWeight;
-        let search = ResourceSearch::over(
+        let search = ResourceSearch::new(
             "Mail",
-            vec![
-                SearchEntry::new("Lunch plans", "")
-                    .field("ada@example.org", SearchWeight::Metadata),
-                SearchEntry::new("Quarterly report", "")
-                    .field("ada@example.org", SearchWeight::Identity),
-            ],
+            Arc::new(IndexedEntries::built(
+                vec![
+                    SearchEntry::new("Lunch plans", "")
+                        .field("ada@example.org", SearchWeight::Metadata),
+                    SearchEntry::new("Quarterly report", "")
+                        .field("ada@example.org", SearchWeight::Identity),
+                ],
+                0,
+            )),
         );
         let hits = search.search("ada@example.org");
         assert_eq!(hits.len(), 2, "both are found by the address");
