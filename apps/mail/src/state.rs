@@ -247,11 +247,20 @@ impl MailState {
         Rc::new(RefCell::new(state))
     }
 
+    /// The bundled sample mailbox and accounts.
     pub fn new_sample(images: ImageStore) -> Self {
-        let mailbox = crate::sample::sample_mailbox();
-        let accounts = crate::sample::sample_account_store();
-        let mut s = Self::empty(mailbox, accounts, crate::sample::SAMPLE_NOW_MIN, images);
-        // Preselect a conversation so the reader is populated on launch.
+        Self::from_fixture(&crate::sample::MailFixture::bundled(), images)
+    }
+
+    /// What a screenshot shows: the fixture's mailbox, accounts and clock,
+    /// with a conversation selected so the reader is populated.
+    pub fn from_fixture(fixture: &crate::sample::MailFixture, images: ImageStore) -> Self {
+        let mut s = Self::empty(
+            fixture.mailbox.clone(),
+            fixture.accounts.clone(),
+            fixture.now_min,
+            images,
+        );
         let threads = s.current_threads();
         let pick = threads
             .iter()
