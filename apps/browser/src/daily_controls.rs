@@ -189,6 +189,8 @@ impl DailyControls {
         };
         let row = Row::new()
             .no_wrap()
+            .with_id("browser.find")
+            .with_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s1)
             .push(Box::new(
                 TextInput::from_state(&self.query)
                     .with_id(FIND_INPUT)
@@ -199,7 +201,7 @@ impl DailyControls {
             .push(Box::new(
                 Container::new()
                     .with_no_padding()
-                    .with_min_width(counter_width)
+                    .with_width(counter_width)
                     .with_child(Box::new(
                         Text::new(&counter)
                             .with_role(TextRole::Caption)
@@ -225,7 +227,7 @@ impl DailyControls {
                 "Close find",
                 Action::Close,
             )));
-        Box::new(Container::new().with_child(Box::new(row)))
+        Box::new(row)
     }
 }
 

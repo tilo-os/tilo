@@ -345,20 +345,30 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
     Ok(true)
 }
 
-/// The tab strip with a long row of tabs, pinned and busy ones among them.
+/// The tab strip with a working set of tabs: pinned ones, one loading, one
+/// playing sound and one muted.
 fn tab_strip_fixture(width: u32) -> BrowserTabStrip {
-    let descriptors = (1..=32)
-        .map(|id| {
-            ui::widget::TabDescriptor::new(
-                id,
-                format!("Fixture tab {id} with a deliberately long title"),
-            )
-        })
+    const TITLES: [&str; 11] = [
+        "Inbox",
+        "Calendar",
+        "Rust documentation",
+        "Tilo design language",
+        "tilo/tilo: Tilo source code",
+        "Pull requests",
+        "Summer playlist",
+        "Learn Rust",
+        "MDN Web Docs",
+        "Flight to Lisbon",
+        "Reading list",
+    ];
+    let descriptors = (1_u64..)
+        .zip(TITLES)
+        .map(|(id, title)| ui::widget::TabDescriptor::new(id, title))
         .collect();
-    let mut tabs = BrowserTabStrip::new(descriptors, 32);
+    let mut tabs = BrowserTabStrip::new(descriptors, 11);
     tabs.set_pinned(1, true);
     tabs.set_pinned(2, true);
-    tabs.set_active(32);
+    tabs.set_active(4);
     tabs.set_viewport_width(f64::from(width));
     tabs.set_motion_reduced(true);
     let favicon = vello::peniko::ImageData {
@@ -371,9 +381,9 @@ fn tab_strip_fixture(width: u32) -> BrowserTabStrip {
         height: 2,
     };
     tabs.set_fixture_visual(1, Some(favicon), false, false, false);
-    tabs.set_fixture_visual(2, None, true, false, false);
-    tabs.set_fixture_visual(30, None, false, true, false);
-    tabs.set_fixture_visual(32, None, false, true, true);
+    tabs.set_fixture_visual(6, None, true, false, false);
+    tabs.set_fixture_visual(7, None, false, true, false);
+    tabs.set_fixture_visual(10, None, false, true, true);
     tabs
 }
 
@@ -394,6 +404,7 @@ const SCENARIOS: &[&str] = &[
     "error",
     "pip-empty",
     "pip-active",
+    "menu",
     "site-protection",
     "site-information",
     "passwords",
@@ -402,27 +413,40 @@ const SCENARIOS: &[&str] = &[
     "permission",
     "download-prompt",
     "private",
+    "private-settings",
 ];
+
+/// What a `--shots` capture renders for `--scenario`.
+enum Staged {
+    /// A widget that is drawn as it is.
+    Widget(Box<dyn Widget>),
+    /// The browser with its overflow menu opened by a press on the control,
+    /// as a person opens it.
+    OverflowMenu(Box<BrowserWidget>),
+}
 
 /// The widget a `--shots` capture renders for `--scenario`. Without one it is
 /// the browser on its default page.
-fn scenario_widget(
-    scenario: Option<&str>,
-    viewport: (u32, u32),
-) -> Result<Box<dyn Widget>, LaunchError> {
+fn scenario_widget(scenario: Option<&str>, viewport: (u32, u32)) -> Result<Staged, LaunchError> {
     if scenario == Some("tabs") {
-        return Ok(Box::new(tab_strip_fixture(viewport.0)));
+        return Ok(Staged::Widget(Box::new(tab_strip_fixture(viewport.0))));
     }
-    let mut widget = if scenario == Some("private") {
-        BrowserWidget::new_headless_private()
-    } else {
-        BrowserWidget::new_headless()
-    };
+    let mut widget = BrowserWidget::new_capture(
+        if scenario.is_some_and(|name| name.starts_with("private")) {
+            BrowsingMode::Private
+        } else {
+            BrowsingMode::Normal
+        },
+    );
     widget.debug_set_viewport_width(viewport.0);
+    let mut menu = false;
     match scenario {
         None | Some("private") => {}
-        Some("overlay") => widget.debug_force_suggestions(suggestion_fixture()),
-        Some("settings") => widget.debug_show_settings(),
+        Some("overlay") => {
+            widget.debug_type_address("git");
+            widget.debug_force_suggestions(suggestion_fixture());
+        }
+        Some("settings" | "private-settings") => widget.debug_show_settings(),
         Some("history") => widget.debug_show_library("history"),
         Some("bookmarks") => widget.debug_show_library("bookmarks"),
         Some("extensions") => widget.debug_show_library("extensions"),
@@ -446,7 +470,11 @@ fn scenario_widget(
         Some("loading") => widget.debug_show_loading(),
         Some("error") => widget.debug_show_load_error(),
         Some("pip-empty") => widget.debug_show_empty_pip_feedback(),
-        Some("pip-active") => widget.debug_show_active_pip(),
+        Some("pip-active") => {
+            widget.debug_show_active_pip();
+            menu = true;
+        }
+        Some("menu") => menu = true,
         Some("site-protection") => widget.debug_show_site_panel(false),
         Some("site-information") => widget.debug_show_site_panel(true),
         Some("passwords") => widget.debug_show_autofill(false),
@@ -458,7 +486,11 @@ fn scenario_widget(
             return Err(LaunchError::Scenario(format!("unknown scenario {other:?}")));
         }
     }
-    Ok(Box::new(widget))
+    Ok(if menu {
+        Staged::OverflowMenu(Box::new(widget))
+    } else {
+        Staged::Widget(Box::new(widget))
+    })
 }
 
 /// What the address bar offers while someone types `git`.
@@ -489,9 +521,12 @@ fn suggestion_fixture() -> Vec<browser::history::HistoryEntry> {
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
     let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-    let widget = scenario_widget(args.scenario.as_deref(), viewport)?;
-    render_shot_to_png(widget, viewport, out, args)
-        .map_err(|error| LaunchError::Operation(error.to_string()))
+    let staged = scenario_widget(args.scenario.as_deref(), viewport)?;
+    match staged {
+        Staged::Widget(widget) => render_shot_to_png(widget, viewport, out, args),
+        Staged::OverflowMenu(widget) => render_menu_shot(*widget, viewport, out, args),
+    }
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 fn parse_size(value: &str) -> Option<(u32, u32)> {
@@ -636,6 +671,71 @@ fn render_shot_to_png(
     Ok(())
 }
 
+/// Render the browser with its overflow menu open. The menu opens the way it
+/// does for a person: a press on the control after the first layout. The
+/// frame is drawn as it stands, without another layout, which would rebuild
+/// the toolbar and close the menu.
+fn render_menu_shot(
+    mut widget: BrowserWidget,
+    viewport: (u32, u32),
+    out: &std::path::Path,
+    args: &LaunchArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+
+    let mut frame =
+        ShotFrame::new(viewport, ui::launch::shot_theme(args)).with_resync_after_build();
+    frame.sync(&mut widget);
+    frame.layout(&mut widget)?;
+    frame.sync(&mut widget);
+    frame.layout(&mut widget)?;
+    let (x, y) = widget
+        .debug_overflow_center()
+        .ok_or("the toolbar has no overflow control")?;
+    let press = [
+        WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        },
+        WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+        WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        },
+    ];
+    let (state, taffy, node) = frame
+        .layout_parts()
+        .ok_or("the frame has no layout to press in")?;
+    let root = state.root.clone();
+    for event in &press {
+        let mut handled = false;
+        let mut focus = None;
+        widget.handle_event(
+            event,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut state.doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy,
+            },
+        );
+    }
+    let mut scene = frame.draw(&mut widget);
+    frame.draw_overlay(&mut widget, &mut scene);
+    frame.write_png(&scene, out);
+    println!("browser: wrote shot to {}", out.display());
+    Ok(())
+}
+
 fn write_live_capture(
     frame: &ShotFrame,
     scene: &vello::Scene,
@@ -658,7 +758,7 @@ fn write_live_capture(
         let sidecar = std::path::PathBuf::from(format!("{}.pip.json", out.display()));
         std::fs::write(&sidecar, serde_json::to_vec_pretty(&protocol)?)?;
         println!(
-            "browser: live PiP selected {} at {:.0}×{:.0}; wrote {}",
+            "browser: live PiP selected {} at {:.0}x{:.0}; wrote {}",
             request.title,
             region.width(),
             region.height(),
