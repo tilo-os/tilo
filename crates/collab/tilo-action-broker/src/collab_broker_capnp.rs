@@ -1195,6 +1195,7 @@ impl PendingInvocation {
 mod action_host;
 mod app_consent;
 mod launchable;
+mod local_action_host;
 
 pub use launchable::launchable_provider;
 #[path = "desktop_commands.rs"]
@@ -4244,11 +4245,32 @@ impl CapnpBrokerState {
         inputs: InvocationInputs<'_>,
         revision: Option<&str>,
     ) -> Result<InvocationJob, String> {
+        self.start_invocation_from_offered_origin(peer_id, offered, inputs, revision, None)
+    }
+
+    fn start_invocation_from_offered_origin(
+        &self,
+        peer_id: u64,
+        offered: (PublishedSurface, PublishedAction),
+        inputs: InvocationInputs<'_>,
+        revision: Option<&str>,
+        origin: Option<InvocationCaller>,
+    ) -> Result<InvocationJob, String> {
         let _admission = self
             .admission_lock
             .lock()
             .map_err(|_| "invocation admission unavailable")?;
-        self.dispatch_invocation_from_offered(peer_id, offered, inputs, None, revision)
+        self.dispatch_invocation_from_offered_owned(
+            peer_id,
+            offered,
+            inputs,
+            AdmissionProvenance {
+                durable: None,
+                revision,
+                origin,
+                retained_time: None,
+            },
+        )
     }
 
     fn dispatch_invocation_from_offered(
@@ -4304,7 +4326,31 @@ impl CapnpBrokerState {
         );
         owner.validate()?;
         // Never trust an envelope's invoker: the host sets it.
-        let context = invoker::host_set_invoker(context, actor)?;
+        let context = invoker::host_set_invoker(context, actor, execution.as_ref())?;
+        // A certified local origin retains its original registered clock and
+        // exact person/room through an asynchronous directory lookup. Never
+        // recapture a replacement origin at dispatch or accept a payload actor.
+        let original_time = if let Some(InvocationCaller::Certified { caller, .. }) = &origin {
+            let admitted = self.current_action_caller(caller)?;
+            if caller.room != offered.0.route.cluster_id
+                || actor.is_agent
+                || actor.id != admitted.principal_id
+            {
+                return Err("original caller does not match the invocation route or actor".into());
+            }
+            Some(
+                caller
+                    .policy_time
+                    .as_ref()
+                    .ok_or("original policy clock unavailable")?,
+            )
+        } else {
+            None
+        };
+        if original_time.is_some() && (durable.is_some() || retained_time.is_some()) {
+            return Err("duplicate original invocation custody".into());
+        }
+        let retained_time = original_time.or(retained_time);
         let policy_time = match (durable, retained_time) {
             (Some(context), None) => self.checked_policy_time(context.time())?.0,
             (None, Some(original)) => self.checked_policy_time(Some(original))?.0,
@@ -4369,7 +4415,7 @@ impl CapnpBrokerState {
                 &offered.1,
             )?;
         }
-        if durable.is_some()
+        if (durable.is_some() || execution.is_some())
             && !self
                 .stable_invocation_subscribers
                 .lock()
@@ -4419,7 +4465,10 @@ impl CapnpBrokerState {
             .map_err(|_| "invocation handle space exhausted")?;
         let invocation = match durable {
             Some(context) => context.invocation(),
-            None => tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+            None => execution.as_ref().map_or_else(
+                || tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+                ExecutionScope::invocation,
+            ),
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let mut receipt_context = tilo_actions::ActionContext::for_resource(
@@ -4471,7 +4520,7 @@ impl CapnpBrokerState {
         registry.insert(
             id,
             PendingInvocation {
-                activity: ActivityTarget::new(execution, actor, &offered.0, &offered.1),
+                activity: ActivityTarget::new(execution.clone(), actor, &offered.0, &offered.1),
                 owner,
                 network_evidence: durable.and_then(DurableContext::network),
                 original: OriginalInvocationData::capture(
@@ -4491,6 +4540,7 @@ impl CapnpBrokerState {
                     revision,
                     durable.map(DurableContext::origin).or(origin),
                     policy_time.clone(),
+                    execution.as_ref().map(ExecutionScope::lease),
                 ),
                 policy_time,
                 journal_key,
