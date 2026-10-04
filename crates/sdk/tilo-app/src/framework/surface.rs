@@ -486,6 +486,12 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         &mut self.surface
     }
 
+    // The host is invisible to whoever reaches the surface by its type (a
+    // test driving it, a host that embeds it): it answers as the surface.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        self.surface.as_any_mut()
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut ui_core::taffy::TaffyTree<()>,
