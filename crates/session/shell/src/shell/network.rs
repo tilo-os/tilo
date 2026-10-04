@@ -5618,7 +5618,16 @@ impl ShellNetwork {
             }
             return;
         }
-        if self.require_peer_identity && self.peer_identities.get(&origin).is_none() {
+        // A member of an enrolled room that announced nothing to this device
+        // (a browser) is known from the room's governance, which also says it
+        // may take part in the room: its actions are answered as its own.
+        let governed_action = matches!(msg, NeighbourMsg::RemoteAction { .. })
+            && self.peer_identities.get(&origin).is_none()
+            && self.governed_identity(ws, peer).is_some();
+        if self.require_peer_identity
+            && self.peer_identities.get(&origin).is_none()
+            && !governed_action
+        {
             tracing::warn!(peer = %peer, "dropping collaboration message from an unauthenticated device");
             return;
         }
@@ -5645,7 +5654,10 @@ impl ShellNetwork {
         {
             self.redeem_invited_identity(ws, *invite_id, &peer, &identity.device_cert);
         }
-        if self.require_peer_identity && !matches!(&msg, NeighbourMsg::IdentityHello { .. }) {
+        if self.require_peer_identity
+            && !governed_action
+            && !matches!(&msg, NeighbourMsg::IdentityHello { .. })
+        {
             let required = Self::required_room_verb(&msg);
             let pinned_authority_may_bootstrap = matches!(&msg, NeighbourMsg::SyncResp { .. });
             if !self.peer_room_allows(&origin, ws, required, pinned_authority_may_bootstrap) {
