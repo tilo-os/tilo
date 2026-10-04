@@ -27,6 +27,7 @@ use super::app::{
     role_permissions, settle_launch,
 };
 use super::launch::LaunchInput;
+use super::root::ResourceRoot;
 
 const INSTANCE: u64 = 7;
 
@@ -716,6 +717,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .expect("record is open")
             .expect("a peer's change merges");
         self.harness().relayout();
+    }
+
+    /// Run `visit` on the app's custom surface of type `S` — its view state,
+    /// which no action reaches — then the frames that follow. `None` when the
+    /// app's view is not an `S`.
+    pub fn surface<S: 'static, O>(&mut self, visit: impl FnOnce(&mut S) -> O) -> Option<O> {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
+                root.content_mut()
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<S>())
+                    .map(visit)
+            })
+            .flatten()
     }
 
     /// Undo the local participant's last action, as Ctrl+Z does.

@@ -186,6 +186,11 @@ impl<R: Resource> ResourceRoot<R> {
         self
     }
 
+    /// The app's view: the custom surface itself when the view is one.
+    pub(crate) fn content_mut(&mut self) -> &mut dyn Widget {
+        self.content.as_mut()
+    }
+
     /// Stage a screenshot scenario's view state: every view's
     /// [`on_stage`](super::ViewCx::on_stage) callback runs now, and every
     /// hosted surface stages on its next sync.

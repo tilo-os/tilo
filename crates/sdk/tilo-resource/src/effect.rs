@@ -77,6 +77,33 @@ pub trait Effect: Sized + 'static {
             .collect()
     }
 
+    /// This effect as one published action with its arguments already
+    /// bound: an effect offered on the thing it acts on (a child resource's
+    /// "apply" naming that child), invoked without arguments. `None` when
+    /// the vocabulary does not declare it.
+    fn bound_spec(&self) -> Option<ActionSpec> {
+        let id = self.id();
+        let declared = Self::declarations()
+            .into_iter()
+            .find(|decl| decl.id == id)?
+            .spec(Self::OPERATION);
+        let payload = Payload {
+            effect: id.to_owned(),
+            args: self.arguments(),
+        };
+        let mut spec = ActionSpec::operation(
+            id,
+            declared.label.clone(),
+            OperationKind::Effect,
+            Self::OPERATION,
+            &payload,
+        )
+        .ok()?;
+        spec.description = declared.description;
+        spec.contract = declared.contract;
+        Some(spec)
+    }
+
     /// Decode one invocation's payload, as the operation's specs encode it.
     ///
     /// # Errors
@@ -313,6 +340,25 @@ mod tests {
         );
         assert!(Sample::decode("wipe", &serde_json::Map::new()).is_err());
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
+    }
+
+    #[test]
+    fn a_bound_effect_is_invoked_without_arguments_and_decodes_to_its_value() {
+        let value = Sample::Wipe { passes: 3 };
+        let bound = value.bound_spec().unwrap();
+        assert_eq!(bound.id, "wipe");
+        assert_eq!(bound.label, "Wipe");
+        assert_eq!(bound.kind, OperationKind::Effect);
+        assert_eq!(bound.operation_type.as_deref(), Some("test.effects"));
+        assert_eq!(bound.contract.risk, RiskLevel::Destructive);
+        assert_eq!(
+            bound.contract.execution,
+            ExecutionMode::Background { cancellable: true }
+        );
+        let tilo_actions::ActionInput::Immediate(encoded) = &bound.input else {
+            panic!("a bound effect takes no arguments");
+        };
+        assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), value);
     }
 
     #[test]
