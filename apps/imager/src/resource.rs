@@ -107,6 +107,11 @@ pub enum ImagerEffect {
         )]
         value: String,
     },
+    /// Choose a disk image.
+    #[effect(job)]
+    ChooseImage,
+    /// Cancel the installer download; what was verified is kept for resume.
+    CancelDownload,
     /// Rescan drives.
     #[effect(permission = "read")]
     Rescan,
@@ -270,7 +275,7 @@ impl ResourceSurface<Imager, ImagerEffect> for ImagerApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Imager>) {
-        self.attach_framework(cx.dispatcher(), cx.mode());
+        self.attach_framework(cx.dispatcher(), cx.jobs(), cx.mode());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -486,6 +491,8 @@ mod tests {
             "set-wifi-psk",
             "rescan",
             "choose-drive",
+            "choose-image",
+            "cancel-download",
         ] {
             assert!(root_ids.contains(&id), "{id} in {root_ids:?}");
         }
@@ -655,6 +662,78 @@ mod tests {
         assert!(
             find(&resources, "imager.import").is_some(),
             "the folder imports"
+        );
+    }
+
+    #[test]
+    fn the_image_chooser_is_an_effect_whose_pick_is_reviewed() {
+        let directory = tempfile::tempdir().unwrap();
+        let image = directory.path().join("plain.iso");
+        std::fs::write(&image, b"an image for the chooser test").unwrap();
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(image));
+        app.effect(&ImagerEffect::ChooseImage).unwrap();
+        app.settle();
+        assert_eq!(recorder.pick_requests()[0].title(), "Choose a disk image");
+        assert_eq!(
+            app.state().source.map(|source| source.name),
+            Some("plain.iso".to_owned())
+        );
+        assert!(
+            app.effect(&ImagerEffect::CancelDownload).is_err(),
+            "no download runs"
+        );
+    }
+
+    #[test]
+    fn a_drive_rows_write_chooses_that_drive_and_still_needs_its_name() {
+        let mut app = customizing();
+        let resources = app.harness().resources();
+        let drive = find(&resources, "imager.target:demo-sandisk-ultra").unwrap();
+        let write = drive
+            .actions
+            .iter()
+            .find(|action| action.id == "write")
+            .unwrap();
+        assert_eq!(
+            write.contract.availability.is_available(),
+            find(&resources, Imager::KIND)
+                .unwrap()
+                .actions
+                .iter()
+                .find(|action| action.id == "write")
+                .unwrap()
+                .contract
+                .availability
+                .is_available(),
+            "a row's write is unavailable only when every write is"
+        );
+        assert!(matches!(
+            app.call_on(
+                "imager.target:demo-sandisk-ultra",
+                "write",
+                serde_json::json!({})
+            ),
+            Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+        ));
+
+        let chosen = app
+            .harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| {
+                wizard.forget_target_for_test();
+                wizard.choose_for_write("/dev/sdb");
+                let sdb = wizard.target().map(|target| target.name.clone());
+                wizard.forget_target_for_test();
+                wizard.choose_for_write("/dev/nvme0n1");
+                (sdb, wizard.target().is_none())
+            })
+            .unwrap();
+        assert_eq!(
+            chosen,
+            (Some("sdb".to_owned()), true),
+            "the write chooses its removable drive, never an internal disk"
         );
     }
 }

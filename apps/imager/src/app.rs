@@ -40,7 +40,7 @@ use winit::event::WindowEvent;
 
 use ui::paint::{PaintCtx, with_alpha};
 use ui::permissions::PermissionContext;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::surface;
 use ui::text_metrics::{centered_text_top, line_height_px, renderer_type_size};
@@ -61,7 +61,8 @@ use crate::resource::{Imager, ImagerEffect, ImagerState};
 use crate::write::{JobControl, WriteRequest, spawn_job};
 use crate::write_setup::WriteSetupPanel;
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LiveRow, RunMode,
+    Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, JobProgress, Jobs,
+    LiveRow, RunMode,
 };
 use ui::tilo_resource::Effect as _;
 
@@ -504,6 +505,16 @@ struct Layout {
     clippy::struct_excessive_bools,
     reason = "the bools split across unrelated concerns (internal-disk visibility, the system-disk destructive-write ack, and seed/repaint bookkeeping), so grouping them would need a real design pass rather than a mechanical lint fix"
 )]
+/// The key of the installer download among the window's jobs.
+const RELEASE_DOWNLOAD: &str = "release-download";
+
+/// An installer download in flight: the release row it belongs to, and the
+/// switch that stops it between chunks.
+struct ReleaseDownload {
+    index: usize,
+    control: crate::release::DownloadControl,
+}
+
 pub struct ImagerApp {
     // ---- the imager resource, as last presented ----
     source: Option<Source>,
@@ -532,12 +543,10 @@ pub struct ImagerApp {
     job_control: Option<JobControl>,
     /// The caller of the running write effect, answered when it ends.
     write_reply: Option<EffectReply>,
-    portal_rx: Option<PortalChannel>,
-    release_rx: Option<std::sync::mpsc::Receiver<crate::release::DownloadEvent>>,
-    release_control: Option<crate::release::DownloadControl>,
-    release_download_index: Option<usize>,
-    release_download_progress: Option<(u64, u64)>,
-    release_download_stage: Option<&'static str>,
+    /// The installer download running as this window's job.
+    release_download: Option<ReleaseDownload>,
+    /// The window's own jobs: the installer download.
+    jobs: Option<Jobs<Imager>>,
     export_dialog: ExportDialog,
     /// Stages the read-only export modal after the demo document has synced.
     /// Used only by the deterministic `export` screenshot scenario.
@@ -620,12 +629,8 @@ impl ImagerApp {
             job_rx: None,
             job_control: None,
             write_reply: None,
-            portal_rx: None,
-            release_rx: None,
-            release_control: None,
-            release_download_index: None,
-            release_download_progress: None,
-            release_download_stage: None,
+            release_download: None,
+            jobs: None,
             export_dialog: ExportDialog::new(),
             export_after_sync: false,
             shot_confirmation_ready: false,
@@ -676,6 +681,12 @@ impl ImagerApp {
     #[cfg(test)]
     pub(crate) fn focus_profile_field_for_test(&mut self, field: CzField) {
         self.customize.focus_for_test(field);
+    }
+
+    /// Choose no drive.
+    #[cfg(test)]
+    pub(crate) fn forget_target_for_test(&mut self) {
+        self.selected = None;
     }
 
     #[cfg(test)]
@@ -835,11 +846,24 @@ impl ImagerApp {
         self.dirty = true;
     }
 
+    /// The release row whose installer is downloading.
+    fn downloading_release(&self) -> Option<usize> {
+        self.release_download
+            .as_ref()
+            .map(|download| download.index)
+    }
+
     /// The door edits go through, from the framework that hosts the wizard,
     /// and what it is built for: only a window someone uses probes drives
     /// and may write them.
-    pub(crate) fn attach_framework(&mut self, dispatcher: Dispatcher<Imager>, mode: RunMode) {
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: Dispatcher<Imager>,
+        jobs: Jobs<Imager>,
+        mode: RunMode,
+    ) {
         self.dispatcher = Some(dispatcher);
+        self.jobs = Some(jobs);
         self.live = self.reaches_machine && mode.is_live();
     }
 
@@ -1086,10 +1110,12 @@ impl ImagerApp {
                 .as_ref()
                 .is_some_and(|control| !control.is_cancelled()),
             Hit::CancelDownload => self
-                .release_control
+                .release_download
                 .as_ref()
-                .is_some_and(|control| !control.is_cancelled()),
-            Hit::Release(index) => self.release_rx.is_none() && self.releases.get(index).is_some(),
+                .is_some_and(|download| !download.control.is_cancelled()),
+            Hit::Release(index) => {
+                self.release_download.is_none() && self.releases.get(index).is_some()
+            }
             Hit::Recent(index) => self.recent.get(index).is_some(),
             Hit::Target(index) => self
                 .targets
@@ -1206,9 +1232,9 @@ impl ImagerApp {
                         "Cancel Tilo installer download",
                         *rect,
                         *hit,
-                        self.release_control
+                        self.release_download
                             .as_ref()
-                            .is_none_or(crate::release::DownloadControl::is_cancelled),
+                            .is_none_or(|download| download.control.is_cancelled()),
                     )
                     .with_description("Keeps the verified partial download for a safe resume"),
                 ),
@@ -2172,9 +2198,9 @@ impl ImagerApp {
                 y += SIBLING;
             }
             let r = Rect::new(x0, y, x1, y + m.release_row_h);
-            if self.release_download_index == Some(i) {
+            if self.downloading_release() == Some(i) {
                 hits.push((r, Hit::CancelDownload));
-            } else if self.release_rx.is_none() {
+            } else if self.release_download.is_none() {
                 hits.push((r, Hit::Release(i)));
             }
             y = r.y1;
@@ -3210,9 +3236,12 @@ impl ImagerApp {
             Point::new(text_x, r.y0 + RELATED),
             Some(title_max_w),
         );
-        let downloading = self.release_download_index == Some(index);
+        let downloading = self.downloading_release() == Some(index);
+        let progress = downloading.then(|| self.release_progress()).flatten();
         let where_ = if downloading {
-            self.release_download_stage.unwrap_or("preparing")
+            progress
+                .as_ref()
+                .map_or("preparing", |progress| progress.phase.as_str())
         } else if rel.local_path.is_empty() {
             "download"
         } else {
@@ -3251,8 +3280,9 @@ impl ImagerApp {
         )
         .draw_right_v(scene, tr, r.x1 - 16.0, r.y0 + RELATED, f64::from(title_h));
         if downloading {
-            let fraction = self
-                .release_download_progress
+            let fraction = progress
+                .as_ref()
+                .and_then(|progress| progress.completed.zip(progress.total))
                 .and_then(|(done, total)| (total > 0).then_some(done as f64 / total as f64))
                 .unwrap_or(0.0)
                 .clamp(0.0, 1.0);
@@ -4280,131 +4310,132 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    fn open_file_picker(&mut self) {
-        self.portal_rx = Some(
-            PickRequest::open("Choose a disk image", "Choose")
-                .filter(
-                    FileFilter::new("Disk images")
-                        .glob("*.iso")
-                        .glob("*.img")
-                        .glob("*.raw")
-                        .mimetype("application/x-iso9660-image"),
-                )
-                .thread_name("imager-portal")
-                .send(),
-        );
-        self.set_status("Opening the file picker…");
-        self.dirty = true;
+    /// The disk-image chooser this machine shows.
+    fn image_request() -> PickRequest {
+        PickRequest::open("Choose a disk image", "Choose").filter(
+            FileFilter::new("Disk images")
+                .glob("*.iso")
+                .glob("*.img")
+                .glob("*.raw")
+                .mimetype("application/x-iso9660-image"),
+        )
     }
 
-    /// Drain a pending portal result, if any. Called each `sync`.
-    fn drain_portal(&mut self) {
-        let Some(rx) = &self.portal_rx else { return };
-        let outcome = match rx.try_recv() {
-            Ok(o) => o,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.portal_rx = None;
-                return;
-            }
+    /// Review the image the person chose in the chooser, if they chose one.
+    fn take_chosen_image(&mut self, path: Option<std::path::PathBuf>) -> EffectAnswer {
+        self.dirty = true;
+        let Some(path) = path else {
+            self.set_status("File selection cancelled.");
+            return Ok(Effected::done());
         };
-        self.portal_rx = None;
-        match outcome {
-            PortalOutcome::Opened(path) => match crate::probe::inspect_source(&path) {
-                Some(src) => self.select_source(&src),
-                None => self.set_status("That file is not a readable disk image."),
-            },
-            PortalOutcome::Cancelled => self.set_status("File selection cancelled."),
-            PortalOutcome::Failed(reason) => {
-                self.set_status(&format!("File picker unavailable: {reason}"));
-            }
+        if let Some(source) = crate::probe::inspect_source(&path) {
+            self.select_source(&source);
+            Ok(Effected::done())
+        } else {
+            let message = "That file is not a readable disk image.";
+            self.set_status(message);
+            Err(message.into())
         }
-        self.dirty = true;
     }
 
+    /// Download and verify `release` as a job of this window, which the
+    /// release row shows and the published download row can cancel.
     fn download_release(&mut self, index: usize, release: TiloRelease) {
-        if self.release_rx.is_some() {
+        if self.release_download.is_some() {
             self.set_status("A Tilo installer download is already in progress.");
             return;
         }
+        let Some(jobs) = self.jobs.clone() else {
+            self.set_status("Tilo installers download in a window someone uses.");
+            return;
+        };
         self.set_status(&format!(
             "Downloading and verifying {}…",
             release.display_name()
         ));
-        let job = crate::release::spawn_download(release);
-        self.release_rx = Some(job.events);
-        self.release_control = Some(job.control);
-        self.release_download_index = Some(index);
-        self.release_download_progress = None;
-        self.release_download_stage = Some("preparing");
+        let control = crate::release::DownloadControl::default();
+        let worker = control.clone();
+        jobs.start::<Self>(RELEASE_DOWNLOAD, move |cx| {
+            Ok(cx.thread(
+                move |progress| {
+                    crate::release::verified_image_observed(&release, &worker, &mut |event| {
+                        if progress.is_cancelled() {
+                            worker.cancel();
+                        }
+                        match event {
+                            crate::release::DownloadEvent::Downloading { received, total } => {
+                                progress.report("downloading", Some(received), Some(total));
+                            }
+                            crate::release::DownloadEvent::Verifying => {
+                                progress.report("verifying", None, None);
+                            }
+                            crate::release::DownloadEvent::Expanding { written, total } => {
+                                progress.report("preparing image", Some(written), Some(total));
+                            }
+                        }
+                    })
+                },
+                |app: &mut Self, result, _| {
+                    app.finish_release_download(result);
+                    Ok(Effected::done())
+                },
+            ))
+        });
+        self.release_download = Some(ReleaseDownload { index, control });
         self.dirty = true;
     }
 
-    fn drain_release(&mut self) {
-        let Some(rx) = &self.release_rx else { return };
-        let mut events = Vec::new();
-        loop {
-            match rx.try_recv() {
-                Ok(event) => events.push(event),
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    if !events
-                        .iter()
-                        .any(|event| matches!(event, crate::release::DownloadEvent::Finished(_)))
-                    {
-                        events.push(crate::release::DownloadEvent::Finished(Err(
-                            "The Tilo installer download stopped unexpectedly.".into(),
-                        )));
-                    }
-                    break;
-                }
+    /// Stop the running installer download safely.
+    fn cancel_release_download(&mut self) -> Result<(), String> {
+        let Some(download) = &self.release_download else {
+            return Err("No Tilo installer download is running".into());
+        };
+        download.control.cancel();
+        self.set_status(
+            "Cancelling safely… The verified partial download will be kept for resume.",
+        );
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Where the running installer download is, as its job last said.
+    fn release_progress(&self) -> Option<JobProgress> {
+        self.jobs.as_ref()?.progress(RELEASE_DOWNLOAD)
+    }
+
+    /// The status line for a download at `progress`.
+    fn download_status(progress: &JobProgress) -> String {
+        match progress.phase.as_str() {
+            "downloading" => {
+                let percent = progress
+                    .completed
+                    .zip(progress.total)
+                    .and_then(|(done, total)| done.saturating_mul(100).checked_div(total))
+                    .unwrap_or(0);
+                format!("Downloading Tilo installer… {percent}%")
             }
+            "verifying" => "Cryptographically verifying the Tilo installer…".into(),
+            _ => "Preparing the verified Tilo installer image…".into(),
         }
-        if events.is_empty() {
-            return;
-        }
-        for event in events {
-            match event {
-                crate::release::DownloadEvent::Downloading { received, total } => {
-                    self.release_download_progress = Some((received, total));
-                    self.release_download_stage = Some("downloading");
-                    let percent = received.saturating_mul(100).checked_div(total).unwrap_or(0);
-                    self.set_status(&format!("Downloading Tilo installer… {percent}%"));
+    }
+
+    /// The installer download ended: review the verified image, or say why
+    /// it did not arrive.
+    fn finish_release_download(&mut self, result: Result<Source, String>) {
+        self.release_download = None;
+        match result {
+            Ok(source) => {
+                if let Some(release) = self
+                    .releases
+                    .iter_mut()
+                    .find(|release| release.matches_source(&source))
+                {
+                    release.local_path.clone_from(&source.path);
                 }
-                crate::release::DownloadEvent::Verifying => {
-                    self.release_download_progress = None;
-                    self.release_download_stage = Some("verifying");
-                    self.set_status("Cryptographically verifying the Tilo installer…");
-                }
-                crate::release::DownloadEvent::Expanding { written, total } => {
-                    self.release_download_progress = Some((written, total));
-                    self.release_download_stage = Some("preparing image");
-                    self.set_status("Preparing the verified Tilo installer image…");
-                }
-                crate::release::DownloadEvent::Finished(result) => {
-                    self.release_rx = None;
-                    self.release_control = None;
-                    self.release_download_index = None;
-                    self.release_download_progress = None;
-                    self.release_download_stage = None;
-                    match result {
-                        Ok(source) => {
-                            if let Some(release) = self
-                                .releases
-                                .iter_mut()
-                                .find(|release| release.matches_source(&source))
-                            {
-                                release.local_path.clone_from(&source.path);
-                            }
-                            self.select_source(&source);
-                            self.set_status(
-                                "Tilo installer downloaded and cryptographically verified.",
-                            );
-                        }
-                        Err(error) => self.set_status(&error),
-                    }
-                }
+                self.select_source(&source);
+                self.set_status("Tilo installer downloaded and cryptographically verified.");
             }
+            Err(error) => self.set_status(&error),
         }
         self.dirty = true;
     }
@@ -4491,27 +4522,55 @@ impl ImagerApp {
         }
     }
 
-    /// Why a write to `device` cannot start now, if it cannot.
-    fn write_refusal(&self, device: &str) -> Result<(), String> {
+    /// Why nothing can be written now, whichever drive: the write state is
+    /// still being restored, a write runs, or this window has no writer.
+    fn writer_refusal(&self) -> Result<(), (&'static str, String)> {
         if !self.startup_write_state_reconciled {
-            return Err("Restoring the previous image-write state; wait for drive review before starting another write".into());
+            return Err(("restoring_write_state", "Restoring the previous image-write state; wait for drive review before starting another write".into()));
         }
         if self.job_rx.is_some() {
-            return Err("An image write is already in progress".into());
+            return Err((
+                "write_in_progress",
+                "An image write is already in progress".into(),
+            ));
         }
         if !self.writer().is_available() {
-            return Err(
+            return Err((
+                "write_backend_disabled",
                 "Raw-device writing is disabled; enable the privileged Imager backend first".into(),
-            );
+            ));
         }
-        let Some(target) = self.target() else {
-            return Err("Select an image source and target drive before writing".into());
-        };
         if self.source.is_none() {
-            return Err("Select an image source and target drive before writing".into());
+            return Err((
+                "incomplete_plan",
+                "Select an image source and target drive before writing".into(),
+            ));
         }
-        if device != target.dev_path() {
-            return Err("The selected target changed; review the write plan again.".into());
+        Ok(())
+    }
+
+    /// The removable drive at `device`, as the last probe saw it.
+    fn media_target(&self, device: &str) -> Option<usize> {
+        self.targets
+            .iter()
+            .position(|target| target.is_media_target() && target.dev_path() == device)
+    }
+
+    /// Writing a drive chooses it: a row's write needs no separate choice.
+    /// The typed name still has to match it before anything is written.
+    pub(crate) fn choose_for_write(&mut self, device: &str) {
+        if let Some(index) = self.media_target(device)
+            && self.selected != Some(index)
+        {
+            self.select_target(index);
+        }
+    }
+
+    /// Why a write to `device` cannot start now, if it cannot.
+    fn write_refusal(&self, device: &str) -> Result<(), String> {
+        self.writer_refusal().map_err(|(_, reason)| reason)?;
+        if self.media_target(device).is_none() {
+            return Err("Select an image source and target drive before writing".into());
         }
         Ok(())
     }
@@ -4841,7 +4900,11 @@ impl ImagerApp {
 
     fn dispatch_hit(&mut self, hit: Hit) {
         match hit {
-            Hit::PickFile => self.open_file_picker(),
+            Hit::PickFile => {
+                if let Some(dispatcher) = &self.dispatcher {
+                    dispatcher.effect(&ImagerEffect::ChooseImage);
+                }
+            }
             Hit::Release(i) => {
                 if let Some(release) = self.releases.get(i).cloned() {
                     if release.url.is_empty() {
@@ -4852,13 +4915,7 @@ impl ImagerApp {
                 }
             }
             Hit::CancelDownload => {
-                if let Some(control) = self.release_control.clone() {
-                    control.cancel();
-                    self.set_status(
-                        "Cancelling safely… The verified partial download will be kept for resume.",
-                    );
-                    self.dirty = true;
-                }
+                let _ = self.cancel_release_download();
             }
             Hit::Recent(i) => {
                 if let Some(src) = self.recent.get(i).cloned() {
@@ -4929,8 +4986,9 @@ impl Widget for ImagerApp {
         }
 
         // Fold in any async work.
-        self.drain_portal();
-        self.drain_release();
+        if let Some(progress) = self.release_progress() {
+            self.status = Self::download_status(&progress);
+        }
         self.drain_job();
 
         self.action = Action::Flash;
@@ -5421,7 +5479,7 @@ impl Widget for ImagerApp {
     /// Keep the event loop ticking while a job or file picker is in flight, so
     /// the progress bars animate and the portal result is drained promptly.
     fn needs_animation_frame(&self) -> bool {
-        self.job_rx.is_some() || self.portal_rx.is_some() || self.release_rx.is_some()
+        self.job_rx.is_some()
     }
 
     fn draw_with_presence(
@@ -5449,12 +5507,26 @@ impl ImagerApp {
                 device,
                 confirmation,
             } => {
+                self.choose_for_write(&device);
                 self.write_refusal(&device)?;
                 self.begin_write(&device, &confirmation)?;
                 self.write_reply = Some(cx.reply());
                 Ok(Effected::Pending)
             }
             ImagerEffect::Status => Ok(Effected::value(self.status_value())),
+            ImagerEffect::ChooseImage => {
+                self.set_status("Opening the file picker…");
+                self.dirty = true;
+                Ok(
+                    cx.choose_path(Self::image_request(), |app: &mut Self, path, _| {
+                        app.take_chosen_image(path)
+                    }),
+                )
+            }
+            ImagerEffect::CancelDownload => {
+                self.cancel_release_download()?;
+                Ok(Effected::done())
+            }
             ImagerEffect::ExportConfig => {
                 if self.source.is_none() || self.target().is_none() {
                     return Err("Select an image source and target drive first".into());
@@ -5497,18 +5569,15 @@ impl ImagerApp {
     /// The effects that cannot run now, and why.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
-        let device = self.target().map(TargetDrive::dev_path).unwrap_or_default();
-        if let Err(reason) = self.write_refusal(&device) {
-            let code = if !self.writer().is_available() {
-                "write_backend_disabled"
-            } else if self.job_rx.is_some() {
-                "write_in_progress"
-            } else if !self.startup_write_state_reconciled {
-                "restoring_write_state"
-            } else {
-                "incomplete_plan"
-            };
+        if let Err((code, reason)) = self.writer_refusal() {
             statuses.push(EffectStatus::unavailable(ImagerEffect::WRITE, code, reason));
+        }
+        if self.release_download.is_none() {
+            statuses.push(EffectStatus::unavailable(
+                ImagerEffect::CANCEL_DOWNLOAD,
+                "no_download",
+                "No Tilo installer download is running",
+            ));
         }
         if self.source.is_none() || self.target().is_none() {
             statuses.push(EffectStatus::unavailable(
@@ -5533,11 +5602,34 @@ impl ImagerApp {
             LiveRow::new("imager.job", "imager.job", format!("Image write: {phase}"))
                 .effect(&ImagerEffect::Status),
         );
+        if let Some(download) = &self.release_download {
+            let name = self
+                .releases
+                .get(download.index)
+                .map(TiloRelease::display_name)
+                .unwrap_or_default();
+            let detail = self.release_progress().map_or_else(
+                || "Preparing".to_owned(),
+                |progress| Self::download_status(&progress),
+            );
+            rows.push(
+                LiveRow::new(
+                    "imager.download",
+                    "imager.download",
+                    format!("Download {name}"),
+                )
+                .presentation(tilo_actions::ResourcePresentation {
+                    detail: Some(detail),
+                    ..tilo_actions::ResourcePresentation::default()
+                })
+                .effect(&ImagerEffect::CancelDownload),
+            );
+        }
         rows
     }
 
-    /// One removable drive: choose it, or write the reviewed image to it
-    /// after typing its name.
+    /// One removable drive: choose it, or write the reviewed image to it —
+    /// choosing it too — after typing its name.
     fn target_row(&self, target: &TargetDrive) -> LiveRow {
         let identity = target.stable_id.as_deref().unwrap_or(&target.name);
         let device = target.dev_path();
@@ -5550,18 +5642,8 @@ impl ImagerApp {
         write.contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
             phrase: target.name.clone(),
         };
-        let write = match self.write_refusal(&device) {
-            Err(reason)
-                if self
-                    .target()
-                    .is_some_and(|chosen| chosen.name == target.name) =>
-            {
-                write.unavailable("write_unavailable", reason)
-            }
-            Err(_) => write.unavailable(
-                "not_the_chosen_drive",
-                "Choose this drive and review the write plan first",
-            ),
+        let write = match self.writer_refusal() {
+            Err((code, reason)) => write.unavailable(code, reason),
             Ok(()) => write,
         };
         LiveRow::new(format!("imager.target:{identity}"), "imager.target", device)
@@ -6908,30 +6990,15 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn release_download_is_local_visible_cancellable_and_keeps_the_loop_awake() {
-        // Phase `pending_release_download_keeps_the_event_loop_awake`.
-        {
-            let (mut app, _doc) = seeded_app();
-            assert!(!app.needs_animation_frame());
-
-            let (_tx, rx) = std::sync::mpsc::channel();
-            app.release_rx = Some(rx);
-            assert!(app.needs_animation_frame());
-
-            app.release_rx = None;
-            assert!(!app.needs_animation_frame());
-        }
-
+    fn release_download_is_local_visible_and_cancellable() {
         // Phase `active_release_download_replaces_selection_with_an_accessible_cancel_action`.
         {
             let (mut app, _doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-            let (_tx, rx) = std::sync::mpsc::channel();
-            app.release_rx = Some(rx);
-            app.release_control = Some(crate::release::DownloadControl::default());
-            app.release_download_index = Some(0);
-            app.release_download_progress = Some((25, 100));
-            app.release_download_stage = Some("downloading");
+            app.release_download = Some(ReleaseDownload {
+                index: 0,
+                control: crate::release::DownloadControl::default(),
+            });
 
             let layout = app.compute_layout();
             assert!(
@@ -6948,32 +7015,43 @@ mod tests {
             );
             let tree = app.accessibility_tree();
             assert!(accessible_named(&tree, "Cancel Tilo installer download").is_some());
+            assert!(
+                app.published_rows()
+                    .iter()
+                    .any(|row| row.id() == "imager.download"),
+                "the download is published with its cancel"
+            );
+
+            app.cancel_release_download().unwrap();
+            assert!(
+                app.release_download
+                    .as_ref()
+                    .is_some_and(|download| download.control.is_cancelled())
+            );
         }
 
-        // Phase `release_progress_is_local_visible_and_terminal_events_clear_the_job`.
+        // Phase `release_progress_reads_as_a_status_and_the_end_clears_the_job`.
         {
             let (mut app, _doc) = seeded_app();
-            let (tx, rx) = std::sync::mpsc::channel();
-            app.release_rx = Some(rx);
-            app.release_control = Some(crate::release::DownloadControl::default());
-            app.release_download_index = Some(0);
-            tx.send(crate::release::DownloadEvent::Downloading {
-                received: 25,
-                total: 100,
-            })
-            .unwrap();
-            app.drain_release();
-            assert_eq!(app.release_download_progress, Some((25, 100)));
-            assert!(app.status.contains("25%"));
+            let progress = JobProgress {
+                phase: "downloading".into(),
+                completed: Some(25),
+                total: Some(100),
+            };
+            assert!(ImagerApp::download_status(&progress).contains("25%"));
 
-            tx.send(crate::release::DownloadEvent::Finished(Err(
-                "Tilo installer download cancelled.".into(),
-            )))
-            .unwrap();
-            app.drain_release();
-            assert!(app.release_rx.is_none());
-            assert!(app.release_control.is_none());
+            app.release_download = Some(ReleaseDownload {
+                index: 0,
+                control: crate::release::DownloadControl::default(),
+            });
+            app.finish_release_download(Err("Tilo installer download cancelled.".into()));
+            assert!(app.release_download.is_none());
             assert!(app.status.contains("cancelled"));
+            assert!(
+                !app.published_rows()
+                    .iter()
+                    .any(|row| row.id() == "imager.download")
+            );
         }
     }
 
@@ -7065,21 +7143,15 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn source_and_target_selection_accept_only_inspected_external_media() {
-        // Phase `portal_open_selects_inspected_source`.
+        // Phase `a_chosen_image_is_inspected_before_it_is_reviewed`.
         {
             let (mut app, _doc) = seeded_app();
-            // The recording host answers with a real Tilo-looking image.
             let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
             std::fs::write(f.path(), b"tilo payload for the imager test").unwrap();
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
-            recorder.respond_to_pick(PortalOutcome::Opened(f.path().to_path_buf()));
-            app.open_file_picker();
-            assert_eq!(recorder.pick_requests()[0].title(), "Choose a disk image");
-            app.drain_portal();
-            // A `.iso` file → a valid source is selected.
-            assert!(app.source.is_some());
+            app.take_chosen_image(Some(f.path().to_path_buf())).unwrap();
             assert_eq!(app.source.as_ref().unwrap().kind, SourceKind::IsoFile);
+            app.take_chosen_image(None).unwrap();
+            assert!(app.status.contains("cancelled"));
         }
 
         // Phase `drive_step_only_offers_external_installation_media`.

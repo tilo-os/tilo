@@ -56,7 +56,10 @@
 //! items it acts on), `job` (runs in the background and reports progress,
 //! then its result), `cancellable` (a job the caller may cancel), `returns`
 //! (answers with a JSON value), `destructive` (asks for confirmation),
-//! `privileged` (hands out or shows a credential, such as copying a one-time
+//! `risk = "path"` (a `fn(&Self) -> RiskLevel` classifying one invocation:
+//! one it finds destructive asks for confirmation, so formatting the system
+//! disk can, and another disk need not), `privileged` (hands out or shows a
+//! credential, such as copying a one-time
 //! code: asks for confirmation too), `sensitive` (discloses a copy of private
 //! data, such as exporting an address book: asks for confirmation too), `idempotent` (safe to repeat after an
 //! uncertain outcome), `device_only` (only the person at this device) and
@@ -215,6 +218,11 @@ pub struct EffectDecl {
     /// the person at that device may invoke it, never a collaborator or a
     /// remote participant.
     pub device_only: bool,
+    /// How much harm one invocation can do, classified from its arguments
+    /// (formatting the system disk, against any other): an invocation the
+    /// classifier finds destructive asks for the confirmation a declared
+    /// destructive effect does.
+    pub risk_of: Option<fn(&tilo_actions::ActionArgs) -> RiskLevel>,
 }
 
 /// How an effect answers its caller.
@@ -311,7 +319,10 @@ impl EffectDecl {
             },
             ..base
         };
-        spec
+        match self.risk_of {
+            Some(classify) => spec.with_risk(classify),
+            None => spec,
+        }
     }
 
     /// Whether the effect runs in the background, reporting its result later.

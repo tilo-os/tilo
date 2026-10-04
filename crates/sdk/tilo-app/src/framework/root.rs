@@ -312,8 +312,10 @@ impl<R: Resource> ResourceRoot<R> {
             tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state);
         let mut bound = self.bindings.declarations(state);
         let mut rows = Vec::new();
+        let mut availability = Vec::new();
         self.surfaces(&mut |surface| {
             bound.extend(surface.bound_declarations());
+            availability.extend(surface.availability());
             rows.extend(
                 surface
                     .live_rows()
@@ -328,6 +330,15 @@ impl<R: Resource> ResourceRoot<R> {
                 .any(|existing| existing.id == decl.id)
             {
                 resource = resource.with_action(tilo_resource::declaration_spec(&decl));
+            }
+        }
+        for status in &availability {
+            for spec in resource
+                .actions
+                .iter_mut()
+                .filter(|spec| spec.id == status.id())
+            {
+                status.overlay(spec);
             }
         }
         merge(&mut resource.children, rows);

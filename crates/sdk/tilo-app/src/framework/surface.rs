@@ -137,6 +137,15 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
         Vec::new()
     }
 
+    /// The resource's own actions that differ from their declaration right
+    /// now, as the surface's live state says (`Camera::SET_MODE` unavailable
+    /// while recording, with why). Read whenever the resource is published,
+    /// so the palette, agents and the door follow the surface: an action
+    /// unavailable here is refused with its reason.
+    fn availability(&self) -> Vec<EffectStatus> {
+        Vec::new()
+    }
+
     /// Edits bound to the surface's view state — the selection, the caret,
     /// the playhead, the folder or page shown — as typed builders of the
     /// resource's action, published on the resource beside its declared
@@ -187,6 +196,7 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
 /// collects it.
 pub(crate) trait SurfacePublication<R: Resource> {
     fn bound_declarations(&self) -> Vec<ActionDecl<R>>;
+    fn availability(&self) -> Vec<EffectStatus>;
     fn live_rows(&self) -> Vec<LiveRow>;
     fn live_row(&self, id: &str) -> Option<LiveRow>;
     fn search_entries(&self) -> Vec<SearchEntry>;
@@ -623,6 +633,10 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
 {
     fn bound_declarations(&self) -> Vec<ActionDecl<R>> {
         self.surface.bound_declarations()
+    }
+
+    fn availability(&self) -> Vec<EffectStatus> {
+        self.surface.availability()
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {

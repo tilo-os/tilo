@@ -30,6 +30,9 @@ const MAX_IMAGE_DECODE_BYTES: u64 = MAX_IMAGE_PIXELS * 4;
 const DECODE_QUEUE_CAPACITY: usize = 8;
 const DECODE_RESULT_CAPACITY: usize = 1;
 const MAX_READY_IMAGE_BYTES: usize = 96 * 1024 * 1024;
+/// How long a picture whose bytes are still arriving from another device
+/// waits before it is read again.
+const ARRIVING_RETRY: std::time::Duration = std::time::Duration::from_millis(500);
 pub const ASSET_PREFIX: &str = "asset:blake3:";
 
 /// The app's own content store, where pictures placed on slides and the
@@ -134,6 +137,9 @@ pub struct ImageStore {
     access_clock: Cell<u64>,
     /// Pictures shown as still arriving whatever their decode reports.
     held: RefCell<std::collections::HashSet<String>>,
+    /// Pictures whose bytes another device is still sending this one, and
+    /// when they were last asked for.
+    arriving: RefCell<HashMap<String, ui::time::Instant>>,
 }
 
 impl ImageStore {
@@ -167,6 +173,7 @@ impl ImageStore {
             access: RefCell::new(HashMap::new()),
             access_clock: Cell::new(0),
             held: RefCell::default(),
+            arriving: RefCell::default(),
         }
     }
 
@@ -178,6 +185,17 @@ impl ImageStore {
             return ImageState::Failed;
         }
         let mut map = self.inner.borrow_mut();
+        // Bytes arriving from another device are asked for again, now and
+        // then, until they are here.
+        let due = self
+            .arriving
+            .borrow()
+            .get(path)
+            .is_some_and(|asked| asked.elapsed() >= ARRIVING_RETRY);
+        if due {
+            self.arriving.borrow_mut().remove(path);
+            map.remove(path);
+        }
         if let Some(state) = map.get(path) {
             self.touch(path);
             return state.clone();
@@ -226,6 +244,11 @@ impl ImageStore {
         while let Ok((path, state)) = self.rx.try_recv() {
             if self.held.borrow().contains(&path) {
                 continue;
+            }
+            if matches!(state, ImageState::Loading) {
+                self.arriving
+                    .borrow_mut()
+                    .insert(path.clone(), ui::time::now());
             }
             self.remove_ready_bytes(&path);
             self.ready_bytes
@@ -303,7 +326,16 @@ fn decode(content: &ContentStore, path: &str) -> ImageState {
         return ImageState::Failed;
     }
     let Some(bytes) = read_asset(content, path) else {
-        return ImageState::Failed;
+        // Bytes another device holds, which this device's store is fetching,
+        // are still on their way: the picture is loading, not broken.
+        let arriving = path
+            .strip_prefix(ASSET_PREFIX)
+            .is_some_and(|hash| content.state(hash) == tilo_content::ContentState::Pending);
+        return if arriving {
+            ImageState::Loading
+        } else {
+            ImageState::Failed
+        };
     };
     decode_bytes(&bytes)
 }
@@ -367,6 +399,89 @@ pub(crate) fn decode_bytes_with_budget(bytes: &[u8], budget: usize) -> ImageStat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tilo_content::{
+        ContentBackend, ContentError, ContentReader, ContentState, MemoryBackend, Stored,
+    };
+
+    /// A device store whose content arrives from another device: pending
+    /// until `arrived`, then readable.
+    struct Arriving {
+        store: MemoryBackend,
+        arrived: Arc<AtomicBool>,
+    }
+
+    impl ContentBackend for Arriving {
+        fn put(&self, reader: &mut dyn std::io::Read, mime: &str) -> Result<Stored, ContentError> {
+            self.store.put(reader, mime)
+        }
+        fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError> {
+            if self.arrived.load(Ordering::SeqCst) {
+                self.store.open(hash)
+            } else {
+                Ok(None)
+            }
+        }
+        fn has(&self, hash: &str) -> bool {
+            self.arrived.load(Ordering::SeqCst) && self.store.has(hash)
+        }
+        fn state(&self, hash: &str) -> ContentState {
+            if self.has(hash) {
+                ContentState::Resolved
+            } else {
+                ContentState::Pending
+            }
+        }
+    }
+
+    /// A picture whose bytes are still on their way from another device
+    /// shows as loading, and appears once they are here.
+    #[test]
+    fn a_picture_still_arriving_loads_and_then_appears() {
+        let arrived = Arc::new(AtomicBool::new(false));
+        let backend = Arriving {
+            store: MemoryBackend::default(),
+            arrived: Arc::clone(&arrived),
+        };
+        let image = image::DynamicImage::ImageRgba8(image::RgbaImage::new(3, 2));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let hash = backend
+            .store
+            .put(&mut bytes.get_ref().as_slice(), "image/png")
+            .unwrap()
+            .hash;
+        let src = format!("{ASSET_PREFIX}{hash}");
+        let mut images = ImageStore::new(ContentStore::from_backend(Arc::new(backend)));
+        let settle = |images: &mut ImageStore| {
+            let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+            loop {
+                images.pump();
+                let state = images.get(&src);
+                if !images.arriving.borrow().is_empty() || !matches!(state, ImageState::Loading) {
+                    return state;
+                }
+                assert!(std::time::Instant::now() < deadline, "the decode settles");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        assert!(
+            matches!(settle(&mut images), ImageState::Loading),
+            "bytes on their way are loading, not a broken picture"
+        );
+        arrived.store(true, Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+        loop {
+            images.pump();
+            if let ImageState::Ready(ready) = images.get(&src) {
+                assert_eq!((ready.width, ready.height), (3, 2));
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "the picture appears");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
 
     /// Frozen/live decode budgets and limits, and failed worker requests never stay loading.
     #[test]
@@ -424,6 +539,7 @@ mod tests {
                 access: RefCell::new(HashMap::new()),
                 access_clock: Cell::new(0),
                 held: RefCell::default(),
+                arriving: RefCell::default(),
             };
             assert!(matches!(
                 store.get("/does/not/exist.png"),

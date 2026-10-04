@@ -180,7 +180,12 @@
 //!   and answering its caller. Importing and exporting is such a job: the
 //!   host's file chooser opens through [`EffectCx::choose_file`] and
 //!   [`EffectCx::save_file`], the same on every host, a browser page
-//!   included. Effects never run in History mode. A variant
+//!   included.
+//!   An effect whose harm depends on its arguments (formatting the system
+//!   disk) classifies each invocation (`#[effect(risk = "…")]`), and asks
+//!   for confirmation only when it is destructive. A surface withholds one
+//!   of the resource's own actions while its live state forbids it
+//!   ([`ResourceSurface::availability`]). Effects never run in History mode. A variant
 //!   that only changes what its caller sees (open, reveal, show) is
 //!   `#[effect(view)]`, published as a View operation and answered by the
 //!   same handler.
@@ -304,7 +309,8 @@ pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;
 pub use effect::{
-    EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Jobs, Progress, Projection,
+    EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, JobProgress, Jobs, Progress,
+    Projection,
 };
 pub use kinds::resource_kind;
 pub use launch::{Command, LaunchInput};
