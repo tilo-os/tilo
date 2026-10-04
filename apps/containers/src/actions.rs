@@ -159,7 +159,10 @@ mod tests {
         let effects: Vec<_> = rows
             .iter()
             .flat_map(|row| row.actions.iter())
-            .filter(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
+            .filter(|action| {
+                action.kind == ui::tilo_actions::OperationKind::Effect
+                    && action.contract.permission == ui::tilo_actions::PermissionRequirement::Admin
+            })
             .collect();
         assert!(
             effects

@@ -25,13 +25,13 @@ use std::rc::Rc;
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Politeness, Role};
 use ui::control_custody::RawControlSlot;
 use ui::framework::{Dispatcher, LiveRow, TextControl};
+use ui::tilo_resource::Effect as _;
+
+use crate::resource::ContainersEffect;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::{
-    ActionAddress, ActionSpec, ControlInvocation, OperationKind, PermissionRequirement,
-    RetryPolicy, flatten,
-};
+use ui::tilo_actions::{ActionAddress, ActionSpec, ControlInvocation, flatten};
 use ui::tilo_resource::TextEdit;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
@@ -342,7 +342,7 @@ pub struct ContainersApp {
     pub(crate) palette_open: bool,
     /// In-app lifecycle controls emit the same inert resource intent as Ctrl+K
     /// and agents. The host re-resolves authority, records the Effect, then
-    /// calls `Widget::start_operation`.
+    /// hands it to the surface's effect handler.
     pub(crate) pending_control_invocation: RawControlSlot,
     /// Collapsible sidebar reveal kernel (the shared `ui` flap animation).
     pub(crate) sidebar_flap: FlapState,
@@ -1186,7 +1186,7 @@ impl ContainersApp {
             .collect();
         let entries: Vec<CommandEntry> = flatten(&resources)
             .into_iter()
-            .filter(|action| action.action.id == "select")
+            .filter(|action| action.action.id == "select-container")
             .map(|action| CommandEntry::from_flat_action(&action))
             .collect();
         self.palette.set_entries(entries);
@@ -1206,14 +1206,13 @@ impl ContainersApp {
             .collect();
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address)
             .expect("palette address resolves");
-        let kind = spec.kind;
         let encoded = spec
             .build_json(&intent.arguments)
             .expect("valid palette arguments");
-        assert!(
-            self.answer_resource_operation(kind, &encoded.type_id, &encoded.payload,)
-                .expect("resource operation")
-        );
+        let effect =
+            <ContainersEffect as ui::tilo_resource::Effect>::from_payload(&encoded.payload)
+                .expect("a containers effect");
+        self.perform_effect(effect).expect("the effect is done");
         self.sync(doc, &automerge::ROOT);
     }
 
@@ -1723,21 +1722,11 @@ impl ContainersApp {
 /// materialises an omitted stable identity only when a result is activated.
 const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
 
-/// A view or effect operation on a row, its payload the verb and target.
-fn row_operation(
-    id: &str,
-    label: impl Into<String>,
-    kind: OperationKind,
-    type_id: &str,
-    payload: &[&str],
-) -> Option<ActionSpec> {
-    ActionSpec::operation(id, label, kind, type_id, &payload).ok()
-}
-
-/// An engine effect: needs an administrator, and the engine.
-fn engine_effect(spec: ActionSpec, engine_live: bool, offline: &str) -> ActionSpec {
-    let spec = spec.requiring(PermissionRequirement::Admin).privileged();
-    if engine_live {
+/// `effect`, as a row offers it: an engine effect only while the engine
+/// answers.
+fn offered(effect: &ContainersEffect, engine_live: bool, offline: &str) -> ActionSpec {
+    let spec = effect.bound();
+    if engine_live || effect.engine_operation().is_none() {
         spec
     } else {
         spec.unavailable("engine_offline", offline)
@@ -1747,246 +1736,147 @@ fn engine_effect(spec: ActionSpec, engine_live: bool, offline: &str) -> ActionSp
 const ENGINE_OFFLINE: &str = "Container engine actions are unavailable in demo mode";
 
 fn container_row(container: &crate::model::Container, engine_live: bool) -> LiveRow {
+    let id = || container.id.clone();
     let mut row = LiveRow::new(
         format!("container:{}", container.id),
         "containers.container",
         container.name.clone(),
-    );
-    if let Some(spec) = row_operation(
-        "select",
-        format!("Open {}", container.name),
-        OperationKind::View,
-        "containers.container",
-        &["select", &container.id],
-    ) {
-        row = row.operation(spec);
-    }
-    let verbs: &[(&str, &str)] = match container.status {
-        crate::model::ContainerStatus::Running | crate::model::ContainerStatus::Restarting => &[
-            ("stop", "Stop"),
-            ("restart", "Restart"),
-            ("pause", "Pause"),
-            ("shell", "Open shell"),
+    )
+    .operation({
+        let mut open = ContainersEffect::SelectContainer { id: Some(id()) }.bound();
+        open.label = format!("Open {}", container.name);
+        open
+    });
+    let effects = match container.status {
+        crate::model::ContainerStatus::Running | crate::model::ContainerStatus::Restarting => vec![
+            ContainersEffect::Stop { container: id() },
+            ContainersEffect::Restart { container: id() },
+            ContainersEffect::Pause { container: id() },
+            ContainersEffect::Shell { container: id() },
         ],
-        crate::model::ContainerStatus::Paused => &[
-            ("unpause", "Resume"),
-            ("stop", "Stop"),
-            ("remove", "Remove"),
-            ("shell", "Open shell"),
+        crate::model::ContainerStatus::Paused => vec![
+            ContainersEffect::Unpause { container: id() },
+            ContainersEffect::Stop { container: id() },
+            ContainersEffect::RemoveContainer { container: id() },
+            ContainersEffect::Shell { container: id() },
         ],
-        _ => &[("start", "Start"), ("remove", "Remove")],
+        _ => vec![
+            ContainersEffect::Start { container: id() },
+            ContainersEffect::RemoveContainer { container: id() },
+        ],
     };
-    for (verb, label) in verbs {
-        if let Some(spec) = row_operation(
-            verb,
-            *label,
-            OperationKind::Effect,
-            "containers.container",
-            &[verb, &container.id],
-        ) {
-            let mut spec = engine_effect(spec, engine_live, ENGINE_OFFLINE);
-            if *verb == "remove" {
-                spec = spec.destructive();
-            } else if *verb != "restart" && *verb != "shell" {
-                spec = spec.retry_policy(RetryPolicy::Idempotent);
-            }
-            row = row.operation(spec);
-        }
+    for effect in &effects {
+        row = row.operation(offered(effect, engine_live, ENGINE_OFFLINE));
     }
     row.row(logs_row(container))
 }
 
 fn logs_row(container: &crate::model::Container) -> LiveRow {
-    let mut logs = LiveRow::new(
+    LiveRow::new(
         format!("container:{}:logs", container.id),
         "containers.logs",
         format!("{} logs", container.name),
-    );
-    if let Some(spec) = row_operation(
-        "open",
-        "Open logs",
-        OperationKind::View,
-        "containers.logs",
-        &["logs", &container.id],
-    ) {
-        logs = logs.operation(spec);
-    }
-    logs
+    )
+    .effect(&ContainersEffect::OpenLogs {
+        container: container.id.clone(),
+    })
 }
 
 fn image_row(image: &crate::model::Image, engine_live: bool) -> LiveRow {
     let reference = image.reference();
-    let mut row = LiveRow::new(
+    LiveRow::new(
         format!("image:{reference}"),
         "containers.image",
         reference.clone(),
-    );
-    if let Some(spec) = row_operation(
-        "open",
-        "Show image",
-        OperationKind::View,
-        "containers.image",
-        &["open", &reference],
-    ) {
-        row = row.operation(spec);
-    }
-    if let Some(spec) = row_operation(
-        "remove",
-        "Remove image",
-        OperationKind::Effect,
-        "containers.image",
-        &["remove", &reference],
-    ) {
-        row = row.operation(engine_effect(spec, engine_live, ENGINE_OFFLINE).destructive());
-    }
-    row
+    )
+    .effect(&ContainersEffect::ShowImage {
+        image: reference.clone(),
+    })
+    .operation(offered(
+        &ContainersEffect::RemoveImage { image: reference },
+        engine_live,
+        ENGINE_OFFLINE,
+    ))
 }
 
 fn volume_row(volume: &crate::model::Volume, engine_live: bool) -> LiveRow {
-    let mut row = LiveRow::new(
+    LiveRow::new(
         format!("volume:{}", volume.name),
         "containers.volume",
         volume.name.clone(),
-    );
-    if let Some(spec) = row_operation(
-        "open",
-        "Show volume",
-        OperationKind::View,
-        "containers.volume",
-        &["open", &volume.name],
-    ) {
-        row = row.operation(spec);
-    }
-    if let Some(spec) = row_operation(
-        "remove",
-        "Remove volume",
-        OperationKind::Effect,
-        "containers.volume",
-        &["remove", &volume.name],
-    ) {
-        row = row.operation(engine_effect(spec, engine_live, ENGINE_OFFLINE).destructive());
-    }
-    row
+    )
+    .effect(&ContainersEffect::ShowVolume {
+        volume: volume.name.clone(),
+    })
+    .operation(offered(
+        &ContainersEffect::RemoveVolume {
+            volume: volume.name.clone(),
+        },
+        engine_live,
+        ENGINE_OFFLINE,
+    ))
 }
 
 fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> LiveRow {
-    let mut row = LiveRow::new(
+    LiveRow::new(
         format!("distrobox:{}", distrobox.name),
         "containers.distrobox",
         distrobox.name.clone(),
-    );
-    if let Some(spec) = row_operation(
-        "open",
-        "Show distrobox",
-        OperationKind::View,
-        "containers.distrobox",
-        &["open", &distrobox.name],
-    ) {
-        row = row.operation(spec);
-    }
-    if let Some(spec) = row_operation(
-        "enter",
-        "Enter distrobox",
-        OperationKind::Effect,
-        "containers.distrobox",
-        &["enter", &distrobox.name],
-    ) {
-        row = row.operation(engine_effect(
-            spec,
-            engine_live,
-            "Distrobox actions are unavailable in demo mode",
-        ));
-    }
-    row
+    )
+    .effect(&ContainersEffect::ShowDistrobox {
+        distrobox: distrobox.name.clone(),
+    })
+    .operation(offered(
+        &ContainersEffect::EnterDistrobox {
+            distrobox: distrobox.name.clone(),
+        },
+        engine_live,
+        "Distrobox actions are unavailable in demo mode",
+    ))
 }
 
 impl ContainersApp {
-    fn answer_resource_operation(
+    /// Ask the engine to `verb` the `kind` of thing named `target`.
+    pub(crate) fn run_engine_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<bool, String> {
-        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let Some(verb) = args.first().map(String::as_str) else {
-            return Err("missing operation".into());
-        };
-        let target = args.get(1).map(String::as_str).unwrap_or_default();
-        if kind == OperationKind::View && type_id == "containers.container" && verb == "select" {
-            self.select_container(Some(target.to_string()));
-            return Ok(true);
-        }
-        if kind == OperationKind::View && type_id == "containers.logs" && verb == "logs" {
-            self.select_container(Some(target.to_string()));
-            self.show_tab(DetailTab::Logs);
-            return Ok(true);
-        }
-        if kind == OperationKind::View && verb == "open" {
-            self.show_section(match type_id {
-                "containers.image" => Section::Images,
-                "containers.volume" => Section::Volumes,
-                "containers.distrobox" => Section::Distrobox,
-                _ => return Ok(false),
-            });
-            return Ok(true);
-        }
-        if kind != OperationKind::Effect {
-            return Ok(false);
-        }
+        kind: &str,
+        verb: &str,
+        target: &str,
+    ) -> Result<(), String> {
         if !self.engine.live {
             return Err("container engine actions are unavailable while Podman is offline".into());
         }
         #[cfg(test)]
         if let Some(result) = self.controlled_immediate(
-            format!("{type_id}.{verb}"),
+            format!("{kind}.{verb}"),
             target.to_string(),
-            args.clone(),
+            vec![verb.to_string(), target.to_string()],
         ) {
             result?;
             self.spawn_refresh();
             self.show_toast(format!("{verb} accepted for {target}"), false);
-            return Ok(true);
+            return Ok(());
         }
-        match type_id {
-            "containers.container" => match verb {
-                "start" => {
-                    podman::run_action(Action::Start, target)?;
-                }
-                "stop" => {
-                    podman::run_action(Action::Stop, target)?;
-                }
-                "restart" => {
-                    podman::run_action(Action::Restart, target)?;
-                }
-                "pause" => {
-                    podman::run_action(Action::Pause, target)?;
-                }
-                "unpause" => {
-                    podman::run_action(Action::Unpause, target)?;
-                }
-                "remove" => {
-                    podman::run_action(Action::Remove, target)?;
-                }
-                "shell" => {
-                    crate::terminal::spawn_exec_attach(target, "/bin/sh")
-                        .map_err(|e| e.to_string())?;
-                }
-                _ => return Ok(false),
-            },
-            "containers.image" if verb == "remove" => {
-                podman::remove_image(target, true)?;
+        match (kind, verb) {
+            ("containers.container", "start") => podman::run_action(Action::Start, target)?,
+            ("containers.container", "stop") => podman::run_action(Action::Stop, target)?,
+            ("containers.container", "restart") => podman::run_action(Action::Restart, target)?,
+            ("containers.container", "pause") => podman::run_action(Action::Pause, target)?,
+            ("containers.container", "unpause") => podman::run_action(Action::Unpause, target)?,
+            ("containers.container", "remove") => podman::run_action(Action::Remove, target)?,
+            ("containers.container", "shell") => {
+                crate::terminal::spawn_exec_attach(target, "/bin/sh").map_err(|e| e.to_string())?;
             }
-            "containers.volume" if verb == "remove" => {
-                podman::remove_volume(target, false)?;
-            }
-            "containers.distrobox" if verb == "enter" => {
+            ("containers.image", "remove") => podman::remove_image(target, true)?,
+            ("containers.volume", "remove") => podman::remove_volume(target, false)?,
+            ("containers.distrobox", "enter") => {
                 crate::terminal::spawn_distrobox_enter(target).map_err(|e| e.to_string())?;
             }
-            _ => return Ok(false),
+            _ => return Err(format!("`{verb}` is not a container engine operation")),
         }
         self.spawn_refresh();
         self.show_toast(format!("{verb} accepted for {target}"), false);
-        Ok(true)
+        Ok(())
     }
 }
 
@@ -1995,37 +1885,6 @@ impl Widget for ContainersApp {
         dyn ui::widget::controls::ActionControls,
         dyn ui::search::capability::SearchSource
     );
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            "containers.container",
-            "containers.logs",
-            "containers.image",
-            "containers.volume",
-            "containers.distrobox",
-        ]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
 
     fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         let (doc, _) = ui::doc::document(doc, path);
