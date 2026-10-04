@@ -8,26 +8,34 @@
 //!
 //! The list is the [`TreeView`] engine in its navigation presentation: arrow
 //! keys move the selection, Left/Right collapse and expand, Enter activates,
-//! F2 renames an editable label, rows publish their semantics, and dragging
-//! an item onto a drop target moves it. Rows paint through
+//! F2 renames an editable label, Delete reports [`NavList::on_delete`], the
+//! Menu key, a right click and a long press ask for the row's menu
+//! ([`NavList::on_context_menu`]), rows publish their semantics, and
+//! dragging an item onto a drop target moves it. Rows paint through
 //! [`crate::chrome::paint_nav_row`], so a painted app that calls that
 //! painter draws the same rows.
 //!
 //! Inside a [`super::NavShell`] the list is the sidebar's content: choosing a
 //! destination in a narrow window closes the drawer (or pushes the content
-//! screen) without the app doing anything.
+//! screen) without the app doing anything, and the shell's filter field
+//! narrows the sections that are [`NavSection::filterable`].
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+
+use vello::kurbo::{Point, Rect};
+use vello::peniko::Color;
 
 use crate::LocalState;
 use crate::chrome::NavCount;
 use crate::icons::Icon;
 use crate::local_state::LocalBinding;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
-use crate::widget::tree_view::{NavPresentation, NavRowSpec, NodeId, TreeModel, TreeView};
-use crate::widget::{AppModel, ModelPath, TreeRowAction};
+use crate::widget::tree_view::{
+    NavItemSpec, NavPresentation, NavRowSpec, NavStatus, NodeId, TreeModel, TreeView,
+};
+use crate::widget::{AppModel, FilterCount, Filterable, ModelPath, RowStatus, Tone, TreeRowAction};
 
 /// A group of destinations under a sentence-case title.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,9 +46,15 @@ pub struct NavSection {
     pub title: String,
     /// The person can fold the section away.
     pub collapsible: bool,
+    /// The section starts folded.
+    pub collapsed: bool,
     /// A trailing action on the header (usually "New …" with
     /// [`Icon::Plus`]); reported through [`NavList::on_section_action`].
     pub trailing_action: Option<NavAction>,
+    /// The one quiet line the section shows while it has no items.
+    pub empty_caption: Option<String>,
+    /// The window's filter narrows this section's items.
+    pub filterable: bool,
     pub items: Vec<NavItem>,
 }
 
@@ -51,7 +65,10 @@ impl NavSection {
             id: id.into(),
             title: title.into(),
             collapsible: false,
+            collapsed: false,
             trailing_action: None,
+            empty_caption: None,
+            filterable: false,
             items,
         }
     }
@@ -68,9 +85,34 @@ impl NavSection {
         self
     }
 
+    /// Fold the section when it first appears (it stays foldable).
+    #[must_use]
+    pub fn collapsed(mut self) -> Self {
+        self.collapsible = true;
+        self.collapsed = true;
+        self
+    }
+
     #[must_use]
     pub fn trailing_action(mut self, action: NavAction) -> Self {
         self.trailing_action = Some(action);
+        self
+    }
+
+    /// What the section says while it holds nothing ("No drafts"): one
+    /// sentence, in tertiary ink, where its first row would be.
+    #[must_use]
+    pub fn empty_caption(mut self, caption: impl Into<String>) -> Self {
+        self.empty_caption = Some(caption.into());
+        self
+    }
+
+    /// Let the window's filter field ([`super::NavShell::with_filter`])
+    /// narrow this section's items. Sections that do not opt in (a list of
+    /// connections above the tables being filtered) stay as they are.
+    #[must_use]
+    pub fn filterable(mut self) -> Self {
+        self.filterable = true;
         self
     }
 }
@@ -83,6 +125,9 @@ pub struct NavAction {
     pub icon: Icon,
     /// Sentence case, naming what happens ("New playlist", "More").
     pub label: String,
+    /// Pressing it asks for the row's menu ([`NavList::on_context_menu`])
+    /// instead of reporting the action.
+    pub opens_menu: bool,
 }
 
 impl NavAction {
@@ -92,11 +137,21 @@ impl NavAction {
             id: id.into(),
             icon,
             label: label.into(),
+            opens_menu: false,
         }
+    }
+
+    /// The row's "More" action: pressing it opens the row's menu under the
+    /// action, the same menu a right click opens.
+    #[must_use]
+    pub fn opens_context_menu(mut self) -> Self {
+        self.opens_menu = true;
+        self
     }
 }
 
-/// One destination.
+/// One destination. Every part but the label is optional; see
+/// `docs/ui-migration.md`, "Rows: what each part of a `NavItem` means".
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavItem {
     /// Stable across rebuilds; selection, expansion and focus follow it.
@@ -111,10 +166,37 @@ pub struct NavItem {
     pub children: Vec<NavItem>,
     /// Starts expanded (only meaningful with children).
     pub expanded: bool,
+    /// Opens even where the person folded it (the place the app just
+    /// revealed).
+    pub ensure_expanded: bool,
     /// Other items may be dragged into this one ([`NavList::on_move`]).
     pub drop_target: bool,
     /// The label can be renamed in place ([`NavList::on_rename`]).
     pub editable_label: bool,
+    pub secondary: Option<String>,
+    pub meta: Option<String>,
+    pub status: Option<NavItemStatus>,
+    pub status_label: Option<(String, Tone)>,
+    pub badge: Option<String>,
+    pub swatch: Option<Color>,
+    pub checked: Option<bool>,
+    pub level: Option<f32>,
+    pub presence: Vec<String>,
+    /// The key assistive technology and tests address the row by; the
+    /// default is `nav:item:{id}`.
+    pub semantic_key: Option<String>,
+}
+
+/// A row's status dot, as [`NavItem::status`] keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NavItemStatus(NavStatus);
+
+impl NavItemStatus {
+    /// The status as the row paints it.
+    #[must_use]
+    pub fn row_status(&self) -> RowStatus<'_> {
+        self.0.row_status()
+    }
 }
 
 impl NavItem {
@@ -128,8 +210,19 @@ impl NavItem {
             actions: true,
             children: Vec::new(),
             expanded: false,
+            ensure_expanded: false,
             drop_target: false,
             editable_label: false,
+            secondary: None,
+            meta: None,
+            status: None,
+            status_label: None,
+            badge: None,
+            swatch: None,
+            checked: None,
+            level: None,
+            presence: Vec::new(),
+            semantic_key: None,
         }
     }
 
@@ -166,6 +259,16 @@ impl NavItem {
         self
     }
 
+    /// Open this item whenever the sections are handed over, even where the
+    /// person folded it: the place the app is revealing (the database a
+    /// connection just opened).
+    #[must_use]
+    pub fn ensure_expanded(mut self) -> Self {
+        self.expanded = true;
+        self.ensure_expanded = true;
+        self
+    }
+
     #[must_use]
     pub fn drop_target(mut self) -> Self {
         self.drop_target = true;
@@ -182,6 +285,84 @@ impl NavItem {
     #[must_use]
     pub fn without_actions(mut self) -> Self {
         self.actions = false;
+        self
+    }
+
+    /// One `Caption` line under the label (a host and port, a schedule).
+    /// It elides; the row grows to hold it.
+    #[must_use]
+    pub fn secondary(mut self, text: impl Into<String>) -> Self {
+        self.secondary = Some(text.into());
+        self
+    }
+
+    /// A tertiary figure at the trailing edge (a size).
+    #[must_use]
+    pub fn meta(mut self, text: impl Into<String>) -> Self {
+        self.meta = Some(text.into());
+        self
+    }
+
+    /// A status dot at the trailing edge: a drive's health, a connection's
+    /// state, an account that needs attention, a person's presence.
+    #[must_use]
+    pub fn status(mut self, status: RowStatus<'_>) -> Self {
+        self.status = Some(NavItemStatus(NavStatus::of(status)));
+        self
+    }
+
+    /// A quiet tinted badge naming the row's state ("Active").
+    #[must_use]
+    pub fn status_label(mut self, label: impl Into<String>, tone: Tone) -> Self {
+        self.status_label = Some((label.into(), tone));
+        self
+    }
+
+    /// A short leading code that classifies the row (`GET`, `POST`). The
+    /// codes of one section share a column, so their labels line up.
+    #[must_use]
+    pub fn badge(mut self, code: impl Into<String>) -> Self {
+        self.badge = Some(code.into());
+        self
+    }
+
+    /// The content colour the row stands for (a calendar, a project), in
+    /// the icon's place.
+    #[must_use]
+    pub fn swatch(mut self, color: Color) -> Self {
+        self.swatch = Some(color);
+        self
+    }
+
+    /// A checkbox in the leading slot (a calendar shown or hidden). The
+    /// whole row toggles it and reports through [`NavList::on_check`]; a
+    /// checkable row is not a destination and is never selected.
+    #[must_use]
+    pub fn checked(mut self, checked: bool) -> Self {
+        self.checked = Some(checked);
+        self
+    }
+
+    /// A usage bar under the label, `fraction` of it filled (a backup
+    /// destination's space).
+    #[must_use]
+    pub fn level(mut self, fraction: f32) -> Self {
+        self.level = Some(fraction.clamp(0.0, 1.0));
+        self
+    }
+
+    /// Someone is on this place: a mark in their presence colour. Call once
+    /// per person.
+    #[must_use]
+    pub fn presence(mut self, identity: impl Into<String>) -> Self {
+        self.presence.push(identity.into());
+        self
+    }
+
+    /// The key assistive technology, agents and tests address the row by.
+    #[must_use]
+    pub fn semantic_key(mut self, key: impl Into<String>) -> Self {
+        self.semantic_key = Some(key.into());
         self
     }
 }
@@ -202,17 +383,18 @@ enum NavNodeKind {
     Root,
     Section {
         collapsible: bool,
-        action: Option<Icon>,
+        action: Option<(Icon, String)>,
         first: bool,
     },
     Item {
-        icon: Option<Icon>,
-        count: Option<NavCount>,
-        depth: usize,
+        spec: Box<NavItemSpec>,
         actions: bool,
         drop_target: bool,
         editable: bool,
+        semantic_key: Option<String>,
     },
+    /// An empty section's caption.
+    Caption,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -248,14 +430,81 @@ impl NavKeys {
         self.by_key.insert(key.to_owned(), self.next);
         self.next
     }
+
+    fn section(&self, id: &str) -> Option<NodeId> {
+        self.by_key.get(&format!("section:{id}")).copied()
+    }
 }
 
 const ROOT: NodeId = 0;
 
+/// What a build of the model asks the tree to open.
+#[derive(Default)]
+struct Openings {
+    /// Open as the app asked, unless the person folded it since.
+    expanded: Vec<NodeId>,
+    /// Open whatever the person did.
+    ensured: Vec<NodeId>,
+}
+
+/// Whether `label` matches a filter `query` the way search matches.
+fn matches_query(label: &str, query: &str) -> bool {
+    crate::search::normalize_search_text(label).contains(query)
+}
+
+/// `items` narrowed to what matches `query` (folded), keeping the parents
+/// of matching children, open.
+fn narrow(items: &[NavItem], query: &str) -> Vec<NavItem> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let children = narrow(&item.children, query);
+            if children.is_empty() && !matches_query(&item.label, query) {
+                return None;
+            }
+            let mut kept = item.clone();
+            if !children.is_empty() {
+                kept.ensure_expanded = true;
+                kept.expanded = true;
+            }
+            kept.children = children;
+            Some(kept)
+        })
+        .collect()
+}
+
+fn count_items(items: &[NavItem]) -> usize {
+    items
+        .iter()
+        .map(|item| 1usize.saturating_add(count_items(&item.children)))
+        .sum()
+}
+
+/// `sections` as the filter `query` shows them: filterable sections
+/// narrowed, the others whole.
+fn filtered(sections: &[NavSection], query: &str) -> Vec<NavSection> {
+    let query = crate::search::normalize_search_text(query.trim());
+    if query.is_empty() {
+        return sections.to_vec();
+    }
+    sections
+        .iter()
+        .map(|section| {
+            if !section.filterable {
+                return section.clone();
+            }
+            let mut narrowed = section.clone();
+            narrowed.items = narrow(&section.items, &query);
+            narrowed.collapsed = false;
+            narrowed
+        })
+        .collect()
+}
+
 impl NavModel {
-    fn build(sections: &[NavSection], keys: &mut NavKeys) -> (Self, Vec<NodeId>) {
+    fn build(sections: &[NavSection], keys: &mut NavKeys) -> (Self, Openings) {
         let mut model = Self::default();
-        let mut expanded = Vec::new();
+        let mut openings = Openings::default();
         model.nodes.insert(
             ROOT,
             NavNode {
@@ -280,22 +529,50 @@ impl NavModel {
                         label: section.title.clone(),
                         kind: NavNodeKind::Section {
                             collapsible: section.collapsible,
-                            action: section.trailing_action.as_ref().map(|action| action.icon),
+                            action: section
+                                .trailing_action
+                                .as_ref()
+                                .map(|action| (action.icon, action.label.clone())),
                             first: first_row,
                         },
                         parent: Some(ROOT),
                         children: Vec::new(),
                     },
                 );
-                expanded.push(id);
+                if !section.collapsed {
+                    openings.expanded.push(id);
+                }
                 id
             };
             first_row = false;
+            if section.items.is_empty()
+                && let Some(caption) = &section.empty_caption
+            {
+                let id = keys.id(&format!("caption:{}", section.id));
+                model.attach(
+                    parent,
+                    id,
+                    NavNode {
+                        key: format!("caption:{}", section.id),
+                        label: caption.clone(),
+                        kind: NavNodeKind::Caption,
+                        parent: Some(parent),
+                        children: Vec::new(),
+                    },
+                );
+            }
+            let badges: Rc<Vec<String>> = Rc::new(
+                section
+                    .items
+                    .iter()
+                    .filter_map(|item| item.badge.clone())
+                    .collect(),
+            );
             for item in &section.items {
-                model.add_item(parent, item, 0, keys, &mut expanded);
+                model.add_item(parent, item, 0, &badges, keys, &mut openings);
             }
         }
-        (model, expanded)
+        (model, openings)
     }
 
     fn add_item(
@@ -303,10 +580,26 @@ impl NavModel {
         parent: NodeId,
         item: &NavItem,
         depth: usize,
+        badges: &Rc<Vec<String>>,
         keys: &mut NavKeys,
-        expanded: &mut Vec<NodeId>,
+        openings: &mut Openings,
     ) {
         let id = keys.id(&format!("item:{}", item.id));
+        let spec = NavItemSpec {
+            icon: item.icon,
+            count: item.count,
+            depth,
+            secondary: item.secondary.clone(),
+            meta: item.meta.clone(),
+            status: item.status.as_ref().map(|status| status.0.clone()),
+            status_label: item.status_label.clone(),
+            badge: item.badge.clone(),
+            section_badges: Rc::clone(badges),
+            swatch: item.swatch,
+            checked: item.checked,
+            level: item.level,
+            presence: item.presence.clone(),
+        };
         self.attach(
             parent,
             id,
@@ -314,22 +607,38 @@ impl NavModel {
                 key: item.id.clone(),
                 label: item.label.clone(),
                 kind: NavNodeKind::Item {
-                    icon: item.icon,
-                    count: item.count,
-                    depth,
+                    spec: Box::new(spec),
                     actions: item.actions,
                     drop_target: item.drop_target,
                     editable: item.editable_label,
+                    semantic_key: item.semantic_key.clone(),
                 },
                 parent: Some(parent),
                 children: Vec::new(),
             },
         );
         if item.expanded {
-            expanded.push(id);
+            openings.expanded.push(id);
         }
+        if item.ensure_expanded {
+            openings.ensured.push(id);
+        }
+        // Nested codes line up among their siblings.
+        let child_badges: Rc<Vec<String>> = Rc::new(
+            item.children
+                .iter()
+                .filter_map(|child| child.badge.clone())
+                .collect(),
+        );
         for child in &item.children {
-            self.add_item(id, child, depth.saturating_add(1), keys, expanded);
+            self.add_item(
+                id,
+                child,
+                depth.saturating_add(1),
+                &child_badges,
+                keys,
+                openings,
+            );
         }
     }
 
@@ -350,10 +659,22 @@ impl NavModel {
         })
     }
 
+    fn section_id(&self, key: &str) -> Option<NodeId> {
+        self.nodes.iter().find_map(|(id, node)| {
+            (node.key == key && matches!(node.kind, NavNodeKind::Section { .. })).then_some(*id)
+        })
+    }
+
     fn is_item(&self, id: NodeId) -> bool {
         self.nodes
             .get(&id)
             .is_some_and(|node| matches!(node.kind, NavNodeKind::Item { .. }))
+    }
+
+    fn is_checkable(&self, id: NodeId) -> bool {
+        self.nodes.get(&id).is_some_and(
+            |node| matches!(&node.kind, NavNodeKind::Item { spec, .. } if spec.checked.is_some()),
+        )
     }
 
     fn spec(&self, id: NodeId) -> Option<NavRowSpec> {
@@ -367,16 +688,12 @@ impl NavModel {
             } => Some(NavRowSpec::Section {
                 title: node.label.clone(),
                 collapsible: *collapsible,
-                action: *action,
+                action: action.as_ref().map(|(icon, _)| *icon),
+                action_label: action.as_ref().map(|(_, label)| label.clone()),
                 first: *first,
             }),
-            NavNodeKind::Item {
-                icon, count, depth, ..
-            } => Some(NavRowSpec::Item {
-                icon: *icon,
-                count: *count,
-                depth: *depth,
-            }),
+            NavNodeKind::Item { spec, .. } => Some(NavRowSpec::Item(spec.clone())),
+            NavNodeKind::Caption => Some(NavRowSpec::Caption),
         }
     }
 }
@@ -398,6 +715,7 @@ impl TreeModel for NavModel {
         self.nodes.get(&id).is_some_and(|node| match node.kind {
             NavNodeKind::Root | NavNodeKind::Section { .. } => true,
             NavNodeKind::Item { .. } => !node.children.is_empty(),
+            NavNodeKind::Caption => false,
         })
     }
 
@@ -415,10 +733,14 @@ impl TreeModel for NavModel {
 
     fn semantic_key(&self, id: NodeId) -> Option<String> {
         let node = self.nodes.get(&id)?;
-        match node.kind {
-            NavNodeKind::Root => None,
+        match &node.kind {
+            NavNodeKind::Root | NavNodeKind::Caption => None,
             NavNodeKind::Section { .. } => Some(format!("nav:section:{}", node.key)),
-            NavNodeKind::Item { .. } => Some(format!("nav:item:{}", node.key)),
+            NavNodeKind::Item { semantic_key, .. } => Some(
+                semantic_key
+                    .clone()
+                    .unwrap_or_else(|| format!("nav:item:{}", node.key)),
+            ),
         }
     }
 
@@ -443,7 +765,7 @@ impl TreeModel for NavModel {
     fn can_collapse(&self, id: NodeId) -> bool {
         // A section folds only when it says it does.
         self.nodes.get(&id).is_some_and(|node| match node.kind {
-            NavNodeKind::Root => false,
+            NavNodeKind::Root | NavNodeKind::Caption => false,
             NavNodeKind::Section { collapsible, .. } => collapsible,
             NavNodeKind::Item { .. } => true,
         })
@@ -454,7 +776,8 @@ impl TreeModel for NavModel {
     }
 
     fn is_selectable(&self, id: NodeId) -> bool {
-        self.is_item(id)
+        // A checkable row toggles; it is not a destination.
+        self.is_item(id) && !self.is_checkable(id)
     }
 
     fn is_renamable(&self, id: NodeId) -> bool {
@@ -478,6 +801,8 @@ type Callback<A> = Option<Box<dyn FnMut(A)>>;
 struct NavShared {
     /// Node id → item or section id, refreshed on every rebuild.
     keys: HashMap<NodeId, String>,
+    /// Item ids whose rows are checkable, with their state.
+    checks: HashMap<NodeId, bool>,
     item_actions: Vec<String>,
     section_actions: HashMap<NodeId, String>,
     on_select: Callback<String>,
@@ -485,6 +810,10 @@ struct NavShared {
     on_section_action: Option<Box<dyn FnMut(&str, &str)>>,
     on_rename: Option<Box<dyn FnMut(&str, String)>>,
     on_move: Option<Box<dyn FnMut(&str, NavDrop)>>,
+    on_check: Option<Box<dyn FnMut(&str, bool)>>,
+    on_expand: Option<Box<dyn FnMut(&str, bool)>>,
+    on_delete: Callback<String>,
+    on_menu: Option<Box<dyn FnMut(&str, Rect, Point)>>,
     binding: Option<LocalBinding<Option<String>>>,
     /// The person chose a destination since the shell last asked.
     navigated: bool,
@@ -495,22 +824,29 @@ pub struct NavList {
     tree: TreeView<(), NavModel>,
     shared: Rc<RefCell<NavShared>>,
     keys: NavKeys,
+    /// The sections as the app handed them, before any filter.
     sections: Vec<NavSection>,
+    /// The filter the window's field applies to filterable sections.
+    filter: String,
+    /// What was open before a filter opened every match, restored when the
+    /// filter clears.
+    unfiltered_open: Option<Vec<NodeId>>,
 }
 
 impl NavList {
     #[must_use]
     pub fn new(sections: Vec<NavSection>) -> Self {
         let mut keys = NavKeys::default();
-        let (model, expanded) = NavModel::build(&sections, &mut keys);
+        let (model, openings) = NavModel::build(&sections, &mut keys);
         let shared = Rc::new(RefCell::new(NavShared::default()));
         let select_shared = Rc::clone(&shared);
         let action_shared = Rc::clone(&shared);
         let rename_shared = Rc::clone(&shared);
-        let mut tree = TreeView::from_model(model)
+        let expand_shared = Rc::clone(&shared);
+        let tree = TreeView::from_model(model)
             .hide_root()
             .fill()
-            .with_expanded(expanded)
+            .with_expanded(openings.expanded)
             .selection_follows_focus(true)
             .click_activation(crate::widget::TreeClickActivation::SingleClick)
             .on_select(move |id| {
@@ -546,9 +882,48 @@ impl NavList {
                 if let Some(callback) = shared.on_rename.as_mut() {
                     callback(&key, title);
                 }
+            })
+            .on_expand(move |id, open| {
+                let mut shared = expand_shared.borrow_mut();
+                let Some(key) = shared.keys.get(&id).cloned() else {
+                    return;
+                };
+                if let Some(callback) = shared.on_expand.as_mut() {
+                    callback(&key, open);
+                }
             });
-        let section_shared = Rc::clone(&shared);
-        let mut nav = NavPresentation::new(false, Box::new(NavModel::spec));
+        let mut list = Self {
+            tree,
+            shared,
+            keys,
+            sections,
+            filter: String::new(),
+            unfiltered_open: None,
+        };
+        list.install_presentation(false);
+        list.refresh_keys();
+        list
+    }
+
+    /// Paint the tree as this list's rows (a rail's tiles when `rail`),
+    /// reporting header actions, checks and menus into the list.
+    fn install_presentation(&mut self, rail: bool) {
+        // A toggled check shows at once, before the app's next sections
+        // confirm it.
+        let spec_shared = Rc::clone(&self.shared);
+        let spec = move |model: &NavModel, id: NodeId| {
+            let mut spec = model.spec(id)?;
+            if let NavRowSpec::Item(item) = &mut spec
+                && item.checked.is_some()
+                && let Ok(shared) = spec_shared.try_borrow()
+                && let Some(checked) = shared.checks.get(&id)
+            {
+                item.checked = Some(*checked);
+            }
+            Some(spec)
+        };
+        let mut nav = NavPresentation::new(rail, Box::new(spec));
+        let section_shared = Rc::clone(&self.shared);
         nav.on_section_action = Some(Box::new(move |id| {
             let mut shared = section_shared.borrow_mut();
             let (Some(section), Some(action)) = (
@@ -561,33 +936,64 @@ impl NavList {
                 callback(&section, &action);
             }
         }));
-        tree.set_nav_presentation(nav);
-        let list = Self {
-            tree,
-            shared,
-            keys,
-            sections,
-        };
-        list.refresh_keys();
-        list
+        let check_shared = Rc::clone(&self.shared);
+        nav.on_check = Some(Box::new(move |id| {
+            let mut shared = check_shared.borrow_mut();
+            let (Some(key), Some(checked)) = (
+                shared.keys.get(&id).cloned(),
+                shared.checks.get(&id).copied(),
+            ) else {
+                return;
+            };
+            // The row shows the new state at once; the app's next sections
+            // confirm it.
+            shared.checks.insert(id, !checked);
+            if let Some(callback) = shared.on_check.as_mut() {
+                callback(&key, !checked);
+            }
+        }));
+        if self.shared.borrow().on_menu.is_some() {
+            nav.on_menu = Some(self.menu_reporter());
+        }
+        self.tree.set_nav_presentation(nav);
+    }
+
+    fn menu_reporter(&self) -> Box<dyn FnMut(NodeId, Rect, Point)> {
+        let shared = Rc::clone(&self.shared);
+        Box::new(move |id, lift, at| {
+            let mut shared = shared.borrow_mut();
+            let Some(key) = shared.keys.get(&id).cloned() else {
+                return;
+            };
+            if let Some(callback) = shared.on_menu.as_mut() {
+                callback(&key, lift, at);
+            }
+        })
     }
 
     fn refresh_keys(&self) {
         let mut shared = self.shared.borrow_mut();
-        shared.keys = self
-            .tree
-            .model()
+        let model = self.tree.model();
+        shared.keys = model
             .nodes
             .iter()
             .map(|(id, node)| (*id, node.key.clone()))
+            .collect();
+        shared.checks = model
+            .nodes
+            .iter()
+            .filter_map(|(id, node)| match &node.kind {
+                NavNodeKind::Item { spec, .. } => spec.checked.map(|checked| (*id, checked)),
+                _ => None,
+            })
             .collect();
         shared.section_actions = self
             .sections
             .iter()
             .filter_map(|section| {
                 let action = section.trailing_action.as_ref()?;
-                let id = self.keys.by_key.get(&format!("section:{}", section.id))?;
-                Some((*id, action.id.clone()))
+                let id = self.keys.section(&section.id)?;
+                Some((id, action.id.clone()))
             })
             .collect();
     }
@@ -606,7 +1012,8 @@ impl NavList {
         self
     }
 
-    /// Choose `id`. Does not report through [`Self::on_select`].
+    /// Choose `id` and bring its row into view. Does not report through
+    /// [`Self::on_select`].
     #[must_use]
     pub fn selected(mut self, id: &str) -> Self {
         self.set_selected(Some(id));
@@ -614,7 +1021,7 @@ impl NavList {
     }
 
     /// Keep the chosen destination in `state`: the list shows what the state
-    /// holds and writes the person's choice back.
+    /// holds (and brings it into view) and writes the person's choice back.
     #[must_use]
     pub fn bind_selection(mut self, state: &LocalState<Option<String>>) -> Self {
         let (value, binding) = LocalBinding::new(state);
@@ -632,7 +1039,9 @@ impl NavList {
 
     /// Actions shown on hover and focus at the trailing edge of every item
     /// that has not opted out ([`NavItem::without_actions`]); reported with
-    /// the item id and the action id through `on_action`.
+    /// the item id and the action id through `on_action`. An action that
+    /// [opens the menu](NavAction::opens_context_menu) asks for the row's
+    /// menu instead.
     #[must_use]
     pub fn item_actions(
         mut self,
@@ -641,7 +1050,14 @@ impl NavList {
     ) -> Self {
         let row_actions = actions
             .iter()
-            .map(|action| TreeRowAction::new(action.icon, action.label.clone()))
+            .map(|action| {
+                let row = TreeRowAction::new(action.icon, action.label.clone());
+                if action.opens_menu {
+                    row.opens_context_menu()
+                } else {
+                    row
+                }
+            })
             .collect();
         {
             let mut shared = self.shared.borrow_mut();
@@ -666,6 +1082,59 @@ impl NavList {
     pub fn on_rename(mut self, f: impl FnMut(&str, String) + 'static) -> Self {
         self.shared.borrow_mut().on_rename = Some(Box::new(f));
         self.tree = self.tree.rename_on_double_click();
+        self
+    }
+
+    /// Called with the item id and its new state when the person toggles a
+    /// checkable row ([`NavItem::checked`]): a click anywhere on it, or
+    /// Space or Enter.
+    #[must_use]
+    pub fn on_check(self, f: impl FnMut(&str, bool) + 'static) -> Self {
+        self.shared.borrow_mut().on_check = Some(Box::new(f));
+        self
+    }
+
+    /// Called with the item or section id and whether it is now open when
+    /// the person folds or unfolds it, so the app can keep what was folded.
+    #[must_use]
+    pub fn on_expand(self, f: impl FnMut(&str, bool) + 'static) -> Self {
+        self.shared.borrow_mut().on_expand = Some(Box::new(f));
+        self
+    }
+
+    /// Called with the focused item's id when the person presses Delete
+    /// (never Backspace, which belongs to whatever editor sits beside the
+    /// list).
+    #[must_use]
+    pub fn on_delete(mut self, f: impl FnMut(String) + 'static) -> Self {
+        self.shared.borrow_mut().on_delete = Some(Box::new(f));
+        let shared = Rc::clone(&self.shared);
+        self.tree = self.tree.on_delete(move |id| {
+            let mut shared = shared.borrow_mut();
+            let Some(key) = shared.keys.get(&id).cloned() else {
+                return;
+            };
+            if let Some(callback) = shared.on_delete.as_mut() {
+                callback(key);
+            }
+        });
+        self
+    }
+
+    /// Called when the person asks for an item's menu: a right click or a
+    /// long press on its row, the Menu key or Shift+F10 on it, or an item
+    /// action that [opens the menu](NavAction::opens_context_menu). It
+    /// receives the item id, the row's lift (hand it to
+    /// `ContextMenu::anchor_row` so the row stays marked) and where the menu
+    /// opens: the pointer, or the bottom-leading corner of the row or the
+    /// action.
+    #[must_use]
+    pub fn on_context_menu(mut self, f: impl FnMut(&str, Rect, Point) + 'static) -> Self {
+        self.shared.borrow_mut().on_menu = Some(Box::new(f));
+        let reporter = self.menu_reporter();
+        if let Some(nav) = self.tree.nav_mut() {
+            nav.on_menu = Some(reporter);
+        }
         self
     }
 
@@ -711,24 +1180,11 @@ impl NavList {
     }
 
     /// An icon-over-label compact rail (a workspace switcher, a channel
-    /// rail). Section titles give way to space; counts become a mark.
+    /// rail). Section titles give way to space; counts become a mark;
+    /// captions wrap to a second line before they elide.
     #[must_use]
     pub fn rail(mut self) -> Self {
-        let mut nav = NavPresentation::new(true, Box::new(NavModel::spec));
-        let section_shared = Rc::clone(&self.shared);
-        nav.on_section_action = Some(Box::new(move |id| {
-            let mut shared = section_shared.borrow_mut();
-            let (Some(section), Some(action)) = (
-                shared.keys.get(&id).cloned(),
-                shared.section_actions.get(&id).cloned(),
-            ) else {
-                return;
-            };
-            if let Some(callback) = shared.on_section_action.as_mut() {
-                callback(&section, &action);
-            }
-        }));
-        self.tree.set_nav_presentation(nav);
+        self.install_presentation(true);
         self
     }
 
@@ -738,32 +1194,50 @@ impl NavList {
         if sections == self.sections {
             return;
         }
+        self.sections = sections;
+        self.rebuild();
+    }
+
+    /// Build the tree's model from the sections as the filter shows them.
+    fn rebuild(&mut self) {
         let selected = self.selected_id();
-        let (model, expanded) = NavModel::build(&sections, &mut self.keys);
+        let shown = filtered(&self.sections, &self.filter);
+        let (model, openings) = NavModel::build(&shown, &mut self.keys);
         let kept: Vec<NodeId> = self.tree.expanded_ids().collect();
+        let ensured: HashSet<NodeId> = openings.ensured.iter().copied().collect();
         // What the person folded stays folded; what is new opens as the app
-        // asked, and a section that does not fold is always open.
-        let open: Vec<NodeId> = expanded
+        // asked, a section that does not fold is always open, and what the
+        // app ensures opens whatever the person did.
+        let open: Vec<NodeId> = openings
+            .expanded
             .into_iter()
-            .filter(|id| !self.keys_seen(*id) || !model.can_collapse(*id))
+            .filter(|id| !self.keys_seen(*id) || !model.can_collapse(*id) || ensured.contains(id))
             .chain(kept)
+            .chain(openings.ensured)
             .collect();
         self.tree
             .update_source(&[crate::widget::TreeModelChange::Reset], move |current| {
-                *current = model
+                *current = model;
             });
         self.tree.restore_expanded(open);
-        self.sections = sections;
         self.refresh_keys();
-        self.set_selected(selected.as_deref());
+        self.select_quietly(selected.as_deref());
     }
 
     fn keys_seen(&self, id: NodeId) -> bool {
         self.shared.borrow().keys.contains_key(&id)
     }
 
-    /// Choose `id` (or nothing) without reporting it.
+    /// Choose `id` (or nothing) without reporting it, and bring its row
+    /// into view (once the list has a viewport, if it has none yet).
     pub fn set_selected(&mut self, id: Option<&str>) {
+        let node = self.select_quietly(id);
+        if let Some(node) = node {
+            self.tree.reveal(node);
+        }
+    }
+
+    fn select_quietly(&mut self, id: Option<&str>) -> Option<NodeId> {
         let node = id.and_then(|key| self.tree.model().item_id(key));
         match node {
             Some(node) => self.tree.selection_mut().select_only(node),
@@ -772,6 +1246,7 @@ impl NavList {
         if let Some(node) = node {
             self.tree.set_focused(Some(node));
         }
+        node
     }
 
     /// The chosen destination.
@@ -781,17 +1256,128 @@ impl NavList {
         self.tree.model().key(id).map(str::to_owned)
     }
 
-    /// The painted rect of item `id`'s row, when it is in view.
+    /// Open or fold item or section `id` without reporting it.
+    pub fn set_expanded(&mut self, id: &str, open: bool) {
+        let model = self.tree.model();
+        let Some(node) = model.item_id(id).or_else(|| model.section_id(id)) else {
+            return;
+        };
+        let mut expanded: Vec<NodeId> = self.tree.expanded_ids().collect();
+        if open {
+            expanded.push(node);
+        } else {
+            expanded.retain(|kept| *kept != node);
+        }
+        self.tree.restore_expanded(expanded);
+    }
+
+    /// Whether item or section `id` is open.
     #[must_use]
-    pub fn row_rect(&self, id: &str) -> Option<vello::kurbo::Rect> {
+    pub fn is_expanded(&self, id: &str) -> bool {
+        let model = self.tree.model();
+        model
+            .item_id(id)
+            .or_else(|| model.section_id(id))
+            .is_some_and(|node| self.tree.is_expanded(node))
+    }
+
+    /// The painted rect of item `id`'s row, edge to edge of the list, when
+    /// it is in view.
+    #[must_use]
+    pub fn row_rect(&self, id: &str) -> Option<Rect> {
         let node = self.tree.model().item_id(id)?;
         self.tree.row_rect(node)
+    }
+
+    /// The lift of item `id`'s row: where its hover and selection paint.
+    /// Hand it to `ContextMenu::anchor_row` so a menu marks the row.
+    #[must_use]
+    pub fn row_lift_rect(&self, id: &str) -> Option<Rect> {
+        let node = self.tree.model().item_id(id)?;
+        self.tree.nav_lift_rect(node)
+    }
+
+    /// Where item action `action` sits on item `id`'s row (whether or not
+    /// the row is hovered), to open a menu at it with `open_anchored`.
+    #[must_use]
+    pub fn item_action_rect(&self, id: &str, action: &str) -> Option<Rect> {
+        let node = self.tree.model().item_id(id)?;
+        let index = self
+            .shared
+            .borrow()
+            .item_actions
+            .iter()
+            .position(|known| known == action)?;
+        self.tree.row_action_rect(node, index)
+    }
+
+    /// Show item `id` being dragged to just before item `before`, for a
+    /// capture: the row lifts under a resting pointer and the drop line
+    /// shows. Nothing moves unless the person releases it. Needs
+    /// [`Self::on_move`].
+    pub fn stage_drag(&mut self, id: &str, before: &str) {
+        let model = self.tree.model();
+        if let (Some(source), Some(target)) = (model.item_id(id), model.item_id(before)) {
+            self.tree.stage_reorder(source, target);
+        }
+    }
+
+    /// Narrow the filterable sections to `query` (an empty query shows
+    /// everything). The shell's filter field calls this; an app with its own
+    /// field may too.
+    pub fn set_filter(&mut self, query: &str) {
+        if query == self.filter {
+            return;
+        }
+        let was_filtering = !self.filter.trim().is_empty();
+        let filtering = !query.trim().is_empty();
+        if filtering && !was_filtering {
+            self.unfiltered_open = Some(self.tree.expanded_ids().collect());
+        }
+        query.clone_into(&mut self.filter);
+        self.rebuild();
+        if !filtering && let Some(open) = self.unfiltered_open.take() {
+            self.tree.restore_expanded(open);
+        }
+    }
+
+    /// The filter the list is narrowed to.
+    #[must_use]
+    pub fn filter(&self) -> &str {
+        &self.filter
     }
 
     /// The list's tree, for tests reading its engine state.
     #[cfg(test)]
     pub(crate) fn tree(&self) -> &TreeView<(), NavModel> {
         &self.tree
+    }
+}
+
+impl Filterable for NavList {
+    fn set_filter(&mut self, query: &str) {
+        Self::set_filter(self, query);
+    }
+
+    fn filter_count(&self) -> Option<FilterCount> {
+        let filterable: Vec<&NavSection> = self
+            .sections
+            .iter()
+            .filter(|section| section.filterable)
+            .collect();
+        if filterable.is_empty() {
+            return None;
+        }
+        let total = filterable
+            .iter()
+            .map(|section| count_items(&section.items))
+            .sum();
+        let shown = filtered(&self.sections, &self.filter)
+            .iter()
+            .filter(|section| section.filterable)
+            .map(|section| count_items(&section.items))
+            .sum();
+        Some(FilterCount::new(shown, total))
     }
 }
 
@@ -839,6 +1425,12 @@ impl crate::widget::Decorator for NavList {
     fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
         if request.wants::<dyn NavigationSource>() {
             request.provide::<dyn NavigationSource>(self);
+            return;
+        }
+        if request.wants::<dyn Filterable>()
+            && self.sections.iter().any(|section| section.filterable)
+        {
+            request.provide::<dyn Filterable>(self);
             return;
         }
         crate::widget::Widget::provide_mut(&mut self.tree, request);

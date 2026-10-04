@@ -29,8 +29,8 @@ use ui::icons::Icon;
 use ui::tokens::{Metrics, Spacing, SpacingStep, TextRole};
 pub use ui::widget::Tone as StatusTone;
 use ui::widget::{
-    Badge, Button, ChipStyle, Column, Container, ControlSize, IconWidget, Row, Section, Spacer,
-    Text, Widget,
+    Badge, Button, ChipStyle, Column, Container, ControlSize, IconSize, IconWidget, Row, Section,
+    Spacer, Text, Widget,
 };
 
 /// Type alias for the boxed-widget currency the `ui` tree speaks.
@@ -248,7 +248,7 @@ pub fn icon_row(icon: Icon, title: &str, detail: &str, control: El) -> El {
         .no_wrap()
         .with_align_items(taffy::AlignItems::Center)
         .with_gap(spacing().s3)
-        .push(Box::new(IconWidget::new(icon, Metrics::BASE.icon_md)))
+        .push(Box::new(IconWidget::new(icon)))
         .push(Box::new(
             Container::new()
                 .with_no_padding()
@@ -414,7 +414,7 @@ pub fn hero(icon: Icon, title: &str) -> El {
         .no_wrap()
         .with_align_items(taffy::AlignItems::Center)
         .with_gap(spacing().s3)
-        .push(Box::new(IconWidget::new(icon, Metrics::BASE.icon_lg)))
+        .push(Box::new(IconWidget::new(icon).sized(IconSize::Large)))
         .push(Box::new(
             Container::new()
                 .with_no_padding()
