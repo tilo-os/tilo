@@ -4210,36 +4210,24 @@ fn restore_address(widget: &mut dyn Widget, id: &str, state: &str) {
     }
 }
 
-impl Continuable for BrowserWidget {
-    fn continuation_metadata(
-        &self,
-        _state: &AutoCommit,
-        _root: &ObjId,
-    ) -> Option<ui::collaboration::ContinuationMetadata> {
+impl BrowserWidget {
+    /// The page to show again when this window reopens or continues on
+    /// another device. A private window leaves nothing behind.
+    pub(crate) fn restorable_page(&self) -> Option<Vec<u8>> {
         if self.browsing_mode.is_private() {
             return None;
         }
         let url = self.continuation_url()?;
-        let bytes = serde_json::to_vec(&serde_json::json!({ "url": url })).ok()?;
-        Some(ui::collaboration::ContinuationMetadata {
-            schema_version: 1,
-            bytes,
-        })
+        serde_json::to_vec(&serde_json::json!({ "url": url })).ok()
     }
 
-    fn restore_continuation_metadata(
-        &mut self,
-        metadata: &ui::collaboration::ContinuationMetadata,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-    ) -> bool {
+    /// Show the page [`Self::restorable_page`] saved. Only a web page
+    /// without credentials in its address is restored.
+    pub(crate) fn restore_page(&mut self, saved: &[u8]) -> bool {
         if self.browsing_mode.is_private() {
             return false;
         }
-        if metadata.schema_version != 1 {
-            return false;
-        }
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&metadata.bytes) else {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(saved) else {
             return false;
         };
         let Some(url) = value.get("url").and_then(serde_json::Value::as_str) else {
@@ -4260,6 +4248,28 @@ impl Continuable for BrowserWidget {
             self.engine.send(WebViewCommand::Navigate(url.to_owned()));
         }
         true
+    }
+}
+
+impl Continuable for BrowserWidget {
+    fn continuation_metadata(
+        &self,
+        _state: &AutoCommit,
+        _root: &ObjId,
+    ) -> Option<ui::collaboration::ContinuationMetadata> {
+        Some(ui::collaboration::ContinuationMetadata {
+            schema_version: 1,
+            bytes: self.restorable_page()?,
+        })
+    }
+
+    fn restore_continuation_metadata(
+        &mut self,
+        metadata: &ui::collaboration::ContinuationMetadata,
+        _state: &mut AutoCommit,
+        _root: &ObjId,
+    ) -> bool {
+        metadata.schema_version == 1 && self.restore_page(&metadata.bytes)
     }
 }
 
