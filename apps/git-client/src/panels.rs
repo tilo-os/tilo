@@ -14,10 +14,10 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
     BadgeFace, Button, ButtonFace, ButtonRole, ControlSize, Interaction, ListRowFace, RowAction,
-    RowStatus,
 };
 
 use crate::history::short_id;
+use crate::i18n::{t, t_args};
 use crate::model::{Branch, RepoModel, Stash};
 
 /// A remote command from the header row.
@@ -31,12 +31,12 @@ pub enum RemoteAction {
 impl RemoteAction {
     pub const ALL: [Self; 3] = [Self::Fetch, Self::Pull, Self::Push];
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Fetch => "Fetch",
-            Self::Pull => "Pull",
-            Self::Push => "Push",
-        }
+    pub fn label(self) -> String {
+        t(match self {
+            Self::Fetch => "git-fetch",
+            Self::Pull => "git-pull",
+            Self::Push => "git-push",
+        })
     }
 
     /// The command's icon, for a header too narrow for its label.
@@ -96,10 +96,12 @@ pub struct PanelsDraw {
 
 /// One section of the page.
 struct SectionRows<'a> {
-    title: &'static str,
+    title: String,
     rows: Vec<RowSpec<'a>>,
     /// Holds the new branch form.
     form: bool,
+    /// Stands in the leading column of a two-column page.
+    leading: bool,
 }
 
 /// One row: what it shows and what can be done to it.
@@ -108,19 +110,33 @@ struct RowSpec<'a> {
     secondary: Option<String>,
     meta: Option<String>,
     current: bool,
-    actions: Vec<(RowAction<'static>, BranchAction)>,
+    actions: Vec<(Icon, String, BranchAction)>,
 }
 
 /// How a branch stands against its upstream, in words.
 pub fn tracking(branch: &Branch) -> String {
+    tracking_words(branch, false)
+}
+
+/// How the checked-out branch stands against its upstream: the same words,
+/// saying it is the one checked out.
+pub fn current_tracking(branch: &Branch) -> String {
+    tracking_words(branch, true)
+}
+
+fn tracking_words(branch: &Branch, current: bool) -> String {
+    let current = ("current", if current { "yes" } else { "no" }.into());
     let Some(upstream) = &branch.upstream else {
-        return "No upstream branch".to_string();
+        return t_args("git-tracking-none", &[current]);
     };
+    let upstream = ("upstream", upstream.as_str().into());
+    let ahead = ("ahead", branch.ahead.into());
+    let behind = ("behind", branch.behind.into());
     match (branch.ahead, branch.behind) {
-        (0, 0) => format!("Up to date with {upstream}"),
-        (a, 0) => format!("{a} ahead of {upstream}"),
-        (0, b) => format!("{b} behind {upstream}"),
-        (a, b) => format!("{a} ahead, {b} behind {upstream}"),
+        (0, 0) => t_args("git-tracking-even", &[current, upstream]),
+        (_, 0) => t_args("git-tracking-ahead", &[current, upstream, ahead]),
+        (0, _) => t_args("git-tracking-behind", &[current, upstream, behind]),
+        _ => t_args("git-tracking-diverged", &[current, upstream, ahead, behind]),
     }
 }
 
@@ -137,18 +153,29 @@ pub fn stash_title(stash: &Stash) -> &str {
     message
 }
 
-const CHECKOUT: RowAction<'static> = RowAction {
-    icon: Icon::Check,
-    label: "Check out",
-};
-const DELETE: RowAction<'static> = RowAction {
-    icon: Icon::Trash,
-    label: "Delete branch",
-};
-const APPLY: RowAction<'static> = RowAction {
-    icon: Icon::CornerDownLeft,
-    label: "Apply stash",
-};
+fn checkout(name: &str) -> (Icon, String, BranchAction) {
+    (
+        Icon::Check,
+        t("git-check-out"),
+        BranchAction::Checkout(name.to_string()),
+    )
+}
+
+fn delete(name: &str) -> (Icon, String, BranchAction) {
+    (
+        Icon::Trash,
+        t("git-delete-branch"),
+        BranchAction::Delete(name.to_string()),
+    )
+}
+
+fn apply(index: usize) -> (Icon, String, BranchAction) {
+    (
+        Icon::CornerDownLeft,
+        t("git-apply-stash"),
+        BranchAction::StashApply(index),
+    )
+}
 
 /// The rows of the local branches (`remote` false) or the remote ones.
 fn branch_rows(model: &RepoModel, remote: bool) -> Vec<RowSpec<'_>> {
@@ -158,18 +185,21 @@ fn branch_rows(model: &RepoModel, remote: bool) -> Vec<RowSpec<'_>> {
         .filter(|b| b.is_remote == remote)
         .map(|b| RowSpec {
             title: &b.name,
-            secondary: (!remote).then(|| tracking(b)),
+            secondary: (!remote).then(|| {
+                if b.is_head {
+                    current_tracking(b)
+                } else {
+                    tracking(b)
+                }
+            }),
             meta: Some(short_id(&b.tip).to_string()),
             current: b.is_head,
             actions: if b.is_head {
                 Vec::new()
             } else if remote {
-                vec![(CHECKOUT, BranchAction::Checkout(b.name.clone()))]
+                vec![checkout(&b.name)]
             } else {
-                vec![
-                    (CHECKOUT, BranchAction::Checkout(b.name.clone())),
-                    (DELETE, BranchAction::Delete(b.name.clone())),
-                ]
+                vec![checkout(&b.name), delete(&b.name)]
             },
         })
         .collect()
@@ -197,7 +227,7 @@ fn sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
             secondary: Some(s.branch.clone()),
             meta: None,
             current: false,
-            actions: vec![(APPLY, BranchAction::StashApply(s.index))],
+            actions: vec![apply(s.index)],
         })
         .collect();
     let remotes = model
@@ -213,29 +243,34 @@ fn sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
         .collect();
     vec![
         SectionRows {
-            title: "Branches",
+            title: t("git-section-branches"),
             rows: local,
             form: can_create,
+            leading: true,
         },
         SectionRows {
-            title: "Remote branches",
+            title: t("git-section-remote-branches"),
             rows: remote,
             form: false,
+            leading: true,
         },
         SectionRows {
-            title: "Tags",
+            title: t("git-section-tags"),
             rows: tags,
             form: false,
+            leading: false,
         },
         SectionRows {
-            title: "Stashes",
+            title: t("git-section-stashes"),
             rows: stashes,
             form: false,
+            leading: false,
         },
         SectionRows {
-            title: "Remotes",
+            title: t("git-section-remotes"),
             rows: remotes,
             form: false,
+            leading: false,
         },
     ]
 }
@@ -271,7 +306,7 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &PanelsInput<'_>) -> Pan
         let (left, right): (Vec<_>, Vec<_>) = all
             .iter()
             .filter(|section| !section.rows.is_empty() || section.form)
-            .partition(|section| matches!(section.title, "Branches" | "Remote branches"));
+            .partition(|section| section.leading);
         vec![
             (Rect::new(lane.x0, top, lane.x0 + w, area.y1), left),
             (Rect::new(lane.x1 - w, top, lane.x1, area.y1), right),
@@ -321,9 +356,9 @@ fn paint_section(
         column.x1,
         y + line.max(BadgeFace::height(theme)),
     );
-    let title_w = f64::from(ctx.text.measure_style(section.title, None, &heading).0);
+    let title_w = f64::from(ctx.text.measure_style(&section.title, None, &heading).0);
     ctx.text_role_in_band(
-        section.title,
+        &section.title,
         TextRole::Heading,
         theme.text_primary,
         band.x0,
@@ -355,7 +390,11 @@ fn paint_section(
     let pad = f64::from(s.s3);
     let pointer = input.pointer.filter(|p| clip.contains(*p));
     for (i, row) in section.rows.iter().enumerate() {
-        let actions: Vec<RowAction<'_>> = row.actions.iter().map(|(a, _)| *a).collect();
+        let actions: Vec<RowAction<'_>> = row
+            .actions
+            .iter()
+            .map(|(icon, label, _)| RowAction { icon: *icon, label })
+            .collect();
         let mut face = ListRowFace::new(row.title).actions(&actions);
         if let Some(secondary) = row.secondary.as_deref() {
             face = face.secondary(secondary);
@@ -363,8 +402,10 @@ fn paint_section(
         if let Some(meta) = row.meta.as_deref() {
             face = face.meta(meta);
         }
+        // The checked-out branch is named in its secondary line and set in
+        // strong type; its trailing edge stays where every other row's is.
         if row.current {
-            face = face.status(RowStatus::Active).emphasized(true);
+            face = face.emphasized(true);
         }
         if i + 1 < section.rows.len() {
             face = face.separator(false);
@@ -388,11 +429,11 @@ fn paint_section(
         face.interaction(interaction)
             .hovered_action(hovered_action)
             .paint(ctx, rect);
-        for ((_, action), r) in row.actions.iter().zip(&action_rects) {
+        for ((_, _, action), r) in row.actions.iter().zip(&action_rects) {
             out.targets
                 .push((r.intersect(clip), PanelHit::Branch(action.clone())));
         }
-        for (_, action) in &row.actions {
+        for (_, _, action) in &row.actions {
             out.semantic
                 .push((rect.intersect(clip), PanelHit::Branch(action.clone())));
         }
@@ -411,8 +452,8 @@ fn paint_branch_form(
 ) -> f64 {
     let theme = ctx.theme;
     let h = ButtonFace::height(ControlSize::Regular, theme);
-    let label = "Create branch";
-    let face = ButtonFace::new(Rect::ZERO, label);
+    let label = t("git-create-branch");
+    let face = ButtonFace::new(Rect::ZERO, &label);
     let w = face.intrinsic_width(ctx.text, theme);
     let button = Rect::new(column.x1 - w, y, column.x1, y + h);
     let field = Rect::new(
@@ -422,16 +463,12 @@ fn paint_branch_form(
         y + h,
     );
     let enabled = !input.branch_name.trim().is_empty();
-    Button::paint(
-        ctx.scene,
-        ctx.transform,
-        ctx.text,
-        theme,
-        &ButtonFace::new(button, label)
-            .role(ButtonRole::Secondary)
-            .hovered(enabled && input.pointer.is_some_and(|p| button.contains(p)))
-            .disabled(!enabled),
-    );
+    let face = ButtonFace::new(button, &label)
+        .role(ButtonRole::Secondary)
+        .disabled(!enabled);
+    let hovered = enabled && input.pointer.is_some_and(|p| face.contains(theme, p));
+    let face = face.hovered(hovered);
+    Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
     out.branch_field = field;
     out.targets.push((field, PanelHit::BranchName));
     out.semantic.push((field, PanelHit::BranchName));
@@ -459,8 +496,9 @@ pub fn remote_buttons(
     let mut x1 = right;
     let mut placed = Vec::new();
     for action in RemoteAction::ALL.iter().rev() {
+        let label = action.label();
         let w = if labelled {
-            ButtonFace::new(Rect::ZERO, action.label()).intrinsic_width(ctx.text, theme)
+            ButtonFace::new(Rect::ZERO, &label).intrinsic_width(ctx.text, theme)
         } else {
             h
         };
@@ -468,19 +506,14 @@ pub fn remote_buttons(
         if rect.x0 < min_x {
             break;
         }
-        let hovered = pointer.is_some_and(|p| rect.contains(p));
         let face = if labelled {
-            ButtonFace::new(rect, action.label())
+            ButtonFace::new(rect, &label)
         } else {
-            ButtonFace::icon_only(rect, action.icon(), action.label())
+            ButtonFace::icon_only(rect, action.icon(), &label)
         };
-        Button::paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            theme,
-            &face.hovered(hovered),
-        );
+        let hovered = pointer.is_some_and(|p| face.contains(theme, p));
+        let face = face.hovered(hovered);
+        Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
         placed.push((rect, *action));
         x1 = rect.x0 - gap;
     }
@@ -493,7 +526,7 @@ pub fn remote_buttons_width(text: &mut ui::text_render::TextRenderer, theme: &Th
     let gap = f64::from(theme.tokens.spacing.s2);
     RemoteAction::ALL
         .iter()
-        .map(|a| ButtonFace::new(Rect::ZERO, a.label()).intrinsic_width(text, theme))
+        .map(|a| ButtonFace::new(Rect::ZERO, &a.label()).intrinsic_width(text, theme))
         .sum::<f64>()
         + gap * (RemoteAction::ALL.len() - 1) as f64
 }

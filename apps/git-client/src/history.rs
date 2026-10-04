@@ -1,9 +1,10 @@
 //! The history screen: the commit list with its branch graph, and the
 //! selected commit.
 //!
-//! The list stands on the sidebar region. Every commit row has the same two
-//! lines: the summary with its age, then the refs that point at it (as
-//! chips) with the author, and the short hash at the trailing edge. The
+//! The list stands on the sidebar region. Every commit row has the same
+//! three lines in the same places: the summary across the whole row; the
+//! author with the commit's age at the trailing edge; and the short hash,
+//! followed by the refs that point at the commit as chips. The
 //! graph is content the app draws: lanes and dots in the theme's series
 //! colours. The detail is a readable column on the window ground: the
 //! summary as the title, the author, the commit's facts as a property list,
@@ -23,16 +24,18 @@ use ui::widget::{
 
 use crate::changes::line_counts;
 use crate::graph::GraphLayout;
+use crate::i18n::{t, t_args};
 use crate::model::{Commit, RefKind, RefLabel, RepoModel};
 
 /// Row geometry of the commit list, measured from the theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Metrics {
-    /// One commit row (both lines and their padding).
+    /// One commit row (all three lines and their padding).
     pub row_h: f64,
     pad_y: f64,
     line_gap: f64,
     summary_h: f64,
+    caption_h: f64,
     chip_h: f64,
     /// The list's inset from the column edges.
     inset: f64,
@@ -50,14 +53,19 @@ impl Metrics {
             text.measure_style("Ag", None, &theme.text(TextRole::Body))
                 .1,
         );
+        let caption_h = f64::from(
+            text.measure_style("Ag", None, &theme.text(TextRole::Caption))
+                .1,
+        );
         let chip_h = ChipFace::height(theme);
         let pad_y = f64::from(s.s2);
         let line_gap = f64::from(s.s1);
         Self {
-            row_h: (pad_y * 2.0 + summary_h + line_gap + chip_h).ceil(),
+            row_h: (pad_y * 2.0 + summary_h + caption_h + line_gap + chip_h).ceil(),
             pad_y,
             line_gap,
             summary_h,
+            caption_h,
             chip_h,
             inset: f64::from(s.s2),
             pad_x: f64::from(s.s3),
@@ -91,20 +99,25 @@ pub fn age(time: i64) -> String {
     ui::format::relative(now.saturating_sub(time))
 }
 
-/// A commit's date and time in the local zone: `30 June 2026, 08:12`.
+/// A commit's date and time in the local zone, in the active locale:
+/// `30 June 2026, 08:12`.
 pub fn date(time: i64) -> String {
     use chrono::{Datelike, Timelike};
     let Some(utc) = chrono::DateTime::from_timestamp(time, 0) else {
         return String::new();
     };
     let local = utc.with_timezone(&chrono::Local);
-    format!(
-        "{} {} {}, {:02}:{:02}",
-        local.day(),
-        ui::format::month_name(local.month0() as usize),
-        local.year(),
-        local.hour(),
-        local.minute()
+    t_args(
+        "git-date",
+        &[
+            ("day", local.day().to_string().into()),
+            ("month", local.month().into()),
+            ("year", local.year().to_string().into()),
+            (
+                "time",
+                format!("{:02}:{:02}", local.hour(), local.minute()).into(),
+            ),
+        ],
     )
 }
 
@@ -155,9 +168,8 @@ pub fn paint_list(ctx: &mut PaintCtx<'_>, area: Rect, input: &ListInput<'_>) -> 
         rows.push((i, row));
     }
     let graph_x = area.x0 + m.inset + m.pad_x;
-    let lanes = input.layout.lanes.max(1) as f64;
     paint_graph(ctx, input, &m, graph_x, &row_at, area);
-    let text_x = graph_x + lanes * m.lane_w + f64::from(ctx.theme.tokens.spacing.s2);
+    let text_x = text_left(area, input.layout.lanes, &m, ctx.theme);
     for &(i, row) in &rows {
         if let Some(commit) = input.model.commits.get(i) {
             paint_row_text(ctx, commit, row, text_x, &m, &input.model.head);
@@ -169,6 +181,16 @@ pub fn paint_list(ctx: &mut PaintCtx<'_>, area: Rect, input: &ListInput<'_>) -> 
         metrics: m,
         content_height,
     }
+}
+
+/// Where a row's text starts in a list over `area`: past the graph's
+/// `lanes` and a gap. The text ends `pad_x` inside the row.
+fn text_left(area: Rect, lanes: usize, m: &Metrics, theme: &Theme) -> f64 {
+    area.x0
+        + m.inset
+        + m.pad_x
+        + ui::num::f64_of_usize(lanes.max(1)) * m.lane_w
+        + f64::from(theme.tokens.spacing.s2)
 }
 
 /// The lane edges and the commit dots, in the theme's series colours.
@@ -236,8 +258,8 @@ fn paint_graph(
     }
 }
 
-/// One commit row's text: summary and age, then the refs, the author and
-/// the short hash.
+/// One commit row's text: the summary; the author and the age; the short
+/// hash and the refs.
 fn paint_row_text(
     ctx: &mut PaintCtx<'_>,
     commit: &Commit,
@@ -255,31 +277,19 @@ fn paint_row_text(
         right,
         row.y0 + m.pad_y + m.summary_h,
     );
-    let line2 = Rect::new(
+    let line2 = Rect::new(text_x, line1.y1, right, line1.y1 + m.caption_h);
+    let line3 = Rect::new(
         text_x,
-        line1.y1 + m.line_gap,
+        line2.y1 + m.line_gap,
         right,
-        line1.y1 + m.line_gap + m.chip_h,
+        line2.y1 + m.line_gap + m.chip_h,
     );
 
-    let meta = theme.text(TextRole::Caption).numeric();
-    let age = age(commit.time);
-    let (age_w, age_h) = ctx.text.measure_style(&age, None, &meta);
-    let age_x = right - f64::from(age_w);
-    ctx.text(
-        &age,
-        &meta,
-        theme.text_dim,
-        Point::new(
-            age_x,
-            ui::text_metrics::centered_text_top(line1.y0, line1.height(), f64::from(age_h)),
-        ),
-        None,
-    );
+    // The summary has the whole line.
     let body = theme.text(TextRole::Body);
     let summary = ctx.text.elide_to_width_style(
         &commit.summary,
-        ui::num::f32_of_f64((age_x - gap - text_x).max(0.0)),
+        ui::num::f32_of_f64(line1.width().max(0.0)),
         &body,
     );
     ctx.text_role_in_band(
@@ -291,30 +301,59 @@ fn paint_row_text(
         None,
     );
 
+    // The author, and the age at the trailing edge.
+    let meta = theme.text(TextRole::Caption).numeric();
+    let age = age(commit.time);
+    let (age_w, age_h) = ctx.text.measure_style(&age, None, &meta);
+    let age_x = right - f64::from(age_w);
+    ctx.text(
+        &age,
+        &meta,
+        theme.text_dim,
+        Point::new(
+            age_x,
+            ui::text_metrics::centered_text_top(line2.y0, line2.height(), f64::from(age_h)),
+        ),
+        None,
+    );
+    let caption = theme.text(TextRole::Caption);
+    let author = ctx.text.elide_to_width_style(
+        &commit.author_name,
+        ui::num::f32_of_f64((age_x - gap - text_x).max(0.0)),
+        &caption,
+    );
+    ctx.text_role_in_band(
+        &author,
+        TextRole::Caption,
+        theme.text_dim,
+        text_x,
+        line2,
+        None,
+    );
+
+    // The short hash, then the refs.
     let hash_style = hash_style(theme);
     let hash = short_id(&commit.id);
     let (hash_w, hash_h) = ctx.text.measure_style(hash, None, &hash_style);
-    let hash_x = right - f64::from(hash_w);
     ctx.text(
         hash,
         &hash_style,
         theme.text_tertiary,
         Point::new(
-            hash_x,
-            ui::text_metrics::centered_text_top(line2.y0, line2.height(), f64::from(hash_h)),
+            text_x,
+            ui::text_metrics::centered_text_top(line3.y0, line3.height(), f64::from(hash_h)),
         ),
         None,
     );
-    let limit = hash_x - gap;
-    let mut x = text_x;
+    let mut x = text_x + f64::from(hash_w) + gap;
     for label in shown_refs(&commit.refs) {
         let lead = ref_lead(theme, label, head);
         let w = ChipFace::intrinsic_width(&label.name, lead, false, ctx.text, theme);
-        let room = limit - x;
+        let room = right - x;
         if room <= m.chip_h {
             break;
         }
-        let chip = Rect::new(x, line2.y0, x + w.min(room), line2.y1);
+        let chip = Rect::new(x, line3.y0, x + w.min(room), line3.y1);
         ChipFace::new(chip, &label.name).lead(lead).paint(
             ctx.scene,
             ctx.transform,
@@ -325,23 +364,6 @@ fn paint_row_text(
         if w > room {
             break;
         }
-    }
-    // The author shows whole or not at all: the detail names them anyway.
-    let caption = theme.text(TextRole::Caption);
-    let author_w = f64::from(
-        ctx.text
-            .measure_style(&commit.author_name, None, &caption)
-            .0,
-    );
-    if x + author_w <= limit {
-        ctx.text_role_in_band(
-            &commit.author_name,
-            TextRole::Caption,
-            theme.text_dim,
-            x,
-            line2,
-            None,
-        );
     }
 }
 
@@ -381,6 +403,62 @@ pub fn reflow(body: &str) -> String {
         .filter(|p| !p.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// A commit's facts for its property list, in the active locale.
+struct Facts {
+    commit_label: String,
+    id: String,
+    date_label: String,
+    date: String,
+    parents_label: String,
+    parents: String,
+    refs_label: String,
+    refs: String,
+}
+
+impl Facts {
+    fn of(commit: &Commit) -> Self {
+        Self {
+            commit_label: t("git-fact-commit"),
+            id: commit.id.clone(),
+            date_label: t("git-fact-date"),
+            date: date(commit.time),
+            parents_label: t_args(
+                "git-fact-parents",
+                &[("count", commit.parents.len().into())],
+            ),
+            parents: commit
+                .parents
+                .iter()
+                .map(|p| short_id(p))
+                .collect::<Vec<_>>()
+                .join(", "),
+            refs_label: t("git-fact-refs"),
+            refs: shown_refs(&commit.refs)
+                .map(|r| r.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        }
+    }
+
+    /// The rows: the id, the date, the parents and the refs pointing here
+    /// (each of the last two only when there are any).
+    fn rows(&self) -> Vec<PropertyRow<'_>> {
+        let mut rows = vec![
+            PropertyRow::new(&self.commit_label, &self.id).with_kind(TextKind::Secret),
+            PropertyRow::new(&self.date_label, &self.date).with_kind(TextKind::Numeric),
+        ];
+        if !self.parents.is_empty() {
+            rows.push(
+                PropertyRow::new(&self.parents_label, &self.parents).with_kind(TextKind::Secret),
+            );
+        }
+        if !self.refs.is_empty() {
+            rows.push(PropertyRow::new(&self.refs_label, &self.refs));
+        }
+        rows
+    }
 }
 
 /// Paint the selected commit into `area`, scrolled by `scroll`. Returns the
@@ -444,32 +522,8 @@ pub fn paint_detail(ctx: &mut PaintCtx<'_>, area: Rect, commit: &Commit, scroll:
     y += avatar + f64::from(s.s6);
 
     // Its facts.
-    let date = date(commit.time);
-    let parents = commit
-        .parents
-        .iter()
-        .map(|p| short_id(p))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let refs = shown_refs(&commit.refs)
-        .map(|r| r.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut facts = vec![
-        PropertyRow::new("Commit", &commit.id).with_kind(TextKind::Secret),
-        PropertyRow::new("Date", &date).with_kind(TextKind::Numeric),
-    ];
-    if !parents.is_empty() {
-        let label = if commit.parents.len() > 1 {
-            "Parents"
-        } else {
-            "Parent"
-        };
-        facts.push(PropertyRow::new(label, &parents).with_kind(TextKind::Secret));
-    }
-    if !refs.is_empty() {
-        facts.push(PropertyRow::new("Branches and tags", &refs));
-    }
+    let fact_text = Facts::of(commit);
+    let facts = fact_text.rows();
     let list = PropertyListFace::new(&facts);
     let facts_h = list.height(ctx.text, theme, width);
     list.paint(ctx, Rect::new(x, y, x + width, y + facts_h));
@@ -511,14 +565,14 @@ fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, lane: Rect, y: f64) -> f
     )
     .max(BadgeFace::height(theme));
     let band = Rect::new(lane.x0, y, lane.x1, y + header_h);
-    let title = "Changed files";
+    let title = t("git-changed-files");
     let title_w = f64::from(
         ctx.text
-            .measure_style(title, None, &theme.text(TextRole::Subheading))
+            .measure_style(&title, None, &theme.text(TextRole::Subheading))
             .0,
     );
     ctx.text_role_in_band(
-        title,
+        &title,
         TextRole::Subheading,
         theme.text_primary,
         band.x0,
@@ -606,6 +660,47 @@ mod tests {
             let [(_, a), (_, b)] = pair else { continue };
             assert!((a.height() - b.height()).abs() < 0.01);
             assert!((b.y0 - a.y1).abs() < 0.01, "rows stack edge to edge");
+        }
+    }
+
+    /// At the list's width, docked or as a drawer, the bundled sample shows
+    /// every summary, author and ref whole: nothing in the shipped
+    /// repository is elided.
+    #[test]
+    fn the_sample_rows_fit_the_list_whole() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let m = Metrics::measure(&mut text, &theme);
+        let (mut model, _) = crate::sample::model();
+        let layout = crate::graph::layout(&mut model.commits);
+        let width = f64::from(theme.tokens.metrics.overview_width);
+        let area = Rect::new(0.0, 0.0, width, 800.0);
+        let left = text_left(area, layout.lanes, &m, &theme);
+        let room = area.x1 - m.inset - m.pad_x - left;
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let width_of = |text: &mut TextRenderer, s: &str, style: &TextStyle| {
+            f64::from(text.measure_style(s, None, style).0)
+        };
+        let body = theme.text(TextRole::Body);
+        let caption = theme.text(TextRole::Caption);
+        let meta = theme.text(TextRole::Caption).numeric();
+        for commit in &model.commits {
+            assert!(
+                width_of(&mut text, &commit.summary, &body) <= room,
+                "{:?} fits its line",
+                commit.summary
+            );
+            let line2 = width_of(&mut text, &commit.author_name, &caption)
+                + gap
+                + width_of(&mut text, &age(commit.time), &meta);
+            assert!(line2 <= room, "{:?}: author and age fit", commit.summary);
+            let mut line3 = width_of(&mut text, short_id(&commit.id), &hash_style(&theme));
+            for label in shown_refs(&commit.refs) {
+                let lead = ref_lead(&theme, label, &model.head);
+                line3 +=
+                    gap + ChipFace::intrinsic_width(&label.name, lead, false, &mut text, &theme);
+            }
+            assert!(line3 <= room, "{:?}: hash and refs fit", commit.summary);
         }
     }
 

@@ -30,6 +30,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
+use ui::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use ui::widget::toolbar::Orientation;
 use ui::widget::{
     Banner, ButtonFace, ControlSize, EmptyState, EmptyStateContent, ModalAction, ModalHit,
@@ -41,6 +42,7 @@ use crate::changes::{self, ChangesHit};
 use crate::diffview::{self, DiffHit, HunkAction};
 use crate::graph::{self, GraphLayout};
 use crate::history;
+use crate::i18n::{t, t_args};
 use crate::model::{ChangeArea, DiffKey, DiffMap, FileChange, RepoModel};
 use crate::panels::{self, BranchAction, PanelHit, RemoteAction};
 use crate::settings::{DiffLayout, Settings};
@@ -86,12 +88,12 @@ impl Screen {
         matches!(self, Screen::Changes | Screen::History)
     }
 
-    fn label(self) -> &'static str {
-        match self {
-            Screen::Changes => "Changes",
-            Screen::History => "History",
-            Screen::Panels => "Branches",
-        }
+    fn label(self) -> String {
+        t(match self {
+            Screen::Changes => "git-screen-changes",
+            Screen::History => "git-screen-history",
+            Screen::Panels => "git-screen-branches",
+        })
     }
 
     fn target(self) -> &'static str {
@@ -121,29 +123,31 @@ enum Confirm {
 impl Confirm {
     fn title(&self) -> String {
         match self {
-            Confirm::DiscardFile { name, .. } => format!("Discard changes to {name}?"),
-            Confirm::DiscardHunk(_) => "Discard this change?".to_string(),
-            Confirm::DeleteBranch(name) => format!("Delete {name}?"),
+            Confirm::DiscardFile { name, .. } => {
+                t_args("git-confirm-discard-file-title", &[("name", name.into())])
+            }
+            Confirm::DiscardHunk(_) => t("git-confirm-discard-hunk-title"),
+            Confirm::DeleteBranch(name) => {
+                t_args("git-confirm-delete-branch-title", &[("name", name.into())])
+            }
         }
     }
 
-    fn body(&self) -> &'static str {
-        match self {
+    fn body(&self) -> String {
+        t(match self {
             Confirm::DiscardFile { area, .. } if *area == ChangeArea::Untracked => {
-                "The file is deleted from your working tree. This can't be undone."
+                "git-confirm-discard-untracked-body"
             }
-            Confirm::DiscardFile { .. } | Confirm::DiscardHunk(_) => {
-                "Your edits are lost. This can't be undone."
-            }
-            Confirm::DeleteBranch(_) => "Commits that only this branch holds are lost.",
-        }
+            Confirm::DiscardFile { .. } | Confirm::DiscardHunk(_) => "git-confirm-discard-body",
+            Confirm::DeleteBranch(_) => "git-confirm-delete-branch-body",
+        })
     }
 
-    fn action(&self) -> &'static str {
-        match self {
-            Confirm::DiscardFile { .. } | Confirm::DiscardHunk(_) => "Discard",
-            Confirm::DeleteBranch(_) => "Delete branch",
-        }
+    fn action(&self) -> String {
+        t(match self {
+            Confirm::DiscardFile { .. } | Confirm::DiscardHunk(_) => "git-confirm-discard",
+            Confirm::DeleteBranch(_) => "git-delete-branch",
+        })
     }
 }
 
@@ -305,6 +309,13 @@ pub struct GitClientApp {
     semantic: Vec<Target>,
     /// Scrollable regions of the last paint, back to front.
     scroll_regions: Vec<ScrollRegion>,
+    /// The scroll bar track of every region of the last paint whose content
+    /// overflows, with how its content stood.
+    scroll_bars: Vec<(Scroller, Rect, ScrollMetrics)>,
+    /// The toolkit scroll bar of the region whose thumb is held or under
+    /// the pointer, and which region that is.
+    scrollbar: Scrollbar,
+    scrollbar_region: Option<Scroller>,
 }
 
 impl Default for GitClientApp {
@@ -419,23 +430,23 @@ impl GitClientApp {
         let selected_change = first_change(&model);
         let commit_input = TextInput::local()
             .with_id("git.commit-message")
-            .with_accessible_name("Commit message")
-            .with_placeholder("Commit message");
+            .with_accessible_name(t("git-commit-message"))
+            .with_placeholder(&t("git-commit-message"));
         let branch_input = TextInput::local()
             .with_id("git.branch-name")
-            .with_accessible_name("New branch name")
+            .with_accessible_name(t("git-new-branch-name"))
             .with_kind(TextInputKind::Name)
-            .with_placeholder("Branch name");
+            .with_placeholder(&t("git-branch-name"));
         let open_input = TextInput::local()
             .with_id("git.repository-path")
-            .with_accessible_name("Repository path")
+            .with_accessible_name(t("git-repository-path"))
             .with_kind(TextInputKind::Path)
-            .with_placeholder("Repository path");
+            .with_placeholder(&t("git-repository-path"));
         let syntax_pressed = Rc::new(Cell::new(false));
         let pressed = Rc::clone(&syntax_pressed);
         let syntax_tool =
             Toolbar::new(Orientation::Horizontal)
-                .push_toggle("Syntax", true, move || pressed.set(true));
+                .push_toggle(&t("git-syntax"), true, move || pressed.set(true));
         Self {
             actions: crate::resource::ActionSink::default(),
             model,
@@ -465,11 +476,13 @@ impl GitClientApp {
             panels_scroll: 0.0,
             confirm: None,
             confirm_layout: None,
-            // Both lists are content the person reads: the overview width.
+            // Both lists are content the person reads: the overview width,
+            // docked or as a drawer, so a row reads the same in both.
             // The diff beside them keeps the content minimum plus a rail's
             // width for its line numbers before the list becomes a drawer.
             drawer: SidebarDrawer::new()
                 .docked_width(f64::from(ui::tokens::Metrics::BASE.overview_width))
+                .overlay_width(f64::from(ui::tokens::Metrics::BASE.overview_width))
                 .breakpoint(f64::from(
                     ui::tokens::Metrics::BASE.overview_width
                         + ui::tokens::Metrics::BASE.content_min_width
@@ -483,6 +496,9 @@ impl GitClientApp {
             targets: Vec::new(),
             semantic: Vec::new(),
             scroll_regions: Vec::new(),
+            scroll_bars: Vec::new(),
+            scrollbar: Scrollbar::vertical(),
+            scrollbar_region: None,
         }
     }
 
@@ -642,7 +658,7 @@ impl GitClientApp {
 
     fn repository_busy(&mut self) -> bool {
         if self.remote_job.is_some() {
-            self.last_error = Some(ui::i18n!("git-remote-busy"));
+            self.last_error = Some(t("git-remote-busy"));
             return true;
         }
         false
@@ -655,17 +671,16 @@ impl GitClientApp {
         invocation: Option<tilo_actions::InvocationId>,
     ) -> Result<(), String> {
         if self.remote_job.is_some() {
-            return Err(ui::i18n!("git-remote-busy"));
+            return Err(t("git-remote-busy"));
         }
         let path = self
             .repo()
             .ok_or_else(|| "remote operation requires a repository".to_string())?;
-        let label = match action {
-            RemoteAction::Fetch => "Fetching…",
-            RemoteAction::Pull => "Pulling…",
-            RemoteAction::Push => "Pushing…",
-        }
-        .to_string();
+        let label = t(match action {
+            RemoteAction::Fetch => "git-remote-fetching",
+            RemoteAction::Pull => "git-remote-pulling",
+            RemoteAction::Push => "git-remote-pushing",
+        });
         let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("git-remote".into())
@@ -700,7 +715,7 @@ impl GitClientApp {
         let result = match job.receiver.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err(ui::i18n!("git-remote-worker-stopped")),
+            Err(TryRecvError::Disconnected) => Err(t("git-remote-worker-stopped")),
         };
         self.last_error = result.as_ref().err().cloned();
         job.result = Some(result);
@@ -830,11 +845,13 @@ impl GitClientApp {
         self.selected_change = first_change(&self.model);
     }
 
+    /// Whether there is something staged and a message to commit it with.
+    fn can_commit(&self) -> bool {
+        !self.model.staged.is_empty() && !self.commit_input.value().trim().is_empty()
+    }
+
     fn do_commit(&mut self) {
-        if self.repository_busy() {
-            return;
-        }
-        if self.model.staged.is_empty() || self.commit_input.value().trim().is_empty() {
+        if self.repository_busy() || !self.can_commit() {
             return;
         }
         if let Some(path) = self.repo() {
@@ -977,7 +994,10 @@ impl GitClientApp {
                 self.screen = Screen::Changes;
             }
             None => {
-                self.last_error = Some(format!("No git repository at {raw}"));
+                self.last_error = Some(t_args(
+                    "git-error-no-repository",
+                    &[("path", raw.as_str().into())],
+                ));
             }
         }
     }
@@ -1257,8 +1277,15 @@ impl GitClientApp {
         }
     }
 
-    /// Paint the whole window for this frame and record its targets.
+    /// Paint the whole window for this frame, record its targets, and show
+    /// where each overflowing region stands.
     fn paint_window(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
+        self.paint_screens(ctx, presence);
+        self.paint_scroll_bars(ctx);
+    }
+
+    /// Paint the screens, the header row and the list column.
+    fn paint_screens(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
         self.targets.clear();
         self.semantic.clear();
         self.scroll_regions.clear();
@@ -1461,6 +1488,15 @@ impl GitClientApp {
         self.changes_scroll = self
             .changes_scroll
             .clamp(0.0, (out.content_height - out.viewport_height).max(0.0));
+        if !out.commit_enabled {
+            let rect = out.commit_button.intersect(clip);
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                self.semantic.push(Target {
+                    rect,
+                    hit: Hit::Change(ChangesHit::Commit),
+                });
+            }
+        }
         self.commit_input.apply_layout_external(out.commit_input);
         self.commit_input
             .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
@@ -1520,7 +1556,8 @@ impl GitClientApp {
             x = rect.x1 + gap;
         }
 
-        let labels: Vec<&str> = Screen::ALL.iter().map(|s| s.label()).collect();
+        let owned: Vec<String> = Screen::ALL.iter().map(|s| s.label()).collect();
+        let labels: Vec<&str> = owned.iter().map(String::as_str).collect();
         let natural =
             SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, ctx.text, theme);
         let mut right = header.x1 - s3;
@@ -1603,7 +1640,8 @@ impl GitClientApp {
             )
             .width,
         );
-        let labels = ["Unified", "Split"];
+        let (unified, split) = (t("git-diff-unified"), t("git-diff-split"));
+        let labels = [unified.as_str(), split.as_str()];
         let layout_w =
             SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, ctx.text, theme);
         let with_tool = right - tool_w - s3 - layout_w >= min_x;
@@ -1659,7 +1697,7 @@ impl GitClientApp {
     fn paint_banner(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) -> Rect {
         use ui::widget::banner::{BannerContent, BannerKind};
         let (kind, title, dismissible) = if self.remote_job.is_some() {
-            (BannerKind::Info, ui::i18n!("git-remote-running"), false)
+            (BannerKind::Info, t("git-remote-running"), false)
         } else if let Some(error) = &self.last_error {
             (BannerKind::Error, error.clone(), true)
         } else {
@@ -1711,15 +1749,15 @@ impl GitClientApp {
     fn paint_diff(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) {
         let key = self.current_diff_key();
         let Some(diff) = key.as_ref().and_then(|k| self.diffs.get(k)) else {
-            let title = if self.model.change_count() == 0 {
-                "Your working tree is clean"
+            let title = t(if self.model.change_count() == 0 {
+                "git-tree-clean"
             } else {
-                "Select a file to see its changes"
-            };
+                "git-select-file"
+            });
             EmptyState::paint(
                 ctx,
                 body,
-                &EmptyStateContent::new(title),
+                &EmptyStateContent::new(&title),
                 Point::new(f64::MIN, f64::MIN),
             );
             return;
@@ -1758,7 +1796,7 @@ impl GitClientApp {
             EmptyState::paint(
                 ctx,
                 body,
-                &EmptyStateContent::new("No commits yet"),
+                &EmptyStateContent::new(&t("git-no-commits")),
                 Point::new(f64::MIN, f64::MIN),
             );
             return;
@@ -1818,32 +1856,47 @@ impl GitClientApp {
         });
     }
 
-    /// The "open a repository" screen: what to do, the path field and the
+    /// The "open a repository" screen: the window's header row (empty: no
+    /// repository has screens yet), then what to do, the path field and the
     /// Open button, and the reason the last attempt failed.
     fn paint_open(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
         use ui::widget::banner::{BannerContent, BannerKind};
         let theme = ctx.theme;
         let s = &theme.tokens.spacing;
+        let window = self.rect;
+        let header_y = (window.y0 + Self::header_height(theme)).min(window.y1);
+        ui::surface::separator(
+            ctx.scene,
+            ctx.transform,
+            window.x0,
+            window.x1,
+            header_y,
+            0.0,
+            theme.tokens.colors.surfaces.content,
+        );
+        let body = Rect::new(window.x0, header_y, window.x1, window.y1.max(header_y));
         let lane = ui::content_layout::FocusedContentLane::new()
             .max_width(f64::from(theme.tokens.metrics.panel_width_sheet))
             .gutter(f64::from(s.s6))
-            .layout(self.rect);
+            .layout(body);
         let width = ui::num::f32_of_f64(lane.width());
-        let mut y = self.rect.y0 + self.rect.height() / 3.0;
-        let title = "Open a repository";
-        let title_h = ctx.measure_role(title, TextRole::Title, Some(width)).height;
+        let mut y = body.y0 + body.height() / 3.0;
+        let title = t("git-open-title");
+        let title_h = ctx
+            .measure_role(&title, TextRole::Title, Some(width))
+            .height;
         ctx.text_role(
-            title,
+            &title,
             TextRole::Title,
             theme.text_primary,
             Point::new(lane.x0, y),
             Some(width),
         );
         y += title_h + f64::from(s.s2);
-        let hint = "Enter the path of a git repository on this computer.";
-        let hint_h = ctx.measure_role(hint, TextRole::Body, Some(width)).height;
+        let hint = t("git-open-hint");
+        let hint_h = ctx.measure_role(&hint, TextRole::Body, Some(width)).height;
         ctx.text_role(
-            hint,
+            &hint,
             TextRole::Body,
             theme.text_dim,
             Point::new(lane.x0, y),
@@ -1852,8 +1905,8 @@ impl GitClientApp {
         y += hint_h + f64::from(s.s6);
 
         let h = ButtonFace::height(ControlSize::Regular, theme);
-        let label = "Open";
-        let button_w = ButtonFace::new(Rect::ZERO, label).intrinsic_width(ctx.text, theme);
+        let label = t("git-open");
+        let button_w = ButtonFace::new(Rect::ZERO, &label).intrinsic_width(ctx.text, theme);
         let button = Rect::new(lane.x1 - button_w, y, lane.x1, y + h);
         let field = Rect::new(lane.x0, y, button.x0 - f64::from(s.s2), y + h);
         self.open_input.apply_layout_external(field);
@@ -1873,7 +1926,7 @@ impl GitClientApp {
             ctx.transform,
             ctx.text,
             theme,
-            &ButtonFace::new(button, label)
+            &ButtonFace::new(button, &label)
                 .role(ui::widget::ButtonRole::Primary)
                 .hovered(enabled && self.pointer.is_some_and(|p| button.contains(p)))
                 .disabled(!enabled),
@@ -2053,6 +2106,127 @@ impl GitClientApp {
         }
     }
 
+    /// How far `scroller` is scrolled.
+    fn scroll_offset(&self, scroller: Scroller) -> f64 {
+        match scroller {
+            Scroller::ChangesList => self.changes_scroll,
+            Scroller::Diff => self.diff_scroll,
+            Scroller::HistoryList => self.history_scroll,
+            Scroller::Detail => self.detail_scroll,
+            Scroller::Panels => self.panels_scroll,
+        }
+    }
+
+    fn set_scroll_offset(&mut self, scroller: Scroller, offset: f64) {
+        let slot = match scroller {
+            Scroller::ChangesList => &mut self.changes_scroll,
+            Scroller::Diff => &mut self.diff_scroll,
+            Scroller::HistoryList => &mut self.history_scroll,
+            Scroller::Detail => &mut self.detail_scroll,
+            Scroller::Panels => &mut self.panels_scroll,
+        };
+        *slot = offset;
+    }
+
+    /// The toolkit scroll thumb along the trailing edge of every region
+    /// whose content overflows, so a list cut by its edge shows that it
+    /// goes on; records the tracks for the pointer.
+    fn paint_scroll_bars(&mut self, ctx: &mut PaintCtx<'_>) {
+        // The toolkit scroll view's bar: a thumb `s2` thick, held half an
+        // `s1` off the region's edges.
+        let s = &ctx.theme.tokens.spacing;
+        let thickness = f64::from(s.s2);
+        let margin = f64::from(s.s1) / 2.0;
+        self.scroll_bars = self
+            .scroll_regions
+            .iter()
+            .filter_map(|region| {
+                let r = region.rect;
+                let metrics = ScrollMetrics::new(
+                    r.height() + region.max_y.max(0.0),
+                    r.height(),
+                    self.scroll_offset(region.scroller),
+                );
+                metrics.overflows().then(|| {
+                    (
+                        region.scroller,
+                        Rect::new(
+                            r.x1 - margin - thickness,
+                            r.y0 + margin,
+                            r.x1 - margin,
+                            r.y1 - margin,
+                        ),
+                        metrics,
+                    )
+                })
+            })
+            .collect();
+        for &(scroller, track, metrics) in &self.scroll_bars {
+            let bar = if self.scrollbar_region == Some(scroller) {
+                self.scrollbar
+            } else {
+                Scrollbar::vertical()
+            };
+            bar.draw(ctx.scene, ctx.transform, track, metrics, ctx.theme, false);
+        }
+    }
+
+    /// A press on a scroll bar: the thumb starts a drag, the track pages.
+    /// Returns whether the press was the scroll bar's.
+    fn scroll_bar_press(&mut self, pos: Point) -> bool {
+        let Some(&(scroller, track, metrics)) = self
+            .scroll_bars
+            .iter()
+            .rev()
+            .find(|(_, track, _)| track.contains(pos))
+        else {
+            return false;
+        };
+        let mut bar = Scrollbar::vertical();
+        match bar.press(track, metrics, pos) {
+            PressOutcome::Thumb => {
+                self.scrollbar = bar;
+                self.scrollbar_region = Some(scroller);
+                true
+            }
+            PressOutcome::Page(offset) => {
+                self.set_scroll_offset(scroller, offset);
+                true
+            }
+            PressOutcome::Miss => false,
+        }
+    }
+
+    /// Pointer motion over the scroll bars: a held thumb follows it, and the
+    /// thumb under it brightens.
+    fn scroll_bar_move(&mut self, pos: Point) {
+        if self.scrollbar.is_dragging() {
+            let held = self
+                .scroll_bars
+                .iter()
+                .find(|(scroller, _, _)| Some(*scroller) == self.scrollbar_region)
+                .copied();
+            if let Some((scroller, track, metrics)) = held
+                && let Some(offset) = self.scrollbar.drag_to(track, metrics, pos)
+            {
+                self.set_scroll_offset(scroller, offset);
+            }
+            return;
+        }
+        let hovered = self
+            .scroll_bars
+            .iter()
+            .rev()
+            .find(|(_, track, metrics)| {
+                Scrollbar::vertical()
+                    .thumb_rect(*track, *metrics)
+                    .is_some_and(|thumb| thumb.contains(pos))
+            })
+            .map(|(scroller, _, _)| *scroller);
+        self.scrollbar.set_hover(hovered.is_some());
+        self.scrollbar_region = hovered;
+    }
+
     // --- Accessibility --------------------------------------------------
 
     /// The semantic inventory of the last paint: one node per control and
@@ -2106,12 +2280,11 @@ impl GitClientApp {
                 Hit::SidebarToggle => button(
                     "git.navigation-toggle".into(),
                     rect,
-                    if self.drawer.is_open() {
-                        "Hide sidebar"
+                    t(if self.drawer.is_open() {
+                        "git-sidebar-hide"
                     } else {
-                        "Show sidebar"
-                    }
-                    .into(),
+                        "git-sidebar-show"
+                    }),
                 ),
                 Hit::Screen(screen) => (
                     screen.target().to_string(),
@@ -2127,8 +2300,12 @@ impl GitClientApp {
                 ),
                 Hit::DiffLayout(layout) => {
                     let (target, name) = match layout {
-                        DiffLayout::Unified => ("git.diff-layout.unified", "Unified diff"),
-                        DiffLayout::SideBySide => ("git.diff-layout.split", "Side-by-side diff"),
+                        DiffLayout::Unified => {
+                            ("git.diff-layout.unified", t("git-diff-unified-name"))
+                        }
+                        DiffLayout::SideBySide => {
+                            ("git.diff-layout.split", t("git-diff-split-name"))
+                        }
                     };
                     (
                         target.to_string(),
@@ -2147,7 +2324,7 @@ impl GitClientApp {
                     "git.syntax-highlight".to_string(),
                     rect,
                     AccessNode::new(Role::Button)
-                        .with_name("Syntax highlighting")
+                        .with_name(t("git-syntax-name"))
                         .with_state(
                             AccessState::new()
                                 .focusable(true)
@@ -2157,15 +2334,15 @@ impl GitClientApp {
                 ),
                 Hit::Remote(action) => {
                     let (target, name) = match action {
-                        RemoteAction::Fetch => ("git.remote.fetch", "Fetch from remote"),
-                        RemoteAction::Pull => ("git.remote.pull", "Pull from remote"),
-                        RemoteAction::Push => ("git.remote.push", "Push to remote"),
+                        RemoteAction::Fetch => ("git.remote.fetch", t("git-fetch-name")),
+                        RemoteAction::Pull => ("git.remote.pull", t("git-pull-name")),
+                        RemoteAction::Push => ("git.remote.push", t("git-push-name")),
                     };
-                    button(target.into(), rect, name.into())
+                    button(target.into(), rect, name)
                 }
                 Hit::DismissError => {
                     let text = if self.remote_job.is_some() {
-                        ui::i18n!("git-remote-running")
+                        t("git-remote-running")
                     } else {
                         self.last_error.clone().unwrap_or_default()
                     };
@@ -2182,13 +2359,13 @@ impl GitClientApp {
                     if self.remote_job.is_some() {
                         continue;
                     }
-                    button("git.dismiss-error".into(), rect, "Dismiss error".into())
+                    button("git.dismiss-error".into(), rect, t("git-dismiss-error"))
                 }
                 Hit::Change(ChangesHit::FocusMessage) => field(
                     "git.commit-message",
                     rect,
                     &self.commit_input,
-                    "Commit message",
+                    &t("git-commit-message"),
                 ),
                 Hit::Change(hit) => match self.change_node(hit, rect) {
                     Some(entry) => entry,
@@ -2196,24 +2373,24 @@ impl GitClientApp {
                 },
                 Hit::Diff(hit) => {
                     let (target, name) = match hit {
-                        DiffHit::StageFile if self.selected_is_staged() => (
-                            "git.diff.unstage-file".to_string(),
-                            "Unstage file".to_string(),
-                        ),
-                        DiffHit::StageFile => {
-                            ("git.diff.stage-file".to_string(), "Stage file".to_string())
+                        DiffHit::StageFile if self.selected_is_staged() => {
+                            ("git.diff.unstage-file".to_string(), t("git-unstage-file"))
                         }
-                        DiffHit::DiscardFile => (
-                            "git.discard-file".to_string(),
-                            "Discard file changes".to_string(),
-                        ),
+                        DiffHit::StageFile => {
+                            ("git.diff.stage-file".to_string(), t("git-stage-file"))
+                        }
+                        DiffHit::DiscardFile => {
+                            ("git.discard-file".to_string(), t("git-discard-file-name"))
+                        }
                         DiffHit::Hunk(hunk, action) => {
-                            let name = match action {
-                                HunkAction::Toggle if self.selected_is_staged() => "Unstage hunk",
-                                HunkAction::Toggle => "Stage hunk",
-                                HunkAction::Discard => "Discard hunk",
-                            };
-                            (format!("git.hunk:{hunk}:{action:?}"), name.to_string())
+                            let name = t(match action {
+                                HunkAction::Toggle if self.selected_is_staged() => {
+                                    "git-unstage-hunk"
+                                }
+                                HunkAction::Toggle => "git-stage-hunk",
+                                HunkAction::Discard => "git-discard-hunk",
+                            });
+                            (format!("git.hunk:{hunk}:{action:?}"), name)
                         }
                     };
                     button(target, rect, name)
@@ -2226,11 +2403,13 @@ impl GitClientApp {
                         format!("git.commit:{}", commit.id),
                         rect,
                         AccessNode::new(Role::ListItem)
-                            .with_name(format!(
-                                "{} by {}, {}",
-                                commit.summary,
-                                commit.author_name,
-                                history::age(commit.time)
+                            .with_name(t_args(
+                                "git-commit-row-name",
+                                &[
+                                    ("summary", commit.summary.as_str().into()),
+                                    ("author", commit.author_name.as_str().into()),
+                                    ("age", history::age(commit.time).into()),
+                                ],
                             ))
                             .with_state(
                                 AccessState::new()
@@ -2244,31 +2423,50 @@ impl GitClientApp {
                     "git.new-branch-name",
                     rect,
                     &self.branch_input,
-                    "New branch name",
+                    &t("git-new-branch-name"),
                 ),
                 Hit::Panel(PanelHit::CreateBranch) => {
-                    button("git.create-branch".into(), rect, "Create branch".into())
+                    let (target, rect, node) =
+                        button("git.create-branch".into(), rect, t("git-create-branch"));
+                    let disabled = self.branch_input.value().trim().is_empty();
+                    (
+                        target,
+                        rect,
+                        node.with_state(AccessState::new().focusable(true).disabled(disabled)),
+                    )
                 }
                 Hit::Panel(PanelHit::Branch(action)) => {
                     let (target, name) = match action {
                         BranchAction::Checkout(name) => (
                             format!("git.branch.checkout:{name}"),
-                            format!("Check out {name}"),
+                            t_args("git-check-out-name", &[("name", name.into())]),
                         ),
                         BranchAction::Delete(name) => (
                             format!("git.branch.delete:{name}"),
-                            format!("Delete {name}"),
+                            t_args("git-delete-name", &[("name", name.into())]),
                         ),
                         BranchAction::StashApply(index) => (
                             format!("git.stash.apply:{index}"),
-                            format!("Apply stash {index}"),
+                            t_args("git-apply-stash-name", &[("index", (*index).into())]),
                         ),
                     };
                     button(target, rect, name)
                 }
-                Hit::OpenPath => field("git.open-path", rect, &self.open_input, "Repository path"),
+                Hit::OpenPath => field(
+                    "git.open-path",
+                    rect,
+                    &self.open_input,
+                    &t("git-repository-path"),
+                ),
                 Hit::OpenRepository => {
-                    button("git.open-repository".into(), rect, "Open repository".into())
+                    let (target, rect, node) =
+                        button("git.open-repository".into(), rect, t("git-open-name"));
+                    let disabled = self.open_input.value().trim().is_empty();
+                    (
+                        target,
+                        rect,
+                        node.with_state(AccessState::new().focusable(true).disabled(disabled)),
+                    )
                 }
                 Hit::Scrim => continue,
             };
@@ -2299,38 +2497,55 @@ impl GitClientApp {
                     rect,
                     node(
                         Role::ListItem,
-                        format!("Open {} diff, {}", change.path, change.kind.label()),
+                        t_args(
+                            "git-change-open",
+                            &[
+                                ("path", change.path.as_str().into()),
+                                ("kind", change.kind.label().into()),
+                            ],
+                        ),
                         self.selected_change == Some((*area, *row)),
                     ),
                 )
             }
             ChangesHit::ToggleStage(area, row) => {
-                let verb = if *area == ChangeArea::Staged {
-                    "Unstage"
+                let (verb, key) = if *area == ChangeArea::Staged {
+                    ("Unstage", "git-unstage-path")
                 } else {
-                    "Stage"
+                    ("Stage", "git-stage-path")
                 };
                 let change = change_list(&self.model, *area).get(*row)?;
                 (
                     format!("git.change.{verb}:{area:?}:{}", change.path),
                     rect,
-                    node(Role::Button, format!("{verb} {}", change.path), false),
+                    node(
+                        Role::Button,
+                        t_args(key, &[("path", change.path.as_str().into())]),
+                        false,
+                    ),
                 )
             }
             ChangesHit::StageAll(area) => (
                 format!("git.changes.stage-all:{area:?}"),
                 rect,
-                node(Role::Button, "Stage all changes".into(), false),
+                node(Role::Button, t("git-stage-all-name"), false),
             ),
             ChangesHit::UnstageAll(area) => (
                 format!("git.changes.unstage-all:{area:?}"),
                 rect,
-                node(Role::Button, "Unstage all changes".into(), false),
+                node(Role::Button, t("git-unstage-all-name"), false),
             ),
             ChangesHit::Commit => (
                 "git.changes.commit".into(),
                 rect,
-                node(Role::Button, changes::commit_label(&self.model), false),
+                AccessNode::new(Role::Button)
+                    .with_name(changes::commit_label(&self.model))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .disabled(!self.can_commit()),
+                    )
+                    .with_bounds(rect),
             ),
             ChangesHit::FocusMessage => return None,
         })
@@ -2484,6 +2699,7 @@ impl Widget for GitClientApp {
         let title = confirm.title();
         let body = confirm.body();
         let action = confirm.action();
+        let cancel = t("git-cancel");
         let hovered = |index: usize| {
             self.confirm_layout
                 .as_ref()
@@ -2492,20 +2708,20 @@ impl Widget for GitClientApp {
                 .is_some_and(|(rect, p)| rect.contains(p))
         };
         let actions = [
-            ModalAction::secondary("Cancel").hovered(hovered(0)),
-            ModalAction::danger(action).hovered(hovered(1)),
+            ModalAction::secondary(&cancel).hovered(hovered(0)),
+            ModalAction::danger(&action).hovered(hovered(1)),
         ];
         let style = theme.text(TextRole::Body);
         let spec = ModalSpec::new(&title).actions(&actions);
         let width = modal_dialog::body_width(window, spec.max_width, theme);
-        let (_, body_h) = text.measure_style(body, Some(ui::num::f32_of_f64(width)), &style);
+        let (_, body_h) = text.measure_style(&body, Some(ui::num::f32_of_f64(width)), &style);
         let spec = spec.body_height(f64::from(body_h)).dismiss_on_scrim(true);
         let layout = modal_dialog::layout(window, &spec, text, theme);
         modal_dialog::paint_backdrop(scene, transform, text, theme, &layout, &spec);
         let (_, dim) = modal_dialog::ink(theme);
         text.draw_style(
             scene,
-            body,
+            &body,
             dim,
             transform.pre_translate(vello::kurbo::Vec2::new(layout.body.x0, layout.body.y0)),
             Some(ui::num::f32_of_f64(layout.body.width())),
@@ -2526,10 +2742,9 @@ impl Widget for GitClientApp {
         };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Some(Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                ));
+                let pos = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.pointer = Some(pos);
+                self.scroll_bar_move(pos);
                 // Keep an in-flight text-selection drag updating.
                 self.forward_to_inputs(&mut input);
             }
@@ -2549,6 +2764,7 @@ impl Widget for GitClientApp {
                 state: ElementState::Released,
                 ..
             } => {
+                self.scrollbar.release();
                 self.forward_to_inputs(&mut input);
                 if self.syntax_pressed.replace(false) {
                     self.toggle_syntax_highlight(input.state);
@@ -2616,11 +2832,11 @@ impl Widget for GitClientApp {
             ui::a11y::AccessNode::new(ui::a11y::Role::Group)
                 .with_name("Git")
                 .with_description(if self.remote_job.is_some() {
-                    ui::i18n!("git-remote-running")
+                    t("git-remote-running")
                 } else if self.awaiting_repo {
-                    "Open a repository".to_string()
+                    t("git-open-title")
                 } else {
-                    "Repository changes, history, branches and remotes".to_string()
+                    t("git-app-description")
                 })
                 .with_children(children),
         )
@@ -2748,7 +2964,7 @@ impl Widget for GitClientApp {
                 phase: "git.remote".into(),
                 completed: None,
                 total: None,
-                message: Some(ui::i18n!("git-remote-running")),
+                message: Some(t("git-remote-running")),
             });
         }
         None
@@ -2877,7 +3093,7 @@ impl GitClientApp {
             return Ok(false);
         }
         if kind == tilo_actions::OperationKind::Effect && self.repository_busy() {
-            return Err(ui::i18n!("git-remote-busy"));
+            return Err(t("git-remote-busy"));
         }
         let operation: crate::actions::GitClientOperation =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -3132,6 +3348,10 @@ impl GitClientApp {
         };
         if self.confirm.is_some() {
             self.confirm_press(pos);
+            return;
+        }
+        if self.scroll_bar_press(pos) {
+            self.set_focus(None);
             return;
         }
         if !self.drawer_is_modal()

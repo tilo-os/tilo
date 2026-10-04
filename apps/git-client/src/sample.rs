@@ -171,10 +171,10 @@ fn sample_branches() -> Vec<Branch> {
             tip: "a1b2c3d".into(),
         },
         Branch {
-            name: "feature/wgpu-pipeline".into(),
+            name: "wgpu-pipeline".into(),
             is_head: false,
             is_remote: false,
-            upstream: Some("origin/feature/wgpu-pipeline".into()),
+            upstream: Some("origin/wgpu-pipeline".into()),
             ahead: 4,
             behind: 1,
             tip: "9f8e7d6".into(),
@@ -198,7 +198,7 @@ fn sample_branches() -> Vec<Branch> {
             tip: "7d6e5f4".into(),
         },
         Branch {
-            name: "origin/feature/wgpu-pipeline".into(),
+            name: "origin/wgpu-pipeline".into(),
             is_head: false,
             is_remote: true,
             upstream: None,
@@ -238,8 +238,8 @@ fn sample_stashes() -> Vec<Stash> {
         },
         Stash {
             index: 1,
-            message: "On feature/wgpu-pipeline: Bind group cache experiment".into(),
-            branch: "feature/wgpu-pipeline".into(),
+            message: "On wgpu-pipeline: Bind group cache experiment".into(),
+            branch: "wgpu-pipeline".into(),
         },
     ]
 }
@@ -327,7 +327,7 @@ fn commit_history_recent() -> Vec<Sample<'static>> {
     vec![
         Sample {
             id: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
-            summary: "Merge branch 'feature/wgpu-pipeline'",
+            summary: "Merge branch 'wgpu-pipeline'",
             body: "Bring the new wgpu render pipeline onto main.\n\nReplaces the legacy blit path with a compute-driven\nblur and a reusable bind-group cache.",
             author: MIRA,
             ago: 2 * HOUR,
@@ -349,7 +349,7 @@ fn commit_history_recent() -> Vec<Sample<'static>> {
             author: ALEX,
             ago: 5 * HOUR,
             parents: &["3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b"],
-            refs: vec![rl("feature/wgpu-pipeline", RefKind::LocalBranch)],
+            refs: vec![rl("wgpu-pipeline", RefKind::LocalBranch)],
             files: vec![
                 touched("src/render/shaders/blur.wgsl", ChangeKind::Added, 37, 0),
                 touched("src/render/scene.rs", ChangeKind::Modified, 12, 2),
@@ -377,7 +377,7 @@ fn commit_history_recent() -> Vec<Sample<'static>> {
             author: ALEX,
             ago: DAY + 5 * HOUR,
             parents: &["7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e"],
-            refs: vec![rl("origin/feature/wgpu-pipeline", RefKind::RemoteBranch)],
+            refs: vec![rl("origin/wgpu-pipeline", RefKind::RemoteBranch)],
             files: vec![touched("src/render/pipeline.rs", ChangeKind::Added, 31, 0)],
         },
     ]
