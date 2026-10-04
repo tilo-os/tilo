@@ -7,8 +7,8 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use ui::application::ComponentBehaviour;
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Fixture, ResourceApp, ResourceSurface,
-    SurfaceCx, ViewCx,
+    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp,
+    ResourceSurface, SurfaceCx, ViewCx,
 };
 use ui::tilo_actions::EncodedAction;
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
@@ -153,6 +153,14 @@ impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
 
     fn effects(&self) -> Vec<EffectStatus> {
         crate::effects::statuses(self)
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        crate::effects::rows(self)
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        crate::effects::row(self, id)
     }
 
     // Preference and device rows publish their document edits as hand-built
