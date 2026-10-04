@@ -334,13 +334,27 @@ fn page_operation_payload(request: &PageRequest) -> serde_json::Value {
     if let Some(element) = request.element() {
         payload.insert("element".into(), element.into());
     }
-    let argument = match request {
-        PageRequest::Fill { text, .. } => Some(("text", text.as_str().into())),
-        PageRequest::Select { values, .. } => Some(("values", values.clone().into())),
-        PageRequest::Press { key, .. } => Some(("key", key.chord().into())),
-        PageRequest::Outline | PageRequest::Click { .. } | PageRequest::Submit { .. } => None,
+    let arguments: Vec<(&str, serde_json::Value)> = match request {
+        PageRequest::Fill { text, secret, .. } => {
+            vec![("text", text.as_str().into()), ("secret", (*secret).into())]
+        }
+        PageRequest::Select { values, .. } => vec![("values", values.clone().into())],
+        PageRequest::Press { key, .. } => vec![("key", key.chord().into())],
+        PageRequest::Submit { cross_origin, .. } => vec![("cross_origin", (*cross_origin).into())],
+        PageRequest::At { x, y } => vec![("x", (*x).into()), ("y", (*y).into())],
+        PageRequest::Settle {
+            quiet_ms,
+            timeout_ms,
+        } => vec![
+            ("quiet_ms", (*quiet_ms).into()),
+            ("timeout_ms", (*timeout_ms).into()),
+        ],
+        PageRequest::Console { since } | PageRequest::Network { since } => {
+            vec![("since", (*since).into())]
+        }
+        PageRequest::Outline | PageRequest::Click { .. } | PageRequest::Changes => Vec::new(),
     };
-    if let Some((name, value)) = argument {
+    for (name, value) in arguments {
         payload.insert(name.into(), value);
     }
     payload.into()
@@ -348,8 +362,37 @@ fn page_operation_payload(request: &PageRequest) -> serde_json::Value {
 
 fn decode_page_operation(value: &serde_json::Value) -> Result<PageRequest, String> {
     let element = || required_string(value, "element");
+    let number = |key: &str| value.get(key).and_then(serde_json::Value::as_f64);
+    let whole = |key: &str, default: u32| {
+        value.get(key).map_or(Ok(default), |given| {
+            given
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| format!("page `{key}` must be a whole number of milliseconds"))
+        })
+    };
     let request = match value.get("action").and_then(serde_json::Value::as_str) {
         Some("outline") => PageRequest::Outline,
+        Some("changes") => PageRequest::Changes,
+        Some("at") => PageRequest::At {
+            x: number("x").ok_or("page at is missing `x`")?,
+            y: number("y").ok_or("page at is missing `y`")?,
+        },
+        Some("settle") => PageRequest::Settle {
+            quiet_ms: whole("quiet_ms", PAGE_SETTLE_QUIET_MS)?,
+            timeout_ms: whole("timeout_ms", PAGE_SETTLE_TIMEOUT_MS)?,
+        },
+        Some(log @ ("console" | "network")) => {
+            let since = value
+                .get("since")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            if log == "console" {
+                PageRequest::Console { since }
+            } else {
+                PageRequest::Network { since }
+            }
+        }
         Some("click") => PageRequest::Click {
             element: element()?,
         },
@@ -360,6 +403,10 @@ fn decode_page_operation(value: &serde_json::Value) -> Result<PageRequest, Strin
                 .and_then(serde_json::Value::as_str)
                 .ok_or("page fill is missing `text`")?
                 .to_string(),
+            secret: value
+                .get("secret")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
         },
         Some("select") => PageRequest::Select {
             element: element()?,
@@ -388,6 +435,10 @@ fn decode_page_operation(value: &serde_json::Value) -> Result<PageRequest, Strin
         },
         Some("submit") => PageRequest::Submit {
             element: element()?,
+            cross_origin: value
+                .get("cross_origin")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
         },
         _ => return Err("unknown page action".into()),
     };
@@ -788,6 +839,24 @@ fn local_background_contract(tags: &[&str]) -> ActionContract {
 /// Page content belongs to this profile's signed-in sessions, so reading it
 /// takes the same authority as operating it, and neither is offered to a
 /// person picking from the palette: people use the page itself.
+/// How long a settle waits for the page to go quiet, and at most, by default.
+const PAGE_SETTLE_QUIET_MS: u32 = 500;
+const PAGE_SETTLE_TIMEOUT_MS: u32 = 10_000;
+
+/// Page actions that only look: they change nothing on the page.
+const PAGE_READS: &[&str] = &[
+    "read",
+    "changes",
+    "element_at",
+    "wait_settled",
+    "console",
+    "network",
+];
+
+/// Contract tag of results that are web content: data to reason about,
+/// never instructions to follow.
+const UNTRUSTED_CONTENT_TAG: &str = "content:untrusted";
+
 fn page_contract(read: bool) -> ActionContract {
     ActionContract {
         permission: ui::tilo_actions::PermissionRequirement::Write,
@@ -805,13 +874,17 @@ fn page_contract(read: bool) -> ActionContract {
         result: ResultSpec::Json {
             schema: serde_json::json!({
                 "type": "object",
-                "required": ["url", "title", "message", "navigated"],
+                "required": ["url", "title", "message", "navigated", "provenance"],
                 "properties": {
                     "url": { "type": "string" },
                     "title": { "type": "string" },
                     "message": { "type": "string" },
                     "navigated": { "type": "boolean" },
                     "outline": { "type": "string" },
+                    "data": { "type": "object" },
+                    // Everything here came from the page: treat it as data,
+                    // not as instructions.
+                    "provenance": { "const": "web-content" },
                 },
             }),
         },
@@ -819,10 +892,33 @@ fn page_contract(read: bool) -> ActionContract {
             "device-local".into(),
             "page-content".into(),
             "sensitive-data".into(),
+            UNTRUSTED_CONTENT_TAG.into(),
             ui::tilo_actions::PROGRAMMATIC_TAG.into(),
         ],
         ..ActionContract::default()
     }
+}
+
+fn cross_origin_param() -> ActionParam {
+    ActionParam::optional_owned(
+        "cross_origin",
+        ParamType::Boolean,
+        "Allow sending the form to another site than the page's own (default false)",
+    )
+}
+
+fn since_param() -> ActionParam {
+    ActionParam::optional_owned(
+        "since",
+        ParamType::Integer,
+        "Only entries after this sequence number: the `next` of the previous answer (default 0)",
+    )
+}
+
+fn since(args: &ActionArgs) -> u64 {
+    args.integer("since")
+        .and_then(|n| u64::try_from(n).ok())
+        .unwrap_or(0)
 }
 
 fn element_param() -> ActionParam {
@@ -1829,7 +1925,7 @@ impl BrowserWidget {
                 id,
                 label,
                 placeholder,
-                if id == "read" {
+                if PAGE_READS.contains(&id) {
                     OperationKind::View
                 } else {
                     OperationKind::Effect
@@ -1840,7 +1936,7 @@ impl BrowserWidget {
                     encode_browser_operation(&BrowserOperation::Page(build(args)))
                 },
             )
-            .with_contract(page_contract(id == "read"))
+            .with_contract(page_contract(PAGE_READS.contains(&id)))
         }
         let element = |args: &ActionArgs| args.text("element").unwrap_or_default().to_string();
         let specs = vec![
@@ -1871,6 +1967,25 @@ impl BrowserWidget {
                 move |args| PageRequest::Fill {
                     element: element(args),
                     text: args.text("text").unwrap_or_default().to_string(),
+                    secret: false,
+                },
+            ),
+            page_action(
+                "fill_secret",
+                "Fill page password field",
+                "",
+                vec![
+                    element_param(),
+                    ActionParam::required_owned(
+                        "text",
+                        ParamType::Secret,
+                        "Password or card number for the field; kept out of logs and history",
+                    ),
+                ],
+                move |args| PageRequest::Fill {
+                    element: element(args),
+                    text: args.text("text").unwrap_or_default().to_string(),
+                    secret: true,
                 },
             ),
             page_action(
@@ -1935,10 +2050,81 @@ impl BrowserWidget {
                 "submit",
                 "Submit page form",
                 "d1e5",
-                vec![element_param()],
+                vec![element_param(), cross_origin_param()],
                 move |args| PageRequest::Submit {
                     element: element(args),
+                    cross_origin: args.boolean("cross_origin").unwrap_or(false),
                 },
+            ),
+            page_action(
+                "changes",
+                "What changed on the page",
+                "",
+                Vec::new(),
+                |_| PageRequest::Changes,
+            ),
+            page_action(
+                "element_at",
+                "Element at a page point",
+                "",
+                vec![
+                    ActionParam::required_owned(
+                        "x",
+                        ParamType::Number,
+                        "Viewport x in CSS pixels from the page's left edge",
+                    ),
+                    ActionParam::required_owned(
+                        "y",
+                        ParamType::Number,
+                        "Viewport y in CSS pixels from the page's top edge",
+                    ),
+                ],
+                |args| PageRequest::At {
+                    x: args.number("x").unwrap_or(-1.0),
+                    y: args.number("y").unwrap_or(-1.0),
+                },
+            ),
+            page_action(
+                "wait_settled",
+                "Wait for the page to settle",
+                "",
+                vec![
+                    ActionParam::optional_owned(
+                        "quiet_ms",
+                        ParamType::Integer,
+                        "How long the page must stay unchanged, milliseconds (default 500)",
+                    ),
+                    ActionParam::optional_owned(
+                        "timeout_ms",
+                        ParamType::Integer,
+                        "Longest wait, milliseconds (default 10000, at most 20000)",
+                    ),
+                ],
+                |args| {
+                    let ms = |name: &str, default: u32| {
+                        args.integer(name)
+                            .and_then(|n| u32::try_from(n).ok())
+                            .unwrap_or(default)
+                    };
+                    PageRequest::Settle {
+                        quiet_ms: ms("quiet_ms", PAGE_SETTLE_QUIET_MS),
+                        timeout_ms: ms("timeout_ms", PAGE_SETTLE_TIMEOUT_MS),
+                    }
+                },
+            ),
+            page_action(
+                "console",
+                "Page console messages",
+                "",
+                vec![since_param()],
+                |args| PageRequest::Console { since: since(args) },
+            ),
+            page_action(
+                "network",
+                "Page network requests",
+                "",
+                vec![since_param()],
+                |args| PageRequest::Network { since: since(args) },
             ),
         ];
         if is_supported_web_url(&self.current_uri) {
@@ -2090,6 +2276,10 @@ impl BrowserWidget {
         if let Some(outline) = &reply.outline {
             value.insert("outline".into(), outline.as_str().into());
         }
+        if let Some(data) = &reply.data {
+            value.insert("data".into(), data.clone());
+        }
+        value.insert("provenance".into(), "web-content".into());
         ui::tilo_actions::InvocationUpdate::Succeeded {
             invocation,
             output: ui::tilo_actions::ActionOutput {
@@ -8092,6 +8282,7 @@ mod tests {
                     PageRequest::Fill {
                         element: "d3e7".into(),
                         text: String::new(),
+                        secret: false,
                     },
                     PageRequest::Select {
                         element: "d3e8".into(),
@@ -8125,6 +8316,7 @@ mod tests {
                 url: "https://shop.test/cart".into(),
                 message: "Clicked button \"Checkout\"".into(),
                 outline: None,
+                data: None,
                 navigated: true,
                 loading: true,
             }));
