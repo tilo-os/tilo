@@ -427,16 +427,27 @@ pub(crate) fn published_template_resources() -> Vec<Resource> {
         .collect()
 }
 
-/// Favourites snapshot for Resource publish when the widget is not the door.
-pub(crate) fn load_published_places() -> Vec<favorites::Favorite> {
-    let Some(home) = tilo_paths::home() else {
-        return Vec::new();
-    };
-    let dirs = favorites::UserDirs::from_system();
-    match config::config_dir() {
-        Some(dir) => favorites::load(&dir, &home, &dirs),
-        None => favorites::defaults(&home, &dirs),
-    }
+/// The favourites `places` name on this device, in order; places this device
+/// cannot resolve (a home it does not have) are left out.
+pub(crate) fn resolve_places(
+    places: &[String],
+    home: Option<&Path>,
+    dirs: &favorites::UserDirs,
+) -> Vec<favorites::Favorite> {
+    places
+        .iter()
+        .filter_map(|place| crate::places::path_of(place, home, dirs))
+        .map(|path| favorites::favorite(path, home.unwrap_or_else(|| Path::new("/")), dirs))
+        .collect()
+}
+
+/// The favourites `places` name on this device, for the published tree.
+pub(crate) fn device_places(places: &[String]) -> Vec<favorites::Favorite> {
+    resolve_places(
+        places,
+        crate::model::user_home().as_deref(),
+        &favorites::UserDirs::from_system(),
+    )
 }
 
 fn short_fingerprint(key: &[u8; 32]) -> String {
@@ -725,17 +736,16 @@ pub struct FileExplorerWidget {
     /// Set when applying a command changed structure; consumed by
     /// `take_structure_dirty` so the App rebuilds the composition.
     structure_dirty: bool,
-    /// Framework dispatcher when hosted; local action host otherwise.
-    /// Standalone, `--shots`, and unit tests leave `framework` empty.
-    actions: crate::resource::ActionSink,
-    /// Document edits queued until `sync` can submit them through the sink.
-    pending_shared: Vec<crate::resource::FilesDocAction>,
-    /// Set while adopting a presented document so that adoption does not
-    /// queue another edit.
-    adopting_shared: bool,
-    /// Bookmark paths last copied in from the shared document. Only these
-    /// are removed when a later document drops them; disk defaults stay.
-    adopted_bookmarks: Vec<String>,
+    /// Where bookmark edits go: the resource's dispatcher. `None` for a
+    /// widget no framework hosts (a shell's embedded tile, a unit test),
+    /// whose bookmark edits stay in the window.
+    dispatcher: Option<ui::framework::Dispatcher<crate::resource::FileExplorer>>,
+    /// The person's view preferences; `None` outside a framework host, where
+    /// they stay in the window.
+    preferences: Option<ui::framework::Setting<crate::resource::FilesPreferences>>,
+    /// The preferences last shown, so a change from another window or device
+    /// is adopted once.
+    shown_preferences: Option<crate::resource::FilesPreferences>,
     /// Right-click menu, owned here (not in the rebuilt composition) so it
     /// stays open across frames. `menu_commands[i]` is the command to run
     /// for menu item `i` (None for separators).
@@ -755,8 +765,9 @@ pub struct FileExplorerWidget {
     /// Shared, persistent favourites + drag-reorder state (see
     /// [`crate::places_sidebar`]). Cloned into the sidebar each rebuild.
     favs: FavStore,
-    /// Per-user config dir for persisting favourites + zoom (`None` when the
-    /// environment has no config dir — the UI still works, just doesn't persist).
+    /// Per-device config dir for recent files and the preview cache (`None`
+    /// when the environment has none — the UI still works, just doesn't keep
+    /// them).
     config_dir: Option<PathBuf>,
     /// Icon/row zoom step (see [`crate::config`]); `0` = default.
     zoom_level: i32,
@@ -904,133 +915,98 @@ impl FileExplorerWidget {
         widget
     }
 
-    /// Keep the framework dispatcher. Hosted document edits then go through
-    /// [`Dispatcher::apply_now_with`](ui::framework::Dispatcher::apply_now_with).
+    /// Whether a framework hosts this widget: its resource is then published
+    /// by the framework, and the widget adds only its live rows.
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.dispatcher.is_some()
+    }
+
+    /// Take part in the resource: bookmark edits go through `dispatcher`,
+    /// and the view follows the person's `preferences`.
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::FileExplorer>,
+        preferences: ui::framework::Setting<crate::resource::FilesPreferences>,
     ) {
-        self.actions.attach(dispatcher);
+        self.dispatcher = Some(dispatcher);
+        self.preferences = Some(preferences);
+        self.adopt_preferences();
     }
 
-    /// Mark this explorer as a framework-hosted surface so
-    /// [`Widget::resources`] defers to `tilo_resource::publish`.
-    ///
-    /// Tests use this without a live dispatcher. The sink then records the
-    /// edit on its local action host. Production [`Self::attach_framework`]
-    /// stores the dispatcher and submits with `apply_now_with`.
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
-        self.actions.set_hosted(hosted);
-    }
-
-    #[allow(
-        dead_code,
-        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
-    )]
-    pub(crate) fn is_framework_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn last_shared_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
-    }
-
-    fn share_document_edit(&mut self, action: crate::resource::FilesDocAction) {
-        if self.adopting_shared || !self.actions.is_hosted() {
+    /// Show the bookmarked `places`, resolved on this device.
+    pub(crate) fn present_places(&mut self, places: &[String]) {
+        let favorites = resolve_places(places, self.home_path.as_deref(), &self.user_dirs);
+        if self.favs.borrow().favorites == favorites {
             return;
         }
-        self.pending_shared.push(action);
+        self.favs.borrow_mut().favorites = favorites;
+        self.refresh_places_search();
+        self.structure_dirty = true;
     }
 
-    fn share_sort(&mut self) {
-        self.share_document_edit(crate::resource::FilesDocAction::SetSort {
-            key: crate::doc::sort_key_token(self.sort_by).to_owned(),
+    /// The stored place for folder `path` on this device.
+    fn place_for(&self, path: &Path) -> String {
+        crate::places::place_of(path, self.home_path.as_deref(), &self.user_dirs)
+    }
+
+    /// Submit a bookmark edit. The sidebar already shows it; the stored
+    /// places are presented back once it applies (or again unchanged if it
+    /// is refused).
+    fn dispatch(&self, action: &crate::resource::FilesDocAction) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.apply(action);
+        }
+    }
+
+    /// The view preferences this window shows.
+    fn current_preferences(&self) -> crate::resource::FilesPreferences {
+        crate::resource::FilesPreferences {
+            view: crate::doc::view_mode_token(self.view_mode).to_owned(),
+            sort: crate::doc::sort_key_token(self.sort_by).to_owned(),
             order: crate::doc::sort_order_token(self.sort_order).to_owned(),
-        });
+            zoom: self.zoom_level,
+            hidden: self.show_hidden,
+        }
     }
 
-    fn share_bookmarks(&mut self) {
-        self.share_document_edit(crate::resource::FilesDocAction::SetBookmarks {
-            paths: self.bookmark_paths(),
-        });
-    }
-
-    fn bookmark_paths(&self) -> Vec<String> {
-        self.favs
-            .borrow()
-            .favorites
-            .iter()
-            .map(|favorite| favorite.path.display().to_string())
-            .collect()
-    }
-
-    fn flush_shared_edits(&mut self, doc: &mut automerge::AutoCommit) {
-        let pending = std::mem::take(&mut self.pending_shared);
-        if !self.actions.is_hosted() {
+    /// Keep what the window now shows as the person's preferences.
+    fn store_preferences(&mut self) {
+        let current = self.current_preferences();
+        if self.shown_preferences.as_ref() == Some(&current) {
             return;
         }
-        for action in pending {
-            self.actions.dispatch(doc, &action);
+        if let Some(preferences) = &self.preferences
+            && let Err(error) = preferences.set(current.clone())
+        {
+            tracing::warn!(%error, "file-explorer: view preferences not stored");
         }
+        self.shown_preferences = Some(current);
     }
 
-    /// Copy shared view preferences and bookmarks onto the widget.
-    ///
-    /// An empty document (`shared == false`) leaves the local sidebar and
-    /// view alone. Listing rows, the current path, and selection are not
-    /// touched.
-    pub(crate) fn adopt_shared_state(&mut self, state: &crate::resource::FilesState) {
-        if !state.shared {
+    /// Show the person's preferences when they changed: in another window,
+    /// on another device, in Settings.
+    fn adopt_preferences(&mut self) {
+        let Some(stored) = self.preferences.as_ref().map(ui::framework::Setting::get) else {
+            return;
+        };
+        if self.shown_preferences.as_ref() == Some(&stored) {
             return;
         }
-        self.adopting_shared = true;
-        self.set_view_mode(crate::doc::parse_view_mode(&state.view_mode));
-        self.set_sort_by(crate::doc::parse_sort_key(&state.sort_key));
-        if self.sort_order != crate::doc::parse_sort_order(&state.sort_order) {
-            self.sort_order = crate::doc::parse_sort_order(&state.sort_order);
+        self.shown_preferences = Some(stored.clone());
+        self.view_mode = crate::doc::parse_view_mode(&stored.view);
+        let sort_by = crate::doc::parse_sort_key(&stored.sort);
+        let sort_order = crate::doc::parse_sort_order(&stored.order);
+        if (sort_by, sort_order) != (self.sort_by, self.sort_order) {
+            self.sort_by = sort_by;
+            self.sort_order = sort_order;
             sort_entries(self.sort_by, self.sort_order, &mut self.entries);
         }
-        self.set_zoom(state.zoom);
-        if self.show_hidden != state.show_hidden {
-            self.show_hidden = state.show_hidden;
+        self.zoom_level = config::clamp_zoom(stored.zoom);
+        if self.show_hidden != stored.hidden {
+            self.show_hidden = stored.hidden;
             self.refresh();
         }
-        self.adopt_bookmarks(&state.bookmarks);
-        self.adopting_shared = false;
-    }
-
-    fn adopt_bookmarks(&mut self, paths: &[String]) {
-        let gone: Vec<std::path::PathBuf> = self
-            .adopted_bookmarks
-            .iter()
-            .filter(|path| !paths.iter().any(|kept| kept == *path))
-            .map(std::path::PathBuf::from)
-            .collect();
-        let home = self
-            .home_path
-            .clone()
-            .unwrap_or_else(|| std::path::PathBuf::from("/"));
-        let mut changed = false;
-        for path in &gone {
-            let mut favs = self.favs.borrow_mut();
-            changed |= favorites::remove(&mut favs.favorites, path);
-        }
-        for path in paths {
-            let mut favs = self.favs.borrow_mut();
-            changed |= favorites::add(
-                &mut favs.favorites,
-                std::path::PathBuf::from(path),
-                &home,
-                &self.user_dirs,
-            );
-        }
-        if changed {
-            self.save_favorites();
-            self.refresh_places_search();
-        }
-        self.adopted_bookmarks = paths.to_vec();
+        self.structure_dirty = true;
     }
 
     /// Surface a bounded result from startup portals such as received-file
@@ -1089,7 +1065,7 @@ impl FileExplorerWidget {
     /// Construct with an explicit persistence directory + home, resolving the
     /// XDG user dirs from the real environment. `new` uses the real per-user
     /// config dir; tests pass a `tempdir` (or `None`) so they never read or
-    /// write the user's real favourites/zoom state.
+    /// write the user's real recent files or preview cache.
     #[doc(hidden)]
     pub fn with_persistence(config_dir: Option<PathBuf>, home: Option<PathBuf>) -> Self {
         Self::with_persistence_dirs(config_dir, home, favorites::UserDirs::from_system())
@@ -1192,15 +1168,13 @@ impl FileExplorerWidget {
         });
         let cwd = inputs.initial_dir;
 
-        let zoom_level = config_dir.as_deref().map_or(0, config::load_zoom);
-        // Favourites: persisted list when we have a home + config dir, else the
-        // built-in defaults so the sidebar is never empty. Standard entries
-        // follow the user's real, localized XDG directories.
-        let favorites = match (home.as_deref(), config_dir.as_deref()) {
-            (Some(h), Some(dir)) => favorites::load(dir, h, &user_dirs),
-            (Some(h), None) => favorites::defaults(h, &user_dirs),
-            (None, _) => Vec::new(),
-        };
+        let zoom_level = 0;
+        // The standard places until the resource presents the stored ones;
+        // a widget no framework hosts keeps them.
+        let favorites = home
+            .as_deref()
+            .map(|home| favorites::defaults(home, &user_dirs))
+            .unwrap_or_default();
         let show_hidden = false;
         let workspace_roots = inputs.workspace_roots;
         // Construct each durable namespace once. Subsequent refreshes are
@@ -1298,10 +1272,9 @@ impl FileExplorerWidget {
             composed_once: false,
             cmds,
             structure_dirty: false,
-            actions: crate::resource::ActionSink::default(),
-            pending_shared: Vec::new(),
-            adopting_shared: false,
-            adopted_bookmarks: Vec::new(),
+            dispatcher: None,
+            preferences: None,
+            shown_preferences: None,
             context_menu: ContextMenu::new(),
             menu_commands: Vec::new(),
             submenu: ContextMenu::new(),
@@ -1377,13 +1350,6 @@ impl FileExplorerWidget {
     /// The current zoom scale multiplier (icon/row size).
     fn zoom_scale(&self) -> f64 {
         config::zoom_scale(self.zoom_level)
-    }
-
-    /// Persist the favourites list (best-effort).
-    fn save_favorites(&self) {
-        if let Some(dir) = self.config_dir.as_deref() {
-            favorites::save(dir, &self.favs.borrow().favorites);
-        }
     }
 
     /// Refresh an already-loaded private Places projection. This is deliberately
@@ -2381,7 +2347,7 @@ impl FileExplorerWidget {
         self.sort_by = s;
         sort_entries(self.sort_by, self.sort_order, &mut self.entries);
         if changed {
-            self.share_sort();
+            self.store_preferences();
         }
     }
     pub fn toggle_sort_order(&mut self) {
@@ -2390,16 +2356,14 @@ impl FileExplorerWidget {
             SortOrder::Descending => SortOrder::Ascending,
         };
         sort_entries(self.sort_by, self.sort_order, &mut self.entries);
-        self.share_sort();
+        self.store_preferences();
     }
     pub fn set_view_mode(&mut self, m: ViewMode) {
         if self.view_mode == m {
             return;
         }
         self.view_mode = m;
-        self.share_document_edit(crate::resource::FilesDocAction::SetView {
-            mode: crate::doc::view_mode_token(m).to_owned(),
-        });
+        self.store_preferences();
     }
 
     pub fn entries_snapshot(&self) -> &[Entry] {
@@ -3466,9 +3430,7 @@ impl FileExplorerWidget {
             }
             FileCommand::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
-                self.share_document_edit(crate::resource::FilesDocAction::SetHidden {
-                    shown: self.show_hidden,
-                });
+                self.store_preferences();
                 self.refresh();
                 true
             }
@@ -3792,16 +3754,16 @@ impl FileExplorerWidget {
 
     /// `FileCommand::AddFavorite` — pin `path` to the places list.
     fn apply_add_favorite(&mut self, path: PathBuf) -> bool {
+        let place = self.place_for(&path);
         let added = {
             let home = self.home_path.clone().unwrap_or_else(|| PathBuf::from("/"));
             let mut favs = self.favs.borrow_mut();
             favorites::add(&mut favs.favorites, path, &home, &self.user_dirs)
         };
         if added {
-            self.save_favorites();
             self.refresh_places_search();
             self.status = Some(t("files-added-favourite"));
-            self.share_bookmarks();
+            self.dispatch(&crate::resource::FilesDocAction::AddBookmark { place, at: None });
         }
         true
     }
@@ -3813,10 +3775,11 @@ impl FileExplorerWidget {
             favorites::remove(&mut favs.favorites, path)
         };
         if removed {
-            self.save_favorites();
             self.refresh_places_search();
             self.status = Some(t("files-removed-favourite"));
-            self.share_bookmarks();
+            self.dispatch(&crate::resource::FilesDocAction::RemoveBookmark {
+                place: self.place_for(path),
+            });
         }
         true
     }
@@ -3824,19 +3787,25 @@ impl FileExplorerWidget {
     /// `FileCommand::ReorderFavorite` — move favourite `from` to index `to`
     /// (drag-to-reorder drop).
     fn apply_reorder_favorite(&mut self, from: usize, to: usize) -> bool {
-        let before = self.bookmark_paths();
+        let moved = self
+            .favs
+            .borrow()
+            .favorites
+            .get(from)
+            .filter(|_| from != to)
+            .map(|favorite| favorite.path.clone());
+        let Some(moved) = moved else {
+            return true;
+        };
         {
             let mut favs = self.favs.borrow_mut();
             favorites::reorder(&mut favs.favorites, from, to);
         }
-        self.save_favorites();
         self.refresh_places_search();
-        let after = self.bookmark_paths();
-        if before != after {
-            self.share_document_edit(crate::resource::FilesDocAction::SetBookmarks {
-                paths: after,
-            });
-        }
+        self.dispatch(&crate::resource::FilesDocAction::MoveBookmark {
+            place: self.place_for(&moved),
+            to,
+        });
         true
     }
 
@@ -4066,12 +4035,7 @@ impl FileExplorerWidget {
         let level = config::clamp_zoom(level);
         if level != self.zoom_level {
             self.zoom_level = level;
-            if !self.adopting_shared
-                && let Some(dir) = self.config_dir.as_deref()
-            {
-                config::save_zoom(dir, level);
-            }
-            self.share_document_edit(crate::resource::FilesDocAction::SetZoom { level });
+            self.store_preferences();
         }
     }
 
@@ -8538,15 +8502,8 @@ impl Widget for FileExplorerWidget {
         self.poll_share_result() | received
     }
 
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        {
-            let (doc, _) = ui::doc::document(state, path);
-            self.flush_shared_edits(doc);
-        }
+        self.adopt_preferences();
         self.poll_deferred_document_open();
         self.poll_pending_launch();
         self.refresh_framework_history_target();
