@@ -12,6 +12,7 @@ use ui_core::presence::PresenceKey;
 use ui_core::widget::{Decorator, ResourceOperation, ResourceOperationStart, Widget};
 use ui_core::{PresencePayload, WakeHandle};
 
+use super::controls::Actions;
 use super::dispatch::Dispatcher;
 use super::effect::{
     EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects, Jobs, OwnedJobs, Projection,
@@ -231,6 +232,7 @@ impl<R: Resource, S: ResourceSurface<R, E>, E: Effect> SurfaceHost<R, S, E> {
 pub struct SurfaceCx<R: Resource> {
     pub(crate) jobs: Jobs<R>,
     pub(crate) dispatch: Dispatcher<R>,
+    pub(crate) actions: Actions<R>,
     pub(crate) live: Live<R>,
     pub(crate) run: Run,
     pub(crate) storage: Rc<ViewStorage>,
@@ -248,6 +250,14 @@ impl<R: Resource> SurfaceCx<R> {
     /// Keep the handle. See [`Jobs`].
     pub fn jobs(&self) -> Jobs<R> {
         self.jobs.clone()
+    }
+
+    /// The resource's published actions and the surface's effects, for
+    /// binding the toolkit controls a surface builds itself (a toggle, a
+    /// dropdown, a button deep in its own widget tree) the way a view's
+    /// controls are bound: [`Actions::bind`], [`Actions::bind_effect`].
+    pub fn actions(&self) -> Actions<R> {
+        self.actions.clone()
     }
 
     /// The dispatcher of the resource nested in this one at `id`, whose

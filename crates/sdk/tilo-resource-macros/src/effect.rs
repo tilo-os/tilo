@@ -9,17 +9,20 @@ use crate::{doc_lines, humanize, krate, param_type, snake_case};
 
 /// A field's `#[param(…)]`: its description, after `secret,` when the
 /// argument is a secret (an invite, a password) the host keeps out of logs,
-/// history and confirmations.
+/// history and confirmations, and then `choices = EXPR` when the values it
+/// takes are a fixed list (any expression yielding strings, such as a
+/// constant table).
 #[derive(Default)]
 struct Param {
     secret: bool,
     description: Option<String>,
+    choices: Option<syn::Expr>,
 }
 
 impl syn::parse::Parse for Param {
     fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
         let mut param = Self::default();
-        if input.peek(syn::Ident) {
+        if input.peek(syn::Ident) && !input.peek2(syn::Token![=]) {
             let flag: syn::Ident = input.parse()?;
             if flag != "secret" {
                 return Err(syn::Error::new(flag.span(), "expected `secret`"));
@@ -30,7 +33,19 @@ impl syn::parse::Parse for Param {
             }
             input.parse::<syn::Token![,]>()?;
         }
-        param.description = Some(input.parse::<syn::LitStr>()?.value());
+        if input.peek(syn::LitStr) {
+            param.description = Some(input.parse::<syn::LitStr>()?.value());
+            if input.is_empty() {
+                return Ok(param);
+            }
+            input.parse::<syn::Token![,]>()?;
+        }
+        let key: syn::Ident = input.parse()?;
+        if key != "choices" {
+            return Err(syn::Error::new(key.span(), "expected `choices = ...`"));
+        }
+        input.parse::<syn::Token![=]>()?;
+        param.choices = Some(input.parse()?);
         Ok(param)
     }
 }
@@ -249,10 +264,14 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             } else {
                 param_ty
             };
-            if optional {
+            let declared = if optional {
                 quote!(#krate::__private::ActionParam::optional_owned(#param, #param_ty, #description))
             } else {
                 quote!(#krate::__private::ActionParam::required_owned(#param, #param_ty, #description))
+            };
+            match &described.choices {
+                Some(choices) => quote!(#declared.with_choices(#choices)),
+                None => declared,
             }
         });
         let answers = if options.job || options.cancellable {

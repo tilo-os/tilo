@@ -629,6 +629,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         surface.attach(SurfaceCx {
             jobs: jobs.clone(),
             dispatch: self.dispatch.clone(),
+            actions: self.actions(),
             live: self.live.clone(),
             run: self.run.clone(),
             storage: Rc::clone(&self.storage),
