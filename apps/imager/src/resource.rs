@@ -116,7 +116,9 @@ impl ResourceApp for ImagerShell {
     const ID: &'static str = "so.tilo.imager";
     const TITLE: &'static str = "Disk Imager";
     const ICON: Option<&'static str> = Some("imager");
-    const SHOT_VIEWPORT: (u32, u32) = (1180, 820);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1180, 820)
+    }
 
     fn view(cx: &mut ViewCx<Imager>) -> Element {
         cx.surface(ImagerApp::new())

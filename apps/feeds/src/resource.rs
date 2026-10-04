@@ -126,11 +126,13 @@ impl Resource for Feeds {
             anchor: Some(format!("feeds.subscription:{}", feed.id)),
             title: feed.title.clone(),
             text: feed.url.clone(),
+            action: None,
         });
         let articles = state.store.articles.iter().map(|article| SearchEntry {
             anchor: Some(format!("feeds.article:{}", article.id)),
             title: article.title.clone(),
             text: article.summary.clone(),
+            action: None,
         });
         feeds.chain(articles).collect()
     }
@@ -144,7 +146,9 @@ impl ResourceApp for FeedsShell {
     const ID: &'static str = "so.tilo.feeds";
     const TITLE: &'static str = "Feeds";
     const ICON: Option<&'static str> = Some("feeds");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Feeds>) -> Element {
         cx.surface(FeedsApp::new())

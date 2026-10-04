@@ -76,7 +76,6 @@
 "apps/api-tester/src/main.rs" = 2
 "apps/backups/src/main.rs" = 2
 "apps/calculator/src/main.rs" = 1
-"apps/calendar/src/lib.rs" = 2
 "apps/calendar/src/main.rs" = 1
 "apps/camera/src/lib.rs" = 2
 "apps/camera/src/main.rs" = 1
@@ -90,7 +89,6 @@
 "apps/db-client/src/main.rs" = 2
 "apps/diffmerge/src/lib.rs" = 2
 "apps/diffmerge/src/main.rs" = 2
-"apps/disk-usage/src/main.rs" = 2
 "apps/disks/src/main.rs" = 1
 "apps/ebook/src/main.rs" = 1
 "apps/feeds/src/lib.rs" = 2
@@ -161,7 +159,7 @@
 "apps/maps/src/app/interaction.rs" = 1
 "apps/maps/src/offline_panel.rs" = 1
 "apps/music/src/doc.rs" = 1
-"apps/notes/src/actions.rs" = 2
+"apps/notes/src/actions.rs" = 1
 "apps/notes/src/framework_history.rs" = 1
 "apps/notes/src/legacy_import.rs" = 1
 "apps/notes/src/search_provider.rs" = 1
@@ -191,3 +189,17 @@
 "apps/weather/src/framework_history.rs" = 1
 "apps/word-processor/src/actions/editing.rs" = 1
 "apps/word-processor/src/actions.rs" = 1
+
+# Surfaces whose own PublishesResources still offers document actions beside
+# the resource's publication (`ResourceSurface::publishes_document_actions`).
+# The framework drops such actions from every other surface.
+[ratchets.surface_document_actions]
+"apps/contacts/src/resource.rs" = 1
+"apps/ebook/src/resource.rs" = 1
+"apps/settings/src/resource.rs" = 1
+"apps/sheets/src/resource.rs" = 1
+"apps/slides/src/resource.rs" = 1
+"apps/snippets/src/resource.rs" = 1
+"apps/tube/src/resource.rs" = 1
+"apps/video-editor/src/app.rs" = 1
+"apps/word-processor/src/framework.rs" = 1

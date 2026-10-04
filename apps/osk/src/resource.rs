@@ -183,7 +183,9 @@ impl ResourceApp for OskShell {
     const ID: &'static str = "so.tilo.osk";
     const TITLE: &'static str = "On-screen keyboard";
     const ICON: Option<&'static str> = Some("osk");
-    const SHOT_VIEWPORT: (u32, u32) = (720, 360);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (720, 360)
+    }
 
     fn view(cx: &mut ViewCx<Osk>) -> Element {
         cx.surface(OskWidget::new())

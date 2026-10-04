@@ -206,7 +206,9 @@ impl ResourceApp for ContainersShell {
     const ID: &'static str = "so.tilo.containers";
     const TITLE: &'static str = "Containers";
     const ICON: Option<&'static str> = Some("containers");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Containers>) -> Element {
         cx.surface(ContainersApp::new(true))

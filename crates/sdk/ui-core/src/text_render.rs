@@ -196,14 +196,23 @@ pub fn configured_font_system() -> FontSystem {
     if let Some((locale, database)) = host {
         return crate::font_catalog::system_over(locale, database);
     }
-    let mut font_system = FontSystem::new();
-    let database = font_system.db_mut();
-    crate::font_catalog::drop_duplicate_faces(database);
-    database.set_sans_serif_family(UI_SANS_FAMILY);
-    database.set_serif_family(UI_SERIF_FAMILY);
-    database.set_monospace_family(UI_MONOSPACE_FAMILY);
-    font_system
+    let (locale, database) = SYSTEM_FONT_DATABASE.get_or_init(|| {
+        let mut font_system = FontSystem::new();
+        let database = font_system.db_mut();
+        crate::font_catalog::drop_duplicate_faces(database);
+        database.set_sans_serif_family(UI_SANS_FAMILY);
+        database.set_serif_family(UI_SERIF_FAMILY);
+        database.set_monospace_family(UI_MONOSPACE_FAMILY);
+        (font_system.locale().to_owned(), font_system.db().clone())
+    });
+    FontSystem::new_with_locale_and_db(locale.clone(), database.clone())
 }
+
+/// The system's fonts, scanned once per process. A scan parses every
+/// installed font file, and each renderer would otherwise repeat it.
+#[cfg(not(test))]
+static SYSTEM_FONT_DATABASE: std::sync::OnceLock<(String, cosmic_text::fontdb::Database)> =
+    std::sync::OnceLock::new();
 
 /// The toolkit's color emoji face for engines that load their own fonts, as
 /// font data and face index.

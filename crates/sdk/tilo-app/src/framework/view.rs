@@ -7,7 +7,7 @@ use std::hash::Hash;
 use std::rc::{Rc, Weak};
 
 use tilo_actions::ActionBinding;
-use tilo_resource::{Binds, Collection, Effect, Id, Invoke, Resource};
+use tilo_resource::{ActionDecl, Binds, Collection, Effect, Id, Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::record::RecordSaveStatus;
 use ui_core::widget::{Button, Checkbox, Element, Text, TextInput};
@@ -17,6 +17,7 @@ use super::dispatch::Dispatcher;
 use super::each::Each;
 use super::effect::{EffectAnswer, EffectCx, EffectStatus, Effects};
 use super::live::Live;
+use super::scenario::{Run, RunMode};
 use super::settings::{Setting, ViewStorage};
 use super::stage::Stages;
 use super::surface::{ResourceSurface, SurfaceCx, SurfaceHost};
@@ -66,6 +67,33 @@ impl<R: Resource> Updaters<R> {
     }
 }
 
+type Bind<R> = Box<dyn Fn(&<R as Resource>::State) -> Vec<ActionDecl<R>>>;
+type BindList<R> = Vec<(Weak<()>, Bind<R>)>;
+
+/// The edits views bound to their local state
+/// ([`ViewCx::bind_declarations`]), each tied to the view scope that bound
+/// it.
+pub(crate) struct Bindings<R: Resource>(Rc<RefCell<BindList<R>>>);
+
+impl<R: Resource> Clone for Bindings<R> {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+}
+
+impl<R: Resource> Bindings<R> {
+    pub(crate) fn new() -> Self {
+        Self(Rc::default())
+    }
+
+    /// Every live view's bound edits over `state`.
+    pub(crate) fn declarations(&self, state: &R::State) -> Vec<ActionDecl<R>> {
+        let mut bindings = self.0.borrow_mut();
+        bindings.retain(|(alive, _)| alive.strong_count() > 0);
+        bindings.iter().flat_map(|(_, bind)| bind(state)).collect()
+    }
+}
+
 /// Projects the resource state onto the value a view scope reads: the whole
 /// state at the root, one item inside an [`Each`] row.
 pub(crate) type Focus<R, T> = Rc<dyn for<'a> Fn(&'a <R as Resource>::State) -> Option<&'a T>>;
@@ -87,19 +115,21 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     pub(crate) saved: LocalState<RecordSaveStatus>,
     pub(crate) stages: Stages,
     pub(crate) feeds: super::history::HistoryFeeds,
+    pub(crate) run: Run,
     pub(crate) storage: Rc<ViewStorage>,
+    pub(crate) bindings: Bindings<R>,
     pub(crate) effects: Effects<R>,
 }
 
 impl<R: Resource> ViewCx<R> {
+    /// The scope of a freshly built root view: its own updaters, save status
+    /// and staging, none of which another root shares.
     pub(crate) fn root(
         live: Live<R>,
-        updaters: Updaters<R>,
         alive: &Rc<()>,
         dispatch: Dispatcher<R>,
         published: tilo_actions::Resource,
-        saved: LocalState<RecordSaveStatus>,
-        stages: Stages,
+        run: Run,
         storage: Rc<ViewStorage>,
     ) -> Self {
         // The history verbs every app answers are bindable like its own.
@@ -112,16 +142,18 @@ impl<R: Resource> ViewCx<R> {
         Self {
             live,
             focus: Rc::new(|state| Some(state)),
-            updaters,
+            updaters: Updaters::new(),
             alive: Rc::downgrade(alive),
             dispatch,
             published: Rc::new(published),
             item: None,
             controls: Rc::default(),
-            saved,
-            stages,
+            saved: LocalState::new(RecordSaveStatus::Saved),
+            stages: Stages::new(),
             feeds: super::history::HistoryFeeds::default(),
+            run,
             storage,
+            bindings: Bindings::new(),
             effects: Effects::inert(),
         }
     }
@@ -136,6 +168,17 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// Where edits go. Custom widgets keep a clone.
     pub fn dispatcher(&self) -> Dispatcher<R> {
         self.dispatch.clone()
+    }
+
+    /// The dispatcher of the resource nested in this one at `id`, whose
+    /// edits are this resource's action `wrap(edit)`: a rich-text body, a
+    /// draft, a SQL buffer. See [`Dispatcher::child`].
+    pub fn child<C: Resource>(
+        &self,
+        id: &str,
+        wrap: impl Fn(C::Action) -> R::Action + 'static,
+    ) -> Dispatcher<C> {
+        self.dispatch.child(id, wrap)
     }
 
     /// Who this view is for: the participant reading and editing through
@@ -188,6 +231,26 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.live.with(|state| read((self.focus)(state)))
     }
 
+    /// What the view is built for: a window someone uses, a past version in
+    /// History, or a screenshot. Start work that reaches outside the process
+    /// (an engine, a socket, a probe) only when it [is live](RunMode::is_live).
+    pub fn mode(&self) -> RunMode {
+        self.run.mode
+    }
+
+    /// The capture's stand-in for a live source of type `V`
+    /// ([`Fixture::provide`](super::Fixture::provide)); `None` outside a
+    /// capture, or when the scenario provides none.
+    pub fn fixture<V: 'static>(&self) -> Option<Rc<V>> {
+        self.run.fixture::<V>()
+    }
+
+    /// The content store the host lent the app: opaque blobs by hash that
+    /// outlive it. A capture's holds the blobs its scenario put there.
+    pub fn content(&self) -> Option<tilo_content::ContentStore> {
+        self.run.content()
+    }
+
     /// The app's typed settings of type `S`, kept current while this scope
     /// lives. `S` declares whether they follow the person or stay on the
     /// device ([`Scope`](ui_core::storage::Scope)).
@@ -212,9 +275,10 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
 
     /// Stage view state for a screenshot scenario: `stage` runs with the
     /// scenario's name (`None` for a plain `--shots`) after the scenario's
-    /// actions applied and before the frame is captured. Set the
-    /// [`LocalState`]s a scenario shows — a selection, an open dialog — the
-    /// way the user's input would. It never runs in a live window.
+    /// actions applied and were laid out, and before the frame is captured.
+    /// Set the [`LocalState`]s a scenario shows — a selection, an open
+    /// dialog — the way the user's input would. It never runs in a live
+    /// window.
     pub fn on_stage(&self, stage: impl FnMut(Option<&str>) + 'static) {
         self.stages.push(self.alive.clone(), Box::new(stage));
     }
@@ -361,7 +425,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let saved = self.saved.clone();
         let stages = self.stages.clone();
         let feeds = self.feeds.clone();
+        let run = self.run.clone();
         let storage = Rc::clone(&self.storage);
+        let bindings = self.bindings.clone();
         let effects = self.effects.clone();
         Each::new(
             self.live.clone(),
@@ -384,12 +450,29 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     saved: saved.clone(),
                     stages: stages.clone(),
                     feeds: feeds.clone(),
+                    run: run.clone(),
                     storage: Rc::clone(&storage),
+                    bindings: bindings.clone(),
                     effects: effects.clone(),
                 };
                 row(&mut cx)
             }),
         )
+    }
+
+    /// Publish edits bound to this view's local state — the folder shown,
+    /// the row selected — on the resource beside its declared actions, as
+    /// typed builders of its action: `bind` runs whenever the published
+    /// tree is read, with the current resource state, and reads the local
+    /// state it captured. Invoking one dispatches what it builds through the
+    /// same permission check, confirmation and undo as any other action. The
+    /// binding lasts as long as this view scope (a row's ends with the row);
+    /// an id the resource already publishes keeps the resource's action.
+    pub fn bind_declarations(&self, bind: impl Fn(&R::State) -> Vec<ActionDecl<R>> + 'static) {
+        self.bindings
+            .0
+            .borrow_mut()
+            .push((self.alive.clone(), Box::new(bind)));
     }
 
     /// The resource's published actions, for binding controls built outside
@@ -449,7 +532,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let saved = self.saved.clone();
         let stages = self.stages.clone();
         let feeds = self.feeds.clone();
+        let run = self.run.clone();
         let storage = Rc::clone(&self.storage);
+        let bindings = self.bindings.clone();
         let effects = self.effects.clone();
         Box::new(Switch::new(
             key.clone(),
@@ -467,7 +552,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     saved: saved.clone(),
                     stages: stages.clone(),
                     feeds: feeds.clone(),
+                    run: run.clone(),
                     storage: Rc::clone(&storage),
+                    bindings: bindings.clone(),
                     effects: effects.clone(),
                 };
                 part(&mut cx, value)
@@ -486,6 +573,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         surface.attach(SurfaceCx {
             dispatch: self.dispatch.clone(),
             live: self.live.clone(),
+            run: self.run.clone(),
             storage: Rc::clone(&self.storage),
             effects: self.effects.clone(),
             alive: self.alive.clone(),
