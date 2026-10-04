@@ -508,6 +508,7 @@ pub struct FrameHarness {
     caller_palette: caller_palette::CallerPalette,
     system_search: system_search::SystemSearch,
     component_wake: Option<ComponentRunnerWakeState>,
+    owner_wake_queue: Option<crate::owner_wake::OwnerWakeQueue>,
     state: State,
     root: Box<dyn Widget>,
     history: Option<Box<crate::history_mode::host::HistoryHost>>,
@@ -866,6 +867,28 @@ impl FrameHarness {
             .try_flush();
         self.relayout();
         result
+    }
+
+    /// Attach the queue shared by this host's actual mounted components.
+    /// # Errors
+    /// A host cannot replace registration identity after attachment.
+    pub fn attach_owner_wake_queue(
+        &mut self,
+        queue: crate::owner_wake::OwnerWakeQueue,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        if self.owner_wake_queue.is_some() {
+            return Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime);
+        }
+        self.owner_wake_queue = Some(queue);
+        Ok(())
+    }
+    /// Service one snapshot through current checked owner and canonical admission.
+    /// # Errors
+    /// Refusal retains current and unvisited requests for retry.
+    pub fn service_pending_owner_models(
+        &mut self,
+    ) -> Result<usize, crate::bound_dispatch::BoundDispatchError> {
+        Ok(0)
     }
 
     fn drain_component_wakes(&self) {
@@ -1323,6 +1346,7 @@ impl FrameHarness {
             caller_palette: Default::default(),
             system_search: Default::default(),
             component_wake,
+            owner_wake_queue: None,
             state,
             root,
             taffy: TaffyTree::new(),
@@ -12958,3 +12982,7 @@ mod framed_tests {
         assert_eq!(viewport((-3.0_f64, f64::NAN)), (0, 0));
     }
 }
+
+#[cfg(test)]
+#[path = "headless/owner_fifo_tests.rs"]
+mod owner_fifo_tests;
