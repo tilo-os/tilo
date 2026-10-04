@@ -1902,6 +1902,7 @@ impl WindowsApp {
 }
 
 const LOCAL_OPERATIONS: &[&str] = &[
+    crate::actions::SHOW_OPERATION,
     "windows.launch",
     "windows.launch-vm-fallback",
     "windows.publish",
@@ -2145,17 +2146,6 @@ impl ui::search::capability::SearchSource for WindowsApp {
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.search_index.provider())]
     }
-
-    /// A picked hit shows its app, as choosing it in the list does.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AppModel, _path: &ModelPath) {
-        let Some(id) = crate::search::app_from_anchor(action_id) else {
-            return;
-        };
-        if let Some(index) = self.catalogue.apps.iter().position(|app| app.id == id) {
-            self.select(Page::App, index);
-            self.rebuild();
-        }
-    }
 }
 
 impl ui::widget::controls::ActionControls for WindowsApp {
@@ -2167,6 +2157,20 @@ impl ui::widget::controls::ActionControls for WindowsApp {
 }
 
 impl WindowsApp {
+    /// Show the application a `show` payload names, as choosing its row
+    /// does.
+    fn show_app(&mut self, payload: &[u8]) -> Result<(), String> {
+        let id: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let index = self
+            .catalogue
+            .apps
+            .iter()
+            .position(|app| app.id == id)
+            .ok_or_else(|| format!("no Windows application {id}"))?;
+        self.select(Page::App, index);
+        Ok(())
+    }
+
     fn admit_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -2176,6 +2180,15 @@ impl WindowsApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if !LOCAL_OPERATIONS.contains(&type_id) {
+            return Ok(None);
+        }
+        if kind == tilo_actions::OperationKind::View && type_id == crate::actions::SHOW_OPERATION {
+            self.show_app(payload)?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
         if kind != tilo_actions::OperationKind::Effect {
             return Ok(None);
         }
@@ -2602,25 +2615,30 @@ mod tests {
         }
         // Case `platform_search_finds_apps_by_name_and_opens_them`.
         {
-            let mut app = WindowsApp::new_offline();
+            let app = WindowsApp::new_offline();
             let providers = ui::search::capability::search_providers(&app);
-            let hits: Vec<_> = providers
+            let hit = providers
                 .iter()
                 .flat_map(|provider| provider.search("cyberpunk"))
-                .collect();
-            let hit = hits
-                .iter()
                 .find(|hit| hit.title == "Cyberpunk 2077")
                 .expect("search finds an app by its name");
-            Widget::sync(&mut app, &mut AutoCommit::new(), &automerge::ROOT);
-            ui::search::capability::activate_search_result(
-                &mut app,
-                &hit.action_id,
-                &mut AutoCommit::new(),
-                &automerge::ROOT,
-            );
-            assert_eq!((app.page, app.selected), (Page::App, 1));
-            assert_eq!(app.content_title(), "Cyberpunk 2077");
+            let address = hit
+                .action_address()
+                .expect("a hit invokes a published action");
+            assert_eq!(address, crate::search::show_app_address("cyberpunk-2077"));
+
+            let mut app =
+                ui::prelude::TestApp::<crate::resource::WindowsShell>::capture(Some("wide"))
+                    .unwrap();
+            app.call_on(&address.resource, &address.action, serde_json::json!({}))
+                .expect("the hit's show action runs");
+            app.settle();
+            app.harness()
+                .expect(
+                    &ui::headless::SemanticExpectation::named("windows-app-cyberpunk-2077")
+                        .selected(true),
+                )
+                .expect("the hit's app is the one shown");
         }
     }
 

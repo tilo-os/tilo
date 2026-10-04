@@ -1,111 +1,82 @@
 //! Platform search over the installed Windows apps.
 //!
 //! The catalogue is a live projection of the compatibility service, not
-//! document state, so the window hands search a snapshot of its apps and
-//! takes a picked hit back in [`WindowsApp`](crate::WindowsApp)'s
-//! `activate_search_result`, which shows the app as choosing its row does.
+//! document state, so the window keeps a search catalogue of its apps in
+//! step with each refresh. A hit invokes the app row's `show` action, which
+//! shows the app as choosing its row does.
 
-use std::sync::Arc;
+use std::collections::BTreeSet;
 
-use ui::search::{FieldWeight, ListIndex, SearchProvider, SearchResult};
+use ui::search::{CatalogSearchProvider, FieldWeight, SearchCatalog, SearchRecord, SearchResult};
+use ui::tilo_actions::ActionAddress;
 
 use crate::model::Catalogue;
 
 const KIND: &str = "Windows apps";
 
-/// The anchor a hit for app `id` opens.
-pub fn app_anchor(id: &str) -> String {
+/// The published row of app `id`.
+pub fn app_resource_id(id: &str) -> String {
     format!("windows.app:{id}")
 }
 
-/// The app id an anchor points to, if it is one of ours.
-pub fn app_from_anchor(anchor: &str) -> Option<&str> {
-    anchor.strip_prefix("windows.app:")
+/// The action a hit for app `id` invokes: show it in the window.
+pub fn show_app_address(id: &str) -> ActionAddress {
+    ActionAddress::new(app_resource_id(id), "show")
 }
 
-/// One findable app: what a hit shows and the words it is found by.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Entry {
-    id: String,
-    name: String,
-    publisher: String,
-    route: &'static str,
-}
-
-/// The apps as search finds them, rebuilt when the catalogue changes.
-#[derive(Clone, Debug, Default)]
+/// The apps as search finds them, updated when the catalogue changes.
+#[derive(Clone, Debug)]
 pub struct AppsSearch {
-    entries: Arc<Vec<Entry>>,
-    index: Arc<ListIndex>,
+    catalog: SearchCatalog,
+    ids: BTreeSet<String>,
 }
 
 impl AppsSearch {
     pub fn new(catalogue: &Catalogue) -> Self {
-        let mut search = Self::default();
+        let mut search = Self {
+            catalog: SearchCatalog::new(KIND),
+            ids: BTreeSet::new(),
+        };
         search.sync(catalogue);
         search
     }
 
     /// Take the catalogue's apps. Called on a catalogue refresh, never from
-    /// a keypress.
+    /// a keypress; an unchanged app leaves the catalogue as it is.
     pub fn sync(&mut self, catalogue: &Catalogue) {
-        let entries: Vec<Entry> = catalogue
-            .apps
-            .iter()
-            .map(|app| Entry {
-                id: app.id.clone(),
-                name: app.name.clone(),
-                publisher: app.publisher.clone(),
-                route: app.route.label(),
-            })
-            .collect();
-        if *self.entries != entries {
-            self.entries = Arc::new(entries);
+        let ids: BTreeSet<String> = catalogue.apps.iter().map(|app| app.id.clone()).collect();
+        for gone in self.ids.difference(&ids) {
+            self.catalog.remove(&app_resource_id(gone));
         }
+        for app in &catalogue.apps {
+            let result = SearchResult::for_action(KIND, &app.name, show_app_address(&app.id))
+                .with_subtitle(app.publisher.clone());
+            let record = SearchRecord::new(app_resource_id(&app.id), result)
+                .field(app.name.clone(), FieldWeight::TITLE)
+                .field(app.publisher.clone(), FieldWeight::SUBTITLE)
+                .field(app.route.label(), FieldWeight::METADATA);
+            let _ = self.catalog.upsert_record(record);
+        }
+        self.ids = ids;
     }
 
     pub fn provider(&self) -> AppsSearchProvider {
         AppsSearchProvider {
-            entries: Arc::clone(&self.entries),
-            index: Arc::clone(&self.index),
+            catalog: self.catalog.clone(),
         }
     }
 }
 
 pub struct AppsSearchProvider {
-    entries: Arc<Vec<Entry>>,
-    index: Arc<ListIndex>,
+    catalog: SearchCatalog,
 }
 
-impl SearchProvider for AppsSearchProvider {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for AppsSearchProvider {
+    fn provider_name(&self) -> &str {
         KIND
     }
 
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        let ranks = self.index.ranks(
-            query,
-            self.entries.iter().map(|entry| {
-                [
-                    (entry.name.as_str(), FieldWeight::TITLE),
-                    (entry.publisher.as_str(), FieldWeight::SUBTITLE),
-                    (entry.route, FieldWeight::METADATA),
-                ]
-            }),
-        );
-        let mut hits: Vec<SearchResult> = self
-            .entries
-            .iter()
-            .zip(ranks)
-            .filter_map(|(entry, rank)| {
-                rank.map(|rank| {
-                    SearchResult::new(KIND, &entry.name, app_anchor(&entry.id))
-                        .with_subtitle(entry.publisher.clone())
-                        .with_score(rank)
-                })
-            })
-            .collect();
-        hits.sort_by_key(|hit| std::cmp::Reverse(hit.score));
-        hits
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 }
