@@ -1555,6 +1555,7 @@ dependencies = [
  "tilo-content",
  "tilo-files",
  "tilo-paths",
+ "tilo-subject",
  "tilo-test-env",
  "tilo-wet-media",
  "usvg",

@@ -142,6 +142,10 @@ impl ArtworkResource {
     pub const SELECT_GROW: ActionRef<Self, f64> = ActionRef::new("select", &["grow"]);
     /// `select` softening the selection's edge over units.
     pub const SELECT_FEATHER: ActionRef<Self, f64> = ActionRef::new("select", &["feather"]);
+    /// `select` the picture's subject, found by the on-device model.
+    pub const SELECT_SUBJECT: ActionRef<Self, bool> = ActionRef::new("select", &["subject"]);
+    /// `select` fitting the selection's edge to the picture over units.
+    pub const SELECT_REFINE: ActionRef<Self, f64> = ActionRef::new("select", &["refine"]);
     /// `select` with a mode alone: `none` selects nothing.
     pub const SELECT_MODE: ActionRef<Self, String> = ActionRef::new("select", &["mode"]);
     /// `combine`: marks, then `union`, `subtract`, `intersect` or `exclude`.
@@ -604,7 +608,11 @@ impl Resource for ArtworkResource {
     type Action = CanvasAction;
 
     fn read(doc: &Doc) -> Result<Artwork, ModelError> {
-        Ok(crate::doc::read(doc))
+        let art = crate::doc::read(doc);
+        // What the next action authored here finds in the artwork, even
+        // before the window has shown it.
+        crate::author::read(&art);
+        Ok(art)
     }
 
     /// A new artwork is an empty sheet of paper with one plain layer, so the
@@ -876,18 +884,16 @@ fn picture_declarations() -> Vec<ActionDecl<ArtworkResource>> {
 fn area_declarations() -> Vec<ActionDecl<ArtworkResource>> {
     vec![
             ActionDecl::new("select", "Select area", params_of::<crate::selection::Select>(), |args, _now| {
-            let mut select: crate::selection::Select = read_args(args)?;
-            crate::author::resolve(&mut select)?;
-            Ok(CanvasAction::Select(Box::new(select)))
+            let select: crate::selection::Select = read_args(args)?;
+            crate::author::resolve(select)
         })
-        .describe("Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. look outlines it")
+        .describe("Select an area: shapes, marks, magic wand (at), colour or subject; add, subtract, intersect, grow, feather, invert, refine. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. Cut-out: subject, use-selection mask. look outlines it")
         .answering(),
-        decl::<crate::selection::UseSelection>(
-            "use-selection",
-            "Use selection",
-            "Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).",
-            CanvasAction::UseSelection,
-        )
+        ActionDecl::new("use-selection", "Use selection", params_of::<crate::selection::UseSelection>(), |args, _now| {
+            let using: crate::selection::UseSelection = read_args(args)?;
+            crate::subject::clean(using)
+        })
+        .describe("Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).")
         .answering(),
         decl::<crate::selection::Combine>(
             "combine",
