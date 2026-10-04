@@ -119,7 +119,7 @@ function fakeLive() {
     },
   };
 }
-function mount({control = false, refuse = false} = {}) {
+function mount({control = false, refuse = false, dismissed = () => []} = {}) {
   const doc = fakeDocument();
   const surface = doc.createElement('div');
   const live = fakeLive();
@@ -134,6 +134,7 @@ function mount({control = false, refuse = false} = {}) {
     surface, document: doc, live: () => live, ...codecs, now: () => clock.t, mac: false,
     windows: () => rects,
     setWindows: list => shown.push(list),
+    dismissed,
     sendInput: async (publisher, stream, events) => {
       if (events.length) sent.push({publisher, stream, events});
       return events.length ? control && !refuse : control;
@@ -252,6 +253,23 @@ test('a member the host lets drive the window clicks, scrolls, types and pastes 
   ], 'the pasted text reaches the window before its paste key');
   assert.equal(m.layer.stats().inputSent, events.length);
   m.layer.close();
+});
+
+test('closing a window a member drives closes it at its source', async () => {
+  let closedKeys = [];
+  const options = {dismissed: () => { const keys = closedKeys; closedKeys = []; return keys; }};
+  const driver = await controlled({control: true, ...options});
+  closedKeys = [KEY, 'cd'.repeat(32) + ':0000000000000001'];
+  driver.run();
+  await tick();
+  assert.deepEqual(driver.sent.map(request => request.events), [['Close']]);
+  driver.layer.close();
+  const watcher = await controlled({control: false, ...options});
+  closedKeys = [KEY];
+  watcher.poll();
+  await tick();
+  assert.deepEqual(watcher.sent, [], 'a watcher only closes its own view');
+  watcher.layer.close();
 });
 
 test('a watching member sends nothing, and a refusal stops input', async () => {

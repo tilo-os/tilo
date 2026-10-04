@@ -85,7 +85,11 @@ containerfile="$repo/os/Containerfile"
 # ARM virtio software rendering adds one reviewed LLVM CPU shim payload.
 # The extension overlay replaces the codec-specific resolver: no repository
 # definitions or upstream keys ship, only the generic helper and its units.
-expected_contract=59d815025b2c0dcab6845d6073e7e4f65dfcacebca68b46add8f9db7b8fd39a3
+# The build-only Cisco OpenH264 gate is a deliberate addition (removed after it runs).
+# The extension-manifest public key ships beside the helper.
+# The release gate's greetd session-context check ships beside the other
+# booted-guest checks in /usr/libexec/tilo.
+expected_contract=f0f360cd6858d6aad382d36b38f8852f20b0bad45702402459ef8321453126b7
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -127,8 +131,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # The ARM virtual graphics CPU shim adds one COPY, bringing this to 152.
 # Redeclaring KERNEL_RPMS_REF before the kernel-swap RUN so Buildah hashes the
 # kernel image identity into that layer's cache key adds one ARG (153).
-[ "$instructions" -le 153 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 153)" >&2
+# Redeclaring RPMS_REF before the first snapshot install, for the same reason,
+# adds one more (154).
+[ "$instructions" -le 154 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 154)" >&2
   exit 1
 }
 

@@ -51,6 +51,8 @@ def base(installed=None, arch="x86_64"):
         "gstreamer1": nevra("gstreamer1", "1.28.7", repo="base", arch=arch),
         "libavcodec-free": nevra("libavcodec-free", "8.1.2", "4.fc44", repo="base", arch=arch),
         "mesa-dri-drivers": nevra("mesa-dri-drivers", "26.2.3", repo="base", arch=arch),
+        # Every Tilo image carries Fedora's stub for libopenh264.so, never Cisco's build.
+        "noopenh264": nevra("noopenh264", "2.6.0", "4.fc44", repo="base", arch=arch),
     }
     if installed is not None:
         packages = installed
@@ -227,9 +229,25 @@ class CodecsPart(unittest.TestCase):
         self.assertNotIn("intel-media-driver", [n.name for n in decision.chosen])
 
     def test_a_component_the_base_ships_needs_nothing(self):
-        installed = dict(base().installed, openh264=nevra("openh264", "2.6.0", "3.fc44", repo="base"))
+        installed = dict(base().installed, **{"intel-media-driver": nevra("intel-media-driver", "26.1.5",
+                                                                           repo="base")})
         decision = self.decide(base(installed))
-        self.assertNotIn("openh264", [n.name for n in decision.chosen])
+        self.assertNotIn("intel-media-driver", [n.name for n in decision.chosen])
+
+    def test_ciscos_openh264_is_offered_over_the_bases_stub(self):
+        # The base ships Fedora's noopenh264 stub at the very path Cisco's
+        # library has, so the part's overlay shadows the stub; only the stub's
+        # name is kept out of the repositories, never Cisco's package.
+        decision = self.decide(base())
+        self.assertIn("noopenh264", base().installed)
+        self.assertIn(nevra("openh264", "2.6.0", "3.fc44", repo="fedora-cisco-openh264"), decision.chosen)
+        with tempfile.TemporaryDirectory() as workdir:
+            dnf = resolver.Dnf(recipe, base(), Path(workdir))
+            excludes = dnf.base_excludes()
+        cisco = next(e for e in excludes if e.startswith("--setopt=fedora-cisco-openh264.excludepkgs="))
+        excluded = cisco.split("=", 2)[2].split(",")
+        self.assertIn("noopenh264", excluded)
+        self.assertNotIn("openh264", excluded)
 
     def test_waiting_when_nothing_matches(self):
         decision = self.decide(base(), {})

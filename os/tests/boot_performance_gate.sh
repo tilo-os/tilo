@@ -37,6 +37,64 @@ if [ ! -S "$greetd_socket" ]; then
   echo "greetd login endpoint is unavailable: $greetd_socket" >&2
   exit 1
 fi
+# An active greetd that systemd had to restart got there through a failed
+# start. Five failures in a row stop it for good: the splash has already quit,
+# nothing owns the display, and the panel stays dark while the rest of the
+# system (sshd included) keeps running.
+greetd_restarts="$(systemctl show --property=NRestarts --value greetd.service 2>/dev/null || true)"
+case "$greetd_restarts" in
+  0) ;;
+  ''|*[!0-9]*) echo 'greetd.service restart count is unavailable' >&2; exit 1 ;;
+  *) echo "greetd.service was restarted $greetd_restarts times before the greeter came up" >&2; exit 1 ;;
+esac
+
+# The greeter must have lit what it drew on. A connected connector whose CRTC
+# is off, or a backlight at zero, is a black screen that every other check
+# here would pass.
+drm_sysfs="${TILO_DRM_SYSFS:-/sys/class/drm}"
+connected=0
+lit=0
+for connector in "$drm_sysfs"/card*-*; do
+  [ -r "$connector/status" ] || continue
+  [ "$(cat "$connector/status")" = connected ] || continue
+  connected=$((connected + 1))
+  if [ "$(cat "$connector/enabled" 2>/dev/null)" = enabled ] \
+     && [ "$(cat "$connector/dpms" 2>/dev/null)" = On ]; then
+    lit=$((lit + 1))
+  fi
+done
+if [ "$connected" -gt 0 ] && [ "$lit" -eq 0 ]; then
+  echo "no connected display is lit at the greeter ($connected connected)" >&2
+  exit 1
+fi
+backlight_sysfs="${TILO_BACKLIGHT_SYSFS:-/sys/class/backlight}"
+for backlight in "$backlight_sysfs"/*; do
+  [ -r "$backlight/brightness" ] || continue
+  brightness="$(cat "$backlight/brightness")"
+  power="$(cat "$backlight/bl_power" 2>/dev/null || echo 0)"
+  if [ "$brightness" = 0 ] || [ "$power" != 0 ]; then
+    echo "backlight ${backlight##*/} is dark at the greeter (brightness $brightness, bl_power $power)" >&2
+    exit 1
+  fi
+done
+
+# A device unit that never appears holds every unit ordered after it for the
+# whole device timeout, under the splash and with nothing on screen saying
+# why. A firmware TPM the kernel has no driver for did this twice per boot.
+boot_log="$(journalctl -b -o short-monotonic --no-pager 2>/dev/null)" || {
+  echo "this boot's journal is unreadable" >&2
+  exit 1
+}
+device_timeouts="$(grep -E 'systemd\[1\]: Timed out waiting for device ' <<<"$boot_log" \
+  | sed 's/.*Timed out waiting for device //' | sort -u || true)"
+if [ -n "$device_timeouts" ]; then
+  printf 'this boot waited out a device that never appeared:\n' >&2
+  while IFS= read -r device; do printf '  %s\n' "$device"; done <<<"$device_timeouts" >&2
+  case "$device_timeouts" in
+    *tpm*) printf 'TPM support: %s\n' "$(systemd-analyze has-tpm2 2>/dev/null | tr '\n' ' ')" >&2 ;;
+  esac
+  exit 1
+fi
 
 zram_sysfs="${TILO_ZRAM_SYSFS:-/sys/block/zram0}"
 if [ ! -r "$zram_sysfs/comp_algorithm" ]; then
@@ -164,8 +222,18 @@ switch_root_steps() {
     | cut -c1-160 | sed 's/^/  /' | head -12 || true
 }
 
-# ldconfig.service and systemd-update-done.service run on a boot only when
-# /usr looks newer than /etc/.updated; the image records the two as equal.
+# bootc removes /etc/.updated from every deployment, so its first boot runs the
+# ConditionNeedsUpdate= units. The caches the image builds (the linker cache in
+# /etc, the hardware database in /usr) must not be among them.
+image_cache_units=(ldconfig.service systemd-hwdb-update.service)
+rebuilt_image_caches() {
+  local unit
+  for unit in "${image_cache_units[@]}"; do
+    [ "$(systemctl show "$unit" --property=ConditionResult --value 2>/dev/null || true)" != yes ] \
+      || printf '%s\n' "$unit"
+  done
+}
+
 first_boot_update_check() {
   local result path
   result="$(systemctl show ldconfig.service --property=ConditionResult --value 2>/dev/null || true)"
@@ -255,3 +323,9 @@ fi
 boot_phases
 printf 'kernel+userspace reached usable greeter in %d.%03ds (budget: %ss)\n' \
   "$seconds" "$milliseconds" "$budget_seconds"
+rebuilt="$(rebuilt_image_caches)"
+if [ -n "$rebuilt" ]; then
+  printf 'this boot rebuilt caches the image already carries: %s\n' "$(tr '\n' ' ' <<<"$rebuilt")" >&2
+  first_boot_update_check >&2
+  exit 1
+fi

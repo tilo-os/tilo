@@ -249,6 +249,17 @@ impl CodeEditor {
         self.inner.bind_text(obj);
     }
 
+    /// Keep reading the bound text while edits stay local, for an owner
+    /// that submits each edit as an action of its own.
+    pub fn set_direct_crdt_writes(&mut self, enabled: bool) {
+        self.inner.set_direct_crdt_writes(enabled);
+    }
+
+    /// Detach the bound text, keeping what is shown.
+    pub fn clear_text_binding(&mut self) {
+        self.inner.clear_text_binding();
+    }
+
     /// For a host outside the taffy tree calling each frame instead of
     /// the `Widget::sync` pass. No-op until [`bind_text`](CodeEditor::bind_text).
     pub fn pull(&mut self, doc: &mut AutoCommit) {

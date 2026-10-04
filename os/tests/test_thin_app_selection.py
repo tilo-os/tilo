@@ -160,10 +160,14 @@ app-sdk = { path = "../../app_sdk" }
 
     def test_package_selection(self):
         with self.subTest(phase="selected_binary_retains_full_runtime_features_and_hash"):
-            selected = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_PACKAGES="calculator")
+            maps = self.root / "link-maps"
+            selected = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_PACKAGES="calculator",
+                                        TILO_THIN_LINK_MAP_DIR=str(maps))
             self.assertEqual(selected.returncode, 0, selected.stdout + selected.stderr)
             target = self.root / "target/thin-app"
             self.assertTrue((target / "calculator").is_file())
+            # The size wrapper wrote the app's link map, so it compiled the app.
+            self.assertTrue((maps / "calculator.map").is_file())
             self.assertFalse((target / "other").exists())
             self.assertNotIn("Compiling other", selected.stderr)
             runtime = target / "libruntime_dylib.so"

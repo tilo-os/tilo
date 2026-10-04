@@ -100,6 +100,13 @@ class ArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'absolute'):
                 artifact.inventory(self.root, self.inputs)
             path.unlink()
+            # An environment image's links are read inside an environment.
+            image = self.root / 'usr/share/tilo-apps/pkgs' / ('ab' * 32) / 'etc'
+            image.mkdir(parents=True)
+            (image / 'mtab').symlink_to('../proc/self/mounts')
+            rows = artifact.inventory(self.root, self.inputs)
+            self.assertEqual(rows['usr/share/tilo-apps/pkgs/' + 'ab' * 32 + '/etc/mtab']['target'],
+                             '../proc/self/mounts')
             (self.root / 'out/shell').chmod(0o4755)
             with self.assertRaisesRegex(ValueError, 'mode'):
                 artifact.inventory(self.root, self.inputs)

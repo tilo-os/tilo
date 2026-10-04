@@ -301,7 +301,7 @@ impl ShellOverlayHost {
             }
             let desktop = &mut tree.desktop;
             desktop.outputs.place_unhomed(&desktop.workspaces);
-            tree.flush_to_disk();
+            tree.queue_save();
         }
         chrome.borrow_mut().bump();
     }

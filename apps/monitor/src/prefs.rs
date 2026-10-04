@@ -1,12 +1,14 @@
-//! Per-window Monitor preferences.
+//! Monitor preferences.
 //!
-//! These values describe how **this device** observes a live system:
-//! sampling cadence, whether it is currently sampling, kernel-thread
-//! visibility, and the local confirmation affordance. They must not enter
-//! Automerge, history, or collaboration: another window's paused sampler or
-//! relaxed confirmation preference is never authority over this machine.
-//! `MonitorApp` owns one [`Prefs`] value per window; a host may later bind it
-//! to a device-preference service without changing that boundary.
+//! The sampling cadence, kernel-thread visibility and the kill confirmation
+//! are the person's: they follow them to every device as
+//! [`MonitorPreferences`], a personal settings section, never the shared
+//! document — a collaborator's relaxed confirmation is never authority over
+//! this machine. Whether this window is sampling right now
+//! ([`Prefs::auto_refresh`]) belongs to the window alone.
+
+use serde::{Deserialize, Serialize};
+use ui::storage::{Scope, SettingsSchema};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Prefs {
@@ -36,8 +38,25 @@ impl Default for Prefs {
 }
 
 impl Prefs {
+    /// The part of these preferences that follows the person.
+    #[must_use]
+    pub fn personal(&self) -> MonitorPreferences {
+        MonitorPreferences {
+            interval_ms: self.interval_ms,
+            show_kernel_threads: self.show_kernel_threads,
+            confirm_kill: self.confirm_kill,
+        }
+    }
+
+    /// Take the person's preferences, keeping this window's sampling state.
+    pub fn adopt(&mut self, personal: &MonitorPreferences) {
+        self.interval_ms = personal.interval_ms;
+        self.show_kernel_threads = personal.show_kernel_threads;
+        self.confirm_kill = personal.confirm_kill;
+    }
+
     /// Advance to the next refresh cadence (1s → 1.5s → 2s → 3s → 5s → 1s).
-    /// Any off-grid value (e.g. loaded from an older document) snaps back
+    /// Any off-grid value (a hand-edited setting) snaps back
     /// to the start of the cycle.
     pub fn cycle_interval(&mut self) {
         self.interval_ms = match self.interval_ms {
@@ -57,6 +76,24 @@ impl Prefs {
             format!("{:.1}s", self.interval_ms as f32 / 1000.0)
         }
     }
+}
+
+/// The Monitor preferences that follow the person to every device.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorPreferences {
+    pub interval_ms: u64,
+    pub show_kernel_threads: bool,
+    pub confirm_kill: bool,
+}
+
+impl Default for MonitorPreferences {
+    fn default() -> Self {
+        Prefs::default().personal()
+    }
+}
+
+impl SettingsSchema for MonitorPreferences {
+    const SCOPE: Scope = Scope::Personal;
 }
 
 #[cfg(test)]

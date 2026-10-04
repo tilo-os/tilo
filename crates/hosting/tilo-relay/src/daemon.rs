@@ -301,12 +301,21 @@ pub struct Relay {
 pub(crate) struct WebContext {
     pub(crate) relay: RelayProtocol,
     pub(crate) certification: crate::certification::CertificationProtocol,
+    /// The device of the session beside this node, once named.
+    pub(crate) node_session: Arc<std::sync::OnceLock<[u8; 32]>>,
 }
 
 impl Relay {
     #[cfg(feature = "web")]
     pub(crate) fn web_context(&self) -> &WebContext {
         &self.web
+    }
+
+    /// Name the device of the session beside this node (the shell that runs
+    /// the person's apps), which pages address to open apps there. Named
+    /// once; a later call keeps the first.
+    pub fn set_node_session(&self, device: [u8; 32]) {
+        let _ = self.web.node_session.set(device);
     }
 }
 
@@ -616,6 +625,14 @@ impl Relay {
             .authorized_by(&identity.device_cert.capabilities)
             .limited_to(&available_services);
         let app_serving = app_serving.filter(|_| cfg.services.app_serving);
+        // Reject unavailable local backends before binding endpoints, publishing
+        // capabilities or starting background tasks.
+        let environments = crate::environment_host::worker_environments(
+            cfg.environments.as_ref().filter(|_| cfg.services.compute),
+            &cfg.state_root.join("environments"),
+            &identity.device_signing_key,
+            &tilo_user_identity::IdentityPaths::under(&cfg.identity_root).device_privkey,
+        )?;
         let compute_ready = Arc::new(AtomicBool::new(false));
         let mesh_profile = Arc::new(crate::mesh::DeviceMeshProfile {
             device: identity.device_cert.device_public_key,
@@ -738,10 +755,14 @@ impl Relay {
         };
         let compute = ComputeProtocol::new(
             workspaces.clone(),
-            identity.user_public_key,
-            identity.device_cert.clone(),
-            identity.device_signing_key.clone(),
+            crate::compute_session::ComputeIdentity {
+                user_public_key: identity.user_public_key,
+                cert: identity.device_cert.clone(),
+                signing_key: identity.device_signing_key.clone(),
+            },
             revocations.clone(),
+            live_trust_policy.clone(),
+            Arc::new(crate::environment_host::TracingMetering),
         );
         let certification = crate::certification::CertificationProtocol::new(
             identity.user_public_key,
@@ -752,6 +773,7 @@ impl Relay {
         let web = Box::new(WebContext {
             relay: handler.clone(),
             certification: certification.clone(),
+            node_session: Arc::default(),
         });
         let governed_access_update = Arc::new(AsyncMutex::new(()));
         // A certified host governs the rooms it creates, unless its embedder
@@ -849,6 +871,7 @@ impl Relay {
                 workspaces: cfg.workspaces.iter().map(|binding| binding.id).collect(),
                 state_root: cfg.state_root.join("compute-worker"),
                 readiness: Arc::clone(&compute_ready),
+                environments,
             };
             let worker_task = tokio::spawn(async move {
                 if let Err(error) = run_production_compute_worker(worker_config).await {

@@ -9424,4 +9424,10 @@ impl ui::framework::ResourceSurface<crate::resource::VideoProject> for VideoEdit
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_capture(scenario);
     }
+
+    // Edits bound to where the user is publish as hand-built rows of the
+    // widget's own rather than as `bound_declarations`.
+    fn publishes_document_actions(&self) -> bool {
+        true
+    }
 }

@@ -69,7 +69,7 @@ pub use battery::{BatteryEvent, BatteryMonitor, BatterySnapshot, BatteryState};
 #[cfg(feature = "service")]
 pub use bridge::{PowerBridge, PowerCommand, PowerNotification, PowerSignal};
 #[cfg(feature = "service")]
-pub use config::{default_policy, load_policy, policy_from_settings_json};
+pub use config::{default_policy, load_policy_for_profile, policy_from_settings_json};
 #[cfg(feature = "service")]
 pub use history::{
     BatteryHistory, BatteryHistoryPoint, PowerSourceKind, load_battery_history, load_ups_history,

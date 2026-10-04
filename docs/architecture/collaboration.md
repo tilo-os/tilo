@@ -17,7 +17,11 @@ First setup creates two related Ed25519 identities:
 The device key is also the Iroh `EndpointId`. The shell, filesystem sync, and
 workspace host therefore present the same device identity. A home or hosted
 server receives a separate device certificate with `can_act_as_host`; it never
-receives the human root secret.
+receives the human root secret. A company node runs a session beside its
+relay for the person's apps and agents: that session has a key of its own,
+which the node vouches for and the root certifies at install as one of the
+person's devices (never a host), so it reads and writes the node's rooms as
+an ordinary channel member.
 
 The same chain can endorse a self-built OS image without exporting the human
 root: `ImageEndorsement` binds an immutable OCI SHA-256 manifest digest and Tilo

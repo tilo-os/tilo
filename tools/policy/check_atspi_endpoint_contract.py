@@ -47,7 +47,7 @@ def audit(root: Path = ROOT) -> list[str]:
 
     cargo = (root / "crates/sdk/ui-core/Cargo.toml").read_text(encoding="utf-8")
     adapter = re.search(
-        # Upstream 0.34.0, or the vendored fork of it that the winit facade uses.
+        # Upstream 0.34.0, or the vendored fork of it built on tilo-winit.
         r'^accesskit_winit\s*=\s*(?:"0\.34\.0"|\{\s*version\s*=\s*"0\.34\.0"[^}\n]*\}'
         r'|\{\s*package\s*=\s*"tilo-accesskit-winit"\s*,\s*version\s*=\s*"0\.34\.0"\s*,'
         r'\s*path\s*=\s*"\.\./\.\./\.\./vendor/accesskit_winit"[^}\n]*\})',

@@ -690,39 +690,53 @@ struct RoutedEvent<'a> {
 
 /// The words of one text box being edited on the canvas: the SDK editor,
 /// embedded where the box is drawn and laid out at the slide's size, editing
-/// the element's rich-text body through `SlidesAction::EditElementText`.
+/// the element's rich-text body as the deck's child resource, each edit a
+/// `SlidesAction::EditElementText`. Until the deck's dispatcher is attached
+/// it shows the words without editing them.
 struct TextBoxEditor {
     slide_id: String,
     element_id: String,
-    host: Embedded<RichTextSurface<RichTextField<actions::SlidesAction>>>,
+    host: Embedded<RichTextSurface<RichTextField>>,
 }
 
 impl TextBoxEditor {
-    fn open(doc: &AutoCommit, slide_id: &str, element: &Element) -> Self {
+    fn open(
+        doc: &AutoCommit,
+        slide_id: &str,
+        element: &Element,
+        deck: Option<&ui::framework::Dispatcher<actions::SlidesDeck>>,
+    ) -> Self {
         let (locate_slide, locate_element) = (slide_id.to_owned(), element.id.clone());
-        let (edit_slide, edit_element) = (slide_id.to_owned(), element.id.clone());
-        let field = RichTextField::new(
-            actions::SLIDES_ACTION_TYPE,
-            move |doc| SlidesDoc::element_body(doc, &locate_slide, &locate_element),
-            move |edit| actions::SlidesAction::EditElementText {
-                slide_id: edit_slide.clone(),
-                element_id: edit_element.clone(),
-                edit,
-            },
-        );
-        let mut surface = RichTextSurface::field(field)
+        let field = RichTextField::view_only(move |doc| {
+            SlidesDoc::element_body(doc, &locate_slide, &locate_element)
+        });
+        let surface = RichTextSurface::field(field)
             .with_editor(render::text_box_editor(element))
             .with_submit(SubmitKey::ModEnter);
+        let mut editor = Self {
+            slide_id: slide_id.to_owned(),
+            element_id: element.id.clone(),
+            host: Embedded::new(surface),
+        };
+        if let Some(deck) = deck {
+            editor.attach(deck);
+        }
+        let surface = editor.host.widget_mut();
         surface.present_from(doc);
         surface.set_focus(true);
         surface
             .editor_mut()
             .focus_block(usize::MAX, ui::widget::CursorPlacement::End);
-        Self {
-            slide_id: slide_id.to_owned(),
-            element_id: element.id.clone(),
-            host: Embedded::new(surface),
-        }
+        editor
+    }
+
+    /// Edit through the deck's dispatcher from now on.
+    fn attach(&mut self, deck: &ui::framework::Dispatcher<actions::SlidesDeck>) {
+        let (id, wrap) = actions::element_text_child(&self.slide_id, &self.element_id);
+        self.host
+            .widget_mut()
+            .source_mut()
+            .attach(deck.child::<tilo_document::RichText>(&id, wrap));
     }
 }
 
@@ -1612,6 +1626,9 @@ impl SlidesApp {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::actions::SlidesDeck>,
     ) {
+        if let Some(editor) = self.text_editor.as_mut() {
+            editor.attach(&dispatcher);
+        }
         self.framework = Some(dispatcher);
         self.framework_hosted = true;
     }
@@ -6460,16 +6477,7 @@ impl ui::undo::CommittedActions for SlidesApp {
     /// its slides action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        let typed = self.text_editor.as_mut().and_then(|editor| {
-            ui::undo::CommittedActions::take_committed_action(editor.host.widget_mut())
-        });
-        typed.or_else(|| self.actions.take_committed())
-    }
-    /// Typing a word into a text box is one undo step, open until the word ends.
-    fn keeps_undo_step_open(&self) -> bool {
-        self.text_editor.as_ref().is_some_and(|editor| {
-            ui::undo::CommittedActions::keeps_undo_step_open(editor.host.widget())
-        })
+        self.actions.take_committed()
     }
 }
 
@@ -8017,7 +8025,12 @@ impl SlidesApp {
             .as_ref()
             .is_some_and(|editor| editor.slide_id == slide_id && editor.element_id == element.id);
         if !current {
-            self.text_editor = Some(TextBoxEditor::open(doc, &slide_id, &element));
+            self.text_editor = Some(TextBoxEditor::open(
+                doc,
+                &slide_id,
+                &element,
+                self.framework.as_ref(),
+            ));
         }
         let select_all = std::mem::take(&mut self.text_edit_select_all);
         if let Some(editor) = self.text_editor.as_mut() {
@@ -10996,15 +11009,13 @@ mod tests {
 
     // --- element text editing -----------------------------------------------
 
-    /// Typing, selection, select-all, replace, forward delete and cut edit the
-    /// CRDT text, and notes selection/IME/multiline edits the bound notes text.
+    /// The text box editor opens, navigates and selects on the widget's own
+    /// event path, and without the deck's dispatcher it shows the words and
+    /// refuses every edit. Notes selection/IME/multiline edit the bound notes
+    /// text.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn text_editing_keys_write_through_the_crdt() {
-        // Case `editing_element_text_types_and_deletes_through_the_crdt`.
+    fn text_box_keys_and_notes_editing() {
+        // Case `enter_opens_the_box_and_escape_ends_editing_keeping_it_selected`.
         {
             let (mut app, mut doc, id) = selected_text_app();
             sized(&mut app, 1280.0, 800.0);
@@ -11013,22 +11024,13 @@ mod tests {
             assert!(app.editing_text);
             edit_frame(&mut app, &mut doc);
             assert_eq!(edit_caret(&app), "Hi".len());
+            // Without the deck's dispatcher the box is shown, never edited.
+            let heads = doc.get_heads();
             type_text(&mut app, &mut doc, "!");
-            assert_eq!(
-                loaded(&doc).slides[0].element(&id).unwrap().text,
-                "Hi!",
-                "typed char persisted"
-            );
             app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Backspace));
-            assert_eq!(
-                loaded(&doc).slides[0].element(&id).unwrap().text,
-                "Hi",
-                "backspace persisted"
-            );
-            // Enter starts a paragraph; Escape ends editing, box still selected.
-            app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Enter));
-            type_text(&mut app, &mut doc, "yo");
-            assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().text, "Hi\nyo");
+            assert_eq!(loaded(&doc).slides[0].element(&id).unwrap().text, "Hi");
+            assert_eq!(doc.get_heads(), heads, "nothing was written");
+            // Escape ends editing, box still selected.
             app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Escape));
             assert!(!app.editing_text);
             assert_eq!(app.sel.as_deref(), Some(id.as_str()));
@@ -11051,10 +11053,10 @@ mod tests {
             assert_eq!(edit_selection(&app), "Hi", "the selection spans both chars");
         }
 
-        // Case `select_all_then_backspace_clears_the_element_text_in_the_crdt`.
+        // Case `ctrl_a_selects_the_whole_box`.
         {
             use winit::keyboard::ModifiersState;
-            let (mut app, mut doc, id) = selected_text_app();
+            let (mut app, mut doc, _id) = selected_text_app();
             edit_frame(&mut app, &mut doc);
             app_dispatch_mods(
                 &mut app,
@@ -11063,50 +11065,6 @@ mod tests {
                 &char_ev("a"),
             );
             assert_eq!(edit_selection(&app), "Hi", "Ctrl+A selects the whole text");
-            app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::Backspace));
-            assert_eq!(
-                loaded(&doc).slides[0].element(&id).unwrap().text,
-                "",
-                "the selected text was deleted from the CRDT"
-            );
-        }
-
-        // Case `typing_over_a_selection_replaces_it_in_the_crdt`.
-        {
-            let (mut app, mut doc, id) = selected_text_app();
-            app.begin_text_edit(true);
-            edit_frame(&mut app, &mut doc);
-            type_text(&mut app, &mut doc, "X");
-            assert_eq!(
-                loaded(&doc).slides[0].element(&id).unwrap().text,
-                "X",
-                "the selection was replaced, not appended to"
-            );
-        }
-
-        // Case `bold_typed_in_a_box_is_a_mark_and_undo_takes_back_a_word`.
-        {
-            use winit::keyboard::ModifiersState;
-            let (mut app, mut doc, id) = selected_text_app();
-            edit_frame(&mut app, &mut doc);
-            type_text(&mut app, &mut doc, " ");
-            app_dispatch_mods(
-                &mut app,
-                &mut doc,
-                Modifiers::from(ModifiersState::CONTROL),
-                &char_ev("b"),
-            );
-            type_text(&mut app, &mut doc, "bold");
-            let element = loaded(&doc).slides[0].element(&id).unwrap().clone();
-            assert_eq!(element.text, "Hi bold");
-            assert!(
-                element.blocks[0]
-                    .marks
-                    .iter()
-                    .any(|span| span.mark == ui::widget::marks::Mark::Bold && span.range == (3..7)),
-                "{:?}",
-                element.blocks[0].marks
-            );
         }
 
         // Case `notes_selection_ime_and_multiline_edit_the_bound_crdt_text`.
@@ -11156,6 +11114,139 @@ mod tests {
                 "Ctrl+Z falls through to the toolkit's global undo handler"
             );
         }
+    }
+
+    /// The slides app as it runs, on its starter deck, with its text box
+    /// that reads `words` opened for editing by a double-click, the caret at
+    /// its end.
+    fn editing_starter_box(
+        words: &str,
+        role: ui::permissions::Role,
+    ) -> (ui::framework::testing::TestApp<crate::SlidesShell>, String) {
+        ui::i18n::I18nManager::init("en-US");
+        let mut app =
+            ui::framework::testing::TestApp::<crate::SlidesShell>::with_role(role).unwrap();
+        let deck = app.read_document(|doc| crate::doc::SlidesDoc::load(doc).unwrap());
+        let id = deck.slides[0]
+            .elements
+            .iter()
+            .find(|element| element.text == words)
+            .unwrap()
+            .id
+            .clone();
+        // Where the box is drawn: the deck's surface below the host's bar.
+        let mut geometry = SlidesApp::new();
+        geometry.deck = deck;
+        geometry.bootstrapped = true;
+        geometry.rect = app.harness().targets()["BoundComponent"];
+        geometry.sync_flaps(0.0, false);
+        let chrome = geometry.compute_chrome();
+        let element = geometry.deck.slides[0].element(&id).unwrap();
+        let at = render::element_dest(chrome.slide_dest, chrome.scale, element).center();
+        app.harness().double_click_at(at.x, at.y);
+        (app, id)
+    }
+
+    fn element_text(
+        app: &ui::framework::testing::TestApp<crate::SlidesShell>,
+        id: &str,
+    ) -> Element {
+        app.read_document(|doc| {
+            crate::doc::SlidesDoc::load(doc).unwrap().slides[0]
+                .element(id)
+                .unwrap()
+                .clone()
+        })
+    }
+
+    /// Typing in a text box edits the deck's child rich text: each edit is a
+    /// deck action, undo takes back a word, a mark is a mark, and a viewer
+    /// cannot type.
+    #[test]
+    fn typing_in_a_text_box_edits_it_through_the_decks_dispatcher() {
+        use ui::permissions::Role;
+        // Case `typing_edits_the_box_through_the_deck`.
+        {
+            let (mut app, id) = editing_starter_box("Title", Role::Owner);
+            app.harness().type_text(" Hi!");
+            assert_eq!(element_text(&app, &id).text, "Title Hi!");
+            app.harness().key("Backspace");
+            assert_eq!(element_text(&app, &id).text, "Title Hi");
+            app.harness().key("Enter");
+            app.harness().type_text("yo");
+            assert_eq!(element_text(&app, &id).text, "Title Hi\nyo");
+            assert!(app.undo(), "the last word is one step");
+            assert_eq!(element_text(&app, &id).text, "Title Hi\n");
+        }
+
+        // Case `bold_typed_in_a_box_is_a_mark`.
+        {
+            let (mut app, id) = editing_starter_box("Subtitle", Role::Owner);
+            app.harness().type_text(" ");
+            app.harness().set_modifiers(&["ctrl".to_owned()]);
+            app.harness().key("b");
+            app.harness().set_modifiers(&[]);
+            app.harness().type_text("bold");
+            let element = element_text(&app, &id);
+            assert_eq!(element.text, "Subtitle bold");
+            assert!(
+                element.blocks[0]
+                    .marks
+                    .iter()
+                    .any(|span| span.mark == ui::widget::marks::Mark::Bold && span.range == (9..13)),
+                "{:?}",
+                element.blocks[0].marks
+            );
+        }
+
+        // Case `a_viewer_cannot_type_in_a_box`.
+        {
+            let (mut app, id) = editing_starter_box("Title", Role::Viewer);
+            let before = app.versions().len();
+            app.harness().type_text("nope");
+            assert_eq!(element_text(&app, &id).text, "Title");
+            assert_eq!(app.versions().len(), before);
+        }
+    }
+
+    /// A text box's words are a rich-text resource of their own beneath their
+    /// element, which an agent edits as the deck's action.
+    #[test]
+    fn an_agent_edits_a_text_box_as_a_rich_text_resource() {
+        use ui::tilo_resource::Resource as _;
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = ui::framework::testing::TestApp::<crate::SlidesShell>::new().unwrap();
+        let id = app.read_document(|doc| {
+            crate::doc::SlidesDoc::load(doc).unwrap().slides[0]
+                .elements
+                .iter()
+                .find(|element| element.text == "Subtitle")
+                .unwrap()
+                .id
+                .clone()
+        });
+        let child = crate::actions::text_resource_id(&id);
+        let declared = app.agent_surface();
+        assert!(
+            declared.as_array().unwrap().iter().any(|row| {
+                row["resource"] == child.as_str()
+                    && row["resource_kind"] == tilo_document::RichText::KIND
+            }),
+            "the words are published as rich text: {declared}"
+        );
+        app.invoke_child::<tilo_document::RichText>(
+            &child,
+            ui::tilo_resource::Invoke::<tilo_document::RichText>::apply(
+                &tilo_document::RichTextAction::ReplaceBody {
+                    markdown: "from an agent".into(),
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(element_text(&app, &id).text, "from an agent");
+        assert!(app.undo());
+        assert_eq!(element_text(&app, &id).text, "Subtitle");
     }
 
     // --- canvas move / resize persistence -----------------------------------

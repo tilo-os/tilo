@@ -232,7 +232,7 @@ fn revealed_secret_does_not_leave_rich_input_snapshot() {
             .multiline(multiline)
             .with_initial_value("private é value")
             .with_secret(true);
-        input.reveal = true;
+        input.set_reveal(true);
         let style = input.multiline_style(theme.text_scale);
         let spans = vec![RichSpan::new(&input.text)];
         let width = if multiline { Some(200.0) } else { None };

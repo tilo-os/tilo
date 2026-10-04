@@ -1,47 +1,136 @@
 # `ush` — the runtime that hosts a shell
 
 `ush` is not a shell language. It is a locked-down application runtime that
-*hosts* a shell: it composes a root filesystem out of the host's, read-only,
-plus a layer that belongs to you, puts a shell inside it, and brokers every
-request that would reach past it. `dsh` is the same program on a developer
-profile.
+*hosts* a shell: it builds a guest from an [environment](environments.md)
+record — a read-only stack of images for `/usr` and `/etc`, the environment's
+own home, the directories it was granted — puts a shell inside it, and brokers
+every request that would reach past it.
 
 ## The problem it solves
 
-`apps/terminal` used to `exec` `$SHELL`. Inside a Tilo app sandbox that fails
+`apps/terminal` cannot `exec` `$SHELL`. Inside a Tilo app sandbox that fails
 with `ENOENT`: [`launcher::profile`](../../crates/packaging/launcher/src/profile.rs)
 binds the loader, fonts, `/sys` and the CA bundle, and deliberately binds no
-executable directory. Two alternatives fail for different reasons:
+executable directory. Adding `/usr/bin` to the system read profile would hand
+the host's entire command set to every app on the machine.
 
-- Adding `/usr/bin` to the system read profile hands the host's entire command
-  set to every app on the machine, which would defeat the purpose of the
-  profile.
-- Minting a capability per directory produces a permission dialog for
-  `/usr/share/terminfo`, and still leaves `/etc/passwd` out — so the prompt
-  prints `I have no name!` and `vim` and `less` do not work.
+A guest whose root is built from images gets `/usr/bin`, terminfo and
+`/etc/passwd` **by construction**, not as a grant, and what it can run is
+exactly what its environment record lists — on every device it opens on.
 
-A **read-only host rootfs provides `/usr/bin`, terminfo and `/etc/passwd` by
-construction**, not as a grant. The rest of this design follows from that.
+## The environment record
+
+An environment is a synced record declared by the Terminal app
+(`#[resource(kind = "environment")]`, in
+[`tilo-environment`](../../crates/runtime/environment/src/lib.rs)):
+
+```rust
+pub struct Environment {
+    pub name: String,
+    pub runtime: RuntimeRef,      // { release, images: arch -> tapp:<hex> }
+    pub tools: Vec<ToolRef>,      // { packages, images: arch -> tapp:<hex> }
+    pub grants: Json<Vec<CapOverride>>, // FsPath and NetHost grants, subject so.tilo.ush
+    pub home: HomePolicy,         // Persistent (default) | Ephemeral
+}
+```
+
+The record is architecture-neutral: a node stacks the images for its own
+architecture (`x86_64`, `aarch64`). When a tool has no usable image for it —
+none recorded, or one this node cannot materialise — the session builds it
+there through the tool builder, for the same packages on that node's image of
+the runtime release, and records the id with `add-tool`, so the next session is
+a cache hit.
+
+Its actions are `add-tool`, `remove-tool`, `grant-dir`, `allow-host`,
+`revoke-grant`, `set-runtime` and `rename`. History and undo come from the record layer; there
+is no other package manifest and no other permission file.
+
+The supervisor keeps the records where Terminal keeps its own —
+`<data home>/tilo-rooms/personal/so.tilo.terminal/.local/share`, room
+`personal` — joins the record's shared writers, applies actions through the
+record layer (attributed to `so.tilo.ush`), and appends. A session that names
+no record gets the **default environment**, created on first use with the
+system store's current `env-runtime`.
 
 ## The root a guest gets
 
 ```text
-/usr    overlay: lower = [ephemeral layer,] persistent layer, host /usr
-                 upper = the session's writable layer
-/etc    overlay: same stack
-/bin /sbin /lib /lib64 /home …   the base's own root symlinks, mirrored
-/var/lib /var/cache /var/log     the layer's own, bound
-/var/tmp /tmp /run /proc /dev    fresh
-/run/ush/bin                     the runtime and its command shims, read-only
-$HOME                            the store's guest home, over the host home
-<trusted dirs>                   one bind per `perm trust-dir`
+/usr, /etc     read-only overlay: lowers = [tool images…, env-runtime]
+               (/etc also carries the session's passwd, group and resolver
+               on top); no writable upper anywhere
+/bin /sbin /lib /lib64   links into /usr
+/home/<user>   the environment's home (per environment, in the ush store)
+<grants>       one bind per FsPath grant, at the same path as on the host
+/tmp /run /proc /dev     fresh
+/var           tmpfs, plus the environment's own /var/lib and /var/cache
+/run/ush/bin   the runtime and its command shims, read-only
 ```
 
-Nothing else from the host is in the namespace. A path you were not granted is
-not missing a permission — it is not there. The one exception is the machine's
-resolver, bound read-only: it describes the network the machine is on and
-carries no user content, matching the policy `launcher::profile` applies to
-`/etc/resolv.conf`.
+Nothing else from the host is in the namespace — including its network: see
+[The network](#the-network). A path you were not granted is
+not missing a permission — it is not there. Images are materialised read-only
+trees; `bwrap` stacks them as overlay lowers inside the guest's own user
+namespace, so the supervisor needs no mount privilege of its own. Overlayfs
+needs two lowers to mount without an upper, so a single tree (an environment
+with no tools) is bound read-only instead.
+
+The guest runs as **the real uid and gid**, through a user namespace that maps
+exactly that one id. A file written to a granted directory belongs to you, and
+nothing inside the guest is root. The images know only their own system
+accounts, so each session lays a generated `passwd` and `group` naming you —
+and a `resolv.conf` naming the session's DNS stub — over the images' `/etc`.
+
+## The network
+
+Every guest has a network namespace of its own. What it can reach is the
+record's `NetHost` grants, enforced in the kernel by
+[`tilo-egress`](../../crates/runtime/egress/src/lib.rs) — not by a proxy,
+which command-line tools ignore:
+
+```text
+guest netns (owned by a user namespace the supervisor owns)
+  resolv.conf → 127.0.0.1:53 ──► DNS stub (supervisor) ── granted? ──► the machine's resolver
+                                   │ no: NXDOMAIN, nothing leaves the machine
+                                   └─ every A/AAAA answered ──► nftables set, with the record's
+                                                                TTL (at least 60 s, at most 4 h)
+  nftables, output: lo and established flows accept; DNS anywhere but the stub
+                    reject; TCP/UDP to an address in the set accept; else reject
+  tap ◄──► pasta (passt, unprivileged, in the host's namespace) ◄──► the network
+```
+
+- **By name.** `perm allow-host github.com` allows that host;
+  `perm allow-host '*.example.com'` the domain and every name under it
+  (recorded as `.example.com`, the capability vocabulary's spelling);
+  `perm allow-host '*'` everything. An address cannot be granted: it would
+  bypass the resolver that decides.
+- **No address literal gets through.** An address is reachable only after the
+  stub answered it for a granted name, and only until the answer ages out.
+  Connections already open survive that; new ones need a new answer.
+- **No grants, no network.** The stub refuses every name and the set stays
+  empty. `*` installs no filter: the guest reaches everything, still from
+  its own namespace.
+- **In force at once.** The stub and the filter belong to the running
+  session, so `perm allow-host` — and `perm revoke` of a host — apply without
+  `restart`. Narrowing empties the sets, so nothing answered under the old
+  grants stays reachable.
+- **Not the machine's own services.** `pasta` maps none of the host's
+  loopback into the guest. Answers that point a name under a granted *domain*
+  at a private, link-local or loopback address are not admitted (an exact
+  host grant may name a LAN host); link-local — cloud metadata at
+  `169.254.169.254` — never is.
+- **Fails closed.** The supervisor programs the filter over netlink, through
+  a socket opened inside the namespace while it still held the namespace's
+  `CAP_NET_ADMIN`; no `nft` binary is involved. If the kernel refuses
+  nf_tables and the record grants hosts, the session does not start and
+  says why. `pasta` is attached only once the filter is in place. Without
+  grants, a guest whose filter or `pasta` is unavailable starts offline.
+- **Nothing in the guest can change it.** `bwrap`'s user namespace nests
+  inside the one that owns the network namespace, so the guest has no
+  capability over its network — and seccomp denies it `unshare` and `setns`.
+
+The filter matches addresses, so a granted host shares its address with
+whatever else is served from it (a CDN): names are what you grant, addresses
+are what the kernel can enforce.
 
 ## The trust boundary
 
@@ -49,92 +138,106 @@ Three principals, in decreasing authority.
 
 **The supervisor** is Tilo code and runs in the user's session outside every app
 sandbox. It builds namespaces, so it needs `unshare`, `mount` and `pivot_root`
-— the syscalls `launcher::seccomp` blanket-denies to apps. It is trusted with
-them because it is the thing that *creates* the confinement. It owns the layer
-store, `policy.json` and the audit log, and none of the three is visible inside
-a guest at any path.
+— the syscalls `launcher::seccomp` blanket-denies to apps. It owns the store,
+the environment records and the audit log, and none of them is visible inside a
+guest at any path. When a grant covers one of them (granting your whole home,
+say) the supervisor covers it with an empty tmpfs after binding the grant.
 
-**The guest** is everything you run. It is untrusted. It runs as uid 0 *inside
-its own user namespace*, which maps to the unprivileged real user outside and
-confers no host authority whatsoever — that is what lets `rpm` chown a file into
-a layer you own. The seccomp filter still denies `unshare`, `setns`, `mount`,
-`umount2`, `pivot_root` and `chroot`, so a guest cannot build a second namespace
-and climb out of the first.
+**The guest** is everything you run. It is untrusted. The seccomp filter denies
+`unshare`, `setns`, `mount`, `umount2`, `pivot_root` and `chroot`, so a guest
+cannot build a second namespace and climb out of the first; `ptrace`, `bpf`,
+keyrings, module loading and `AF_PACKET` sockets are denied too. Landlock
+restricts writes to scratch, `/var`, the home and the writable grants.
 
 **The supervisor's need for those syscalls does not propagate.** `bwrap`
 installs the filter after it has finished mounting and immediately before it
-execs the guest, so the syscalls exist for exactly the process that performs the
-setup and for no descendant of it. Proven in
-`profile.rs::the_kernel_enforces_each_profiles_filter` (the `Profile::Ush` case), which installs
-the filter in a forked child and calls `unshare(CLONE_NEWUSER)`.
+execs the guest. Proven in `seccomp.rs::the_kernel_enforces_the_filter`, which
+installs the filter in a forked child and calls `unshare(CLONE_NEWUSER)`.
 
 **An app** cannot reach the runtime by executing it: it has neither the syscalls
 nor a path to the binary. `apps/terminal` asks the supervisor over the `ush`
-service socket and receives a pty master over `SCM_RIGHTS`. What crosses the
-boundary is a terminal, not a namespace — and never a `dsh` session, which
-`Profile::reachable_from_app_launch` refuses on every request.
+service socket for a target and receives a pty master over `SCM_RIGHTS`. What
+crosses the boundary is a terminal, not a namespace.
 
-## Layers
+## The service protocol
 
-A layer is a directory owned by you, shaped like a fragment of a root
-filesystem, used as the overlay's `upperdir`. Creating one requires more than
-`mkdir`,
-because unprivileged overlayfs has two limits — both from the same fact, that
-host uid 0 is not mapped into the guest's user namespace, so `CAP_DAC_OVERRIDE`
-does not apply to a root-owned inode:
+One line of JSON out, one line plus a descriptor back:
 
-- **A root-owned directory cannot be copied up.** So a new layer mirrors the
-  base's entire directory tree, owned by you: ~22 000 empty directories on
-  Fedora 44, under a second, a few megabytes of metadata. After that a write
-  anywhere the base has a directory needs no copy-up.
-- **A root-owned file cannot be modified.** The rpm database and dnf's
-  transaction history must be rewritten, so a new layer seeds its own copies.
+```json
+{"op":"open-session","target":{"kind":"environment"},"cols":80,"rows":24}
+{"op":"open-session","target":{"kind":"environment","record":"work"}}
+```
 
-That second point is also what makes a layer a *delta* rather than a second
-operating system: the transaction starts from the base image's installed set, so
-`pkg install htop` downloads htop and not glibc. Measured: `pkg install sl`
-fetched 17 KiB.
+`record` is a record key (`[A-Za-z0-9._-]`, at most 64 bytes); the owning app
+and the room are fixed by the supervisor, never taken from the request. The
+answer is `{"result":"session","session":…,"environment":…}` with the pty
+master attached, or `{"result":"denied","reason":…}`.
 
-**You can add to the base and shadow it, but you cannot alter a file that came
-from the image.** This preserves the image-based OS's immutability.
+### The Host target
 
-`/var` is not shadowed. The store lives under `$HOME`, which is `/var/home/<user>`
-on a bootc system, and overlayfs refuses an `upperdir` nested inside its own
-`lowerdir`. The guest gets layer-owned `/var/lib`, `/var/cache` and `/var/log`
-instead, which limits access to host machine state.
+`{"kind":"host"}` is the device's own login shell: the account's shell from
+the passwd database, on a pty, in the supervisor's session environment, with
+no namespace, filter or Landlock ruleset. It is answered only when all of
+these hold (`crates/runtime/ush/src/host.rs`):
 
-## Where packages come from
+1. **The caller is Terminal.** `tilo-launcher` writes `QUS1`, a little-endian
+   `u32` length and `{"protocol":1,"app_id":…}` on a sandboxed app's
+   connection before the app holds it; any other app id is refused. A
+   connection without that preamble comes from outside every app sandbox —
+   the shell hosting Terminal in-process.
+2. **No agent asked.** The request carries `"requested_by":"agent"` whenever
+   the session was asked for through Terminal's published actions (by an
+   agent, another app, or a collaborator); that is always refused.
+3. **The device owner is signed in.** The owner's root key
+   (`/var/lib/tilo/user-identity/pubkey.bin`) must be the session's default
+   identity (`$XDG_CONFIG_HOME/tilo/identity/registry.json`).
+4. **The person allowed it once.** A `CapOverride` granting
+   `Scope::Device("host-shell")` to `so.tilo.terminal`, in the store's
+   `host-shell.json`. Without it the answer is
+   `{"result":"host-not-allowed",…}`; a shell-hosted Terminal tab then raises
+   the shell's permission prompt, which records the answer there.
 
-**`dnf`, running inside the guest, installing into `/`.** The guest's `/usr` is
-an overlay whose upper is your layer, so "into `/`" *is* "into the layer", and
-the host's filesystem is on the read-only side of the mount however the
-transaction is spelled.
+### Environments
 
-Alternatives and failure modes:
+`{"op":"list-environments"}`, `{"op":"create-environment","name":…}` and
+`{"op":"environment-action","record":…,"action":"rename","args":{"name":…}}`
+answer `{"result":"environments","environments":[{"key","name","tools",
+"grants"}…]}` — what Terminal's target picker and environments panel show.
 
-- **`dnf --installroot=<layer>` on the host.** This places files in the layer,
-  but an installroot holding only the delta
-  has no `/bin/sh`, no `ldconfig` and no `/usr/lib/rpm`, so every scriptlet
-  fails. Measured on Fedora 44: `ldconfig` returns "call to ldconfig failed",
-  `man-db`'s file trigger exits 127, and `dnf` reports the transaction as failed
-  while leaving the files behind — a half-applied install that reports failure.
-  Running the same transaction inside the guest works because the guest *is* the
-  base plus the layer.
-- **`rpm2cpio` into the layer.** No dependency solving, no scriptlets, no
-  database, and no reliable way to implement `pkg remove`.
-- **A container image per layer.** Correct and heavy: a second package universe,
-  a second update cadence, gigabytes where the delta is kilobytes.
+The request connection is the session's lifetime in both directions: Terminal
+closing it ends the guest, and the guest exiting closes it.
+
+## Installing tools
+
+`pkg install pandoc` inside a guest asks the broker (`Request::AddTool`). The
+broker builds a `tool` image for the environment's runtime through the
+[`ToolBuilder`](../../crates/runtime/environment/src/lib.rs) seam — the build
+runs `dnf` as uid 0 in its own build sandbox, never in your guest — and appends
+it to the record with `add-tool`. Running sessions pick it up on `restart`; new
+sessions have it immediately. A package another tool already provides is not
+built again. The builder's output streams to the shell that asked.
+
+`pkg remove` takes the tools providing the named packages out (`remove-tool`).
+A tool image is one build, so packages installed together are removed
+together; `pkg remove` says which. `pkg list` shows the runtime and the tools.
+
+On a device without a tool builder, `pkg install` answers that building is not
+available; the tools an environment already has keep working.
 
 ## Permissions are Tilo's
 
-`perm trust-dir ~/src` mints a `collab_types::caps::CapOverride` —
-`Subject::App("so.tilo.ush")`, `Scope::FsPath`, `Effect::Grant`, `Verb::Write` —
-and every question is `decide_capability`. That is the same record the
-compositor stores on a workspace, renders in its permissions panel and can
-revoke, and the same deny-biased function `tilo-launcher` and the FUSE mount
-call. There is no `ush`-local permission type: a `Restrict` written by the
-compositor removes the bind here, and an expired grant does not survive into the
-next session.
+`perm allow-host github.com` applies `allow-host`, a `Scope::NetHost` grant
+(see [The network](#the-network)); `perm list` shows hosts as `net …`.
+
+`perm trust-dir ~/src` applies `grant-dir`, which mints a
+`collab_types::caps::CapOverride` — `Subject::App("so.tilo.ush")`,
+`Scope::FsPath`, `Effect::Grant`, `Verb::Write` — into the record, and every
+question is `decide_capability`. That is the same record the compositor stores,
+renders in its permissions panel and can revoke. A `Restrict` written elsewhere
+narrows the bind here, and an expired grant does not survive into the next
+session. Paths the guest builds itself (`/usr`, `/etc`, `/proc`, `/dev`,
+`/run/ush`, and `/tmp`, `/run`, `/var`, `/var/lib`, `/var/cache`, `/home`
+themselves) cannot be granted.
 
 A new bind needs a new mount namespace, so `perm trust-dir` answers "run
 `restart`". That is what the `restart` command is for.
@@ -143,105 +246,113 @@ A new bind needs a new mount namespace, so `perm trust-dir` answers "run
 
 Tilo ships no signature database, and this runtime does not provide one.
 
-- `guard status` reports enforcement it has **tested**, not enforcement it
-  configured: the Landlock line comes from attempting an operation the ruleset
-  forbids. A status line that said "installed" because the install code ran
-  would report success without checking enforcement.
-- `scan <path>` reports package ownership, `rpm -V` agreement, executable and
-  setuid bits, and whether a write there would reach the host. Every report, on
-  every code path, ends with the sentence saying nothing was checked against a
-  database — asserted by a test, because a `scan` that could return without it
-  would sooner or later be read as a clean bill of health.
-- `quarantine` is user-driven: `quarantine add`
-  moves a file into the layer with its executable bits cleared, so the original
+- `guard status` reports the environment, its runtime and tools, and
+  enforcement it has **tested**: the Landlock line comes from attempting an
+  operation the ruleset forbids, and the network lines from connecting to an
+  address nothing granted (`1.1.1.1:443`, which must be refused) and to the
+  first granted host.
+- `scan <path>` reports which image a path comes from (the topmost image that
+  has it — a file from an image was verified by its content address when it
+  was materialised and cannot be changed from the guest), executable and setuid
+  bits, and whether a write there would reach the host. Every report ends with
+  the sentence saying nothing was checked against a database.
+- `quarantine` is user-driven: `quarantine add` moves a file into
+  `/var/lib/ush/quarantine` with its executable bits cleared, so the original
   path stops resolving. No file is moved there automatically.
-
-## `dsh`
-
-The same program, the same layers, the same store, the same broker — on a
-profile that trades isolation for power. It keeps the layer model and the
-read-only base; it gives up the syscall filter that makes `ush` a boundary,
-because nested rootless `podman` and `distrobox` cannot work without `unshare`,
-`mount` and `setns`.
-
-- Namespace syscalls allowed. `ptrace`, `bpf`, `keyctl`, module loading and
-  `AF_PACKET` sockets stay denied — `dsh` does not disable seccomp entirely.
-- `/dev/fuse` bound.
-- The capability bounding set kept. `bwrap` empties it, and a guest that can
-  `unshare(CLONE_NEWUSER)` and then not write the new namespace's `uid_map` gets
-  nowhere. These capabilities exist only inside the guest's own user namespace.
-- The full subordinate id range mapped. The runtime builds the user namespace
-  itself, has `newuidmap`/`newgidmap` write the maps from outside — both carry
-  file capabilities, so no privilege is involved — and hands `bwrap` the
-  namespace with `--userns`.
-
-**`dsh` is a development profile, not a sandbox.** It prints that on
-every start, and it is reachable only by typing it: an app that was handed the
-service socket at launch cannot ask for one.
 
 ## Commands
 
 ```
-ush [-c COMMAND] [-v] [--ephemeral]   a sandboxed shell
-dsh [-c COMMAND] [-v]                 a developer shell (NOT a sandbox)
-tilo-ush serve [--socket PATH]         hand guests to apps that ask
+ush [-c COMMAND] [-v] [--environment RECORD]   a shell in an environment
+tilo-ush serve [--socket PATH]                  hand guests to apps that ask
 
-pkg install [--one-time] PKG…   pkg remove PKG…   pkg list
-pkg diff                        pkg inspect PKG   pkg freeze   pkg burn
-perm trust-dir DIR              perm list         perm revoke ID
-scan PATH                       guard status
+pkg install PKG…     pkg remove PKG…     pkg list
+perm trust-dir DIR   perm allow-host HOST
+perm list            perm revoke ID
+scan PATH            guard status
 quarantine list | add PATH | restore PATH
 restart
+tilo …  app …  store …  system …      brokered to the host session
 ```
-
-`pkg install --one-time` records the package and removes it when the session
-ends; `pkg freeze` keeps it. `pkg burn` destroys the layer, deferred to the end
-of the session because an overlay `upperdir` cannot be removed from under a live
-mount.
 
 ## Storage
 
 ```
 ~/.local/share/ush/
-  layers/persistent/       the layer a normal session writes to
-  layers/ephemeral/<id>/   one per --ephemeral session
-  sessions/<id>/           overlay workdirs, the broker socket
-  audit/                   the broker's append-only log, one file per day
-  policy.json              saved permission decisions
-  home/                    the guest's home — not yours
+  environments/<record>/home/   an environment's home
+  environments/<record>/var/    its /var/lib and /var/cache
+  sessions/<id>/                generated /etc entries, the broker socket,
+                                an ephemeral home
+  audit/                        the broker's append-only log, one file per day
 ```
 
-`$TILO_USH_HOME` moves it. The store must be on ordinary disk: overlayfs will not
-take tmpfs as an upper directory, and the runtime says so by name rather than
-letting the mount fail with `Invalid argument`.
+`$TILO_USH_HOME` moves the store (and, with it, the records);
+`$TILO_USH_RECORDS` moves the records alone. The supervisor hands both to the
+sessions it starts. Images live in the package store; tests point
+`$TILO_USH_IMAGES` at fixture trees instead (`<hex id>/` directories and a
+`current-runtime` file). The network tests fake the outside world on
+loopback: `$TILO_USH_RESOLVER` names the resolvers the stub forwards to,
+`$TILO_USH_EGRESS_MAP_HOST_LOOPBACK` an address at which the guest reaches
+the host's loopback, and `$TILO_USH_EGRESS_REFUSE_NETFILTER=1` makes the
+session behave as if the kernel refused the filter.
 
 ## Known limits
 
-- **The guest shares the host's network namespace.** Package installation needs
-  egress, and the right mechanism to broker it is
-  [`launcher::netgate`](../../crates/packaging/launcher/src/netgate.rs) — an
-  empty namespace and a name-matched SOCKS5 gate — which is not wired to this
-  runtime yet. Until it is, a guest reaches the network the machine reaches.
-- **Rootless `podman` inside `dsh` needs more plumbing.** The namespace
-  primitives are there and verified — nested user namespaces work and the full
-  subuid range is mapped — but podman takes its *rootful* path when `euid == 0`,
-  which the guest's uid-0-in-a-userns design makes true. Running it needs either
-  a guest at the real uid (which would break `pkg`, since rpm must chown) or the
-  rootful storage paths provisioned in the layer.
-- **A layer cannot upgrade a base package**, only add to the base and shadow it.
-  See "Layers" above; `pkg` reports this explicitly.
+- **The network is filtered by address.** See the end of
+  [The network](#the-network). Unix sockets are not network traffic: a
+  granted directory holding one reaches whatever listens on it.
+- **Images are not fetched from the registry yet.** The supervisor
+  materialises images through the package store (`materialized_tree`), from
+  the system app store, the user's store and the shelf in the user's synced
+  files; CI catalog images that ship with neither are not fetched.
+
+## Images your other devices built
+
+A tool built on one of your devices opens on the others — your relay
+included — without being built again:
+
+- **Trust.** The supervisor's store trusts, besides the publishers the
+  installation ships and this device's own key, every device key your
+  identity has certified (`ImageTrust::with_fleet`). The fleet is read again
+  at every use (`ush::fleet`: this device's certificate, the identity host's
+  fleet record, the certificates your home peers were enrolled with), so a
+  device you remove stops counting at once. Its images are refused from then
+  on, the ones already materialised here included and whenever they claim to
+  have been signed, because a lost key can back-date a signature; your other
+  devices build their own. A relay is one of your devices exactly when it
+  holds a certificate from your identity; a relay without one is anyone, and
+  its images open only when the CI catalog key signed them. Another person's
+  devices are never trusted this way: only your identity speaks for your
+  fleet.
+- **Transport.** A device shares each tool it builds by putting the whole
+  package on the shelf at `.tilo/images/<id>.tapp` in your synced files, and
+  every device looks there for an image it lacks before building one. The
+  synced files already reach all your devices and are fully replicated on your
+  home peer, which serves them by content hash when a device reads one, so no
+  new protocol or peer service is involved. Nothing on the shelf is trusted:
+  the store checks each package is the image asked for and admits it by its
+  publisher, as it does a registry's. A session with no synced files mounted
+  neither shares nor fetches, and builds what it lacks.
 
 ## Verifying it yourself
 
 ```bash
-cargo test -p ush          # unit + integration
+cargo test -p ush -p tilo-environment -p tilo-egress   # unit + integration
 ```
 
-The integration test performs the overlay mount the runtime performs before
-deciding whether it can run, and reports the failure when it cannot — inside this
-repository's build container it cannot, because that container's own `/usr` is a
-podman overlay. Run the compiled test binary directly on the host to exercise
-the guest:
+The integration test builds a real guest from fixture images — a runtime whose
+`usr` is the machine's `/usr` and a tool that adds one command — and checks
+`pkg list`, the tool on `PATH`, a read-only `/usr`, the real uid, and that a
+file written to a granted directory is owned by you. It probes first whether
+the machine can stack the images at all; inside a build container whose own
+`/usr` is an overlay it cannot, and says so. The network test gives the record
+one host and checks, from a shell in the guest, that the host is reachable by
+name, that an address literal and an ungranted name are not, that
+`perm allow-host` applies at once and that `guard status` reports what it
+tested; a second checks that a session with hosts it cannot filter does not
+start. They need `pasta` and `/dev/net/tun`, and say so where those are
+missing. Run the compiled test binary
+directly on the host to exercise the guest:
 
 ```bash
 cargo test -p ush --test it --no-run   # prints the binary, target/debug/deps/it-<hash>

@@ -66,7 +66,7 @@ declare -A NAME=(
 [containers]="Containers" [db-client]="Database Client" [diffmerge]="Diff & Merge" [disks]="Disks"
 [disk-usage]="Disk Usage" [ebook]="E-Book Reader" [feeds]="Feeds" [file-explorer]="Files" [firewall]="Firewall"
 [git-client]="Git" [hex-editor]="Hex Editor" [imager]="Disk Imager" [logs]="Logs"
-[image-editor]="Image Editor" [mail]="Mail" [maps]="Maps" [monitor]="System Monitor" [music]="Music" [notes]="Notes"
+[mail]="Mail" [maps]="Maps" [monitor]="System Monitor" [music]="Music" [notes]="Notes"
 [osk]="On-Screen Keyboard" [passwords]="Passwords" [pdf-viewer]="PDF Viewer" [photos]="Photos"
 [print-centre]="Print Centre" [remote]="Remote Desktop" [scratchpad]="Scratchpad" [settings]="Settings"
 [sheets]="Sheets" [slides]="Slides" [shortcuts]="Shortcuts" [snippets]="Snippets" [speed-test]="Speed Test" [store]="App Store"

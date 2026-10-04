@@ -234,6 +234,10 @@ pub enum IssuedRole {
     /// relays, pins and reads them and owns their rooms, but admits no
     /// devices. One year.
     Node,
+    /// The session beside a node that runs the person's apps and agents:
+    /// a member device of theirs with its own key, never a host and never
+    /// one that admits devices. One year, like its node.
+    Session,
 }
 
 /// How long a node's certificate lasts.
@@ -245,13 +249,14 @@ impl IssuedRole {
         match self {
             Self::Browser => CertificationPolicy::browser().ceiling,
             Self::Node => tilo_user_identity::cloud_enrollment::host_capabilities(),
+            Self::Session => DeviceCapabilities::member(),
         }
     }
 
     fn lifetime_ns(self) -> u64 {
         match self {
             Self::Browser => CertificationPolicy::browser().lifetime_ns,
-            Self::Node => NODE_CERT_LIFETIME_NS,
+            Self::Node | Self::Session => NODE_CERT_LIFETIME_NS,
         }
     }
 }
@@ -398,7 +403,7 @@ mod tests {
     use tilo_user_identity::verify_device_cert;
 
     #[tokio::test]
-    async fn a_page_root_issues_browser_and_node_certificates_but_never_its_own() {
+    async fn a_page_root_issues_browser_node_and_session_certificates_but_never_its_own() {
         let root = SigningKey::from_bytes(&[1; 32]);
         let device = SigningKey::from_bytes(&[2; 32]).verifying_key().to_bytes();
 
@@ -420,6 +425,17 @@ mod tests {
         assert!(!caps.can_admit_devices && !caps.foreign);
         assert_eq!(
             node.expires_at_ns.unwrap() - node.issued_at_ns,
+            NODE_CERT_LIFETIME_NS
+        );
+
+        let session = issue_device_cert(&root, device, "Apps on the node", IssuedRole::Session)
+            .await
+            .unwrap();
+        verify_device_cert(&session).unwrap();
+        assert_eq!(session.capabilities, DeviceCapabilities::member());
+        assert!(!session.capabilities.can_act_as_host);
+        assert_eq!(
+            session.expires_at_ns.unwrap() - session.issued_at_ns,
             NODE_CERT_LIFETIME_NS
         );
 

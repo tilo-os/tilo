@@ -68,7 +68,9 @@ impl ResourceApp for SpeedTestShell {
     const ID: &'static str = "so.tilo.speed-test";
     const TITLE: &'static str = "Speed Test";
     const ICON: Option<&'static str> = Some("speed-test");
-    const SHOT_VIEWPORT: (u32, u32) = (1180, 760);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1180, 760)
+    }
 
     fn view(cx: &mut ViewCx<SpeedTest>) -> Element {
         cx.surface(SpeedTestApp::new())

@@ -93,6 +93,7 @@ impl Resource for Tube {
                 anchor: Some(format!("tube.queue:{video_id}")),
                 title: video_id.clone(),
                 text: "queue".into(),
+                action: None,
             })
             .chain(
                 state
@@ -103,6 +104,7 @@ impl Resource for Tube {
                         anchor: Some(format!("tube.subscription:{channel_id}")),
                         title: channel_id.clone(),
                         text: "subscription".into(),
+                        action: None,
                     }),
             )
             .collect()
@@ -205,7 +207,9 @@ impl ResourceApp for TubeShell {
     const ID: &'static str = "so.tilo.tube";
     const TITLE: &'static str = "Tube";
     const ICON: Option<&'static str> = Some("tube");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Tube>) -> Element {
         cx.surface(Self::surface())
@@ -228,6 +232,12 @@ impl ResourceSurface<Tube> for TubeApp {
 
     fn attach(&mut self, cx: SurfaceCx<Tube>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    // Edits bound to where the user is publish as hand-built rows of the
+    // widget's own rather than as `bound_declarations`.
+    fn publishes_document_actions(&self) -> bool {
+        true
     }
 }
 

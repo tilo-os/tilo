@@ -68,6 +68,9 @@ serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
+# The content store a host lends the app (`ViewCx::content`), in every build;
+# the native build below adds its directory store for `render`.
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 
 [[test]]
 name = "it"

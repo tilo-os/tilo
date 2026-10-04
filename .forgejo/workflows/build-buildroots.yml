@@ -83,7 +83,7 @@ jobs:
   signing-preflight:
     needs: plan
     if: needs.plan.outputs.kinds != '[]'
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
