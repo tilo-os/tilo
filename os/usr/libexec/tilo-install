@@ -1496,7 +1496,7 @@ stage_installed_firstboot_runtime() {
   unit="$source_root/usr/lib/systemd/system/tilo-firstboot-user.service"
   [ -f "$helper" ] && [ ! -L "$helper" ] && [ -f "$unit" ] && [ ! -L "$unit" ] \
     || die "installer is missing its first-boot account runtime"
-  for name in tilo-firstboot-autologin-cleanup; do
+  for name in tilo-firstboot-autologin-cleanup tilo-session-recovery; do
     [ -f "$source_root/usr/libexec/$name" ] && [ ! -L "$source_root/usr/libexec/$name" ] \
       && [ -f "$source_root/usr/lib/systemd/system/$name.service" ] \
       && [ ! -L "$source_root/usr/lib/systemd/system/$name.service" ] \
@@ -1513,6 +1513,7 @@ stage_installed_firstboot_runtime() {
   tmp="$(mktemp "$target_etc/systemd/system/.firstboot-user.XXXXXX")"
   sed 's|^ExecStart=/usr/libexec/tilo-firstboot-user$|ExecStart=/usr/bin/bash /etc/tilo/firstboot-user|' "$unit" > "$tmp"
   chmod 0644 "$tmp"
+  printf '\n[Unit]\nOnFailure=tilo-session-recovery.service\n' >> "$tmp"
   label_installed_tilo_path "$tmp" /etc/systemd/system/tilo-firstboot-user.service
   mv -f -- "$tmp" "$target_etc/systemd/system/tilo-firstboot-user.service"
   ln -sfn ../tilo-firstboot-user.service \
@@ -1536,6 +1537,16 @@ stage_installed_firstboot_runtime() {
   mv -f -- "$tmp" "$target_etc/systemd/system/tilo-firstboot-autologin-cleanup.service"
   ln -sfn ../tilo-firstboot-autologin-cleanup.service \
     "$target_etc/systemd/system/graphical.target.wants/tilo-firstboot-autologin-cleanup.service"
+  tmp="$(mktemp "$target_etc/tilo/.session-recovery.XXXXXX")"
+  install -m 0644 "$source_root/usr/libexec/tilo-session-recovery" "$tmp"
+  label_installed_tilo_path "$tmp" /etc/tilo/session-recovery
+  mv -f -- "$tmp" "$target_etc/tilo/session-recovery"
+  tmp="$(mktemp "$target_etc/systemd/system/.session-recovery.XXXXXX")"
+  sed 's|^ExecStart=/usr/libexec/tilo-session-recovery$|ExecStart=/usr/bin/bash /etc/tilo/session-recovery|' \
+    "$source_root/usr/lib/systemd/system/tilo-session-recovery.service" > "$tmp"
+  chmod 0644 "$tmp"
+  label_installed_tilo_path "$tmp" /etc/systemd/system/tilo-session-recovery.service
+  mv -f -- "$tmp" "$target_etc/systemd/system/tilo-session-recovery.service"
   for service in greetd sshd; do
     install -d -m 0755 "$target_etc/systemd/system/$service.service.d"
     tmp="$(mktemp "$target_etc/systemd/system/$service.service.d/.firstboot-user.XXXXXX")"
@@ -1543,7 +1554,7 @@ stage_installed_firstboot_runtime() {
     # A failed account transaction must not repeatedly launch a nonexistent
     # graphical user. Keep sshd available for any existing recovery account.
     if [ "$service" = greetd ]; then
-      printf 'Requires=tilo-firstboot-user.service\n\n[Service]\nExecStartPre=/usr/bin/bash /etc/tilo/firstboot-user --check-session\n' >> "$tmp"
+      printf 'Requires=tilo-firstboot-user.service\nOnFailure=tilo-session-recovery.service\n\n[Service]\nExecStartPre=/usr/bin/bash /etc/tilo/firstboot-user --check-session\n' >> "$tmp"
     fi
     chmod 0644 "$tmp"
     label_installed_tilo_path "$tmp" "/etc/systemd/system/$service.service.d/10-tilo-firstboot-user.conf"

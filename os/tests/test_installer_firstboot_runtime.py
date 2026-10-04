@@ -35,7 +35,9 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             for relative in ("usr/libexec/tilo-firstboot-user",
                              "usr/lib/systemd/system/tilo-firstboot-user.service",
                              "usr/libexec/tilo-firstboot-autologin-cleanup",
-                             "usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service"):
+                             "usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service",
+                             "usr/libexec/tilo-session-recovery",
+                             "usr/lib/systemd/system/tilo-session-recovery.service"):
                 out = source / relative
                 out.parent.mkdir(parents=True, exist_ok=True)
                 out.write_bytes((ROOT / "os" / relative).read_bytes())
@@ -54,10 +56,19 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             unit = target / "systemd/system/tilo-firstboot-user.service"
             self.assertIn("ExecStart=/usr/bin/bash /etc/tilo/firstboot-user\n", unit.read_text())
             self.assertNotIn("ExecStart=/usr/libexec/", unit.read_text())
+            self.assertIn("OnFailure=tilo-session-recovery.service", unit.read_text())
             enable = target / "systemd/system/multi-user.target.wants/tilo-firstboot-user.service"
             self.assertEqual(enable.resolve(), unit)
             greetd = (target / "systemd/system/greetd.service.d/10-tilo-firstboot-user.conf").read_text()
             self.assertIn("Requires=tilo-firstboot-user.service", greetd)
+            self.assertIn("OnFailure=tilo-session-recovery.service", greetd)
+            recovery_unit = target / "systemd/system/tilo-session-recovery.service"
+            self.assertIn("ExecStart=/usr/bin/bash /etc/tilo/session-recovery", recovery_unit.read_text())
+            self.assertIn("TTYPath=/dev/tty2", recovery_unit.read_text())
+            self.assertIn("Conflicts=getty@tty2.service greetd.service", recovery_unit.read_text())
+            self.assertIn("Wants=getty@tty3.service", recovery_unit.read_text())
+            self.assertIn("NoNewPrivileges=yes", recovery_unit.read_text())
+            self.assertTrue((target / "tilo/session-recovery").is_file())
             self.assertIn("After=tilo-firstboot-user.service", greetd)
             self.assertIn("ExecStartPre=/usr/bin/bash /etc/tilo/firstboot-user --check-session", greetd)
             self.assertIn("After=tilo-firstboot-user.service", (target / "systemd/system/sshd.service.d/10-tilo-firstboot-user.conf").read_text())
@@ -89,6 +100,38 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
             self.assertNotEqual(check('[initial_session]\ncommand = "shell"\n').returncode, 0)
             self.assertEqual(check('[initial_session]\nuser = "root"\n').returncode, 0)
             self.assertEqual(check('[default_session]\nuser = "greetd"\n').returncode, 0)
+
+    def test_failed_startup_displays_recovery_and_filters_secret_output(self):
+        with tempfile.TemporaryDirectory() as work:
+            work = Path(work)
+            commands = work / "bin"
+            commands.mkdir()
+            for name, text in {
+                "plymouth": 'echo "plymouth $*" >> "$TRACE"; exit 1',
+                "chvt": 'echo "chvt $*" >> "$TRACE"',
+                "systemctl": '[ "$1" != is-active ] || exit 0; echo "ActiveState=failed"',
+                "journalctl": 'echo "password=DO_NOT_DISPLAY_PRIVATE_SECRET"; echo "greetd.service: Failed with result exit-code."',
+            }.items():
+                script = commands / name
+                script.write_text("#!/bin/bash\n" + text + "\n")
+                script.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "-c", 'source "$1"; show_session_recovery "$2"', "recovery-fixture",
+                 str(ROOT / "os/usr/libexec/tilo-session-recovery"), str(commands)],
+                env={**os.environ, "TRACE": str(work / "trace")}, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Tilo could not start the desktop", result.stdout)
+            self.assertIn("Recovery SSH is running", result.stdout)
+            self.assertIn("authenticated console login", result.stdout)
+            self.assertIn("ActiveState=failed", result.stdout)
+            self.assertIn("greetd.service: Failed with result", result.stdout)
+            self.assertNotIn("PRIVATE_SECRET", result.stdout)
+            self.assertEqual((work / "trace").read_text(), "plymouth quit\nchvt 2\n")
+            # A status-only fallback cannot turn failure into a privileged login.
+            script = (ROOT / "os/usr/libexec/tilo-session-recovery").read_text()
+            self.assertNotIn("sulogin", script)
+            self.assertNotIn("bash -i", script)
+            self.assertNotIn("setenforce", script)
 
     def test_base_os_ships_native_firstboot_runtime(self):
         containerfile = (ROOT / "os/Containerfile").read_text()
