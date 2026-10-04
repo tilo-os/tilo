@@ -82,6 +82,16 @@ pub const GROUPS: [Group; 4] = [
     },
 ];
 
+/// The keys that do `does` (a Fluent id of [`GROUPS`]), as a menu row
+/// shows them beside the same command.
+pub fn keys_for(does: &str) -> Option<&'static str> {
+    GROUPS
+        .iter()
+        .flat_map(|group| group.shortcuts.iter())
+        .find(|shortcut| shortcut.does == does)
+        .map(|shortcut| shortcut.keys)
+}
+
 /// The tools and the keys that pick them up.
 pub fn tools() -> Vec<(String, &'static str)> {
     Tool::ALL
