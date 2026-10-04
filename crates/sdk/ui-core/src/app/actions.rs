@@ -2542,9 +2542,9 @@ impl App {
         // argument-binding, confirmation, and broker-admission door above.
         // This branch runs only when the broker directs that admitted action
         // back to its source app, preserving the normal receipt lifecycle.
-        if encoded.type_id == "tilo.application.launch" {
-            let launch: ApplicationLaunchPayload = serde_json::from_slice(&encoded.payload)
-                .map_err(|_| {
+        if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE {
+            let launch: tilo_actions::remote::ApplicationLaunch =
+                serde_json::from_slice(&encoded.payload).map_err(|_| {
                     tilo_actions::DoorError::Failed("invalid application launch payload".into())
                 })?;
             if !launch.valid() {
@@ -2579,7 +2579,7 @@ impl App {
             let request = tilo_actions::remote::InvokeRequest {
                 invocation: tilo_actions::InvocationId::new(),
                 target: tilo_actions::remote::application_open_target(&room, &launch.app_id),
-                argument: tilo_actions::remote::InvokeArgument::Text(launch.content_hash),
+                argument: launch.argument(),
                 context: None,
                 confirmation: None,
                 revision: None,
