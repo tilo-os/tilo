@@ -8127,6 +8127,121 @@ mod tests {
         }
     }
 
+    /// A stand-in for an imported scanout image: an SDR target the test can read back.
+    #[cfg(target_os = "linux")]
+    fn direct_target(
+        bridge: &VelloDrmBridge,
+        width: u32,
+        height: u32,
+    ) -> ui::dmabuf_import::ImportedRenderTarget {
+        let (device, _) = bridge.gpu();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("direct-scanout-test-target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        ui::dmabuf_import::ImportedRenderTarget {
+            view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            texture,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            width,
+            height,
+            stride: width.saturating_mul(4),
+        }
+    }
+
+    /// The direct swapchain alternates between two scanout images, so the image a frame lands in
+    /// holds the revision before last. The renderer's retained target holds the previous one, and
+    /// the image receives a whole copy of it: a typed character must repaint sparsely, not the
+    /// full panel (a dense 2944x1840 frame took ~45 ms on a Snapdragon X Elite).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_frames_stay_sparse_across_the_swapchain_and_show_the_whole_scene() {
+        let (width, height) = (128, 96);
+        let mut bridge = required_bridge(width, height);
+        bridge.wait_for_gpu_completion_for_test();
+        let slots = [
+            direct_target(&bridge, width, height),
+            direct_target(&bridge, width, height),
+        ];
+        let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
+        let region = vello::FineDamageRect {
+            x: 16,
+            y: 16,
+            width: 16,
+            height: 16,
+        };
+        let red = Color::from_rgb8(0xE0, 0x10, 0x20);
+        let mut typed = rect_scene(width, height, Color::WHITE);
+        typed.append(&region_scene(region, red), None);
+
+        bridge
+            .paint_imported_until(
+                &rect_scene(width, height, Color::WHITE),
+                version(1, None, None),
+                &slots[0],
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .expect("the first direct frame renders");
+        let stats = bridge
+            .paint_imported_until(
+                &typed,
+                version(2, Some(1), Some(&[region])),
+                &slots[1],
+                tilo_test_env::hang_deadline(),
+                white,
+                &[],
+            )
+            .expect("the sparse direct frame renders");
+        if bridge.target.renderer.sparse_fine_supported() {
+            assert!(
+                stats.sparse_attempts > 0 && stats.full_attempts == 0,
+                "a damaged region repaints sparsely: {stats:?}"
+            );
+        }
+
+        let (device, queue) = bridge.gpu();
+        let (buffer, stride) = VelloDrmBridge::allocate_staging(device, width, height);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        VelloDrmBridge::append_full_copy(
+            &mut encoder,
+            &slots[1].texture,
+            &buffer,
+            stride,
+            width,
+            height,
+        );
+        queue.submit([encoder.finish()]);
+        let mapped = VelloDrmBridge::map_device_readback(device, &buffer).expect("slot readback");
+        let pixel = |x: u32, y: u32| {
+            let at = (y * stride + x * 4) as usize;
+            mapped[at..at + 4].to_vec()
+        };
+        assert_eq!(
+            pixel(20, 20),
+            vec![0x20, 0x10, 0xE0, 0xFF],
+            "the typed region"
+        );
+        assert_eq!(
+            pixel(100, 80),
+            vec![0xFF; 4],
+            "the rest of the slot comes from the retained frame, not the slot's stale image"
+        );
+        drop(mapped);
+        buffer.unmap();
+    }
+
     /// One direct frame that missed its deadline -- a cold shader cache, a busy GPU -- poisons
     /// the target. The retry after the readback presenter stood in must render again, or a single
     /// slow frame keeps the output on the per-frame readback for the rest of the session.
@@ -8134,29 +8249,7 @@ mod tests {
     #[test]
     fn a_direct_frame_after_a_missed_deadline_renders_again() {
         let mut bridge = required_bridge(128, 96);
-        let (device, _) = bridge.gpu();
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("direct-retry-target"),
-            size: wgpu::Extent3d {
-                width: 128,
-                height: 96,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bgra8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let target = ui::dmabuf_import::ImportedRenderTarget {
-            view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
-            texture,
-            format: wgpu::TextureFormat::Bgra8Unorm,
-            width: 128,
-            height: 96,
-            stride: 128 * 4,
-        };
+        let target = direct_target(&bridge, 128, 96);
         let scene = rect_scene(128, 96, Color::WHITE);
         let white = crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS;
 
