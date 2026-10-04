@@ -12,9 +12,9 @@ headroom = 0.01
 # (`build.sh --profile release` optimizes less and comes out about 2 MB
 # larger.)
 [bundles.desktop]
-bytes = 83361792
+bytes = 83427328
 
 [bundles.desktop.rebaseline]
-run = 61462
-measured = 82527626
-reason = "feature growth: the feeds reader's effects, search and message catalog in every host, and the git client's live rows (#2426)"
+run = 61359
+measured = 82551833
+reason = "feature growth: snippets runs on the framework, with its body as a text child (#2417)"
