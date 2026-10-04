@@ -272,3 +272,13 @@ backend. wgpu-hal's GLES device holds its single context lock for every
 pipeline compile, so parallel initialisation gains nothing there, and on a
 slow driver a queued worker thread exceeds the context lock timeout and
 panics.
+
+## `vendor/vello/src/lib.rs`, `wgpu_engine.rs`: images without CPU pixels
+
+An image whose blob is empty is drawn, on a renderer without an
+`override_image` texture for it, from the process's `ExternalImageSource`
+(`set_external_image_source`, keyed by blob id) instead of panicking, and
+transparent when the source has nothing. The compositor keeps Wayland
+client frames on the GPU and draws them on its presenting renderer from
+their textures; screenshots, recordings and renderers on other devices
+reach the same frames through the source, which reads them back on demand.
