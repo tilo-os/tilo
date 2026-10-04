@@ -533,3 +533,75 @@ fn a_window_opens_another_record_in_its_own_place() {
     assert_eq!(bare.record(), &harbour);
     assert_eq!(bare.state().notes.len(), 1);
 }
+
+/// A sketch whose record of a path starts traced over that path in its
+/// genesis, and whose launch reads the record it opens.
+struct GenesisApp;
+
+impl ResourceApp for GenesisApp {
+    type Resource = Sketch;
+    const ID: &'static str = "so.tilo.test-genesis-sketch";
+    const TITLE: &'static str = "Sketch";
+    const ARGUMENTS: usize = 1;
+
+    fn view(cx: &mut ViewCx<Sketch>) -> Element {
+        Box::new(cx.text(|sketch| sketch.source.clone()))
+    }
+
+    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+        input.argument().map(RecordId::for_file)
+    }
+
+    fn genesis(input: &LaunchInput<'_>) -> Vec<Invoke<Sketch>> {
+        input
+            .argument()
+            .map(|path| Sketch::TRACE.with(path.to_owned()))
+            .into_iter()
+            .collect()
+    }
+
+    /// Reopened, a note says how many notes the record already held.
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Sketch>> {
+        let held = input.record::<Sketch>().map(|sketch| sketch.notes.len());
+        match held {
+            Some(held) if !created => vec![Sketch::NOTE.with(format!("reopened over {held}"))],
+            _ => Vec::new(),
+        }
+    }
+}
+
+#[test]
+fn a_launch_genesis_is_the_same_on_every_device_and_nobodys_edit() {
+    let mut here = TestApp::<GenesisApp>::launched(&["/pictures/harbour.png"]).unwrap();
+    let there = TestApp::<GenesisApp>::launched(&["/pictures/harbour.png"]).unwrap();
+    assert_eq!(here.state().source, "/pictures/harbour.png");
+    assert!(!here.undo(), "the genesis is no undo step");
+    assert_eq!(
+        here.read_document(|doc| doc.clone().get_heads()),
+        there.read_document(|doc| doc.clone().get_heads()),
+        "both devices wrote the same genesis"
+    );
+    let mut theirs = there.peer_document();
+    here.merge_peer(&mut theirs).unwrap();
+    assert_eq!(here.state().source, "/pictures/harbour.png");
+}
+
+#[test]
+fn a_launch_reads_the_record_it_opens() {
+    let mut app = TestApp::<GenesisApp>::launched(&["/pictures/harbour.png"]).unwrap();
+    assert!(
+        app.state().notes.is_empty(),
+        "a created record is not reopened"
+    );
+    app.invoke(Sketch::NOTE.with("the lighthouse".into()))
+        .unwrap();
+    let app = app.relaunch(&["/pictures/harbour.png"]).unwrap();
+    let mut texts: Vec<String> = app
+        .state()
+        .notes
+        .values()
+        .map(|note| note.text.clone())
+        .collect();
+    texts.sort();
+    assert_eq!(texts, ["reopened over 1", "the lighthouse"]);
+}

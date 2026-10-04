@@ -156,6 +156,25 @@ impl Resource for Document {
     }
 }
 
+/// The import of the file `input` names, as one action.
+fn import(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
+    let Some(file) = input.file() else {
+        return Vec::new();
+    };
+    let format = crate::WpFormat::from_path(std::path::Path::new(file.name()));
+    let content = input
+        .content()
+        .cloned()
+        .unwrap_or_else(crate::app_content_store);
+    match crate::import_action(file.bytes(), format, &content) {
+        Ok(action) => Invoke::apply(&action).into_iter().collect(),
+        Err(error) => {
+            eprintln!("word-processor: could not open {}: {error}", file.name());
+            Vec::new()
+        }
+    }
+}
+
 /// The media types of the files the word processor opens: every format it
 /// imports (PDF and EPUB are export-only).
 const OPENS: &[&str] = &[
@@ -225,20 +244,24 @@ impl ResourceApp for WordProcessorApp {
         input.argument().map(RecordId::for_file)
     }
 
-    /// A file's record starts as the file imported; reopened, the record is
-    /// the document and the file is where Save writes it.
+    /// A file's record starts as the file imported, in its genesis: every
+    /// device that opens the same file before they have synced writes the
+    /// same document.
+    fn genesis(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
+        import(input)
+    }
+
+    /// Reopened, the record is the document and the file is where Save
+    /// writes it, unless the file changed since the record last read or
+    /// wrote it: then it is read again, an edit Undo takes back.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Document>> {
-        let Some(file) = input.file().filter(|_| created) else {
+        let (Some(file), Some(state)) = (input.file(), input.record::<RichTextState>()) else {
             return Vec::new();
         };
-        let format = crate::WpFormat::from_path(std::path::Path::new(file.name()));
-        match crate::import_action(file.bytes(), format, &crate::app_content_store()) {
-            Ok(action) => Invoke::apply(&action).into_iter().collect(),
-            Err(error) => {
-                eprintln!("word-processor: could not open {}: {error}", file.name());
-                Vec::new()
-            }
+        if created || state.file_digest() == Some(tilo_content::hash_bytes(file.bytes()).as_str()) {
+            return Vec::new();
         }
+        import(input)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -309,9 +332,7 @@ impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
         });
         self.model_mut().set_content_store(content);
         if let Some(path) = cx.launch_arguments().first() {
-            let path = std::path::PathBuf::from(path);
-            let format = crate::WpFormat::from_path(&path);
-            self.set_file(path, format);
+            self.show_record_of(std::path::PathBuf::from(path));
         }
         self.follow_personal_dictionary(cx.settings());
         self.attach_framework(cx.live(), cx.dispatcher());
