@@ -394,6 +394,21 @@ fn restore_owner_from_parent(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether this process runs as the owner of `directory`.
+fn owns_directory(directory: &std::path::Path) -> anyhow::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        // SAFETY: geteuid has no preconditions.
+        Ok(std::fs::metadata(directory)?.uid() == unsafe { libc::geteuid() })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = directory;
+        Ok(true)
+    }
+}
+
 fn project_personal_device(
     identity_dir: &std::path::Path,
     cert: &DeviceCert,
@@ -848,13 +863,17 @@ fn commit_staged_personal_enrollment(
         0o600,
     )?;
     // The joined identity is the one this device now acts for: select it, or
-    // the next login resolves the absent default and asks to create one.
-    let record_id = record
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .context("joined identity record has no runtime id")?;
-    runtime_identity::set_active_identity(&marker.identity_dir, record_id)
-        .context("select the joined identity")?;
+    // the next login resolves the absent default and asks to create one. Only
+    // the directory's owner can select (the selector is theirs alone); a
+    // root-run join into someone else's directory leaves it to them.
+    if owns_directory(&marker.identity_dir)? {
+        let record_id = record
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .context("joined identity record has no runtime id")?;
+        runtime_identity::set_active_identity(&marker.identity_dir, record_id)
+            .context("select the joined identity")?;
+    }
     checkpoint(PersonalCommitCheckpoint::UserPublicKey)?;
     tilo_files::native::atomic::write(&paths.user_pubkey, &marker.user_public_key)?;
     checkpoint(PersonalCommitCheckpoint::PerUserCert)?;
@@ -875,7 +894,6 @@ fn commit_staged_personal_enrollment(
         record.clone(),
         fleet,
         marker.identity_dir.join("registry.json"),
-        marker.identity_dir.join("active"),
         tilo_relay::home_peer_registry_path(identity_root),
         paths.user_pubkey.clone(),
         per_user_cert

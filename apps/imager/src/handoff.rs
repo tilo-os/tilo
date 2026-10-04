@@ -98,7 +98,7 @@ pub fn apply_setup_handoff(
             return Err("A device name is required to enroll this machine's identity.".into());
         }
         let rooms = tilo_identity_host::provisioning::personal_rooms_export_path()
-            .unwrap_or_else(|| PathBuf::from("/var/lib/tilo/personal-rooms.json"));
+            .unwrap_or_else(|| PathBuf::from("/var/lib/tilo/peers/personal-rooms.json"));
         tilo_identity_host::provisioning::enroll_from_local_identity(
             &tilo_identity_host::provisioning::JoinedDeviceLayout {
                 target_root: root,
