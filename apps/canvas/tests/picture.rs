@@ -423,6 +423,7 @@ fn svg_export_lays_a_layers_vignette_over_its_marks() {
     );
 }
 
+#[test]
 fn a_click_on_a_picture_picks_it() {
     let mut app = TestApp::<App>::new().unwrap();
     placed(&mut app);
