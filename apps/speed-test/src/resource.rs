@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use ui::framework::{ResourceApp, ResourceSurface, ViewCx};
-use ui::tilo_actions::{Action, ActionError, ActionRegistry, ActionSpec, OperationKind};
+use ui::tilo_actions::{Action, ActionError, ActionSpec, OperationKind};
 use ui::tilo_resource::{Doc, ModelError, Resource};
 use ui::widget::Element;
 
@@ -34,10 +34,6 @@ impl Resource for SpeedTest {
     type State = SpeedTestState;
     type Action = EmptyDocAction;
 
-    fn register(registry: &mut ActionRegistry) {
-        registry.register::<EmptyDocAction>(Self::ACTION_TYPE);
-    }
-
     fn read(_doc: &Doc) -> Result<SpeedTestState, ModelError> {
         Ok(SpeedTestState)
     }
@@ -64,7 +60,7 @@ impl ResourceApp for SpeedTestShell {
     const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<SpeedTest>) -> Element {
-        cx.surface(SpeedTestApp::new())
+        cx.surface(SpeedTestApp::new().with_actions(cx.actions()))
     }
 
     fn scenarios() -> &'static [&'static str] {

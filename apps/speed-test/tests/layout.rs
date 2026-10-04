@@ -84,3 +84,29 @@ fn nothing_has_been_measured_before_a_test_runs() {
         "no stage is reached at idle"
     );
 }
+
+#[test]
+fn the_run_button_stops_a_running_test_through_its_published_action() {
+    let mut app = staged("running", (1280, 800));
+    let harness = app.harness();
+    let stop = harness
+        .a11y_node_named("Stop test")
+        .expect("a running test offers Stop");
+    harness
+        .perform_a11y_action(stop, &ui::a11y::Action::Activate)
+        .unwrap();
+    let _ = harness.poll_frame();
+    let run = harness
+        .a11y_node_named("Run speed test")
+        .expect("stopping returns the button to Run");
+    assert!(harness.a11y_node_named("Stop test").is_none());
+    let (_, node) = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(id, _)| *id == run)
+        .unwrap();
+    assert!(
+        !node.is_disabled(),
+        "Run is bound to the resource's published start"
+    );
+}

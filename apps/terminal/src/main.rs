@@ -160,22 +160,30 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
                 // Spawn the portable shell path: macOS has no /bin/true.
                 let mut command = terminal::CommandBuilder::new("/bin/sh");
                 let script = if transcript {
-                    ENDED_TRANSCRIPT_SH
+                    let lines: Vec<String> = ENDED_TRANSCRIPT
+                        .iter()
+                        .map(|line| format!("'{line}'"))
+                        .collect();
+                    format!("printf '%s\\n' {}", lines.join(" "))
                 } else {
-                    "exit 0"
+                    "exit 0".to_owned()
                 };
-                command.args(["-c", script]);
+                command.args(["-c", script.as_str()]);
                 command
             };
             #[cfg(windows)]
             let command = {
                 let mut command = terminal::CommandBuilder::new("cmd.exe");
                 let script = if transcript {
-                    ENDED_TRANSCRIPT_CMD
+                    let lines: Vec<String> = ENDED_TRANSCRIPT
+                        .iter()
+                        .map(|line| format!("echo {line}"))
+                        .collect();
+                    lines.join("& ")
                 } else {
-                    "exit /b 0"
+                    "exit /b 0".to_owned()
                 };
-                command.args(["/d", "/c", script]);
+                command.args(["/d", "/c", script.as_str()]);
                 command
             };
             TerminalWidget::spawn_command(command)
@@ -203,15 +211,13 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 
 /// The output the `ended` scenario's shell prints before it exits, so the shot
 /// shows a session that kept its transcript.
-#[cfg(unix)]
-const ENDED_TRANSCRIPT_SH: &str = "printf '%s\n' \
-  'user@tilo ~/tilo $ ./deploy.sh staging' \
-  'Building release bundle...' \
-  'Uploading 3 files to staging.tilo.so' \
-  'Deploy finished in 4.2s' \
-  'Shell closed by the remote end.'";
-#[cfg(windows)]
-const ENDED_TRANSCRIPT_CMD: &str = "echo user@tilo ~/tilo $ ./deploy.sh staging& echo Building release bundle...& echo Uploading 3 files to staging.tilo.so& echo Deploy finished in 4.2s& echo Shell closed by the remote end.";
+const ENDED_TRANSCRIPT: &[&str] = &[
+    "user@tilo ~/tilo $ ./deploy.sh staging",
+    "Building release bundle...",
+    "Uploading 3 files to staging.tilo.so",
+    "Deploy finished in 4.2s",
+    "Shell closed by the remote end.",
+];
 
 /// Run one offscreen frame against `widget` at `viewport` and write the
 /// resulting RGBA to `out` as a PNG.
