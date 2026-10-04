@@ -4215,6 +4215,9 @@ impl BrowserWidget {
                 WebViewEvent::PageResult { request_id, result } => {
                     self.accept_page_result(request_id, result);
                 }
+                // Answers to the paint stream's own requests; its engine
+                // wrapper consumes them before they reach the browser.
+                WebViewEvent::PaintSnapshot { .. } | WebViewEvent::PaintResource { .. } => {}
                 event @ (WebViewEvent::DownloadRequested { .. }
                 | WebViewEvent::DownloadProgress { .. }
                 | WebViewEvent::DownloadFinished { .. }
@@ -4787,9 +4790,20 @@ impl Default for BrowserWidget {
     }
 }
 
-/// Live browsing always uses a real engine. WPE is an explicit migration
-/// option; deterministic rendering is confined to `new_headless`.
+/// Live browsing always uses a real engine. `TILO_BROWSER_PAINT=1` draws its
+/// pages from the paint stream (the engine's layout as a display list, drawn by
+/// this toolkit) instead of its pixels: what a web client of this host sees.
 fn default_engine(mode: BrowsingMode) -> SharedEngine {
+    let engine = native_engine(mode);
+    if std::env::var("TILO_BROWSER_PAINT").as_deref() == Ok("1") {
+        return ui::webview::paint::PaintEngine::new(engine);
+    }
+    engine
+}
+
+/// WPE is an explicit migration option; deterministic rendering is confined
+/// to `new_headless`.
+fn native_engine(mode: BrowsingMode) -> SharedEngine {
     #[cfg(feature = "wpe")]
     if std::env::var("TILO_BROWSER_ENGINE").as_deref() == Ok("wpe") {
         if mode.is_private() {
