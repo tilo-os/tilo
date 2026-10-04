@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use automerge::AutoCommit;
 use ui::widget::{
-    Column, ControlSize, Dropdown, Element, Field, LabelPlacement, ModalDialog, Text,
+    Column, ControlSize, Dropdown, Element, Field, ModalDialog, Property, PropertyList, Row, Text,
 };
 use ui::{LocalState, TextRole};
 
@@ -16,7 +16,7 @@ use super::{ContactsApp, DuplicateReview};
 use crate::actions::MergeField;
 use crate::model::{Contact, ContactId};
 use crate::vcard::VCardVersion;
-use crate::view::{DialogChoice, Request, Shared, queue};
+use crate::view::{Compact, DialogChoice, Request, Shared, queue};
 
 /// Which decision a dialog asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -271,23 +271,39 @@ impl ContactsApp {
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(body(&format!(
-                "These cards share {}. Every phone number, email, address and group is kept.",
+                "These cards share {}. This card stays, with every phone number, email, address and group of both.",
                 shared_facts(&review.reasons)
             ))));
+        // Each field the cards disagree on: its name and which value the
+        // merged card keeps, then both values in full.
         for (field, choice) in &review.choices {
+            let label = duplicate_field_label(*field);
             let current = duplicate_field_value(&review.survivor, *field);
             let other = duplicate_field_value(&review.source, *field);
-            let mut menu = Dropdown::from_state(vec![current.clone(), other.clone()], choice)
+            let keep = "Keep this card's".to_owned();
+            let take = "Keep the other card's".to_owned();
+            let mut menu = Dropdown::from_state(vec![keep.clone(), take.clone()], choice)
                 .with_id(&format!("contacts.duplicate.{field:?}"))
-                .control_size(ControlSize::Large);
+                .with_accessible_name(format!("{label} to keep"));
             menu.set_value_options(vec![
-                ("current".to_owned(), current),
-                ("other".to_owned(), other),
+                ("current".to_owned(), keep.clone()),
+                ("other".to_owned(), take.clone()),
             ]);
-            content = content.push(Box::new(
-                Field::new(duplicate_field_label(*field), menu)
-                    .with_label_placement(Some(LabelPlacement::Above)),
-            ));
+            let heading = Row::new()
+                .no_wrap()
+                .with_justify(taffy::JustifyContent::SpaceBetween)
+                .push(Box::new(Text::new(label).with_role(TextRole::Subheading)))
+                .push(Box::new(Compact::new(
+                    menu,
+                    vec![keep, take],
+                    ControlSize::Small,
+                )));
+            content = content
+                .push(Box::new(heading))
+                .push(Box::new(PropertyList::new(vec![
+                    Property::new("This card", current),
+                    Property::new("Other card", other),
+                ])));
         }
         let (source, survivor) = (review.source.display_name(), review.survivor.display_name());
         let title = if source == survivor {

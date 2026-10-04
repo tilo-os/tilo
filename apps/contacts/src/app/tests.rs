@@ -237,9 +237,9 @@ fn sidebar_destinations_narrow_the_list() {
     );
 }
 
-/// Sort and group views of the book order and filter the published rows.
+/// The list's order control sorts by name or by organization.
 #[test]
-fn sort_orders_the_list_and_the_more_menu_offers_it() {
+fn the_sort_control_orders_the_list() {
     let (mut app, mut doc) = synced();
     let by_name = list_ids(&app);
     let names: Vec<String> = by_name
@@ -254,15 +254,17 @@ fn sort_orders_the_list_and_the_more_menu_offers_it() {
     let Some(OpenMenu::More(rows)) = &app.open_menu else {
         panic!("the More menu is open");
     };
-    let sort_org = rows
-        .iter()
-        .position(|row| *row == Some(MoreAction::Sort(SortKey::Org)))
-        .expect("the menu offers sorting by organization");
     assert!(
         !rows.contains(&Some(MoreAction::ReviewDuplicate)),
         "no review is offered without a likely duplicate"
     );
-    app.run_menu_choice(&mut doc, sort_org);
+    app.menu.close();
+    app.open_menu = None;
+    ask(&mut app, &mut doc, Request::Sort(SortKey::Org));
+    assert!(
+        app.sort_choice.with(|value| value == "organization"),
+        "the control shows the order"
+    );
     app.publish();
     let by_org = list_ids(&app);
     assert_ne!(by_org, by_name);
@@ -374,6 +376,43 @@ fn list_keys_delete_edit_and_create() {
     );
 }
 
+/// Asked for from the keyboard or assistive technology, a contact's menu
+/// opens under its row, leaving the row readable.
+#[test]
+fn a_contact_menu_without_a_pointer_opens_under_its_row() {
+    let mut harness = harness((1280, 800));
+    let (grace, row) = {
+        let app = harness.root::<ContactsApp>();
+        let grace = id_named(app, "Grace Hopper");
+        let row = app
+            .shared
+            .borrow()
+            .painted
+            .iter()
+            .find(|(id, _)| *id == grace)
+            .map(|(_, rect)| *rect)
+            .unwrap();
+        (grace, row)
+    };
+    harness
+        .root_mut::<ContactsApp>()
+        .shared
+        .borrow_mut()
+        .push(Request::ContextMenu(grace, None));
+    harness.send(&WindowEvent::RedrawRequested);
+    harness.send(&WindowEvent::RedrawRequested);
+    let app = harness.root::<ContactsApp>();
+    assert!(
+        matches!(&app.open_menu, Some(OpenMenu::Contact(id, _)) if *id == grace),
+        "Grace's menu is open"
+    );
+    let first = app.menu.item_rect(0).expect("the menu has rows");
+    assert!(
+        first.y0 >= row.y1 - 0.5,
+        "the menu's first row ({first:?}) is under the contact's row ({row:?})"
+    );
+}
+
 /// A contact's action menu reaches the canonical edit, favourite, export
 /// and delete paths.
 #[test]
@@ -384,7 +423,7 @@ fn the_contact_menu_runs_the_canonical_actions() {
     ask(
         &mut app,
         &mut doc,
-        Request::ContextMenu(grace, Point::new(400.0, 200.0)),
+        Request::ContextMenu(grace, Some(Point::new(400.0, 200.0))),
     );
     assert_eq!(app.selected, Some(grace));
     let rows = match &app.open_menu {
@@ -409,7 +448,7 @@ fn the_contact_menu_runs_the_canonical_actions() {
     ask(
         &mut app,
         &mut doc,
-        Request::ContextMenu(grace, Point::new(400.0, 200.0)),
+        Request::ContextMenu(grace, Some(Point::new(400.0, 200.0))),
     );
     app.run_menu_choice(&mut doc, index(ContextAction::Export));
     app.publish();
@@ -426,7 +465,7 @@ fn the_contact_menu_runs_the_canonical_actions() {
     ask(
         &mut app,
         &mut doc,
-        Request::ContextMenu(grace, Point::new(400.0, 200.0)),
+        Request::ContextMenu(grace, Some(Point::new(400.0, 200.0))),
     );
     app.run_menu_choice(&mut doc, index(ContextAction::Delete));
     assert_eq!(app.confirm_delete, Some(grace));
@@ -447,7 +486,7 @@ fn the_contact_menu_runs_the_canonical_actions() {
     ask(
         &mut app,
         &mut doc,
-        Request::ContextMenu(next, Point::ORIGIN),
+        Request::ContextMenu(next, Some(Point::ORIGIN)),
     );
     app.run_menu_choice(&mut doc, index(ContextAction::Edit));
     assert_eq!(app.mode, Mode::Edit);
