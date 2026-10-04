@@ -1319,7 +1319,6 @@ dependencies = [
  "bounded-zip",
  "fnv",
  "host-info",
- "pollster",
  "private-fs",
  "reqwest",
  "runtime-dylib",
@@ -18097,8 +18096,6 @@ dependencies = [
  "chrono",
  "collab-types",
  "getrandom 0.4.3",
- "image",
- "pollster",
  "serde_json",
  "taffy",
  "tempfile",
@@ -18112,7 +18109,6 @@ dependencies = [
  "tilo-ui",
  "tilo-vello",
  "tilo-winit",
- "wgpu",
  "workspace-hack",
 ]
 
