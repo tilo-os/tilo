@@ -491,19 +491,7 @@ pub struct ControlBindingCoverage {
     pub status: ControlBindingStatus,
 }
 
-/// One visible expression of a domain action in the retained UI. The action
-/// address remains the execution identity; this route is presentation
-/// metadata for focus, presence, animation, and “show me where” behavior.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ActionUiRoute {
-    pub address: tilo_actions::ActionAddress,
-    pub control_id: String,
-    /// Root-to-control semantic path. Fewer nodes is the cheaper UI route.
-    pub path: Vec<crate::a11y_tree::SemanticId>,
-    pub bounds: Option<vello::kurbo::Rect>,
-    pub focused: bool,
-    pub disabled: bool,
-}
+pub use crate::action_locus::ActionUiRoute;
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -916,6 +904,7 @@ impl App {
             return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
         }
         let history = component.history.take();
+        let behaviour = component.behaviour;
         let Some(component) = assembly.component.take() else {
             return Err(crate::launch::LaunchError::Operation(
                 "component assembly no longer owns its component".to_owned(),
@@ -946,6 +935,9 @@ impl App {
         validation.disarm();
         root_custody.root = Some(root);
         let mut app = retirement_assembly::assemble(root_custody);
+        app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
+        app.appearance_reconcile = behaviour.appearance_reconcile;
+        app.set_capture_protected(behaviour.capture_protected);
         if let Some(registration) = history
             && let Err(error) = app.install_history(registration)
         {
@@ -2280,10 +2272,7 @@ impl App {
     /// Returns whether the running root accepted it. A root that is not the
     /// framework host leaves the current view in place.
     #[cfg(feature = "native")]
-    pub(crate) fn install_reloaded_view(
-        &mut self,
-        root: Box<dyn crate::widget::AppWidget>,
-    ) -> bool {
+    pub(crate) fn install_reloaded_view(&mut self, root: DevRoot) -> bool {
         let Some(bound) = self
             .root_widget
             .as_any_mut()
@@ -2291,7 +2280,7 @@ impl App {
         else {
             return false;
         };
-        bound.component.root = Some(root);
+        bound.component.install_reloaded(root);
         self.needs_sync = true;
         true
     }

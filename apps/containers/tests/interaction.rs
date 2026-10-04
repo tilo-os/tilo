@@ -2,6 +2,9 @@
 //! through the production frame host (`ui::headless::Driver`): real layout,
 //! real event routing, real accessibility, and pixels read back from the
 //! renderer `--shots` uses.
+//!
+//! Editing the new-container draft goes through the framework's dispatcher,
+//! so those tests run the hosted app ([`TestApp`]) and type into it.
 
 #![allow(
     clippy::unwrap_used,
@@ -13,29 +16,27 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use tilo_automerge::ApplyIncoming;
-
-use automerge::AutoCommit;
+use containers::ContainersShell;
 use containers::app::ContainersApp;
-use containers::doc::{CreateField, DetailTab, Section, ViewDoc};
-use containers::model::sample_engine;
+use containers::doc::{CreateDraft, CreateField};
+use containers::model::{DetailTab, Section, sample_engine};
 use containers::terminal;
 use ui::headless::Driver;
+use ui::prelude::TestApp;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
+/// The sample engine offline, showing what a plain `--shots` shows.
 fn offline_at(viewport: (u32, u32), theme: Theme) -> Driver {
-    Driver::for_root(ui::State::new(), ContainersApp::new(false), viewport, theme)
+    let mut app = ContainersApp::sample();
+    app.stage_scene(None);
+    Driver::for_root(ui::State::new(), app, viewport, theme)
 }
 
 fn offline() -> Driver {
     offline_at(VIEWPORT, Theme::dark())
-}
-
-fn doc(d: &mut Driver) -> &mut AutoCommit {
-    &mut d.state_mut().doc
 }
 
 fn app(d: &mut Driver) -> &mut ContainersApp {
@@ -83,7 +84,7 @@ fn sections_and_dialogs_render_non_blank() {
         ("4", Section::Distrobox),
     ] {
         d.key(key);
-        assert_eq!(ViewDoc::section(doc(&mut d)), section);
+        assert_eq!(app(&mut d).section(), section);
         assert!(painted(&d) > floor / 8, "{section:?} paints content");
     }
 
@@ -94,7 +95,7 @@ fn sections_and_dialogs_render_non_blank() {
     assert!(painted(&d) > floor, "the form paints over the window");
 
     let mut phone = offline_at((390, 844), Theme::dark().with_text_scale(2.0));
-    assert!(ViewDoc::selected(doc(&mut phone)).is_some());
+    assert!(app(&mut phone).selected().is_some());
     assert!(
         labels(&phone).iter().any(|label| label == "Restart"),
         "a phone opens on the chosen container"
@@ -114,21 +115,46 @@ fn sections_and_dialogs_render_non_blank() {
     assert!(painted(&phone) > (390 * 844 / 20) as usize);
 }
 
-/// The new-container form edits the shared draft through real fields and
-/// assembles the podman command.
+fn hosted() -> TestApp<ContainersShell> {
+    TestApp::<ContainersShell>::capture(None).expect("the containers capture launches")
+}
+
+fn draft(app: &TestApp<ContainersShell>, field: CreateField) -> String {
+    app.state().draft.get(field).to_owned()
+}
+
+fn hosted_named(app: &mut TestApp<ContainersShell>, name: &str) -> ui::accesskit::NodeId {
+    let d = app.harness();
+    named(d, name, ui::accesskit::Role::TextInput)
+}
+
+/// Typing in the new-container form splices the draft's texts: plain keys,
+/// a replaced selection, an IME commit, Tab to the next field and an
+/// assistive value; undo takes a typed word back.
 #[test]
-fn create_form_input_order_and_command() {
+fn create_form_edits_the_draft() {
+    // --- phase: typing_splices_and_undo_takes_a_word_back ---
+    {
+        let mut app = hosted();
+        // `n` opens the form on its image field.
+        app.harness().key("n");
+        app.harness().type_text("ngi");
+        assert_eq!(draft(&app, CreateField::Image), "ngi");
+        assert!(app.undo(), "the typed word is one undo step");
+        assert_eq!(draft(&app, CreateField::Image), "");
+    }
+
     // --- phase: select_all_then_typing_replaces ---
     {
-        let mut d = offline();
-        d.key("n");
-        d.type_text("nginx:latest");
-        d.set_modifiers(&["ctrl".to_owned()]);
-        d.key("a");
-        d.set_modifiers(&[]);
-        d.type_text("p");
+        let mut app = hosted();
+        app.harness().key("n");
+        app.harness().type_text("nginx:latest");
+        app.harness().set_modifiers(&["ctrl".to_owned()]);
+        app.harness().key("a");
+        app.harness().set_modifiers(&[]);
+        app.harness().type_text("p");
         assert_eq!(
-            ViewDoc::create_field(doc(&mut d), CreateField::Image),
+            draft(&app, CreateField::Image),
             "p",
             "select-all then typing replaces the selection instead of appending"
         );
@@ -136,21 +162,16 @@ fn create_form_input_order_and_command() {
 
     // --- phase: ime_commit_replicates_as_crdt_text ---
     {
-        let mut d = offline();
-        d.key("n");
-        let mut peer = doc(&mut d).fork();
-        d.send(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
-            "接続".into(),
-        )));
+        let mut app = hosted();
+        app.harness().key("n");
+        let mut peer = app.peer_document();
+        app.harness().commit_text("接続");
+        assert_eq!(draft(&app, CreateField::Image), "接続");
+        app.merge_peer(&mut peer).expect("peer merge");
         assert_eq!(
-            ViewDoc::create_field(doc(&mut d), CreateField::Image),
-            "接続"
-        );
-        peer.merge_incoming(doc(&mut d)).expect("peer merge");
-        assert_eq!(
-            ViewDoc::create_field(&peer, CreateField::Image),
+            containers::doc::CreateDoc::read(&peer).get(CreateField::Image),
             "接続",
-            "the field splices the shared collaborative Text"
+            "the field splices the shared collaborative text"
         );
     }
 
@@ -158,66 +179,82 @@ fn create_form_input_order_and_command() {
     {
         let mut d = offline();
         d.key("n");
+        let focused = |d: &Driver| d.focused_access_node().and_then(|node| node.name);
+        assert_eq!(focused(&d).as_deref(), Some("Image"));
         d.key("Tab");
-        d.type_text("web");
         assert_eq!(
-            ViewDoc::create_field(doc(&mut d), CreateField::Name),
-            "web",
+            focused(&d).as_deref(),
+            Some("Name"),
             "Tab moves from Image to Name"
         );
     }
 
-    // --- phase: escape_cancels_and_an_empty_image_does_not_submit ---
-    {
-        let mut d = offline();
-        d.key("n");
-        d.key("Enter");
-        assert!(
-            app(&mut d).is_create_open(),
-            "the form stays open without an image"
-        );
-        d.key("Escape");
-        assert!(!app(&mut d).is_create_open());
-    }
-
-    // --- phase: create_form_assembles_full_podman_run ---
-    {
-        let mut doc = AutoCommit::new();
-        ViewDoc::set_create_field(&mut doc, CreateField::Name, "web");
-        ViewDoc::set_create_field(&mut doc, CreateField::Image, "ghcr.io/acme/app:edge");
-        ViewDoc::set_create_field(&mut doc, CreateField::Ports, "8080:80, 8443:443");
-        ViewDoc::set_create_field(&mut doc, CreateField::Env, "TZ=UTC, LOG=info");
-        ViewDoc::set_create_field(
-            &mut doc,
-            CreateField::Volumes,
-            "data:/var/lib/app, cfg:/etc/app",
-        );
-        let args = ViewDoc::create_run_args(&doc).expect("image present → args");
-        assert_eq!(&args[0..2], &["run", "-d"]);
-        assert!(args.windows(2).any(|w| w[0] == "--name" && w[1] == "web"));
-        assert_eq!(args.iter().filter(|a| *a == "-p").count(), 2);
-        assert_eq!(args.iter().filter(|a| *a == "-e").count(), 2);
-        assert_eq!(args.iter().filter(|a| *a == "-v").count(), 2);
-        assert!(
-            args.windows(2)
-                .any(|w| w[0] == "-v" && w[1] == "data:/var/lib/app")
-        );
-        assert_eq!(args.last().unwrap(), "ghcr.io/acme/app:edge");
-    }
-
     // --- phase: the_form_is_a_modal_with_named_fields ---
     {
-        let mut d = offline();
-        d.key("n");
-        let image = named(&d, "Image", ui::accesskit::Role::TextInput);
-        d.perform_a11y_action(image, &ui::a11y::Action::SetValue("alpine:3.20".into()))
+        let mut app = hosted();
+        app.harness().key("n");
+        let image = hosted_named(&mut app, "Image");
+        app.harness()
+            .perform_a11y_action(image, &ui::a11y::Action::SetValue("alpine:3.20".into()))
             .unwrap();
-        assert_eq!(
-            ViewDoc::create_field(doc(&mut d), CreateField::Image),
-            "alpine:3.20"
-        );
-        let _ = named(&d, "New container", ui::accesskit::Role::Dialog);
+        assert_eq!(draft(&app, CreateField::Image), "alpine:3.20");
+        let _ = named(app.harness(), "New container", ui::accesskit::Role::Dialog);
     }
+}
+
+/// An empty image keeps the form open; Escape cancels it; Enter on a form
+/// with an image creates the container and empties the draft, undoably.
+#[test]
+fn create_form_submits_and_cancels() {
+    let mut app = hosted();
+    app.harness().key("n");
+    app.harness().key("Enter");
+    let _ = named(app.harness(), "New container", ui::accesskit::Role::Dialog);
+    app.harness().key("Escape");
+    assert!(
+        !app.harness().a11y_nodes().into_iter().any(|(_, node)| {
+            node.role() == ui::accesskit::Role::Dialog && node.label() == Some("New container")
+        }),
+        "Escape closes the form"
+    );
+
+    app.harness().key("n");
+    app.harness().type_text("alpine");
+    assert_eq!(
+        app.state().draft.run_args(),
+        Some(vec!["run".into(), "-d".into(), "alpine".into()])
+    );
+    app.harness().key("Enter");
+    assert!(
+        app.state().draft.is_empty(),
+        "creating the container empties the draft"
+    );
+    assert!(app.undo(), "emptying the draft is undoable");
+    assert_eq!(draft(&app, CreateField::Image), "alpine");
+}
+
+/// The draft assembles the full `podman run`.
+#[test]
+fn create_draft_assembles_full_podman_run() {
+    let args = CreateDraft::with(&[
+        (CreateField::Name, "web"),
+        (CreateField::Image, "ghcr.io/acme/app:edge"),
+        (CreateField::Ports, "8080:80, 8443:443"),
+        (CreateField::Env, "TZ=UTC, LOG=info"),
+        (CreateField::Volumes, "data:/var/lib/app, cfg:/etc/app"),
+    ])
+    .run_args()
+    .expect("image present → args");
+    assert_eq!(&args[0..2], &["run", "-d"]);
+    assert!(args.windows(2).any(|w| w[0] == "--name" && w[1] == "web"));
+    assert_eq!(args.iter().filter(|a| *a == "-p").count(), 2);
+    assert_eq!(args.iter().filter(|a| *a == "-e").count(), 2);
+    assert_eq!(args.iter().filter(|a| *a == "-v").count(), 2);
+    assert!(
+        args.windows(2)
+            .any(|w| w[0] == "-v" && w[1] == "data:/var/lib/app")
+    );
+    assert_eq!(args.last().unwrap(), "ghcr.io/acme/app:edge");
 }
 
 /// Entering a distrobox builds its terminal, and the canonical log resource
@@ -251,9 +288,9 @@ fn container_resources_open_terminal_and_log_detail() {
         d.key("2");
         let id = sample_engine().containers[1].id.clone();
         let payload = serde_json::to_vec(&vec!["logs", id.as_str()]).unwrap();
-        let (app, state) = d.root_and_state_mut::<ContainersApp>();
+        let (root, state) = d.root_and_state_mut::<ContainersApp>();
         assert!(
-            app.start_operation(
+            root.start_operation(
                 &ui::widget::ResourceOperation::local(
                     ui::tilo_actions::InvocationId::new(),
                     ui::tilo_actions::OperationKind::View,
@@ -267,9 +304,9 @@ fn container_resources_open_terminal_and_log_detail() {
             .unwrap()
         );
         d.relayout();
-        assert_eq!(ViewDoc::section(doc(&mut d)), Section::Containers);
-        assert_eq!(ViewDoc::selected(doc(&mut d)).as_deref(), Some(id.as_str()));
-        assert_eq!(ViewDoc::tab(doc(&mut d)), DetailTab::Logs);
+        assert_eq!(app(&mut d).section(), Section::Containers);
+        assert_eq!(app(&mut d).selected(), Some(id.as_str()));
+        assert_eq!(app(&mut d).tab(), DetailTab::Logs);
     }
 }
 
@@ -281,13 +318,13 @@ fn keyboard_pointer_and_semantic_navigation() {
     {
         let mut d = offline();
         d.key("3");
-        assert_eq!(ViewDoc::section(doc(&mut d)), Section::Volumes);
+        assert_eq!(app(&mut d).section(), Section::Volumes);
         d.key("4");
-        assert_eq!(ViewDoc::section(doc(&mut d)), Section::Distrobox);
+        assert_eq!(app(&mut d).section(), Section::Distrobox);
         d.key("2");
-        assert_eq!(ViewDoc::section(doc(&mut d)), Section::Images);
+        assert_eq!(app(&mut d).section(), Section::Images);
         d.key("1");
-        assert_eq!(ViewDoc::section(doc(&mut d)), Section::Containers);
+        assert_eq!(app(&mut d).section(), Section::Containers);
     }
 
     // --- phase: the_sidebar_and_the_list_take_assistive_activation ---
@@ -301,7 +338,7 @@ fn keyboard_pointer_and_semantic_navigation() {
             .expect("the Images destination is named");
         d.perform_a11y_action(images, &ui::a11y::Action::Activate)
             .unwrap();
-        assert_eq!(ViewDoc::section(doc(&mut d)), Section::Images);
+        assert_eq!(app(&mut d).section(), Section::Images);
 
         d.key("1");
         let postgres = sample_engine()
@@ -318,7 +355,7 @@ fn keyboard_pointer_and_semantic_navigation() {
         d.perform_a11y_action(row, &ui::a11y::Action::Activate)
             .unwrap();
         assert_eq!(
-            ViewDoc::selected(doc(&mut d)).as_deref(),
+            app(&mut d).selected(),
             Some(postgres.id.as_str()),
             "activating a row opens that container"
         );
@@ -335,7 +372,7 @@ fn keyboard_pointer_and_semantic_navigation() {
             .expect("the Stats tab is named");
         d.perform_a11y_action(stats, &ui::a11y::Action::Activate)
             .unwrap();
-        assert_eq!(ViewDoc::tab(doc(&mut d)), DetailTab::Stats);
+        assert_eq!(app(&mut d).tab(), DetailTab::Stats);
         assert!(labels(&d).iter().any(|label| label == "Memory"));
     }
 }

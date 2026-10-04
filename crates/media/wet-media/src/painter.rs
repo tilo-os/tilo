@@ -28,19 +28,24 @@ impl Painted {
     /// so recolouring or nudging a stroke keeps its character; the
     /// fingerprint follows the content too, so any edit re-simulates it.
     pub fn new(id: &str, mark: Mark) -> Self {
-        let seed_hash = blake3::hash(id.as_bytes());
-        let mut seed_bytes = [0_u8; 8];
-        seed_bytes.copy_from_slice(seed_hash.as_bytes().get(..8).unwrap_or(&[0; 8]));
         let mut hasher = blake3::Hasher::new();
         hasher.update(id.as_bytes());
         hasher.update(&[0]);
         hasher.update(serde_json::to_string(&mark).unwrap_or_default().as_bytes());
         Self {
             fingerprint: *hasher.finalize().as_bytes(),
-            seed: u64::from_le_bytes(seed_bytes),
+            seed: seed_of(id),
             mark,
         }
     }
+}
+
+/// The seed of the randomness of the mark addressed by `id`.
+pub fn seed_of(id: &str) -> u64 {
+    let hash = blake3::hash(id.as_bytes());
+    let mut bytes = [0_u8; 8];
+    bytes.copy_from_slice(hash.as_bytes().get(..8).unwrap_or(&[0; 8]));
+    u64::from_le_bytes(bytes)
 }
 
 /// One layer's simulation, kept in step with its marks.
@@ -97,7 +102,9 @@ impl LayerPainter {
         }
         let start = self.applied.len();
         for mark in marks.get(start..).unwrap_or_default() {
-            self.sim.apply(&mark.mark, mark.seed);
+            for (piece, seed) in mark.mark.pieces(mark.seed) {
+                self.sim.apply(&piece, seed);
+            }
             self.applied.push(mark.fingerprint);
             let count = self.applied.len();
             if count.is_multiple_of(CHECKPOINT_EVERY) {
@@ -114,6 +121,18 @@ impl LayerPainter {
         self.pixels
             .as_ref()
             .map_or(&[], |(_, pixels)| pixels.as_slice())
+    }
+
+    /// The layer with `marks` painted and `wet` laid over them, without
+    /// keeping `wet`: what a stroke still being painted looks like. The
+    /// painted marks stay simulated, so the next preview costs only `wet`.
+    pub fn preview(&mut self, marks: &[Painted], wet: &[Painted]) -> Vec<u8> {
+        self.paint(marks);
+        let mut sim = self.sim.clone_box();
+        for mark in wet {
+            sim.apply(&mark.mark, mark.seed);
+        }
+        sim.composite()
     }
 
     /// Go back to the state after the first `keep` marks.

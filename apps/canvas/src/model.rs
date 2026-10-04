@@ -41,7 +41,11 @@ impl Default for Ground {
 }
 
 /// One layer of the artwork.
-#[derive(Clone, Debug, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "shown, held still, an inverted mask and clipped are independent settings"
+)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layer {
     pub id: String,
     pub name: String,
@@ -52,6 +56,50 @@ pub struct Layer {
     pub medium: String,
     pub opacity: f64,
     pub visible: bool,
+    /// `0..=1`: how much of the ground's tooth shows through the layer's
+    /// marks, like ink printed on paper.
+    pub texture: f64,
+    /// Held still: the pointer passes through its marks to those beneath.
+    pub locked: bool,
+    /// Colour and tone adjustments of everything on the layer.
+    pub adjust: Option<Adjust>,
+    /// The layer this layer masks, or empty for an ordinary layer. A mask's
+    /// marks are drawn in greys: where it is light that layer shows, where
+    /// it is dark it is hidden. Hiding the mask turns it off.
+    pub mask_of: String,
+    /// A mask's grey before any mark, `0..=1`: 1 shows all of its layer,
+    /// 0 hides all of it.
+    pub base: f64,
+    /// A mask that hides where it is light and shows where it is dark.
+    pub invert: bool,
+    /// Clipped to the layer below: it shows only where that layer has paint.
+    pub clip: bool,
+}
+
+impl Layer {
+    /// Whether this layer is another layer's mask.
+    pub fn is_mask(&self) -> bool {
+        !self.mask_of.is_empty()
+    }
+}
+
+/// The area selected for the next edit: a region of the artwork, kept with
+/// it like the reference picture and never drawn into it. Fills, masks and
+/// copies take its shape; its feather softens their edge.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Selection {
+    /// SVG path data in artwork units, filled non-zero.
+    pub d: String,
+    /// How far its edge fades, in units.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub feather: f64,
+}
+
+impl Selection {
+    /// The selected area.
+    pub fn region(&self) -> crate::region::Region {
+        crate::region::Region::of_path(&BezPath::from_svg(&self.d).unwrap_or_default())
+    }
 }
 
 /// A point of a stroke: `[x, y]` or `[x, y, pressure]` with pressure `0..=1`.
@@ -84,10 +132,10 @@ pub enum Shape {
         y: f64,
         text: String,
         size: f64,
-        /// `sans`, `serif`, `mono` or a family name.
+        /// `sans`, `serif`, `mono` or a family `media` lists under fonts.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         font: Option<String>,
-        /// 400 regular to 700 bold.
+        /// 100 to 900; 400 regular, 700 bold, any value between.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         weight: Option<u16>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -101,11 +149,60 @@ pub enum Shape {
         /// Wrap width.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         width: Option<f64>,
+        /// Letter spacing in thousandths of the size: 80 opens up capitals,
+        /// negative tightens.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tracking: Option<f64>,
+        /// SVG path data the baseline follows instead of starting at x, y;
+        /// align sets the words at its start, middle or end.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
     },
     /// A brush stroke: a smooth curve through `points`, `size` wide.
     /// Points are `[x, y]` or `[x, y, pressure]`; a handful of points is
     /// enough, the stroke is smoothed through them.
-    Stroke { points: Vec<StrokePoint>, size: f64 },
+    Stroke {
+        points: Vec<StrokePoint>,
+        size: f64,
+        /// A limb that lifts to a point and forks this many times (1-6)
+        /// into ever thinner twigs: a branch or bare tree in one stroke.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forks: Option<u32>,
+        /// With `forks`: how widely the twigs splay, in degrees (default 35).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spread: Option<f64>,
+        /// Instead of one line, this many short dabs (1-600) of `size`
+        /// scattered along the points: foliage, flowers, broken light.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dabs: Option<u32>,
+        /// With `dabs`: how far they stray either side of the path, in units
+        /// (default twice `size`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scatter: Option<f64>,
+        /// With `dabs`: how long each is, in units (about `size` when
+        /// absent); much longer than `size`, each is a flick that lifts to
+        /// a point, as grass is painted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dab_length: Option<f64>,
+    },
+    /// A PNG, JPEG or WebP in the frame `x, y, width, height`.
+    Image {
+        /// File path, content address or `data:` URI.
+        src: String,
+        x: f64,
+        y: f64,
+        /// Units; absent: a unit per pixel, or the other side's aspect.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        width: f64,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        height: f64,
+        /// Fractions `[x, y, w, h]` of the picture shown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        crop: Option<[f64; 4]>,
+        /// Degrees turned inside the frame.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        straighten: Option<f64>,
+    },
 }
 
 /// A colour gradient across a mark.
@@ -118,6 +215,9 @@ pub struct Gradient {
     /// Colour stops: `[[0, "#ffd27a"], [1, "#e0603a"]]`; a stop's alpha
     /// (`#ffd27a00`) fades the paint out, for a glow or mist.
     pub stops: Vec<(f64, String)>,
+    /// Radial only: where the light sits inside the circle, off its centre.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focal: Option<[f64; 2]>,
 }
 
 /// How a mark is coloured and, on a painted layer, how it is painted.
@@ -140,10 +240,15 @@ pub struct Style {
     /// `0..=1`; absent is opaque.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f64>,
-    /// On a painted layer: the width of the brush that lays a filled shape
+    /// A brush stroke's preset on a plain layer (`pen`, `pencil`, `marker`,
+    /// `airbrush`, `charcoal`, `calligraphy`), or `eraser` on any layer;
+    /// a round ink brush when absent. See [`crate::brushes`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brush: Option<String>,
+    /// On a painted layer: the size of the brush that lays a filled shape
     /// in, in units.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub brush: Option<f64>,
+    pub brush_size: Option<f64>,
     /// On a painted layer: the direction of the brushwork, in degrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub angle: Option<f64>,
@@ -152,7 +257,8 @@ pub struct Style {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wet: bool,
     /// On a painted layer: overrides of the medium's parameters for this
-    /// mark (`{"load": 0.3}`).
+    /// mark (`{"load": 0.3}`). On a plain layer's stroke: the brush's
+    /// `flow`, `hardness`, `spacing`, `smoothing` and `taper`, each `0..=1`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, f64>,
     /// Outline dash pattern, `[on, off, …]` in units.
@@ -169,6 +275,69 @@ pub struct Style {
     pub blend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shadow: Option<Shadow>,
+    /// A shadow cast inside the mark from its edge; a light colour and an
+    /// offset toward the light make it a highlight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_shadow: Option<Shadow>,
+    /// `0..=1`: film grain over the mark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grain: Option<f64>,
+    /// Soften the mark's edge outward over this many units: mist, glow,
+    /// shading that melts into what is under it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feather: Option<f64>,
+    /// Colour and tone adjustments: a picture's pixels, a shape's colours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adjust: Option<Adjust>,
+}
+
+/// Non-destructive colour and tone adjustments, applied in this order:
+/// white balance, exposure, contrast, curve, highlights and
+/// shadows, hue, saturation, vibrance, grayscale, invert; then blur,
+/// sharpen and vignette. Absent or zero leaves a step out.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Adjust {
+    /// Stops, -5 to 5. Others -1 to 1 unless noted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contrast: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlights: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadows: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saturation: Option<f64>,
+    /// Saturation sparing strong colours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vibrance: Option<f64>,
+    /// Degrees, -180 to 180.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hue: Option<f64>,
+    /// Warmer +.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    /// Magenta +.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tint: Option<f64>,
+    /// Tone curve `[[in, out], …]`, 0-1; `[[0.05, 0], [0.95, 1]]` sets
+    /// black and white points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<Vec<[f64; 2]>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grayscale: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invert: Option<bool>,
+    /// Radius in units, 0-200 (pictures and paint).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blur: Option<f64>,
+    /// 0-1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharpen: Option<f64>,
+    /// Edges darker +, lighter -.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vignette: Option<f64>,
 }
 
 /// The blend modes a mark may use.
@@ -249,6 +418,10 @@ pub struct Mark {
     pub group: String,
     /// The mark whose shape this mark is cut to, or empty.
     pub clip: String,
+    /// SVG path data of the area the mark is kept inside (the selection's
+    /// shape when it was laid), in the units of its geometry so it travels
+    /// with it, or empty.
+    pub area: String,
 }
 
 /// The stored body of a mark: everything that is replaced together.
@@ -265,6 +438,8 @@ pub struct MarkBody {
     pub group: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub clip: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub area: String,
 }
 
 /// The whole artwork as views and actions read it.
@@ -281,6 +456,7 @@ pub struct Artwork {
     /// Media presets saved in this artwork, by id.
     pub media: BTreeMap<String, crate::media::MediumSpec>,
     pub reference: Option<Reference>,
+    pub selection: Option<Selection>,
 }
 
 impl Default for Artwork {
@@ -294,6 +470,7 @@ impl Default for Artwork {
             marks: Vec::new(),
             media: BTreeMap::new(),
             reference: None,
+            selection: None,
         }
     }
 }
@@ -307,6 +484,17 @@ impl Artwork {
         self.marks.iter().find(|mark| mark.id == id)
     }
 
+    /// The layer new marks go on when none is named: the top layer that is
+    /// not a mask.
+    pub fn top_layer(&self) -> Option<&Layer> {
+        self.layers.iter().rev().find(|layer| !layer.is_mask())
+    }
+
+    /// The mask of `layer`, if it has one.
+    pub fn mask_of(&self, layer: &str) -> Option<&Layer> {
+        self.layers.iter().find(|mask| mask.mask_of == layer)
+    }
+
     /// The marks of `layer`, bottom to top.
     pub fn marks_of<'a>(&'a self, layer: &'a str) -> impl Iterator<Item = &'a Mark> + 'a {
         self.marks.iter().filter(move |mark| mark.layer == layer)
@@ -317,48 +505,136 @@ impl Artwork {
         Rect::new(0.0, 0.0, self.width, self.height)
     }
 
-    /// The topmost visible mark under `point`, for hit-testing.
+    /// The topmost visible mark of an unlocked layer under `point`, for
+    /// hit-testing.
     pub fn mark_at(&self, point: Point) -> Option<&Mark> {
         self.marks.iter().rev().find(|mark| {
-            self.layer(&mark.layer).is_some_and(|layer| layer.visible)
+            self.layer(&mark.layer)
+                .is_some_and(|layer| layer.visible && !layer.locked && !layer.is_mask())
+                && mark.inked()
                 && mark.hit(point)
-                && self.clip_of(mark).is_none_or(|clip| clip.hit(point))
+                && self.clipped_in(mark, point)
         })
     }
 
-    /// The mark `mark` is cut to, if any.
-    pub fn clip_of(&self, mark: &Mark) -> Option<&Mark> {
-        (!mark.clip.is_empty())
-            .then(|| self.mark(&mark.clip))
-            .flatten()
+    /// The marks `mark` is cut to: the mark its clip names, or the members
+    /// of the group it names; none when it is not cut.
+    pub fn clips_of(&self, mark: &Mark) -> Vec<&Mark> {
+        if mark.clip.is_empty() {
+            return Vec::new();
+        }
+        match self.mark(&mark.clip) {
+            Some(clip) => vec![clip],
+            None => self
+                .members(&mark.clip)
+                .filter(|member| member.id != mark.id)
+                .collect(),
+        }
+    }
+
+    /// Whether `point` is inside what `mark` is cut to, its clip and its
+    /// area (anywhere when it is not cut).
+    pub fn clipped_in(&self, mark: &Mark, point: Point) -> bool {
+        let clips = self.clips_of(mark);
+        (clips.is_empty() || clips.iter().any(|clip| clip.hit(point)))
+            && mark.area().is_none_or(|area| area.contains(point))
+    }
+
+    /// What a click at `point` picks: the topmost mark under it, an eraser
+    /// included. An eraser shows no ink of its own, so only the pointer's
+    /// tools that outline erasers pick them; [`Self::mark_at`] passes
+    /// through them.
+    pub fn pick_at(&self, point: Point) -> Option<&Mark> {
+        self.marks.iter().rev().find(|mark| {
+            self.layer(&mark.layer)
+                .is_some_and(|layer| layer.visible && !layer.locked && !layer.is_mask())
+                && (mark.inked() || mark.erases())
+                && mark.hit(point)
+                && self.clipped_in(mark, point)
+        })
+    }
+
+    /// The erasers on shown layers, bottom to top: what the eraser and
+    /// selection tools outline.
+    pub fn erasers(&self) -> impl Iterator<Item = &Mark> + '_ {
+        self.marks.iter().filter(|mark| {
+            mark.erases()
+                && self
+                    .layer(&mark.layer)
+                    .is_some_and(|layer| layer.visible && !layer.is_mask())
+        })
+    }
+
+    /// The marks beneath eraser `eraser` on its layer that it takes paint
+    /// off: those its reach overlaps.
+    pub fn erased_by<'a>(&'a self, eraser: &'a Mark) -> impl Iterator<Item = &'a Mark> + 'a {
+        let reach = eraser.bounds();
+        self.marks
+            .iter()
+            .take_while(move |mark| mark.id != eraser.id)
+            .filter(move |mark| {
+                mark.layer == eraser.layer
+                    && !mark.erases()
+                    && mark.inked()
+                    && self.visible_bounds(mark).intersect(reach).area() > 0.0
+            })
     }
 
     /// What of `mark` can show: its bounds, cut to its clip's.
     pub fn visible_bounds(&self, mark: &Mark) -> Rect {
         let bounds = mark.bounds();
-        self.clip_of(mark)
-            .map_or(bounds, |clip| bounds.intersect(clip.bounds()))
+        let bounds = self
+            .clips_of(mark)
+            .iter()
+            .map(|clip| clip.bounds())
+            .reduce(|a, b| a.union(b))
+            .map_or(bounds, |clip| bounds.intersect(clip));
+        mark.area()
+            .map_or(bounds, |area| bounds.intersect(area.bounding_box()))
     }
 
-    /// The members of group `id`, bottom to top.
+    /// The members of group `id`, bottom to top: its own marks and those of
+    /// the groups inside it (`icons` holds `icons/mail`'s).
     pub fn members(&self, id: &str) -> impl Iterator<Item = &Mark> + '_ {
         let id = id.to_owned();
-        self.marks.iter().filter(move |mark| mark.group == id)
+        self.marks
+            .iter()
+            .filter(move |mark| in_group(&mark.group, &id))
     }
 
-    /// The groups' ids, sorted.
+    /// The groups' ids, sorted, a nested group after the one it is in.
     pub fn groups(&self) -> Vec<&str> {
-        let mut groups: Vec<&str> = self
-            .marks
-            .iter()
-            .map(|mark| mark.group.as_str())
-            .filter(|group| !group.is_empty())
-            .collect();
+        let mut groups: Vec<&str> = Vec::new();
+        for mark in &self.marks {
+            let mut end = 0;
+            for part in mark.group.split('/') {
+                end += part.len();
+                if let Some(path) = mark.group.get(..end).filter(|path| !path.is_empty()) {
+                    groups.push(path);
+                }
+                end += 1;
+            }
+        }
         groups.sort_unstable();
         groups.dedup();
         groups
     }
 }
+
+/// Whether a mark in `group` belongs to group `id`: it is `id` or nested in it.
+pub fn in_group(group: &str, id: &str) -> bool {
+    !id.is_empty()
+        && group
+            .strip_prefix(id)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// A valid group id: one or more ids joined by `/`, a group in a group.
+pub fn valid_group(group: &str) -> bool {
+    group.len() <= 160 && group.split('/').all(valid_id)
+}
+
+impl Artwork {}
 
 /// A valid id: 1–48 of `a-z`, `0-9`, `-` and `_`, so an agent can name a mark
 /// (`sun`, `tree-3`) and address it later.
@@ -375,7 +651,56 @@ fn finite(values: &[f64]) -> bool {
         .all(|value| value.is_finite() && value.abs() <= MAX_SIDE * 4.0)
 }
 
+/// Why a picture cannot be shown, in words an agent can act on.
+fn image_problem(shape: &Shape) -> Option<String> {
+    let Shape::Image {
+        src,
+        x,
+        y,
+        width,
+        height,
+        crop,
+        straighten,
+    } = shape
+    else {
+        return None;
+    };
+    let (frame, width, height) = ([*x, *y, *width, *height], *width, *height);
+    if ui::tilo_actions::content_hash(src).is_none() {
+        Some("an image's src is a file path, content address or data: URI".into())
+    } else if !finite(&frame) || width <= 0.0 || height <= 0.0 {
+        Some("an image needs finite x, y and a positive width and height".into())
+    } else if crop.is_some_and(|[x, y, w, h]| {
+        ![x, y, w, h].iter().all(|v| v.is_finite())
+            || x < 0.0
+            || y < 0.0
+            || w <= 0.0
+            || h <= 0.0
+            || x + w > 1.0 + 1e-9
+            || y + h > 1.0 + 1e-9
+    }) {
+        Some("crop is [x, y, w, h] fractions of the picture, inside 0..1, w and h positive".into())
+    } else if straighten.is_some_and(|angle| !(-45.0..=45.0).contains(&angle)) {
+        Some("straighten is -45 to 45 degrees".into())
+    } else {
+        None
+    }
+}
+
 impl Shape {
+    /// A brush stroke through `points`, `size` wide, that grows nothing.
+    pub fn plain_stroke(points: Vec<StrokePoint>, size: f64) -> Self {
+        Self::Stroke {
+            points,
+            size,
+            forks: None,
+            spread: None,
+            dabs: None,
+            scatter: None,
+            dab_length: None,
+        }
+    }
+
     /// Why this geometry cannot be drawn, in words an agent can act on.
     pub fn problem(&self) -> Option<String> {
         match self {
@@ -415,6 +740,8 @@ impl Shape {
                 align,
                 line_height,
                 width,
+                tracking,
+                path,
                 ..
             } => {
                 if !finite(&[*x, *y, *size])
@@ -437,16 +764,26 @@ impl Shape {
                     Some("a text's line_height is 0.5 to 4".into())
                 } else if width.is_some_and(|width| !finite(&[width]) || width <= 0.0) {
                     Some("a text's width must be positive".into())
-                } else if font
-                    .as_deref()
-                    .is_some_and(|font| font.trim().is_empty() || font.len() > 64)
+                } else if let Some(font) = font.as_deref().filter(|font| !crate::fonts::known(font))
                 {
-                    Some("a text's font is sans, serif, mono or a family name".into())
+                    Some(format!(
+                        "font {font:?} is not one Tilo ships; use sans, serif, mono or one of {}",
+                        crate::fonts::families().join(", ")
+                    ))
+                } else if tracking.is_some_and(|tracking| !(-300.0..=1000.0).contains(&tracking)) {
+                    Some("a text's tracking is -300 to 1000 thousandths of its size".into())
+                } else if let Some(path) = path {
+                    match BezPath::from_svg(path) {
+                        Ok(path) if path.elements().len() >= 2 => None,
+                        Ok(_) => Some("a text's path needs at least two points".into()),
+                        Err(error) => Some(format!("a text's path is not SVG path data: {error}")),
+                    }
                 } else {
                     None
                 }
             }
-            Self::Stroke { points, size } => {
+            Self::Image { .. } => image_problem(self),
+            Self::Stroke { points, size, .. } => {
                 if points.is_empty() || points.len() > MAX_POINTS {
                     Some(format!("a stroke needs 1 to {MAX_POINTS} points"))
                 } else if !points
@@ -457,9 +794,39 @@ impl Shape {
                 } else if !size.is_finite() || *size <= 0.0 || *size > MAX_SIDE {
                     Some("a stroke needs a positive size".into())
                 } else {
-                    None
+                    self.growth_problem()
                 }
             }
+        }
+    }
+
+    /// Why a stroke's twigs or dabs cannot be grown.
+    fn growth_problem(&self) -> Option<String> {
+        let Self::Stroke {
+            forks,
+            spread,
+            dabs,
+            scatter,
+            dab_length,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let units =
+            |value: &Option<f64>| value.is_some_and(|value| !(0.0..=MAX_SIDE).contains(&value));
+        if forks.is_some() && dabs.is_some() {
+            Some("a stroke either forks or breaks into dabs, not both".into())
+        } else if forks.is_some_and(|forks| !(1..=6).contains(&forks)) {
+            Some("forks is 1 to 6".into())
+        } else if spread.is_some_and(|spread| !(5.0..=90.0).contains(&spread)) {
+            Some("spread is 5 to 90 degrees".into())
+        } else if dabs.is_some_and(|dabs| !(1..=600).contains(&dabs)) {
+            Some("dabs is 1 to 600".into())
+        } else if units(scatter) || units(dab_length) {
+            Some("scatter and dab_length are 0 or more units".into())
+        } else {
+            None
         }
     }
 
@@ -472,6 +839,7 @@ impl Shape {
             Self::Path { .. } => "path",
             Self::Text { .. } => "text",
             Self::Stroke { .. } => "stroke",
+            Self::Image { .. } => "image",
         }
     }
 
@@ -500,6 +868,13 @@ impl Shape {
             Self::Line { points } => polyline(points, false),
             Self::Path { d } => BezPath::from_svg(d).unwrap_or_default(),
             Self::Text { .. } => self.text_box().unwrap_or_default().to_path(0.1),
+            Self::Image {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => Rect::new(*x, *y, x + width, y + height).to_path(0.1),
             Self::Stroke { points, .. } => {
                 let mut path = BezPath::new();
                 for (index, point) in points.iter().enumerate() {
@@ -521,7 +896,10 @@ impl Shape {
     /// Whether the shape is a closed region that can be filled.
     pub fn closed(&self) -> bool {
         match self {
-            Self::Rect { .. } | Self::Ellipse { .. } | Self::Polygon { .. } => true,
+            Self::Rect { .. }
+            | Self::Ellipse { .. }
+            | Self::Polygon { .. }
+            | Self::Image { .. } => true,
             Self::Path { d } => d.trim_end().ends_with(['z', 'Z']),
             Self::Line { .. } | Self::Text { .. } | Self::Stroke { .. } => false,
         }
@@ -564,15 +942,36 @@ impl Shape {
                     d: path_data(&path),
                 }
             }
-            Self::Text { .. } => {
+            Self::Image { .. } => {
                 let mut moved = self.clone();
-                if let Self::Text { x, y, .. } = &mut moved {
+                if let Self::Image { x, y, .. } = &mut moved {
                     *x += dx;
                     *y += dy;
                 }
                 moved
             }
-            Self::Stroke { points, size } => Self::Stroke {
+            Self::Text { .. } => {
+                let mut moved = self.clone();
+                if let Self::Text { x, y, path, .. } = &mut moved {
+                    *x += dx;
+                    *y += dy;
+                    if let Some(d) = path {
+                        let mut along = BezPath::from_svg(d).unwrap_or_default();
+                        along.apply_affine(Affine::translate((dx, dy)));
+                        *d = path_data(&along);
+                    }
+                }
+                moved
+            }
+            Self::Stroke {
+                points,
+                size,
+                forks,
+                spread,
+                dabs,
+                scatter,
+                dab_length,
+            } => Self::Stroke {
                 points: points
                     .iter()
                     .map(|point| {
@@ -587,8 +986,158 @@ impl Shape {
                     })
                     .collect(),
                 size: *size,
+                forks: *forks,
+                spread: *spread,
+                dabs: *dabs,
+                scatter: *scatter,
+                dab_length: *dab_length,
             },
         }
+    }
+
+    /// What a stroke grows into, in units: twigs, or dabs pointing along
+    /// the path or `angle` degrees.
+    pub fn form(&self, angle: Option<f64>) -> Option<tilo_wet_media::Form> {
+        let Self::Stroke {
+            size,
+            forks,
+            spread,
+            dabs,
+            scatter,
+            dab_length,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        if let Some(forks) = forks {
+            return Some(tilo_wet_media::Form::Branch {
+                forks: *forks,
+                spread: narrow(spread.unwrap_or(35.0)),
+            });
+        }
+        dabs.map(|count| tilo_wet_media::Form::Dabs {
+            count,
+            scatter: narrow(scatter.unwrap_or(size * 2.0)),
+            length: narrow(dab_length.unwrap_or(0.0)),
+            angle: angle.map(narrow),
+        })
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "stroke geometry is bounded by the document's size limits"
+)]
+fn narrow(value: f64) -> f32 {
+    value as f32
+}
+
+impl Shape {
+    /// The same shape under `affine`, when the geometry itself can carry it:
+    /// a move and a stretch along the axes, the same both ways for text and
+    /// brush strokes. `None` asks for a transform instead (a turn, a skew, a
+    /// flip).
+    #[must_use]
+    pub fn transformed(&self, affine: Affine) -> Option<Self> {
+        let [sx, b, c, sy, dx, dy] = affine.as_coeffs();
+        if b != 0.0 || c != 0.0 || sx <= 0.0 || sy <= 0.0 {
+            return None;
+        }
+        let uniform = (sx - sy).abs() <= 1e-9 * sx.max(sy);
+        let map = |[x, y]: [f64; 2]| [x * sx + dx, y * sy + dy];
+        let points = |points: &[[f64; 2]]| points.iter().copied().map(map).collect();
+        Some(match self {
+            Self::Rect {
+                x,
+                y,
+                width,
+                height,
+                radius,
+            } => {
+                let [x, y] = map([*x, *y]);
+                Self::Rect {
+                    x,
+                    y,
+                    width: width * sx,
+                    height: height * sy,
+                    radius: radius * sx.min(sy),
+                }
+            }
+            Self::Ellipse { cx, cy, rx, ry } => {
+                let [cx, cy] = map([*cx, *cy]);
+                Self::Ellipse {
+                    cx,
+                    cy,
+                    rx: rx * sx,
+                    ry: ry * sy,
+                }
+            }
+            Self::Polygon { points: at } => Self::Polygon { points: points(at) },
+            Self::Line { points: at } => Self::Line { points: points(at) },
+            Self::Image { .. } => {
+                let mut image = self.clone();
+                if let Self::Image {
+                    x,
+                    y,
+                    width,
+                    height,
+                    ..
+                } = &mut image
+                {
+                    [*x, *y] = map([*x, *y]);
+                    *width *= sx;
+                    *height *= sy;
+                }
+                image
+            }
+            Self::Path { d } => {
+                let mut path = BezPath::from_svg(d).ok()?;
+                path.apply_affine(affine);
+                Self::Path {
+                    d: path_data(&path),
+                }
+            }
+            Self::Text { .. } if uniform => {
+                let mut text = self.clone();
+                if let Self::Text {
+                    x, y, size, width, ..
+                } = &mut text
+                {
+                    [*x, *y] = map([*x, *y]);
+                    *size *= sx;
+                    *width = width.map(|width| width * sx);
+                }
+                text
+            }
+            Self::Stroke {
+                points,
+                size,
+                forks,
+                spread,
+                dabs,
+                scatter,
+                dab_length,
+            } if uniform => Self::Stroke {
+                points: points
+                    .iter()
+                    .map(|point| {
+                        let mut moved = point.clone();
+                        if let [x, y, ..] = moved.as_mut_slice() {
+                            [*x, *y] = map([*x, *y]);
+                        }
+                        moved
+                    })
+                    .collect(),
+                size: size * sx,
+                forks: *forks,
+                spread: *spread,
+                dabs: *dabs,
+                scatter: scatter.map(|scatter| scatter * sx),
+                dab_length: dab_length.map(|length| length * sx),
+            },
+            Self::Text { .. } | Self::Stroke { .. } => return None,
+        })
     }
 }
 
@@ -641,17 +1190,24 @@ impl Shape {
             align,
             line_height,
             width,
+            tracking,
+            path,
             ..
         } = self
         else {
             return None;
         };
+        if let Some(path) = path {
+            // Words along a path stay within about their size of it.
+            let along = BezPath::from_svg(path).unwrap_or_default().bounding_box();
+            return Some(along.inflate(*size * 0.5, *size));
+        }
         let advance = size
-            * if weight.unwrap_or(400) >= 600 {
+            * (if weight.unwrap_or(400) >= 600 {
                 0.6
             } else {
                 0.55
-            };
+            } + tracking.unwrap_or(0.0) / 1000.0);
         let lines: Vec<f64> = text
             .split('\n')
             .map(|line| advance * count(line.chars().count()))
@@ -699,6 +1255,55 @@ fn polyline(points: &[[f64; 2]], closed: bool) -> BezPath {
 }
 
 impl Mark {
+    /// Whether the mark puts down any colour: a mark with none only cuts
+    /// others to its shape.
+    pub fn inked(&self) -> bool {
+        let style = &self.style;
+        style.fill.is_some()
+            || style.stroke.is_some()
+            || style.gradient.is_some()
+            || matches!(self.shape, Shape::Image { .. })
+    }
+
+    /// Whether the mark is an eraser: it takes paint off its layer and has
+    /// none of its own to pick.
+    pub fn erases(&self) -> bool {
+        matches!(self.shape, Shape::Stroke { .. })
+            && crate::brushes::Preset::of(&self.style) == crate::brushes::Preset::Eraser
+    }
+
+    /// The area the mark is kept inside, in artwork units, if it has one.
+    pub fn area(&self) -> Option<BezPath> {
+        let mut area = BezPath::from_svg(&self.area)
+            .ok()
+            .filter(|area| !area.elements().is_empty())?;
+        area.apply_affine(self.affine());
+        Some(area)
+    }
+
+    /// Keep the mark inside `area` (SVG path data in artwork units), or
+    /// inside nothing when it is empty.
+    pub fn keep_inside(&mut self, area: &str) {
+        self.area = BezPath::from_svg(area)
+            .ok()
+            .filter(|path| !path.elements().is_empty())
+            .map(|mut path| {
+                path.apply_affine(self.affine().inverse());
+                path_data(&path)
+            })
+            .unwrap_or_default();
+    }
+
+    /// The mark's area moved with its geometry by `affine`.
+    fn carry_area(&mut self, affine: Affine) {
+        if let Ok(mut area) = BezPath::from_svg(&self.area)
+            && !area.elements().is_empty()
+        {
+            area.apply_affine(affine);
+            self.area = path_data(&area);
+        }
+    }
+
     pub fn affine(&self) -> Affine {
         self.transform.map_or(Affine::IDENTITY, Affine::new)
     }
@@ -712,6 +1317,35 @@ impl Mark {
             mark.transform = Some((Affine::translate((dx, dy)) * self.affine()).as_coeffs());
         } else {
             mark.shape = self.shape.translated(dx, dy);
+            mark.carry_area(Affine::translate((dx, dy)));
+            // A gradient is placed in the same units as the geometry.
+            if let Some(gradient) = &mut mark.style.gradient {
+                for point in [&mut gradient.from, &mut gradient.to] {
+                    point[0] += dx;
+                    point[1] += dy;
+                }
+            }
+        }
+        mark
+    }
+
+    /// The mark under `affine` (artwork units): baked into its geometry
+    /// where the geometry can carry it, so a stretched rectangle stays a
+    /// rectangle; otherwise composed onto its transform.
+    #[must_use]
+    pub fn transformed(&self, affine: Affine) -> Self {
+        let mut mark = self.clone();
+        match self
+            .transform
+            .is_none()
+            .then(|| self.shape.transformed(affine))
+            .flatten()
+        {
+            Some(shape) => {
+                mark.shape = shape;
+                mark.carry_area(affine);
+            }
+            None => mark.transform = Some((affine * self.affine()).as_coeffs()),
         }
         mark
     }
@@ -722,6 +1356,20 @@ impl Mark {
         let mut path = self.shape.path();
         path.apply_affine(self.affine());
         let reach = match &self.shape {
+            // Twigs reach beyond the limb about as far again as it is long;
+            // dabs stray their scatter from the path.
+            Shape::Stroke {
+                size,
+                forks: Some(_),
+                ..
+            } => size * 0.5 + path.perimeter(0.5) * 0.9,
+            Shape::Stroke {
+                size,
+                dabs: Some(_),
+                scatter,
+                dab_length,
+                ..
+            } => size * 2.0 + scatter.unwrap_or(size * 2.0) + dab_length.unwrap_or(0.0) * 1.4,
             Shape::Stroke { size, .. } => size * 0.5,
             _ => self.style.stroke_width * 0.5,
         };
@@ -736,9 +1384,10 @@ impl Mark {
         }
         let local = self.affine().inverse() * point;
         match &self.shape {
-            Shape::Text { .. } | Shape::Rect { .. } | Shape::Ellipse { .. } => {
-                self.shape.path().contains(local)
-            }
+            Shape::Text { .. }
+            | Shape::Rect { .. }
+            | Shape::Ellipse { .. }
+            | Shape::Image { .. } => self.shape.path().contains(local),
             Shape::Polygon { .. } | Shape::Path { .. } if self.shape.closed() => {
                 self.shape.path().contains(local) || self.near_outline(local, 4.0)
             }

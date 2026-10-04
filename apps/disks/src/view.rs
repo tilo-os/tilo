@@ -4,7 +4,7 @@
 //! scrolling page of sections, property lists, stat tiles and tables. Nothing
 //! here paints, sizes or colours anything: every control says what it is and
 //! the theme decides how it looks. Interaction leaves as an [`Intent`] the
-//! app applies to the shared document.
+//! app applies to the window and the machine.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -24,12 +24,10 @@ use ui::widget::{
 
 use crate::app::{ActionKind, Tab};
 use crate::map::{MapEntry, PartitionMap};
-use crate::model::{
-    AttrSeverity, Drive, Partition, SmartAttr, SmartInfo, SmartStatus, Topology, fmt_hours,
-};
+use crate::model::{AttrSeverity, Drive, Partition, SmartAttr, SmartInfo, SmartStatus, fmt_hours};
 
 /// What a control in the window asks for. The app applies each one to the
-/// shared document and the machine, the same way for a click, a key or an
+/// window and the machine, the same way for a click, a key or an
 /// accessibility action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Intent {
@@ -64,14 +62,13 @@ pub(crate) struct DetailModel<'a> {
     pub enabled: [bool; 5],
 }
 
-/// The drive list: one destination per drive.
-pub(crate) fn drive_list(topology: &Topology, selected: usize, intents: &Intents) -> NavList {
-    let items = topology
-        .drives
-        .iter()
+/// The drive list: one destination per drive, under the name it shows.
+pub(crate) fn drive_list(labels: Vec<String>, selected: usize, intents: &Intents) -> NavList {
+    let items = labels
+        .into_iter()
         .enumerate()
-        .map(|(index, drive)| {
-            NavItem::new(drive_id(index), drive.model.clone())
+        .map(|(index, label)| {
+            NavItem::new(drive_id(index), label)
                 .icon(Icon::HardDrive)
                 .without_actions()
         })
@@ -233,13 +230,8 @@ fn actions(model: &DetailModel<'_>, intents: &Intents) -> Section {
             })
             .with_enabled(enabled)
             .tooltip(kind.describe());
-        // Format only opens the confirm sheet; the others act on the machine.
-        let request = move || intents.push(Intent::Run(kind));
-        let button = if kind.destructive() {
-            button.on_view(request)
-        } else {
-            button.on_effect(request)
-        };
+        // Each acts on the machine; Format asks for the device's name first.
+        let button = button.on_effect(move || intents.push(Intent::Run(kind)));
         row = row.push(Box::new(button));
     }
     Section::new(vec![

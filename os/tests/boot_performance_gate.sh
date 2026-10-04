@@ -37,6 +37,64 @@ if [ ! -S "$greetd_socket" ]; then
   echo "greetd login endpoint is unavailable: $greetd_socket" >&2
   exit 1
 fi
+# An active greetd that systemd had to restart got there through a failed
+# start. Five failures in a row stop it for good: the splash has already quit,
+# nothing owns the display, and the panel stays dark while the rest of the
+# system (sshd included) keeps running.
+greetd_restarts="$(systemctl show --property=NRestarts --value greetd.service 2>/dev/null || true)"
+case "$greetd_restarts" in
+  0) ;;
+  ''|*[!0-9]*) echo 'greetd.service restart count is unavailable' >&2; exit 1 ;;
+  *) echo "greetd.service was restarted $greetd_restarts times before the greeter came up" >&2; exit 1 ;;
+esac
+
+# The greeter must have lit what it drew on. A connected connector whose CRTC
+# is off, or a backlight at zero, is a black screen that every other check
+# here would pass.
+drm_sysfs="${TILO_DRM_SYSFS:-/sys/class/drm}"
+connected=0
+lit=0
+for connector in "$drm_sysfs"/card*-*; do
+  [ -r "$connector/status" ] || continue
+  [ "$(cat "$connector/status")" = connected ] || continue
+  connected=$((connected + 1))
+  if [ "$(cat "$connector/enabled" 2>/dev/null)" = enabled ] \
+     && [ "$(cat "$connector/dpms" 2>/dev/null)" = On ]; then
+    lit=$((lit + 1))
+  fi
+done
+if [ "$connected" -gt 0 ] && [ "$lit" -eq 0 ]; then
+  echo "no connected display is lit at the greeter ($connected connected)" >&2
+  exit 1
+fi
+backlight_sysfs="${TILO_BACKLIGHT_SYSFS:-/sys/class/backlight}"
+for backlight in "$backlight_sysfs"/*; do
+  [ -r "$backlight/brightness" ] || continue
+  brightness="$(cat "$backlight/brightness")"
+  power="$(cat "$backlight/bl_power" 2>/dev/null || echo 0)"
+  if [ "$brightness" = 0 ] || [ "$power" != 0 ]; then
+    echo "backlight ${backlight##*/} is dark at the greeter (brightness $brightness, bl_power $power)" >&2
+    exit 1
+  fi
+done
+
+# A device unit that never appears holds every unit ordered after it for the
+# whole device timeout, under the splash and with nothing on screen saying
+# why. A firmware TPM the kernel has no driver for did this twice per boot.
+boot_log="$(journalctl -b -o short-monotonic --no-pager 2>/dev/null)" || {
+  echo "this boot's journal is unreadable" >&2
+  exit 1
+}
+device_timeouts="$(grep -E 'systemd\[1\]: Timed out waiting for device ' <<<"$boot_log" \
+  | sed 's/.*Timed out waiting for device //' | sort -u || true)"
+if [ -n "$device_timeouts" ]; then
+  printf 'this boot waited out a device that never appeared:\n' >&2
+  while IFS= read -r device; do printf '  %s\n' "$device"; done <<<"$device_timeouts" >&2
+  case "$device_timeouts" in
+    *tpm*) printf 'TPM support: %s\n' "$(systemd-analyze has-tpm2 2>/dev/null | tr '\n' ' ')" >&2 ;;
+  esac
+  exit 1
+fi
 
 zram_sysfs="${TILO_ZRAM_SYSFS:-/sys/block/zram0}"
 if [ ! -r "$zram_sysfs/comp_algorithm" ]; then
@@ -132,13 +190,82 @@ initrd_gaps() {
     t > end { exit }
     p != "" && t - p > 300000 { m = $0; sub(/^[^]]*]/, "", m); printf "  %7.3fs before [%s]%s\n", (t - p) / 1e6, $2, substr(m, 1, 110) }
     { p = t }' <<<"$log" | sort -rn | head -10 || true
+  # A busy initrd has no gaps: name the units that ran longest instead, from
+  # systemd's own Starting/Finished lines in the same window.
+  printf 'initrd, longest units (%s journal entries in the phase):\n' \
+    "$(awk -F'[][]' -v start="$initrd_us" -v end="$userspace_us" \
+         '{ t = $2 * 1e6 } t >= start && t <= end { n++ } END { print n + 0 }' <<<"$log")"
+  awk -F'[][]' -v start="$initrd_us" -v end="$userspace_us" '
+    { t = $2 * 1e6 }
+    t < start || t > end { next }
+    {
+      m = $0; sub(/^[^]]*]/, "", m)
+      if (m ~ /systemd\[1\]: Starting /) {
+        u = m; sub(/.*systemd\[1\]: Starting /, "", u); sub(/ - .*/, "", u); sub(/\.\.\.$/, "", u)
+        begun[u] = t
+      } else if (m ~ /systemd\[1\]: (Finished|Started) /) {
+        u = m; sub(/.*systemd\[1\]: (Finished|Started) /, "", u); sub(/ - .*/, "", u); sub(/\.$/, "", u)
+        if (u in begun) { printf "  %7.3fs %s\n", (t - begun[u]) / 1e6, u; delete begun[u] }
+      }
+    }
+    END { for (u in begun) printf "  %7.3fs %s (still running at switch-root)\n", (end - begun[u]) / 1e6, u }' \
+    <<<"$log" | sort -rn | head -8 || true
 }
+# The pivot into the real root logs no unit in between; systemd's own
+# milestones across it say where its time went (policy load, relabel, the
+# new manager's first job).
+switch_root_steps() {
+  local log
+  log="$(journalctl -b -o short-monotonic --no-pager 2>/dev/null)" || return 0
+  printf 'switch-root milestones:\n'
+  grep -E 'Switching root|SELinux policy|Relabeled|systemd [0-9]+[.0-9-]* running|Queued start job for default target|initrd-switch-root.service: Deactivated' <<<"$log" \
+    | cut -c1-160 | sed 's/^/  /' | head -12 || true
+}
+
+# bootc removes /etc/.updated from every deployment, so its first boot runs the
+# ConditionNeedsUpdate= units. The caches the image builds (the linker cache in
+# /etc, the hardware database in /usr) must not be among them.
+image_cache_units=(ldconfig.service systemd-hwdb-update.service)
+rebuilt_image_caches() {
+  local unit
+  for unit in "${image_cache_units[@]}"; do
+    [ "$(systemctl show "$unit" --property=ConditionResult --value 2>/dev/null || true)" != yes ] \
+      || printf '%s\n' "$unit"
+  done
+}
+
+first_boot_update_check() {
+  local result path
+  result="$(systemctl show ldconfig.service --property=ConditionResult --value 2>/dev/null || true)"
+  printf 'first-boot update check: ldconfig condition %s\n' "${result:-unknown}"
+  # The booted view, the mount behind /usr, and the deployment's own /etc
+  # (bootc's merged copy), to tell which side moved.
+  for path in /usr /etc/.updated /etc/ld.so.cache /sysroot/state/deploy/*/etc/.updated \
+      /sysroot/ostree/deploy/*/deploy/*/etc/.updated; do
+    [ -e "$path" ] || continue
+    printf '  %s %s\n' "$(stat -c '%y' "$path" 2>/dev/null)" "$path"
+  done
+  printf '  /usr is %s\n' "$(findmnt -no SOURCE,FSTYPE --target /usr 2>/dev/null | head -1)"
+}
+
 kernel_gaps() {
   local log
   # Journald timestamps imported early messages at receipt. Those timestamps
   # can place every early message after the initrd started. Read the kernel's
   # own clock instead; an unprivileged failure must not fabricate kernel gaps.
-  log="$(dmesg --color=never 2>/dev/null)" || log="$(sudo -n dmesg --color=never 2>/dev/null)" || {
+  # dmesg is restricted for the gate user. journald keeps the kernel's own
+  # timestamp of each kernel message as _SOURCE_MONOTONIC_TIMESTAMP, which the
+  # gate user reads through wheel.
+  log="$(dmesg --color=never 2>/dev/null)" || log="$(sudo -n dmesg --color=never 2>/dev/null)" \
+    || log="$(journalctl -k -b -o json --no-pager 2>/dev/null | python3 -c '
+import json, sys
+for line in sys.stdin:
+    entry = json.loads(line)
+    stamp = entry.get("_SOURCE_MONOTONIC_TIMESTAMP")
+    message = entry.get("MESSAGE")
+    if stamp and isinstance(message, str):
+        print(f"[{int(stamp) / 1e6:12.6f}] {message}")
+' 2>/dev/null)" && [ -n "$log" ] || {
     printf 'raw kernel timestamps unavailable; no kernel gap attribution\n'
     return 0
   }
@@ -176,6 +303,8 @@ if [ "$entered_us" -gt $((budget_us / 2)) ] && [ "$entered_us" -le "$budget_us" 
   cpu_steal
   kernel_gaps
   initrd_gaps
+  switch_root_steps
+  first_boot_update_check
   systemd-analyze critical-chain graphical.target 2>/dev/null | head -14 || true
 fi
 if [ "$entered_us" -gt "$budget_us" ]; then
@@ -185,6 +314,8 @@ if [ "$entered_us" -gt "$budget_us" ]; then
   cpu_steal >&2
   kernel_gaps >&2
   initrd_gaps >&2
+  switch_root_steps >&2
+  first_boot_update_check >&2
   systemd-analyze critical-chain graphical.target >&2 || true
   systemd-analyze blame --no-pager 2>/dev/null | grep -v '\.device$' | head -20 >&2 || true
   exit 1
@@ -192,3 +323,9 @@ fi
 boot_phases
 printf 'kernel+userspace reached usable greeter in %d.%03ds (budget: %ss)\n' \
   "$seconds" "$milliseconds" "$budget_seconds"
+rebuilt="$(rebuilt_image_caches)"
+if [ -n "$rebuilt" ]; then
+  printf 'this boot rebuilt caches the image already carries: %s\n' "$(tr '\n' ' ' <<<"$rebuilt")" >&2
+  first_boot_update_check >&2
+  exit 1
+fi

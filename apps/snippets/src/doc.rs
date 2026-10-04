@@ -134,6 +134,22 @@ impl SnippetsDoc {
         }
     }
 
+    /// The text object of snippet `id`'s body, created when the snippet has
+    /// none yet; `None` when there is no such snippet.
+    pub fn body_text(doc: &mut AutoCommit, id: SnippetId) -> Option<ObjId> {
+        let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(&ROOT, "snippets") else {
+            return None;
+        };
+        let key = id.to_string();
+        let Ok(Some((Value::Object(ObjType::Map), snip))) = doc.get(&map, key.as_str()) else {
+            return None;
+        };
+        match doc.get(&snip, "body") {
+            Ok(Some((Value::Object(ObjType::Text), text))) => Some(text),
+            _ => doc.put_object(&snip, "body", ObjType::Text).ok(),
+        }
+    }
+
     /// Remove a snippet from the document.
     pub fn remove(doc: &mut AutoCommit, id: SnippetId) {
         let map = Self::snippets_map(doc);

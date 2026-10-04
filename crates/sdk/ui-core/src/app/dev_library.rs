@@ -4,7 +4,8 @@
 // build. Each open window keeps its id and its own state bytes. The library's
 // `tilo_dev_apply` runs for every window, so the new code sees that window's
 // state and no other. A library linked to the same `ui` can also publish a
-// widget root; a second copy of `ui` is refused and the running root stays.
+// widget root and the action decoders its document edits go through; a second
+// copy of `ui` is refused and the running root stays.
 
 use std::cell::RefCell;
 #[cfg(all(unix, any(feature = "native", test)))]
@@ -22,12 +23,20 @@ pub(crate) struct DevWindowSlot {
     pub state: Vec<u8>,
 }
 
+/// A view built by the new code, with the decoders of the actions it
+/// publishes. They travel together: the view encodes its actions with the new
+/// code, so only the new code's decoders can read them back.
+pub struct DevRoot {
+    pub view: Box<dyn AppWidget>,
+    pub registry: crate::tilo_actions::ActionRegistry,
+}
+
 /// What a successful load produced. The caller installs `root` into the
 /// windows it already has; a `None` root leaves those widgets alone.
 #[cfg(any(feature = "native", test))]
 pub(crate) struct DevReload {
     pub windows: Vec<DevWindowSlot>,
-    pub root: Option<Box<dyn AppWidget>>,
+    pub root: Option<DevRoot>,
     /// `dlopen` and symbol lookup, before any of the library's code ran.
     pub load: std::time::Duration,
 }
@@ -39,18 +48,19 @@ pub fn dev_stamp_addr() -> *const () {
 }
 
 thread_local! {
-    static DEV_ROOT: RefCell<Option<Box<dyn AppWidget>>> = const { RefCell::new(None) };
+    static DEV_ROOT: RefCell<Option<DevRoot>> = const { RefCell::new(None) };
     #[cfg(all(unix, any(feature = "native", test)))]
     static LOADED_LIBS: RefCell<Vec<*mut libc::c_void>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Store a widget root built by the library that shares this `ui`.
-pub fn publish_dev_root(root: Box<dyn AppWidget>) {
+/// Store a widget root and its action decoders, built by the library that
+/// shares this `ui`.
+pub fn publish_dev_root(root: DevRoot) {
     DEV_ROOT.with(|slot| *slot.borrow_mut() = Some(root));
 }
 
 /// Take the root [`publish_dev_root`] stored on this thread.
-pub fn take_dev_root() -> Option<Box<dyn AppWidget>> {
+pub fn take_dev_root() -> Option<DevRoot> {
     DEV_ROOT.with(|slot| slot.borrow_mut().take())
 }
 
@@ -418,8 +428,25 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
     }
 
     unsafe extern "C" fn probe_publish() -> i32 {
-        publish_dev_root(Box::new(ReloadedProbe));
+        let mut registry = crate::tilo_actions::ActionRegistry::new();
+        registry.register::<ReloadedEdit>("reloaded.edit");
+        publish_dev_root(super::DevRoot {
+            view: Box::new(ReloadedProbe),
+            registry,
+        });
         1
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct ReloadedEdit;
+
+    impl crate::tilo_actions::Action for ReloadedEdit {
+        fn apply(
+            &self,
+            _doc: &mut crate::tilo_actions::Doc,
+        ) -> Result<(), crate::tilo_actions::ActionError> {
+            Ok(())
+        }
     }
 
     struct ReloadedProbe;
@@ -495,7 +522,11 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
         )
         .expect("matching ui reloads");
         let root = reloaded.root.expect("the new view is published");
-        assert_eq!(root.name(), "reloaded");
+        assert_eq!(root.view.name(), "reloaded");
+        assert!(
+            root.registry.contains("reloaded.edit"),
+            "the new code's decoders come with its view"
+        );
         assert_eq!(reloaded.windows[0].id, "primary");
         assert_eq!(reloaded.windows[1].id, "notes");
         assert_eq!(reloaded.windows[0].state, b"hello|primary");

@@ -11,6 +11,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +19,7 @@ from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "dev/prepare-hardware-profile.py"
 sys.path.insert(0, str(SCRIPT.parent))
+import hardware_profile  # noqa: E402
 SPEC = importlib.util.spec_from_file_location("prepare_hardware_profile", SCRIPT)
 prepare = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(prepare)
@@ -90,6 +92,10 @@ class HardwareProfileTest(unittest.TestCase):
         self.system_firmware = self.root / "usr/lib/firmware/qcom/a740_sqe.fw.xz"
         self.system_firmware.parent.mkdir(parents=True)
         self.system_firmware.write_bytes(b"distro firmware fixture")
+        for name in ("gen70500_sqe.fw", "gen70500_gmu.bin", "x1e80100/gen70500_zap.mbn"):
+            path = self.system_firmware.parent / (name + ".xz")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"GPU firmware fixture")
         for name in NAMES:
             (self.firmware / name).write_bytes(f"firmware fixture: {name}".encode())
         self.manifest = {
@@ -154,7 +160,10 @@ class HardwareProfileTest(unittest.TestCase):
             install_line = dracut.read_text().splitlines()[1]
             self.assertEqual(install_line, 'install_items+=" ' + " ".join(
                 f"/usr/lib/firmware/qcom/x1e80100/LENOVO/83ED/{name}" for name in NAMES
-            ) + ' /usr/lib/firmware/qcom/a740_sqe.fw.xz "')
+            ) + ' /usr/lib/firmware/qcom/a740_sqe.fw.xz'
+              ' /usr/lib/firmware/qcom/gen70500_sqe.fw.xz'
+              ' /usr/lib/firmware/qcom/gen70500_gmu.bin.xz'
+              ' /usr/lib/firmware/qcom/x1e80100/gen70500_zap.mbn.xz "')
             parser = self.root / prepare.PARSER_PATH
             self.assertIn(b"FIELDS_V2", parser.read_bytes())
             self.assertNotIn(b"\r", parser.read_bytes())
@@ -163,7 +172,12 @@ class HardwareProfileTest(unittest.TestCase):
             installed_spec.loader.exec_module(installed_parser)
             definition = json.loads((self.root / prepare.DEFINITION_PATH).read_text())
             self.assertEqual(installed_parser.validate_definition(definition)["id"], "lenovo-83ed")
-            outputs = [profile_path, self.root / prepare.DEFINITION_PATH, parser, dracut,
+            # The 83ED firmware reports a TPM no Linux driver serves; without
+            # this the generator holds sysinit.target for the 45 s device
+            # timeout in the initrd and again after switch-root.
+            kargs = self.root / prepare.KARGS_PATH
+            self.assertEqual(tomllib.loads(kargs.read_text())["kargs"], ["systemd.tpm2_wait=0"])
+            outputs = [profile_path, self.root / prepare.DEFINITION_PATH, parser, dracut, kargs,
                        *(installed / name for name in NAMES)]
             self.assertEqual(self.ownership.call_count, len(outputs))
             for output in outputs:
@@ -392,10 +406,98 @@ class HardwareProfileTest(unittest.TestCase):
             "# Hardware-profile firmware and boot modules needed before the root is mounted.",
             'add_drivers+=" sdhci-of-dwcmshc "',
         ])
+        self.assertFalse((self.root / prepare.KARGS_PATH).exists())
         module.unlink()
         with self.assertRaisesRegex(ValueError, "not built in or installed"):
             prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions,
                                     target_update_ref=TARGET_REF)
+
+
+    def test_kernel_args_reach_the_sealed_command_line(self):
+        definitions, data = self.definition()
+        data["schema_version"] = 2
+        data["system_firmware"] = []
+        data["kernel_args"] = ["earlycon", "console=ttyS2,1500000n8"]
+        (definitions / "other-board.json").write_text(json.dumps(data))
+        prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions,
+                                target_update_ref=TARGET_REF)
+        kargs = self.root / prepare.KARGS_PATH
+        self.assertEqual(tomllib.loads(kargs.read_text())["kargs"], data["kernel_args"])
+        self.assertEqual(stat.S_IMODE(kargs.stat().st_mode), 0o644)
+        # bootc reads kargs.d in name order; the board's console must come last.
+        self.assertGreater(kargs.name, "05-credentials.toml")
+        for bad in (["console=ttyS2 quiet"], ['console="ttyS2"'], ["earlycon", "earlycon"], [""], "earlycon"):
+            with self.subTest(kernel_args=bad):
+                data["kernel_args"] = bad
+                with self.assertRaisesRegex(ValueError, "kernel argument"):
+                    hardware_profile.validate_definition(data)
+
+
+class OrangePiWifiFirmwareTest(unittest.TestCase):
+    """The Orange Pi profile carries its Wi-Fi driver and NVRAM into the
+    initramfs, under the board-specific names brcmfmac asks for first, and
+    installs that NVRAM without Broadcom's shared sample MAC."""
+
+    PROFILE = "orangepi-3b-v2-1"
+    BOARD = "xunlong,orangepi-3b-v2.1"
+
+    def test_wifi_firmware_reaches_the_initramfs_without_the_sample_mac(self):
+        profiles = Path(__file__).resolve().parents[1] / "hardware/profiles"
+        definition = json.loads((profiles / f"{self.PROFILE}.json").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp)
+            root, firmware = work / "root", work / "firmware"
+            firmware.mkdir()
+            kver = "6.17.1-tilo.aarch64"
+            kernel = root / f"usr/lib/modules/{kver}"
+            (kernel / "dtb/rockchip").mkdir(parents=True)
+            (kernel / "dtb" / definition["devicetree"]).write_bytes(
+                struct.pack(">II", 0xD00DFEED, 40) + bytes(32))
+            (kernel / "config").write_text("CONFIG_ARM64=y\n", encoding="utf-8")
+            for module in definition["boot_modules"]:
+                (kernel / "kernel").mkdir(exist_ok=True)
+                (kernel / "kernel" / f"{module}.ko.zst").write_bytes(b"module")
+            nvram = b"#AP6256_NVRAM\nboardtype=0x6e4\nmacaddr=00:90:4c:c5:12:38\r\nccode=XZ\n"
+            for name in definition["firmware"]:
+                payload = nvram if name.endswith(".txt") else f"blob {name}".encode()
+                (firmware / name).write_bytes(payload)
+            (firmware / "manifest.json").write_text(json.dumps({
+                "schema_version": 1,
+                "profile": self.PROFILE,
+                "files": {name: hashlib.sha256((firmware / name).read_bytes()).hexdigest()
+                          for name in definition["firmware"]},
+            }), encoding="utf-8")
+            with patch.object(prepare.platform, "machine", return_value="aarch64"), \
+                    patch.object(prepare.os, "geteuid", return_value=0), \
+                    patch.object(prepare.os, "chown"):
+                prepare.prepare_profile(self.PROFILE, root, kver, firmware, profiles,
+                                        target_update_ref=TARGET_REF)
+            dracut = (root / "etc/dracut.conf.d/41-tilo-hardware.conf").read_text(encoding="utf-8")
+            installed = root / "usr/lib/firmware/brcm"
+            for suffix in ("bin", "clm_blob", "txt"):
+                for name in (f"brcmfmac43456-sdio.{suffix}", f"brcmfmac43456-sdio.{self.BOARD}.{suffix}"):
+                    self.assertEqual(definition["firmware"][name], f"brcm/{name}")
+                    self.assertIn(f"/usr/lib/firmware/brcm/{name}", dracut)
+                    expected = (firmware / name).read_bytes()
+                    if suffix == "txt":
+                        expected = b"#AP6256_NVRAM\nboardtype=0x6e4\nccode=XZ\n"
+                    self.assertEqual((installed / name).read_bytes(), expected)
+        drivers = next(line for line in dracut.splitlines() if line.startswith("add_drivers"))
+        for module in ("mmc_core", "cfg80211", "brcmutil", "brcmfmac", "rockchipdrm", "dw-hdmi"):
+            self.assertIn(f" {module} ", drivers)
+
+    def test_fetch_script_stages_every_profile_firmware_name(self):
+        definition = json.loads((Path(__file__).resolve().parents[1]
+                                 / f"hardware/profiles/{self.PROFILE}.json").read_text(encoding="utf-8"))
+        fetch = (Path(__file__).resolve().parents[1] / "dev/fetch-orangepi-wifi-firmware.sh").read_text(
+            encoding="utf-8")
+        assets = (Path(__file__).resolve().parents[1] / "external-assets/github-assets.tsv").read_text(
+            encoding="utf-8")
+        self.assertIn(f"board={self.BOARD}", fetch)
+        for name in definition["firmware"]:
+            if self.BOARD not in name:
+                generic_asset = fetch.split(f"[{name}]=", 1)[1].split()[0]
+                self.assertIn(f"\t{generic_asset}\t", assets)
 
 
 if __name__ == "__main__":

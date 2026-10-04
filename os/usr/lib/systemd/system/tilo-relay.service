@@ -58,7 +58,10 @@ ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK is how the iroh endpoint enumerates its own interfaces and
+# addresses. Without it the daemon reports ready with an empty address set
+# and no peer can dial the host directly.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 LockPersonality=yes
 RestrictRealtime=yes

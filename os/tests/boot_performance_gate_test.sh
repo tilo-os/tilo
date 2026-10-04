@@ -10,6 +10,18 @@ export TILO_ZRAM_SYSFS="$work/zram0"
 export TILO_BLOCK_SYSFS="$work/block"
 export TILO_NTSYNC_DEVICE=/dev/null
 export TILO_GREETD_SOCKET="$work/greetd.sock"
+mkdir -p "$work/drm/card1-eDP-1" "$work/drm/card1-DP-1" "$work/backlight/panel"
+printf 'connected\n' >"$work/drm/card1-eDP-1/status"
+printf 'enabled\n' >"$work/drm/card1-eDP-1/enabled"
+printf 'On\n' >"$work/drm/card1-eDP-1/dpms"
+# The kernel reports a disconnected connector's DPMS as On as well.
+printf 'disconnected\n' >"$work/drm/card1-DP-1/status"
+printf 'disabled\n' >"$work/drm/card1-DP-1/enabled"
+printf 'On\n' >"$work/drm/card1-DP-1/dpms"
+printf '1024\n' >"$work/backlight/panel/brightness"
+printf '0\n' >"$work/backlight/panel/bl_power"
+export TILO_DRM_SYSFS="$work/drm"
+export TILO_BACKLIGHT_SYSFS="$work/backlight"
 python3 - "$TILO_GREETD_SOCKET" <<'PY'
 import socket
 import sys
@@ -29,10 +41,13 @@ if [ "${1:-}" = is-active ]; then
   exit
 fi
 case "${2:-}" in
+  --property=NRestarts) printf '%s\n' "${TILO_TEST_GREETD_RESTARTS:-0}" ;;
   --property=InitRDTimestampMonotonic) printf '%s\n' "${TILO_TEST_INITRD_US:-}" ;;
   --property=UserspaceTimestampMonotonic) printf '%s\n' "${TILO_TEST_USERSPACE_US:-}" ;;
   graphical.target) printf '%s\n' "${TILO_TEST_GRAPHICAL_US:-${TILO_TEST_ACTIVE_US:?}}" ;;
   greetd.service) printf '%s\n' "${TILO_TEST_GREETD_US:-${TILO_TEST_ACTIVE_US:?}}" ;;
+  ldconfig.service|systemd-hwdb-update.service)
+    case " ${TILO_TEST_REBUILT:-} " in *" $2 "*) echo yes ;; *) echo no ;; esac ;;
   *) exit 1 ;;
 esac
 EOF
@@ -44,7 +59,16 @@ printf '%s\n' '[    0.100000] host kernel: start' \
   '[   14.500000] host kernel: Run /init as init process' \
   '[   20.000000] host systemd[1]: after the initrd'
 EOF
-cp "$work/dmesg" "$work/journalctl"
+cat >"$work/journalctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '[    0.100000] host kernel: start' \
+  '[   14.500000] host kernel: Run /init as init process' \
+  '[   15.000000] host systemd[1]: Starting tilo-root-discover.service - Discover the root...' \
+  '[   19.000000] host systemd[1]: Finished tilo-root-discover.service - Discover the root.' \
+  '[   20.000000] host systemd[1]: after the initrd'
+[ -z "${TILO_TEST_DEVICE_TIMEOUT:-}" ] \
+  || printf '[   66.000000] host systemd[1]: Timed out waiting for device %s.\n' "$TILO_TEST_DEVICE_TIMEOUT"
+EOF
 cat >"$work/systemd-analyze" <<'EOF'
 #!/usr/bin/env bash
 printf 'mock critical chain\n' >&2
@@ -62,6 +86,13 @@ PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/pass"
 grep -Fq 'kernel+userspace reached usable greeter in 19.999s (budget: 20s)' "$work/pass"
 
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_TEST_REBUILT=systemd-hwdb-update.service \
+  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/rebuilt"; then
+  echo 'boot performance gate accepted a first boot that rebuilt the hardware database' >&2
+  exit 1
+fi
+grep -Fq 'this boot rebuilt caches the image already carries: systemd-hwdb-update.service' "$work/rebuilt"
+
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=20000001 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/fail.out" 2>"$work/fail.err"; then
   echo 'boot performance gate accepted an over-budget boot' >&2
@@ -76,10 +107,14 @@ PATH="$work:$PATH" TILO_TEST_ACTIVE_US=21000000 TILO_TEST_INITRD_US=15000000 \
 grep -Fq '12.000s before [   14.000000] host kernel: Freeing initrd memory' "$work/gaps.err"
 grep -Fq 'kernel log starts at 0.100s' "$work/gaps.err"
 grep -Fq 'initrd, longest gaps before switch-root:' "$work/gaps.err"
+grep -Fq 'switch-root milestones:' "$work/gaps.err"
+grep -Fq 'first-boot update check: ldconfig condition' "$work/gaps.err"
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=25000000 TILO_TEST_INITRD_US=14500000 \
   TILO_TEST_USERSPACE_US=21000000 "$repo/os/tests/boot_performance_gate.sh" \
   >/dev/null 2>"$work/initrd-gaps.err" || true
-grep -Fq '5.500s before [   20.000000] host systemd[1]: after the initrd' "$work/initrd-gaps.err" \
+grep -Fq '4.000s before [   19.000000] host systemd[1]: Finished tilo-root-discover.service' "$work/initrd-gaps.err" \
+  && grep -Fq '4.000s tilo-root-discover.service' "$work/initrd-gaps.err" \
+  && grep -Fq 'initrd, longest units (4 journal entries in the phase):' "$work/initrd-gaps.err" \
   || { cat "$work/initrd-gaps.err" >&2; exit 1; }
 if grep -A1 -F 'kernel log, longest gaps' "$work/gaps.err" | grep -Fq 'after the initrd'; then
   echo 'kernel gap report reached past the initrd start' >&2
@@ -172,6 +207,58 @@ if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_TEST_GREETD_ACTIVE=no \
   exit 1
 fi
 grep -Fq 'greetd.service is not active' "$work/no-greeter"
+
+# A first boot whose initial session account did not exist yet: greetd failed
+# and was restarted until it hit its start limit, leaving the panel dark.
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_TEST_GREETD_RESTARTS=4 \
+  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/restarted-greeter"; then
+  echo 'boot performance gate accepted a greeter that systemd had to restart' >&2
+  exit 1
+fi
+grep -Fq 'greetd.service was restarted 4 times' "$work/restarted-greeter"
+
+printf 'disabled\n' >"$work/drm/card1-eDP-1/enabled"
+printf 'Off\n' >"$work/drm/card1-eDP-1/dpms"
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
+  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/dark-crtc"; then
+  echo 'boot performance gate accepted a greeter on a switched-off display' >&2
+  exit 1
+fi
+grep -Fq 'no connected display is lit at the greeter (1 connected)' "$work/dark-crtc"
+printf 'enabled\n' >"$work/drm/card1-eDP-1/enabled"
+printf 'On\n' >"$work/drm/card1-eDP-1/dpms"
+
+printf '0\n' >"$work/backlight/panel/brightness"
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
+  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/dark-backlight"; then
+  echo 'boot performance gate accepted a greeter behind a zero backlight' >&2
+  exit 1
+fi
+grep -Fq 'backlight panel is dark at the greeter (brightness 0, bl_power 0)' "$work/dark-backlight"
+printf '1024\n' >"$work/backlight/panel/brightness"
+printf '4\n' >"$work/backlight/panel/bl_power"
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
+  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/powered-down-backlight"; then
+  echo 'boot performance gate accepted a powered-down backlight' >&2
+  exit 1
+fi
+grep -Fq 'backlight panel is dark at the greeter (brightness 1024, bl_power 4)' "$work/powered-down-backlight"
+printf '0\n' >"$work/backlight/panel/bl_power"
+
+# A machine without a display (a headless board) has nothing to light.
+PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_DRM_SYSFS="$work/no-drm" \
+  TILO_BACKLIGHT_SYSFS="$work/no-backlight" "$repo/os/tests/boot_performance_gate.sh" >/dev/null
+
+# Firmware that reports a TPM no driver serves made systemd wait out the
+# device timeout under the splash, in the initrd and again after switch-root.
+if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
+  TILO_TEST_DEVICE_TIMEOUT='dev-tpmrm0.device - /dev/tpmrm0' \
+  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/device-timeout"; then
+  echo 'boot performance gate accepted a boot that waited out a missing device' >&2
+  exit 1
+fi
+grep -Fq 'this boot waited out a device that never appeared:' "$work/device-timeout"
+grep -Fq '  dev-tpmrm0.device - /dev/tpmrm0.' "$work/device-timeout"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_GREETD_SOCKET="$work/missing-greetd.sock" \
   "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/no-greeter-socket"; then
@@ -463,8 +550,19 @@ if grep -Fq 'systemctl enable tilo-boot-entries.service' \
   exit 1
 fi
 
-grep -Fq '/usr/lib/systemd/systemd-update-done --root=/' "$repo/os/Containerfile" || {
-  echo 'first boot regenerates the linker cache on the login critical chain' >&2
+# bootc drops /etc/.updated from every deployment, so the caches the image
+# builds must not hang on ConditionNeedsUpdate=/etc.
+dropin="$repo/os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf"
+{ grep -Fxq 'ConditionNeedsUpdate=' "$dropin" \
+    && grep -Fxq 'ConditionFileNotEmpty=|!/etc/ld.so.cache' "$dropin" \
+    && grep -Fq 'install -D -m 0644 /usr/local/libexec/tilo-ldconfig-image-cache.conf' "$repo/os/Containerfile" \
+    && grep -Fq '/usr/lib/systemd/systemd-update-done --root=/' "$repo/os/Containerfile"; } || {
+  echo 'first boot of a deployment regenerates the linker cache on the login critical chain' >&2
+  exit 1
+}
+{ grep -Fq '&& systemd-hwdb update --usr' "$repo/os/Containerfile" \
+    && grep -Fq '&& rm -f /etc/udev/hwdb.bin' "$repo/os/Containerfile"; } || {
+  echo 'first boot of a deployment rebuilds the hardware database' >&2
   exit 1
 }
 

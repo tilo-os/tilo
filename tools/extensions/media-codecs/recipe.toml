@@ -1,0 +1,132 @@
+# The media-codecs system extension: what tools/extensions/resolve.py resolves
+# for each published OS image, and where every artifact may come from.
+#
+# Tilo distributes none of these packages. CI only pins which upstream bytes a
+# device may fetch for a given base; the device downloads them itself from the
+# URLs below (os/usr/share/tilo/system-extensions/README.md, "Downloaded
+# system extensions").
+
+schema = 1
+id = "media-codecs"
+os_id = "fedora"
+repo_file = "media-codecs.repo"
+
+# Parts are the systemd-sysext images the device assembles. A part is
+# "available" when at least one of its components has a build for this base,
+# "waiting" when none has one yet, and "unsupported" when none applies.
+[[parts]]
+name = "tilo-codecs"
+waiting = "The codecs are waiting for builds that match this release."
+unsupported = "No codecs are published for this system."
+
+# The freeworld Mesa driver brings its own libgallium-<version>.so, which then
+# serves every Mesa client, so it must be built from exactly the base's Mesa.
+# It is a part of its own so a mismatch only ever turns hardware H.264/HEVC off.
+[[parts]]
+name = "tilo-codecs-mesa"
+waiting = "Hardware H.264/HEVC is waiting for a matching Mesa build from RPM Fusion."
+unsupported = "The base image has no Mesa drivers."
+
+# Top-level packages and the base package each one follows. `exact`: only the
+# base's own version. `compatible`: the base's version, else the newest older
+# build of the same major.minor (an older plugin against a newer core is the
+# direction these libraries keep compatible). `newest`: no base counterpart.
+# Epochs are ignored when comparing with the base: RPM Fusion's GStreamer
+# plugins carry epoch 1 where Fedora's core has none.
+[[components]]
+name = "gstreamer1-plugins-bad-freeworld"
+part = "tilo-codecs"
+rule = "compatible"
+follows = "gstreamer1"
+
+[[components]]
+name = "gstreamer1-plugins-ugly"
+part = "tilo-codecs"
+rule = "compatible"
+follows = "gstreamer1"
+
+[[components]]
+name = "gstreamer1-plugin-openh264"
+part = "tilo-codecs"
+rule = "compatible"
+follows = "gstreamer1"
+
+# The image carries Fedora's `noopenh264` stub instead (Tilo never distributes
+# Cisco's binary). Cisco's library has the stub's exact paths, so this part's
+# overlay shadows it; nothing needs relocating.
+[[components]]
+name = "openh264"
+part = "tilo-codecs"
+rule = "newest"
+
+[[components]]
+name = "libavcodec-freeworld"
+part = "tilo-codecs"
+rule = "compatible"
+follows = "libavcodec-free"
+
+[[components]]
+name = "intel-media-driver"
+part = "tilo-codecs"
+rule = "newest"
+arches = ["x86_64"]
+
+[[components]]
+name = "mesa-va-drivers-freeworld"
+part = "tilo-codecs-mesa"
+rule = "exact"
+follows = "mesa-dri-drivers"
+
+# Signing keys. A relative `file` is in this directory; an absolute one is read
+# from the image being resolved. A per-release key is pinned per VERSION_ID: a
+# release without a pinned key cannot be resolved until one is added here.
+[keys.rpmfusion-free]
+file = "keys/RPM-GPG-KEY-rpmfusion-free-fedora-2020"
+fingerprint = "e9a491a3de247814e7e067eae06f8ecdd651ff2e"
+
+[keys.rpmfusion-nonfree]
+file = "keys/RPM-GPG-KEY-rpmfusion-nonfree-fedora-2020"
+fingerprint = "79bdb88f9bbf73910fd4095b6a2af96194843c65"
+
+[keys.fedora-primary]
+file = "/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-{version_id}-primary"
+fingerprint = { "44" = "36f612dcf27f7d1a48a835e4dbfcf71c6d9f90a6" }
+
+# Every repository in media-codecs.repo, with the key that must have signed its
+# packages and its publisher. An artifact's first URL is the repository's
+# canonical baseurl (media-codecs.repo) plus the package's location in its
+# metadata; `also` adds further templates ({releasever}, {basearch},
+# {location}, {filename}: the location's last component). A URL is published
+# only after it served exactly the resolved bytes, over HTTPS on every hop; one
+# that does not is dropped for that artifact.
+[repos.fedora]
+key = "fedora-primary"
+publisher = "Fedora Project"
+
+[repos.updates]
+key = "fedora-primary"
+publisher = "Fedora Project"
+
+# Fedora builds OpenH264 and signs it; Cisco serves the binaries, which is what
+# covers the H.264 patent licence. codecs.fedoraproject.org redirects each
+# package to Cisco's host over plain HTTP, so Cisco's own HTTPS URL is offered.
+[repos.fedora-cisco-openh264]
+key = "fedora-primary"
+publisher = "Cisco Systems"
+also = ["https://ciscobinary.openh264.org/{filename}"]
+
+[repos.rpmfusion-free]
+key = "rpmfusion-free"
+publisher = "RPM Fusion"
+
+[repos.rpmfusion-free-updates]
+key = "rpmfusion-free"
+publisher = "RPM Fusion"
+
+[repos.rpmfusion-nonfree]
+key = "rpmfusion-nonfree"
+publisher = "RPM Fusion"
+
+[repos.rpmfusion-nonfree-updates]
+key = "rpmfusion-nonfree"
+publisher = "RPM Fusion"

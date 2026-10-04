@@ -666,6 +666,37 @@ pub struct ConnectorSnapshot {
     pub physical_mm: Option<(u32, u32)>,
     /// What the sink's EDID says it is; `None` when it exposes none.
     pub monitor: Option<settings_store::hardware::MonitorIdentity>,
+    /// The mode the display configuration asks for, if any. Remembered with
+    /// a lit output so a later rescan can tell a changed request from an
+    /// unchanged one (see [`super::hotplug::retained_mode`]).
+    pub mode_intent: Option<settings_store::hardware::OutputMode>,
+}
+
+impl ConnectorSnapshot {
+    /// Every mode the connector advertises, in the kernel's order.
+    pub fn advertised_modes(&self) -> Vec<settings_store::hardware::OutputMode> {
+        self.modes.iter().map(output_mode).collect()
+    }
+
+    /// Drive the connector at `wanted` rather than the mode configuration
+    /// picked, when the connector still advertises exactly that mode.
+    pub fn retain_mode(&mut self, wanted: settings_store::hardware::OutputMode) -> bool {
+        let Some(found) = self.modes.iter().find(|m| output_mode(m) == wanted) else {
+            return false;
+        };
+        self.mode = *found;
+        true
+    }
+}
+
+/// A KMS mode as the display configuration names it.
+fn output_mode(mode: &Mode) -> settings_store::hardware::OutputMode {
+    let (width, height) = mode.size();
+    settings_store::hardware::OutputMode {
+        width: u32::from(width),
+        height: u32::from(height),
+        refresh_mhz: mode_refresh_mhz(mode),
+    }
 }
 
 /// A connector before the whole-seat topology resolves its persisted key.
@@ -867,6 +898,7 @@ impl CardHandle {
                 enabled: true,
                 physical_mm: info.size().filter(|&(w, h)| w > 0 && h > 0),
                 monitor,
+                mode_intent: None,
             });
         }
         out
@@ -916,14 +948,12 @@ impl CardHandle {
     ) {
         let output_config = config.output_for(&config_key);
         snapshot.enabled = output_config.is_none_or(|output| output.enabled);
-        snapshot.mode = pick_configured_mode(
-            &snapshot.modes,
-            output_config.and_then(|output| output.mode),
-        )
-        .or_else(|| pick_configured_mode(&snapshot.modes, None))
-        // `connected` has already rejected an empty KMS mode table; retaining
-        // the old value here is defensive rather than inventing a mode.
-        .unwrap_or(snapshot.mode);
+        snapshot.mode_intent = output_config.and_then(|output| output.mode);
+        snapshot.mode = pick_configured_mode(&snapshot.modes, snapshot.mode_intent)
+            .or_else(|| pick_configured_mode(&snapshot.modes, None))
+            // `connected` has already rejected an empty KMS mode table; retaining
+            // the old value here is defensive rather than inventing a mode.
+            .unwrap_or(snapshot.mode);
         snapshot.config_key = config_key;
     }
 
@@ -1051,6 +1081,7 @@ impl CardHandle {
                 physical_mm: snapshot.physical_mm,
                 monitor: snapshot.monitor.clone(),
                 hdr_display: self.read_hdr_display_info(&snapshot.connector_name),
+                mode_intent: snapshot.mode_intent,
                 crtc,
                 scanout,
             }),
@@ -1817,6 +1848,11 @@ impl DrmScanout {
     /// Mode dimensions — callers size their paint buffer to this.
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// The mode this scanout was modeset at.
+    pub fn output_mode(&self) -> settings_store::hardware::OutputMode {
+        output_mode(&self.mode)
     }
 
     /// PCI bus identity of the KMS device which owns this output.
@@ -2909,6 +2945,8 @@ pub struct ScanoutBuild {
     pub monitor: Option<settings_store::hardware::MonitorIdentity>,
     /// The sink's HDR description, when its EDID advertises PQ.
     pub hdr_display: Option<crate::wayland::edid::HdrDisplayInfo>,
+    /// The configured mode this output was brought up under, if any.
+    pub mode_intent: Option<settings_store::hardware::OutputMode>,
     /// The crtc this output was modeset onto, so a later hotplug can pick one still free.
     pub crtc: crtc::Handle,
     /// Live, modeset scanout bound to this connector's crtc.

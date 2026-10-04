@@ -158,6 +158,15 @@ def build_proof(args):
             "installed_update_origin": installed_origin,
             "target_uki_sha256": hash_file(uki),
             "disk_guid": disk_guid.lower(), "partuuids": identities}
+    code_receipt = Path('/run/tilo-installer/code-refresh/active.json')
+    if code_receipt.exists() or code_receipt.is_symlink():
+        require(code_receipt.is_file() and not code_receipt.is_symlink()
+                and code_receipt.stat().st_size <= 65536, 'unsafe installer code refresh evidence')
+        code = json.loads(code_receipt.read_text())
+        require(code.get('schema') == 'tilo.installer-code-refresh.v1'
+                and re.fullmatch(r'[0-9a-f]{64}', code.get('sha256', '')),
+                'invalid installer code refresh evidence')
+        result['installer_code_override_sha256'] = code['sha256']
     if selected:
         result["selected_target"] = selected
     if dev_copy:

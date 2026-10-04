@@ -1,7 +1,8 @@
 //! Root widget for the Remote app.
 //!
-//! Owns the connection [`Workspace`] (mirrored from the shared document),
-//! the current [`Screen`], the add / edit draft and the live session. The
+//! Owns the connection [`Workspace`] (as the resource presents it, plus
+//! what this device observed of each machine's reachability), the current
+//! [`Screen`], the add / edit draft and the live session. The
 //! window is a [`NavShell`]: a docked rail of destinations beside the
 //! current screen, with the screen's title and actions in the header row.
 //! The list and the form are toolkit widgets rebuilt from this state
@@ -10,7 +11,9 @@
 //!
 //! Controls report through one queue of [`Action`]s, drained after every
 //! event, so the pointer, the keyboard, assistive technology and the
-//! resource actions agents call share one path.
+//! resource actions agents call share one path. Saved connections change
+//! only through the resource's dispatcher; a connection's password or key
+//! passphrase lives in this device's secret store.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -44,7 +47,6 @@ use ui::widget::{
 };
 use ui::{LocalState, TextRole};
 
-use crate::doc::RemoteDoc;
 use crate::model::{
     AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Presence, Screen,
     Workspace,
@@ -482,11 +484,11 @@ enum Content {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent flag (fullscreen, layout and paint gates, \
-              seeding); grouping them would express no invariant between them"
+              capture); grouping them would express no invariant between them"
 )]
 pub struct RemoteApp {
-    /// The connection store. Source of truth for the list; mirrored from
-    /// the shared document.
+    /// The saved connections as the resource last presented them, plus what
+    /// this device observed of their reachability.
     workspace: Workspace,
     /// Which screen is showing.
     screen: Screen,
@@ -512,22 +514,26 @@ pub struct RemoteApp {
     /// many times; resource-operation completion must never settle an old
     /// invocation against a newer session for the same connection id.
     session_generation: u64,
-    /// The generation and outcome last recorded in the document.
-    recorded: Option<(u64, Presence)>,
-    /// Session outcomes waiting to be written to the document.
-    pending_records: Vec<crate::actions::RemoteAction>,
     /// The session fills the window, without the rail and the header.
     fullscreen: bool,
     /// Discoverable Tilo peers for the form's device picker.
     tilo_devices: Vec<TiloDevice>,
     next_tilo_session_id: u64,
 
-    /// Framework-owned action dispatch: the single path by which a saved
-    /// connection is added, edited, renamed, favourited, or deleted. It
-    /// brackets the undo boundary and applies each action through the
-    /// executor, so the on-screen controls and the palette share one
-    /// replayable path.
-    actions: crate::resource::ActionSink,
+    /// The resource's door: the single path by which a saved connection is
+    /// added, edited, renamed, pinned, or deleted, shared with the palette,
+    /// agents and scripts. `None` until the framework attaches the surface.
+    dispatch: Option<ui::framework::Dispatcher<crate::resource::Remote>>,
+    /// This device's store for the connections' passwords and passphrases.
+    secrets: Option<ui::secrets::SecretStore>,
+    /// Built for a screenshot: no transport starts.
+    capture: bool,
+    /// The time, in milliseconds since the Unix epoch, "last used" reads
+    /// against in a screenshot.
+    now_override: Option<i64>,
+    /// The actions this window submitted, for tests of a bare widget.
+    #[cfg(test)]
+    submitted: RefCell<Vec<crate::actions::RemoteAction>>,
     pending_resource_operation: Option<PendingResourceOperation>,
     /// Confirmation mirroring resource-action policy. Private view state,
     /// never replicated with the connection profile.
@@ -552,8 +558,6 @@ pub struct RemoteApp {
     rect: Rect,
     layout_dirty: bool,
     dirty: bool,
-    /// True once the in-memory workspace has been mirrored into the document.
-    seeded: bool,
 }
 
 impl RemoteApp {
@@ -576,12 +580,15 @@ impl RemoteApp {
             session: SharedSession::default(),
             session_for: None,
             session_generation: 0,
-            recorded: None,
-            pending_records: Vec::new(),
             fullscreen: false,
             tilo_devices,
             next_tilo_session_id: 1,
-            actions: crate::resource::ActionSink::default(),
+            dispatch: None,
+            secrets: None,
+            capture: false,
+            now_override: None,
+            #[cfg(test)]
+            submitted: RefCell::default(),
             pending_resource_operation: None,
             pending_confirmation: None,
             dialog: None,
@@ -597,8 +604,21 @@ impl RemoteApp {
             rect: Rect::ZERO,
             layout_dirty: true,
             dirty: true,
-            seeded: false,
         }
+    }
+
+    /// A bare widget holding the sample roster and what a capture observes
+    /// of it, for tests.
+    #[cfg(test)]
+    fn sample() -> Self {
+        let sample = Sample::new();
+        let mut workspace = Workspace::new();
+        workspace.connections = sample_connections();
+        workspace.connections.push(sample_legacy_rdp());
+        workspace.presence = sample.presence;
+        let mut app = Self::from_parts(workspace, sample.devices);
+        app.now_override = Some(sample.now_ms);
+        app
     }
 
     /// Where the platform search hands the hits a person picks: the view
@@ -609,27 +629,26 @@ impl RemoteApp {
 
     /// Stage the view state of a named screenshot scenario. The connections
     /// themselves come from the scenario's resource actions
-    /// ([`crate::resource::RemoteShell::scenario`]).
+    /// ([`crate::resource::RemoteShell::scenario`]); what they do not hold
+    /// (reachability, nearby devices) from the capture's [`Sample`].
     pub(crate) fn stage(&mut self, scenario: Option<&str>) {
-        let mut scratch = AutoCommit::new();
-        self.tilo_devices = seed_tilo_devices();
         match scenario.unwrap_or_default() {
-            "pinned" => self.apply(Action::Show(Destination::Pinned), &mut scratch),
-            "form" => self.apply(Action::NewConnection, &mut scratch),
+            "pinned" => self.apply(Action::Show(Destination::Pinned)),
+            "form" => self.apply(Action::NewConnection),
             "form-tilo" => {
-                self.apply(Action::NewConnection, &mut scratch);
-                self.apply(Action::SetKind(ConnectionKind::Tilo), &mut scratch);
-                self.apply(Action::PickTiloDevice(2), &mut scratch);
+                self.apply(Action::NewConnection);
+                self.apply(Action::SetKind(ConnectionKind::Tilo));
+                self.apply(Action::PickTiloDevice(2));
             }
             "form-invalid" => {
-                self.apply(Action::NewConnection, &mut scratch);
+                self.apply(Action::NewConnection);
                 self.fields.host.set("build.lab.internal".into());
                 self.fields.port.set(String::new());
-                self.apply(Action::SaveForm, &mut scratch);
+                self.apply(Action::SaveForm);
             }
             "edit" => {
                 if let Some(id) = self.first_of_kind(ConnectionKind::Ssh) {
-                    self.apply(Action::EditConnection(id), &mut scratch);
+                    self.apply(Action::EditConnection(id));
                 }
             }
             "session-ssh" => self.sample_session(ConnectionKind::Ssh),
@@ -746,7 +765,7 @@ impl RemoteApp {
     }
 
     /// Apply a queued [`Action`] to the app state.
-    fn apply(&mut self, action: Action, state: &mut AutoCommit) {
+    fn apply(&mut self, action: Action) {
         self.dirty = true;
         match action {
             Action::Show(destination) => {
@@ -775,6 +794,7 @@ impl RemoteApp {
                 self.validating = false;
                 self.screen = Screen::Form { editing: None };
                 self.load_fields();
+                self.fields.secret.set(String::new());
             }
             Action::EditConnection(id) => {
                 if let Some(c) = self.workspace.get(id) {
@@ -783,14 +803,17 @@ impl RemoteApp {
                     self.validating = false;
                     self.screen = Screen::Form { editing: Some(id) };
                     self.load_fields();
+                    // A saved credential is never read back into the form;
+                    // typing one replaces it.
+                    self.fields.secret.set(String::new());
                 }
             }
             Action::RequestConnect(id) => self.request_connect(id),
-            Action::ToggleFavorite(id) => self.toggle_favorite(id, state),
+            Action::ToggleFavorite(id) => self.toggle_favorite(id),
             Action::RequestDelete(id) => self.request_delete(id),
             Action::RequestTrustSshHostKey(id) => self.request_trust_ssh_host_key(id),
             Action::RequestForgetSshHostKey(id) => self.request_forget_ssh_host_key(id),
-            Action::ConfirmPending => self.confirm_pending(state),
+            Action::ConfirmPending => self.confirm_pending(),
             Action::CancelPending => self.pending_confirmation = None,
             Action::SetKind(k) => {
                 self.read_fields();
@@ -822,7 +845,7 @@ impl RemoteApp {
                     self.load_fields();
                 }
             }
-            Action::SaveForm => self.save_form(state),
+            Action::SaveForm => self.save_form(),
             Action::ToggleScale => {
                 let mut session = self.session.borrow_mut();
                 session.scale_to_fit = !session.scale_to_fit;
@@ -852,14 +875,14 @@ impl RemoteApp {
     }
 
     /// Run every queued action.
-    fn apply_requests(&mut self, state: &mut AutoCommit) {
+    fn apply_requests(&mut self) {
         loop {
             let queued = std::mem::take(&mut *self.requests.borrow_mut());
             if queued.is_empty() {
                 break;
             }
             for action in queued {
-                self.apply(action, state);
+                self.apply(action);
             }
         }
     }
@@ -868,15 +891,15 @@ impl RemoteApp {
     fn open_found(&mut self) {
         let anchors = std::mem::take(&mut *self.opened.borrow_mut());
         for anchor in anchors {
-            let Some(id) = anchor
-                .strip_prefix("remote.connection:")
-                .and_then(|id| id.parse::<ConnectionId>().ok())
+            let Some(id) = self
+                .workspace
+                .connections()
+                .iter()
+                .map(|connection| connection.id)
+                .find(|id| crate::resource::connection_resource_id(*id) == anchor)
             else {
                 continue;
             };
-            if self.workspace.get(id).is_none() {
-                continue;
-            }
             self.selected = Some(id);
             self.destination = Destination::Connections;
             self.screen = Screen::List;
@@ -884,7 +907,7 @@ impl RemoteApp {
         }
     }
 
-    fn toggle_favorite(&mut self, id: ConnectionId, state: &mut AutoCommit) {
+    fn toggle_favorite(&mut self, id: ConnectionId) {
         // Compute the absolute target before the in-memory flip so replay does
         // not depend on the connection's current state.
         let Some(target) = self
@@ -895,12 +918,18 @@ impl RemoteApp {
             return;
         };
         self.workspace.toggle_favorite(id);
-        self.dispatch(state, &crate::actions::set_favorite_action(id, target));
+        self.submit(&crate::actions::set_favorite_action(id, target));
     }
 
-    fn delete_connection(&mut self, id: ConnectionId, state: &mut AutoCommit) {
+    fn delete_connection(&mut self, id: ConnectionId) {
         self.workspace.remove(id);
-        self.dispatch(state, &crate::actions::delete_action(id));
+        self.submit(&crate::actions::delete_action(id));
+        // The connection's credentials go with it.
+        if let Some(secrets) = &self.secrets {
+            for purpose in [SSH_PASSWORD, KEY_PASSPHRASE, VNC_PASSWORD] {
+                let _ = secrets.item(purpose, &id.to_string()).delete_blocking();
+            }
+        }
         if self.selected == Some(id) {
             self.selected = None;
         }
@@ -909,20 +938,41 @@ impl RemoteApp {
         }
     }
 
-    fn dispatch(&mut self, state: &mut AutoCommit, action: &crate::actions::RemoteAction) {
-        self.actions.dispatch_with_context(
-            state,
-            crate::actions::REMOTE_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.remote", "Remote", action),
-        );
+    /// Submit one [`RemoteAction`](crate::actions::RemoteAction) through the
+    /// resource's door — the one way this window changes the saved
+    /// connections, shared with the palette, agents and scripts. The rows it
+    /// changes are presented back; the caller updates the workspace for
+    /// immediate feedback. Without a dispatcher (a bare widget in a test)
+    /// nothing is saved.
+    fn submit(&self, action: &crate::actions::RemoteAction) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.apply(action);
+        }
+        #[cfg(test)]
+        self.submitted.borrow_mut().push(action.clone());
     }
 
-    /// Write the session outcomes recorded since the last event.
-    fn flush_records(&mut self, state: &mut AutoCommit) {
-        for action in std::mem::take(&mut self.pending_records) {
-            self.dispatch(state, &action);
-        }
+    /// The credential this device saved for a connection, for `purpose`.
+    fn saved_secret(&self, purpose: &'static str, id: ConnectionId) -> Option<String> {
+        let secret = self
+            .secrets
+            .as_ref()?
+            .item(purpose, &id.to_string())
+            .get_blocking()
+            .ok()??;
+        String::from_utf8(secret.expose().to_vec()).ok()
+    }
+
+    /// The time "last used" reads against, in milliseconds since the Unix
+    /// epoch.
+    fn now_ms(&self) -> i64 {
+        self.now_override.unwrap_or_else(|| {
+            ui::time::wall()
+                .duration_since(ui::time::UNIX_EPOCH)
+                .map_or(0, |since| {
+                    i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+                })
+        })
     }
 
     /// Stable, non-secret identity used to revalidate a confirmation after a
@@ -1088,7 +1138,7 @@ impl RemoteApp {
     /// Revalidate against the current shared projection immediately before a
     /// network attempt or deletion. A late collaborator edit changes neither
     /// the target nor the document unexpectedly; the user must review it.
-    fn confirm_pending(&mut self, state: &mut AutoCommit) {
+    fn confirm_pending(&mut self) {
         let Some(pending) = self.pending_confirmation.take() else {
             return;
         };
@@ -1107,7 +1157,7 @@ impl RemoteApp {
                 // boundary, so an expired capability cannot race confirmation.
                 self.open_session(id);
             }
-            PendingConfirmation::Delete { .. } => self.delete_connection(id, state),
+            PendingConfirmation::Delete { .. } => self.delete_connection(id),
             PendingConfirmation::TrustSshHostKey { observed, .. } => {
                 let current = self.ssh_host_key_issue(id);
                 if !matches!(current, Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == &observed)
@@ -1196,8 +1246,20 @@ impl RemoteApp {
             session.live = None;
         }
         let readiness = connection_readiness(&c);
-        let live = if readiness.can_connect() {
-            self.start_live(&c)
+        let live = if readiness.can_connect() && self.capture {
+            // A capture reaches nothing outside the process.
+            LiveSession::Preview(SessionStatus::Connecting)
+        } else if readiness.can_connect() {
+            let live = self.start_live(&c);
+            // When a machine was last used follows the person to their other
+            // devices; whether it answered is this device's observation, made
+            // once the transport reports (`pump_session`).
+            let now = self.now_ms();
+            if let Some(connection) = self.workspace.get_mut(id) {
+                connection.last_used_ms = Some(now);
+            }
+            self.submit(&crate::actions::mark_used_action(id, now));
+            live
         } else {
             LiveSession::Unavailable {
                 readiness,
@@ -1238,7 +1300,8 @@ impl RemoteApp {
     }
 
     /// Build the real transport for a connection from its kind + auth and
-    /// the process environment (secrets are never stored in the document).
+    /// the credential saved on this device (secrets are never stored in the
+    /// document).
     fn start_live(&mut self, c: &Connection) -> LiveSession {
         match c.kind {
             ConnectionKind::Ssh => {
@@ -1251,9 +1314,10 @@ impl RemoteApp {
                     }
                 };
                 let prefer_key = matches!(c.auth, AuthMethod::PublicKey);
+                let secret = self.saved_secret(secret_purpose(c.kind, c.auth), c.id);
                 let auth = match crate::ssh::resolve_auth(
                     prefer_key,
-                    |k| std::env::var(k).ok(),
+                    secret,
                     &crate::ssh::default_key_paths(),
                 ) {
                     Ok(a) => a,
@@ -1280,7 +1344,7 @@ impl RemoteApp {
             ConnectionKind::Vnc => match VncSession::connect(VncConfig {
                 host: c.host.clone(),
                 port: c.port,
-                password: std::env::var("REMOTE_VNC_PASSWORD").ok(),
+                password: self.saved_secret(VNC_PASSWORD, c.id),
             }) {
                 Ok(s) => LiveSession::Vnc(s),
                 Err(e) => LiveSession::Error(e.to_string()),
@@ -1318,9 +1382,9 @@ impl RemoteApp {
         }
     }
 
-    /// Drain live-session I/O and note a session's outcome once: a
-    /// connection that came up marks the machine reachable, one that failed
-    /// marks it unreachable.
+    /// Drain live-session I/O and note what this device observed of the
+    /// machine: a connection that came up marks it reachable, one that
+    /// failed marks it unreachable. The observation stays on this device.
     fn pump_session(&mut self) {
         let (changed, status) = {
             let mut session = self.session.borrow_mut();
@@ -1345,22 +1409,15 @@ impl RemoteApp {
         ) {
             return;
         }
-        if self.recorded == Some((self.session_generation, presence)) {
-            return;
+        if self.workspace.presence_of(id) != presence {
+            self.workspace.presence.insert(id, presence);
+            self.dirty = true;
         }
-        self.recorded = Some((self.session_generation, presence));
-        let at = ui::clock::local_now().timestamp();
-        if let Some(connection) = self.workspace.get_mut(id) {
-            connection.presence = presence;
-            connection.last_used = Some(at);
-        }
-        self.pending_records
-            .push(crate::actions::record_session_action(id, at, presence));
-        self.dirty = true;
     }
 
-    /// Commit the form's draft into the workspace and the document.
-    fn save_form(&mut self, state: &mut AutoCommit) {
+    /// Commit the form's draft through the resource, and its credential into
+    /// this device's secret store.
+    fn save_form(&mut self) {
         self.read_fields();
         let problems = self.draft.problems();
         if !problems.is_empty() {
@@ -1376,18 +1433,29 @@ impl RemoteApp {
         };
         let id = editing.unwrap_or_else(Uuid::new_v4);
         let mut conn = self.draft.build(id);
-        // Preserve favorite + presence + last_used across an edit.
+        // Preserve favorite + last used across an edit.
         if let Some(existing) = self.workspace.get(id) {
             conn.favorite = existing.favorite;
-            conn.presence = existing.presence;
-            conn.last_used = existing.last_used;
+            conn.last_used_ms = existing.last_used_ms;
         }
         // One focused action for the edited fields — not a whole-workspace
-        // re-mirror. favourite/presence/last_used are preserved by the action's
-        // deterministic read of the current document (see [`crate::actions`]).
+        // re-mirror. The action leaves favourite and last used alone.
         let action = crate::actions::upsert_action(&conn);
+        let purpose = secret_purpose(conn.kind, conn.auth);
         self.workspace.upsert(conn);
-        self.dispatch(state, &action);
+        self.submit(&action);
+        let secret = self.fields.secret.with(Clone::clone);
+        self.fields.secret.set(String::new());
+        if !secret.is_empty()
+            && let Some(secrets) = &self.secrets
+            && let Err(error) = secrets
+                .item(purpose, &id.to_string())
+                .put_blocking(secret.as_bytes())
+        {
+            self.notify(format!(
+                "Couldn't save the password on this device: {error}"
+            ));
+        }
         self.selected = Some(id);
         self.screen = Screen::List;
     }
@@ -1429,15 +1497,17 @@ impl RemoteApp {
         self.draft.group = read(&self.fields.group);
     }
 
-    /// Show the saved connections the framework resource already holds.
+    /// Show the saved connections the resource holds: this window's edits,
+    /// a collaborator's, an undo. A session to a connection that is gone
+    /// ends.
     pub(crate) fn adopt_resource_state(&mut self, state: &[crate::model::Connection]) {
         if self.workspace.connections() == state {
             return;
         }
         self.workspace.connections = state.to_vec();
         self.forget_vanished();
-        self.seeded = true;
         self.dirty = true;
+        self.check_views();
     }
 
     /// Drop references to connections a collaborator deleted.
@@ -1461,20 +1531,23 @@ impl RemoteApp {
         }
     }
 
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    /// Take the resource's door and this device's secret store when hosted
+    /// as a [`ResourceSurface`]; a capture shows its sample's reachability
+    /// and nearby devices.
     ///
     /// [`ResourceSurface`]: ui::framework::ResourceSurface
     pub(crate) fn attach_framework(
         &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Remote>,
+        cx: &ui::framework::SurfaceCx<crate::resource::Remote>,
     ) {
-        self.actions.attach(dispatcher);
-    }
-
-    /// The last action an on-screen control dispatched.
-    #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
+        self.dispatch = Some(cx.dispatcher());
+        self.secrets = Some(cx.secrets());
+        self.capture = cx.mode() == ui::framework::RunMode::Capture;
+        if let Some(sample) = cx.fixture::<Sample>() {
+            self.workspace.presence.clone_from(&sample.presence);
+            self.tilo_devices.clone_from(&sample.devices);
+            self.now_override = Some(sample.now_ms);
+        }
     }
 
     // -- the window ---------------------------------------------------------
@@ -1484,7 +1557,7 @@ impl RemoteApp {
     /// stops it from opening; what this device lacks is said when a session
     /// is opened, where it can be acted on.
     fn rows(&self) -> Vec<RowModel> {
-        let now = ui::clock::local_now().timestamp();
+        let now_ms = self.now_ms();
         self.ordered()
             .into_iter()
             .filter(|c| self.destination != Destination::Pinned || c.favorite)
@@ -1493,9 +1566,13 @@ impl RemoteApp {
                     readiness @ (TransportReadiness::BackendUnavailable
                     | TransportReadiness::InvalidProfile) => readiness.label().to_owned(),
                     TransportReadiness::Ready | TransportReadiness::NeedsLiveSessionCapability => {
-                        c.last_used.map_or_else(
+                        // Another device's clock may run ahead of this one.
+                        c.last_used_ms.map_or_else(
                             || "Never connected".to_owned(),
-                            |at| ui::format::capitalize_first(&ui::format::relative(now - at)),
+                            |at_ms| {
+                                let secs_ago = now_ms.saturating_sub(at_ms).max(0) / 1000;
+                                ui::format::capitalize_first(&ui::format::relative(secs_ago))
+                            },
                         )
                     }
                 };
@@ -1509,7 +1586,7 @@ impl RemoteApp {
                         c.address()
                     },
                     meta,
-                    presence: c.presence,
+                    presence: self.workspace.presence_of(c.id),
                     favourite: c.favorite,
                     selected: self.selected == Some(c.id),
                 }
@@ -1924,8 +2001,6 @@ impl Collaborative for RemoteApp {
 impl Widget for RemoteApp {
     ui::provides!(
         dyn ui::widget::Collaborative,
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources,
         dyn ui::widget::controls::ActionControls
     );
 
@@ -1950,23 +2025,15 @@ impl Widget for RemoteApp {
             request.kind,
             request.type_id,
             request.payload,
-            doc,
-            path,
         )? {
             Some(started)
         } else {
-            self.answer_resource_operation(
-                request.kind,
-                request.type_id,
-                request.payload,
-                doc,
-                path,
-            )?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            })
+            self.answer_resource_operation(request.kind, request.type_id, request.payload)?
+                .then(|| {
+                    ui::widget::ResourceOperationStart::Completed(
+                        ui::tilo_actions::ActionOutput::default(),
+                    )
+                })
         };
         self.check_views();
         Ok(started)
@@ -2130,30 +2197,11 @@ impl Widget for RemoteApp {
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        {
-            let (doc, _) = ui::doc::document(state, path);
-            let doc_conns = RemoteDoc::list(doc);
-            if self.seeded {
-                // The document is authoritative once seeded. Adopt the complete
-                // merged projection, not merely additions: collaborator edits,
-                // favourite changes, and deletions must all become visible.
-                if self.workspace.connections() != doc_conns.as_slice() {
-                    self.workspace.connections = doc_conns;
-                    self.forget_vanished();
-                    self.dirty = true;
-                }
-            } else {
-                // A live window starts empty and adopts whatever the document
-                // holds; nothing fabricated is ever written into it.
-                self.workspace.connections = doc_conns;
-                self.forget_vanished();
-                self.seeded = true;
-                self.dirty = true;
-            }
-            self.flush_records(doc);
-            self.open_found();
-            self.apply_requests(doc);
-        }
+        // The saved connections arrive through the resource
+        // ([`Self::adopt_resource_state`]); here the window catches up on
+        // picked search hits and queued controls.
+        self.open_found();
+        self.apply_requests();
         self.revalidate();
         self.check_views();
         self.body_mut().sync(state, path);
@@ -2164,7 +2212,7 @@ impl Widget for RemoteApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        !self.seeded || !self.pending_records.is_empty() || !self.opened.borrow().is_empty()
+        !self.opened.borrow().is_empty()
     }
 
     fn build_layout(
@@ -2260,13 +2308,12 @@ impl Widget for RemoteApp {
             let (doc, path) = ui::doc::document(ctx.state, ctx.path);
             dialog.handle_detached(event, ctx.scale_factor, *ctx.modifiers, doc, path);
             *ctx.handled = true;
-            self.apply_requests(doc);
+            self.apply_requests();
             self.dirty = true;
             return;
         }
         if let Some(action) = self.handle_shortcut(event, ctx.modifiers.state()) {
-            let (doc, _) = ui::doc::document(ctx.state, ctx.path);
-            self.apply(action, doc);
+            self.apply(action);
             *ctx.handled = true;
             return;
         }
@@ -2280,16 +2327,14 @@ impl Widget for RemoteApp {
             self.body_mut()
                 .handle_event(event, &mut ctx.reborrow(path, child));
         }
-        let (doc, _) = ui::doc::document(ctx.state, ctx.path);
         if !*ctx.handled
             && let Some(action) = Self::handle_unclaimed(event, &self.screen)
         {
-            self.apply(action, doc);
+            self.apply(action);
             *ctx.handled = true;
         }
-        self.flush_records(doc);
         self.open_found();
-        self.apply_requests(doc);
+        self.apply_requests();
         self.revalidate();
         self.check_views();
     }
@@ -2362,42 +2407,6 @@ impl Widget for RemoteApp {
     }
 }
 
-impl ui::resources::PublishesResources for RemoteApp {
-    /// Publish each saved connection as a resource (open, connect, rename,
-    /// favourite, delete) so the shell's action palette and agents reach
-    /// them.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // The framework root publishes saved connections. Keep only the live
-        // session resource when hosted — it is not in Resource::children.
-        if self.actions.is_hosted() {
-            return self.live_session_resources();
-        }
-        self.publish_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.actions.is_hosted() && id == "remote.connections" {
-            return None;
-        }
-        find_resource(&self.publish_resources(doc), id).or_else(|| {
-            self.actions.is_hosted().then(|| {
-                self.live_session_resources()
-                    .into_iter()
-                    .find(|resource| resource.id.as_str() == id)
-            })?
-        })
-    }
-}
-
-impl ui::undo::CommittedActions for RemoteApp {
-    /// Hand the host the heads captured before an on-screen control
-    /// dispatched its Remote action, so it records one undo boundary
-    /// bracketing it. Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-}
-
 impl ui::widget::controls::ActionControls for RemoteApp {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         ui::widget::controls::take_control_invocation(self.body_mut())
@@ -2405,9 +2414,9 @@ impl ui::widget::controls::ActionControls for RemoteApp {
 }
 
 impl RemoteApp {
-    /// Live session affordances are not in [`crate::resource::Remote`]'s
-    /// children — publish them beside the framework tree when hosted.
-    pub(crate) fn live_session_resources(&self) -> Vec<tilo_actions::Resource> {
+    /// The open session, published as a live row beside the saved
+    /// connections: disconnect, send text, and the SSH host-key decisions.
+    pub(crate) fn live_session_rows(&self) -> Vec<ui::framework::LiveRow> {
         let Some(id) = self.session_for else {
             return Vec::new();
         };
@@ -2420,7 +2429,7 @@ impl RemoteApp {
                 if session.status() == SessionStatus::Connected
         );
         let host_key_issue = self.ssh_host_key_issue(id);
-        vec![crate::actions::session_resource(
+        vec![crate::actions::session_row(
             connection,
             can_send_text,
             host_key_issue.as_ref(),
@@ -2436,8 +2445,6 @@ impl RemoteApp {
         kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
     ) -> Result<bool, String> {
         if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
@@ -2450,22 +2457,16 @@ impl RemoteApp {
         }
         match operation {
             crate::actions::RemoteOperation::ShowConnections => {
-                self.apply(
-                    Action::Show(Destination::Connections),
-                    &mut AutoCommit::new(),
-                );
+                self.apply(Action::Show(Destination::Connections));
             }
             crate::actions::RemoteOperation::NewConnectionForm => {
-                self.apply(Action::NewConnection, &mut AutoCommit::new());
+                self.apply(Action::NewConnection);
             }
             crate::actions::RemoteOperation::EditConnection { connection_id } => {
                 if self.workspace.get(connection_id).is_none() {
                     return Err("saved connection no longer exists".into());
                 }
-                self.apply(
-                    Action::EditConnection(connection_id),
-                    &mut AutoCommit::new(),
-                );
+                self.apply(Action::EditConnection(connection_id));
             }
             crate::actions::RemoteOperation::Connect { connection_id } => {
                 if self.workspace.get(connection_id).is_none() {
@@ -2550,8 +2551,6 @@ impl RemoteApp {
         kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         if kind != tilo_actions::OperationKind::Effect {
             return Ok(None);
@@ -2633,7 +2632,7 @@ impl RemoteApp {
             crate::actions::RemoteOperation::Disconnect { .. }
             | crate::actions::RemoteOperation::TrustSshHostKey { .. }
             | crate::actions::RemoteOperation::ForgetSshHostKey { .. } => {
-                if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+                if !self.answer_resource_operation(kind, type_id, payload)? {
                     return Ok(None);
                 }
                 Ok(Some(ui::widget::ResourceOperationStart::Completed(
@@ -2642,18 +2641,6 @@ impl RemoteApp {
             }
         }
     }
-}
-
-fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
 }
 
 // ===========================================================================
@@ -3174,8 +3161,56 @@ fn vnc_keysym(key: &Key, text: Option<&str>) -> Option<u32> {
 }
 
 // ===========================================================================
+// Credentials
+// ===========================================================================
+
+/// The secret-store purposes of a connection's credentials, keyed by its id.
+const SSH_PASSWORD: &str = "ssh-password";
+const KEY_PASSPHRASE: &str = "ssh-key-passphrase";
+const VNC_PASSWORD: &str = "vnc-password";
+
+/// Which credential a connection of `kind` authenticating with `auth` uses.
+fn secret_purpose(kind: ConnectionKind, auth: AuthMethod) -> &'static str {
+    match (kind, auth) {
+        (ConnectionKind::Vnc, _) => VNC_PASSWORD,
+        (_, AuthMethod::PublicKey) => KEY_PASSPHRASE,
+        _ => SSH_PASSWORD,
+    }
+}
+
+// ===========================================================================
 // Sample data: the connections and nearby devices a screenshot shows.
 // ===========================================================================
+
+/// The time, in milliseconds since the Unix epoch, the sample roster's
+/// "last used" reads against.
+const SAMPLE_NOW_MS: i64 = 1_790_000_000_000;
+
+/// What a screenshot shows that the document does not hold: the time "last
+/// used" reads against, which machines answered, and the Tilo devices
+/// nearby.
+pub(crate) struct Sample {
+    now_ms: i64,
+    presence: HashMap<ConnectionId, Presence>,
+    devices: Vec<TiloDevice>,
+}
+
+impl Sample {
+    pub(crate) fn new() -> Self {
+        let presence = with_sample_seeds(|seeds| {
+            seeds
+                .into_iter()
+                .chain([legacy_rdp_seed()])
+                .map(|(index, seed)| (sample_id(index), seed.presence))
+                .collect()
+        });
+        Self {
+            now_ms: SAMPLE_NOW_MS,
+            presence,
+            devices: sample_tilo_devices(),
+        }
+    }
+}
 
 /// Readable fixture input for a sample connection. Named fields keep adjacent
 /// strings, enums, and booleans from being silently transposed.
@@ -3188,37 +3223,43 @@ struct ConnectionSeed<'a> {
     auth: AuthMethod,
     /// How long ago the last session was, in minutes; `None` for never.
     used_minutes_ago: Option<i64>,
+    /// Whether the machine answered when this device last tried.
     presence: Presence,
     group: &'a str,
     favorite: bool,
 }
 
+/// The stable id of the `index`th sample machine, so a scenario's frame is
+/// identical on every run.
+fn sample_id(index: u128) -> ConnectionId {
+    Uuid::from_u128(0x7e40_7e00_0000_0000_0000_0000_0000_0000 | index)
+}
+
 impl ConnectionSeed<'_> {
-    fn build(self, index: u128, now: i64) -> Connection {
+    fn build(self, index: u128) -> Connection {
         Connection {
-            // Stable ids keep a scenario's frame identical on every run.
-            id: Uuid::from_u128(0x7e40_7e00_0000_0000_0000_0000_0000_0000 | index),
+            id: sample_id(index),
             name: self.name.into(),
             host: self.host.into(),
             port: self.port,
             user: self.user.into(),
             kind: self.kind,
             auth: self.auth,
-            last_used: self.used_minutes_ago.map(|minutes| now - minutes * 60),
-            presence: self.presence,
+            last_used_ms: self
+                .used_minutes_ago
+                .map(|minutes| SAMPLE_NOW_MS - minutes * 60_000),
             group: self.group.into(),
             favorite: self.favorite,
         }
     }
 }
 
-/// A lived-in list of saved machines, last used relative to `now` (Unix
-/// seconds).
+/// Hand `read` the lived-in list of saved machines, each with its index.
 #[allow(
     clippy::too_many_lines,
     reason = "fixture data: one named record per sample machine"
 )]
-pub(crate) fn sample_connections(now: i64) -> Vec<Connection> {
+fn with_sample_seeds<T>(read: impl FnOnce(Vec<(u128, ConnectionSeed<'_>)>) -> T) -> T {
     let studio = SecretKey::from_bytes(&[17; 32]).public().to_string();
     let laptop = SecretKey::from_bytes(&[29; 32]).public().to_string();
     let seeds = [
@@ -3319,32 +3360,47 @@ pub(crate) fn sample_connections(now: i64) -> Vec<Connection> {
             favorite: false,
         },
     ];
-    seeds
-        .into_iter()
-        .zip(1_u128..)
-        .map(|(seed, index)| seed.build(index, now))
-        .collect()
+    read((1_u128..).zip(seeds).collect())
+}
+
+/// A lived-in list of saved machines, with fixed ids so every screenshot is
+/// the same document.
+pub(crate) fn sample_connections() -> Vec<Connection> {
+    with_sample_seeds(|seeds| {
+        seeds
+            .into_iter()
+            .map(|(index, seed)| seed.build(index))
+            .collect()
+    })
+}
+
+/// A remote desktop profile saved before Remote dropped RDP, with its index.
+fn legacy_rdp_seed() -> (u128, ConnectionSeed<'static>) {
+    (
+        100,
+        ConnectionSeed {
+            name: "Windows workstation",
+            host: "10.0.0.31",
+            port: 3389,
+            user: "ada",
+            kind: ConnectionKind::Rdp,
+            auth: AuthMethod::Password,
+            used_minutes_ago: Some(40 * 24 * 60),
+            presence: Presence::Offline,
+            group: "Work",
+            favorite: false,
+        },
+    )
 }
 
 /// A remote desktop profile saved before Remote dropped RDP: kept so its
 /// owner can switch it to a protocol Remote opens.
-pub(crate) fn sample_legacy_rdp(now: i64) -> Connection {
-    ConnectionSeed {
-        name: "Windows workstation",
-        host: "10.0.0.31",
-        port: 3389,
-        user: "ada",
-        kind: ConnectionKind::Rdp,
-        auth: AuthMethod::Password,
-        used_minutes_ago: Some(40 * 24 * 60),
-        presence: Presence::Offline,
-        group: "Work",
-        favorite: false,
-    }
-    .build(100, now)
+pub(crate) fn sample_legacy_rdp() -> Connection {
+    let (index, seed) = legacy_rdp_seed();
+    seed.build(index)
 }
 
-fn seed_tilo_devices() -> Vec<TiloDevice> {
+fn sample_tilo_devices() -> Vec<TiloDevice> {
     let device = |name: &str, seed: u8, online: bool| TiloDevice {
         name: name.into(),
         node: SecretKey::from_bytes(&[seed; 32]).public().to_string(),

@@ -11,6 +11,7 @@
 //! theme owns every colour, size and space.
 
 use ui::TextRole;
+use ui::framework::TextControl;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::widget::media_card::{MediaAspect, MediaCard, MediaGrid, MediaSize, MediaSource};
@@ -21,13 +22,12 @@ use ui::widget::{
 };
 
 use super::{
-    PAGE_SIZE, StoreApp, Theme, action_code, clear_filters_binding, detail_binding, format_size,
-    full_publisher, item_action_binding, moderation_case_spec, navigation_binding,
-    open_surface_binding, refresh_binding, remote_form_binding, remote_refresh_binding,
-    remote_remove_binding, report_binding, report_export_binding, report_note_key,
-    report_submit_binding, short_publisher, visible_operation_status,
+    PAGE_SIZE, StoreApp, Theme, action_code, format_size, full_publisher, short_publisher,
+    visible_operation_status,
 };
+use crate::bindings;
 use crate::model::{StoreItem, StoreSource, StoreTrust};
+use crate::resource::{ReportProjection, StoreEffect, report_note_dispatcher};
 use crate::widgets::{CardAction, CardDetails, app_icon, category_label, provenance};
 
 /// How wide a page's content may grow, in lines of body text, so it widens
@@ -133,7 +133,7 @@ impl StoreApp {
             .with_icon(Icon::ArrowLeft)
             .role(ButtonRole::Plain)
             .tooltip("Return to the app catalogue");
-        if let Some(binding) = navigation_binding("show-catalogue", "Back to apps", "catalogue") {
+        if let Some(binding) = bindings::effect(&StoreEffect::ShowCatalogue) {
             back = back.on_action(binding);
         }
         Box::new(Row::new().no_wrap().push(Box::new(back)))
@@ -214,29 +214,15 @@ impl StoreApp {
     /// the row never outgrows a narrow window.
     fn catalogue_toolbar(&self, theme: &Theme, shown: usize) -> Element {
         let mut remotes = Button::icon_only("store.remotes", Icon::Globe, "Flatpak remotes");
-        if let Some(binding) = open_surface_binding(
-            "store:remotes",
-            "store.remote-list",
-            "Flatpak remotes",
-            "show",
-            "Show Flatpak remotes",
-            "store.view-remotes",
-        ) {
+        if let Some(binding) = bindings::effect(&StoreEffect::ShowRemotes) {
             remotes = remotes.on_action(binding);
         }
         let mut trust = Button::icon_only("store.safety", Icon::Shield, "Trust and moderation");
-        if let Some(binding) = open_surface_binding(
-            "store:moderation",
-            "store.moderation",
-            "Trust and moderation",
-            "show",
-            "Show trust and moderation",
-            "store.view-trust",
-        ) {
+        if let Some(binding) = bindings::effect(&StoreEffect::ShowTrust) {
             trust = trust.on_action(binding);
         }
         let mut refresh = Button::icon_only("store.refresh", Icon::Refresh, "Refresh catalogues");
-        if let Some(binding) = refresh_binding() {
+        if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
             refresh = refresh.on_action(binding);
         }
         // One row: what the catalogue holds takes the leading space, every
@@ -259,7 +245,7 @@ impl StoreApp {
             let mut clear = Button::new("store.filters.clear", "Clear filters", None)
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small);
-            if let Some(binding) = clear_filters_binding() {
+            if let Some(binding) = bindings::effect(&StoreEffect::ClearFilters) {
                 clear = clear.on_action(binding);
             }
             row = row.push(Box::new(clear));
@@ -294,12 +280,12 @@ impl StoreApp {
             CardAction {
                 kind: action,
                 key: &click_key,
-                binding: item_action_binding(item, action),
+                binding: bindings::package(item, action),
                 in_progress: operation_active,
             },
             CardDetails {
                 key: &select_key,
-                binding: detail_binding(item),
+                binding: bindings::show_details(item),
             },
             self.images.as_ref(),
             theme,
@@ -314,7 +300,7 @@ impl StoreApp {
                 .with_message("Try a different search or category.")
                 .with_action("Clear filters")
                 .with_action_id("store.empty.clear");
-            if let Some(binding) = clear_filters_binding() {
+            if let Some(binding) = bindings::effect(&StoreEffect::ClearFilters) {
                 empty = empty.on_action(binding);
             }
             return Box::new(empty);
@@ -340,7 +326,7 @@ impl StoreApp {
         }
         .with_action("Refresh catalogue")
         .with_action_id("store.empty.refresh");
-        Box::new(match refresh_binding() {
+        Box::new(match bindings::effect(&StoreEffect::Refresh) {
             Some(binding) => empty.on_action(binding),
             None => empty,
         })
@@ -407,9 +393,7 @@ impl StoreApp {
         if page > 0 {
             let mut previous = Button::new("store.page.previous", "Previous", None)
                 .tooltip("Previous catalogue page");
-            if let Some(binding) =
-                navigation_binding("previous-page", "Previous catalogue page", "previous-page")
-            {
+            if let Some(binding) = bindings::effect(&StoreEffect::PreviousPage) {
                 previous = previous.on_action(binding);
             }
             row = row.push(Box::new(previous));
@@ -423,9 +407,7 @@ impl StoreApp {
         if page + 1 < page_count {
             let mut next =
                 Button::new("store.page.next", "Next", None).tooltip("Next catalogue page");
-            if let Some(binding) =
-                navigation_binding("next-page", "Next catalogue page", "next-page")
-            {
+            if let Some(binding) = bindings::effect(&StoreEffect::NextPage) {
                 next = next.on_action(binding);
             }
             row = row.push(Box::new(next));
@@ -481,7 +463,7 @@ impl StoreApp {
         )
         .role(ButtonRole::Primary)
         .tooltip(format!("{} {}", action.label(), item.name));
-        if let Some(binding) = item_action_binding(item, action) {
+        if let Some(binding) = bindings::package(item, action) {
             primary = primary.on_action(binding);
         }
         let mut row = Row::new()
@@ -494,7 +476,7 @@ impl StoreApp {
                 None,
             )
             .tooltip(format!("{} {}", pin_action.label(), item.name));
-            if let Some(binding) = item_action_binding(item, pin_action) {
+            if let Some(binding) = bindings::package(item, pin_action) {
                 button = button.on_action(binding);
             }
             row = row.push(Box::new(button));
@@ -503,7 +485,7 @@ impl StoreApp {
             let mut button = Button::new(&format!("store.app.{}.remove", item.id), "Remove", None)
                 .role(ButtonRole::Destructive)
                 .tooltip(format!("Remove {}", item.name));
-            if let Some(binding) = item_action_binding(item, remove_action) {
+            if let Some(binding) = bindings::package(item, remove_action) {
                 button = button.on_action(binding);
             }
             row = row.push(Box::new(button));
@@ -619,20 +601,13 @@ impl StoreApp {
             None,
         )
         .tooltip("Create a local, collaborative report draft");
-        if let Some(binding) = report_binding(item) {
+        if let Some(binding) = bindings::draft_report(item) {
             report = report.on_action(binding);
         }
         let mut moderation = Button::new("store.safety.detail", "Moderation details", None)
             .role(ButtonRole::Plain)
             .tooltip("Review the Store trust and moderation model");
-        if let Some(binding) = open_surface_binding(
-            "store:moderation",
-            "store.moderation",
-            "Trust and moderation",
-            "show",
-            "Show trust and moderation",
-            "store.view-trust",
-        ) {
+        if let Some(binding) = bindings::effect(&StoreEffect::ShowTrust) {
             moderation = moderation.on_action(binding);
         }
         Box::new(Section::titled(
@@ -692,46 +667,30 @@ impl StoreApp {
 
     /// One report draft or moderation case: its status, the concern field
     /// and what can be done with it.
-    fn report_form(&self, report: &super::ReportRecord, theme: &Theme) -> Element {
+    fn report_form(&self, report: &ReportProjection, theme: &Theme) -> Element {
         let item = self.items.iter().find(|item| item.id == report.app_id);
-        let note = self
-            .report_notes
-            .get(&report.app_id)
-            .map_or("", String::as_str);
-        let is_case = report.id.starts_with("case-");
         let mut export = Button::new(&format!("{}.export", report.id), "Export evidence", None)
             .tooltip("Save a bounded JSON evidence envelope through the system file picker");
-        if let Some(binding) = report_export_binding(report, item, note) {
+        if let Some(binding) =
+            bindings::report(|app| StoreEffect::ExportEvidence { app }, &report.app_id)
+        {
             export = export.on_action(binding);
         }
         let mut buttons: Vec<Button> = Vec::new();
-        if let Some(item) = item
-            && let StoreSource::Tilo { registry_name } = &item.source
-        {
-            if is_case {
-                for (action, label, type_id, reason) in [
-                    (
-                        "refresh-status",
-                        "Refresh status",
-                        "store.moderation-status",
-                        "",
-                    ),
-                    ("appeal", "Appeal decision", "store.moderation-appeal", note),
-                ] {
-                    let payload = (registry_name.clone(), report.id.clone(), reason.to_string());
+        if self.reported_app(report).is_ok() {
+            if report.is_case() {
+                let case_actions: [super::CaseControl; 2] = [
+                    ("refresh-status", "Refresh status", |app| {
+                        StoreEffect::RefreshStatus { app }
+                    }),
+                    ("appeal", "Appeal decision", |app| StoreEffect::Appeal {
+                        app,
+                    }),
+                ];
+                for (action, label, effect) in case_actions {
                     let mut button = Button::new(&format!("{}.{action}", report.id), label, None);
-                    if let Some(spec) = moderation_case_spec(action, label, type_id, &payload) {
-                        let resource = ui::tilo_actions::Resource::new(
-                            report.id.clone(),
-                            "store.moderation-case",
-                            report.app_id.clone(),
-                        )
-                        .with_action(spec);
-                        if let Ok(binding) =
-                            ui::tilo_actions::ActionBinding::unit_for(&resource, action)
-                        {
-                            button = button.on_action(binding);
-                        }
+                    if let Some(binding) = bindings::report(effect, &report.app_id) {
+                        button = button.on_action(binding);
                     }
                     buttons.push(button);
                 }
@@ -740,13 +699,15 @@ impl StoreApp {
                     Button::new(&format!("{}.submit", report.id), "Submit report", None)
                         .role(ButtonRole::Primary)
                         .tooltip("Sign and submit this report to the authoritative registry");
-                if let Some(binding) = report_submit_binding(report, item, note, registry_name) {
+                if let Some(binding) =
+                    bindings::report(|app| StoreEffect::SubmitReport { app }, &report.app_id)
+                {
                     submit = submit.on_action(binding);
                 }
                 buttons.push(submit);
             }
         }
-        let kind = if is_case {
+        let kind = if report.is_case() {
             "Moderation case"
         } else {
             "Report draft"
@@ -759,15 +720,8 @@ impl StoreApp {
         for button in buttons {
             actions = actions.push(Box::new(button));
         }
-        let field = Field::new(
-            "What happened?",
-            TextInput::new(vec![])
-                .with_id(&format!("store.report.note.{}", report.app_id))
-                .with_on_change_path(&report_note_key(&report.app_id))
-                .multiline(true)
-                .with_placeholder("Describe what happened"),
-        )
-        .with_help("Describe observable behavior and evidence another reviewer can verify.");
+        let field = Field::new("What happened?", self.report_note_field(&report.app_id))
+            .with_help("Describe observable behavior and evidence another reviewer can verify.");
         Box::new(Section::titled(
             name,
             vec![
@@ -789,17 +743,36 @@ impl StoreApp {
         ))
     }
 
+    /// The note of `app_id`'s report: every keystroke one edit of the
+    /// document's text, merging with a collaborator typing in it.
+    fn report_note_field(&self, app_id: &str) -> NoteField {
+        let input = TextInput::new(vec![])
+            .with_id(&format!("store.report.note.{app_id}"))
+            .multiline(true)
+            .with_placeholder("Describe what happened");
+        let note_of = app_id.to_owned();
+        let locate =
+            move |doc: &ui::tilo_resource::Doc| crate::doc_actions::report_note(doc, &note_of);
+        NoteField(match &self.dispatcher {
+            Some(dispatcher) => {
+                TextControl::new(input, report_note_dispatcher(dispatcher, app_id), locate)
+            }
+            None => TextControl::view_only(input, locate),
+        })
+    }
+
     // ---- flatpak remotes ----
 
     /// Flatpak repositories: the form that adds one and the list of those
     /// configured on this machine.
     pub(super) fn build_remotes(&self, theme: &Theme) -> Element {
         let mut add = Button::new("store.remote.add", "Add remote", None).role(ButtonRole::Primary);
-        if let Some(binding) = remote_form_binding() {
+        if let Some(binding) = bindings::add_remote(&self.remote_name_state, &self.remote_url_state)
+        {
             add = add.on_action(binding);
         }
         let mut refresh = Button::new("store.remote.refresh", "Refresh remotes", None);
-        if let Some(binding) = remote_refresh_binding() {
+        if let Some(binding) = bindings::effect(&StoreEffect::RefreshRemotes) {
             refresh = refresh.on_action(binding);
         }
         let form = Form::new()
@@ -830,7 +803,7 @@ impl StoreApp {
             .iter()
             .map(|remote| {
                 let queue = std::rc::Rc::clone(&self.queued_invocations);
-                let binding = remote_remove_binding(remote);
+                let binding = bindings::remove_remote(remote);
                 Box::new(
                     ListRow::new(format!("store.remote.{}", remote.name), &remote.title)
                         .icon(Icon::Globe)
@@ -863,6 +836,30 @@ impl StoreApp {
             )));
         }
         self.page(theme, Measure::Reading, false, children)
+    }
+}
+
+/// A report's note in a form field: the document-bound text control, named
+/// by its field's visible label.
+struct NoteField(TextControl<TextInput>);
+
+impl ui::widget::Decorator for NoteField {
+    type Inner = TextControl<TextInput>;
+
+    fn inner(&self) -> &TextControl<TextInput> {
+        &self.0
+    }
+
+    fn inner_mut(&mut self) -> &mut TextControl<TextInput> {
+        &mut self.0
+    }
+}
+
+impl ui::widget::FormControl for NoteField {
+    fn with_form_accessible_name(mut self, name: &str) -> Self {
+        let input = std::mem::replace(self.0.control_mut(), TextInput::new(vec![]));
+        *self.0.control_mut() = input.with_accessible_name(name);
+        self
     }
 }
 

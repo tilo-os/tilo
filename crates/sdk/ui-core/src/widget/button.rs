@@ -39,6 +39,9 @@ pub struct Button {
     is_hovered: bool,
     is_pressed: bool,
     is_focused: bool,
+    /// Focus came from pressing the button: the pointer already shows where
+    /// the person is, so the focus ring is kept for keyboard focus.
+    pressed_into_focus: bool,
     /// Drawn instead of (icon-only) or before (icon + label) the text,
     /// so toolbars render crisp lucide icons without depending on a
     /// Nerd Font being installed.
@@ -125,6 +128,12 @@ fn theme_key(theme: &Theme) -> ThemeKey {
 }
 
 impl Button {
+    /// Focus a person needs to be shown: keyboard focus, not the focus a
+    /// click on the button gave it.
+    fn focus_visible(&self) -> bool {
+        self.is_focused && !self.pressed_into_focus
+    }
+
     fn effectively_enabled(&self) -> bool {
         self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
     }
@@ -139,6 +148,7 @@ impl Button {
             is_hovered: false,
             is_pressed: false,
             is_focused: false,
+            pressed_into_focus: false,
             icon: None,
             fill_width: false,
             role: ButtonRole::Secondary,
@@ -231,17 +241,21 @@ impl Button {
     ) -> Self {
         const TYPE_ID: &str = "tilo.ui.control.invoke";
         let resource_id = format!("tilo.control:{}", self.id);
-        let mut spec = tilo_actions::ActionSpec::operation(
-            "invoke",
-            self.label.clone(),
-            kind,
-            TYPE_ID,
-            &self.id,
-        )
-        .expect("a control id is always JSON serializable");
+        // An icon-only button is named by what a screen reader announces.
+        let label = if self.label.is_empty() {
+            self.accessible_name
+                .clone()
+                .or_else(|| self.tooltip.clone())
+                .unwrap_or_default()
+        } else {
+            self.label.clone()
+        };
+        let mut spec =
+            tilo_actions::ActionSpec::operation("invoke", label.clone(), kind, TYPE_ID, &self.id)
+                .expect("a control id is always JSON serializable");
         spec.contract.discovery = tilo_actions::DiscoveryScope::Launchable;
-        let resource = tilo_actions::Resource::new(resource_id, "tilo.control", self.label.clone())
-            .with_action(spec);
+        let resource =
+            tilo_actions::Resource::new(resource_id, "tilo.control", label).with_action(spec);
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "invoke")
             .expect("the synthesized invoke action is nullary");
         self = self.on_action(binding);
@@ -1373,7 +1387,7 @@ impl Widget for Button {
         let current_state = (
             self.is_hovered,
             self.is_pressed,
-            self.is_focused,
+            self.focus_visible(),
             self.effectively_enabled(),
         );
         if current_state != self.last_state {
@@ -1411,7 +1425,7 @@ impl Widget for Button {
             interact: ButtonInteract {
                 hovered: self.is_hovered,
                 pressed: self.is_pressed,
-                focused: self.is_focused,
+                focused: self.focus_visible(),
                 disabled: !enabled,
             },
             content: FaceContent {
@@ -1437,7 +1451,7 @@ impl Widget for Button {
             || (
                 self.is_hovered,
                 self.is_pressed,
-                self.is_focused,
+                self.focus_visible(),
                 self.effectively_enabled(),
             ) != self.last_state
     }
@@ -1491,6 +1505,7 @@ impl Widget for Button {
                         *ctx.handled = true;
 
                         if self.is_pressed {
+                            self.pressed_into_focus |= !self.is_focused;
                             *ctx.focus_target = Some(ctx.node_id);
                         }
 
@@ -1537,6 +1552,8 @@ impl Widget for Button {
         true
     }
     fn set_focus(&mut self, focused: bool) {
+        // A press that focused it keeps its mark; losing focus clears it.
+        self.pressed_into_focus &= focused;
         self.is_focused = focused;
     }
     fn is_focused(&self) -> bool {
@@ -1686,19 +1703,21 @@ impl crate::resources::PublishesResources for Button {
         let Some(mut resource) = self.native_resource.clone() else {
             return Vec::new();
         };
-        // The action directory refuses unnamed resources and actions, and
-        // an icon-only button learns its accessible name or tooltip after
-        // `on_effect` built the resource; publish the name it is announced by.
-        if resource.label.trim().is_empty()
+        // The action directory refuses unnamed resources and actions, and an
+        // icon-only button is named by what it is announced as now: its
+        // accessible name or tooltip may be set after `on_effect` built the
+        // resource, or change with its state ("Hide sidebar" / "Show
+        // sidebar"). Publish the current name.
+        if self.label.is_empty()
             && let Some(name) = self
                 .accessible_name
                 .as_ref()
                 .or(self.tooltip.as_ref())
                 .filter(|name| !name.trim().is_empty())
         {
-            resource.label.clone_from(name);
+            let stale = std::mem::replace(&mut resource.label, name.clone());
             for action in &mut resource.actions {
-                if action.label.trim().is_empty() {
+                if action.label.trim().is_empty() || action.label == stale {
                     action.label.clone_from(name);
                 }
             }
@@ -2449,6 +2468,27 @@ mod tests {
         action_mode_suppresses_raw_mutation_and_callback();
         action_availability_revokes_and_restores_without_overriding_authored_state();
         legacy_button_paths_are_explicit_in_inventory();
+    }
+
+    /// A theme switched under a live tree repaints a plain button's face
+    /// in the new theme's roles, rather than keeping the cached dark-theme
+    /// ink that all but vanishes on a light ground.
+    #[test]
+    fn a_cached_face_follows_a_theme_switch() {
+        let mut button = Button::new("plain", "Undo", None).role(ButtonRole::Plain);
+        button.rect = Rect::new(0.0, 0.0, 80.0, 32.0);
+        let presence = crate::presence::PresenceCtx::default();
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        for theme in [Theme::dark(), Theme::light()] {
+            button.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            assert_eq!(
+                button.last_theme,
+                Some(theme_key(&theme)),
+                "the face is painted in {}",
+                theme.name
+            );
+        }
     }
 
     #[test]

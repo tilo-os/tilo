@@ -104,21 +104,6 @@ impl CurveKey {
 }
 
 impl Graph2dScreen {
-    /// Pure graph rendering for a frozen History model; no editing controls.
-    pub(crate) fn draw_history_canvas(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        model: &CalcModel,
-        area: Rect,
-    ) {
-        self.canvas = area;
-        self.zoom.settle(model.view2d);
-        self.draw_canvas(scene, t, tr, theme, model, (None, &model.view2d));
-    }
-
     /// Adopt the theme's scale and metrics.
     pub fn scale_for(&mut self, theme: &Theme) {
         self.panel.scale_for(theme);

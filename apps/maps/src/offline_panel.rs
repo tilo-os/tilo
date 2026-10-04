@@ -7,7 +7,6 @@
 use ui::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use taffy::{NodeId, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -202,10 +201,11 @@ impl OfflinePanel {
         scale: f64,
         modifiers: winit::event::Modifiers,
         mouse: Point,
+        doc: &mut AutoCommit,
     ) -> bool {
         let on_levels = self.levels_rect.is_some_and(|rect| rect.contains(mouse));
         if on_levels || self.levels.is_editing() {
-            let handled = drive(&mut self.levels, event, scale, modifiers);
+            let handled = crate::hand_laid::drive(&mut self.levels, event, scale, modifiers, doc);
             if let Some(levels) = self.levels.take_changed() {
                 self.zoom_extra = (levels.round() as u8).saturating_sub(1).min(MAX_EXTRA_ZOOM);
             }
@@ -226,7 +226,7 @@ impl OfflinePanel {
         {
             self.input.begin_edit();
         }
-        let handled = drive(&mut self.input, event, scale, modifiers);
+        let handled = crate::hand_laid::drive(&mut self.input, event, scale, modifiers, doc);
         self.reconcile_field();
         handled
     }
@@ -802,36 +802,6 @@ impl OfflinePanel {
         }
         y
     }
-}
-
-/// Drive one event through a toolkit control the sheet places by hand.
-fn drive(
-    widget: &mut dyn Widget,
-    event: &WindowEvent,
-    scale: f64,
-    modifiers: winit::event::Modifiers,
-) -> bool {
-    let mut doc = AutoCommit::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let Ok(node) = taffy.new_leaf(Style::default()) else {
-        return false;
-    };
-    let mut handled = false;
-    let mut focus_target: Option<NodeId> = None;
-    widget.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: scale,
-            modifiers: &modifiers,
-            state: &mut doc,
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
 }
 
 /// About how much one stored map tile takes on disk.

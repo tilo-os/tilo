@@ -37,16 +37,25 @@ pub mod registry;
 #[cfg(feature = "store")]
 mod content;
 #[cfg(feature = "store")]
+mod image;
+#[cfg(feature = "store")]
 mod store;
 
 pub use catalog::{
     Catalog, CatalogError, SystemStore, display_name_for_package_id, find_installed, list_installed,
+};
+#[cfg(feature = "store")]
+pub use image::{
+    FleetSource, ImageShelf, ImageTrust, MaterializeError, SYSTEM_IMAGE_PUBLISHERS_FILE, Store,
+    check_tool_runtime, materialized_tree, tool_runtime,
 };
 pub use layout::Layout;
 pub use registry::{InstalledPackage, Pinning, Registry, RegistryError};
 #[cfg(feature = "store")]
 pub use store::{Admission, DiskUsage, Installed, PackageStore, Removed};
 pub use tilo_app_package::BlobFetcher;
+#[cfg(feature = "store")]
+pub use tilo_user_identity::{CertifiedFleet, DeviceStanding};
 
 /// Why a store operation failed.
 #[derive(Debug, thiserror::Error)]

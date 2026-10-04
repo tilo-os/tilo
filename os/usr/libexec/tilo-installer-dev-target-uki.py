@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,8 @@ MARKER = Path('/usr/share/tilo/unverified-vm-install')
 FLAVOUR = Path('/usr/lib/tilo/image-flavour')
 PORT = Path('/dev/virtio-ports/org.tilo.vm-install-proof')
 MOUNT = 'systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec'
+PROFILE_TOOLS = Path('/usr/lib/tilo')
+UKI_TOOL = Path('/usr/libexec/tilo-uki-cmdline')
 HEX = re.compile(r'[0-9a-f]{128}\Z')
 
 
@@ -89,14 +92,17 @@ def image_inputs(root):
     kernel = regular(root, kernel_directory + '/vmlinuz')
     initrd = regular(root, kernel_directory + '/initramfs.img')
     require(not (root / 'boot/tilo-target').exists(), 'development target already has a target boot bundle')
-    sys.path.insert(0, '/usr/local/bin')
-    profile = load_module('/usr/local/bin/uki-hardware-profile.py', 'dev_target_profile')
+    sys.path.insert(0, str(PROFILE_TOOLS))
+    profile = load_module(PROFILE_TOOLS / 'hardware_profile.py', 'dev_target_profile')
     dtb = profile.resolve_profile(root, version, 'aarch64')
     uki_paths = list((root / 'boot/EFI/Linux').glob('*.efi'))
     ukis = [regular(root, path.relative_to(root)) for path in uki_paths]
     require(len(ukis) <= 1, 'development target has ambiguous UKIs')
     require(not kernel_directory.startswith('kernel/') or len(ukis) == 1,
             'split development target requires one nonempty sealed UKI')
+    if not ukis:
+        require(shutil.which('ukify') is not None,
+                'split-kernel target requires the runtime ukify constructor before installation')
     if ukis:
         actual = sections(ukis[0])
         require(actual.get('.linux') == kernel.read_bytes() and actual.get('.initrd') == initrd.read_bytes(),
@@ -121,7 +127,7 @@ def fields(raw):
 
 
 def sections(path):
-    tool = load_module('/usr/libexec/tilo-uki-cmdline', 'dev_target_sections')
+    tool = load_module(UKI_TOOL, 'dev_target_sections')
     data = path.read_bytes()
     result = {}
     for name, offset, raw_size, size in tool.sections(data):
@@ -202,13 +208,25 @@ def promote(image_root, target_root, esp, selected):
         work = Path(temporary)
         (work / 'cmdline').write_text(cmdline + '\n')
         output = work / 'target.efi'
-        arguments = ['ukify', 'build', '--linux', installed_kernel, '--initrd', installed_initrd,
-                     '--stub', regular(image_root, 'usr/lib/systemd/boot/efi/linuxaa64.efi.stub'),
-                     '--uname', version, '--os-release', '@' + str(regular(image_root, 'usr/lib/os-release')),
-                     '--cmdline', '@' + str(work / 'cmdline'), '--output', output]
-        if dtb is not None:
-            arguments += ['--devicetree', dtb]
-        command(arguments)
+        if boot_type == 'uki':
+            # The CI UKI already contains every verified payload. Change only
+            # its bounded command-line section using the runtime editor that
+            # ships in this installer; rebuilding needs absent build-time tools
+            # and would discard unrelated CI PE sections.
+            shutil.copyfile(destination, output)
+            tool = load_module(UKI_TOOL, 'dev_target_cmdline')
+            if 'tilo.install' in installed.get('.cmdline', b'').rstrip(b'\0\n').decode().split():
+                tool.remove_cmdline(output, 'tilo.install')
+            if not boot_mounts:
+                tool.append_cmdline(output, MOUNT)
+        else:
+            arguments = ['ukify', 'build', '--linux', installed_kernel, '--initrd', installed_initrd,
+                         '--stub', regular(image_root, 'usr/lib/systemd/boot/efi/linuxaa64.efi.stub'),
+                         '--uname', version, '--os-release', '@' + str(regular(image_root, 'usr/lib/os-release')),
+                         '--cmdline', '@' + str(work / 'cmdline'), '--output', output]
+            if dtb is not None:
+                arguments += ['--devicetree', dtb]
+            command(arguments)
         actual = sections(output)
         require(actual.get('.linux') == kernel_bytes and actual.get('.initrd') == initrd_bytes
                 and actual.get('.cmdline', b'').rstrip(b'\0\n') == cmdline.encode(),

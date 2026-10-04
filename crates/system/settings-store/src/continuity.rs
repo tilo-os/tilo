@@ -193,14 +193,6 @@ policies! {
         "tilo.display_transaction.candidate",
         "tilo.display_transaction.deadline_unix_ms",
         "tilo.display_transaction.message",
-        // Local portal grants and physical-key bindings must not escape the
-        // device on which they were granted/configured.
-        "tilo.ebook_local_library.books",
-        "tilo.ebook_local_library.watched_folders",
-        "tilo.ebook_local_library.shortcuts",
-        "tilo.video_player.autoplay",
-        "tilo.video_player.loop_enabled",
-        "tilo.video_player.recent_history",
         // Provider records can name loopback endpoints and device-vault
         // locators. The secret bytes live elsewhere, but this aggregate
         // cannot safely roam until it is split into portable/local records.
@@ -219,6 +211,48 @@ policies! {
         "tilo.continuity.audit",
         "tilo.history.seen_frontiers",
     ],
+}
+
+/// The section holding every app's [`SettingScope::Personal`] preferences,
+/// one object per app id. An app's typed settings declare their scope, and
+/// only those declared personal are written here, so each entry is a
+/// reviewed leaf: `tilo.app_personal.<app id>` roams as one value.
+pub const APP_PERSONAL_SECTION: &str = "app_personal";
+
+/// The section holding every app's [`SettingScope::DeviceLocal`]
+/// preferences, one object per app id. They never leave the device.
+pub const APP_DEVICE_LOCAL_SECTION: &str = "app_device_local";
+
+/// The largest serialized personal value the device fabric carries. An app's
+/// personal section is one value, so its whole object must fit.
+pub const MAX_PERSONAL_VALUE_BYTES: usize = 64 * 1024;
+
+/// The scope of an app's settings section leaf (`tilo.<section>.<app id>`),
+/// when `key` names one.
+fn app_section_scope(key: &str) -> Option<SettingScope> {
+    let rest = key.strip_prefix("tilo.")?;
+    let (section, app) = rest.split_once('.')?;
+    if !valid_app_id(app) {
+        return None;
+    }
+    match section {
+        APP_PERSONAL_SECTION => Some(SettingScope::Personal),
+        APP_DEVICE_LOCAL_SECTION => Some(SettingScope::DeviceLocal),
+        _ => None,
+    }
+}
+
+/// A reverse-DNS app id: dot-separated, non-empty labels of ASCII letters,
+/// digits, `-` and `_`.
+fn valid_app_id(app: &str) -> bool {
+    app.len() <= 200
+        && app.contains('.')
+        && app.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        })
 }
 
 /// A reviewed, typed settings leaf. Construction succeeds only for registry
@@ -247,10 +281,15 @@ pub fn registered(key: &str) -> Option<SettingKey> {
         .map(SettingKey)
 }
 
-/// Return the reviewed continuity class for an exact settings leaf.
+/// Return the reviewed continuity class for an exact settings leaf: a
+/// registry entry, or an app's section in [`APP_PERSONAL_SECTION`] or
+/// [`APP_DEVICE_LOCAL_SECTION`], whose scope the app declared by writing it
+/// there.
 #[must_use]
 pub fn classify(key: &str) -> Option<SettingScope> {
-    registered(key).map(SettingKey::scope)
+    registered(key)
+        .map(SettingKey::scope)
+        .or_else(|| app_section_scope(key))
 }
 
 /// Whether an exact settings leaf may use the ordinary roaming channel.
@@ -274,7 +313,7 @@ pub fn personal_values(
         };
         for (leaf, value) in leaves {
             let canonical = format!("tilo.{section}.{leaf}");
-            if registered(&canonical).is_some_and(|key| key.scope() == SettingScope::Personal) {
+            if classify(&canonical) == Some(SettingScope::Personal) {
                 projected.insert(canonical, value.clone());
             }
         }
@@ -377,6 +416,40 @@ mod tests {
     }
 
     #[test]
+    fn app_sections_roam_only_when_declared_personal() {
+        let document = serde_json::json!({
+            "app_personal": {
+                "so.tilo.monitor": {"confirm_kill": false, "interval_ms": 2000},
+                "not-an-app-id": {"x": 1}
+            },
+            "app_device_local": {"so.tilo.monitor": {"last_window": [0, 0]}},
+            "so.tilo.monitor": {"stray": true}
+        });
+        let document = document.as_object().unwrap();
+        assert_eq!(
+            personal_values(document),
+            std::collections::BTreeMap::from([(
+                "tilo.app_personal.so.tilo.monitor".to_string(),
+                serde_json::json!({"confirm_kill": false, "interval_ms": 2000})
+            )])
+        );
+        assert_eq!(
+            classify("tilo.app_device_local.so.tilo.monitor"),
+            Some(SettingScope::DeviceLocal)
+        );
+        assert_eq!(classify("tilo.app_personal.not-an-app-id"), None);
+        assert_eq!(classify("tilo.app_personal."), None);
+        assert_eq!(classify("tilo.so.tilo.monitor.stray"), None);
+        assert_eq!(
+            unclassified_leaves(document),
+            vec![
+                "tilo.app_personal.not-an-app-id".to_string(),
+                "tilo.so.tilo.monitor.stray".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn the_typed_registry_reviews_every_writer_and_ownership_boundary() {
         // Phase `typed_registry_projects_only_reviewed_personal_values`.
         {
@@ -436,9 +509,7 @@ mod tests {
                 },
                 "agent_providers": {"config": {}},
                 "collaboration": {"status_sharing": "automatic", "manual_status": null},
-                "history": {"seen_frontiers": {}},
-                "ebook_local_library": {"books": {}, "watched_folders": [], "shortcuts": {}},
-                "video_player": {"autoplay": true, "loop_enabled": false, "recent_history": []}
+                "history": {"seen_frontiers": {}}
             });
             assert_eq!(
                 unclassified_leaves(document.as_object().unwrap()),

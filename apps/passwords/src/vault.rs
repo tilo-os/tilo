@@ -4,23 +4,24 @@
 //!
 //! Every part of the window (the sidebar, the item list, the content pages
 //! and the dialogs) reads this state and asks for changes through
-//! [`Request`]s, which the root applies with the document in hand.
+//! [`Request`]s, which the root applies. The palette, agents and scripts
+//! reach the same state through [`PasswordsEffect`]s.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use accounts::{CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind};
-use automerge::AutoCommit;
 use ui::widget::NavPane;
 use vello::kurbo::{Point, Rect};
 use zeroize::Zeroizing;
 
+use crate::actions::PasswordsEffect;
 use crate::transfer::ImportLogin;
 
 /// The core every part of the window reads and changes.
 pub(crate) type Shared = Rc<RefCell<Core>>;
 
-/// Requests from controls, applied by the root, which holds the document.
+/// Requests from controls, applied by the root.
 pub(crate) type Requests = Rc<RefCell<Vec<Request>>>;
 
 /// How long a revealed secret stays on screen.
@@ -369,9 +370,8 @@ impl Default for ListState {
 }
 
 pub(crate) struct Core {
+    /// The vault; `None` for the fixture captures show.
     pub(crate) model: Option<crate::PasswordsModel>,
-    /// Open the person's vault on the first sync (the live app).
-    pub(crate) open_on_sync: bool,
     /// Metadata only: passwords, notes and field values are cleared before
     /// an item enters this cache (it feeds rendering, resources and
     /// accessibility).
@@ -407,8 +407,6 @@ pub(crate) struct Core {
     pub(crate) backup_password: Zeroizing<String>,
     pub(crate) backup_confirmation: Zeroizing<String>,
     pub(crate) dialog: Option<Dialog>,
-    /// Document actions: local host standalone; framework dispatcher when hosted.
-    pub(crate) actions: crate::resource::ActionSink,
     /// A narrow window should bring this pane to the front.
     pub(crate) show_pane: Option<NavPane>,
     pub(crate) list: ListState,
@@ -421,10 +419,9 @@ pub(crate) struct Core {
 }
 
 impl Core {
-    fn empty(model: Option<crate::PasswordsModel>, open_on_sync: bool) -> Self {
+    fn empty(model: Option<crate::PasswordsModel>) -> Self {
         Self {
             model,
-            open_on_sync,
             items: Vec::new(),
             selected: None,
             filter: VaultFilter::All,
@@ -455,7 +452,6 @@ impl Core {
             backup_password: Zeroizing::new(String::new()),
             backup_confirmation: Zeroizing::new(String::new()),
             dialog: None,
-            actions: crate::resource::ActionSink::default(),
             show_pane: None,
             list: ListState::default(),
             pointer: Point::ZERO,
@@ -465,15 +461,9 @@ impl Core {
         }
     }
 
-    /// The live app: the person's vault, opened on the first sync.
-    pub(crate) fn live() -> Self {
-        Self::empty(None, true)
-    }
-
-    /// A vault in `model` (tests).
-    #[cfg(test)]
+    /// The vault in `model`: the person's in a live window.
     pub(crate) fn with_model(model: crate::PasswordsModel) -> Self {
-        let mut core = Self::empty(Some(model), false);
+        let mut core = Self::empty(Some(model));
         core.refresh();
         core.select_first_visible();
         core
@@ -481,7 +471,7 @@ impl Core {
 
     /// Fixture items with no vault behind them (captures and tests).
     pub(crate) fn demo() -> Self {
-        let mut core = Self::empty(None, false);
+        let mut core = Self::empty(None);
         core.load_demo();
         core
     }
@@ -489,7 +479,6 @@ impl Core {
     /// Replace whatever is shown with the fixture vault.
     pub(crate) fn load_demo(&mut self) {
         self.model = None;
-        self.open_on_sync = false;
         let full = crate::demo::full_items();
         self.health = crate::analyze_health(&full);
         self.findings = crate::findings(&full);
@@ -511,15 +500,6 @@ impl Core {
         self.items.sort_by_key(|item| item.title.to_lowercase());
         self.list.reveal = true;
         self.touch();
-    }
-
-    /// Open the person's vault once, on the first sync of the live app.
-    pub(crate) fn open_pending(&mut self) {
-        if std::mem::take(&mut self.open_on_sync) {
-            self.model = Some(crate::PasswordsModel::open());
-            self.refresh();
-            self.select_first_visible();
-        }
     }
 
     /// The page and the list must be built again.
@@ -613,54 +593,41 @@ impl Core {
         self.selected = self.visible().first().map(|item| item.id.clone());
     }
 
-    pub(crate) fn select_filter(&mut self, doc: &mut AutoCommit, filter: VaultFilter) {
-        self.commit_view(
-            doc,
-            &crate::resource::PasswordsAction::SetFilter {
-                filter: filter.as_str().into(),
-            },
-        );
+    pub(crate) fn select_filter(&mut self, filter: VaultFilter) {
+        self.filter = filter;
         self.screen = Screen::Vault;
         self.list.scroll = 0.0;
         self.select_first_visible();
-        if let Some(id) = self.selected.clone() {
-            self.commit_view(
-                doc,
-                &crate::resource::PasswordsAction::SelectItem { id: id.0 },
-            );
-        }
         self.show_pane = Some(NavPane::Overview);
         self.touch();
     }
 
-    pub(crate) fn open(&mut self, doc: &mut AutoCommit, id: &SecretId) {
-        if self.item(id).is_none() {
-            return;
-        }
-        if !self.item(id).is_some_and(|item| self.filter.matches(item)) {
+    /// Show the item `id`, clearing a filter that hides it. `false` when the
+    /// vault has no such item.
+    pub(crate) fn open(&mut self, id: &SecretId) -> bool {
+        let Some(listed) = self.item(id).map(|item| self.filter.matches(item)) else {
+            return false;
+        };
+        if !listed {
             // Show the item where it is listed.
-            self.commit_view(
-                doc,
-                &crate::resource::PasswordsAction::SetFilter {
-                    filter: VaultFilter::All.as_str().into(),
-                },
-            );
+            self.filter = VaultFilter::All;
         }
         if self.screen == Screen::Editor {
             self.close_editor();
         }
         self.screen = Screen::Vault;
-        self.commit_view(
-            doc,
-            &crate::resource::PasswordsAction::SelectItem { id: id.0.clone() },
-        );
+        if self.selected.as_ref() != Some(id) {
+            self.selected = Some(id.clone());
+            self.revealed = None;
+        }
         self.list.reveal = true;
         self.show_pane = Some(NavPane::Content);
         self.touch();
+        true
     }
 
     /// Move the selection by one row (arrow keys).
-    pub(crate) fn step(&mut self, doc: &mut AutoCommit, forward: bool) {
+    pub(crate) fn step(&mut self, forward: bool) {
         let visible: Vec<SecretId> = self.visible().iter().map(|item| item.id.clone()).collect();
         let Some(last) = visible.len().checked_sub(1) else {
             return;
@@ -675,7 +642,7 @@ impl Core {
             Some(at) => at.saturating_sub(1),
         };
         if let Some(id) = visible.get(next).cloned() {
-            self.open(doc, &id);
+            self.open(&id);
             self.show_pane = None;
         }
     }
@@ -711,59 +678,6 @@ impl Core {
         } else {
             "Added to favorites"
         });
-    }
-
-    // --- shared view state ---------------------------------------------
-
-    pub(crate) fn commit_view(
-        &mut self,
-        doc: &mut AutoCommit,
-        action: &crate::resource::PasswordsAction,
-    ) {
-        self.apply_view_action(action);
-        self.actions.dispatch(doc, action);
-    }
-
-    fn apply_view_action(&mut self, action: &crate::resource::PasswordsAction) {
-        match action {
-            crate::resource::PasswordsAction::SetFilter { filter } => {
-                let filter = VaultFilter::parse(filter);
-                if filter != self.filter {
-                    self.filter = filter;
-                    self.touch();
-                }
-            }
-            crate::resource::PasswordsAction::SelectItem { id } => {
-                if self.items.iter().any(|item| item.id.0 == *id)
-                    && self
-                        .selected
-                        .as_ref()
-                        .is_none_or(|current| current.0 != *id)
-                {
-                    self.selected = Some(SecretId(id.clone()));
-                    self.revealed = None;
-                    self.touch();
-                }
-            }
-        }
-    }
-
-    /// Adopt collaborative view prefs; never clear the local vault cache.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::VaultState) {
-        if self.filter != state.filter {
-            self.filter = state.filter;
-            self.touch();
-        }
-        if let Some(id) = &state.selected_id
-            && self.items.iter().any(|item| item.id.0 == *id)
-            && self
-                .selected
-                .as_ref()
-                .is_none_or(|current| current.0 != *id)
-        {
-            self.selected = Some(SecretId(id.clone()));
-            self.touch();
-        }
     }
 
     // --- the open item -------------------------------------------------
@@ -1222,8 +1136,15 @@ impl Core {
         let Some(Dialog::DeleteConfirm { id, .. }) = self.dialog.take() else {
             return;
         };
-        if let Some(model) = &mut self.model {
-            match model.remove(&id) {
+        if let Err(error) = self.delete(&id) {
+            self.toast(error);
+        }
+    }
+
+    /// Delete `id` from the vault.
+    pub(crate) fn delete(&mut self, id: &SecretId) -> Result<(), String> {
+        let result = if let Some(model) = &mut self.model {
+            match model.remove(id) {
                 Ok(true) => {
                     self.selected = None;
                     self.refresh();
@@ -1231,17 +1152,22 @@ impl Core {
                     self.select_first_visible();
                     self.show_pane = Some(NavPane::Overview);
                     self.toast("Item deleted");
+                    Ok(())
                 }
-                Ok(false) => self.toast("That item is no longer in your vault"),
-                Err(error) => self.toast(format!("Could not delete the item: {error}")),
+                Ok(false) => Err("That item is no longer in your vault".to_owned()),
+                Err(error) => Err(format!("Could not delete the item: {error}")),
             }
-        } else {
-            self.items.retain(|item| item.id != id);
+        } else if self.item(id).is_some() {
+            self.items.retain(|item| &item.id != id);
             self.selected = None;
             self.close_editor();
             self.select_first_visible();
-        }
+            Ok(())
+        } else {
+            Err("That item is no longer in your vault".to_owned())
+        };
         self.touch();
+        result
     }
 
     pub(crate) fn close_dialog(&mut self) {
@@ -1671,10 +1597,12 @@ impl Core {
     // --- requests and operations ----------------------------------------
 
     /// Apply a control's request.
-    pub(crate) fn apply(&mut self, request: Request, doc: &mut AutoCommit) {
+    pub(crate) fn apply(&mut self, request: Request) {
         match request {
-            Request::Navigate(id) => self.navigate(doc, &id),
-            Request::Open(id) => self.open(doc, &id),
+            Request::Navigate(id) => self.navigate(&id),
+            Request::Open(id) => {
+                self.open(&id);
+            }
             Request::ToggleFavorite(id) => self.toggle_favorite(&id),
             Request::NewItem => self.begin_add(),
             Request::Edit => self.begin_edit(),
@@ -1712,9 +1640,9 @@ impl Core {
         }
     }
 
-    pub(crate) fn navigate(&mut self, doc: &mut AutoCommit, id: &str) {
+    pub(crate) fn navigate(&mut self, id: &str) {
         if let Some(filter) = id.strip_prefix("filter:") {
-            self.select_filter(doc, VaultFilter::parse(filter));
+            self.select_filter(VaultFilter::parse(filter));
             return;
         }
         let screen = match id {
@@ -1731,75 +1659,90 @@ impl Core {
         self.touch();
     }
 
-    /// Answer an exported vault operation (palette, agents, search hits).
-    pub(crate) fn answer_operation(
-        &mut self,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-    ) -> Result<bool, String> {
-        use crate::actions::PasswordOperation;
-        if type_id != crate::actions::OPERATION_TYPE {
-            return Ok(false);
-        }
-        let operation: PasswordOperation = serde_json::from_slice(payload)
-            .map_err(|error| format!("invalid Passwords operation: {error}"))?;
-        let mut select = |core: &mut Self, id: &str| {
-            let id = SecretId(id.to_owned());
-            core.open(doc, &id);
+    /// Whether a draft is open in the editor.
+    pub(crate) fn is_editing(&self) -> bool {
+        self.screen == Screen::Editor
+    }
+
+    /// Answer an effect invoked by the palette, an agent, a script or a
+    /// search hit.
+    pub(crate) fn perform(&mut self, effect: PasswordsEffect) -> Result<(), String> {
+        let open = |core: &mut Self, id: String| {
+            if core.open(&SecretId(id)) {
+                Ok(())
+            } else {
+                Err("That item is no longer in your vault".to_owned())
+            }
         };
-        match operation {
-            PasswordOperation::Add => self.begin_add(),
-            PasswordOperation::SaveDraft => self.save_draft(),
-            PasswordOperation::GeneratePassword => self.generate_password(),
-            PasswordOperation::CancelDraft => self.cancel_edit(),
-            PasswordOperation::Open { id } => select(self, &id),
-            PasswordOperation::Edit { id } => {
-                select(self, &id);
+        match effect {
+            PasswordsEffect::Add => self.begin_add(),
+            PasswordsEffect::Save => {
+                if !self.is_editing() {
+                    return Err("No item is being edited".into());
+                }
+                self.toast = None;
+                self.save_draft();
+                if self.is_editing() {
+                    return Err(self
+                        .draft_error
+                        .as_ref()
+                        .map(|(_, message)| message.clone())
+                        .or_else(|| self.toast.as_ref().map(|(message, _)| message.clone()))
+                        .unwrap_or_else(|| "The item was not saved".to_owned()));
+                }
+            }
+            PasswordsEffect::Cancel => self.cancel_edit(),
+            PasswordsEffect::Generate => {
+                if !self.is_editing() {
+                    return Err("No item is being edited".into());
+                }
+                self.generate_password();
+            }
+            PasswordsEffect::Edit { item } => {
+                open(self, item)?;
                 self.begin_edit();
             }
-            PasswordOperation::Copy { id } => {
-                select(self, &id);
+            PasswordsEffect::Copy { item } => {
+                open(self, item)?;
                 self.copy_secret();
             }
-            PasswordOperation::Reveal { id } => {
-                select(self, &id);
-                self.reveal_secret();
+            PasswordsEffect::Reveal { item } => {
+                open(self, item)?;
+                if self.revealed.is_none() {
+                    self.reveal_secret();
+                }
             }
-            PasswordOperation::RequestDelete { id } => {
-                select(self, &id);
-                self.request_delete();
+            PasswordsEffect::Delete { item } => self.delete(&SecretId(item))?,
+            PasswordsEffect::Import => self.request_import(),
+            PasswordsEffect::Export => self.request_export(),
+            PasswordsEffect::Filter { filter } => {
+                let parsed = VaultFilter::parse(&filter);
+                if parsed.as_str() != filter {
+                    return Err(format!("unknown filter `{filter}`"));
+                }
+                self.select_filter(parsed);
             }
-            PasswordOperation::ImportCsv => self.request_import(),
-            PasswordOperation::ExportCsv => self.request_export(),
+            PasswordsEffect::Open { item } => open(self, item)?,
         }
-        Ok(true)
+        Ok(())
     }
 
     // --- resources --------------------------------------------------------
 
-    /// Standalone / unit tests: the vault door with the live items.
-    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
-        use ui::tilo_resource::Resource as _;
-        let state = crate::resource::Passwords::read(doc).unwrap_or_default();
-        crate::actions::standalone_resources(&self.items, self.screen == Screen::Editor, &state)
+    /// Live vault rows, one per item: what agents, scripts and the palette
+    /// may do with it. A row names the item by its opaque id and kind only;
+    /// its title, account and addresses stay in the vault.
+    pub(crate) fn item_rows(&self) -> Vec<ui::framework::LiveRow> {
+        self.items.iter().map(crate::actions::item_row).collect()
     }
 
-    /// Live item rows (and editor-session operations) without a vault root.
-    pub(crate) fn live_item_extras(&self) -> Vec<ui::tilo_actions::Resource> {
-        let mut extras = crate::actions::live_item_resources(&self.items);
-        if self.screen == Screen::Editor {
-            let mut session = ui::tilo_actions::Resource::new(
-                "passwords:session",
-                "passwords.session",
-                "Editing session",
-            );
-            for spec in crate::actions::editor_session_specs() {
-                session = session.with_action(spec);
-            }
-            extras.insert(0, session);
-        }
-        extras
+    /// The live row of item `id` (a published row id).
+    pub(crate) fn item_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        let id = id.strip_prefix(crate::actions::ITEM_PREFIX)?;
+        self.items
+            .iter()
+            .find(|item| item.id.0 == id)
+            .map(crate::actions::item_row)
     }
 }
 

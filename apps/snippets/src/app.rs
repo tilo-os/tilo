@@ -6,20 +6,23 @@
 //! snippet. The shell owns the header row, the sidebar toggle, the widths,
 //! the drawer and the push stack; this module owns the state they show.
 //!
-//! The library is mirrored into the shared Automerge document by
-//! [`crate::doc`] so two instances converge. Selection, the open snippet and
-//! the variables dialog are view state and stay local to each peer.
+//! The library is the [`crate::resource::Snippets`] resource the framework
+//! presents; every change is a [`SnippetsAction`] submitted through its
+//! dispatcher. Selection, the open snippet and the variables dialog are view
+//! state and stay local to each peer.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ChangeHash, ObjId};
+use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
+use ui::framework::Dispatcher;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_resource::{PlainText, text::splice_between};
 use ui::widget::code_editor::CodeEditor;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
@@ -31,14 +34,14 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::actions::{self, SnippetsAction, SnippetsResourceCtx};
+use crate::actions::{self, SnippetsAction};
 use crate::detail_pane::{self, DetailKey};
 use crate::doc::SnippetsDoc;
 use crate::expand::ExpandModal;
 use crate::highlight;
 use crate::list_pane::{ListPane, ListState};
 use crate::model::{Language, Library, Selection, SmartFolder, Snippet, SnippetId};
-use crate::seed;
+use crate::resource::Snippets;
 use crate::{tr, tr_with};
 
 /// The core every part of the window reads and changes.
@@ -179,25 +182,27 @@ pub(crate) struct OpenMenu {
 /// painted panes' geometry.
 pub(crate) struct Core {
     pub(crate) library: Library,
-    /// Complete incremental search catalogue. Provider handles clone this
-    /// shared index in O(1), so opening search never snapshots the library.
-    search_provider: crate::search_provider::SnippetSearchProvider,
     pub(crate) selection: Selection,
-    /// Editing cache only; every change is dispatched into `SnippetsDoc`.
+    /// Editing cache only; every change is a splice of the open snippet's
+    /// body, submitted through `body_edits`.
     pub(crate) body_editor: CodeEditor,
     body_identity: Option<(SnippetId, Language)>,
+    /// The open snippet's body text, edited as a child of the library.
+    body_edits: Option<Dispatcher<PlainText>>,
     /// The snippet the content column shows.
     pub(crate) open: Option<SnippetId>,
+    /// A snippet this view just created or duplicated, opened as soon as the
+    /// library it was added to is presented.
+    pending_open: Option<SnippetId>,
     /// Ordered ids the list shows (the chosen place's snippets).
     pub(crate) visible: Vec<SnippetId>,
     /// The fill-in-variables dialog, when open.
     pub(crate) expand: Option<ExpandModal>,
     pub(crate) menu: Option<OpenMenu>,
     toast: Option<Toast>,
-    /// Whether the local library has been mirrored into the shared doc.
-    seeded: bool,
-    /// Framework dispatcher when hosted; the local action host otherwise.
-    actions: crate::resource::ActionSink,
+    /// The resource's dispatcher, once the framework attaches the view.
+    /// Each on-screen control submits a [`SnippetsAction`] through it.
+    dispatch: Option<Dispatcher<Snippets>>,
     /// The pointer, in window coordinates.
     pub(crate) pointer: Point,
     /// The window, for dialogs and menus.
@@ -215,23 +220,22 @@ pub(crate) struct Core {
 }
 
 impl Core {
-    fn with_library(library: Library) -> Self {
-        let search_provider = crate::search_provider::SnippetSearchProvider::new(&library);
+    fn new() -> Self {
         let mut core = Self {
-            library,
-            search_provider,
+            library: Library::new(),
             selection: Selection::default(),
             body_editor: CodeEditor::local()
                 .with_id("snippets.body")
                 .with_placeholder("snippets-body-placeholder"),
             body_identity: None,
+            body_edits: None,
             open: None,
+            pending_open: None,
             visible: Vec::new(),
             expand: None,
             menu: None,
             toast: None,
-            seeded: false,
-            actions: crate::resource::ActionSink::default(),
+            dispatch: None,
             pointer: Point::ZERO,
             window: Rect::ZERO,
             list: ListState::default(),
@@ -246,9 +250,10 @@ impl Core {
 
     pub(crate) fn recompute_visible(&mut self) {
         self.visible = self.library.query(&self.selection);
-        // Keep the open snippet valid; otherwise open the first one.
+        // Keep the open snippet valid; otherwise open the first one. A
+        // snippet this view just created stays open while it is on its way.
         if let Some(open) = self.open {
-            if !self.visible.contains(&open) {
+            if !self.visible.contains(&open) && self.pending_open != Some(open) {
                 self.open = self.visible.first().copied();
             }
         } else {
@@ -380,50 +385,51 @@ impl Core {
         sections
     }
 
-    /// Dispatch one [`SnippetsAction`] — the single mutation path shared with
-    /// the palette. The shared document is authoritative; the in-memory
-    /// library is re-projected from it so the panes reflect the change this
-    /// frame.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: &SnippetsAction) {
-        self.actions.dispatch_with_context(
-            doc,
-            actions::SNIPPETS_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.snippets", "Snippets", action),
-        );
-        self.refresh_from_doc(doc);
+    /// Submit one [`SnippetsAction`] — the single mutation path shared with
+    /// the palette — through the resource's dispatcher. The host checks the
+    /// participant's permission, applies it as one undo step, and presents
+    /// the changed library.
+    fn submit(&self, action: &SnippetsAction) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.apply(action);
+        }
     }
 
-    /// Show the library the framework resource already holds. An empty
-    /// projection does not wipe snippets that have not been published yet.
-    fn adopt_resource_state(&mut self, state: &[Snippet]) {
-        if state.is_empty() {
-            return;
-        }
-        let next = Library {
+    /// Show the library the resource holds: a local edit, a collaborator's,
+    /// an undo.
+    pub(crate) fn show_library(&mut self, state: &[Snippet]) {
+        self.library = Library {
             snippets: state.to_vec(),
         };
-        if self.library.snippets != next.snippets {
-            self.search_provider.update(&self.library, &next);
-            self.library = next;
-            self.recompute_visible();
-            self.sync_body_editor();
+        if let Some(id) = self.pending_open
+            && self.library.get(id).is_some()
+        {
+            self.pending_open = None;
+            self.open = Some(id);
         }
-        self.seeded = true;
+        self.recompute_visible();
+        self.sync_body_editor();
     }
 
-    fn refresh_from_doc(&mut self, doc: &AutoCommit) {
-        let next = Library {
-            snippets: SnippetsDoc::list(doc),
-        };
-        self.search_provider.update(&self.library, &next);
-        self.library = next;
+    /// Edit through the resource's dispatcher from now on.
+    fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Snippets>) {
+        self.dispatch = Some(dispatcher);
+        self.body_identity = None;
         self.sync_body_editor();
     }
 
     pub(crate) fn sync_body_editor(&mut self) {
         let snippet = self.open.and_then(|id| self.library.get(id));
         let identity = snippet.map(|s| (s.id, s.language));
+        if self.body_identity.map(|(id, _)| id) != identity.map(|(id, _)| id) {
+            self.body_edits = identity.and_then(|(id, _)| {
+                self.dispatch.as_ref().map(|dispatch| {
+                    dispatch.child::<PlainText>(&actions::body_resource_id(id), move |edit| {
+                        actions::edit_body_action(id, edit)
+                    })
+                })
+            });
+        }
         if self.body_identity != identity {
             self.body_editor
                 .set_highlighter(identity.map(|(_, language)| {
@@ -444,15 +450,28 @@ impl Core {
         self.body_editor.take_dirty();
     }
 
+    /// Submit what the person typed in the body as one splice of the stored
+    /// text, applied now so the next keystroke splices the text it made.
+    /// Typing a word is one undo step. A refused edit (a viewer's) writes
+    /// nothing, and the editor shows the stored text again.
     fn flush_body_edit(&mut self, doc: &mut AutoCommit) {
-        if let Some(text) = self.body_editor.take_dirty()
-            && let Some(id) = self.open
-            && self
-                .library
-                .get(id)
-                .is_some_and(|snippet| snippet.body != text)
-        {
-            self.perform_action(doc, &actions::set_body_action(id, &text));
+        let Some(text) = self.body_editor.take_dirty() else {
+            return;
+        };
+        let Some(id) = self.open else {
+            return;
+        };
+        let stored = SnippetsDoc::get(doc, id).map(|snippet| snippet.body);
+        let applied = match (&self.body_edits, &stored) {
+            (Some(edits), Some(stored)) => {
+                splice_between(stored, &text).is_none_or(|edit| edits.apply_now(doc, &edit).is_ok())
+            }
+            _ => false,
+        };
+        if !applied {
+            self.body_editor
+                .set_text(stored.as_deref().unwrap_or_default());
+            self.body_editor.take_dirty();
         }
     }
 
@@ -521,18 +540,7 @@ impl Core {
         handled && !matches!(event, WindowEvent::CursorMoved { .. })
     }
 
-    /// The presentation context the palette needs to build the library-level
-    /// "New snippet" action (which folder to file it under).
-    pub(crate) fn snippets_resource_ctx(&self) -> SnippetsResourceCtx {
-        SnippetsResourceCtx {
-            current_folder: match &self.selection {
-                Selection::Folder(f) => f.clone(),
-                _ => String::new(),
-            },
-        }
-    }
-
-    fn new_snippet(&mut self, doc: &mut AutoCommit) {
+    fn new_snippet(&mut self) {
         let folder = match &self.selection {
             Selection::Folder(f) => f.clone(),
             _ => String::new(),
@@ -540,22 +548,26 @@ impl Core {
         // The uuid is minted here, at authoring time, and carried in the
         // action payload so replay reproduces the identical row.
         let s = Snippet::blank(&folder);
-        let id = s.id;
-        self.perform_action(doc, &actions::create_snippet_action(s));
         // A new snippet is neither a favorite nor used yet: show it in a
         // place that holds it.
         if matches!(
             self.selection,
             Selection::Smart(SmartFolder::Favorites | SmartFolder::MostUsed) | Selection::Tag(_)
         ) {
-            self.selection = Selection::default();
+            self.select(Selection::default());
         }
-        self.recompute_visible();
-        self.open_snippet(id);
+        self.open_when_presented(s.id);
+        self.submit(&actions::create_snippet_action(s));
         self.toast(&tr("snippets-created"));
     }
 
-    fn copy(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+    /// Open `id`, which this view just submitted, once it is presented.
+    fn open_when_presented(&mut self, id: SnippetId) {
+        self.pending_open = Some(id);
+        self.open_snippet(id);
+    }
+
+    fn copy(&mut self, id: SnippetId) {
         // A body with placeholders goes through the fill-in dialog so raw
         // `${...}` never lands on the clipboard.
         let needs_expand = self.library.get(id).is_some_and(Snippet::has_placeholders);
@@ -567,15 +579,15 @@ impl Core {
         // mutation, so it goes through an action.
         if let Some(body) = self.library.get(id).map(|s| s.body.clone()) {
             ui::clipboard_copy(&body);
-            self.record_use(id, doc);
+            self.record_use(id);
             self.toast(&tr("snippets-copied"));
         }
     }
 
     /// Record one use of a snippet (drives "Most used") through the action
     /// path, so the bump replicates and is undoable like any mutation.
-    fn record_use(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.perform_action(doc, &actions::record_use_action(id));
+    fn record_use(&self, id: SnippetId) {
+        self.submit(&actions::record_use_action(id));
     }
 
     pub(crate) fn start_expand(&mut self, id: SnippetId) {
@@ -585,41 +597,35 @@ impl Core {
         }
     }
 
-    fn toggle_favorite(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+    fn toggle_favorite(&self, id: SnippetId) {
         let cur = self.library.get(id).is_some_and(|s| s.favorite);
-        self.perform_action(doc, &actions::set_favorite_action(id, !cur));
-        self.recompute_visible();
+        self.submit(&actions::set_favorite_action(id, !cur));
     }
 
-    fn duplicate(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+    fn duplicate(&mut self, id: SnippetId) {
         if let Some(src) = self.library.get(id).cloned() {
             let mut copy = src.clone();
             copy.id = uuid::Uuid::new_v4();
             copy.title = tr_with("snippets-copy-title", &[("title", &src.title)]);
             copy.favorite = false;
             copy.uses = 0;
-            let new_id = copy.id;
-            self.perform_action(doc, &actions::create_snippet_action(copy));
-            self.recompute_visible();
-            if self.visible.contains(&new_id) {
-                self.open_snippet(new_id);
+            // The copy is no favorite, so Favorites does not list it: there
+            // the open snippet stays.
+            if self.selection != Selection::Smart(SmartFolder::Favorites) {
+                self.open_when_presented(copy.id);
             }
+            self.submit(&actions::create_snippet_action(copy));
             self.toast(&tr("snippets-duplicated"));
         }
     }
 
-    fn delete(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.perform_action(doc, &actions::delete_snippet_action(id));
-        if self.open == Some(id) {
-            self.open = None;
-        }
-        self.recompute_visible();
+    fn delete(&mut self, id: SnippetId) {
+        self.submit(&actions::delete_snippet_action(id));
         self.toast(&tr("snippets-deleted"));
     }
 
-    fn set_language(&mut self, id: SnippetId, lang: Language, doc: &mut AutoCommit) {
-        self.perform_action(doc, &actions::set_language_action(id, lang));
-        self.recompute_visible();
+    fn set_language(&self, id: SnippetId, lang: Language) {
+        self.submit(&actions::set_language_action(id, lang));
     }
 
     fn toast(&mut self, message: &str) {
@@ -629,53 +635,16 @@ impl Core {
         });
     }
 
-    /// Reconcile the in-memory library with the shared document.
-    ///
-    /// The document is the source of truth: every mutation flows through a
-    /// dispatched [`SnippetsAction`]. On first sync we either seed our
-    /// starter set into an empty document or adopt a peer's; from then on we
-    /// re-project the document so a peer's change — and our own
-    /// just-dispatched action — both surface.
-    fn sync_library(&mut self, doc: &mut AutoCommit) {
-        let remote = SnippetsDoc::list(doc);
-        if !self.seeded {
-            if remote.is_empty() && !self.actions.is_hosted() {
-                // A screenshot fixture may arrive with a local starter set.
-                // The hosted app never writes that around the resource action.
-                for s in self.library.snippets.clone() {
-                    self.perform_action(doc, &SnippetsAction::CreateSnippet { snippet: s });
-                }
-                // Seeding is not a user undo bracket.
-                let _ = self.actions.take_committed();
-            } else {
-                // A peer is already sharing — adopt their library.
-                let next = Library { snippets: remote };
-                self.search_provider.update(&self.library, &next);
-                self.library = next;
-                self.recompute_visible();
-            }
-            self.seeded = true;
-            return;
-        }
-        // Steady state: the document is authoritative — re-project it.
-        if self.library.snippets != remote {
-            let next = Library { snippets: remote };
-            self.search_provider.update(&self.library, &next);
-            self.library = next;
-            self.recompute_visible();
-        }
-    }
-
-    pub(crate) fn apply(&mut self, action: Action, doc: &mut AutoCommit) {
+    pub(crate) fn apply(&mut self, action: Action) {
         match action {
             Action::Select(sel) => self.select(sel),
             Action::OpenSnippet(id) => self.open_snippet(id),
-            Action::NewSnippet => self.new_snippet(doc),
-            Action::Copy(id) => self.copy(id, doc),
-            Action::ToggleFavorite(id) => self.toggle_favorite(id, doc),
-            Action::Duplicate(id) => self.duplicate(id, doc),
-            Action::Delete(id) => self.delete(id, doc),
-            Action::SetLanguage(id, lang) => self.set_language(id, lang, doc),
+            Action::NewSnippet => self.new_snippet(),
+            Action::Copy(id) => self.copy(id),
+            Action::ToggleFavorite(id) => self.toggle_favorite(id),
+            Action::Duplicate(id) => self.duplicate(id),
+            Action::Delete(id) => self.delete(id),
+            Action::SetLanguage(id, lang) => self.set_language(id, lang),
             Action::PickLanguage(id) => self.open_languages(id),
             Action::More(id) => self.open_more(id),
         }
@@ -751,11 +720,11 @@ impl Core {
         }
         if let Some(action) = chosen {
             self.menu = None;
-            self.apply(action, ctx.state);
+            self.apply(action);
         }
     }
 
-    fn finish_expand(&mut self, modal: ExpandModal, outcome: ExpandOutcome, doc: &mut AutoCommit) {
+    fn finish_expand(&mut self, modal: ExpandModal, outcome: ExpandOutcome) {
         match outcome {
             ExpandOutcome::Stay => {
                 self.expand = Some(modal);
@@ -763,7 +732,7 @@ impl Core {
             ExpandOutcome::Cancel => {}
             ExpandOutcome::Copy(text, id) => {
                 ui::clipboard_copy(&text);
-                self.record_use(id, doc);
+                self.record_use(id);
                 self.toast(&tr("snippets-copied"));
             }
         }
@@ -774,7 +743,7 @@ impl Core {
         self.list.hits.iter()
     }
 
-    fn handle_keyboard_input(&mut self, ctx: &mut ui::widget::EventCtx<'_>, key: &Key) -> bool {
+    fn handle_keyboard_input(&mut self, ctx: &ui::widget::EventCtx<'_>, key: &Key) -> bool {
         let mods = ctx.modifiers.state();
         if !(mods.control_key() || mods.super_key()) {
             return false;
@@ -784,12 +753,12 @@ impl Core {
         };
         match ch.to_lowercase().as_str() {
             "n" => {
-                self.new_snippet(ctx.state);
+                self.new_snippet();
                 true
             }
             "c" if !self.body_editor.is_focused() => {
                 if let Some(id) = self.open {
-                    self.copy(id, ctx.state);
+                    self.copy(id);
                 }
                 true
             }
@@ -967,47 +936,19 @@ pub struct SnippetsApp {
     /// Whether the overview column is in the shell (not for an empty
     /// library, whose one action the content column offers).
     overview_shown: bool,
-    /// A screenshot scenario to stage once the shell has laid out.
+    /// A screenshot scenario to stage once its library is presented.
     pending_scenario: Option<String>,
     /// The capture's specimen snippet has been opened.
     specimen_open: bool,
-    /// How many layouts in a row gave the window the same rect.
+    /// How many layouts the window has had since the specimen opened.
     settled_layouts: u32,
 }
 
-/// Layouts at one window size before a capture stages its scenario.
-const SETTLED_LAYOUTS: u32 = 3;
-
 impl SnippetsApp {
-    /// Build the live app on an **empty** library. A fresh install has no
-    /// snippets — the user saves their own, or a peer's shared library is
-    /// adopted on the first `sync`. The starter set is demo/`--shots` only
-    /// (see [`Self::new_demo`]).
+    /// The window before the framework presents the library: empty, until
+    /// the resource's state arrives.
     pub fn new() -> Self {
-        Self::with_library(Library::new())
-    }
-
-    /// Like [`Self::new`] but with the starter library and a specimen open:
-    /// a library doing real work, for tests. A capture creates the same
-    /// library through the resource's actions instead
-    /// ([`Self::stage_scenario`]).
-    pub fn new_demo() -> Self {
-        let mut library = Library::new();
-        for s in seed::starter_library() {
-            library.insert(s);
-        }
-        let mut app = Self::with_library(library);
-        {
-            let mut core = app.core.borrow_mut();
-            core.open_specimen();
-            core.show_pane = None;
-        }
-        app.refresh_columns();
-        app
-    }
-
-    fn with_library(library: Library) -> Self {
-        let core: Shared = Rc::new(RefCell::new(Core::with_library(library)));
+        let core: Shared = Rc::new(RefCell::new(Core::new()));
         let requests: Requests = Rc::default();
         let new_snippet = {
             let requests = Rc::clone(&requests);
@@ -1054,27 +995,17 @@ impl SnippetsApp {
         }
     }
 
-    /// Stage a capture: create the starter library through the resource's
-    /// own action (none for the `empty` scenario), then, once it is
-    /// presented and the window has its size, the scenario's view state:
+    /// Stage a capture once its library (the starter library the resource's
+    /// scenario creates, none for `empty`) is presented and the window has
+    /// its size:
     ///
     /// * `narrow` — the sidebar drawer open over the content.
     /// * `detail` — a narrow window showing the open snippet.
     /// * `expand` — the fill-in-variables dialog over the open snippet.
     /// * `language`, `more` — the language picker or the overflow menu.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        let scenario = scenario.unwrap_or_default();
-        if scenario != "empty" {
-            let core = self.core.borrow();
-            if core.library.snippets.is_empty() {
-                core.actions.submit_all(
-                    seed::starter_library()
-                        .into_iter()
-                        .map(|snippet| SnippetsAction::CreateSnippet { snippet }),
-                );
-            }
-        }
-        self.pending_scenario = Some(scenario.to_string());
+        self.pending_scenario = Some(scenario.unwrap_or_default().to_string());
+        self.stage_pending_scenario();
     }
 
     fn stage_pending_scenario(&mut self) {
@@ -1086,7 +1017,7 @@ impl SnippetsApp {
             self.pending_scenario = Some(scenario);
             return;
         }
-        // First open the specimen, and let the window lay its column out.
+        // First open the specimen.
         if !self.specimen_open {
             self.specimen_open = true;
             {
@@ -1096,6 +1027,10 @@ impl SnippetsApp {
             }
             self.refresh_columns();
             self.settled_layouts = 0;
+        }
+        // A menu opens under its button: let the window lay the specimen's
+        // column out first.
+        if matches!(scenario.as_str(), "language" | "more") && self.settled_layouts == 0 {
             self.pending_scenario = Some(scenario);
             return;
         }
@@ -1144,13 +1079,15 @@ impl SnippetsApp {
     }
 
     /// Apply what retained controls asked for, bring the screen a choice
-    /// asked for to the front, and keep the column titles current.
-    fn settle(&mut self, doc: &mut AutoCommit) {
+    /// asked for to the front, and keep the column titles current. The
+    /// columns themselves are rebuilt only between frames
+    /// ([`Self::refresh_columns`] from `sync` and `update`), never while
+    /// the host is still routing an event or an action through them.
+    fn settle(&mut self) {
         let requests = std::mem::take(&mut *self.requests.borrow_mut());
         for action in requests {
-            self.core.borrow_mut().apply(action, doc);
+            self.core.borrow_mut().apply(action);
         }
-        self.refresh_columns();
         let (pane, titles) = {
             let mut core = self.core.borrow_mut();
             (
@@ -1178,136 +1115,66 @@ impl SnippetsApp {
         self.core.borrow_mut().body_reachable = !drawer_open && !content_hidden;
     }
 
-    /// Adopt the shared library projection only — never wipe a local
-    /// library that has not been published yet.
-    pub(crate) fn adopt_resource_state(&self, state: &[Snippet]) {
-        self.core.borrow_mut().adopt_resource_state(state);
+    /// Show the library the resource holds.
+    pub(crate) fn show_library(&mut self, state: &[Snippet]) {
+        self.core.borrow_mut().show_library(state);
+        self.settle();
     }
 
-    /// Attach the framework dispatcher when hosted as a resource surface.
-    pub(crate) fn attach_framework(
-        &self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Snippets>,
-    ) {
-        let mut core = self.core.borrow_mut();
-        core.actions.attach(dispatcher);
-        core.seeded = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.core.borrow().actions.is_hosted()
-    }
-
-    pub(crate) fn snippets_resource_ctx(&self) -> SnippetsResourceCtx {
-        self.core.borrow().snippets_resource_ctx()
-    }
-
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&self) {
-        self.core.borrow_mut().actions.mark_hosted_for_test();
-    }
-
-    /// Test-only: select a sidebar folder so hosted extras bind folder-scoped create.
-    #[cfg(test)]
-    pub(crate) fn select_folder_for_test(&self, folder: &str) {
-        self.core.borrow_mut().selection = Selection::Folder(folder.to_string());
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn snippet_count(&self) -> usize {
-        self.core.borrow().library.snippets.len()
+    /// Edit through the resource's dispatcher from now on.
+    pub(crate) fn attach_dispatcher(&self, dispatcher: Dispatcher<Snippets>) {
+        self.core.borrow_mut().attach_dispatcher(dispatcher);
     }
 
     // ---- test accessors -------------------------------------------------
 
-    #[doc(hidden)]
-    pub fn open_id_for_test(&self) -> Option<SnippetId> {
+    #[cfg(test)]
+    pub(crate) fn open_id_for_test(&self) -> Option<SnippetId> {
         self.core.borrow().open
     }
 
-    #[doc(hidden)]
-    pub fn visible_count_for_test(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn visible_count_for_test(&self) -> usize {
         self.core.borrow().visible.len()
     }
 
-    #[doc(hidden)]
-    pub fn library_len_for_test(&self) -> usize {
-        self.core.borrow().library.snippets.len()
-    }
-
-    #[doc(hidden)]
-    pub fn expand_open_for_test(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn expand_open_for_test(&self) -> bool {
         self.core.borrow().expand.is_some()
     }
 
-    #[doc(hidden)]
-    pub fn copy_for_test(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.core.borrow_mut().copy(id, doc);
-    }
-
-    #[doc(hidden)]
-    pub fn new_snippet_for_test(&mut self, doc: &mut AutoCommit) {
-        self.core.borrow_mut().new_snippet(doc);
-    }
-
-    #[doc(hidden)]
-    pub fn snippet_uses_for_test(&self, id: SnippetId) -> u32 {
-        self.core.borrow().library.get(id).map_or(0, |s| s.uses)
-    }
-
-    #[doc(hidden)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub fn last_dispatched_for_test(&self) -> Option<tilo_actions::EncodedAction> {
-        self.core.borrow().actions.last_dispatched().cloned()
-    }
-
-    /// Drive the Delete menu item exactly as a choice resolves it.
-    #[doc(hidden)]
-    pub fn delete_for_test(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.core.borrow_mut().apply(Action::Delete(id), doc);
-    }
-
-    /// Drive the favorite button the same way.
-    #[doc(hidden)]
-    pub fn toggle_favorite_for_test(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.core
-            .borrow_mut()
-            .apply(Action::ToggleFavorite(id), doc);
-    }
-
-    #[doc(hidden)]
-    pub fn sidebar_is_overlay_for_test(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn sidebar_is_overlay_for_test(&self) -> bool {
         self.shell.geometry().sidebar == SidebarPlacement::Drawer
     }
 
-    #[doc(hidden)]
-    pub fn sidebar_open_for_test(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn sidebar_open_for_test(&self) -> bool {
         self.shell.is_sidebar_open()
     }
 
-    #[doc(hidden)]
-    pub fn is_push_for_test(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_push_for_test(&self) -> bool {
         !self.shell.geometry().stack.is_empty()
     }
 
-    #[doc(hidden)]
-    pub fn push_showing_detail_for_test(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn push_showing_detail_for_test(&self) -> bool {
         self.is_push_for_test() && self.shell.front_pane() == NavPane::Content
     }
 
-    #[doc(hidden)]
-    pub fn toggle_sidebar_for_test(&mut self) {
+    #[cfg(test)]
+    pub(crate) fn toggle_sidebar_for_test(&mut self) {
         self.shell.toggle_sidebar();
         self.shell.snap();
     }
 
-    #[doc(hidden)]
-    pub fn open_first_for_test(&mut self) {
+    #[cfg(test)]
+    pub(crate) fn open_first_for_test(&mut self) {
         let first = self.core.borrow().visible.first().copied();
         if let Some(id) = first {
             self.core.borrow_mut().open_snippet(id);
-            self.settle(&mut AutoCommit::new());
+            self.settle();
         }
     }
 }
@@ -1330,13 +1197,7 @@ impl ui::widget::Decorator for SnippetsApp {
     }
 
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn ui::history_mode::capability::DocumentHistory>() {
-            request.provide::<dyn ui::history_mode::capability::DocumentHistory>(self);
-        } else if request.wants::<dyn ui::resources::PublishesResources>() {
-            request.provide::<dyn ui::resources::PublishesResources>(self);
-        } else if request.wants::<dyn ui::search::capability::SearchSource>() {
-            request.provide::<dyn ui::search::capability::SearchSource>(self);
-        } else if request.wants::<dyn ui::undo::UndoPoints>() {
+        if request.wants::<dyn ui::undo::UndoPoints>() {
             request.provide::<dyn ui::undo::UndoPoints>(self);
         } else {
             Widget::provide(&self.shell, request);
@@ -1344,15 +1205,7 @@ impl ui::widget::Decorator for SnippetsApp {
     }
 
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn ui::undo::CommittedActions>() {
-            request.provide::<dyn ui::undo::CommittedActions>(self);
-        } else if request.wants::<dyn ui::history_mode::capability::DocumentHistory>() {
-            request.provide::<dyn ui::history_mode::capability::DocumentHistory>(self);
-        } else if request.wants::<dyn ui::resources::PublishesResources>() {
-            request.provide::<dyn ui::resources::PublishesResources>(self);
-        } else if request.wants::<dyn ui::search::capability::SearchSource>() {
-            request.provide::<dyn ui::search::capability::SearchSource>(self);
-        } else if request.wants::<dyn ui::undo::UndoPoints>() {
+        if request.wants::<dyn ui::undo::UndoPoints>() {
             request.provide::<dyn ui::undo::UndoPoints>(self);
         } else {
             Widget::provide_mut(&mut self.shell, request);
@@ -1380,40 +1233,23 @@ impl ui::widget::Decorator for SnippetsApp {
             request.type_id,
             request.payload,
         )?;
-        self.settle(doc);
+        self.settle();
         Ok(answered.then(|| {
             ui::widget::ResourceOperationStart::Completed(ui::tilo_actions::ActionOutput::default())
         }))
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        {
-            let (doc, _) = ui::doc::document(state, path);
-            {
-                let mut core = self.core.borrow_mut();
-                core.sync_library(doc);
-                core.sync_body_editor();
-            }
-            self.settle(doc);
-        }
+        self.core.borrow_mut().sync_body_editor();
+        self.settle();
+        self.refresh_columns();
         Widget::sync(&mut self.shell, state, path);
     }
 
-    fn needs_idle_sync(&self) -> bool {
-        !self.core.borrow().seeded || Widget::needs_idle_sync(&self.shell)
-    }
-
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        {
-            let (doc, _) = ui::doc::document(state, path);
-            self.settle(doc);
-        }
-        // A capture's staged screen needs the window's final geometry (the
-        // host may still add its own bars in the first frames): stage it
-        // once a few layouts have given the window the same rect.
-        if self.settled_layouts >= SETTLED_LAYOUTS {
-            self.stage_pending_scenario();
-        }
+        self.settle();
+        self.refresh_columns();
+        self.stage_pending_scenario();
         self.core.borrow_mut().update_toast();
         Widget::update(&mut self.shell, state, path)
     }
@@ -1434,15 +1270,19 @@ impl ui::widget::Decorator for SnippetsApp {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         Widget::apply_layout(&mut self.shell, taffy, node, origin);
         let window = Widget::get_rect(&self.shell);
-        let mut core = self.core.borrow_mut();
-        self.settled_layouts = if core.window == window && window.area() > 0.0 {
-            self.settled_layouts.saturating_add(1)
-        } else {
-            0
-        };
-        core.window = window;
-        if let Some(open) = core.menu.as_mut() {
-            open.menu.constrain_to(window);
+        {
+            let mut core = self.core.borrow_mut();
+            if window.area() > 0.0 {
+                self.settled_layouts = self.settled_layouts.saturating_add(1);
+            }
+            core.window = window;
+            if let Some(open) = core.menu.as_mut() {
+                open.menu.constrain_to(window);
+            }
+        }
+        // A staged menu opens once its button has been laid out.
+        if self.pending_scenario.is_some() {
+            self.stage_pending_scenario();
         }
     }
 
@@ -1516,7 +1356,7 @@ impl ui::widget::Decorator for SnippetsApp {
             if let Some(mut modal) = core.expand.take() {
                 let pointer = core.pointer;
                 let outcome = modal.handle_event(event, ctx, pointer);
-                core.finish_expand(modal, outcome, ctx.state);
+                core.finish_expand(modal, outcome);
                 true
             } else if core.menu.is_some() {
                 core.route_menu_event(event, ctx);
@@ -1543,7 +1383,7 @@ impl ui::widget::Decorator for SnippetsApp {
         } else {
             Widget::handle_event(&mut self.shell, event, ctx);
         }
-        self.settle(ctx.state);
+        self.settle();
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -1657,7 +1497,7 @@ impl ui::widget::Decorator for SnippetsApp {
                     core.expand = Some(modal);
                     return false;
                 };
-                core.finish_expand(modal, outcome, doc);
+                core.finish_expand(modal, outcome);
                 Some(true)
             } else if let Some(index) = target
                 .strip_prefix("snippets.menu:")
@@ -1670,7 +1510,7 @@ impl ui::widget::Decorator for SnippetsApp {
                 match (chosen, action) {
                     (Some(chosen), ui::a11y::Action::Activate) => {
                         core.menu = None;
-                        core.apply(chosen, doc);
+                        core.apply(chosen);
                         Some(true)
                     }
                     (Some(_), _) => Some(true),
@@ -1692,15 +1532,14 @@ impl ui::widget::Decorator for SnippetsApp {
                 });
                 hit.map(|hit| {
                     if matches!(action, ui::a11y::Action::Activate) {
-                        core.apply(hit, doc);
+                        core.apply(hit);
                     }
                     matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus)
                 })
             }
         };
         if let Some(handled) = handled {
-            let (doc, _) = ui::doc::document(state, path);
-            self.settle(doc);
+            self.settle();
             return handled;
         }
         Widget::perform_semantic_action(&mut self.shell, target, action, state, path)
@@ -1729,8 +1568,8 @@ impl ui::widget::Decorator for SnippetsApp {
         }
     }
 
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.core.borrow_mut().actions.take_committed()
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn name(&self) -> &'static str {
@@ -1762,20 +1601,6 @@ impl SnippetsApp {
 }
 
 impl ui::undo::UndoPoints for SnippetsApp {
-    fn needs_commit(&self) -> bool {
-        let core = self.core.borrow();
-        ui::undo::needs_commit(&core.body_editor)
-            || core.expand.as_ref().is_some_and(ExpandModal::needs_commit)
-    }
-
-    fn on_commit(&mut self) {
-        let mut core = self.core.borrow_mut();
-        ui::undo::on_commit(&mut core.body_editor);
-        if let Some(modal) = &mut core.expand {
-            modal.on_commit();
-        }
-    }
-
     fn get_state(&self) -> Option<String> {
         let core = self.core.borrow();
         serde_json::to_string(&(core.open, core.body_editor.get_state())).ok()
@@ -1789,104 +1614,6 @@ impl ui::undo::UndoPoints for SnippetsApp {
         {
             core.body_editor.set_state(&caret);
         }
-    }
-}
-
-impl ui::search::capability::SearchSource for SnippetsApp {
-    /// Fold the library into the platform search. The provider is an O(1)
-    /// handle to the retained incremental catalogue, so every snippet is
-    /// findable by title, language, folder, tag, description or body, and
-    /// `language:` and `tag:` narrow the results.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.core.borrow().search_provider.clone())]
-    }
-}
-
-impl SnippetsApp {
-    fn find_published(
-        resource: &tilo_actions::Resource,
-        id: &str,
-    ) -> Option<tilo_actions::Resource> {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        for child in &resource.children {
-            if let Some(found) = Self::find_published(child, id) {
-                return Some(found);
-            }
-        }
-        None
-    }
-
-    pub(crate) fn published_library(&self, doc: &AutoCommit) -> tilo_actions::Resource {
-        let state = <crate::resource::Snippets as ui::tilo_resource::Resource>::read(doc)
-            .unwrap_or_default();
-        let mut root = ui::tilo_resource::publish::<crate::resource::Snippets>(
-            crate::resource::LIBRARY_RESOURCE_ID,
-            "Snippets",
-            &state,
-        );
-        root.children.extend(crate::actions::live_folder_resources(
-            &self.snippets_resource_ctx(),
-        ));
-        root
-    }
-}
-
-impl ui::resources::PublishesResources for SnippetsApp {
-    /// Standalone / `--shots` / unit tests publish the library root. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// that door — keep only the sidebar-folder create extras.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.is_hosted() {
-            return crate::actions::live_folder_resources(&self.snippets_resource_ctx());
-        }
-        vec![self.published_library(doc)]
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.is_hosted() && id == "snippets.library" {
-            return None;
-        }
-        if let Some(found) = Self::find_published(&self.published_library(doc), id) {
-            return Some(found);
-        }
-        if self.is_hosted()
-            && let Some(found) =
-                crate::actions::live_folder_resources(&self.snippets_resource_ctx())
-                    .into_iter()
-                    .find(|resource| resource.id.as_str() == id)
-        {
-            return Some(found);
-        }
-        let core = self.core.borrow();
-        if let Some(raw_id) = id.strip_prefix("snippets.snippet:") {
-            let snippet_id = uuid::Uuid::parse_str(raw_id).ok()?;
-            return core
-                .library
-                .get(snippet_id)
-                .map(crate::actions::provide_snippet_resource);
-        }
-        core.library
-            .tags()
-            .into_iter()
-            .find(|(tag, _)| crate::actions::tag_resource_id(tag) == id)
-            .map(|(tag, _)| crate::actions::provide_tag_resource(tag))
-    }
-}
-
-impl ui::history_mode::capability::DocumentHistory for SnippetsApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-}
-
-impl ui::undo::CommittedActions for SnippetsApp {
-    /// Hand the host the heads captured before an on-screen control
-    /// dispatched its action, so it records one undo boundary for it.
-    /// Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.core.borrow_mut().actions.take_committed()
     }
 }
 

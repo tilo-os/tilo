@@ -46,6 +46,11 @@ pub trait Presenter: Send {
         self.present(&frame.scene, output);
     }
 
+    /// Build the renderer before the first frame arrives. Called once on the render thread as it
+    /// starts, so device setup and shader compilation overlap the compositor's own startup
+    /// instead of delaying the first frame.
+    fn prepare(&mut self) {}
+
     /// The output was resized; default no-op for presenters with a fixed surface.
     fn resize(&mut self, _size: (u32, u32)) {}
 
@@ -130,6 +135,7 @@ impl PresentPipe {
             .spawn(move || {
                 // Flag completion however this thread leaves (normal return or unwind), so `shutdown` never waits on a thread that's already gone.
                 let _done = FinishedOnDrop(thread_finished);
+                presenter.prepare();
                 for msg in rx {
                     match msg {
                         PresentMsg::Frame {

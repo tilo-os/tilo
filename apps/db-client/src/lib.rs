@@ -14,8 +14,9 @@
 //! - [`engine_mysql`] — the MySQL/MariaDB driver: introspection + execution.
 //! - [`worker`]    — the background thread that owns the live engine and runs
 //!   every blocking connect/introspect/query off the UI thread.
-//! - [`actions`]   — the [`actions::DbAction`] CRUD of the saved-connection list,
-//!   routed through [`ui::ActionHost`] (collaborative doc state).
+//! - [`actions`]   — the [`actions::DbAction`] CRUD of the saved-connection list
+//!   and saved queries, and the SQL buffer's edits (collaborative doc state).
+//! - [`resource`]  — the workspace resource and the framework app over it.
 //! - [`sample`]    — the bundled offline sample database.
 //! - [`session`]   — runtime view state (connections, schema, results).
 //! - [`doc`]       — the CRDT-backed SQL buffer + saved-connection list.
@@ -73,19 +74,4 @@ pub mod worker;
 pub mod workspace;
 
 pub use app::DbClientApp;
-
-use ui::widget::Widget;
-
-/// Build the live app: it opens on the user's saved connections (empty on a
-/// fresh machine) and never fabricates a sample database or profiles.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(DbClientApp::new())
-}
-
-/// Build a fully-populated app for the hermetic demo path — the sole source
-/// of the bundled sample database and connection profiles.
-pub fn app_root_demo() -> Box<dyn Widget> {
-    Box::new(DbClientApp::new_demo())
-}
-
-pub use resource::{DbClient, DbClientShell, launch_spec};
+pub use resource::{DbClient, DbClientShell};

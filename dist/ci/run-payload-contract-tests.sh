@@ -40,6 +40,8 @@ python3 "$repo_root/dist/session/tests/session-report.py"
 "$repo_root/dist/rpm/test-app-store-stage.sh"
 "$repo_root/dist/rpm/test-build-target-dir.sh"
 "$repo_root/dist/rpm/test-host-update.sh"
+"$repo_root/dist/rpm/test-app-collection.sh"
+"$repo_root/dist/rpm/test-rpmbuild-route.sh"
 
 # A production import entry must name an installed native executable. This
 # fails before the import payload is added, and must remain in every builder.

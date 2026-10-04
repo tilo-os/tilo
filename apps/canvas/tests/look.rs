@@ -112,8 +112,9 @@ fn a_painted_gradient_that_starts_clear_fades_in() {
             from: [0.0, 0.0],
             to: [400.0, 0.0],
             stops: vec![(0.0, "#20304000".into()), (1.0, "#203040".into())],
+            focal: None,
         }),
-        brush: Some(20.0),
+        brush_size: Some(20.0),
         ..NewMark::new(Shape::Rect {
             x: 0.0,
             y: 0.0,
@@ -176,6 +177,8 @@ fn text_stands_on_its_baseline() {
                 align: None,
                 line_height,
                 width: None,
+                tracking: None,
+                path: None,
             })
         };
         let draw = CanvasAction::Draw(Draw {

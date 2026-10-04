@@ -84,10 +84,9 @@ impl Resource for Vpn {
         state
             .connections
             .iter()
-            .map(|connection| SearchEntry {
-                anchor: Some(format!("vpn.connection:{}", connection.id)),
-                title: connection.name.clone(),
-                text: connection.kind.as_str().to_owned(),
+            .map(|connection| {
+                SearchEntry::new(connection.name.clone(), connection.kind.as_str())
+                    .anchored(format!("vpn.connection:{}", connection.id))
             })
             .collect()
     }
@@ -101,7 +100,11 @@ impl ResourceApp for VpnShell {
     const ID: &'static str = "so.tilo.vpn";
     const TITLE: &'static str = "VPN";
     const ICON: Option<&'static str> = Some("vpn");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        scenario
+            .and_then(|name| name.starts_with("phone").then_some((520, 820)))
+            .unwrap_or((1280, 800))
+    }
 
     fn view(cx: &mut ViewCx<Vpn>) -> Element {
         cx.surface(VpnApp::for_launch())
@@ -126,10 +129,6 @@ impl ResourceApp for VpnShell {
             "phone-config",
             "phone-add",
         ]
-    }
-
-    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
-        name.starts_with("phone").then_some((520, 820))
     }
 }
 

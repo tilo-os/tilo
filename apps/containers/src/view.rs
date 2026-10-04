@@ -4,7 +4,7 @@
 //! is composed from tables, property lists, tabs and buttons. Nothing here
 //! paints, sizes or colours anything: every control says what it is and the
 //! theme decides how it looks. Interaction leaves as an [`Intent`] that the
-//! app applies to the shared document and to the engine.
+//! app applies to the window, the draft and the engine.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -20,12 +20,13 @@ use ui::widget::{
     Tone, Widget,
 };
 
-use crate::doc::{DetailTab, Section as Place};
-use crate::model::{Container, ContainerStatus, DistroBox, Engine, Image, Volume};
+use crate::model::{
+    Container, ContainerStatus, DetailTab, DistroBox, Engine, Image, Section as Place, Volume,
+};
 use crate::podman::Action;
 
 /// What a control in the window asks for. The app applies each one to the
-/// shared document and the engine, the same way for a click, a key or an
+/// window, the draft and the engine, the same way for a click, a key or an
 /// accessibility action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Intent {
@@ -45,8 +46,6 @@ pub(crate) enum Intent {
     NewVolume,
     RemoveVolume(String),
     EnterDistrobox(String),
-    /// A create-form field changed its text.
-    EditDraft(crate::doc::CreateField, String),
     SubmitCreate,
     CloseCreate,
     ConfirmAccept,
@@ -124,7 +123,11 @@ pub(crate) fn section_list(
         .selected(place_id(selected))
         .with_id("containers-sections")
         .with_accessible_name("Sections")
-        .on_select(move |id| intents.push(Intent::ShowSection(Place::parse(&id))))
+        .on_select(move |id| {
+            if let Some(place) = Place::parse(&id) {
+                intents.push(Intent::ShowSection(place));
+            }
+        })
 }
 
 /// The sidebar: the sections, and at its foot whether the engine answers.
@@ -479,7 +482,7 @@ fn verb_button(
         .with_icon(icon)
         .with_enabled(model.controls);
     let binding = (model.live_engine && verb_id != "remove")
-        .then(|| crate::published::container_resource(c, true, None))
+        .then(|| crate::published::container_resource(c, true))
         .and_then(|resource| ui::tilo_actions::ActionBinding::unit_for(&resource, verb_id).ok());
     match binding {
         Some(binding) => button.on_action(binding),

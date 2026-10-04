@@ -25,7 +25,7 @@ test-support = []
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
 agents = ["web", "dep:tilo-agent-participant"]
-web = ["dep:tilo-moq", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
+web = ["dep:tilo-moq", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
 
 [[bin]]
 name = "tilo-relay"
@@ -42,6 +42,12 @@ path = "src/enroll.rs"
 [[bin]]
 name = "tilo-home-peer-control"
 path = "src/home_peer_control.rs"
+
+# A terminal's pty carried to an environment session on a relay; the
+# device's `ush` supervisor runs it for a relay environment target.
+[[bin]]
+name = "tilo-relay-environment"
+path = "src/environment_cli.rs"
 
 # The host / relay daemon.
 #
@@ -105,6 +111,8 @@ serde.workspace = true
 serde_bytes.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
+# Install bodies carry certificates' canonical encoding as base64.
+base64 = { workspace = true, optional = true }
 
 # Signing / hashing — reused for the connection-level nonce challenge.
 getrandom.workspace = true
@@ -150,6 +158,11 @@ bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
 # Installed packages and their integrity records.
 package-store = { path = "../../packaging/package-store" }
+# The environment record a relay session is opened from.
+tilo-environment = { path = "../../runtime/environment" }
+# Members' tool builds: built as the member, signed here.
+env-tools = { path = "../../runtime/env-tools" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # Exclusive, owner-only publication of the relay's node secret.
 private-fs = { path = "../../system/private-fs" }
 clap.workspace = true
@@ -166,10 +179,21 @@ tilo-files = { path = "../../platform/tilo-files" }
 # its workspace tickets rather than asking the operator to duplicate ids.
 tilo-fs = { path = "../../system/fs" }
 collab-types = { path = "../../collab/collab-types" }
+# A node stewards the encrypted channels of the rooms it governs.
+channel-crypto = { path = "../../collab/channel-crypto" }
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+# Owners pre-admit people by the SHA-256 of a token someone else hands them.
+sha2.workspace = true
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 socket2 = "0.6"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Only the local Linux guest backend needs namespaces, Landlock and vsock.
+# Portable relay routing and remote environment sessions do not link it.
+ush = { path = "../../runtime/ush" }
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
@@ -190,6 +214,8 @@ moq-net.workspace = true
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
+# Mints an approver the way onboarding does: the root only in its record.
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 
 [[test]]
 name = "it"

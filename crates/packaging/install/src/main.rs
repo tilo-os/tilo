@@ -207,6 +207,47 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RuntimeCmd,
     },
+    /// Manage environment images: `env-runtime` and `tool` packages, the
+    /// read-only trees an environment's `/usr` and `/etc` are stacked from.
+    /// Images are never launched and have no row in `list`.
+    Image {
+        #[command(subcommand)]
+        cmd: ImageCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ImageCmd {
+    /// Add an image .tapp to the store. Its publisher must be a trusted
+    /// image publisher, an attested one, or the one --publisher names.
+    Add {
+        /// Path to the .tapp file.
+        tapp: PathBuf,
+        /// Also trust this publisher (64 hex characters) for this image.
+        #[arg(long)]
+        publisher: Option<String>,
+        /// Registry server to fetch payload blobs the .tapp does not carry
+        /// from (`<url>/blobs/<hash>`).
+        #[arg(long)]
+        payload_from: Option<String>,
+    },
+    /// List the images this device holds, system stores first.
+    List,
+    /// Print the read-only tree of an image (`tapp:<hex>`), fetching it from
+    /// the registry when no store holds it.
+    Path {
+        /// Package id, `tapp:<hex>`.
+        id: String,
+        /// Registry to fetch a missing image from; defaults to
+        /// `$TILO_REGISTRY`, else `https://apps.tilo.so`.
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Remove an image from the user's store.
+    Remove {
+        /// Package id, `tapp:<hex>`.
+        id: String,
+    },
 }
 
 /// What to do when a package's declared runtime bundle isn't installed.
@@ -1949,10 +1990,119 @@ fn main() {
         },
         Cmd::Path => print_path(),
         Cmd::Runtime { cmd } => runtime(cmd),
+        Cmd::Image { cmd } => image(cmd),
     };
     if let Err(e) = result {
         eprintln!("tilo-install: {e}");
         std::process::exit(1);
+    }
+}
+
+fn parse_image_id(raw: &str) -> Result<PackageId, Error> {
+    let text = if raw.starts_with("tapp:") {
+        raw.to_owned()
+    } else {
+        format!("tapp:{raw}")
+    };
+    text.parse()
+        .map_err(|error| Error::Parse(format!("image id {raw:?}: {error}")))
+}
+
+fn image_store() -> Result<package_store::Store, Error> {
+    let mut store = package_store::Store::new(store()?);
+    let system = package_store::SystemStore::from_env();
+    if let Some(system) = &system {
+        store = store
+            .with_system(package_store::Layout::new(&system.data_dir))
+            .with_system(package_store::Layout::new(&system.payload_dir));
+    }
+    let trust = package_store::ImageTrust::from_env(system.as_ref()).map_err(store_error)?;
+    Ok(store.with_trust(trust))
+}
+
+fn image(cmd: ImageCmd) -> Result<(), Error> {
+    match cmd {
+        ImageCmd::Add {
+            tapp,
+            publisher,
+            payload_from,
+        } => {
+            let store = image_store()?;
+            let mut trust = store.trust().clone();
+            if let Some(publisher) = publisher {
+                trust = trust.with_publisher(
+                    decode_hex_32(&publisher).map_err(Error::InvalidRequiredPublisher)?,
+                );
+            }
+            let payload = payload_from.map(app_registry::HttpBlobs::new);
+            let file = std::io::BufReader::new(fs::File::open(&tapp)?);
+            let meta = store
+                .user()
+                .install_image(
+                    file,
+                    |meta| {
+                        let attested_by = trust.check(meta).map_err(|error| error.to_string())?;
+                        Ok(Admission {
+                            pinned: false,
+                            attested_by,
+                            source: tapp.display().to_string(),
+                        })
+                    },
+                    payload.as_ref().map(|fetcher| fetcher as &dyn BlobFetcher),
+                )
+                .map_err(store_error)?;
+            println!(
+                "{} {} {} {}",
+                meta.id,
+                meta.manifest.package.kind,
+                meta.manifest.package.id,
+                meta.manifest.package.version
+            );
+            Ok(())
+        }
+        ImageCmd::List => {
+            for meta in image_store()?.images().map_err(store_error)? {
+                let runtime = meta
+                    .manifest
+                    .image
+                    .as_ref()
+                    .and_then(|image| image.runtime)
+                    .map(|runtime| format!(" on {runtime}"))
+                    .unwrap_or_default();
+                println!(
+                    "{} {} {} {}{runtime}",
+                    meta.id,
+                    meta.manifest.package.kind,
+                    meta.manifest.package.id,
+                    meta.manifest.package.version
+                );
+            }
+            Ok(())
+        }
+        ImageCmd::Path { id, registry } => {
+            let id = parse_image_id(&id)?;
+            let registry = registry
+                .or_else(|| {
+                    std::env::var("TILO_REGISTRY")
+                        .ok()
+                        .filter(|url| !url.is_empty())
+                })
+                .unwrap_or_else(|| "https://apps.tilo.so".to_owned());
+            let store = image_store()?.with_fetcher(app_registry::HttpBlobs::new(registry));
+            let tree = package_store::materialized_tree(&store, &id)
+                .map_err(|error| Error::Store(error.to_string()))?;
+            println!("{}", tree.display());
+            Ok(())
+        }
+        ImageCmd::Remove { id } => {
+            let id = parse_image_id(&id)?;
+            let removed = store()?.remove_image(id).map_err(store_error)?;
+            eprintln!(
+                "tilo-install: removed {id}; evicted {} blob(s)",
+                removed.evicted_blobs
+            );
+            Ok(())
+        }
     }
 }
 

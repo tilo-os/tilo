@@ -892,11 +892,6 @@ fn key_button_role(role: KeyRole) -> ButtonRole {
     }
 }
 
-/// The height of one recorded calculation in `theme`.
-pub(crate) fn recorded_row_height(theme: &Theme) -> f64 {
-    Metrics::of(theme).row_h
-}
-
 /// Shared presentation of a recorded calculation, without keypad/actions: the
 /// expression as a quiet caption, its result below it in tabular figures,
 /// right-aligned.

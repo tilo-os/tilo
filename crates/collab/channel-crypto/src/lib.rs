@@ -70,7 +70,9 @@ pub mod governance;
 pub mod group;
 pub mod member;
 pub mod persistence;
+pub mod signer;
 pub mod steward;
+pub mod store;
 
 pub use content::{ContentKeyring, KeyHistory};
 pub use crypto::{CIPHERSUITE, MemberKey};
@@ -82,7 +84,9 @@ pub use governance::{
 pub use group::{ChannelGroup, MemberAddition};
 pub use member::{Access, ChannelMember, MemberEvent};
 pub use persistence::VaultKey;
+pub use signer::{SignFuture, StewardSigner};
 pub use steward::{ChannelSteward, Outgoing, Reconciled};
+pub use store::{FileStewardStore, MemoryStewardStore, StewardRecord, StewardStore};
 // Re-exported so callers can take/return KeyPackage values without
 // pulling openmls into their own Cargo.toml — a version-pinning
 // hazard if openmls reshapes `KeyPackage`, flagged in the README.

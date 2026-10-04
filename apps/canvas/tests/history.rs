@@ -68,7 +68,11 @@ fn a_bad_passage_is_found_by_diff_and_undone_by_its_run() {
         .unwrap()
         .unwrap();
     assert_eq!(ids(&diff["marks"]["added"]), ["blot"], "{diff}");
-    assert_eq!(ids(&diff["marks"]["changed"]), ["sky"], "{diff}");
+    assert_eq!(
+        diff["marks"]["changed"],
+        json!({"sky": ["fill"]}),
+        "what changed about each mark: {diff}"
+    );
     assert!(ids(&diff["marks"]["removed"]).is_empty(), "{diff}");
     assert_eq!(
         diff["changed_region"],

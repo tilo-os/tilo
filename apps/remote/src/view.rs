@@ -233,6 +233,9 @@ pub(crate) struct FormFields {
     pub port: LocalState<String>,
     pub user: LocalState<String>,
     pub group: LocalState<String>,
+    /// The password or key passphrase, saved into this device's secret
+    /// store on Save and never into the document.
+    pub secret: LocalState<String>,
 }
 
 impl Default for FormFields {
@@ -243,6 +246,7 @@ impl Default for FormFields {
             port: LocalState::new(String::new()),
             user: LocalState::new(String::new()),
             group: LocalState::new(String::new()),
+            secret: LocalState::new(String::new()),
         }
     }
 }
@@ -433,7 +437,8 @@ fn machine_section(requests: &Requests, fields: &FormFields, model: &FormModel) 
     ))
 }
 
-/// Who signs in and how, where the protocol asks for either.
+/// Who signs in, how, and the password or passphrase this device keeps
+/// for it.
 fn sign_in_fields(
     requests: &Requests,
     fields: &FormFields,
@@ -462,7 +467,18 @@ fn sign_in_fields(
         section =
             section.field(Field::new("Sign in with", Choice::new(auth)).with_trailing_control());
     }
-    section
+    let (label, placeholder) = match model.auth {
+        AuthMethod::PublicKey => ("Key passphrase", "Optional"),
+        _ => ("Password", ""),
+    };
+    section.field(
+        Field::new(
+            label,
+            text_field(&fields.secret, "remote.field:secret", placeholder)
+                .with_kind(TextInputKind::Password),
+        )
+        .with_help("Kept on this device only."),
+    )
 }
 
 /// The add / edit form. Save and Cancel stand in the header row, so they

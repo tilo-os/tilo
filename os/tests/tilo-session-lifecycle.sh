@@ -32,9 +32,13 @@ for socket in \
   grep -Fqx 'WantedBy=tilo-graphical-session.target' "$socket"
 done
 grep -Fqx 'ulimit -c 0' "$wrapper"
-grep -Fq 'tilo_session_unit_file_t' "$selinux_policy"
-grep -Fqx '(allow xdm_t tilo_session_unit_file_t (service (start stop status)))' "$selinux_policy"
-grep -Fqx '(allow xdm_t home_root_t (dir (read)))' "$selinux_policy"
+# The session runs in the user's SELinux domain (pam_selinux in
+# os/etc/pam.d/greetd), never greetd's xdm_t, so the policy grants the display
+# manager nothing a user session needs.
+if grep -Eq '\(allow xdm_t (tilo_session_unit_file_t|home_root_t)' "$selinux_policy"; then
+  echo 'the policy lets the display manager domain run the user session' >&2
+  exit 1
+fi
 # The compositor verifies and repairs an existing identity on every start;
 # there is no separate pre-session identity unit to order anything after.
 if [ -e "$identity_unit" ] || grep -q 'tilo-identity\.service' "$recipient_unit"; then
@@ -185,6 +189,11 @@ if [ "${TILO_SESSION_HOLD:-0}" = 1 ]; then
   trap 'printf "desktop-term\n" >>"$TILO_SESSION_TEST_LOG"; exit 0' TERM HUP INT
   while :; do sleep 1; done
 fi
+if [ "${TILO_SESSION_HOLD_PIPE:-0}" = 1 ]; then
+  sleep 30 &
+  printf '%s\n' "$!" >"$TILO_SESSION_TEST_LOG.holder"
+  exit 9
+fi
 exit "${TILO_SESSION_DESKTOP_STATUS:-0}"
 SH
 chmod 0755 "$fake_systemctl" "$fake_dbus_update" "$fake_shell"
@@ -216,6 +225,22 @@ tail -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* sta
 [ "$(stat -c %a "$flight_dir/latest.log")" = 600 ]
 [ "$(stat -c %a "$flight_dir/frame-trace.csv")" = 600 ]
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+# A process that inherited the compositor's output must not keep the wrapper,
+# and so the session unit, alive after the compositor exits. Its own state
+# directory keeps this from rotating the record the checks below read.
+held_log="$tmp/held-log"
+set +e
+XDG_STATE_HOME="$tmp/held-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$held_log" TILO_SESSION_HOLD_PIPE=1 \
+  timeout 20 "$test_wrapper" --backend headless >/dev/null
+held_status=$?
+set -e
+if [ -s "$held_log.holder" ]; then
+  kill "$(cat "$held_log.holder")" 2>/dev/null || true
+fi
+[ "$held_status" = 9 ]
+tail -n 1 "$tmp/held-state/tilo/session-logs/latest.log" \
+  | grep -Eq '^tilo-flight-record-v1 end=.* status=9 logout_request=no$'
 cat >"$tmp/expected" <<'EOF'
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
 dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE

@@ -198,7 +198,7 @@ impl CalcModel {
 
     /// The invalid-expression state a capture shows: a truthful parse error
     /// under the expression.
-    pub fn apply_error_demo(&mut self) {
+    pub(crate) fn apply_error_demo(&mut self) {
         self.mode = Mode::Calc;
         self.expr = "sqrt(".into();
         self.after_equals = false;

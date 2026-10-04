@@ -503,6 +503,7 @@ settings-users-protection-file = In einer privaten Datei gespeichert
 settings-users-protection-hardware-backed = Durch Hardware geschützt
 settings-users-protection-legacy = Muss geschützt werden
 settings-users-protection-unavailable = Nicht verfügbar
+settings-users-protection-device-certificate = Signiert mit dem Zertifikat dieses Geräts
 settings-users-placeholder-full-name = Vollständiger Name
 settings-users-placeholder-username = anmeldename
 settings-users-placeholder-password = Mindestens 10 Zeichen

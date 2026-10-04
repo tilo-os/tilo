@@ -249,6 +249,13 @@ impl WindowState {
         self.frame_callback_state = FrameCallbackState::None;
     }
 
+    /// Ask for a frame callback for a frame drawn elsewhere, leaving the
+    /// redraw throttle alone: its `done` only marks a callback received.
+    pub fn announce_frame(&mut self) {
+        let surface = self.window.wl_surface();
+        surface.frame(&self.queue_handle, surface.clone());
+    }
+
     /// Request a frame callback if we don't have one for this window in flight.
     pub fn request_frame_callback(&mut self) {
         let surface = self.window.wl_surface();

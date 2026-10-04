@@ -496,6 +496,11 @@ pub struct RetainedGpuTarget {
     last_sparse_render_stats: Option<vello::SparseRenderStats>,
 }
 
+/// Most extra devices compiling a CPU renderer's pipelines in parallel. Each opens a device and
+/// builds every pipeline before compiling its share, so beyond a few that setup outweighs the
+/// split.
+const PRECOMPILE_HELPERS: usize = 8;
+
 impl RetainedGpuTarget {
     /// Construct an offscreen target on the supplied context-owned device and queue.
     ///
@@ -511,7 +516,8 @@ impl RetainedGpuTarget {
             &gpu.device,
             RendererOptions {
                 use_cpu: false,
-                antialiasing_support: AaSupport::all(),
+                // Every frame renders with area anti-aliasing; MSAA pipelines would go unused.
+                antialiasing_support: AaSupport::area_only(),
                 num_init_threads: None,
                 pipeline_cache: None,
             },
@@ -551,6 +557,16 @@ impl RetainedGpuTarget {
             last_clip_single_group_sparse_attempts: 0,
             last_sparse_render_stats: None,
         };
+        if gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu {
+            // Lavapipe compiles each pipeline on its first dispatch: on a cold shader cache,
+            // seconds of one-at-a-time work the warm-up below would add to the first frame.
+            let helpers = std::thread::available_parallelism()
+                .map_or(1, |cores| cores.get().saturating_sub(1).max(1))
+                .min(PRECOMPILE_HELPERS);
+            target
+                .renderer
+                .precompile_pipelines(&target.device, &target.queue, helpers, &|| gpu.open_peer());
+        }
         target.warm_pipelines()?;
         Ok(target)
     }
@@ -4330,6 +4346,22 @@ impl VelloDrmBridge {
         self.target.renderer.sparse_segment_row_mask_available()
     }
 
+    /// Render with a fixed per-tile segment order, so repeated paints of one
+    /// scene are bit-identical. For exact-pixel oracles.
+    ///
+    /// # Errors
+    /// Returns [`BridgeError::Renderer`] if the shader set fails to compile.
+    #[doc(hidden)]
+    pub fn enable_canonical_segment_order(&mut self) -> Result<(), BridgeError> {
+        self.invalidate_retained();
+        let RetainedGpuTarget {
+            device, renderer, ..
+        } = &mut self.target;
+        renderer
+            .enable_canonical_segment_order(device)
+            .map_err(|e| BridgeError::Renderer(format!("{e:?}")))
+    }
+
     /// Whether canonical segment ordering was requested for this renderer.
     #[doc(hidden)]
     pub fn canonical_segment_order_requested(&self) -> bool {
@@ -5732,6 +5764,9 @@ mod tests {
     /// animation at 5K) used to panic inside `Device::poll` and take the session to a black
     /// screen. The reset here is the driver's: every fence wait answers `DeviceError::Lost`, and
     /// wgpu-core invalidates the device and runs its lost callback as it does for a real one.
+    // This injects a Vulkan fence failure in the Linux DRM renderer.
+    // The backend-independent device-destruction tests remain available on macOS.
+    #[cfg(target_os = "linux")]
     #[test]
     fn gpu_target_a_gpu_reset_mid_session_is_survived_by_a_new_bridge() {
         const SIZE: u32 = 64;

@@ -184,6 +184,7 @@ fn start(cert: &DeviceCert, surface: u64) -> NeighbourMsg {
         hdr_static_metadata: None,
         bit_depth: 0,
         app_id: "org.chromium.Chromium".into(),
+        tab: 0,
     }
 }
 
@@ -226,6 +227,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
                 recipient_user_public_key: Some(guest.user_public_key),
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+                inviter_name: None,
             },
         )
         .await
@@ -286,6 +288,20 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
     let maintaining = tokio::spawn(maintain_legacy(legacy.clone(), relay.web_context().clone()));
     let token = browser(addr, &owner_key, &owner).await;
     let guest_token = browser(addr, &guest_key, &guest).await;
+    // A member learns the device of the session beside the node, once the
+    // relay names one.
+    let node = |token| async move {
+        let (code, body) = post(addr, "/node", Some(token), Vec::new()).await;
+        assert_eq!(code, 200);
+        postcard::from_bytes::<tilo_relay_protocol::web::NodeInfo>(&body).unwrap()
+    };
+    assert_eq!(node(token).await.session, None);
+    assert_eq!(post(addr, "/node", None, Vec::new()).await.0, 401);
+    relay.set_node_session(owner.device_public_key);
+    assert_eq!(
+        node(guest_token).await.session,
+        Some(owner.device_public_key)
+    );
     let owner_native = native(&relay, &owner_key, &owner, room.workspace_id).await;
     let guest_native = native(&relay, &guest_key, &guest, room.workspace_id).await;
     let grant = |surface| NeighbourMsg::PermissionGrant {
@@ -378,7 +394,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         )
         .await
         .0,
-        501
+        204
     );
     assert_eq!(
         post(
@@ -391,8 +407,9 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         .0,
         204
     );
-    tilo_test_env::within("directed native input", async {
-        loop {
+    let delivered = tilo_test_env::within("directed native input", async {
+        let mut delivered = Vec::new();
+        while delivered.len() < 2 {
             if let Some(Envelope::Presence { payload, .. }) = owner_native.recv().await {
                 let presence = crate::AttributedPresence::decode(&payload).unwrap();
                 if let Ok(NeighbourMsg::RemoteInput { surface, event, .. }) =
@@ -400,16 +417,20 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
                 {
                     assert_eq!(presence.author, host.device_public_key);
                     assert_eq!(surface, 7);
-                    assert_eq!(
-                        postcard::from_bytes::<wire::InputEvent>(&event).unwrap(),
-                        wire::InputEvent::PointerEnter { surface: 7 }
-                    );
-                    break;
+                    delivered.push(postcard::from_bytes::<wire::InputEvent>(&event).unwrap());
                 }
             }
         }
+        delivered
     })
     .await;
+    assert_eq!(
+        delivered,
+        [
+            wire::InputEvent::PointerAxis { dx: 0.0, dy: 1.0 },
+            wire::InputEvent::PointerEnter { surface: 7 }
+        ]
+    );
     // The other native member must never receive private keyboard/input payloads.
     while let Ok(Some(envelope)) =
         tokio::time::timeout(Duration::from_millis(50), guest_native.recv()).await

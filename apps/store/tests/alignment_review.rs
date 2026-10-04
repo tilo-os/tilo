@@ -84,8 +84,8 @@ fn close(a: f64, b: f64, what: &str) {
 }
 
 fn staged(scenario: &str) -> StoreApp {
-    let mut app = StoreApp::new();
-    store::shots::stage(&mut app, Some(scenario));
+    let mut app = store::fixture::seeded_app();
+    app.stage_scene(Some(scenario));
     app
 }
 
@@ -93,7 +93,7 @@ fn staged(scenario: &str) -> StoreApp {
 #[test]
 fn catalogue_toolbar_and_sections_share_one_column() {
     let theme = ui::Theme::dark();
-    let app = lay_out(store::shots::seeded_app(), (1200.0, 800.0));
+    let app = lay_out(store::fixture::seeded_app(), (1200.0, 800.0));
     let summary = first_named(&*app, "6 apps from 2 sources");
     let search = by_test_id(&*app, "search-open");
     let refresh = by_test_id(&*app, "store.refresh");
@@ -137,7 +137,7 @@ fn catalogue_toolbar_and_sections_share_one_column() {
 /// The catalogue has no title of its own, no permanent status pill, and its toolbar fits a narrow window.
 #[test]
 fn catalogue_has_no_title_no_status_pill_and_a_toolbar_that_fits() {
-    let app = lay_out(store::shots::seeded_app(), (520.0, 820.0));
+    let app = lay_out(store::fixture::seeded_app(), (520.0, 820.0));
     let mut names = Vec::new();
     walk(&*app, &mut |w| {
         if let Some(name) = w.accessibility().and_then(|node| node.name) {
@@ -254,7 +254,7 @@ fn details_page_aligns_identity_and_facts() {
 #[test]
 fn pages_share_one_leading_edge_and_reading_pages_one_trailing_edge() {
     for width in [800.0, 1200.0] {
-        let catalogue = lay_out(store::shots::seeded_app(), (width, 800.0));
+        let catalogue = lay_out(store::fixture::seeded_app(), (width, 800.0));
         let edge = first_named(&*catalogue, "6 apps from 2 sources").x0;
         for (scenario, title, back_id) in [
             ("detail", "Notes", "store.detail.back"),

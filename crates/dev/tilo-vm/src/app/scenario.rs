@@ -54,6 +54,23 @@ fn is_disk_unlock_prompt(text: &str) -> bool {
     text.contains("unlock tilo") && text.contains("enter your disk passphrase or recovery key")
 }
 
+// Older receipts predate these flags and used scenario-tilo plus medium defaults.
+fn check_retained_preferences(saved: &Value, current: &Value) -> Result<(), String> {
+    for key in ["hostname", "keyboard_layout", "timezone", "locale"] {
+        let legacy = if key == "hostname" {
+            json!("scenario-tilo")
+        } else {
+            Value::Null
+        };
+        if saved.get(key).unwrap_or(&legacy) != current.get(key).unwrap_or(&legacy) {
+            return Err(format!(
+                "retained scenario {key} differs; use its original inputs"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Everything one run needs to know, settled before anything boots.
 struct Plan {
     root: PathBuf,
@@ -65,6 +82,10 @@ struct Plan {
     resume: bool,
     unlock: Unlock,
     username: String,
+    hostname: String,
+    keyboard_layout: Option<String>,
+    timezone: Option<String>,
+    locale: Option<String>,
     graphics: crate::scenario::Graphics,
     cycle: String,
     out: PathBuf,
@@ -200,6 +221,10 @@ impl Plan {
             "filesystem": self.filesystem,
             "encrypt": self.unlock.name(),
             "username": self.username,
+            "hostname": self.hostname,
+            "keyboard_layout": self.keyboard_layout,
+            "timezone": self.timezone,
+            "locale": self.locale,
             "graphics": self.graphics,
             "cycle": self.cycle,
             "artifacts": self.out,
@@ -297,6 +322,8 @@ struct VmInstallProof {
     installed_update_origin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     selected_target: Option<VmSelectedTarget>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    installer_code_override_sha256: Option<String>,
     target_uki_sha256: String,
     disk_guid: String,
     partuuids: VmPartuuids,
@@ -374,6 +401,14 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
     }
     let proof: VmInstallProof = serde_json::from_str(payload)
         .map_err(|error| format!("invalid VM install proof: {error}"))?;
+    if proof
+        .installer_code_override_sha256
+        .as_deref()
+        .is_some_and(|digest| !lowercase_hex(digest, 64))
+    {
+        return Err("invalid local installer code refresh digest".into());
+    }
+
     if proof.architecture != "arm64"
         || !proof
             .booted_image_digest
@@ -625,6 +660,121 @@ fn check_install_proof(
 }
 
 #[cfg(windows)]
+fn installer_code_phase(cycle: &std::path::Path, phase: Value) -> Result<(), String> {
+    let lock = cycle.join("installer-code-window.lock");
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let descriptor = loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+        {
+            Ok(descriptor) => break descriptor,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+                    && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => return Err(format!("cannot close installer refresh window: {error}")),
+        }
+    };
+    let result = std::fs::write(cycle.join("installer-code-phase.json"), phase.to_string())
+        .map_err(|error| error.to_string());
+    drop(descriptor);
+    std::fs::remove_file(lock).map_err(|error| error.to_string())?;
+    result
+}
+
+#[cfg(windows)]
+fn installer_code_runtime(plan: &Plan, proof: &VmInstallProof) -> Result<Value, String> {
+    let read = |name: &str, limit: u64| -> Result<Value, String> {
+        let path = plan.cycle_dir.join(name);
+        let size = std::fs::metadata(&path)
+            .map_err(|error| error.to_string())?
+            .len();
+        if size == 0 || size > limit {
+            return Err("installer code runtime evidence is empty or oversized".into());
+        }
+        serde_json::from_slice(&std::fs::read(path).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())
+    };
+    let channel = read("installer-code-channel.json", 8192)?;
+    if channel["schema"] != "tilo.installer-code-runtime.v1" {
+        return Err("installer code channel has an invalid host receipt".into());
+    }
+    let history_path = plan.cycle_dir.join("installer-code-history.json");
+    let history = if history_path.exists() {
+        read("installer-code-history.json", 262144)?
+    } else {
+        json!([])
+    };
+    check_installer_code_runtime(
+        &channel,
+        &history,
+        proof.installer_code_override_sha256.as_deref(),
+    )
+}
+
+#[cfg(windows)]
+fn check_installer_code_runtime(
+    channel: &Value,
+    history: &Value,
+    guest_hash: Option<&str>,
+) -> Result<Value, String> {
+    let fields = channel
+        .as_object()
+        .ok_or("invalid host code channel object")?;
+    if fields.len() != 4
+        || !["schema", "enabled", "port", "source"]
+            .iter()
+            .all(|key| fields.contains_key(*key))
+        || channel["schema"] != "tilo.installer-code-runtime.v1"
+    {
+        return Err("incomplete host code channel receipt".into());
+    }
+    let enabled = channel["enabled"]
+        .as_bool()
+        .ok_or("missing host code channel state")?;
+    let rows = history
+        .as_array()
+        .ok_or("invalid host code refresh history")?;
+    if rows.len() > 32 {
+        return Err("host code refresh history exceeds its bound".into());
+    }
+    if enabled {
+        if !channel["port"]
+            .as_u64()
+            .is_some_and(|port| (1024..=65535).contains(&port))
+            || !channel["source"]
+                .as_str()
+                .is_some_and(|source| !source.is_empty())
+        {
+            return Err("invalid opted-in host code channel endpoint".into());
+        }
+        let latest = rows
+            .last()
+            .ok_or("opted-in code channel has no host refresh attempt")?;
+        let hash = latest
+            .pointer("/requested/sha256")
+            .and_then(Value::as_str)
+            .ok_or("missing host refresh content hash")?;
+        if !lowercase_hex(hash, 64) || latest["acknowledged"] != true || guest_hash != Some(hash) {
+            return Err(
+                "guest installer code evidence differs from the host refresh history".into(),
+            );
+        }
+    } else if !rows.is_empty()
+        || guest_hash.is_some()
+        || !channel["port"].is_null()
+        || !channel["source"].is_null()
+    {
+        return Err("clean installer scenario contains local code override evidence".into());
+    }
+    Ok(json!({"schema":"tilo.installer-code-runtime.v1", "channel":channel, "history":history}))
+}
+
+#[cfg(windows)]
 fn verify_external_target(
     plan: &Plan,
     expected_final_partitions: u64,
@@ -847,6 +997,10 @@ impl App {
             resume: args.resume,
             unlock: args.encrypt,
             username: username.to_owned(),
+            hostname: args.hostname.clone(),
+            keyboard_layout: args.keyboard_layout.clone(),
+            timezone: args.timezone.clone(),
+            locale: args.locale.clone(),
             graphics: args.graphics,
             cycle_dir: storage.join("vm-cycles").join(&cycle),
             run: runtime.join(format!("tilo-vm-{cycle}")),
@@ -882,6 +1036,8 @@ impl App {
                     ));
                 }
             }
+            check_retained_preferences(&saved, &current)
+                .map_err(|message| failed("resume", message, &plan))?;
         }
         if args.dry_run {
             let plan_json = plan.describe();
@@ -1124,6 +1280,51 @@ impl App {
             self.receipt
                 .record("boot-installer", boot.elapsed().as_secs_f64());
 
+            #[cfg(windows)]
+            if std::env::var("TILO_INSTALLER_CODE_PAUSE").as_deref() == Ok("1") {
+                if std::env::var_os("TILO_INSTALLER_CODE_FROM").is_none() {
+                    return Err(failed(
+                        "installer-code-pause",
+                        "pause requires the explicit local code channel",
+                        plan,
+                    ));
+                }
+                let resume_file = plan.out.join("continue-install");
+                if resume_file.exists() {
+                    return Err(failed(
+                        "installer-code-pause",
+                        "stale continue-install marker; use a fresh artifact directory",
+                        plan,
+                    ));
+                }
+                installer_code_phase(
+                    &plan.cycle_dir,
+                    json!({"phase":"paused", "resume":resume_file}),
+                )
+                .map_err(|error| failed("installer-code-pause", error, plan))?;
+                say(&format!(
+                    "development installer ready for helper refresh; create {} to continue",
+                    resume_file.display()
+                ));
+                let deadline = after(plan.install_timeout);
+                while !resume_file.is_file() {
+                    if Instant::now() >= deadline {
+                        return Err(failed(
+                            "installer-code-pause",
+                            "development pause timed out",
+                            plan,
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+
+            #[cfg(windows)]
+            if std::env::var_os("TILO_INSTALLER_CODE_FROM").is_some() {
+                installer_code_phase(&plan.cycle_dir, json!({"phase":"closed"}))
+                    .map_err(|error| failed("installer-code-pause", error, plan))?;
+            }
+
             let install = Instant::now();
             let choices = Choices {
                 layout: plan.layout,
@@ -1135,7 +1336,10 @@ impl App {
                 } else {
                     plan.username.clone()
                 },
-                hostname: "scenario-tilo".into(),
+                hostname: plan.hostname.clone(),
+                keyboard_layout: plan.keyboard_layout.clone(),
+                timezone: plan.timezone.clone(),
+                locale: plan.locale.clone(),
                 account_secret: crate::scenario::Secret::new(credentials.account.expose()),
                 disk_secret: credentials
                     .disk
@@ -1225,7 +1429,10 @@ impl App {
                 .map_err(|error| failed("verify-install-proof", error.to_string(), plan))?;
             let proof = parse_install_proof(&bytes)
                 .map_err(|error| failed("verify-install-proof", error, plan))?;
-            let checked = check_install_proof(&proof, source_check, installed.composefs.as_deref())
+            let mut checked =
+                check_install_proof(&proof, source_check, installed.composefs.as_deref())
+                    .map_err(|error| failed("verify-install-proof", error, plan))?;
+            checked["installer_code_runtime"] = installer_code_runtime(plan, &proof)
                 .map_err(|error| failed("verify-install-proof", error, plan))?;
             Some(checked)
         } else {
@@ -1557,6 +1764,29 @@ fn wait_for_app(console: &mut SocketConsole, app: &str, limit: Duration) -> Opti
 #[cfg(test)]
 mod tests {
     #[test]
+    fn retained_install_preferences_preserve_legacy_defaults_and_reject_changes() {
+        let legacy = serde_json::json!({});
+        let defaults = serde_json::json!({"hostname":"scenario-tilo", "keyboard_layout":null, "timezone":null, "locale":null});
+        super::check_retained_preferences(&legacy, &defaults).unwrap();
+        let mut configured = plan(Layout::Erase);
+        configured.hostname = "laptop".into();
+        configured.keyboard_layout = Some("German (QWERTZ)".into());
+        configured.timezone = Some("Europe/Berlin".into());
+        let requested = configured.describe();
+        super::check_retained_preferences(&requested, &requested).unwrap();
+        for key in ["hostname", "keyboard_layout", "timezone", "locale"] {
+            let mut changed = requested.clone();
+            changed[key] = serde_json::json!("different");
+            assert!(
+                super::check_retained_preferences(&requested, &changed)
+                    .unwrap_err()
+                    .contains(key)
+            );
+        }
+        assert!(super::check_retained_preferences(&legacy, &requested).is_err());
+    }
+
+    #[test]
     fn disk_secret_requires_the_visible_encrypted_root_prompt() {
         assert!(super::is_disk_unlock_prompt(
             "Unlock Tilo\n\nEnter your disk passphrase or recovery key"
@@ -1779,6 +2009,51 @@ mod tests {
 
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn installer_code_host_history_cannot_be_omitted_by_the_guest() {
+        let clean = json!({"schema":"tilo.installer-code-runtime.v1", "enabled":false,"port":null,"source":null});
+        assert!(super::check_installer_code_runtime(&clean, &json!([]), None).is_ok());
+        let hash = "a".repeat(64);
+        let history = json!([{"requested":{"sha256":hash},"acknowledged":true}]);
+        let enabled = json!({"schema":"tilo.installer-code-runtime.v1", "enabled":true,"port":2222,"source":"worktree"});
+        assert!(super::check_installer_code_runtime(&enabled, &history, Some(&hash)).is_ok());
+        assert!(super::check_installer_code_runtime(&enabled, &history, None).is_err());
+        assert!(super::check_installer_code_runtime(&enabled, &json!([]), Some(&hash)).is_err());
+        assert!(super::check_installer_code_runtime(&clean, &history, None).is_err());
+        assert!(super::check_installer_code_runtime(&clean, &json!([]), Some(&hash)).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn installer_code_window_closes_after_inflight_transport_releases_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let cycle = directory.path().to_path_buf();
+        let phase = cycle.join("installer-code-phase.json");
+        std::fs::write(&phase, r#"{"phase":"paused"}"#).unwrap();
+        let lock = cycle.join("installer-code-window.lock");
+        let held = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+            .unwrap();
+        let worker = std::thread::spawn(move || {
+            super::installer_code_phase(&cycle, json!({"phase":"closed"}))
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(
+            std::fs::read_to_string(&phase).unwrap(),
+            r#"{"phase":"paused"}"#
+        );
+        drop(held);
+        std::fs::remove_file(lock).unwrap();
+        worker.join().unwrap().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(phase).unwrap(),
+            r#"{"phase":"closed"}"#
+        );
+    }
+
     fn plan(layout: Layout) -> Plan {
         Plan {
             root: PathBuf::from("/w"),
@@ -1790,6 +2065,10 @@ mod tests {
             resume: false,
             unlock: Unlock::Passphrase,
             username: "scenario".into(),
+            hostname: "scenario-tilo".into(),
+            keyboard_layout: None,
+            timezone: None,
+            locale: None,
             graphics: crate::scenario::Graphics::Software,
             cycle: "scenario-install-x".into(),
             out: PathBuf::from("/w/target/tilo-vm-scenarios/scenario-install-x"),

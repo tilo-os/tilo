@@ -5,7 +5,7 @@
 //! an application could imitate.
 //!
 //! The decisions all live in [`crate::onboarding::Onboarding`]; this
-//! file is only the composition, built from shared `ui` widgets (`Card`,
+//! file is only the composition, built from shared `ui` widgets (`Section`,
 //! `Banner`, `Text`, `Button`, `Checkbox`) so the ceremony inherits the
 //! system theme, focus order and accessibility like the rest of the desktop.
 //!
@@ -15,12 +15,14 @@
 //! allowed unit as Settings, and never blocks setup: the download continues in
 //! the background and the result arrives as a notification.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Read as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -32,8 +34,8 @@ use taffy::{NodeId, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::theme::Theme;
 use ui::widget::{
-    Banner, Button, Checkbox, Column, FilePicker, FilePickerMode, ProgressBar, Row, Scrollable,
-    Section, Spacer, Text, TextInput, Widget,
+    Banner, Button, ButtonRole, Checkbox, Column, FilePicker, FilePickerMode, IconWidget, ListRow,
+    ProgressBar, Row, Scrollable, Section, Spacer, Spinner, Text, TextInput, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
@@ -48,7 +50,6 @@ use crate::onboarding::{
 };
 use crate::shell::i18n::{t, t_args};
 use os_actions::codec_pack::{CodecAction, CodecPackStatus, PackState};
-use ui::widget::ButtonRole;
 
 /// How often setup looks for news from its background work (codec install,
 /// nearby pairing) while that work runs.
@@ -65,9 +66,9 @@ const ACCESSIBLE_PANEL_HEIGHT: f32 = 672.0;
 /// them enough preferred height to avoid needless scrolling on a wide laptop;
 /// flex shrink still preserves the safety gutter on a compact display.
 const DENSE_PANEL_PREFERRED_HEIGHT: f32 = 560.0;
-/// The introduction gets a lower cap than the recovery and completion stages;
-/// it still shrinks to its contents.
-const INTRO_PANEL_HEIGHT: f32 = 500.0;
+/// The two choice screens get a lower cap than the recovery and completion
+/// stages; they still shrink to their contents.
+const INTRO_PANEL_HEIGHT: f32 = 520.0;
 /// Completion is a hand-off surface, not a compact alert. Give its title,
 /// confirmation, next-step explanation, and backup guidance a stable canvas
 /// on ordinary laptop displays; the inner viewport still scrolls when large
@@ -257,7 +258,10 @@ pub enum OnboardingContext {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnboardingVisualState {
     Intro,
-    Connect,
+    Existing,
+    Nearby,
+    NearbyCode,
+    Restore,
     Protect,
     Backup,
     BackupVerified,
@@ -286,7 +290,9 @@ pub fn host_desktop_intro_body() -> String {
 }
 
 pub const KEY_BEGIN: &str = "onboarding.begin";
-pub const KEY_CONNECT: &str = "onboarding.connect";
+pub const KEY_EXISTING: &str = "onboarding.existing";
+pub const KEY_CHOOSE_NEARBY: &str = "onboarding.existing.nearby";
+pub const KEY_CHOOSE_RESTORE: &str = "onboarding.existing.restore";
 pub const KEY_BACK: &str = "onboarding.back";
 pub const KEY_CONNECT_PATH: &str = "onboarding.connect.path";
 pub const KEY_CONNECT_BROWSE: &str = "onboarding.connect.browse";
@@ -450,6 +456,18 @@ const START_CARDS: &[(&str, &str)] = &[
     ("onboarding-tour-check-title", "onboarding-tour-check-body"),
 ];
 
+/// The keyboard and gesture route a navigation card teaches, shown under
+/// its title.
+fn tour_shortcut(card_title: &str) -> Option<&'static str> {
+    match card_title {
+        "onboarding-tour-search-title" => Some("onboarding-tour-search-keys"),
+        "onboarding-tour-search-title-mac" => Some("onboarding-tour-search-keys-mac"),
+        "onboarding-tour-overview-title" => Some("onboarding-tour-overview-keys"),
+        "onboarding-tour-move-title" => Some("onboarding-tour-move-keys"),
+        _ => None,
+    }
+}
+
 impl TourPage {
     fn number(self) -> u8 {
         match self {
@@ -584,6 +602,16 @@ pub struct OnboardingView {
     identity_dir: Option<PathBuf>,
     nearby_child: Option<Child>,
     nearby_status: Option<String>,
+    /// The verification code both devices show while pairing waits for
+    /// approval.
+    nearby_code: Option<String>,
+    /// Review renderer only: draw the nearby screen as if pairing were
+    /// running, without starting the privileged helper.
+    nearby_active_for_snapshot: bool,
+    /// The keys of the choice rows activated since the last sync. A row
+    /// reports its activation here; sync turns each into the same model key
+    /// a button would have set.
+    choice_requests: Rc<RefCell<Vec<&'static str>>>,
     nearby_status_path: Option<PathBuf>,
     codec_setup: Option<CodecSetup>,
     /// Whether this run offers the media codecs step: the pack is available
@@ -734,7 +762,7 @@ impl OnboardingView {
             view = view.with_codec_setup(setup);
         }
         if recovery_only && view.flow.screen() == Screen::Intro {
-            view.flow.begin_connect();
+            view.flow.begin_existing();
         }
         view.restore_pending_progress_from_disk();
         view
@@ -818,6 +846,9 @@ impl OnboardingView {
             identity_dir: None,
             nearby_child: None,
             nearby_status: None,
+            nearby_code: None,
+            nearby_active_for_snapshot: false,
+            choice_requests: Rc::default(),
             nearby_status_path: None,
             codec_setup: None,
             codec_step_offered: false,
@@ -1095,9 +1126,9 @@ impl OnboardingView {
     pub fn secret_rect(&self) -> Option<Rect> {
         let shows_secret = self.tour_page.is_none()
             && match self.flow.screen() {
-                Screen::Connect => true,
+                Screen::Nearby | Screen::Restore => true,
                 Screen::Done => !self.identity_ready_page,
-                Screen::Intro | Screen::NoRecovery => false,
+                Screen::Intro | Screen::Existing | Screen::NoRecovery => false,
             };
         (shows_secret && self.rect.area() > 0.0).then_some(self.rect)
     }
@@ -1253,6 +1284,10 @@ impl OnboardingView {
     }
 
     #[doc(hidden)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fixture arm per reviewed onboarding state"
+    )]
     pub fn set_visual_state_for_snapshot(&mut self, state: OnboardingVisualState) {
         self.flow = Onboarding::new();
         self.error = None;
@@ -1266,14 +1301,30 @@ impl OnboardingView {
         self.tour_only = false;
         self.codec_page = false;
         self.codec_error = None;
+        self.nearby_status = None;
+        self.nearby_code = None;
+        self.nearby_active_for_snapshot = false;
         let minted = MintedIdentity {
             fingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
             path: PathBuf::from("/var/lib/tilo/identities/primary.json"),
         };
         match state {
             OnboardingVisualState::Intro => {}
-            OnboardingVisualState::Connect | OnboardingVisualState::RestoreError => {
-                self.flow.begin_connect();
+            OnboardingVisualState::Existing => self.flow.begin_existing(),
+            OnboardingVisualState::Nearby | OnboardingVisualState::NearbyCode => {
+                self.flow.begin_existing();
+                self.flow.choose_nearby();
+                self.nearby_active_for_snapshot = true;
+                if state == OnboardingVisualState::NearbyCode {
+                    self.nearby_code = Some("482913".into());
+                    self.nearby_status = Some(t("onboarding-nearby-code"));
+                } else {
+                    self.nearby_status = Some(t("onboarding-nearby-waiting"));
+                }
+            }
+            OnboardingVisualState::Restore | OnboardingVisualState::RestoreError => {
+                self.flow.begin_existing();
+                self.flow.choose_restore();
                 if state == OnboardingVisualState::RestoreError {
                     self.error = Some(t("onboarding-snapshot-restore-error"));
                 }
@@ -1366,7 +1417,8 @@ impl OnboardingView {
         let total = self.total_steps();
         let (step, stage) = match self.flow.screen() {
             Screen::Intro => (1, t("onboarding-stage-choose")),
-            Screen::Connect => (2, t("onboarding-stage-restore")),
+            Screen::Existing | Screen::Nearby => (2, t("onboarding-stage-connect")),
+            Screen::Restore => (2, t("onboarding-stage-restore")),
             Screen::NoRecovery => (2, t("onboarding-stage-protect")),
             Screen::Done if self.identity_ready_page && self.codec_page => {
                 (4, t("onboarding-stage-media"))
@@ -1376,7 +1428,9 @@ impl OnboardingView {
         };
         let body: Box<dyn Widget> = match self.flow.screen() {
             Screen::Intro => self.intro(theme),
-            Screen::Connect => self.connect(theme),
+            Screen::Existing => self.existing(theme),
+            Screen::Nearby => self.nearby(theme),
+            Screen::Restore => self.restore(theme),
             Screen::NoRecovery => self.no_recovery(theme),
             Screen::Done if self.identity_ready_page && self.codec_page => self.codecs(theme),
             Screen::Done if self.identity_ready_page => self.done(theme, compact_ready),
@@ -1408,11 +1462,7 @@ impl OnboardingView {
                     .push(Box::new(
                         Text::new(&t_args(
                             "onboarding-progress-stage",
-                            &[
-                                ("step", step.into()),
-                                ("total", total.into()),
-                                ("stage", stage.clone().into()),
-                            ],
+                            &[("step", step.into()), ("total", total.into())],
                         ))
                         .with_id("onboarding.progress.stage")
                         .with_role(ui::tokens::typography::TextRole::Label)
@@ -1457,6 +1507,7 @@ impl OnboardingView {
         let footer_gap = composition_gap;
         let backup_in_scroll = self.flow.screen() == Screen::Done && !self.identity_ready_page;
         let acknowledgement_footer = matches!(self.flow.screen(), Screen::NoRecovery);
+        let choice_footer = self.choice_footer_height(theme);
         let backup_form_visible =
             backup_in_scroll && (!self.backup_was_verified || self.backup_copy_form_open);
         let backup_acknowledgement_visible =
@@ -1473,6 +1524,8 @@ impl OnboardingView {
                 } else {
                     0.0
                 }
+        } else if let Some(height) = choice_footer {
+            height
         } else {
             FOOTER_HEIGHT
                 + if acknowledgement_footer {
@@ -1486,7 +1539,10 @@ impl OnboardingView {
         let fill_panel = !backup_in_scroll
             && (theme.text_scale > 1.0
                 || theme.name.eq_ignore_ascii_case("high contrast")
-                || matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
+                || matches!(
+                    self.flow.screen(),
+                    Screen::Intro | Screen::Nearby | Screen::Restore | Screen::NoRecovery
+                )
                 || self.flow.screen() == Screen::Done);
         let mut scroll = Scrollable::new_vertical();
         if backup_in_scroll {
@@ -1612,7 +1668,112 @@ impl OnboardingView {
         )
     }
 
+    /// Pairing with a nearby device is under way.
+    fn nearby_active(&self) -> bool {
+        self.nearby_child.is_some() || self.nearby_active_for_snapshot
+    }
+
+    /// The ways forward from a choice screen, one row per flow.
+    fn choices(&self) -> Option<[Choice; 2]> {
+        match self.flow.screen() {
+            Screen::Intro => Some([
+                Choice {
+                    id: "onboarding.existing.card",
+                    icon: ui::icons::Icon::User,
+                    title: "onboarding-choice-existing",
+                    detail: "onboarding-choice-existing-detail",
+                    key: KEY_EXISTING,
+                },
+                Choice {
+                    id: "onboarding.begin.card",
+                    icon: ui::icons::Icon::Plus,
+                    title: "onboarding-choice-create",
+                    detail: "onboarding-choice-create-detail",
+                    key: KEY_BEGIN,
+                },
+            ]),
+            Screen::Existing => Some([
+                Choice {
+                    id: "onboarding.existing.nearby.card",
+                    icon: ui::icons::Icon::Monitor,
+                    title: "onboarding-choice-nearby",
+                    detail: "onboarding-choice-nearby-detail",
+                    key: KEY_CHOOSE_NEARBY,
+                },
+                Choice {
+                    id: "onboarding.existing.restore.card",
+                    icon: ui::icons::Icon::Archive,
+                    title: "onboarding-choice-restore",
+                    detail: "onboarding-choice-restore-detail",
+                    key: KEY_CHOOSE_RESTORE,
+                },
+            ]),
+            _ => None,
+        }
+    }
+
+    /// The pinned footer of a choice screen: its rows stay in view at every
+    /// size, like the action row of the other screens. Intro has nothing to
+    /// go back to; the use-existing choice keeps its Back (or keyring retry)
+    /// row below the rows.
+    fn choice_footer_height(&self, theme: &Theme) -> Option<f32> {
+        let choices = self.choices()?;
+        let count = f32::from(u8::try_from(choices.len()).unwrap_or(u8::MAX));
+        let stack = count * choice_row_height(theme);
+        let spacing = &theme.tokens.spacing;
+        Some(if self.flow.screen() == Screen::Intro {
+            stack + spacing.s4
+        } else {
+            stack + spacing.s2 + FOOTER_HEIGHT
+        })
+    }
+
+    fn choice_footer(&self, theme: &Theme, choices: [Choice; 2]) -> Box<dyn Widget> {
+        let spacing = &theme.tokens.spacing;
+        let rows = choices
+            .into_iter()
+            .map(|choice| {
+                let requests = Rc::clone(&self.choice_requests);
+                Box::new(
+                    ListRow::new(choice.id, t(choice.title))
+                        .icon(choice.icon)
+                        .secondary(t(choice.detail))
+                        .disclosure()
+                        .on_activate(move || requests.borrow_mut().push(choice.key)),
+                ) as Box<dyn Widget>
+            })
+            .collect();
+        let stack = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_horizontal_padding(spacing.s3, spacing.s3)
+            .push(Box::new(Section::new(rows)));
+        if self.flow.screen() == Screen::Intro {
+            return Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_gap(0.0)
+                    .push(Box::new(stack))
+                    // The intro's rows have no action row below them; keep
+                    // the action row's visible inset from the panel edge.
+                    .push(Box::new(Spacer::fixed(spacing.s4))),
+            );
+        }
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(spacing.s2)
+                .push(Box::new(stack))
+                .push(self.identity_actions()),
+        )
+    }
+
     fn identity_footer(&self, theme: &Theme) -> Box<dyn Widget> {
+        if let Some(choices) = self.choices() {
+            return self.choice_footer(theme, choices);
+        }
         let acknowledgement = match self.flow.screen() {
             Screen::NoRecovery => Some(
                 Checkbox::new("onboarding.understood.box", KEY_UNDERSTOOD)
@@ -1647,31 +1808,40 @@ impl OnboardingView {
     )]
     fn identity_actions(&self) -> Box<dyn Widget> {
         match self.flow.screen() {
-            Screen::Intro => footer_actions(vec![
-                Box::new(
-                    Button::new(
-                        "onboarding.connect.button",
-                        &t("onboarding-use-existing"),
-                        Some(KEY_CONNECT),
-                    )
-                    .with_icon(ui::icons::Icon::ExternalLink),
-                ),
-                Box::new(
-                    Button::new(
-                        "onboarding.begin.button",
-                        &t("onboarding-create-identity"),
-                        Some(KEY_BEGIN),
-                    )
-                    .with_icon(ui::icons::Icon::ArrowRight)
-                    .role(ButtonRole::Primary),
-                ),
-            ]),
-            Screen::Connect => {
-                let mut actions = Vec::new();
-                if !self.recovery_only {
-                    actions.push(back_button());
+            Screen::Intro => footer_actions(Vec::new()),
+            Screen::Existing if self.recovery_only => footer_actions(vec![Box::new(
+                Button::new(
+                    "onboarding.connect.retry.button",
+                    &t("onboarding-connect-retry-keyring"),
+                    Some(KEY_CONNECT_RETRY),
+                )
+                .with_icon(ui::icons::Icon::Refresh),
+            )]),
+            Screen::Existing => footer_actions(vec![back_button()]),
+            Screen::Nearby => {
+                let mut actions = vec![back_button()];
+                if self.nearby_active() {
+                    actions.push(Box::new(Button::new(
+                        "onboarding.connect.cancel.button",
+                        &t("onboarding-cancel"),
+                        Some(KEY_CONNECT_CANCEL),
+                    )));
+                } else {
+                    actions.push(Box::new(
+                        Button::new(
+                            "onboarding.connect.nearby.button",
+                            &t("onboarding-nearby-try-again"),
+                            Some(KEY_CONNECT_NEARBY),
+                        )
+                        .with_icon(ui::icons::Icon::Refresh)
+                        .role(ButtonRole::Primary),
+                    ));
                 }
-                actions.push(Box::new(
+                footer_actions(actions)
+            }
+            Screen::Restore => footer_actions(vec![
+                back_button(),
+                Box::new(
                     Button::new(
                         "onboarding.import.button",
                         &t("onboarding-restore-backup"),
@@ -1680,9 +1850,8 @@ impl OnboardingView {
                     .with_icon(ui::icons::Icon::ArrowRight)
                     .role(ButtonRole::Primary)
                     .with_enabled(self.connect_source_selected),
-                ));
-                footer_actions(actions)
-            }
+                ),
+            ]),
             Screen::NoRecovery => footer_actions(vec![
                 back_button(),
                 Box::new(
@@ -1783,12 +1952,9 @@ impl OnboardingView {
                     ))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
-                        Text::new(&t_args(
-                            "onboarding-tour-stage",
-                            &[("stage", stage.clone().into()), ("step", number.into())],
-                        ))
-                        .with_role(ui::tokens::typography::TextRole::Label)
-                        .with_color(theme.text_dim),
+                        Text::new(&t_args("onboarding-tour-stage", &[("step", number.into())]))
+                            .with_role(ui::tokens::typography::TextRole::Label)
+                            .with_color(theme.text_dim),
                     )),
             ))
             .push(Box::new(
@@ -1878,31 +2044,56 @@ impl OnboardingView {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .with_gap(theme.tokens.spacing.s2);
-            for (card_title, copy) in cards {
+            for (number, (card_title, copy)) in (1_usize..).zip(cards) {
                 checklist = checklist.push(Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .with_gap(theme.tokens.spacing.s1)
+                    Row::new()
+                        .no_wrap()
+                        .align_start()
+                        .with_gap(theme.tokens.spacing.s3)
                         .push(Box::new(
-                            Text::new(&t(card_title))
+                            Text::new(&number.to_string())
                                 .with_role(ui::tokens::typography::TextRole::Label)
-                                .with_color(theme.text_primary),
+                                .strong()
+                                .numeric()
+                                .with_color(theme.text_dim),
                         ))
-                        .push(paragraph(&t(copy), theme)),
+                        .push(Box::new(
+                            Column::new()
+                                .with_no_padding()
+                                .with_intrinsic_height()
+                                .with_gap(theme.tokens.spacing.s1)
+                                .push(Box::new(
+                                    Text::new(&t(card_title))
+                                        .with_role(ui::tokens::typography::TextRole::Label)
+                                        .with_color(theme.text_primary),
+                                ))
+                                .push(paragraph(&t(copy), theme)),
+                        )),
                 ));
             }
-            // The numbered labels already provide the grouping and order. A
+            // The step numbers already provide the grouping and order. A
             // second titled/padded card spent nearly a full row of a laptop
             // viewport on decoration and pushed the last action below the
             // sticky footer.
             body = body.push(Box::new(checklist));
         } else {
             for (card_title, copy) in cards {
-                body = body.push(Box::new(Section::titled(
-                    t(card_title),
-                    vec![paragraph(&t(copy), theme)],
-                )));
+                let content: Box<dyn Widget> = match tour_shortcut(card_title) {
+                    Some(keys) => Box::new(
+                        Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .with_gap(theme.tokens.spacing.s1)
+                            .push(Box::new(
+                                Text::new(&t(keys))
+                                    .with_role(ui::tokens::typography::TextRole::Label)
+                                    .with_color(theme.text_primary),
+                            ))
+                            .push(paragraph(&t(copy), theme)),
+                    ),
+                    None => paragraph(&t(copy), theme),
+                };
+                body = body.push(Box::new(Section::titled(t(card_title), vec![content])));
             }
         }
         Box::new(body)
@@ -1939,19 +2130,17 @@ impl OnboardingView {
 
     fn intro(&self, theme: &Theme) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
-        let mut list = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(spacing.s3);
-        for point in intro_points() {
-            list = list.push(bullet(&point, theme));
-        }
         let (title, body) = match self.context {
             OnboardingContext::FullSystem => (intro_title(), intro_body()),
             OnboardingContext::HostDesktop => {
                 (host_desktop_intro_title(), host_desktop_intro_body())
             }
         };
+        let icons = [
+            ui::icons::Icon::Users,
+            ui::icons::Icon::HardDrive,
+            ui::icons::Icon::Lock,
+        ];
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -1959,36 +2148,19 @@ impl OnboardingView {
                 .with_gap(spacing.s4)
                 .push(heading(&title, theme))
                 .push(paragraph(&body, theme))
-                .push(Box::new(Section::titled(
-                    t("onboarding-intro-card-title"),
-                    vec![Box::new(list)],
-                ))),
+                .push(fact_list(icons.into_iter().zip(intro_points()), theme)),
         )
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the connect page keeps recovery warnings, nearby-device status/actions and encrypted-backup inputs in one composition"
-    )]
-    fn connect(&self, theme: &Theme) -> Box<dyn Widget> {
-        let compact = self.rect.height() <= 540.0;
-        let path = TextInput::new(Vec::new())
-            .with_id("onboarding.connect.path.field")
-            .with_on_change_path(KEY_CONNECT_PATH)
-            .with_accessible_name(t("onboarding-connect-file"))
-            .with_placeholder(&t("onboarding-connect-file-placeholder"));
-        let passphrase = secret_input(
-            "onboarding.connect.passphrase.field",
-            &self.connect_passphrase,
-            &t("onboarding-connect-passphrase"),
-            &t("onboarding-connect-passphrase-placeholder"),
-        );
-        let spacing = &theme.tokens.spacing;
+    /// How to bring an identity that already exists to this computer. Each
+    /// way opens its own screen from the cards in the footer.
+    fn existing(&self, theme: &Theme) -> Box<dyn Widget> {
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(if compact { spacing.s3 } else { spacing.s4 })
-            .push(heading(&t("onboarding-connect-title"), theme));
+            .with_gap(theme.tokens.spacing.s4)
+            .push(heading(&t("onboarding-existing-title"), theme))
+            .push(paragraph(&t("onboarding-existing-body"), theme));
         if self.recovery_only {
             body = body.push(spaced_banner(
                 Banner::warning(t("onboarding-connect-recovery-title"))
@@ -2003,86 +2175,150 @@ impl OnboardingView {
                 theme,
             ));
         }
-        let nearby_action = if self.nearby_child.is_some() {
-            Button::new(
-                "onboarding.connect.cancel.button",
-                &t("onboarding-cancel"),
-                Some(KEY_CONNECT_CANCEL),
-            )
-        } else {
-            Button::new(
-                "onboarding.connect.nearby.button",
-                &t("onboarding-connect-nearby"),
-                Some(KEY_CONNECT_NEARBY),
-            )
-        };
-        let mut nearby = Column::new()
+        Box::new(body)
+    }
+
+    /// Receive the identity from a trusted device: what to do on the other
+    /// device, then the shared verification code once it appears.
+    fn nearby(&self, theme: &Theme) -> Box<dyn Widget> {
+        let spacing = &theme.tokens.spacing;
+        let mut steps = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(if compact { spacing.s2 } else { spacing.s3 })
-            .push(paragraph(
-                &t("onboarding-connect-nearby-instructions"),
+            .with_gap(spacing.s3);
+        for (number, key) in (1_usize..).zip([
+            "onboarding-nearby-step-open",
+            "onboarding-nearby-step-add",
+            "onboarding-nearby-step-compare",
+        ]) {
+            steps = steps.push(numbered_step(number, &t(key), theme));
+        }
+        let mut body = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s4)
+            .push(heading(&t("onboarding-nearby-title"), theme))
+            .push(paragraph(&t("onboarding-nearby-body"), theme));
+        if let Some(error) = &self.error {
+            body = body.push(spaced_banner(
+                Banner::error(t("onboarding-connect-failed")).with_message(error.clone()),
                 theme,
             ));
-        if let Some(status) = &self.nearby_status {
-            nearby = nearby.push(Box::new(
-                Text::new(status)
-                    // A stable semantic address lets the accessibility host
-                    // recognise verification-code and completion updates as
-                    // changes to one status region across composition rebuilds.
-                    .with_id("onboarding.nearby.status")
-                    .with_role(ui::tokens::typography::TextRole::Body)
-                    .with_color(theme.text_dim)
-                    .with_live(ui::a11y::Politeness::Polite),
-            ));
         }
-        nearby = nearby.push(Box::new(nearby_action));
-        if self.recovery_only {
-            nearby = nearby.push(Box::new(Button::new(
-                "onboarding.connect.retry.button",
-                &t("onboarding-connect-retry-keyring"),
-                Some(KEY_CONNECT_RETRY),
-            )));
-        }
-        let file_row = Row::new().push(Box::new(path)).push(Box::new(
-            Button::new(
-                "onboarding.connect.browse.button",
-                &t("onboarding-connect-browse"),
-                Some(KEY_CONNECT_BROWSE),
-            )
-            .with_icon(ui::icons::Icon::Folder),
-        ));
-        let backup = Column::new()
+        let mut status = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(if compact { spacing.s2 } else { spacing.s3 })
-            .push(Box::new(file_row))
+            .with_gap(spacing.s2);
+        if let Some(code) = &self.nearby_code {
+            status = status
+                .push(Box::new(
+                    Text::new(&t("onboarding-nearby-code-label"))
+                        .with_role(ui::tokens::typography::TextRole::Label)
+                        .with_color(theme.text_dim),
+                ))
+                .push(Box::new(
+                    Text::new(&grouped_code(code))
+                        .with_id("onboarding.nearby.code")
+                        .with_role(ui::tokens::typography::TextRole::Display)
+                        .numeric(),
+                ));
+        }
+        if let Some(message) = &self.nearby_status {
+            let text = Text::new(message)
+                // A stable semantic address lets the accessibility host
+                // recognise verification-code and completion updates as
+                // changes to one status region across composition rebuilds.
+                .with_id("onboarding.nearby.status")
+                .with_role(ui::tokens::typography::TextRole::Body)
+                .with_color(theme.text_dim)
+                .with_live(ui::a11y::Politeness::Polite);
+            status = if self.nearby_active() && self.nearby_code.is_none() {
+                status.push(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .with_gap(theme.tokens.spacing.s2)
+                        .push(Box::new(Spinner::with_size(theme.tokens.metrics.icon_md)))
+                        .push(Box::new(text)),
+                ))
+            } else {
+                status.push(Box::new(text))
+            };
+        }
+        Box::new(
+            body.push(Box::new(Section::new(vec![Box::new(steps)])))
+                .push(Box::new(status)),
+        )
+    }
+
+    /// Restore the identity from an encrypted backup file.
+    fn restore(&self, theme: &Theme) -> Box<dyn Widget> {
+        let compact = self.rect.height() <= 540.0;
+        let spacing = &theme.tokens.spacing;
+        let path = TextInput::new(Vec::new())
+            .with_id("onboarding.connect.path.field")
+            .with_on_change_path(KEY_CONNECT_PATH)
+            .with_accessible_name(t("onboarding-connect-file"))
+            .with_placeholder(&t("onboarding-connect-file-placeholder"));
+        let passphrase = secret_input(
+            "onboarding.connect.passphrase.field",
+            &self.connect_passphrase,
+            &t("onboarding-connect-passphrase"),
+            &t("onboarding-connect-passphrase-placeholder"),
+        );
+        let mut body = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(if compact { spacing.s3 } else { spacing.s4 })
+            .push(heading(&t("onboarding-restore-title"), theme))
+            .push(paragraph(&t("onboarding-restore-body"), theme));
+        if let Some(error) = &self.error {
+            body = body.push(spaced_banner(
+                Banner::error(t("onboarding-connect-failed")).with_message(error.clone()),
+                theme,
+            ));
+        }
+        let file = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s1)
+            .push(Box::new(
+                Text::new(&t("onboarding-restore-file-label"))
+                    .with_role(ui::tokens::typography::TextRole::Label),
+            ))
+            .push(Box::new(
+                Row::new().no_wrap().push(Box::new(path)).push(Box::new(
+                    Button::new(
+                        "onboarding.connect.browse.button",
+                        &t("onboarding-connect-browse"),
+                        Some(KEY_CONNECT_BROWSE),
+                    )
+                    .with_icon(ui::icons::Icon::FolderOpen),
+                )),
+            ));
+        let secret = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s1)
             .push(Box::new(
                 Text::new(&t("onboarding-connect-passphrase"))
                     .with_role(ui::tokens::typography::TextRole::Label),
             ))
             .push(Box::new(passphrase));
         Box::new(
-            body.push(Box::new(Section::titled(
-                t("onboarding-connect-nearby-card"),
-                vec![Box::new(nearby)],
-            )))
-            .push(Box::new(Section::titled(
-                t("onboarding-connect-backup-card"),
-                vec![Box::new(backup)],
-            ))),
+            body.push(Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_gap(if compact { spacing.s3 } else { spacing.s4 })
+                    .push(Box::new(file))
+                    .push(Box::new(secret)),
+            )),
         )
     }
 
     fn no_recovery(&self, theme: &Theme) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
-        let mut list = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(spacing.s4);
-        for point in no_recovery_points() {
-            list = list.push(bullet(&point, theme));
-        }
+        let icons = [ui::icons::Icon::Ban, ui::icons::Icon::Archive];
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -2106,7 +2342,10 @@ impl OnboardingView {
                 theme,
             ));
         }
-        Box::new(body.push(Box::new(Card::new(Box::new(list)))))
+        Box::new(body.push(fact_list(
+            icons.into_iter().zip(no_recovery_points()),
+            theme,
+        )))
     }
 
     #[allow(
@@ -2199,17 +2438,17 @@ impl OnboardingView {
                 theme,
             ))
             .push(paragraph(&body, theme))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-done-next-title"),
-                paragraph(&t("onboarding-done-next-body"), theme),
+                vec![paragraph(&t("onboarding-done-next-body"), theme)],
             )))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 if self.backup_was_verified {
                     t("onboarding-done-backup-verified")
                 } else {
                     t("onboarding-done-backup-recommended")
                 },
-                paragraph_with_id(
+                vec![paragraph_with_id(
                     &if self.backup_was_verified {
                         t("onboarding-done-backup-verified-body")
                     } else {
@@ -2217,13 +2456,13 @@ impl OnboardingView {
                     },
                     theme,
                     "onboarding.done.backup-guidance",
-                ),
+                )],
             )));
 
         if self.context == OnboardingContext::FullSystem {
-            page = page.push(Box::new(Card::titled(
+            page = page.push(Box::new(Section::titled(
                 t("onboarding-done-system-care-title"),
-                paragraph(&t("onboarding-done-system-care-body"), theme),
+                vec![paragraph(&t("onboarding-done-system-care-body"), theme)],
             )));
         }
         Box::new(page)
@@ -2233,13 +2472,16 @@ impl OnboardingView {
     /// live result once the owner chose to install.
     fn codecs(&self, theme: &Theme) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
-        let mut enables = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(spacing.s3);
-        for point in codecs_enables() {
-            enables = enables.push(bullet(&point, theme));
-        }
+        let enables = fact_list(
+            [
+                ui::icons::Icon::Monitor,
+                ui::icons::Icon::Play,
+                ui::icons::Icon::Camera,
+            ]
+            .into_iter()
+            .zip(codecs_enables()),
+            theme,
+        );
         // Once the owner chose, the live result leads the page, above the
         // explanation, so it is visible without scrolling at every size.
         let mut page = Column::new()
@@ -2272,13 +2514,17 @@ impl OnboardingView {
                 theme,
                 "onboarding.codecs.body",
             ))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-codecs-enables-title"),
-                Box::new(enables),
+                vec![enables],
             )))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-codecs-source-title"),
-                paragraph_with_id(&codecs_source(), theme, "onboarding.codecs.source"),
+                vec![paragraph_with_id(
+                    &codecs_source(),
+                    theme,
+                    "onboarding.codecs.source",
+                )],
             )));
         Box::new(page)
     }
@@ -2357,12 +2603,94 @@ fn spaced_banner(banner: Banner, theme: &Theme) -> Box<dyn Widget> {
     )
 }
 
-/// A list item.
-///
-/// The marker is part of the same `Text` rather than a sibling in a
-/// `Row`: these lines wrap, and a marker in its own column detaches from its sentence.
-fn bullet(text: &str, _theme: &Theme) -> Box<dyn Widget> {
-    Box::new(Text::new(&format!("•   {text}")).with_role(ui::tokens::typography::TextRole::Body))
+/// Short statements, each led by an icon that names its subject. The icon
+/// sits in its own column, top-aligned with the first line, so wrapped lines
+/// keep a clean left edge.
+fn fact_list(
+    facts: impl IntoIterator<Item = (ui::icons::Icon, String)>,
+    theme: &Theme,
+) -> Box<dyn Widget> {
+    let mut list = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(theme.tokens.spacing.s3);
+    for (icon, text) in facts {
+        list = list.push(Box::new(
+            Row::new()
+                .no_wrap()
+                .align_start()
+                .with_gap(theme.tokens.spacing.s3)
+                .push(Box::new(
+                    IconWidget::new(icon, theme.tokens.metrics.icon_md).dim(),
+                ))
+                .push(Box::new(
+                    Text::new(&text).with_role(ui::tokens::typography::TextRole::Body),
+                )),
+        ));
+    }
+    Box::new(list)
+}
+
+/// One step of a real sequence: its number in quiet ink, then the
+/// instruction.
+fn numbered_step(number: usize, text: &str, theme: &Theme) -> Box<dyn Widget> {
+    Box::new(
+        Row::new()
+            .no_wrap()
+            .align_start()
+            .with_gap(theme.tokens.spacing.s3)
+            .push(Box::new(
+                Text::new(&number.to_string())
+                    .with_role(ui::tokens::typography::TextRole::Body)
+                    .strong()
+                    .numeric()
+                    .with_color(theme.text_dim),
+            ))
+            .push(Box::new(
+                Text::new(text).with_role(ui::tokens::typography::TextRole::Body),
+            )),
+    )
+}
+
+/// A six-digit verification code in two groups of three, the way people
+/// read a code aloud and compare it between two screens.
+fn grouped_code(code: &str) -> String {
+    let digits: Vec<char> = code.chars().filter(|c| !c.is_whitespace()).collect();
+    if digits.len() == 6 {
+        let (head, tail) = digits.split_at(3);
+        format!(
+            "{} {}",
+            head.iter().collect::<String>(),
+            tail.iter().collect::<String>()
+        )
+    } else {
+        digits.into_iter().collect()
+    }
+}
+
+/// One way forward on a choice screen: a list row that opens its own flow.
+struct Choice {
+    id: &'static str,
+    icon: ui::icons::Icon,
+    title: &'static str,
+    detail: &'static str,
+    /// The model key the row sets, read by sync like a button's.
+    key: &'static str,
+}
+
+/// The height of a choice row: its title and one secondary line, or the
+/// pointer-target minimum when that is taller.
+fn choice_row_height(theme: &Theme) -> f32 {
+    let spacing = &theme.tokens.spacing;
+    let text = theme
+        .text(ui::tokens::typography::TextRole::Body)
+        .line_height_px()
+        + theme
+            .text(ui::tokens::typography::TextRole::Caption)
+            .line_height_px();
+    (text + 2.0 * spacing.s2)
+        .max(theme.tokens.metrics.min_pointer_target + spacing.s2)
+        .ceil()
 }
 
 fn back_button() -> Box<dyn Widget> {
@@ -2696,6 +3024,10 @@ impl Widget for OnboardingView {
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
         }
+        let choices = std::mem::take(&mut *self.choice_requests.borrow_mut());
+        for key in choices {
+            let _ = state.put(root, key, ScalarValue::Boolean(true));
+        }
         let connect_source_selected = !read_string(state, root, KEY_CONNECT_PATH).trim().is_empty();
         if connect_source_selected != self.connect_source_selected {
             self.connect_source_selected = connect_source_selected;
@@ -2758,14 +3090,34 @@ impl Widget for OnboardingView {
             self.flow.begin();
         }
 
-        if read_bool(state, root, KEY_CONNECT) {
-            let _ = state.put(root, KEY_CONNECT, ScalarValue::Boolean(false));
-            self.flow.begin_connect();
+        if read_bool(state, root, KEY_EXISTING) {
+            let _ = state.put(root, KEY_EXISTING, ScalarValue::Boolean(false));
+            self.flow.begin_existing();
+        }
+
+        if read_bool(state, root, KEY_CHOOSE_RESTORE) {
+            let _ = state.put(root, KEY_CHOOSE_RESTORE, ScalarValue::Boolean(false));
+            self.error = None;
+            self.flow.choose_restore();
+        }
+
+        // Choosing the nearby flow is the explicit request to pair, so the
+        // screen opens with pairing already under way.
+        let mut start_nearby = false;
+        if read_bool(state, root, KEY_CHOOSE_NEARBY) {
+            let _ = state.put(root, KEY_CHOOSE_NEARBY, ScalarValue::Boolean(false));
+            if self.flow.screen() == Screen::Existing {
+                self.error = None;
+                self.nearby_status = None;
+                self.nearby_code = None;
+                self.flow.choose_nearby();
+                start_nearby = true;
+            }
         }
 
         if read_bool(state, root, KEY_CONNECT_BROWSE) {
             let _ = state.put(root, KEY_CONNECT_BROWSE, ScalarValue::Boolean(false));
-            if self.flow.screen() == Screen::Connect && self.picker.is_none() {
+            if self.flow.screen() == Screen::Restore && self.picker.is_none() {
                 let (initial, roots) = onboarding_picker_scope();
                 self.picker = Some((
                     PickerPurpose::ImportIdentity,
@@ -2784,68 +3136,68 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_CONNECT_NEARBY) {
             let _ = state.put(root, KEY_CONNECT_NEARBY, ScalarValue::Boolean(false));
-            if self.flow.screen() == Screen::Connect
-                && self.nearby_child.is_none()
-                && self.persist_progress(PersistedStage::AcquiringIdentity)
-            {
-                match (&self.identity_dir, &self.nearby_status_path) {
-                    (Some(identity_dir), Some(status_path)) => {
-                        let _ = std::fs::remove_file(status_path);
-                        let label =
-                            std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
-                        let identity_root = std::env::var_os("TILO_IDENTITY_ROOT")
-                            .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
-                        let requester =
-                            tilo_relay_protocol::ProcessLease::capture(std::process::id());
-                        let spawn =
-                            requester
+            start_nearby = true;
+        }
+        if start_nearby
+            && self.flow.screen() == Screen::Nearby
+            && self.nearby_child.is_none()
+            && self.persist_progress(PersistedStage::AcquiringIdentity)
+        {
+            match (&self.identity_dir, &self.nearby_status_path) {
+                (Some(identity_dir), Some(status_path)) => {
+                    let _ = std::fs::remove_file(status_path);
+                    let label = std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
+                    let identity_root = std::env::var_os("TILO_IDENTITY_ROOT")
+                        .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
+                    let requester = tilo_relay_protocol::ProcessLease::capture(std::process::id());
+                    let spawn = requester
+                        .map_err(|error| error.to_string())
+                        .and_then(|lease| {
+                            Command::new("pkexec")
+                                .args([
+                                    "/usr/libexec/tilo-home-peer-control",
+                                    "pair-device",
+                                    "--identity-root",
+                                ])
+                                .arg(identity_root)
+                                .arg("--identity-dir")
+                                .arg(identity_dir)
+                                .args(["--label", &label, "--status-file"])
+                                .arg(status_path)
+                                .arg("--requester-pid")
+                                .arg(lease.pid().to_string())
+                                .arg("--requester-start-time")
+                                .arg(lease.start_time().to_string())
+                                .stdin(Stdio::null())
+                                .stdout(Stdio::piped())
+                                .stderr(Stdio::piped())
+                                // pkexec, the privileged broker and tilo-enroll must
+                                // share a revocable lifetime.  A dedicated process
+                                // group lets Cancel, Back and compositor teardown
+                                // stop the whole transaction instead of merely
+                                // orphaning a privileged descendant.
+                                .process_group(0)
+                                .spawn()
                                 .map_err(|error| error.to_string())
-                                .and_then(|lease| {
-                                    Command::new("pkexec")
-                                        .args([
-                                            "/usr/libexec/tilo-home-peer-control",
-                                            "pair-device",
-                                            "--identity-root",
-                                        ])
-                                        .arg(identity_root)
-                                        .arg("--identity-dir")
-                                        .arg(identity_dir)
-                                        .args(["--label", &label, "--status-file"])
-                                        .arg(status_path)
-                                        .arg("--requester-pid")
-                                        .arg(lease.pid().to_string())
-                                        .arg("--requester-start-time")
-                                        .arg(lease.start_time().to_string())
-                                        .stdin(Stdio::null())
-                                        .stdout(Stdio::piped())
-                                        .stderr(Stdio::piped())
-                                        // pkexec, the privileged broker and tilo-enroll must
-                                        // share a revocable lifetime.  A dedicated process
-                                        // group lets Cancel, Back and compositor teardown
-                                        // stop the whole transaction instead of merely
-                                        // orphaning a privileged descendant.
-                                        .process_group(0)
-                                        .spawn()
-                                        .map_err(|error| error.to_string())
-                                });
-                        match spawn {
-                            Ok(child) => {
-                                self.nearby_child = Some(child);
-                                self.nearby_status = Some(t("onboarding-nearby-searching"));
-                                self.error = None;
-                            }
-                            Err(error) => {
-                                self.error = Some(t_args(
-                                    "onboarding-nearby-start-failed",
-                                    &[("error", error.into())],
-                                ));
-                            }
+                        });
+                    match spawn {
+                        Ok(child) => {
+                            self.nearby_child = Some(child);
+                            self.nearby_status = Some(t("onboarding-nearby-waiting"));
+                            self.nearby_code = None;
+                            self.error = None;
+                        }
+                        Err(error) => {
+                            self.error = Some(t_args(
+                                "onboarding-nearby-start-failed",
+                                &[("error", error.into())],
+                            ));
                         }
                     }
-                    _ => self.error = Some(t("onboarding-nearby-unavailable")),
                 }
-                self.invalidation.structure();
+                _ => self.error = Some(t("onboarding-nearby-unavailable")),
             }
+            self.invalidation.structure();
         }
 
         if read_bool(state, root, KEY_CONNECT_CANCEL) {
@@ -2855,21 +3207,22 @@ impl Widget for OnboardingView {
                 let _ = std::fs::remove_file(path);
             }
             self.nearby_status = Some(t("onboarding-nearby-cancelled"));
+            self.nearby_code = None;
             self.invalidation.structure();
         }
 
-        if let Some(path) = &self.nearby_status_path
+        if self.nearby_child.is_some()
+            && let Some(path) = &self.nearby_status_path
             && let Ok(bytes) = std::fs::read(path)
             && let Ok(status) = serde_json::from_slice::<serde_json::Value>(&bytes)
             && let Some(code) = status
                 .get("verification_code")
                 .and_then(serde_json::Value::as_str)
+            && self.nearby_code.as_deref() != Some(code)
         {
-            let message = t_args("onboarding-nearby-code", &[("code", code.into())]);
-            if self.nearby_status.as_deref() != Some(&message) {
-                self.nearby_status = Some(message);
-                self.invalidation.structure();
-            }
+            self.nearby_code = Some(code.to_owned());
+            self.nearby_status = Some(t("onboarding-nearby-code"));
+            self.invalidation.structure();
         }
         let finished_nearby_child = match self.nearby_child.take() {
             Some(mut child) => {
@@ -2888,6 +3241,7 @@ impl Widget for OnboardingView {
             // behavior changes, and never leave a completed broker child in
             // the compositor.
             let _ = child.wait();
+            self.nearby_code = None;
             let mut stdout = String::new();
             let mut stderr = String::new();
             if let Some(mut stream) = child.stdout.take() {
@@ -3039,7 +3393,8 @@ impl Widget for OnboardingView {
             clear_secret(&self.connect_passphrase);
             terminate_nearby_pairing(&mut self.nearby_child);
             self.nearby_status = None;
-            if !(self.recovery_only && self.flow.screen() == Screen::Connect) {
+            self.nearby_code = None;
+            if !(self.recovery_only && self.flow.screen() == Screen::Existing) {
                 self.flow.back();
             }
         }
@@ -3047,10 +3402,10 @@ impl Widget for OnboardingView {
         if read_bool(state, root, KEY_IMPORT) {
             let _ = state.put(root, KEY_IMPORT, ScalarValue::Boolean(false));
             let source = PathBuf::from(read_string(state, root, KEY_CONNECT_PATH));
-            if self.flow.screen() == Screen::Connect && source.as_os_str().is_empty() {
+            if self.flow.screen() == Screen::Restore && source.as_os_str().is_empty() {
                 self.error = Some(t("onboarding-connect-choose-file-first"));
                 self.invalidation.structure();
-            } else if self.flow.screen() == Screen::Connect
+            } else if self.flow.screen() == Screen::Restore
                 && self.persist_progress(PersistedStage::AcquiringIdentity)
             {
                 let passphrase = Zeroizing::new(
@@ -3084,7 +3439,7 @@ impl Widget for OnboardingView {
         if read_bool(state, root, KEY_CONNECT_RETRY) {
             let _ = state.put(root, KEY_CONNECT_RETRY, ScalarValue::Boolean(false));
             if self.recovery_only
-                && self.flow.screen() == Screen::Connect
+                && self.flow.screen() == Screen::Existing
                 && self.persist_progress(PersistedStage::AcquiringIdentity)
             {
                 match (self.minter)() {
@@ -3273,7 +3628,9 @@ impl Widget for OnboardingView {
             theme.text_scale > 1.0 || theme.name.eq_ignore_ascii_case("high contrast");
         let panel_height = if accessibility_expanded {
             ACCESSIBLE_PANEL_HEIGHT
-        } else if self.tour_page.is_none() && self.flow.screen() == Screen::Intro {
+        } else if self.tour_page.is_none()
+            && matches!(self.flow.screen(), Screen::Intro | Screen::Existing)
+        {
             INTRO_PANEL_HEIGHT
         } else {
             PANEL_MAX_HEIGHT
@@ -3281,9 +3638,15 @@ impl Widget for OnboardingView {
         let ready_identity_page = self.tour_page.is_none()
             && self.flow.screen() == Screen::Done
             && self.identity_ready_page;
+        // The introduction's pinned cards take a fixed share of the panel, so
+        // it keeps one stable height instead of measuring its explanation.
+        let intro_page = self.tour_page.is_none() && self.flow.screen() == Screen::Intro;
         let dense_identity_page = self.tour_page.is_none()
             && (accessibility_expanded
-                || matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
+                || matches!(
+                    self.flow.screen(),
+                    Screen::Nearby | Screen::Restore | Screen::NoRecovery
+                )
                 || (self.flow.screen() == Screen::Done && !self.identity_ready_page));
         // The scroll/footer budget must use the same preferred height as the
         // composition itself. Previously dense normal-text pages measured a
@@ -3316,6 +3679,8 @@ impl Widget for OnboardingView {
                 taffy::Dimension::length(DENSE_PANEL_PREFERRED_HEIGHT)
             } else if ready_identity_page {
                 taffy::Dimension::length(READY_PANEL_PREFERRED_HEIGHT)
+            } else if intro_page {
+                taffy::Dimension::length(INTRO_PANEL_HEIGHT)
             } else {
                 taffy::Dimension::auto()
             };
@@ -3418,14 +3783,14 @@ impl Widget for OnboardingView {
             return;
         }
         // Escape follows the visible Back action while the identity ceremony
-        // is still reversible. This is especially important on Connect,
-        // where a nearby-device attempt may be running: keyboard users need a
+        // is still reversible. This is especially important on Nearby,
+        // where a pairing attempt may be running: keyboard users need a
         // conventional way to leave the branch, and KEY_BACK shares the exact
         // same cleanup path that terminates that process group and clears its
         // transient status. Intro and Done deliberately remain non-dismissible
         // because setup has either not established an identity yet or still
         // needs an explicit hand-off into the desktop.
-        if matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
+        if (self.flow.is_existing_branch() || self.flow.screen() == Screen::NoRecovery)
             && matches!(
                 event,
                 WindowEvent::KeyboardInput { event, .. }
@@ -3444,6 +3809,12 @@ impl Widget for OnboardingView {
             && let Some(&cn) = children.first()
         {
             c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
+        }
+        // A choice row activated by this event sets its key now, as a
+        // button would, so the document reflects the press immediately.
+        let choices = std::mem::take(&mut *self.choice_requests.borrow_mut());
+        for key in choices {
+            let _ = ctx.state.put(ctx.path, key, ScalarValue::Boolean(true));
         }
     }
 
@@ -3532,17 +3903,18 @@ impl Widget for OnboardingView {
 fn screen_order(screen: Screen) -> u8 {
     match screen {
         Screen::Intro => 0,
-        Screen::Connect | Screen::NoRecovery => 1,
-        Screen::Done => 2,
+        Screen::Existing | Screen::NoRecovery => 1,
+        Screen::Nearby | Screen::Restore => 2,
+        Screen::Done => 3,
     }
 }
 
 fn view_order(screen: Screen, tour: Option<TourPage>) -> u8 {
     match tour {
-        Some(TourPage::Navigate) => 3,
-        Some(TourPage::Organise) => 4,
-        Some(TourPage::Collaborate) => 5,
-        Some(TourPage::Start) => 6,
+        Some(TourPage::Navigate) => 4,
+        Some(TourPage::Organise) => 5,
+        Some(TourPage::Collaborate) => 6,
+        Some(TourPage::Start) => 7,
         None => screen_order(screen),
     }
 }
@@ -4342,12 +4714,22 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
+    )]
     fn onboarding_copy_and_live_regions_speak_the_real_contract() {
         // Phase `desktop_tour_teaches_the_real_keyboard_and_gesture_contract`.
         {
             let navigation = NAVIGATE_CARDS
                 .iter()
-                .flat_map(|(title, body)| [t(title), t(body)])
+                .flat_map(|(title, body)| {
+                    [
+                        t(title),
+                        tour_shortcut(title).map(t).unwrap_or_default(),
+                        t(body),
+                    ]
+                })
                 .collect::<Vec<_>>()
                 .join(" ");
 
@@ -4423,12 +4805,13 @@ mod tests {
         // Phase `nearby_pairing_updates_share_one_polite_live_region`.
         {
             let (mut view, _) = view();
-            view.flow.begin_connect();
+            view.flow.begin_existing();
+            view.flow.choose_nearby();
             let theme = Theme::dark();
 
             for status in [
-                "Looking for a trusted device nearby…",
-                "Code 123456 · waiting for approval on your trusted device",
+                "Waiting for your other device.",
+                "Check that your other device shows the same code, then approve it there.",
                 "Connected. Your workspaces will appear automatically.",
             ] {
                 view.nearby_status = Some(status.into());
@@ -4441,6 +4824,57 @@ mod tests {
                 assert_eq!(node.role, ui::a11y::Role::StaticText);
                 assert_eq!(node.name.as_deref(), Some(status));
                 assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
+            }
+
+            view.nearby_code = Some("123456".into());
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
+            let code = accessibility_for_id(&view, "onboarding.nearby.code")
+                .expect("the verification code is shown on its own");
+            assert_eq!(code.name.as_deref(), Some("123 456"));
+        }
+        // Phase `nearby_steps_say_this_device_waits_for_the_other_one`.
+        {
+            let waiting = t("onboarding-nearby-waiting").to_lowercase();
+            assert!(waiting.contains("other device"), "{waiting}");
+            assert!(!waiting.contains("trusted device nearby"), "{waiting}");
+            let steps = [
+                "onboarding-nearby-step-open",
+                "onboarding-nearby-step-add",
+                "onboarding-nearby-step-compare",
+            ]
+            .map(t)
+            .join(" ");
+            for surface in ["Settings", "Devices & Sync", "Add device", "six-digit code"] {
+                assert!(
+                    steps.contains(surface),
+                    "nearby steps must name {surface}: {steps}"
+                );
+            }
+        }
+        // Phase `onboarding_copy_uses_no_typed_glyphs_as_layout`.
+        {
+            let copy = [
+                "onboarding-intro-point-collaboration",
+                "onboarding-intro-point-local",
+                "onboarding-intro-point-not-account",
+                "onboarding-nearby-step-open",
+                "onboarding-nearby-step-add",
+                "onboarding-nearby-step-compare",
+                "onboarding-nearby-code",
+                "onboarding-progress-stage",
+                "onboarding-tour-eyebrow",
+                "onboarding-tour-stage",
+                "onboarding-tour-search-title",
+                "onboarding-tour-overview-title",
+                "onboarding-tour-move-title",
+                "onboarding-tour-name-title",
+            ]
+            .map(t)
+            .join(" ");
+            for glyph in ['•', '·', '→', '—', '✓', '★'] {
+                assert!(!copy.contains(glyph), "{glyph:?} used as layout in {copy}");
             }
         }
         // Phase `host_desktop_copy_does_not_claim_to_replace_the_linux_login`.
@@ -4497,9 +4931,19 @@ mod tests {
                 !dispatch_escape(&mut view, &mut document),
                 "intro must not be dismissible before an identity exists"
             );
-            press(&mut document, KEY_CONNECT);
+            press(&mut document, KEY_EXISTING);
             view.sync(&mut document, &automerge::ROOT);
-            assert_eq!(view.flow.screen(), Screen::Connect);
+            assert_eq!(view.flow.screen(), Screen::Existing);
+            press(&mut document, KEY_CHOOSE_RESTORE);
+            view.sync(&mut document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Restore);
+            assert!(dispatch_escape(&mut view, &mut document));
+            view.sync(&mut document, &automerge::ROOT);
+            assert_eq!(
+                view.flow.screen(),
+                Screen::Existing,
+                "escape leaves a flow for the choice it was opened from"
+            );
             assert!(dispatch_escape(&mut view, &mut document));
             view.sync(&mut document, &automerge::ROOT);
             assert_eq!(view.flow.screen(), Screen::Intro);
@@ -4524,11 +4968,21 @@ mod tests {
             let identity = tempfile::tempdir().expect("identity directory");
             let mut recovery = OnboardingView::new_for_recovery(identity.path().to_path_buf());
             assert!(recovery.recovery_only);
-            assert_eq!(recovery.flow.screen(), Screen::Connect);
+            assert_eq!(recovery.flow.screen(), Screen::Existing);
             let mut document = AutoCommit::new();
             press(&mut document, KEY_BACK);
             recovery.sync(&mut document, &automerge::ROOT);
-            assert_eq!(recovery.flow.screen(), Screen::Connect);
+            assert_eq!(recovery.flow.screen(), Screen::Existing);
+            press(&mut document, KEY_CHOOSE_RESTORE);
+            recovery.sync(&mut document, &automerge::ROOT);
+            assert_eq!(recovery.flow.screen(), Screen::Restore);
+            press(&mut document, KEY_BACK);
+            recovery.sync(&mut document, &automerge::ROOT);
+            assert_eq!(
+                recovery.flow.screen(),
+                Screen::Existing,
+                "recovery flows still return to their choice"
+            );
             let theme = Theme::dark();
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -4562,14 +5016,15 @@ mod tests {
                 }),
             );
             let mut doc = AutoCommit::new();
-            press(&mut doc, KEY_CONNECT);
+            press(&mut doc, KEY_EXISTING);
+            press(&mut doc, KEY_CHOOSE_RESTORE);
             let _ = doc.put(
                 &automerge::ROOT,
                 KEY_CONNECT_PATH,
                 ScalarValue::Str("/media/backup/primary.json".into()),
             );
             view.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(view.flow().screen(), Screen::Connect);
+            assert_eq!(view.flow().screen(), Screen::Restore);
             press(&mut doc, KEY_IMPORT);
             view.sync(&mut doc, &automerge::ROOT);
             assert_eq!(imported.load(Ordering::SeqCst), 1);
@@ -4602,7 +5057,8 @@ mod tests {
             view.identity_dir = Some(identity_dir.clone());
             let mut document = AutoCommit::new();
 
-            press(&mut document, KEY_CONNECT);
+            press(&mut document, KEY_EXISTING);
+            press(&mut document, KEY_CHOOSE_RESTORE);
             let _ = document.put(
                 &automerge::ROOT,
                 KEY_CONNECT_PATH,
@@ -4629,7 +5085,8 @@ mod tests {
                 Box::new(|_, _| Err("not a Tilo identity".to_string())),
             );
             let mut doc = AutoCommit::new();
-            press(&mut doc, KEY_CONNECT);
+            press(&mut doc, KEY_EXISTING);
+            press(&mut doc, KEY_CHOOSE_RESTORE);
             view.sync(&mut doc, &automerge::ROOT);
             let _ = doc.put(
                 &automerge::ROOT,
@@ -4638,7 +5095,7 @@ mod tests {
             );
             press(&mut doc, KEY_IMPORT);
             view.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(view.flow().screen(), Screen::Connect);
+            assert_eq!(view.flow().screen(), Screen::Restore);
             assert_eq!(view.error(), Some("not a Tilo identity"));
         }
         // Phase `connect_requires_a_selected_file_before_importing`.
@@ -4648,7 +5105,8 @@ mod tests {
                 Box::new(|_, _| Err("importer must not run without a path".to_string())),
             );
             let mut doc = AutoCommit::new();
-            press(&mut doc, KEY_CONNECT);
+            press(&mut doc, KEY_EXISTING);
+            press(&mut doc, KEY_CHOOSE_RESTORE);
             view.sync(&mut doc, &automerge::ROOT);
             let theme = Theme::dark();
             let disabled = accessibility_for_id(
@@ -4662,7 +5120,7 @@ mod tests {
             );
             press(&mut doc, KEY_IMPORT);
             view.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(view.flow().screen(), Screen::Connect);
+            assert_eq!(view.flow().screen(), Screen::Restore);
             assert_eq!(
                 view.error(),
                 Some("Choose an encrypted backup or legacy identity file first.")
@@ -4688,7 +5146,8 @@ mod tests {
         {
             let (mut view, _) = view();
             let mut doc = AutoCommit::new();
-            press(&mut doc, KEY_CONNECT);
+            press(&mut doc, KEY_EXISTING);
+            press(&mut doc, KEY_CHOOSE_RESTORE);
             view.sync(&mut doc, &automerge::ROOT);
             press(&mut doc, KEY_CONNECT_BROWSE);
             view.sync(&mut doc, &automerge::ROOT);
@@ -4697,7 +5156,7 @@ mod tests {
             view.picker.as_mut().expect("picker").1.click_cancel();
             view.sync(&mut doc, &automerge::ROOT);
             assert!(view.picker.is_none());
-            assert_eq!(view.flow().screen(), Screen::Connect);
+            assert_eq!(view.flow().screen(), Screen::Restore);
         }
     }
 
@@ -4917,7 +5376,7 @@ mod tests {
         walk_to_codecs(&mut view, &mut doc);
         assert!(view.codec_page_visible());
         layout(&mut view);
-        assert_eq!(stage_label(&view).as_deref(), Some("Step 4 of 5  ·  Media"));
+        assert_eq!(stage_label(&view).as_deref(), Some("Step 4 of 5"));
         let lines = view.codec_page_lines();
         for needle in [
             "AMD and Intel",
@@ -4975,7 +5434,7 @@ mod tests {
         view.sync(&mut doc, &automerge::ROOT);
         assert!(!view.codec_page_visible());
         layout(&mut view);
-        assert_eq!(stage_label(&view).as_deref(), Some("Step 5 of 5  ·  Ready"));
+        assert_eq!(stage_label(&view).as_deref(), Some("Step 5 of 5"));
         press(&mut doc, KEY_FINISH);
         view.sync(&mut doc, &automerge::ROOT);
         assert!(view.finished());
@@ -5117,7 +5576,7 @@ mod tests {
         walk_to_codecs(&mut view, &mut doc);
         assert!(!view.codec_page_visible());
         layout(&mut view);
-        assert_eq!(stage_label(&view).as_deref(), Some("Step 4 of 4  ·  Ready"));
+        assert_eq!(stage_label(&view).as_deref(), Some("Step 4 of 4"));
     }
 
     #[test]
@@ -5165,14 +5624,22 @@ mod tests {
                 let _ = v.build_layout(&mut taffy, &theme, &mut node_map);
             }
 
-            let (mut connect, _) = view();
-            let mut connect_doc = AutoCommit::new();
-            press(&mut connect_doc, KEY_CONNECT);
-            connect.sync(&mut connect_doc, &automerge::ROOT);
-            let theme = Theme::dark();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let _ = connect.build_layout(&mut taffy, &theme, &mut node_map);
+            for keys in [
+                &[KEY_EXISTING][..],
+                &[KEY_EXISTING, KEY_CHOOSE_NEARBY],
+                &[KEY_EXISTING, KEY_CHOOSE_RESTORE],
+            ] {
+                let (mut connect, _) = view();
+                let mut connect_doc = AutoCommit::new();
+                for key in keys {
+                    press(&mut connect_doc, key);
+                    connect.sync(&mut connect_doc, &automerge::ROOT);
+                }
+                let theme = Theme::dark();
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let _ = connect.build_layout(&mut taffy, &theme, &mut node_map);
+            }
         }
         // Phase `narrow_layout_keeps_the_setup_surface_inside_the_viewport`.
         {
@@ -5262,18 +5729,19 @@ mod tests {
     )]
     fn host_identity_actions_stay_visible_and_aligned_at_supported_laptop_sizes() {
         let scenarios: &[(&[&str], &[&str], bool)] = &[
+            (&[KEY_EXISTING], &["onboarding.back.button"], false),
             (
-                &[],
-                &["onboarding.connect.button", "onboarding.begin.button"],
+                &[KEY_EXISTING, KEY_CHOOSE_NEARBY],
+                &["onboarding.back.button", "onboarding.connect.nearby.button"],
                 false,
             ),
             (
-                &[KEY_CONNECT],
+                &[KEY_EXISTING, KEY_CHOOSE_RESTORE],
                 &["onboarding.back.button", "onboarding.import.button"],
                 false,
             ),
             (
-                &[KEY_CONNECT],
+                &[KEY_EXISTING, KEY_CHOOSE_RESTORE],
                 &["onboarding.back.button", "onboarding.import.button"],
                 true,
             ),
@@ -5497,7 +5965,7 @@ mod tests {
                     theme.name,
                 );
 
-                if view.flow().screen() == Screen::Connect {
+                if view.flow().screen() == Screen::Restore {
                     let viewport = content_viewport;
                     let max_offset = f64::from(scroll.max_offset_y());
                     for field_id in [
@@ -5561,6 +6029,186 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one walk through every choice screen, its cards, and the flows they open"
+    )]
+    fn choices_open_separate_flows_from_pinned_focusable_cards() {
+        // Phase `each_choice_screen_offers_two_cards_that_stay_in_view`.
+        for (keys, cards) in [
+            (
+                &[][..],
+                ["onboarding.existing.card", "onboarding.begin.card"],
+            ),
+            (
+                &[KEY_EXISTING][..],
+                [
+                    "onboarding.existing.nearby.card",
+                    "onboarding.existing.restore.card",
+                ],
+            ),
+        ] {
+            for (width, height, theme) in [
+                (1366.0, 768.0, Theme::dark()),
+                (800.0, 600.0, Theme::dark()),
+                (1280.0, 720.0, Theme::dark().with_text_scale(1.3)),
+                (1280.0, 720.0, Theme::high_contrast().with_ui_scale(1.25)),
+            ] {
+                let (mut view, _) = view();
+                let mut document = AutoCommit::new();
+                for key in keys {
+                    press(&mut document, key);
+                    view.sync(&mut document, &automerge::ROOT);
+                }
+                let mut text = ui::text_render::TextRenderer::new();
+                let mut taffy: TaffyTree<()> = TaffyTree::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+                let measure_map = node_map.clone();
+                taffy
+                    .compute_layout_with_measure(
+                        node,
+                        taffy::Size {
+                            width: taffy::AvailableSpace::Definite(width),
+                            height: taffy::AvailableSpace::Definite(height),
+                        },
+                        |known, available, node_id, _, _| {
+                            measure_map
+                                .get(&node_id)
+                                .map_or(taffy::Size::ZERO, |&pointer| unsafe {
+                                    (*pointer).measure(known, available, &mut text)
+                                })
+                        },
+                    )
+                    .expect("choice layout");
+                view.apply_layout(&taffy, node, Point::ZERO);
+                let panel = view.composed.as_ref().expect("composition").get_rect();
+                let scroll = node_map
+                    .values()
+                    .find_map(|&pointer| unsafe {
+                        ((*pointer).name() == "Scrollable").then(|| (*pointer).get_rect())
+                    })
+                    .expect("choice page scroll viewport");
+                let mut previous: Option<Rect> = None;
+                for id in cards {
+                    let (rect, focusable) = node_map
+                        .values()
+                        .find_map(|&pointer| unsafe {
+                            ((*pointer).test_id() == Some(id))
+                                .then(|| ((*pointer).get_rect(), (*pointer).is_focusable()))
+                        })
+                        .unwrap_or_else(|| panic!("choice screen exposes {id}"));
+                    assert!(focusable, "{id} must be a keyboard focus stop");
+                    assert!(
+                        rect.height() >= f64::from(theme.tokens.metrics.min_pointer_target)
+                            && rect.x0 >= panel.x0 + 8.0
+                            && rect.x1 <= panel.x1 - 8.0
+                            && rect.y0 >= scroll.y1
+                            && rect.y1 <= panel.y1 - 8.0,
+                        "{id} must stay wholly visible below the explanation at {width}x{height}: card={rect:?}, scroll={scroll:?}, panel={panel:?}, theme={}",
+                        theme.name,
+                    );
+                    if let Some(previous) = previous {
+                        assert!(
+                            (rect.y0 - previous.y1).abs() < 0.5,
+                            "the choices are one list, edge to edge"
+                        );
+                        assert!((rect.x0 - previous.x0).abs() < 0.5, "rows share an edge");
+                    }
+                    previous = Some(rect);
+                    let node = accessibility_for_id(&view, id).expect("row semantics");
+                    assert_eq!(node.role, ui::a11y::Role::ListItem);
+                    assert!(
+                        node.value.as_deref().is_some_and(|value| !value.is_empty()),
+                        "{id} announces its description"
+                    );
+                }
+            }
+        }
+        // Phase `use_existing_opens_a_choice_and_each_choice_its_own_screen`.
+        {
+            let (mut view, _) = view();
+            let mut document = AutoCommit::new();
+            press(&mut document, KEY_EXISTING);
+            view.sync(&mut document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Existing);
+            let theme = Theme::dark();
+            let composition = view.build_composition(&theme, PANEL_MAX_HEIGHT);
+            assert!(
+                accessibility_for_id(&*composition, "onboarding.connect.path.field").is_none(),
+                "the choice screen is not the restore form"
+            );
+
+            press(&mut document, KEY_CHOOSE_RESTORE);
+            view.sync(&mut document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Restore);
+            let composition = view.build_composition(&theme, PANEL_MAX_HEIGHT);
+            assert!(accessibility_for_id(&*composition, "onboarding.connect.path.field").is_some());
+            assert!(
+                accessibility_for_id(&*composition, "onboarding.nearby.status").is_none(),
+                "restore does not carry the nearby flow"
+            );
+            press(&mut document, KEY_BACK);
+            view.sync(&mut document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Existing);
+
+            // Without an identity directory the helper cannot start; the
+            // nearby screen still opens and reports why, with a retry.
+            press(&mut document, KEY_CHOOSE_NEARBY);
+            view.sync(&mut document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Nearby);
+            assert_eq!(
+                view.error(),
+                Some(t("onboarding-nearby-unavailable").as_str()),
+                "choosing nearby is the request to pair"
+            );
+            let composition = view.build_composition(&theme, PANEL_MAX_HEIGHT);
+            assert!(
+                accessibility_for_id(&*composition, "onboarding.connect.path.field").is_none(),
+                "nearby does not carry the restore form"
+            );
+            assert!(
+                accessibility_for_id(&*composition, "onboarding.connect.nearby.button").is_some(),
+                "a failed start offers Try again"
+            );
+            press(&mut document, KEY_BACK);
+            view.sync(&mut document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Existing);
+            assert!(
+                view.error().is_none(),
+                "back leaves the flow's error behind"
+            );
+            press(&mut document, KEY_BACK);
+            view.sync(&mut document, &automerge::ROOT);
+            assert_eq!(view.flow.screen(), Screen::Intro);
+        }
+        // Phase `nearby_shows_cancel_while_pairing_runs`.
+        {
+            let (mut view, _) = view();
+            view.set_visual_state_for_snapshot(OnboardingVisualState::NearbyCode);
+            let theme = Theme::dark();
+            let composition = view.build_composition(&theme, PANEL_MAX_HEIGHT);
+            assert!(
+                accessibility_for_id(&*composition, "onboarding.connect.cancel.button").is_some()
+            );
+            assert!(
+                accessibility_for_id(&*composition, "onboarding.connect.nearby.button").is_none()
+            );
+            assert_eq!(
+                accessibility_for_id(&*composition, "onboarding.nearby.code")
+                    .and_then(|node| node.name),
+                Some("482 913".to_string())
+            );
+        }
+        // Phase `codes_are_grouped_for_comparison`.
+        {
+            assert_eq!(grouped_code("123456"), "123 456");
+            assert_eq!(grouped_code("12 34 56"), "123 456");
+            assert_eq!(grouped_code("1234"), "1234");
         }
     }
 
@@ -5681,7 +6329,8 @@ mod tests {
                 })
                 .expect("continue without backup button");
             assert!(
-                button.width() >= 44.0 && button.height() >= 40.0,
+                button.width() >= 44.0
+                    && button.height() >= f64::from(theme.tokens.metrics.min_pointer_target),
                 "backup continuation needs a practical pointer target: {button:?}"
             );
 

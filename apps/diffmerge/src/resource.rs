@@ -80,7 +80,9 @@ impl ResourceApp for DiffmergeShell {
     const ID: &'static str = "so.tilo.diffmerge";
     const TITLE: &'static str = "Diff & Merge";
     const ICON: Option<&'static str> = Some("diffmerge");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn label(state: &MergeState) -> String {
         if state.title.is_empty() {
@@ -316,8 +318,8 @@ mod tests {
         use ui::framework::testing::HeadlessApp;
         use ui::headless::{Control, ControlInput};
 
-        let mut app = HeadlessApp::<DiffmergeShell>::new().expect("the app opens");
-        app.stage(Some("diff")).expect("the diff stages");
+        let mut app =
+            HeadlessApp::<DiffmergeShell>::capture(Some("diff")).expect("the diff stages");
         let find = |app: &mut HeadlessApp<DiffmergeShell>, name: &str| -> Option<Control> {
             app.harness()
                 .controls()

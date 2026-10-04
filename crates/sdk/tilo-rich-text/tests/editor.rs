@@ -108,7 +108,7 @@ fn a_keystroke_is_an_action_and_undo_takes_back_a_word_at_a_time() {
     assert_eq!(paragraphs(&app), ["hello world"]);
     let last = app.versions().pop().unwrap();
     let context = last.context.as_ref().unwrap();
-    assert_eq!(context.action_label, "Splice Text");
+    assert_eq!(context.action_label, "Splice text");
     assert_eq!(
         context
             .resource
@@ -175,7 +175,7 @@ fn moving_a_paragraph_up_is_one_move_the_document_keeps() {
     app.harness().set_modifiers(&[]);
     assert_eq!(paragraphs(&app), ["second", "first"]);
     let last = app.versions().pop().unwrap();
-    assert_eq!(last.context.as_ref().unwrap().action_label, "Move Blocks");
+    assert_eq!(last.context.as_ref().unwrap().action_label, "Move blocks");
     assert!(app.undo());
     assert_eq!(paragraphs(&app), ["first", "second"]);
 }

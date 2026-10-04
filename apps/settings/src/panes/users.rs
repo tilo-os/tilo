@@ -205,6 +205,7 @@ fn protection_label(protection: KeyProtection) -> String {
         KeyProtection::BrokerFile => "settings-users-protection-file",
         KeyProtection::HardwareBacked => "settings-users-protection-hardware-backed",
         KeyProtection::LegacyPlaintext => "settings-users-protection-legacy",
+        KeyProtection::DeviceCertificate => "settings-users-protection-device-certificate",
         KeyProtection::Unavailable => "settings-users-protection-unavailable",
     })
 }

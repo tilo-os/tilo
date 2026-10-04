@@ -587,6 +587,11 @@ impl Window {
     }
 
     #[inline]
+    pub fn announce_frame(&self) {
+        self.window_state.lock().unwrap().announce_frame();
+    }
+
+    #[inline]
     pub fn server_side_decorations(&self) -> Option<bool> {
         self.window_state.lock().unwrap().server_side_decorations()
     }

@@ -61,6 +61,7 @@
 
 pub mod application;
 pub mod change;
+pub mod compact;
 pub mod entry;
 pub mod handshake;
 pub mod moderation;
@@ -73,6 +74,13 @@ pub mod verify;
 pub mod version;
 
 pub use change::{EntryAction, EntryChangeRequest, sign_change_request};
+pub use compact::{
+    COMPACT_SNAPSHOT_PROTOCOL, CatalogueEntry, CatalogueSnapshot, CompactRegistryEntry,
+    CompactRegistrySnapshot, MAX_VERSION_INDEX_BYTES, RegistryVersionIndex, VERSION_INDEX_PROTOCOL,
+    VersionIndexError, VersionIndexFile, VersionIndexRef, compact_signing_message,
+    compact_snapshot, compact_snapshot_hash, newest_versions, sign_compact_snapshot,
+    verify_compact_snapshot, verify_version_index, version_index_bytes,
+};
 pub use entry::{
     ENTRY_DOMAIN, EntryValidationError, INDEX_DOMAIN, LocalizedImages, LocalizedText,
     RegistryEntry, RegistryImage, RegistryImageKind, RegistryTarget, RegistryVersion,

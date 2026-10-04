@@ -209,6 +209,20 @@ pub enum DoorError {
 }
 
 impl DoorError {
+    /// Why an encoded action could not be turned back into one: no decoder
+    /// for its type, or a payload the registered decoder does not read (the
+    /// code that encoded it and the code decoding it disagree). The second is
+    /// a fault of its own and says so; reporting it as an unknown type sends
+    /// whoever reads it looking for a registration that is there.
+    pub fn decoding(error: crate::action::ActionError) -> Self {
+        match error {
+            crate::action::ActionError::UnknownType(type_id) => {
+                DoorError::UnregisteredType(type_id)
+            }
+            other => DoorError::Failed(other.to_string()),
+        }
+    }
+
     /// Stable machine-readable code, distinguishing "I addressed this
     /// wrongly" from "it ran and could not do its job".
     pub fn code(&self) -> &'static str {
@@ -641,9 +655,7 @@ fn dispatch_encoded_with_context(
     if let Some(ambient) = provenance.ambient {
         context = context.enriched_by(ambient);
     }
-    let action = registry
-        .decode(&encoded)
-        .map_err(|_| DoorError::UnregisteredType(encoded.type_id.clone()))?;
+    let action = registry.decode(&encoded).map_err(DoorError::decoding)?;
     if spec.deferred_invocation_type().is_some() && action.locus() != spec.locus {
         return Err(DoorError::Failed(
             "Deferred action locus differs from its declaration".into(),
@@ -863,6 +875,7 @@ mod tests {
         an_address_that_no_longer_resolves_is_refused_not_redirected();
         an_argument_that_does_not_match_the_declaration_is_refused();
         an_unregistered_action_type_is_refused_rather_than_applied();
+        a_payload_its_decoder_cannot_read_is_not_called_unregistered();
         a_change_through_the_door_is_attributed_to_the_caller();
         ambient_task_context_reaches_door_actions_without_overwriting_resource();
     }
@@ -940,6 +953,44 @@ mod tests {
         assert_eq!(err, DoorError::UnregisteredType(NOTE_TYPE.into()));
         assert_eq!(doc.get_heads(), before);
         assert!(doc.get(&ROOT, "starred").unwrap().is_none());
+    }
+
+    /// The type is registered, but by code that reads another shape (as after
+    /// the code that encodes it changed): the refusal names the payload, not a
+    /// missing registration, and nothing is applied.
+    fn a_payload_its_decoder_cannot_read_is_not_called_unregistered() {
+        #[derive(Debug, Serialize, Deserialize)]
+        struct OtherShape {
+            #[allow(dead_code, reason = "only its shape is decoded")]
+            pinned: bool,
+        }
+        impl Action for OtherShape {
+            fn apply(&self, _doc: &mut Doc) -> Result<(), ActionError> {
+                Ok(())
+            }
+        }
+        let tree = open();
+        let mut doc = AutoCommit::new();
+        let before = doc.get_heads();
+        let mut other = ActionRegistry::new();
+        other.register::<OtherShape>(NOTE_TYPE);
+
+        let err = invoke(
+            &mut doc,
+            &tree,
+            &star(),
+            None,
+            InvocationProvenance::caller(b"caller-key"),
+            &other,
+            &mut LocalTransport::new(),
+        )
+        .unwrap_err();
+
+        let DoorError::Failed(why) = &err else {
+            panic!("a payload the decoder cannot read is its own failure: {err:?}");
+        };
+        assert!(why.contains(NOTE_TYPE), "{why}");
+        assert_eq!(doc.get_heads(), before);
     }
 
     /// A provider that reads the document to build its tree, so enumeration

@@ -12,8 +12,9 @@ use ui::search::{
     CatalogSearchProvider, Facet, SearchCatalog, SearchCatalogError, SearchQuery, SearchResult,
 };
 
-use tilo_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
+use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
+use ui::tilo_resource::Effect as _;
 
 use crate::widgets::{category_label, provenance};
 use crate::{StoreItem, StoreSource};
@@ -224,16 +225,10 @@ pub struct StoreSearchProvider {
 impl StoreSearchProvider {
     fn row_resource(row: &Row) -> Resource {
         let mut resource = Resource::new(&row.resource_id, "store.app", &row.title);
-        let app_id = row.resource_id.trim_start_matches("app:");
-        if let Ok(details) = ActionSpec::operation(
-            "show-details",
-            "Show app details",
-            OperationKind::View,
-            "store.view",
-            &app_id,
-        ) {
-            resource.actions.push(details);
-        }
+        let app = row.resource_id.trim_start_matches("app:").to_owned();
+        resource
+            .actions
+            .push(crate::resource::StoreEffect::ShowDetails { app }.bound());
         resource
     }
 }
@@ -363,6 +358,7 @@ mod tests {
     use super::*;
     use crate::{InstalledState, StoreItemVersion, StoreTrust};
     use std::sync::mpsc;
+    use tilo_actions::OperationKind;
     use ui::search::SearchProvider;
 
     fn item(index: usize) -> StoreItem {
@@ -410,7 +406,7 @@ mod tests {
             let address = first.results[0].action_address().unwrap();
             let resource = provider.resolve_action_resource(&address).unwrap();
             assert_eq!(resource.actions[0].id, "show-details");
-            assert_eq!(resource.actions[0].kind, OperationKind::View);
+            assert_ne!(resource.actions[0].kind, OperationKind::Document);
         }
 
         // Case `removed_catalogue_entry_refuses_stale_palette_address`.

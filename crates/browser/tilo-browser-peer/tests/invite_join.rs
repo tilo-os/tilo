@@ -181,6 +181,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
             request_id: [1; 32],
             role: RoomRole::Editor,
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+            inviter_name: Some("Alice".into()),
         },
     )
     .await
@@ -199,8 +200,9 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
     assert!(
         matches!(
             &offered,
-            JoinReply::Invitation { room, workspace_id, name, role: RoomRole::Editor, .. }
+            JoinReply::Invitation { room, workspace_id, name, role: RoomRole::Editor, inviter: Some(inviter), .. }
                 if *room == created.room && *workspace_id == created.workspace_id && name == "Design review"
+                    && inviter.name == "Alice" && inviter.user_public_key == alice.verifying_key().to_bytes()
         ),
         "{offered:?}"
     );
@@ -373,6 +375,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
             request_id: [12; 32],
             role: RoomRole::Editor,
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+            inviter_name: None,
         },
         RoomsRequest::Requests {
             room: created.room.clone(),
@@ -412,6 +415,7 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
             request_id: [4; 32],
             role: RoomRole::Viewer,
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+            inviter_name: None,
         },
     )
     .await
@@ -651,6 +655,7 @@ async fn an_invited_peer_resumes_with_its_own_identity_after_page_and_host_reloa
             request_id: [20; 32],
             role: RoomRole::Editor,
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+            inviter_name: None,
         },
     )
     .await

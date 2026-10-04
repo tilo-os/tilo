@@ -276,6 +276,69 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
     })
     .await;
     assert_eq!(opened, vec!["from the laptop", "after the welcome"]);
+
+    // Another device is admitted and the laptop writes under the new epoch
+    // at once. The edit reaches the browser before the commit that carries
+    // that epoch's key: it waits for the key instead of being refused.
+    let phone = enrol(&root, "phone", DeviceCapabilities::member());
+    let phone_device = Ed25519PublicKey::from_bytes(phone.key.verifying_key().to_bytes());
+    let phone_dir = tempfile::tempdir().unwrap();
+    let mut phone_member = channel_crypto::ChannelMember::open(
+        phone_dir.path(),
+        channel,
+        phone_device,
+        Ed25519PublicKey::from_bytes(laptop_device),
+        &vault,
+    )
+    .unwrap();
+    let phone_request = phone_member
+        .access_request(&phone.key, 1, &vault)
+        .unwrap()
+        .unwrap();
+    requests.insert(phone_device, phone_request);
+    let allowed = BTreeSet::from([
+        Ed25519PublicKey::from_bytes(laptop_device),
+        browser_device,
+        phone_device,
+    ]);
+    let epoch = steward.epoch();
+    steward.reconcile(&allowed, &requests, &vault).unwrap();
+    assert!(steward.epoch() > epoch);
+    publish(&session, &seal(&steward, 3, "under the new epoch"));
+    for outgoing in steward.outbox() {
+        if outgoing.recipient == browser_device {
+            for frame in outgoing.frames {
+                publish(
+                    &session,
+                    &NeighbourMsg::MlsGovernance {
+                        room: ROOM.into(),
+                        frame: Box::new(frame),
+                        delivery: 3,
+                    },
+                );
+            }
+        }
+    }
+    wait_for(
+        "the edit under the new epoch to open in the browser",
+        || {
+            for event in events.drain() {
+                match event {
+                    PeerEvent::Document(document) => {
+                        if let Some(DocumentMutation::Incremental(bytes)) = document.mutation() {
+                            opened.push(String::from_utf8(bytes).unwrap());
+                        }
+                    }
+                    PeerEvent::DocumentRejected(reason) => panic!("rejected: {reason}"),
+                    _ => {}
+                }
+            }
+            let done = (opened.len() >= 3).then(|| opened.clone());
+            async move { done }
+        },
+    )
+    .await;
+    assert_eq!(opened.last().unwrap(), "under the new epoch");
     peer.close();
     host.relay.shutdown().await;
 }

@@ -41,6 +41,14 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, TouchPhase, W
 use winit::keyboard::{Key, NamedKey};
 use zeroize::Zeroize;
 
+#[path = "text_input_preparation.rs"]
+mod preparation;
+use preparation::Preparation;
+
+#[path = "text_input_reveal.rs"]
+mod reveal;
+use reveal::RevealToggle;
+
 /// `MenuItem` callbacks are `Arc<dyn Fn>` and can't mutate the widget, so
 /// clicks dispatch through this parallel list by `item_at` index instead.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -247,6 +255,7 @@ pub struct TextInput {
     single_attributes: Option<SingleLineAttributes>,
     single_origin: Point,
     shaped_layout_signature: u64,
+    shaped_preparation: Option<Preparation>,
     /// Renderer epoch invalidates cached glyph geometry when canonical fonts change.
     shaped_layout_epoch: Option<Arc<()>>,
     /// Complete authored runs supplied by a shared rich-text widget. They
@@ -333,8 +342,12 @@ pub struct TextInput {
     /// `Shift+Enter` for a real newline (chat-composer pattern).
     enter_submits: bool,
     submit_requested: bool,
-    /// The plaintext still never reaches the a11y tree or `text_review`.
-    reveal: bool,
+    /// Trailing show/hide control of a single-line secret field; it owns
+    /// the reveal state. The plaintext still never reaches the a11y tree or
+    /// `text_review`.
+    reveal: RevealToggle,
+    /// The control's layout node while this field is in a layout tree.
+    reveal_node: Option<NodeId>,
     /// Rebuilt by each `draw`; empty in single-line mode.
     lines: Vec<VisualLine>,
     /// Preserved across consecutive `Up`/`Down`; reset on any other move.
@@ -349,10 +362,10 @@ pub struct TextInput {
     highlighter: Option<Box<dyn Highlighter>>,
     /// `Some(0)` inserts a literal `\t`; `None` leaves Tab for focus traversal.
     tab_spaces: Option<usize>,
-    /// Rebuilt only when the text changes (keyed by `hl_sig`).
+    /// Rebuilt only when the exact text or highlighter changes.
     hl_spans: Vec<Vec<Span>>,
     hl_line_starts: Vec<usize>,
-    hl_sig: u64,
+    hl_text: Option<Arc<str>>,
     /// Only re-centres when the caret moves, so a wheel scroll away from it sticks.
     last_scroll_caret: Option<usize>,
     /// Last configured caret width, retained for the platform IME anchor whose
@@ -452,6 +465,7 @@ impl TextInput {
             single_attributes: None,
             single_origin: Point::ZERO,
             shaped_layout_signature: u64::MAX,
+            shaped_preparation: None,
             shaped_layout_epoch: None,
             rich_spans: None,
             preedit: String::new(),
@@ -504,7 +518,8 @@ impl TextInput {
             multiline_shaped: false,
             enter_submits: false,
             submit_requested: false,
-            reveal: false,
+            reveal: RevealToggle::new(),
+            reveal_node: None,
             lines: Vec::new(),
             goal_x: None,
             scroll_y: 0.0,
@@ -516,7 +531,7 @@ impl TextInput {
             tab_spaces: None,
             hl_spans: Vec::new(),
             hl_line_starts: Vec::new(),
-            hl_sig: u64::MAX,
+            hl_text: None,
             last_scroll_caret: None,
             last_caret_width: 2.0,
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -894,6 +909,7 @@ impl TextInput {
     pub(super) fn set_rich_spans(&mut self, spans: Option<Vec<RichSpan>>) {
         if self.rich_spans != spans {
             self.rich_spans = spans;
+            self.shaped_preparation = None;
             self.model_layout_dirty = true;
         }
     }
@@ -1155,6 +1171,7 @@ impl TextInput {
         }
         if self.secret {
             self.text.zeroize();
+            self.last_notified_text.zeroize();
         }
         self.text = s.to_string();
         self.selection_anchor = None;
@@ -1923,6 +1940,14 @@ impl TextInput {
         available_width: f32,
     ) {
         self.refresh_layout_epoch(tr);
+        if self.single_layout.is_some()
+            && self
+                .shaped_preparation
+                .as_ref()
+                .is_some_and(|prepared| prepared.matches(self, style, available_width, theme))
+        {
+            return;
+        }
         self.refresh_highlight();
         let display = self.layout_display_text();
         let spans = self.highlighted_display_spans(theme);
@@ -1937,25 +1962,27 @@ impl TextInput {
             self.shaped_signature(&display, &style.family, style.size, Some(available_width)),
             &spans,
         );
-        if self.single_layout.is_none() || self.shaped_layout_signature != signature {
-            let browser_emoji = tr.browser_color_emoji_installed();
-            let mut layout = RichTextLayout::shape_styled_reusing_browser(
-                &mut tr.font_system,
-                &spans,
-                style,
-                Some(available_width),
-                self.align,
-                self.single_layout.take(),
-                browser_emoji,
-            );
-            tr.note_browser_rich_layout(&layout);
-            if !self.preedit.is_empty() {
-                let start = self.cursor_pos.min(self.text.len());
-                layout.add_underline(start..start.saturating_add(self.preedit.len()));
-            }
-            self.single_layout = Some(layout);
-            self.shaped_layout_signature = signature;
+        let browser_emoji = tr.browser_color_emoji_installed();
+        let mut layout = RichTextLayout::shape_styled_reusing_browser(
+            &mut tr.font_system,
+            &spans,
+            style,
+            Some(available_width),
+            self.align,
+            self.single_layout.take(),
+            browser_emoji,
+        );
+        if self.secret {
+            layout.discard_prepared_inputs();
         }
+        tr.note_browser_rich_layout(&layout);
+        if !self.preedit.is_empty() {
+            let start = self.cursor_pos.min(self.text.len());
+            layout.add_underline(start..start.saturating_add(self.preedit.len()));
+        }
+        self.single_layout = Some(layout);
+        self.shaped_layout_signature = signature;
+        self.shaped_preparation = Preparation::capture(self, style, available_width, Some(theme));
     }
 
     fn multiline_style(&self, scale: f32) -> TextStyle {
@@ -2690,6 +2717,7 @@ impl TextInput {
         self.single_origin.y += rect.y0 - self.rect.y0;
         self.rect = rect;
         self.refresh_multiline_origin();
+        self.refresh_reveal_control();
     }
 
     fn refresh_multiline_origin(&mut self) {
@@ -2725,12 +2753,13 @@ impl TextInput {
 
     #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
-        self.id = id.to_string();
+        self.set_id(id);
         self
     }
 
     pub(crate) fn set_id(&mut self, id: &str) {
         self.id = id.to_string();
+        self.reveal.set_field_id(id);
     }
 
     /// Bind this input to one root-level document string.
@@ -2758,16 +2787,16 @@ impl TextInput {
 
     #[must_use]
     pub fn with_secret(mut self, on: bool) -> Self {
-        self.secret = on;
-        if on {
-            self.kind = TextInputKind::Password;
-        }
+        self.set_secret(on);
         self
     }
 
     pub fn set_secret(&mut self, on: bool) {
         self.secret = on;
         if on {
+            self.shaped_preparation = None;
+            self.hl_text = None;
+            self.single_layout = None;
             self.set_kind(TextInputKind::Password);
         }
     }
@@ -2776,26 +2805,56 @@ impl TextInput {
         self.secret
     }
 
-    /// Only meaningful together with `with_secret`.
+    /// Only meaningful together with `with_secret`. Secret fields start
+    /// hidden; a single-line one also offers its own show/hide control.
     #[must_use]
     pub fn with_reveal(mut self, on: bool) -> Self {
-        self.reveal = on;
+        self.reveal.set_revealed(on);
         self
     }
 
     pub fn set_reveal(&mut self, on: bool) {
-        self.reveal = on;
+        self.reveal.set_revealed(on);
     }
 
     /// No-op on a non-secret field.
     pub fn toggle_reveal(&mut self) {
         if self.secret {
-            self.reveal = !self.reveal;
+            self.reveal.set_revealed(!self.reveal.revealed());
         }
     }
 
     pub fn is_revealed(&self) -> bool {
-        self.reveal
+        self.reveal.revealed()
+    }
+
+    /// Whether this field paints and offers the trailing show/hide control.
+    pub fn has_reveal_control(&self) -> bool {
+        self.secret && !self.multiline
+    }
+
+    /// Where the show/hide control sits, or `None` without one.
+    pub fn reveal_control_rect(&self) -> Option<Rect> {
+        self.has_reveal_control().then(|| self.reveal.get_rect())
+    }
+
+    /// Room the trailing edge keeps free of text: the show/hide control when
+    /// present, otherwise the same padding as the leading edge.
+    fn trailing_text_inset(&self, padding_x: f64) -> f64 {
+        if self.has_reveal_control() {
+            RevealToggle::width_for(self.rect.height())
+        } else {
+            padding_x
+        }
+    }
+
+    fn refresh_reveal_control(&mut self) {
+        self.reveal.set_enabled(!self.effectively_disabled());
+        if self.has_reveal_control() {
+            self.reveal.place(self.rect);
+        } else {
+            self.reveal.set_focus(false);
+        }
     }
 
     #[must_use]
@@ -2855,13 +2914,15 @@ impl TextInput {
     #[must_use]
     pub fn with_highlighter(mut self, h: Box<dyn Highlighter>) -> Self {
         self.highlighter = Some(h);
-        self.hl_sig = u64::MAX; // force a rebuild on next draw
+        self.hl_text = None;
+        self.shaped_preparation = None;
         self
     }
 
     pub fn set_highlighter(&mut self, h: Option<Box<dyn Highlighter>>) {
         self.highlighter = h;
-        self.hl_sig = u64::MAX;
+        self.hl_text = None;
+        self.shaped_preparation = None;
     }
 
     /// `0` = literal `\t`. `Shift+Tab` outdents by the same width.
@@ -2912,18 +2973,15 @@ impl TextInput {
     /// code stay coherent.
     fn refresh_highlight(&mut self) {
         let Some(hl) = &self.highlighter else {
+            self.hl_text = None;
             self.hl_spans.clear();
             self.hl_line_starts.clear();
             return;
         };
-        // FNV-1a signature so re-tokenising is skipped when the text hasn't changed.
-        let mut hasher = fnv::FnvHasher::default();
-        std::hash::Hasher::write(&mut hasher, self.text.as_bytes());
-        let sig = std::hash::Hasher::finish(&hasher) ^ self.text.len() as u64;
-        if sig == self.hl_sig && !self.hl_line_starts.is_empty() {
+        if !self.secret && self.hl_text.as_deref() == Some(self.text.as_str()) {
             return;
         }
-        self.hl_sig = sig;
+        self.hl_text = (!self.secret).then(|| Arc::from(self.text.as_str()));
         self.hl_spans.clear();
         self.hl_line_starts.clear();
         let mut carry = 0u64;
@@ -2955,7 +3013,7 @@ impl TextInput {
 
     #[must_use]
     pub fn disabled(mut self, on: bool) -> Self {
-        self.disabled = on;
+        self.set_disabled(on);
         self
     }
 
@@ -2966,6 +3024,7 @@ impl TextInput {
             self.is_dragging = false;
             self.is_hovered = false;
         }
+        self.reveal.set_enabled(!self.effectively_disabled());
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -3010,7 +3069,7 @@ impl TextInput {
     }
 
     fn masked(&self) -> bool {
-        self.secret && !self.reveal
+        self.secret && !self.reveal.revealed()
     }
 
     /// One bullet per *character* of the real text when masked.
@@ -3961,6 +4020,7 @@ impl Drop for TextInput {
     fn drop(&mut self) {
         if self.secret {
             self.text.zeroize();
+            self.last_notified_text.zeroize();
             self.preedit.zeroize();
         }
     }
@@ -4065,13 +4125,22 @@ impl Widget for TextInput {
             let band = band as f32;
             Dimension::length(band.max(self.interaction.minimum_target()))
         };
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height,
             },
             ..Default::default()
-        });
+        };
+        self.refresh_reveal_control();
+        let node = if self.has_reveal_control() {
+            let reveal = self.reveal.build_layout(taffy, theme, node_map);
+            self.reveal_node = Some(reveal);
+            taffy.parent_node(style, &[reveal])
+        } else {
+            self.reveal_node = None;
+            taffy.leaf_node(style)
+        };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -4130,10 +4199,19 @@ impl Widget for TextInput {
                 reason = "layout width originates as f32; nonnegative insets only reduce it before shaping at f32 precision"
             )]
             let available_width = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0) as f32;
-            let display = self.layout_display_text();
-            let signature =
-                self.shaped_signature(&display, &style.family, style.size, Some(available_width));
-            if self.single_layout.is_none() || self.shaped_layout_signature != signature {
+            if self.single_layout.is_none()
+                || !self
+                    .shaped_preparation
+                    .as_ref()
+                    .is_some_and(|prepared| prepared.matches_inputs(self, &style, available_width))
+            {
+                let display = self.layout_display_text();
+                let signature = self.shaped_signature(
+                    &display,
+                    &style.family,
+                    style.size,
+                    Some(available_width),
+                );
                 let browser_emoji = text_renderer.browser_color_emoji_installed();
                 let mut layout = RichTextLayout::shape_plain_browser(
                     &mut text_renderer.font_system,
@@ -4149,6 +4227,7 @@ impl Widget for TextInput {
                 }
                 self.single_layout = Some(layout);
                 self.shaped_layout_signature = signature;
+                self.shaped_preparation = Preparation::capture(self, &style, available_width, None);
             }
             self.multiline_shaped = true;
             self.lines.clear();
@@ -4187,7 +4266,7 @@ impl Widget for TextInput {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
         self.last_caret_width = theme.caret_width;
         self.gutter_text_scale = f64::from(theme.text_scale);
@@ -4233,12 +4312,20 @@ impl Widget for TextInput {
         let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
         self.update_single_line_scroll(cursor_x_offset, padding_x, theme.caret_width);
 
+        // Text never runs under the show/hide control.
+        let text_clip = if self.has_reveal_control() {
+            let mut clip = self.rect;
+            clip.x1 = (clip.x1 - RevealToggle::width_for(clip.height())).max(clip.x0);
+            RoundedRect::from_rect(clip, f64::from(theme.tokens.radii.control))
+        } else {
+            shape
+        };
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             BlendMode::default(),
             1.0,
             transform,
-            &shape,
+            &text_clip,
         );
 
         self.draw_single_line_decorations(scene, transform, theme, true);
@@ -4255,6 +4342,11 @@ impl Widget for TextInput {
         }
 
         scene.pop_layer();
+        if self.has_reveal_control() {
+            self.refresh_reveal_control();
+            self.reveal
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
         self.draw_spelling(scene, transform, theme);
         self.draw_autocorrection(scene, transform, theme);
         self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
@@ -4266,6 +4358,19 @@ impl Widget for TextInput {
             return;
         }
         self.clamp_to_text();
+
+        // The show/hide control sees input first; a press it takes never
+        // places the caret or moves focus.
+        if self.has_reveal_control() {
+            self.refresh_reveal_control();
+            let node = self.reveal_node.unwrap_or(ctx.node_id);
+            let already_handled = *ctx.handled;
+            self.reveal
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled && !already_handled {
+                return;
+            }
+        }
 
         match event {
             // Only when hovered, so it never steals the wheel from a surrounding scroll region.
@@ -4386,11 +4491,51 @@ impl Widget for TextInput {
 
     /// A disabled input claims no cursor and defers to the host default.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if !self.effectively_disabled() && self.rect.contains(point) {
+        if self.has_reveal_control() && self.reveal.contains(point) {
+            Some(winit::window::CursorIcon::Pointer)
+        } else if !self.effectively_disabled() && self.rect.contains(point) {
             Some(winit::window::CursorIcon::Text)
         } else {
             None
         }
+    }
+
+    /// Hosts that embed the field without a layout tree still get the
+    /// show/hide control's tooltip.
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        if self.has_reveal_control() {
+            self.reveal.tooltip_at(point)
+        } else {
+            None
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        if self.has_reveal_control() {
+            vec![&self.reveal]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        if self.has_reveal_control() {
+            visitor(&self.reveal);
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.has_reveal_control() {
+            vec![&mut self.reveal]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Repaints like a leaf; the show/hide control does not make the field a
+    /// container that only redraws for a dirty child.
+    fn needs_redraw(&self) -> bool {
+        true
     }
 
     fn is_focusable(&self) -> bool {
@@ -4817,6 +4962,7 @@ impl crate::widget::controls::ActionControls for TextInput {
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
         }
+        self.reveal.set_enabled(!self.effectively_disabled());
     }
 }
 
@@ -4900,6 +5046,7 @@ impl TextInput {
         text_size: f32,
         text_scale: f32,
     ) -> f32 {
+        self.shaped_preparation = None;
         self.refresh_layout_epoch(text_renderer);
         self.char_x_positions.clear();
         self.char_x_positions
@@ -4956,6 +5103,9 @@ impl TextInput {
                         browser_emoji,
                     )
                 };
+                if self.secret {
+                    layout.discard_prepared_inputs();
+                }
                 text_renderer.note_browser_rich_layout(&layout);
                 if !self.preedit.is_empty() {
                     let start = self.cursor_pos.min(self.text.len());
@@ -5018,7 +5168,11 @@ impl TextInput {
     ) {
         // Include the caret's painted width, especially for padding-free code
         // lines: putting its left edge on the clip boundary hides it entirely.
-        let visible_width = (self.rect.width() - padding_x * 2.0 - caret_width * 2.0).max(0.0);
+        let visible_width = (self.rect.width()
+            - padding_x
+            - self.trailing_text_inset(padding_x)
+            - caret_width * 2.0)
+            .max(0.0);
         if self.is_focused {
             if cursor_x_offset - self.scroll_x < 0.0 {
                 self.scroll_x = cursor_x_offset;
@@ -5870,3 +6024,7 @@ impl TextInput {
 #[cfg(test)]
 #[path = "text_input_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "text_input_preparation_tests.rs"]
+mod preparation_tests;

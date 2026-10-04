@@ -19,7 +19,6 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         ebook::definition(),
         feeds::definition(),
         hex_editor::definition(),
-        image_editor::definition(),
         maps::definition(),
         music::definition(),
         notes::definition(),

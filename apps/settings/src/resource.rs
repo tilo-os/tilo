@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
+use ui::application::ComponentBehaviour;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::EncodedAction;
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
@@ -99,16 +100,26 @@ impl ResourceApp for SettingsShell {
     const ID: &'static str = "so.tilo.settings";
     const TITLE: &'static str = "Settings";
     const ICON: Option<&'static str> = Some("settings");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        #[cfg(not(feature = "thin"))]
+        if let Some(viewport) = scenario.and_then(crate::shots::scenario_viewport) {
+            return viewport;
+        }
+        #[cfg(feature = "thin")]
+        let _ = scenario;
+        (1280, 800)
+    }
+    // Sidebar filtering rebuilds the widget tree, and the Appearance pane's
+    // scale, theme, contrast and motion apply live.
+    const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour {
+        autofocus_on_structure_change: true,
+        appearance_reconcile: true,
+        ..ComponentBehaviour::DEFAULT
+    };
 
     #[cfg(not(feature = "thin"))]
     fn scenarios() -> &'static [&'static str] {
         crate::shots::SCENARIOS
-    }
-
-    #[cfg(not(feature = "thin"))]
-    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
-        crate::shots::scenario_viewport(name)
     }
 
     fn view(cx: &mut ViewCx<Settings>) -> Element {
@@ -128,6 +139,12 @@ impl ResourceSurface<Settings> for SettingsApp {
     #[cfg(not(feature = "thin"))]
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
+    }
+
+    // Preference and device rows publish their document edits as hand-built
+    // rows of the widget's own rather than through the resource.
+    fn publishes_document_actions(&self) -> bool {
+        true
     }
 }
 

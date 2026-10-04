@@ -1,11 +1,13 @@
-//! Per-window Monitor preferences.
+//! Monitor preferences.
 //!
-//! These values describe how **this device** observes a live system:
-//! sampling cadence, whether it is currently sampling, and kernel-thread
-//! visibility. They must not enter Automerge, history, or collaboration:
-//! another window's paused sampler is never authority over this machine.
-//! `MonitorApp` owns one [`Prefs`] value per window; a host may later bind it
-//! to a device-preference service without changing that boundary.
+//! The sampling cadence and kernel-thread visibility are the person's: they
+//! follow them to every device as [`MonitorPreferences`], a personal
+//! settings section, never the shared document. Whether this window is
+//! sampling right now ([`Prefs::auto_refresh`]) belongs to the window alone:
+//! another window's paused sampler is never authority over this one.
+
+use serde::{Deserialize, Serialize};
+use ui::storage::{Scope, SettingsSchema};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Prefs {
@@ -27,6 +29,40 @@ impl Default for Prefs {
             show_kernel_threads: false,
         }
     }
+}
+
+impl Prefs {
+    /// The part of these preferences that follows the person.
+    #[must_use]
+    pub fn personal(&self) -> MonitorPreferences {
+        MonitorPreferences {
+            interval_ms: self.interval_ms,
+            show_kernel_threads: self.show_kernel_threads,
+        }
+    }
+
+    /// Take the person's preferences, keeping this window's sampling state.
+    pub fn adopt(&mut self, personal: &MonitorPreferences) {
+        self.interval_ms = personal.interval_ms;
+        self.show_kernel_threads = personal.show_kernel_threads;
+    }
+}
+
+/// The Monitor preferences that follow the person to every device.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorPreferences {
+    pub interval_ms: u64,
+    pub show_kernel_threads: bool,
+}
+
+impl Default for MonitorPreferences {
+    fn default() -> Self {
+        Prefs::default().personal()
+    }
+}
+
+impl SettingsSchema for MonitorPreferences {
+    const SCOPE: Scope = Scope::Personal;
 }
 
 #[cfg(test)]

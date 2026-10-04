@@ -156,19 +156,16 @@ fn startup_is_empty_live_and_populated_only_in_demo() {
         Some(crate::list_pane::EMPTY_LIBRARY_TITLE)
     );
 
-    // Syncing the live app over a fresh document seeds nothing but the
-    // reading settings, through an action.
+    // Syncing the live app over a fresh document writes nothing: the default
+    // reading settings stand unwritten.
     let mut live = FeedsApp::new();
     let doc = synced(&mut live);
     assert!(live.core().store.feeds.is_empty());
-    assert!(FeedsDoc::has_settings(&doc));
-    let recorded = live
-        .core()
-        .actions
-        .last_dispatched()
-        .cloned()
-        .expect("reading settings are an action");
-    assert!(String::from_utf8_lossy(&recorded.payload).contains("SetReadSettings"));
+    assert!(
+        !FeedsDoc::has_settings(&doc),
+        "opening writes nothing: the default reading settings stand unwritten"
+    );
+    assert!(live.core().actions.last_dispatched().is_none());
 
     // The demo opens a rich article and seeds its first document.
     let mut demo = app();
@@ -232,11 +229,10 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
         let mut doc = synced(&mut a);
         let (worker, tx) = FetchWorker::for_test();
         a.core_mut().worker = Some(worker);
-        let start = ui::time::now();
+        // `refresh_all` only queues: it returns before any fetch reported.
         a.core_mut().refresh_all();
-        assert!(start.elapsed().as_millis() < 50, "refresh must not block");
         assert!(a.core().refresh.in_progress());
-        assert_eq!(a.core().refresh.done, 0);
+        assert_eq!(a.core().refresh.done, 0, "refresh_all waited for a fetch");
         assert!(
             a.next_wake_deadline().is_some(),
             "outstanding fetches wake the loop without animation"

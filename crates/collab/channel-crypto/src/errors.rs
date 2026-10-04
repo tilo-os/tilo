@@ -89,6 +89,10 @@ pub enum Error {
     #[error("no content key for epoch {0}")]
     MissingContentKey(u64),
 
+    /// The device signer refused or failed to sign a governance frame.
+    #[error("governance signer error: {0}")]
+    Signer(String),
+
     /// A content-key or key-history envelope failed to seal or open.
     #[error("content encryption error: {0}")]
     ContentCrypto(tilo_seal::Error),

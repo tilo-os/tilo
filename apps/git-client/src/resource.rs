@@ -79,7 +79,9 @@ impl ResourceApp for GitClientShell {
     const ID: &'static str = "so.tilo.git-client";
     const TITLE: &'static str = "Git";
     const ICON: Option<&'static str> = Some("git-client");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn label(state: &GitClientState) -> String {
         crate::actions::repo_label(&state.repo)

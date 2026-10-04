@@ -250,7 +250,7 @@ fn a_compact_page_names_each_resource_once_and_each_action_by_signature() {
         next_cursor: b"tilo-dir-7".to_vec(),
         ..CataloguePage::default()
     };
-    let compact = page::compact_page(&page, Some(&mut page::Handles::default()));
+    let compact = page::compact_described(&page, Some(&mut page::Handles::default()), true);
     assert_eq!(
         compact,
         json!({
@@ -273,6 +273,46 @@ fn a_compact_page_names_each_resource_once_and_each_action_by_signature() {
         compact.to_string().len() * 4 < page_json(&page).to_string().len(),
         "the compact page is a fraction of the full one"
     );
+}
+
+/// The rows a needle matched are described; the rest of the resource's
+/// actions are bare signatures. A first sentence is never cut short of its
+/// end at an ordinary length.
+#[test]
+fn only_matched_rows_are_described_and_whole() {
+    let described = |id: &str, text: &str| {
+        let mut row = action_row("doc:1", id, Vec::new());
+        if let Some(action) = row.action.as_mut() {
+            action.description = Some(text.into());
+        }
+        row
+    };
+    let edit = "Change marks by id: colours, opacity, name, move_by [dx,dy], scale and rotate about their centre, or move them to another layer.";
+    let page = CataloguePage {
+        revision: "r1".into(),
+        rows: vec![
+            described("edit", edit),
+            described("paint", "Paint brush strokes. Each stroke is points."),
+        ],
+        ..CataloguePage::default()
+    };
+    let compact = page::compact_first_described(&page, None, 1);
+    let actions = &compact["resources"][0]["actions"];
+    assert_eq!(
+        actions["edit"],
+        format!("Label of edit — {}", edit.trim_end_matches('.'))
+    );
+    assert_eq!(actions["paint"], "Label of paint");
+    let long = format!("{}, and then {}", "word ".repeat(40), "more ".repeat(40));
+    let page = CataloguePage {
+        rows: vec![described("long", &long)],
+        ..CataloguePage::default()
+    };
+    let line = page::compact_described(&page, None, true)["resources"][0]["actions"]["long"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(line.ends_with("word…"), "cut at the clause: {line}");
 }
 
 #[test]
@@ -332,4 +372,44 @@ fn every_word_of_a_needle_begins_a_word_of_the_row() {
         &format,
         &page::needle_words("heavier text")
     ));
+}
+
+#[test]
+fn a_running_app_is_named_by_its_id_or_its_last_part() {
+    let running = [
+        "so.tilo.canvas",
+        "so.tilo.word-processor",
+        "org.example.canvas",
+    ];
+    assert_eq!(
+        page::app_named("so.tilo.word-processor", &running).unwrap(),
+        "so.tilo.word-processor"
+    );
+    assert_eq!(
+        page::app_named("Word-Processor", &running).unwrap(),
+        "so.tilo.word-processor"
+    );
+    let both = page::app_named("canvas", &running).unwrap_err();
+    assert!(both.contains("several"), "{both}");
+    let none = page::app_named("sheets", &running[..1]).unwrap_err();
+    assert!(none.contains("running: so.tilo.canvas"), "{none}");
+}
+
+#[test]
+fn a_succeeded_batch_step_is_its_output_alone() {
+    let step = succeeded_step(json!({
+        "invocation_id": "a",
+        "update": {"state": "succeeded", "invocation": "a", "output": {
+            "value": {"content": "tilo.content:ab"}, "resources": ["tilo.content:ab"]
+        }},
+        "unchanged": "note"
+    }));
+    assert_eq!(
+        step,
+        json!({"value": {"content": "tilo.content:ab"}, "unchanged": "note"})
+    );
+    let empty = succeeded_step(
+        json!({"invocation_id": "b", "update": {"state": "succeeded", "invocation": "b", "output": {}}}),
+    );
+    assert_eq!(empty, json!({}));
 }

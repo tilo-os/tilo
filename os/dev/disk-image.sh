@@ -640,8 +640,14 @@ fi
 msg "1/4 systemd-repart -> $RAW (ESP $ESP_SIZE + $ROOTFS root >= $ROOT_MIN, disk $SIZE)"
 rm -f "$RAW"
 truncate -s "$SIZE" "$RAW"
+# Pin 512-byte sectors. Without --sector-size, systemd-repart 255 and >= 257
+# format a regular file's partitions with 4096-byte filesystem sectors, which
+# makes the ESP a 4K-sector FAT that SD/eMMC/USB firmware cannot read. btrfs
+# keeps its 4 KiB minimum block size; ext4 does not take a sector size.
 sudo -n systemd-repart --empty=force --dry-run=no --discard=no --offline=false \
-  --definitions="$DEFS" --size="$SIZE" "$RAW"
+  --sector-size=512 --definitions="$DEFS" --size="$SIZE" "$RAW"
+python3 "$SCRIPT_DIR/check-disk-sectors.py" "$RAW" >&2 \
+  || die "systemd-repart did not lay out $RAW with 512-byte sectors"
 
 LOOP="$(sudo -n losetup -fP --show "$RAW")"
 sudo -n udevadm settle 2>/dev/null || true
@@ -855,6 +861,14 @@ if [ -n "$USERSPEC" ]; then
       mount --bind /target-var /var
       useradd -m ${u_groups:+-G '$u_groups'} '$u_name'
       printf '%s:%s\n' '$u_name' '$u_pass' | chpasswd
+      # An always-on board image ships the session template and its marker;
+      # its instance is the account created here.
+      board_wants=/etc/systemd/system/multi-user.target.wants
+      board_session=\"\$board_wants/tilo-board-headless-session@$u_name.service\"
+      if [ -f /usr/share/tilo/board-headless-session ]; then
+        install -d -m 0755 \"\$board_wants\"
+        ln -sfn /usr/lib/systemd/system/tilo-board-headless-session@.service \"\$board_session\"
+      fi
       # Label the new home. A home directory inherited from /var comes out
       # \`var_t\` rather than \`user_home_dir_t\`, which an SELinux-enforcing session
       # does not get to use.
@@ -873,7 +887,10 @@ if [ -n "$USERSPEC" ]; then
         [ -f \"/etc/\$db\" ] || { echo \"missing /etc/\$db after account creation\" >&2; exit 1; }
         setfiles -F \"\$fc\" \"/etc/\$db\"
       done
-      setfiles -F \"\$fc\" /var/home"
+      setfiles -F \"\$fc\" /var/home
+      if [ -L \"\$board_session\" ]; then
+        setfiles -F \"\$fc\" \"\$board_session\"
+      fi"
 fi
 
 # Exercise the same one-use account handoff as the graphical installer. This
@@ -899,7 +916,40 @@ if [ -n "$ETC_OVERLAY" ]; then
   sudo -n mount -o remount,rw "$MNT"
   mapfile -t overlay_entries < <(cd "$ETC_OVERLAY" && find . \( -type f -o -type l \) -printf '%P\n' | LC_ALL=C sort)
   msg "adding validation access to this disk's /etc: ${overlay_entries[*]}"
-  sudo -n cp -a --no-preserve=ownership "$ETC_OVERLAY/." "$t_etc/"
+  # Add the entries without touching the directories that already exist: a
+  # `cp -a SRC/. DST/` also copies SRC's own mode, timestamps and SELinux
+  # context onto DST, which left the deployment's /etc labelled
+  # `unconfined_u:object_r:var_t` (the runner's work directory) instead of
+  # `etc_t`, so confined services (ldconfig, accounts-daemon) could not use it.
+  # Every directory the overlay lands in that the deployment already has:
+  # /etc itself and each existing parent of an overlay entry. Their label,
+  # mode and owner must come out exactly as they went in.
+  existing_dirs=("$t_etc")
+  while IFS= read -r dir; do
+    sudo -n test -d "$t_etc/$dir" && existing_dirs+=("$t_etc/$dir")
+  done < <(cd "$ETC_OVERLAY" && find . -mindepth 1 -type d -printf '%P\n' | LC_ALL=C sort)
+  # The label is read as the xattr itself: a runner without SELinux enabled
+  # still stores and copies it, and stat's %C would only print "?" there.
+  dir_metadata() {
+    sudo -n python3 - "${existing_dirs[@]}" <<'PY'
+import os, sys
+for path in sys.argv[1:]:
+    st = os.stat(path)
+    try:
+        label = os.getxattr(path, "security.selinux").rstrip(b"\0").decode()
+    except OSError:
+        label = "-"
+    print(f"{st.st_mode & 0o7777:o} {st.st_uid}:{st.st_gid} {label} {path}")
+PY
+  }
+  before_overlay="$(dir_metadata)"
+  sudo -n tar -C "$ETC_OVERLAY" --no-xattrs --no-selinux -cf - . \
+    | sudo -n tar -C "$t_etc" --no-same-owner --no-overwrite-dir -xf -
+  after_overlay="$(dir_metadata)"
+  if [ "$before_overlay" != "$after_overlay" ]; then
+    diff <(printf '%s\n' "$before_overlay") <(printf '%s\n' "$after_overlay") >&2 || true
+    die "the validation overlay changed the label, mode or owner of an existing /etc directory"
+  fi
   overlay_label_args=(--rm --privileged -v "$t_etc:/target-etc")
   if [ -n "$SRC_REF" ]; then
     overlay_label_args+=(--network host
@@ -1044,6 +1094,8 @@ fi
 if [ "$KEEP_RAW" = 1 ]; then
   msg "4/4 leaving the raw image in place"
   sudo -n chown "$(id -u):$(id -g)" "$RAW"
+  # As for the qcow2 below: a VM that boots it must not wait on its writeback.
+  inenv "sync -- '$RAW'"
   msg "DONE: $RAW"
 else
   msg "4/4 qemu-img convert -> $QCOW"
@@ -1057,6 +1109,11 @@ else
   inenv "\$(test -x /usr/bin/qemu-img && echo /usr/bin/qemu-img || echo qemu-img) \
     convert -f raw -O qcow2 $qcow_opts '$RAW' '$QCOW'"
   rm -f "$RAW"
+  # Write the image out now. Otherwise gigabytes of it are still dirty in the
+  # host's page cache when a VM boots it, and the guest's first flush (the
+  # sync() at switch-root) waits for that writeback: the release gate's boot
+  # budget then measured the host's disk, not the OS (run 60770, 47 s).
+  inenv "sync -- '$QCOW'"
   msg "DONE: $QCOW"
   ls -lh "$QCOW" >&2
 fi

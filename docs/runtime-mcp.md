@@ -97,16 +97,54 @@ TILO_RUNTIME_MCP_HTTP_TOKEN_FILE=/run/secrets/mcp-token \
   tilo-runtime --profile /data/tilo --daemon
 ```
 
+The standalone daemon defaults to the profile's own room. A host may explicitly
+set `TILO_RUNTIME_MCP_ROOM` to the canonical UUID of a room the runtime has
+**already joined**. Startup verifies current certified device admission and
+that its root principal is the selected profile actor. An invitation, saved
+room name, client label or supplied session metadata cannot select an audience.
+Missing, fenced or stale identity fails startup. The runtime checks current
+room-selected custody on every shared-room query, invocation, retry, status and
+cancel request; the action broker also rechecks current room policy on admission. Selecting a room
+never enrolls it, requests keys or changes membership or grants.
+
+A shared-room endpoint exposes the semantic action door only. It does not attach
+the private profile's computer input/watch lease, partner viewer or media reader.
+The native endpoint and local desktop keep their existing scope. Other runtime
+hosts refuse a different MCP audience unless they implement current-admission
+validation explicitly. The endpoint's room stays fixed for its lifetime; clients
+cannot switch it through `initialize` or tool arguments.
+
+This audience selection does not itself publish semantic presence. Authenticated
+invocation transport, exact mounted app/record/resource geometry and presentation
+coherence remain necessary before a panorama can show real semantic agent work.
+
 `POST /mcp` carries one JSON-RPC message and answers with JSON; `initialize`
 without an `Mcp-Session-Id` opens a session and returns its id, later requests
 must carry it, and `DELETE /mcp` ends it. No server-initiated stream is offered.
 `GET /health` needs no token.
 
-Each session is its own agent run: its invocations carry an `agent-run` action
-group named after the client's declared `clientInfo.name`, so history, undo and
-activity tell concurrent agents on one machine apart. Sessions act with the
-profile actor's authority. The token authenticates the fronting proxy only; that
-proxy owns end-user authentication and must route each user to their machine.
+Each admitted session receives a server-issued execution UUID, returned in
+`capabilities.experimental["so.tilo.mcp"].execution_id` at initialization.
+Repeated initialization on that session keeps the UUID. It scopes invocation
+retry, status and cancellation ownership; a second session acting as the same
+profile actor cannot borrow the first session's invocation IDs. Reusing an ID
+within its owning session reports the existing operation without dispatching it
+again. Reconnecting HTTP with the same valid `Mcp-Session-Id` retains ownership.
+Opening a new logical session (or a new stdio connection) receives a new
+execution UUID and cannot resume invocation ownership by supplying the old UUID.
+
+Invocations also carry an `agent-run` history group named after the client's
+declared `clientInfo.name`. Clients can continue a history group through the
+experimental `run` field, but names and history-group IDs are presentation
+metadata, not authenticated execution identity. An `execution_id` supplied by a
+client is ignored. The returned UUID is a correlation identifier, not a bearer
+credential, device identity or capability grant. It does not publish a cursor or
+prove that an action changed visible state.
+
+Sessions retain the profile actor's authority. The token authenticates the
+fronting proxy only; that proxy owns end-user authentication and must route each
+user to their machine. Ending an MCP session removes access to that session; it
+does not assert that its already-dispatched operations were cancelled.
 
 ## Pixel fallback
 

@@ -145,20 +145,6 @@ impl SurfaceKey {
 }
 
 impl Graph3dScreen {
-    /// Pure graph rendering for a frozen History model; no editing controls.
-    pub(crate) fn draw_history_canvas(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        model: &CalcModel,
-        area: Rect,
-    ) {
-        self.canvas = area;
-        self.zoom.settle(model.view3d.zoom);
-        self.draw_surfaces(scene, t, theme, model);
-    }
-
     /// Adopt the theme's scale and metrics.
     pub fn scale_for(&mut self, theme: &Theme) {
         self.panel.scale_for(theme);

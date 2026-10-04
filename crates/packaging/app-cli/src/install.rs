@@ -381,7 +381,16 @@ pub fn install_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<(), InstallError> {
-    install_or_update_app_reporting(app, on_progress, false)
+    install_or_update_app_reporting(app, on_progress, Change::Install)
+}
+
+/// What [`install_or_update_app_reporting`] does with the verified package.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Change {
+    Install,
+    Update,
+    /// Replace the installed version with an older one.
+    Rollback,
 }
 
 fn run_installer_with_progress(
@@ -414,7 +423,7 @@ fn run_installer_with_progress(
 fn install_or_update_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
-    update: bool,
+    change: Change,
 ) -> Result<(), InstallError> {
     validate_offer_metadata(app)?;
     let staging = staging_dir().ok_or(InstallError::NoStagingDir)?;
@@ -463,7 +472,14 @@ fn install_or_update_app_reporting(
 
     let payload_from = payload_source(app);
     let mut command = Command::new(tilo_install_bin());
-    if update {
+    if change == Change::Install {
+        command.args(install_argv(
+            &dest,
+            &app.publisher_pubkey_hex,
+            &app.tapp_root_hash_hex,
+            payload_from.as_deref(),
+        ));
+    } else {
         command.args([
             "update".to_string(),
             app.package_id.clone(),
@@ -477,13 +493,9 @@ fn install_or_update_app_reporting(
         if let Some(url) = &payload_from {
             command.args(["--payload-from", url.as_str()]);
         }
-    } else {
-        command.args(install_argv(
-            &dest,
-            &app.publisher_pubkey_hex,
-            &app.tapp_root_hash_hex,
-            payload_from.as_deref(),
-        ));
+        if change == Change::Rollback {
+            command.arg("--allow-downgrade");
+        }
     }
     on_progress(DownloadProgress {
         received: downloaded,
@@ -525,7 +537,20 @@ pub fn update_app_reporting(
     app: &CatalogueApp,
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> Result<(), InstallError> {
-    install_or_update_app_reporting(app, on_progress, true)
+    install_or_update_app_reporting(app, on_progress, Change::Update)
+}
+
+/// Download and atomically replace an installed app with an older version
+/// from a verified offer, keeping its saved state.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`update_app_reporting`].
+pub fn rollback_app_reporting(
+    app: &CatalogueApp,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    install_or_update_app_reporting(app, on_progress, Change::Rollback)
 }
 
 /// Resolve `package_id` against the live catalogue, then install it.

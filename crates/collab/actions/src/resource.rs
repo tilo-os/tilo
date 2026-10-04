@@ -684,11 +684,18 @@ pub struct ActionSpec {
     /// Classifies one invocation's bound arguments when the action's risk
     /// depends on them. See [`ActionSpec::with_risk`].
     risk_of: Option<RiskClassifier>,
+    /// Names one invocation in history from the action it built. See
+    /// [`ActionSpec::with_history_label`].
+    history_label_of: Option<HistoryLabeler>,
     continuation_resolver: Option<ContinuationResolver>,
 }
 
 /// Classifies the risk of one invocation from its bound arguments.
 pub type RiskClassifier = Arc<dyn Fn(&ActionArgs) -> RiskLevel + Send + Sync>;
+
+/// Names one invocation in history from the encoded action it built, or
+/// declines with `None`.
+pub type HistoryLabeler = Arc<dyn Fn(&EncodedAction) -> Option<String> + Send + Sync>;
 
 struct TypedActionSeed {
     id: String,
@@ -847,6 +854,7 @@ impl ActionSpec {
                 deferred_type: Some(type_id),
             },
             risk_of: None,
+            history_label_of: None,
             continuation_resolver: None,
         }
     }
@@ -884,6 +892,7 @@ impl ActionSpec {
             params: Vec::new(),
             build: InvocationBuilder::Fixed(Arc::new(for_build)),
             risk_of: None,
+            history_label_of: None,
             continuation_resolver: None,
         })
     }
@@ -915,6 +924,7 @@ impl ActionSpec {
             params: Vec::new(),
             build: InvocationBuilder::Fixed(Arc::new(for_build)),
             risk_of: None,
+            history_label_of: None,
             continuation_resolver: None,
         }
     }
@@ -963,6 +973,7 @@ impl ActionSpec {
                 build,
             },
             risk_of: None,
+            history_label_of: None,
             continuation_resolver: None,
         }
     }
@@ -1002,6 +1013,7 @@ impl ActionSpec {
             params: Vec::new(),
             build: InvocationBuilder::Fixed(Arc::new(for_build)),
             risk_of: None,
+            history_label_of: None,
             continuation_resolver: None,
         })
     }
@@ -1051,6 +1063,7 @@ impl ActionSpec {
                 build,
             },
             risk_of: None,
+            history_label_of: None,
             continuation_resolver: None,
         }
     }
@@ -1154,6 +1167,7 @@ impl ActionSpec {
                 deferred_type: None,
             },
             risk_of: None,
+            history_label_of: None,
             continuation_resolver: None,
         }
     }
@@ -1290,6 +1304,30 @@ impl ActionSpec {
             .map_or(self.contract.risk, |classify| classify(args))
     }
 
+    /// Name each invocation in history after the action it built rather
+    /// than after this spec, for an action that carries different edits (a
+    /// generic typed edit is "Remove marks" once and "Edit marks" the next
+    /// time). `None` falls back to [`label`](Self::label).
+    #[must_use]
+    pub fn with_history_label(
+        mut self,
+        label: impl Fn(&EncodedAction) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.history_label_of = Some(Arc::new(label));
+        self
+    }
+
+    /// What history calls one invocation that built `encoded`: the
+    /// [`with_history_label`](Self::with_history_label) name when there is
+    /// one, else the spec's [`label`](Self::label).
+    pub fn history_label(&self, encoded: &EncodedAction) -> String {
+        self.history_label_of
+            .as_ref()
+            .and_then(|label| label(encoded))
+            .filter(|label| !label.trim().is_empty())
+            .unwrap_or_else(|| self.label.clone())
+    }
+
     /// The confirmation one invocation with these bound arguments needs: the
     /// declared policy when there is one, else
     /// [`Confirm`](ConfirmationPolicy::Confirm) when
@@ -1392,6 +1430,66 @@ impl ActionSpec {
     #[must_use]
     pub fn durably_discoverable(mut self) -> Self {
         self.contract.discovery = DiscoveryScope::Durable;
+        self
+    }
+
+    /// This document action as another resource carries it: every action it
+    /// builds passes through `wrap`, which re-encodes it as the action of the
+    /// resource that contains this one (a rich-text edit becomes the note's
+    /// edit of its body, registered under `wrapped_type`). Parameters,
+    /// permission, risk and confirmation stay this action's. A builder's
+    /// refusal passes through unchanged. An effect or view operation is
+    /// returned as it is: it writes nothing to wrap.
+    #[must_use]
+    pub fn rewrapped(
+        mut self,
+        wrapped_type: &str,
+        wrap: impl Fn(EncodedAction) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        if self.kind != OperationKind::Document {
+            return self;
+        }
+        let wrap: Arc<dyn Fn(EncodedAction) -> EncodedAction + Send + Sync> =
+            Arc::new(move |encoded: EncodedAction| {
+                if encoded.type_id == INVALID_ARGUMENTS_TYPE {
+                    encoded
+                } else {
+                    wrap(encoded)
+                }
+            });
+        self.build = match self.build {
+            InvocationBuilder::Fixed(encoded) => {
+                InvocationBuilder::Fixed(Arc::new(wrap(encoded.as_ref().clone())))
+            }
+            InvocationBuilder::Dynamic {
+                build,
+                deferred_type,
+            } => {
+                let wrap = Arc::clone(&wrap);
+                InvocationBuilder::Dynamic {
+                    build: Arc::new(move |args| wrap(build(args))),
+                    deferred_type: deferred_type.map(|_| wrapped_type.to_owned()),
+                }
+            }
+        };
+        self.input = match self.input {
+            ActionInput::Immediate(encoded) => ActionInput::Immediate(wrap(encoded)),
+            ActionInput::Deferred { build, .. } => ActionInput::Deferred {
+                type_id: wrapped_type.to_owned(),
+                build: Arc::new(move || wrap(build())),
+            },
+            ActionInput::Prompted {
+                prompt,
+                placeholder,
+                collects,
+                build,
+            } => ActionInput::Prompted {
+                prompt,
+                placeholder,
+                collects,
+                build: Arc::new(move |text| wrap(build(text))),
+            },
+        };
         self
     }
 

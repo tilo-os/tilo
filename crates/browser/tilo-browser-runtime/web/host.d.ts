@@ -1,3 +1,6 @@
+import type {CaptureSource} from './panorama';
+export {createPanorama} from './panorama';
+export type {CaptureSource, PanoramaCamera, CaptureBounds, PanoramaReceipt, PanoramaObserver} from './panorama';
 import type {DesktopNavigationV1} from "./navigation";
 export type * from "./navigation";
 import type {CertifiedActionsV1,PrivateInvocation} from './peer';
@@ -187,6 +190,13 @@ export interface MountOptions {
   resolveApp?: AppResolver;
   /** With `app: 'desktop'`: mount the page's own desktop, seeded thus. */
   local?: LocalDesktop;
+  /**
+   * The desktop's Invite (its launchpad card and the people control in its
+   * top bar) calls this; without it the desktop offers no invitation.
+   */
+  onInvite?: () => void;
+  /** The workspace name a desktop this mount seeds starts with. */
+  workspaceName?: string;
 }
 /** Which window of a desktop an action call addresses. */
 export interface WindowOption {
@@ -256,6 +266,8 @@ export interface DesktopMount {
   flush(): Promise<void>;
   state(): RuntimeStatus | undefined;
   readonly canvas: HTMLCanvasElement;
+  /** Explicit single-app source for a shared-host composition, never desktop capture. */
+  readonly captureSource: CaptureSource;
   readonly editor: HTMLTextAreaElement;
   readonly semantics: HTMLElement;
   semantic(path: string, target: string | undefined, action: string, value: string, anchor: number, focus: number): unknown;

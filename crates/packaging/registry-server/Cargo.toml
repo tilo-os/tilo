@@ -60,6 +60,10 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 registry-client = { path = "../registry-client" }
+# Compaction tests verify served snapshots with the native and browser clients.
+app-cli = { path = "../app-cli" }
+registry-web = { path = "../registry-web" }
+tilo-test-env = { path = "../../dev/test-env" }
 getrandom.workspace = true
 tempfile.workspace = true
 

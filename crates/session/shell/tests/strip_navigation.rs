@@ -1069,7 +1069,7 @@ fn every_close_route_commits_the_exact_surface_durably() {
             // intentionally refuse a cache-only mutation because the next peer
             // revision would undo it.
             tree.seed_doc_from_cache();
-            tree.flush_to_disk();
+            tree.queue_save();
         }
 
         let close = h
@@ -1213,7 +1213,7 @@ fn every_close_route_commits_the_exact_surface_durably() {
                 };
             }
             tree.seed_doc_from_cache();
-            tree.flush_to_disk();
+            tree.queue_save();
         }
 
         let first = h.tabs[0][0];

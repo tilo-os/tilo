@@ -180,6 +180,10 @@ cat > "$etc/systemd/system/$UNIT" <<'EOF'
 Description=Validation-only SSH access for the release gate
 BindsTo=dev-disk-by\x2did-virtio\x2dtilo\x2dvalidation.device
 After=dev-disk-by\x2did-virtio\x2dtilo\x2dvalidation.device network.target basic.target
+# The merge gives /usr a fresh mtime (systemd-sysext stamps it). After
+# systemd-update-done, the boot's ConditionNeedsUpdate= checks (ldconfig,
+# sysusers, hwdb) have all seen the image's own /usr, as on a user's boot.
+After=systemd-update-done.service
 # Off multi-user.target's ordering: a target waits for the units it wants
 # unless they opt out, and this gate-only service would otherwise add its own
 # sysext refresh and host-key generation to the boot time the gate measures.

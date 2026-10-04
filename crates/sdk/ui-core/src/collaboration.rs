@@ -29,6 +29,8 @@ pub use transport::{
 
 #[cfg(feature = "broker-transport")]
 mod broker;
+#[cfg(feature = "broker-transport")]
+mod channel_settings;
 pub mod handoff;
 mod history;
 pub mod participants;

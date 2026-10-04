@@ -125,6 +125,15 @@ impl Widget for DisplayBars {
         changed
     }
 
+    /// The bars hold no children for the default walk, so their clocks'
+    /// deadlines are gathered here.
+    fn next_wake_deadline(&self) -> Option<ui::clock::Instant> {
+        self.bars
+            .iter()
+            .filter_map(|(_, bar)| bar.next_wake_deadline())
+            .min()
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

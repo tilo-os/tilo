@@ -298,7 +298,6 @@ pub struct DiskUsageApp {
     scan_rx: Option<Receiver<ScanResult>>,
     scan_cancellation: Option<ScanCancellation>,
     picker_rx: Option<ui::portal::PortalChannel>,
-    shot_mode: bool,
     pub(crate) actions: crate::resource::ActionSink,
     /// The hosted resource's published actions, which the view's buttons
     /// invoke. Standalone, they invoke the root this app publishes itself.
@@ -339,7 +338,6 @@ impl DiskUsageApp {
             scan_rx: None,
             scan_cancellation: None,
             picker_rx: None,
-            shot_mode: false,
             actions: crate::resource::ActionSink::default(),
             published: None,
             hosted: false,
@@ -348,101 +346,7 @@ impl DiskUsageApp {
         app
     }
 
-    /// A finished scan of a typical home folder.
-    pub fn sample() -> Self {
-        let mut app = Self::new();
-        app.shot_mode = true;
-        let path = PathBuf::from("/home/you");
-        let values = [
-            ("Projects", 84_200_000_000, 48_310),
-            ("Videos", 48_600_000_000, 1_204),
-            ("Photos", 31_800_000_000, 9_870),
-            ("Downloads", 19_400_000_000, 2_615),
-            ("Documents", 8_700_000_000, 4_132),
-            ("Music", 5_100_000_000, 1_086),
-            (".cache", 3_900_000_000, 12_408),
-            (".local", 3_400_000_000, 6_121),
-            ("Desktop", 2_600_000_000, 214),
-            ("Applications", 2_100_000_000, 3_870),
-            (".config", 1_900_000_000, 1_950),
-            ("Public", 900_000_000, 18),
-            ("Templates", 400_000_000, 9),
-        ];
-        let entries = values
-            .into_iter()
-            .map(|(name, bytes, files)| Entry {
-                path: path.join(name.to_lowercase()),
-                name: name.into(),
-                bytes,
-                files,
-                unreadable: 0,
-            })
-            .collect::<Vec<_>>();
-        let total = entries.iter().map(|e| e.bytes).sum();
-        let files = entries.iter().map(|e| e.files).sum();
-        app.set_result(ScanResult {
-            path,
-            entries,
-            total,
-            files,
-            unreadable: 3,
-            error: None,
-        });
-        app
-    }
-
-    /// A scan that has not finished.
-    pub fn sample_loading() -> Self {
-        let mut app = Self::sample_home();
-        app.show(View::Loading(PathBuf::from("/home/you")));
-        app
-    }
-
-    /// A folder the app could not read.
-    pub fn sample_error() -> Self {
-        let mut app = Self::sample_home();
-        app.show(View::Error(
-            PathBuf::from("/root"),
-            UNREADABLE_FOLDER.into(),
-        ));
-        app
-    }
-
-    /// The same scan with one folder's tooltip showing.
-    pub fn sample_with_inspection() -> Self {
-        let mut app = Self::sample();
-        app.inspected = Some("/home/you/projects".into());
-        app.rebuild();
-        app
-    }
-
-    /// The home view as it looks after a few analyses.
-    pub fn sample_home() -> Self {
-        let mut app = Self::new();
-        app.shot_mode = true;
-        app.places = vec![
-            Place {
-                label: "Home".into(),
-                path: PathBuf::from("/home/you"),
-            },
-            Place {
-                label: "Workspace".into(),
-                path: PathBuf::from(tilo_paths::WORKSPACE_MOUNT),
-            },
-            Place {
-                label: "File system".into(),
-                path: PathBuf::from("/"),
-            },
-        ];
-        app.recent = vec![
-            PathBuf::from("/home/you/Projects/tilo"),
-            PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
-        ];
-        app.rebuild();
-        app
-    }
-
-    fn set_result(&mut self, result: ScanResult) {
+    pub(crate) fn set_result(&mut self, result: ScanResult) {
         if self.recent.first() != Some(&result.path) {
             self.recent.retain(|p| p != &result.path);
             self.recent.insert(0, result.path.clone());
@@ -793,7 +697,7 @@ impl ui::widget::Decorator for DiskUsageApp {
             let (doc, _) = ui::doc::document(state, path);
             DiskUsageDoc::recent(doc)
         };
-        if !self.shot_mode && recent != self.recent {
+        if recent != self.recent {
             self.recent = recent;
             if matches!(self.view, View::Home) {
                 self.rebuild();
@@ -902,6 +806,47 @@ impl DiskUsageApp {
         self.hosted
     }
 
+    /// Show the chart's details for one slice, as hovering it does.
+    pub(crate) fn inspect(&mut self, id: &str) {
+        self.inspected = Some(id.into());
+        if matches!(self.view, View::Analysis(_)) {
+            self.rebuild();
+        }
+    }
+
+    /// Offer a made-up home folder instead of this machine's: what a
+    /// screenshot shows.
+    pub(crate) fn use_made_up_places(&mut self) {
+        self.places = vec![
+            Place {
+                label: "Home".into(),
+                path: PathBuf::from("/home/you"),
+            },
+            Place {
+                label: "Workspace".into(),
+                path: PathBuf::from(tilo_paths::WORKSPACE_MOUNT),
+            },
+            Place {
+                label: "File system".into(),
+                path: PathBuf::from("/"),
+            },
+        ];
+        self.rebuild();
+    }
+
+    /// A scan of the made-up home folder that has not finished.
+    pub(crate) fn show_unfinished_scan(&mut self) {
+        self.show(View::Loading(PathBuf::from("/home/you")));
+    }
+
+    /// A folder the app could not read.
+    pub(crate) fn show_unreadable_folder(&mut self) {
+        self.show(View::Error(
+            PathBuf::from("/root"),
+            UNREADABLE_FOLDER.into(),
+        ));
+    }
+
     #[cfg(test)]
     pub(crate) fn mark_hosted_for_test(&mut self) {
         self.hosted = true;
@@ -913,9 +858,8 @@ impl DiskUsageApp {
         self.actions.is_hosted()
     }
 
-    /// Submit the shared recent-directory projection. Hosted edits use the
-    /// framework dispatcher; standalone, `--shots`, and unit tests use the
-    /// local action host.
+    /// Submit the shared recent-directory projection through the framework
+    /// dispatcher; unit tests of the bare widget use the local action host.
     pub(crate) fn remember_scanned(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
         let action = crate::resource::DiskUsageAction::Remember {
             path: path.to_string_lossy().into_owned(),
@@ -1039,6 +983,27 @@ impl ui::resources::PublishesResources for DiskUsageApp {
     }
 }
 
+/// The analyzer showing a finished scan, as after a real one.
+#[cfg(test)]
+pub(crate) fn analysed() -> DiskUsageApp {
+    let mut app = DiskUsageApp::new();
+    app.set_result(ScanResult::sample());
+    app
+}
+
+/// The home view of the made-up home folder after a few analyses.
+#[cfg(test)]
+pub(crate) fn at_home() -> DiskUsageApp {
+    let mut app = DiskUsageApp::new();
+    app.use_made_up_places();
+    app.recent = vec![
+        PathBuf::from("/home/you/Projects/tilo"),
+        PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
+    ];
+    app.rebuild();
+    app
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1048,7 +1013,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: AutoCommit::new(),
         registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| ui::resources::resources(&DiskUsageApp::sample(), doc),
+        resources: |doc| ui::resources::resources(&analysed(), doc),
         palette: ["Analyze Projects", "Choose folder", "Go back"],
     }
 
@@ -1133,8 +1098,10 @@ mod tests {
 
         // --- phase: home_lists_every_place_and_the_five_latest_recent_folders ---
         {
-            let mut app = DiskUsageApp::sample_home();
+            let mut app = DiskUsageApp::new();
             app.recent.extend([
+                PathBuf::from("/home/you/Projects/tilo"),
+                PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
                 PathBuf::from("/one"),
                 PathBuf::from("/two"),
                 PathBuf::from("/three"),
@@ -1148,7 +1115,7 @@ mod tests {
 
         // --- phase: a_recent_place_is_listed_once ---
         {
-            let mut app = DiskUsageApp::sample_home();
+            let mut app = at_home();
             app.recent.insert(0, PathBuf::from("/"));
             let (_, recent) = app.locations();
             assert!(recent.iter().all(|place| place.path.as_os_str() != "/"));
@@ -1207,7 +1174,7 @@ mod tests {
         // --- phase: a_place_starts_a_scan ---
         let mut harness = FrameHarness::for_root(
             ui::state::State::new(),
-            DiskUsageApp::sample_home(),
+            at_home(),
             (1280, 800),
             ui::Theme::dark(),
         );
@@ -1227,7 +1194,7 @@ mod tests {
         // --- phase: back_leaves_an_analysis ---
         let mut harness = FrameHarness::for_root(
             ui::state::State::new(),
-            DiskUsageApp::sample(),
+            analysed(),
             (1280, 800),
             ui::Theme::dark(),
         );

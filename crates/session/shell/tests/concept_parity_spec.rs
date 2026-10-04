@@ -1380,11 +1380,21 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
         );
 
         let fills = collect_solid_colors(&scene);
-        // Alice cursor color: `#ec4899` (Tailwind pink-500) = (236, 72, 153).
-        // Bob cursor color: `#f97316` (Tailwind orange-500) = (249, 115, 22).
-        // Plan-spec tolerance: ±8 per channel.
-        let has_alice = contains_color_close(&fills, (236, 72, 153), 8);
-        let has_bob = contains_color_close(&fills, (249, 115, 22), 8);
+        // Each peer's cursor colour (`#ec4899` for Alice, `#f97316` for
+        // Bob) is painted as its presence mark: the theme's presence
+        // palette keeps the hue and normalises lightness and chroma.
+        // Tolerance: ±8 per channel.
+        let presence_mark = |r, g, b| {
+            let rgba = theme
+                .tokens
+                .colors
+                .presence
+                .of(Color::from_rgb8(r, g, b))
+                .to_rgba8();
+            (rgba.r, rgba.g, rgba.b)
+        };
+        let has_alice = contains_color_close(&fills, presence_mark(0xec, 0x48, 0x99), 8);
+        let has_bob = contains_color_close(&fills, presence_mark(0xf9, 0x73, 0x16), 8);
         assert!(
             has_alice && has_bob,
             "TopBar right cluster must paint both peers in their own colour \

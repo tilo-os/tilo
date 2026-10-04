@@ -1,0 +1,17 @@
+[Unit]
+Description=Re-resolve Tilo extensions for the booted image
+Documentation=file:///usr/share/tilo/system-extensions/README.md
+
+# After every boot (a new deployment has a new base and its own manifest) and
+# daily, so a part waiting for a compatible upstream build is retried. The
+# helper does nothing for an extension the owner did not opt in to. The update
+# check also starts it (see
+# bootc-fetch-apply-updates.service.d/40-tilo-extension.conf).
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1d
+RandomizedDelaySec=30min
+Unit=tilo-extension@refresh:all.service
+
+[Install]
+WantedBy=timers.target

@@ -34,7 +34,7 @@ mod real {
 
     fn engine() -> MediaEngine {
         // RGBA acceptance so frame content can be compared pixel by pixel.
-        let mut e = MediaEngine::with_config(EngineConfig::default().silent());
+        let mut e = MediaEngine::with_config(EngineConfig::default().frames_only());
         assert!(
             e.is_real_decode(),
             "these assertions require the real pipeline"

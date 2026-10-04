@@ -709,6 +709,16 @@ impl EventCtx<'_> {
             taffy: self.taffy,
         }
     }
+
+    /// The stylus that made the `CursorMoved` or `MouseInput` being
+    /// handled: its pressure, tilt and whether the eraser end is in use.
+    /// `None` for a mouse, a touch, or any other event. A pen's tip is the
+    /// left button and its barrel buttons the right and middle ones, so a
+    /// widget needs this only for what a mouse cannot say.
+    #[must_use]
+    pub fn pen(&self) -> Option<PenSample> {
+        crate::pen::current()
+    }
 }
 
 /// One remote participant's live presence (caret/selection), published by a
@@ -1240,6 +1250,16 @@ pub trait Widget {
     fn accessibility_child_path(&self, child_index: usize) -> Option<Vec<usize>> {
         self.accessibility_child_parent(child_index)
             .map(|parent| vec![parent])
+    }
+
+    /// Whether one retained [`children`](Widget::children) entry is already
+    /// represented in this widget's own synthetic
+    /// [`accessibility`](Widget::accessibility) tree, so the bridge must not
+    /// export it a second time. A host that publishes a child's semantics
+    /// itself (to add its own controls inside the same dialog) answers `true`
+    /// for that child; assistive technology then sees one copy, not two.
+    fn accessibility_represents_child(&self, _child_index: usize) -> bool {
+        false
     }
 
     /// May mutate the CRDT like [`handle_event`](Widget::handle_event).
@@ -2160,6 +2180,7 @@ pub mod binding;
 pub mod capability;
 pub mod controls;
 pub mod decorator;
+pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 
 pub(crate) mod layout;
@@ -2296,7 +2317,7 @@ mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{
     AppCommand, AppHostIntent, AppWidget, DocumentOpenCapability, DocumentOpenOutcome,
-    DocumentOpenReply, IconDescriptor,
+    DocumentOpenReply, HostShellAllow, IconDescriptor,
 };
 pub mod command_palette;
 pub mod input_hint;
@@ -2359,7 +2380,7 @@ pub use time_picker::{TimePicker, TimeValue};
 pub mod color_picker;
 pub mod color_swatch;
 pub use color_picker::{ColorPicker, ColorPickerOutcome};
-pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker};
+pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker, SwatchPainter};
 pub mod popover;
 pub use popover::{Popover, PopoverSide};
 pub mod modal_dialog;
@@ -2475,7 +2496,8 @@ pub mod property_list;
 pub use property_list::{Property, PropertyList, PropertyListFace, PropertyRow};
 pub mod list_row;
 pub use list_row::{
-    ListRow, ListRowFace, RowAction, RowLeading, RowStatus, SwipeAction, badge_column_width,
+    ControlRow, ListRow, ListRowFace, RowAction, RowLeading, RowStatus, SwipeAction,
+    badge_column_width,
 };
 pub mod keyframe;
 pub use keyframe::{KeyframeFace, KeyframeState};

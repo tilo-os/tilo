@@ -190,7 +190,9 @@ impl ResourceApp for LogsShell {
     const ID: &'static str = "so.tilo.logs";
     const TITLE: &'static str = "Logs";
     const ICON: Option<&'static str> = Some("logs");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Logs>) -> Element {
         // The live window reads the journal. An empty list would show a

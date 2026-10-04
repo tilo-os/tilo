@@ -30,6 +30,14 @@ esac
 # goldens render headless on the CPU. GStreamer plugins: the media suites encode
 # and decode real VP9, AV1 and H.264/AAC (dav1d is the AV1 decoder the
 # real-time stack prefers). The Noto set: text shaping and golden rendering.
+# gstreamer1-plugin-openh264 pulls Cisco's openh264 from Fedora's
+# fedora-cisco-openh264 repository, downloaded here by whoever builds this
+# environment, as Cisco's licence requires: the video-editor suites
+# (tests/support/generated_clip.rs and src/preview.rs) encode their H.264
+# sample clips with openh264enc. It belongs only in these CI and developer
+# environments (os/Containerfile.builder, dist/dev/Containerfile.fedora44),
+# never in a Tilo image: those install from the frozen RPM snapshot, which
+# os/scripts/verify-no-cisco-openh264.sh keeps free of it.
 # pulseaudio: only the private software endpoint tools/with-headless-audio.sh
 # starts; it replaces PipeWire's PulseAudio shim where that is installed.
 # bubblewrap, GNOME Text Editor, cryptsetup, swtpm and tpm2-tools are test

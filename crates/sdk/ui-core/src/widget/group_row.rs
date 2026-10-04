@@ -7725,6 +7725,7 @@ mod tests {
             // while 65ms is already ~0.12 and reads as "almost gone".
             row.advance_sibling_fade(Duration::from_millis(32));
             let mid = row.sibling_fade_value();
+            let mid_at = crate::time::now();
             assert!(
                 mid > 0.2 && mid < 0.8,
                 "a quarter of the way through fast the sibling is still on screen, got {mid}",
@@ -7734,9 +7735,17 @@ mod tests {
             row.groups[1].maximized = false;
             let (row, ..) = relayout_row_owned_with(row, 2000.0, &Theme::dark());
             let after = row.sibling_fade_value();
+            // The fade runs on the wall clock, which keeps moving through
+            // the relayout: allow what the curve can travel in that time
+            // (EaseOut is steepest at its start, 3 / duration), so a slow,
+            // loaded machine is not mistaken for a jump.
+            let elapsed = crate::time::now().saturating_duration_since(mid_at);
+            let fast = crate::tokens::Durations::default().fast();
+            let travel = 3.0 * elapsed.as_secs_f32() / fast.as_secs_f32();
             assert!(
-                (after - mid).abs() < 0.15,
-                "a new Super+M must keep the current alpha, was {mid} now {after}",
+                (after - mid).abs() < 0.15 + travel,
+                "a new Super+M must keep the current alpha, was {mid} now {after} \
+                 after {elapsed:?}",
             );
             assert!(
                 row.sibling_fade_is_animating(),

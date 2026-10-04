@@ -81,18 +81,28 @@ fn the_agent_surface_matches_its_golden_file_and_budget() {
             "{action} is published: {actions:?}"
         );
     }
+    // The panels' controls are the artwork's own actions (and the person's
+    // brush), so an agent is offered those once rather than every row's
+    // buttons; the tool rail stays a choice an agent can make. The window
+    // shell's own controls (showing the inspector) are the shell's.
     let controls: Vec<&str> = surface
         .as_array()
         .unwrap()
         .iter()
         .filter(|row| row["resource_kind"] == "tilo.ui.control")
         .filter_map(|row| row["resource"].as_str())
+        .filter(|resource| !resource.contains("nav%2Dshell%2D"))
         .collect();
-    for control in ["canvas-brush-size", "canvas-layer", "add-layer"] {
-        let encoded = control.replace('-', "%2D");
-        assert!(
-            controls.iter().any(|id| id.contains(&encoded)),
-            "the inspector's {control} control is reachable: {controls:?}"
-        );
-    }
+    assert!(
+        controls.is_empty(),
+        "the panels add no UI controls: {controls:?}"
+    );
+    assert!(
+        surface
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["resource_kind"] == "tilo.control.segmented"),
+        "the tool rail is reachable"
+    );
 }

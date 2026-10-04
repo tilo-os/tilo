@@ -10,6 +10,7 @@ use std::sync::Arc;
 use taffy::{Dimension, NodeId, TaffyTree};
 use ui::Shortcut;
 use ui::TextRole;
+use ui::framework::TextControl;
 use ui::theme::Theme;
 use ui::widget::resizable_split::SplitOrientation;
 use ui::widget::{AppModel, ModelPath};
@@ -26,9 +27,14 @@ use crate::results::{CaptionLine, ResultsTable, fill_remaining_height};
 use crate::sample;
 use crate::session::RunStatus;
 
-/// The editor, bound to the shared SQL buffer in the document.
+/// The editor over the shared SQL buffer: it shows the text the document
+/// holds and submits every edit as a splice of it through the workspace's
+/// dispatcher ([`TextControl`]). Until that dispatcher is attached it only
+/// shows the text.
 pub struct EditorPane {
-    editor: CodeEditor,
+    text: TextControl<CodeEditor>,
+    /// Whether `text` edits through the dispatcher yet.
+    attached: bool,
     link: Link,
 }
 
@@ -42,34 +48,38 @@ impl EditorPane {
         // The client opens ready to type a query.
         editor.set_focused(true);
         Self {
-            editor,
+            text: TextControl::view_only(editor, EditorDoc::sql_object),
+            attached: false,
             link: link.clone(),
         }
     }
 
     /// The statement as typed.
     pub fn sql(&self) -> &str {
-        self.editor.value()
+        self.text.control().value()
     }
 }
 
 impl ui::widget::Decorator for EditorPane {
-    type Inner = CodeEditor;
+    type Inner = TextControl<CodeEditor>;
 
-    fn inner(&self) -> &CodeEditor {
-        &self.editor
+    fn inner(&self) -> &TextControl<CodeEditor> {
+        &self.text
     }
 
-    fn inner_mut(&mut self) -> &mut CodeEditor {
-        &mut self.editor
+    fn inner_mut(&mut self) -> &mut TextControl<CodeEditor> {
+        &mut self.text
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (doc, _) = ui::doc::document(state, path);
-        let text = EditorDoc::sql_text(doc);
-        self.editor.bind_text(text);
-        self.editor.pull(doc);
-        self.link.set_sql(self.editor.value());
+        if !self.attached
+            && let Some(dispatcher) = self.link.sql_edits()
+        {
+            self.text.attach(dispatcher);
+            self.attached = true;
+        }
+        Widget::sync(&mut self.text, state, path);
+        self.link.set_sql(self.sql());
     }
 
     /// The editor takes the height its pane has, not just its lines.
@@ -79,14 +89,17 @@ impl ui::widget::Decorator for EditorPane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = Widget::build_layout(&mut self.editor, taffy, theme, node_map);
+        let node = Widget::build_layout(&mut self.text, taffy, theme, node_map);
         fill_remaining_height(taffy, node);
+        // The pane is what the node stands for: an action addressed to the
+        // editor reaches the text control, which submits the edit.
+        ui::widget::decorator::register_node(node_map, node, self);
         node
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        Widget::handle_event(&mut self.editor, event, ctx);
-        self.link.set_sql(self.editor.value());
+        Widget::handle_event(&mut self.text, event, ctx);
+        self.link.set_sql(self.sql());
     }
 
     fn name(&self) -> &'static str {

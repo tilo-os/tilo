@@ -13,14 +13,17 @@ use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId};
 use serde::{Deserialize, Serialize};
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, SurfaceCx,
+};
+use ui::tilo_resource::{PlainText, TextEdit};
 use ui::widget::{AppModel, ModelPath, NavShell, Widget};
 use uuid::Uuid;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
+use tilo_actions::{OperationKind, Resource};
 
-use crate::doc::{ConnectionsDoc, EditorDoc};
 use crate::link::{ConnectionRow, Dialog, Intent, Link, ViewModel};
 use crate::model::{DatabaseSchema, QueryResult, TableInfo};
 use crate::navigator::Navigator;
@@ -31,6 +34,28 @@ use crate::workspace::Workspace;
 /// Unlike document actions, these payloads contain only stable object ids and
 /// SQL/table names — never passwords or live driver handles.
 pub(crate) const DB_OPERATION_TYPE: &str = "db_client.operation";
+
+/// `spec`, an effect the client answers once the database worker has
+/// settled it: a job its caller waits on.
+pub(crate) fn job(spec: tilo_actions::ActionSpec) -> tilo_actions::ActionSpec {
+    spec.execution(tilo_actions::ExecutionMode::Background { cancellable: false })
+        .returns(tilo_actions::ResultSpec::Job)
+}
+
+/// What a saved connection's keyring entry holds.
+const PASSWORD_PURPOSE: &str = "password";
+
+/// `resource`, a live catalog entity, as the row the surface publishes.
+fn live_row(resource: Resource) -> LiveRow {
+    let mut row = LiveRow::new(resource.id.as_str(), resource.kind, resource.label);
+    for action in resource.actions {
+        row = row.operation(action);
+    }
+    for child in resource.children {
+        row = row.row(live_row(child));
+    }
+    row
+}
 
 /// Encode arbitrary catalog text into a path component without the ambiguity
 /// of delimiter-joined ids (`a:b` vs `a`, `b`). Labels remain human-readable;
@@ -88,15 +113,6 @@ pub(crate) enum DbClientOperation {
     },
 }
 
-#[allow(
-    clippy::expect_used,
-    reason = "DbClientOperation contains only serializable strings, so this cannot fail without a broken serializer"
-)]
-pub(crate) fn encode_operation(operation: &DbClientOperation) -> EncodedAction {
-    EncodedAction::encode_operation(DB_OPERATION_TYPE, operation)
-        .expect("database operation payload is serializable")
-}
-
 /// The catalog's structural fingerprint: the views rebuild their rows only
 /// when it changes.
 fn schema_signature(schema: &DatabaseSchema) -> u64 {
@@ -137,7 +153,14 @@ pub struct DbClientApp {
     session: Session,
     /// Dispatches saved-connection CRUD through the shared action model, so the
     /// connection list is collaborative, undoable document state.
-    actions: crate::resource::ActionSink,
+    actions: Option<Dispatcher<crate::resource::DbClient>>,
+    /// This device's keyring for connection passwords, one secret per saved
+    /// profile: the document names the profile, the password stays here.
+    secrets: Option<ui::secrets::SecretStore>,
+    /// Whole-text replacements of the shared SQL buffer (a starter query),
+    /// once the framework dispatcher is attached. The editor's own splices
+    /// go through the copy the link hands it.
+    sql_edits: Option<Dispatcher<PlainText>>,
     /// Id of a connection the local user just added and wants opened as soon as
     /// it lands back through the document reconcile (peer-added connections do
     /// not set this, so they are listed but not auto-connected).
@@ -145,14 +168,11 @@ pub struct DbClientApp {
     /// Active resource invocation plus whether its effect can be retried
     /// safely without duplicating a database write.
     resource_operation: Option<(tilo_actions::InvocationId, bool)>,
+    /// The caller of a running "Run SQL" effect, answered when the query
+    /// settles.
+    query_reply: Option<EffectReply>,
     export_rx: Option<ui::portal::PortalChannel>,
     export_snapshot: Option<crate::model::QueryResult>,
-    /// Whether the editor buffer in the CRDT has been seeded yet.
-    seeded: bool,
-    /// When true this is the hermetic `--shots`/demo build: it seeds the
-    /// bundled sample database and a starter query. The live app leaves this
-    /// false, starts on the user's saved connections and never fabricates.
-    demo: bool,
     /// The dialog over the window, if any.
     dialog: Option<Dialog>,
     /// Potentially destructive SQL awaiting an explicit second confirmation.
@@ -170,21 +190,20 @@ impl Default for DbClientApp {
 }
 
 impl DbClientApp {
-    /// The live app: starts on the user's saved connections (empty on a fresh
-    /// machine) and never fabricates a sample database or profiles.
+    /// The app opens on the workspace's saved connections (empty on a fresh
+    /// record) and never fabricates a sample database or profiles.
     pub fn new() -> Self {
-        Self::build(Session::new(), false)
+        Self::build(Session::new())
     }
 
-    /// The hermetic `--shots`/demo build: the sole source of the sample
-    /// database and connection profiles.
-    pub fn new_demo() -> Self {
-        let mut session = Session::with_sample();
-        session.block_until_idle();
-        Self::build(session, true)
+    /// A client on the bundled sample catalog, connected, beside two
+    /// remotes: the populated widget the tests drive.
+    #[cfg(test)]
+    pub(crate) fn sampled() -> Self {
+        Self::build(Session::with_sample())
     }
 
-    fn build(session: Session, demo: bool) -> Self {
+    fn build(session: Session) -> Self {
         let link = Link::new();
         let search = ui::search::search_button(ui::search::SearchRequest::this_app());
         let actions: Vec<ui::widget::Element> = vec![Box::new(search)];
@@ -197,13 +216,14 @@ impl DbClientApp {
             shell,
             link,
             session,
-            demo,
-            actions: crate::resource::ActionSink::default(),
+            actions: None,
+            secrets: None,
+            sql_edits: None,
             pending_connect_id: None,
             resource_operation: None,
+            query_reply: None,
             export_rx: None,
             export_snapshot: None,
-            seeded: false,
             dialog: None,
             pending_query_confirmation: None,
             search_index: crate::search::DbSearchIndex::default(),
@@ -213,16 +233,44 @@ impl DbClientApp {
         app
     }
 
-    /// Turn a live app into the demo: the sample database and its starter
-    /// query, for a `--shots` frame.
-    pub fn enter_demo(&mut self) {
-        self.session = Session::with_sample();
-        self.session.block_until_idle();
-        self.demo = true;
-        self.seeded = false;
-        self.published = Published::default();
-        self.dialog = None;
-        self.pending_query_confirmation = None;
+    /// Stage a capture. Every populated scenario opens the connection that
+    /// stands for the bundled sample catalog and runs the query the
+    /// workspace holds against it, then shows what it names: `data` and
+    /// `structure` a table's rows and columns, `wide` the track listing,
+    /// `connect` the new-connection form, `confirm` the confirmation before
+    /// a statement that changes data, and `error` a remote that could not be
+    /// reached. `empty` is the first run.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        if scenario == Some("empty") {
+            return;
+        }
+        if let Some(idx) = self.session.sample_index() {
+            self.connect(idx);
+            self.session.block_until_idle();
+            self.session.drain();
+        }
+        if self.session.connected {
+            self.show_query_result(scenario_query(scenario));
+        }
+        match scenario {
+            Some("data") => {
+                self.open_table("albums");
+                self.show_tab(MainTab::Data);
+                self.session.block_until_idle();
+                self.session.drain();
+            }
+            Some("structure") => {
+                self.open_table("tracks");
+                self.show_tab(MainTab::Structure);
+            }
+            Some("connect") => self.open_connect_dialog(),
+            Some("confirm") => self.confirm_statement("DROP TABLE albums;"),
+            Some("error") => self.fail_connecting(
+                "Production analytics",
+                "Connection refused: the server at db.internal:5432 did not answer.",
+            ),
+            _ => {}
+        }
         self.publish();
     }
 
@@ -255,20 +303,6 @@ impl DbClientApp {
         self.session.run_query(sql);
         self.session.block_until_idle();
         self.session.drain();
-    }
-
-    /// Load the starter query called `name` into the editor and run it, as
-    /// choosing it from the menu and pressing Run does.
-    pub fn run_starter_query(&mut self, name: &str) {
-        let queries = crate::sample::starter_queries();
-        if let Some((index, (_, sql))) = queries
-            .iter()
-            .enumerate()
-            .find(|(_, (title, _))| *title == name)
-        {
-            self.link.ask(Intent::LoadSnippet(index));
-            self.show_query_result(sql);
-        }
     }
 
     /// Open the new-connection dialog.
@@ -321,7 +355,7 @@ impl DbClientApp {
     }
 
     /// Do what a view asked.
-    fn apply(&mut self, intent: Intent, doc: &mut AutoCommit) {
+    fn apply(&mut self, intent: Intent) {
         match intent {
             Intent::Connect(id) => {
                 // Use the shared effect implementation for both selecting and
@@ -332,12 +366,12 @@ impl DbClientApp {
             }
             Intent::RemoveConnection(id) => {
                 if let Some(index) = self.session.connections.iter().position(|c| c.id == id) {
-                    self.remove_connection(index, doc);
+                    self.remove_connection(index);
                 }
             }
             Intent::NewConnection => self.dialog = Some(Dialog::Connect),
             Intent::SaveConnection(profile) => {
-                self.save_connection(*profile, doc);
+                self.save_connection(*profile);
                 self.dialog = None;
             }
             Intent::OpenRelation(relation) => {
@@ -360,7 +394,7 @@ impl DbClientApp {
             }
             Intent::LoadSnippet(index) => {
                 if let Some((_, sql)) = crate::sample::starter_queries().get(index) {
-                    self.replace_editor_sql(doc, sql);
+                    self.replace_editor_sql(sql);
                 }
             }
             Intent::DismissStatus => self.session.status = RunStatus::Idle,
@@ -493,11 +527,7 @@ impl DbClientApp {
                     .iter()
                     .position(|connection| connection.id == id)
                     .ok_or_else(|| "connection is no longer available".to_string())?;
-                // Reconnect even when the requested resource is already the
-                // selected row; the old `select_connection` no-op would make
-                // an active-but-disconnected profile impossible to retry.
-                self.session.active = idx;
-                self.session.connect_active();
+                self.connect(idx);
             }
             DbClientOperation::BrowseTable {
                 connection_id,
@@ -655,153 +685,216 @@ impl DbClientApp {
         }
     }
 
-    /// Replace the shared SQL buffer through
-    /// [`DbAction::ReplaceEditorSql`](crate::actions::DbAction::ReplaceEditorSql).
-    /// Hosted sessions use the framework dispatcher; standalone uses the local host.
-    fn replace_editor_sql(&mut self, doc: &mut AutoCommit, sql: &str) {
-        let action = crate::actions::DbAction::ReplaceEditorSql {
-            sql: sql.to_string(),
-        };
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::DB_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.db-client", "Database", &action),
-        );
+    /// Replace the shared SQL buffer with `sql`: one
+    /// [`TextEdit::ReplaceText`] of the SQL child, written as the smallest
+    /// splice so a collaborator's concurrent typing survives. For a
+    /// participant who may only view, the buffer stays as it is; the editor
+    /// shows the stored text again on its next sync.
+    fn replace_editor_sql(&self, sql: &str) {
+        if let Some(sql_edits) = &self.sql_edits {
+            sql_edits.apply(&TextEdit::ReplaceText {
+                text: sql.to_owned(),
+            });
+        }
     }
 
-    /// Show the saved connections the framework resource holds.
-    /// An empty projection does not wipe a roster that has not been published yet.
+    /// Show the saved connections the workspace holds, and open the one the
+    /// local user just added once it has landed.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::DbState) {
-        if self.demo {
-            return;
-        }
-        if state.connections.is_empty() && !self.session.connections.is_empty() {
-            return;
-        }
         let same =
             state.connections.len() == self.session.connections.len()
                 && state.connections.iter().zip(&self.session.connections).all(
                     |(incoming, local)| {
                         incoming.id == local.id
                             && incoming.name == local.name
+                            && incoming.engine == local.engine
                             && incoming.host == local.host
+                            && incoming.port == local.port
                             && incoming.database == local.database
+                            && incoming.user == local.user
+                            && incoming.file_path == local.file_path
                     },
                 );
         if !same {
             self.session.set_connections(state.connections.clone());
         }
+        if let Some(id) = self.pending_connect_id
+            && let Some(idx) = self.session.connections.iter().position(|c| c.id == id)
+        {
+            self.pending_connect_id = None;
+            self.connect(idx);
+        }
+        self.publish();
     }
 
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::DbClient>,
-    ) {
-        self.actions.attach(dispatcher);
+    /// Attach the framework dispatcher, this device's keyring, and in a
+    /// capture the sample catalog that stands in for a database server.
+    pub(crate) fn attach_framework(&mut self, cx: &SurfaceCx<crate::resource::DbClient>) {
+        let dispatcher = cx.dispatcher();
+        let sql_edits = crate::resource::sql_dispatcher(&dispatcher);
+        self.link.attach_sql_edits(sql_edits.clone());
+        self.sql_edits = Some(sql_edits);
+        self.actions = Some(dispatcher);
+        // A capture or a past version reaches no keyring.
+        if cx.mode().is_live() {
+            self.secrets = Some(cx.secrets());
+        }
+        if let Some(sample) = cx.fixture::<crate::resource::SampleDatabase>() {
+            self.session.open_sample_as(sample.connection);
+        }
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
+    /// Open the saved connection at `idx`, with the password this device
+    /// keeps for it.
+    fn connect(&mut self, idx: usize) {
+        let Some(id) = self.session.connections.get(idx).map(|profile| profile.id) else {
+            return;
+        };
+        if !self.session.knows_password(id)
+            && let Some(secret) = self.password_secret(id)
+        {
+            match secret.get_blocking() {
+                Ok(Some(password)) => self
+                    .session
+                    .remember_password(id, String::from_utf8_lossy(password.expose()).into_owned()),
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "reading a connection password failed"),
+            }
+        }
+        // Reconnect even when the requested profile is already the selected
+        // row, so an active-but-disconnected profile can be retried.
+        self.session.active = idx;
+        self.session.connect_active();
+    }
+
+    /// The keyring entry of the password of saved connection `id`.
+    fn password_secret(&self, id: Uuid) -> Option<ui::secrets::ItemSecret> {
+        self.secrets
+            .as_ref()
+            .map(|secrets| secrets.item(PASSWORD_PURPOSE, &id.to_string()))
     }
 
     pub(crate) fn session_connected(&self) -> bool {
         self.session.connected
     }
 
-    /// In-flight connect / query / export job label for hosted live extras.
-    pub(crate) fn live_job_label(&self) -> Option<String> {
+    /// Run `sql` on the open connection for a caller of the "Run SQL"
+    /// effect, who is answered when the query settles.
+    pub(crate) fn start_query_effect(
+        &mut self,
+        sql: &str,
+        cx: &mut EffectCx<crate::resource::DbClient, Self>,
+    ) -> EffectAnswer {
+        if self.query_reply.is_some() || self.resource_operation.is_some() || self.session.busy() {
+            return Err("another database operation is already running".into());
+        }
+        if self.session.active_connection_id().is_none() || !self.session.connected {
+            return Err("connect to a database before running SQL".into());
+        }
+        self.session.run_query(sql);
+        self.query_reply = Some(cx.reply());
+        Ok(Effected::Pending)
+    }
+
+    /// Answer the caller of a running "Run SQL" effect once its query has
+    /// settled, or stop the query when the caller cancelled it.
+    fn settle_query_effect(&mut self) {
+        let Some(reply) = &self.query_reply else {
+            return;
+        };
+        if reply.progress().is_cancelled() {
+            self.session.cancel_in_flight_query();
+            self.query_reply = None;
+            return;
+        }
+        if self.session.busy() {
+            return;
+        }
+        if let Some(reply) = self.query_reply.take() {
+            reply.finish(match &self.session.status {
+                RunStatus::Error(message) => Err(message.clone()),
+                _ => Ok(tilo_actions::ActionOutput::default()),
+            });
+        }
+    }
+
+    /// The live entities the client shows that the workspace does not hold:
+    /// an in-flight connect / query / export job, the current query result,
+    /// and the open connection's catalog, transactions and query history.
+    pub(crate) fn live_rows(&self) -> Vec<LiveRow> {
+        let mut rows = Vec::new();
+        if let Some(label) = self.live_job_label() {
+            rows.push(LiveRow::new("database.job", "database.job", label));
+        }
+        rows.extend(self.search_index.rows().into_iter().map(live_row));
+        rows
+    }
+
+    /// The live entity `id`, at any depth of the open connection's catalog.
+    pub(crate) fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.search_index.resource(id).map(live_row)
+    }
+
+    /// In-flight connect / query / export job label.
+    fn live_job_label(&self) -> Option<String> {
         match &self.session.status {
             RunStatus::Busy(label) => Some(label.clone()),
-            _ if self.resource_operation.is_some() => Some("Database operation…".into()),
+            _ if self.resource_operation.is_some() || self.query_reply.is_some() => {
+                Some("Database operation…".into())
+            }
             _ => None,
         }
     }
 
-    /// Current query-result resource when one is live (not document state).
-    pub(crate) fn live_query_result_resource(&self) -> Option<Resource> {
-        let connection_id = self.session.active_connection_id()?.to_string();
-        let result = self.session.query_result.as_ref()?;
-        let result_id = catalog_resource_id(
-            "query-result",
-            &[&connection_id, &self.session.query_gen.to_string()],
-        );
-        let mut resource = Resource::new(&result_id, "database.query-result", result.message());
-        if let Ok(action) = ActionSpec::operation(
-            "show",
-            "Show query result",
-            OperationKind::View,
-            DB_OPERATION_TYPE,
-            &DbClientOperation::ShowResult {
-                connection_id: connection_id.clone(),
-                result_generation: self.session.query_gen,
-            },
-        ) {
-            resource = resource.with_action(action);
-        }
-        if result.is_select
-            && let Ok(action) = ActionSpec::operation(
-                "export_csv",
-                "Export CSV",
-                OperationKind::Effect,
-                DB_OPERATION_TYPE,
-                &DbClientOperation::ExportCsv {
-                    connection_id,
-                    result_generation: self.session.query_gen,
-                },
-            )
-        {
-            resource = resource.with_action(action);
-        }
-        Some(resource)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
-    }
-
-    /// Save a new connection profile. The live app routes it through the action
-    /// model — the metadata lands in `root["connections"]` (collaborative,
-    /// undoable) while the password is kept in memory only — and remembers to
-    /// open it once it reconciles back. The demo keeps its roster as view state.
-    fn save_connection(&mut self, profile: crate::model::ConnectionProfile, doc: &mut AutoCommit) {
-        if self.demo {
-            self.session.add_connection_blocking(profile);
-            return;
-        }
+    /// Save a new connection profile through the action model — the metadata
+    /// lands in `root["connections"]` (collaborative, undoable) while the
+    /// password goes to this device's keyring — and open it once it lands.
+    fn save_connection(&mut self, profile: crate::model::ConnectionProfile) {
         let id = profile.id;
-        self.session.remember_password(id, profile.password.clone());
-        let action = crate::actions::add_connection_action(&profile);
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::DB_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.db-client", "Database", &action),
-        );
+        if let Some(actions) = &self.actions {
+            actions.apply(&crate::actions::add_connection_action(&profile));
+        }
+        if let Some(secret) = self.password_secret(id) {
+            let stored = if profile.password.is_empty() {
+                secret.delete_blocking()
+            } else {
+                secret.put_blocking(profile.password.as_bytes())
+            };
+            if let Err(error) = stored {
+                tracing::warn!(%error, "keeping the connection password failed");
+            }
+        }
+        self.session.remember_password(id, profile.password);
         self.pending_connect_id = Some(id);
     }
 
-    /// Remove a saved connection by its index in the sidebar list.
-    fn remove_connection(&mut self, idx: usize, doc: &mut AutoCommit) {
+    /// Remove a saved connection by its index in the sidebar list, and the
+    /// password this device kept for it.
+    fn remove_connection(&self, idx: usize) {
         let Some(profile) = self.session.connections.get(idx).cloned() else {
             return;
         };
-        if self.demo {
-            self.session.connections.remove(idx);
-            if self.session.active >= self.session.connections.len() {
-                self.session.active = self.session.connections.len().saturating_sub(1);
-            }
-            return;
+        if let Some(actions) = &self.actions {
+            actions.apply(&crate::actions::remove_connection_action(profile.id));
         }
-        let action = crate::actions::remove_connection_action(profile.id);
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::DB_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.db-client", "Database", &action),
-        );
+        if let Some(secret) = self.password_secret(profile.id)
+            && let Err(error) = secret.delete_blocking()
+        {
+            tracing::warn!(%error, "forgetting the connection password failed");
+        }
+    }
+}
+
+/// The query a staged capture shows the result of: the track listing for
+/// `wide`, the starter query otherwise.
+pub(crate) fn scenario_query(scenario: Option<&str>) -> &'static str {
+    if scenario == Some("wide") {
+        crate::sample::starter_queries()
+            .iter()
+            .find(|(name, _)| *name == "Track listing")
+            .map_or(crate::sample::DEFAULT_QUERY, |(_, sql)| *sql)
+    } else {
+        crate::sample::DEFAULT_QUERY
     }
 }
 
@@ -967,8 +1060,6 @@ impl ui::widget::Decorator for DbClientApp {
     }
 
     ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource;
         inner = shell
     );
@@ -1063,50 +1154,22 @@ impl ui::widget::Decorator for DbClientApp {
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (doc, _) = ui::doc::document(state, path);
-        crate::doc::adopt_shared_schema(doc);
-        if !self.seeded {
-            // Only the demo build seeds a starter query; the live editor
-            // opens empty so nothing references a database that isn't there.
-            if self.demo && EditorDoc::read_sql(doc).is_empty() {
-                EditorDoc::set_sql(doc, crate::sample::DEFAULT_QUERY);
-            }
-            self.seeded = true;
-        }
-
         // Fold in any results the background worker has finished (connect
         // outcomes, query result sets, table pages). This is what makes a
         // remote query land on screen without further user input.
         self.session.drain();
+        self.settle_query_effect();
         if self.export_rx.is_some() {
             self.drain_export_portal();
         }
 
-        // The live app's saved-connection list is collaborative document
-        // state: reconcile the session from `root["connections"]` each frame.
-        // The demo keeps its seeded sample roster as view state instead.
-        if !self.demo {
-            let doc_conns = ConnectionsDoc::read(doc);
-            self.session.set_connections(doc_conns);
-            // Open a connection the local user just added, once it has landed
-            // back through the reconcile.
-            if let Some(id) = self.pending_connect_id
-                && let Some(idx) = self.session.connections.iter().position(|c| c.id == id)
-            {
-                self.session.active = idx;
-                self.session.connect_active();
-                self.pending_connect_id = None;
-            }
-        }
-
+        // The saved connections come from the workspace as presented
+        // (`adopt_resource_state`); the widget writes nothing itself.
         for intent in self.link.take_intents() {
-            self.apply(intent, doc);
+            self.apply(intent);
         }
 
-        if let Err(error) = self
-            .search_index
-            .sync_for_app(&self.session, doc, !self.demo)
-        {
+        if let Err(error) = self.search_index.sync(&self.session) {
             // Preserve the last known-good catalogue for existing palette
             // entries, but make a rejected rebuild visible rather than
             // silently advertising stale discovery as current.
@@ -1143,7 +1206,10 @@ impl ui::widget::Decorator for DbClientApp {
     fn needs_animation_frame(&self) -> bool {
         // Keep frames coming while the worker has a connect/query in flight
         // so its result lands without further input.
-        self.session.busy() || self.export_rx.is_some() || self.shell.needs_animation_frame()
+        self.session.busy()
+            || self.query_reply.is_some()
+            || self.export_rx.is_some()
+            || self.shell.needs_animation_frame()
     }
 
     fn name(&self) -> &'static str {
@@ -1154,64 +1220,6 @@ impl ui::widget::Decorator for DbClientApp {
 impl ui::search::capability::SearchSource for DbClientApp {
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.search_index.provider())]
-    }
-}
-
-impl ui::resources::PublishesResources for DbClientApp {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// the workspace door — keep only live query results and in-flight jobs.
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        if self.is_hosted() {
-            return crate::resource::live_extras(self);
-        }
-        self.publish_resources(doc)
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        // Remote directory enumeration never walks a live schema. Deeper
-        // catalog entries are reached through the retained SearchCatalog and
-        // resolved by their canonical resource ids.
-        let resources = if cursor.is_empty() && max_results > 0 {
-            self.resources(doc)
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if self.is_hosted() && id == "database" {
-            return None;
-        }
-        self.publish_resource(doc, id)
-            .or_else(|| {
-                self.is_hosted()
-                    .then(|| {
-                        crate::resource::live_extras(self)
-                            .into_iter()
-                            .find(|resource| resource.id.as_str() == id)
-                    })
-                    .flatten()
-            })
-            .or_else(|| self.search_index.resource(id))
-    }
-}
-
-impl ui::undo::CommittedActions for DbClientApp {
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // Hand the action model's undo bracket to the host so saved-connection
-        // CRUD becomes a single undo boundary and replicates to peers.
-        self.actions.take_committed()
     }
 }
 
@@ -1281,31 +1289,217 @@ impl DbClientApp {
     }
 }
 
+/// A workspace document whose SQL buffer holds the starter query, as a
+/// capture stages it: what the tests show beside a sampled client.
+#[cfg(test)]
+pub(crate) fn sample_document() -> AutoCommit {
+    use ui::tilo_resource::Resource as _;
+    let mut doc = AutoCommit::new();
+    crate::resource::DbClient::initialize(&mut doc).expect("a new document takes the schema");
+    crate::doc::EditorDoc::set_sql(&mut doc, crate::sample::DEFAULT_QUERY);
+    doc.commit();
+    doc
+}
+
+/// [`sample_document`] as a headless driver's state.
+#[cfg(test)]
+pub(crate) fn sample_state() -> ui::State {
+    ui::State::from_doc(sample_document())
+}
+
+/// The SQL buffer as the framework hosts it: every edit a splice of the SQL
+/// child, through the workspace's dispatcher.
+#[cfg(test)]
+mod editor_sql_tests {
+    use ui::a11y::Action as A11yAction;
+    use ui::framework::testing::TestApp;
+    use ui::tilo_resource::{Invoke, PlainText, TextEdit};
+
+    use crate::actions::add_connection_action;
+    use crate::doc::EditorDoc;
+    use crate::model::{ConnectionProfile, Engine};
+    use crate::resource::{DbClient, DbClientShell, sql_resource_id};
+
+    fn sql(app: &TestApp<DbClientShell>) -> String {
+        app.read_document(EditorDoc::read_sql)
+    }
+
+    /// The SQL buffer's edits in history: those naming the SQL as the
+    /// resource edited.
+    fn sql_edits(app: &TestApp<DbClientShell>) -> usize {
+        app.versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .filter(|context| {
+                context
+                    .resource
+                    .as_ref()
+                    .is_some_and(|resource| resource.id == sql_resource_id())
+            })
+            .count()
+    }
+
+    /// A workspace with one saved connection, which shows the query editor,
+    /// with the editor focused.
+    fn workspace() -> TestApp<DbClientShell> {
+        let mut app = TestApp::<DbClientShell>::new().unwrap();
+        app.invoke(
+            Invoke::<DbClient>::apply(&add_connection_action(&ConnectionProfile::new(
+                "Local",
+                Engine::Sqlite,
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        app.harness().click_named("sql-editor").unwrap();
+        app
+    }
+
+    #[test]
+    fn typing_sql_is_a_splice_of_the_sql_child_undone_a_word_at_a_time() {
+        let mut app = workspace();
+        app.harness().type_text("select name");
+        assert_eq!(sql(&app), "select name");
+        assert!(
+            sql_edits(&app) > 0,
+            "history names the SQL as the resource edited"
+        );
+        assert!(app.undo());
+        assert_eq!(sql(&app), "select ");
+        assert!(app.undo());
+        assert_eq!(sql(&app), "");
+        assert_eq!(
+            app.state().connections.len(),
+            1,
+            "undoing the typing leaves the connection"
+        );
+    }
+
+    #[test]
+    fn a_viewers_keystrokes_change_nothing_and_the_editor_shows_the_stored_sql() {
+        let mut app = workspace();
+        app.harness().type_text("select 1");
+        app.set_role(ui::Role::Viewer);
+        let before = app.versions().len();
+        app.harness().key("End");
+        app.harness().type_text(" drop table");
+        app.harness()
+            .perform_named("sql-editor", &A11yAction::SetValue("drop table".into()))
+            .unwrap();
+        assert_eq!(sql(&app), "select 1");
+        assert_eq!(app.versions().len(), before);
+        let inspection = app.harness().inspection_json().unwrap();
+        assert!(!inspection.contains("drop table"), "{inspection}");
+    }
+
+    #[test]
+    fn replacing_the_sql_is_one_undoable_edit_an_agent_can_address() {
+        let mut app = workspace();
+        app.harness()
+            .perform_named("sql-editor", &A11yAction::SetValue("SELECT 1".into()))
+            .unwrap();
+        assert_eq!(sql(&app), "SELECT 1");
+        app.invoke_child::<PlainText>(
+            &sql_resource_id(),
+            Invoke::<PlainText>::apply(&TextEdit::ReplaceText {
+                text: "SELECT 2".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(sql(&app), "SELECT 2");
+        let inspection = app.harness().inspection_json().unwrap();
+        assert!(
+            inspection.contains("SELECT 2"),
+            "the editor shows it: {inspection}"
+        );
+        assert!(app.undo());
+        assert_eq!(sql(&app), "SELECT 1");
+        assert!(app.undo());
+        assert_eq!(sql(&app), "");
+    }
+
+    #[test]
+    fn typing_replaces_the_selection_and_merges_with_a_collaborator() {
+        let mut app = workspace();
+        app.harness()
+            .perform_named("sql-editor", &A11yAction::SetValue("SELECT 1".into()))
+            .unwrap();
+        app.harness()
+            .perform_named(
+                "sql-editor",
+                &A11yAction::SetSelection {
+                    anchor: 0,
+                    focus: "SELECT".len(),
+                },
+            )
+            .unwrap();
+        app.harness().type_text("WITH");
+        assert_eq!(sql(&app), "WITH 1");
+        app.merge_peer_edit(|doc| {
+            let text = EditorDoc::sql_object(doc).unwrap();
+            ui::automerge::transaction::Transactable::splice_text(doc, &text, 6, 0, " AS t")
+                .unwrap();
+        });
+        app.harness().key("End");
+        app.harness().type_text(";");
+        assert_eq!(sql(&app), "WITH 1 AS t;");
+    }
+
+    /// Choosing a starter query replaces the editor's text with it, as one
+    /// edit of the SQL child.
+    #[test]
+    fn choosing_a_starter_query_loads_it_into_the_editor() {
+        let mut app = workspace();
+        app.harness()
+            .click_named("db.query.snippets")
+            .expect("the starter menu is on the toolbar");
+        app.harness().key("ArrowDown");
+        app.harness().key("Enter");
+        app.settle();
+        let loaded = sql(&app);
+        assert!(
+            crate::sample::starter_queries()
+                .iter()
+                .any(|(_, starter)| *starter == loaded),
+            "the menu's choice replaced the query: {loaded}"
+        );
+        let inspection = app.harness().inspection_json().unwrap();
+        let first_line = loaded.lines().next().unwrap_or_default();
+        assert!(inspection.contains(first_line), "{inspection}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use automerge::ROOT;
-    use tilo_actions::Action;
-    use tilo_automerge::ApplyIncoming;
     use ui::headless::FrameHarness;
     use ui::theme::Theme;
 
     use crate::model::{ConnectionProfile, Engine};
 
     fn synced() -> (DbClientApp, AutoCommit) {
-        let mut app = DbClientApp::new_demo();
-        let mut doc = AutoCommit::new();
+        let mut app = DbClientApp::sampled();
+        let mut doc = sample_document();
         Widget::sync(&mut app, &mut doc, &ROOT);
         (app, doc)
     }
 
     fn mounted(app: DbClientApp) -> FrameHarness {
-        FrameHarness::for_root(ui::State::new(), app, (1280, 800), Theme::dark())
+        FrameHarness::for_root(sample_state(), app, (1280, 800), Theme::dark())
     }
 
     fn app(harness: &FrameHarness) -> &DbClientApp {
         harness.root::<DbClientApp>()
+    }
+
+    /// Put `sql` in the shared buffer, as a collaborator writing it does:
+    /// without the framework dispatcher the editor only shows the text.
+    fn write_sql(harness: &mut FrameHarness, sql: &str) {
+        crate::doc::EditorDoc::set_sql(&mut harness.state_mut().doc, sql);
+        harness.relayout();
     }
 
     /// The first-run state, by the name the harness addresses it with.
@@ -1318,13 +1512,12 @@ mod tests {
         harness.set_modifiers(&[]);
     }
 
-    /// The live app starts empty with a new-connection action opening the dialog; only the demo seeds the sample.
+    /// The app starts empty with a new-connection action opening the dialog.
     #[test]
-    fn start_state_is_empty_live_and_seeded_only_in_demo() {
+    fn start_state_is_empty_with_a_new_connection_action() {
         // --- phase: live_app_starts_empty ---
         {
             let app = DbClientApp::new();
-            assert!(!app.demo, "live build is not the demo build");
             assert!(
                 app.session.connections.is_empty(),
                 "no fabricated connections"
@@ -1353,29 +1546,40 @@ mod tests {
 
         // --- phase: ctrl_n_opens_the_dialog_from_anywhere ---
         {
-            let mut harness = mounted(DbClientApp::new_demo());
+            let mut harness = mounted(DbClientApp::sampled());
             chord(&mut harness, "n");
             harness.relayout();
             assert_eq!(app(&harness).dialog, Some(Dialog::Connect));
         }
+    }
 
-        // --- phase: demo_app_seeds_the_sample ---
-        {
-            let app = DbClientApp::new_demo();
-            assert!(app.demo, "demo build is flagged");
-            assert_eq!(app.session.connections.len(), 3, "demo seeds the roster");
-            assert!(app.session.connected, "demo opens the sample engine");
-            assert!(
-                app.session.schema.table_count() >= 4,
-                "demo has the sample schema"
-            );
+    /// Only a capture shows the bundled sample: its scenario lists the
+    /// sample beside two remotes and stages it opened, with a result, while
+    /// `empty` is the first run.
+    #[test]
+    fn captures_stage_the_sample_catalog_and_the_first_run() {
+        use ui::framework::testing::TestApp;
+
+        let mut capture =
+            TestApp::<crate::resource::DbClientShell>::capture(Some("connect")).unwrap();
+        let state = capture.state();
+        assert_eq!(state.connections.len(), 3, "the sample beside two remotes");
+        assert_eq!(state.editor_sql, crate::sample::DEFAULT_QUERY);
+        let inspection = capture.harness().inspection_json().unwrap();
+        for shown in ["albums", "New connection"] {
+            assert!(inspection.contains(shown), "missing {shown}: {inspection}");
         }
+
+        let mut empty = TestApp::<crate::resource::DbClientShell>::capture(Some("empty")).unwrap();
+        assert!(empty.state().connections.is_empty());
+        let inspection = empty.harness().inspection_json().unwrap();
+        assert!(inspection.contains("No connections yet"), "{inspection}");
     }
 
     /// The tabs show their view, a table opened from the sidebar shows its rows, and the structure follows the selected table.
     #[test]
     fn tabs_and_the_sidebar_choose_what_is_shown() {
-        let mut harness = mounted(DbClientApp::new_demo());
+        let mut harness = mounted(DbClientApp::sampled());
         harness.relayout();
         assert_eq!(app(&harness).session.tab, MainTab::Query);
 
@@ -1425,61 +1629,34 @@ mod tests {
         }
     }
 
-    /// Typing replicates byte-identically, replaces selections in the CRDT and pulls a collaborator's edit into the editor.
+    /// Without the framework dispatcher the editor only shows the shared
+    /// text: typing changes nothing, and a collaborator's edit shows.
     #[test]
-    fn sql_editor_is_collaborative_crdt_text() {
-        // --- phase: typing_replicates_byte_identically_on_a_peer ---
+    fn the_editor_shows_the_shared_sql() {
+        // --- phase: without_a_dispatcher_typing_changes_nothing ---
         {
-            let mut harness = mounted(DbClientApp::new_demo());
+            let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
-            let before = crate::doc::EditorDoc::read_sql(&harness.state().doc);
-            assert!(
-                before.starts_with("SELECT"),
-                "the demo seeds a starter query"
-            );
             harness.state_mut().doc.commit();
-            let base = harness.state_mut().doc.save();
-            let mut peer = AutoCommit::load(&base).unwrap();
-
+            let before = harness.state_mut().doc.get_heads();
             harness.type_text("Z");
-            harness.state_mut().doc.commit();
-            let after = crate::doc::EditorDoc::read_sql(&harness.state().doc);
-            assert_eq!(
-                after.chars().count(),
-                before.chars().count() + 1,
-                "one char inserted"
-            );
-            peer.merge_incoming(&mut harness.state_mut().doc).unwrap();
+            harness.relayout();
             assert_eq!(
                 harness.state_mut().doc.get_heads(),
-                peer.get_heads(),
-                "byte-identical convergence"
+                before,
+                "the document is unchanged"
             );
-        }
-
-        // --- phase: typing_replaces_the_selected_sql_in_the_crdt ---
-        {
-            let mut harness = mounted(DbClientApp::new_demo());
-            harness.relayout();
-            chord(&mut harness, "a");
-            harness.type_text("WITH");
             assert_eq!(
-                crate::doc::EditorDoc::read_sql(&harness.state().doc),
-                "WITH",
-                "selection replacement lands in the shared text"
+                app(&harness).link.sql(),
+                crate::doc::EditorDoc::read_sql(&harness.state().doc)
             );
-            assert_eq!(app(&harness).link.sql(), "WITH");
         }
 
         // --- phase: sync_pulls_a_collaborators_sql_edit_into_the_editor ---
         {
-            let mut harness = mounted(DbClientApp::new_demo());
+            let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
-            crate::doc::EditorDoc::set_sql(
-                &mut harness.state_mut().doc,
-                "SELECT * FROM remote_table",
-            );
-            harness.relayout();
+            write_sql(&mut harness, "SELECT * FROM remote_table");
             assert_eq!(app(&harness).link.sql(), "SELECT * FROM remote_table");
         }
     }
@@ -1489,7 +1666,7 @@ mod tests {
     fn running_asks_before_changing_data_and_never_writes_the_document() {
         // --- phase: running_a_query_writes_nothing_to_the_document ---
         {
-            let mut harness = mounted(DbClientApp::new_demo());
+            let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
             harness.state_mut().doc.commit();
             let before = harness.state_mut().doc.get_heads();
@@ -1505,10 +1682,9 @@ mod tests {
 
         // --- phase: the_run_button_runs_the_query_in_the_editor ---
         {
-            let mut harness = mounted(DbClientApp::new_demo());
+            let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
-            crate::doc::EditorDoc::set_sql(&mut harness.state_mut().doc, "SELECT 42 AS answer");
-            harness.relayout();
+            write_sql(&mut harness, "SELECT 42 AS answer");
             harness
                 .click_named("db.query.run")
                 .expect("Run is on the toolbar");
@@ -1527,10 +1703,9 @@ mod tests {
 
         // --- phase: destructive_sql_requires_an_explicit_confirmation ---
         {
-            let mut harness = mounted(DbClientApp::new_demo());
+            let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
-            chord(&mut harness, "a");
-            harness.type_text("DELETE FROM tracks");
+            write_sql(&mut harness, "DELETE FROM tracks");
             chord(&mut harness, "Enter");
             harness.relayout();
             let root = app(&harness);
@@ -1553,10 +1728,9 @@ mod tests {
 
         // --- phase: confirming_runs_the_statement ---
         {
-            let mut harness = mounted(DbClientApp::new_demo());
+            let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
-            chord(&mut harness, "a");
-            harness.type_text("DELETE FROM tracks WHERE track_id = 1");
+            write_sql(&mut harness, "DELETE FROM tracks WHERE track_id = 1");
             chord(&mut harness, "Enter");
             harness.relayout();
             chord(&mut harness, "Enter");
@@ -1569,74 +1743,109 @@ mod tests {
         }
     }
 
-    /// A saved connection lands in the document without its password, and a peer's connection is listed but not opened.
+    /// Saving a connection from the dialog keeps its password in this
+    /// device's keyring, never in the document, and opens it once it lands;
+    /// removing it forgets the password.
     #[test]
-    fn connections_live_in_the_document_but_queries_do_not() {
-        // --- phase: saving_a_connection_dispatches_an_action_into_the_doc ---
-        {
-            let mut app = DbClientApp::build(Session::new(), false);
-            let mut doc = AutoCommit::new();
-            Widget::sync(&mut app, &mut doc, &ROOT);
+    fn a_saved_connections_password_stays_on_the_device() {
+        let mut app = DbClientApp::new();
+        let secrets = ui::secrets::SecretStore::memory("so.tilo.db-client");
+        app.secrets = Some(secrets.clone());
+        let mut doc = AutoCommit::new();
+        doc.commit();
+        let heads = doc.get_heads();
+        Widget::sync(&mut app, &mut doc, &ROOT);
 
-            let mut profile = ConnectionProfile::new("Prod", Engine::Postgres);
-            profile.host = "db.internal".into();
-            profile.password = "hunter2".into();
-            let id = profile.id;
-            app.save_connection(profile, &mut doc);
+        let mut profile = ConnectionProfile::new("Prod", Engine::Postgres);
+        profile.host = "127.0.0.1".into();
+        profile.port = 1;
+        profile.password = "hunter2".into();
+        app.link.ask(Intent::SaveConnection(Box::new(profile)));
+        Widget::sync(&mut app, &mut doc, &ROOT);
+        assert_eq!(app.dialog, None, "saving closes the dialog");
+        let id = app
+            .pending_connect_id
+            .expect("the client opens it once it lands");
+        let secret = secrets.item(PASSWORD_PURPOSE, &id.to_string());
+        assert_eq!(
+            secret.get_blocking().unwrap().expect("kept").expose(),
+            b"hunter2"
+        );
+        assert_eq!(
+            doc.get_heads(),
+            heads,
+            "the widget writes nothing itself; its edits go through the dispatcher"
+        );
 
-            let conns = crate::doc::ConnectionsDoc::read(&doc);
-            assert_eq!(conns.len(), 1, "the connection was written to the document");
-            assert_eq!(conns[0].name, "Prod");
-            assert!(
-                ui::undo::take_committed_action(&mut app).is_some(),
-                "the action host recorded an undo boundary for the CRUD"
-            );
-            assert_eq!(
-                app.pending_connect_id,
-                Some(id),
-                "the app will open it on reconcile"
-            );
-            let bytes = doc.save();
-            assert!(
-                !bytes.windows(7).any(|w| w == b"hunter2"),
-                "the password must never enter the shared document"
-            );
-        }
-
-        // --- phase: reconcile_surfaces_document_connections ---
-        {
-            let mut app = DbClientApp::build(Session::new(), false);
-            let mut doc = AutoCommit::new();
-            let p = ConnectionProfile::new("Team DB", Engine::MySql);
-            crate::actions::add_connection_action(&p)
-                .apply(&mut doc)
-                .unwrap();
-
-            Widget::sync(&mut app, &mut doc, &ROOT);
-            assert_eq!(
-                app.session.connections.len(),
-                1,
-                "the document connection is listed"
-            );
-            assert_eq!(app.session.connections[0].name, "Team DB");
-            assert!(
-                !app.session.connected,
-                "a peer-added connection is not auto-opened"
-            );
-            assert_eq!(
-                app.link.read(|model| model.connections.len()),
-                1,
-                "and the views are told about it"
-            );
-        }
+        let mut listed = ConnectionProfile::new("Prod", Engine::Postgres);
+        listed.id = id;
+        app.adopt_resource_state(&crate::resource::DbState {
+            connections: vec![listed],
+            ..crate::resource::DbState::default()
+        });
+        assert!(app.pending_connect_id.is_none(), "it opened once listed");
+        assert_eq!(
+            app.link.read(|model| model.connections.len()),
+            1,
+            "and the views are told about it"
+        );
+        app.remove_connection(0);
+        assert!(
+            !secret.present_blocking(),
+            "removing it forgets the password"
+        );
     }
 
-    /// The new-connection dialog adds a `SQLite` file with a Unicode path to the document and opens it; resource operations then run SQL against it.
+    /// Adding a connection is one undoable step of the workspace, and the
+    /// document never holds a password.
+    #[test]
+    fn an_added_connection_is_one_undo_step_without_a_password() {
+        use ui::framework::testing::TestApp;
+        use ui::tilo_resource::Invoke;
+
+        let mut app = TestApp::<crate::resource::DbClientShell>::new().unwrap();
+        let mut profile = ConnectionProfile::new("Prod", Engine::Postgres);
+        profile.password = "hunter2".into();
+        app.invoke(Invoke::apply(&crate::actions::add_connection_action(&profile)).unwrap())
+            .unwrap();
+        assert_eq!(app.state().connections.len(), 1);
+        let saved = app.read_document(|doc| doc.clone().save());
+        assert!(!saved.windows(7).any(|window| window == b"hunter2"));
+        assert!(app.undo());
+        assert!(app.state().connections.is_empty());
+    }
+
+    /// A connection a collaborator added is listed but not opened: opening
+    /// it is this device's choice, with this device's password.
+    #[test]
+    fn a_collaborators_connection_is_listed_without_being_opened() {
+        use ui::framework::testing::TestApp;
+
+        let mut app = TestApp::<crate::resource::DbClientShell>::new().unwrap();
+        let profile = ConnectionProfile::new("Team DB", Engine::MySql);
+        app.merge_peer_edit(|doc| {
+            tilo_actions::Action::apply(&crate::actions::add_connection_action(&profile), doc)
+                .unwrap();
+        });
+        app.settle();
+        let inspection = app.harness().inspection_json().unwrap();
+        assert!(inspection.contains("Team DB"), "{inspection}");
+        assert!(
+            !inspection.contains("Connecting to Team DB"),
+            "a collaborator's connection is not opened here: {inspection}"
+        );
+    }
+
+    /// The new-connection dialog adds a `SQLite` file with a Unicode path to
+    /// the workspace and opens it; after a reopen the effects run SQL on it
+    /// without copying results into the shared document.
     #[test]
     fn the_connection_dialog_adds_a_sqlite_connection_that_opens() {
-        let directory = std::env::temp_dir().join(format!("tilo-db-{}", Uuid::new_v4()));
-        std::fs::create_dir(&directory).unwrap();
-        let database = directory.join("Grün 🌍.sqlite");
+        use ui::framework::testing::TestApp;
+
+        let _keyring = ui::secrets::scope_thread(ui::secrets::memory_backend());
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("Grün 🌍.sqlite");
         {
             let seed = rusqlite::Connection::open(&database).unwrap();
             seed.execute_batch(
@@ -1644,13 +1853,14 @@ mod tests {
             )
             .unwrap();
         }
+        // The dialog takes the file and saves the profile, to be opened once
+        // the workspace lists it.
         let mut harness = mounted(DbClientApp::new());
         harness.relayout();
         harness
             .perform_named(EMPTY_STATE, &ui::a11y::Action::Activate)
             .expect("the one action is offered");
         harness.relayout();
-
         // The engine picker is three equal segments; SQLite is the last.
         let picker = harness.targets()["db.modal.engine"];
         harness.click_at(picker.x1 - 4.0, picker.center().y);
@@ -1661,81 +1871,68 @@ mod tests {
         harness.commit_text(database.to_str().unwrap());
         harness.key("Enter");
         harness.relayout();
-
-        harness.root_mut::<DbClientApp>().session.block_until_idle();
-        harness.relayout();
         let root = app(&harness);
         assert_eq!(root.dialog, None, "saving closes the dialog");
         assert!(
-            root.session.connected,
-            "the new connection opened: {:?} {:?}",
-            root.session.connections, root.session.status
+            root.pending_connect_id.is_some(),
+            "the client opens it once it lands"
         );
-        assert_eq!(root.session.connections[0].name, "Local files");
-        assert_eq!(ConnectionsDoc::read(&harness.state().doc).len(), 1);
-
-        // Resource operations resolve the connection from the document and
-        // run SQL without copying the result into it.
-        let saved = harness.state_mut().doc.save();
-        let connection_id = app(&harness)
-            .session
-            .active_connection_id()
-            .unwrap()
-            .to_string();
         drop(harness);
-        let mut doc = AutoCommit::load(&saved).unwrap();
-        let mut app = DbClientApp::build(Session::new(), false);
-        Widget::sync(&mut app, &mut doc, &ROOT);
-        assert!(
-            !app.session.connected,
-            "loading metadata must not open external resources"
-        );
-        let heads = doc.get_heads();
-        for operation in [
-            DbClientOperation::Connect {
-                connection_id: connection_id.clone(),
-            },
-            DbClientOperation::RunQuery {
-                connection_id,
-                sql: "SELECT value FROM proof".into(),
-            },
-        ] {
-            let invocation = tilo_actions::InvocationId::new();
-            assert_eq!(
-                Widget::start_operation(
-                    &mut app,
-                    &ui::widget::ResourceOperation::local(
-                        invocation,
-                        OperationKind::Effect,
-                        DB_OPERATION_TYPE,
-                        &serde_json::to_vec(&operation).unwrap()
-                    ),
-                    &mut doc,
-                    &ROOT
-                )
+
+        // Hosted, the saved profile opens and runs SQL.
+        let mut profile = ConnectionProfile::new("Local files", Engine::Sqlite);
+        profile.file_path = database.to_str().unwrap().into();
+        let mut app = TestApp::<crate::resource::DbClientShell>::new().unwrap();
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&crate::actions::add_connection_action(&profile))
                 .unwrap(),
-                Some(ui::widget::ResourceOperationStart::Accepted)
-            );
-            app.session.block_until_idle();
-            assert!(matches!(
-                Widget::poll_resource_operation(&mut app, invocation, false, &doc, &ROOT),
-                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-            ));
-        }
-        let result = app.session.query_result.as_ref().unwrap();
-        assert_eq!(result.rows.len(), 1);
-        assert_eq!(result.rows[0][0].display(), "Grün 🌍");
-        assert_eq!(
-            doc.get_heads(),
-            heads,
-            "executing SQL must not copy results into the shared document"
+        )
+        .unwrap();
+        let state = app.state();
+        assert_eq!(state.connections.len(), 1);
+        assert_eq!(state.connections[0].name, "Local files");
+
+        let mut app = app.reopen().unwrap();
+        let connection = crate::resource::connection_resource_id(state.connections[0].id);
+        app.call_on(&connection, "connect", serde_json::json!({}))
+            .unwrap();
+        tilo_test_env::wait_until("the connection to open its catalog", || {
+            app.settle();
+            app.harness()
+                .inspection_json()
+                .is_ok_and(|inspection| inspection.contains("proof"))
+        });
+        let heads = app.read_document(|doc| doc.clone().get_heads());
+        app.effect_confirmed(&crate::resource::DbEffect::Query {
+            sql: "SELECT value FROM proof".into(),
+        })
+        .unwrap_or_else(|error| panic!("{error:?}"));
+        tilo_test_env::wait_until("the query to answer its caller", || {
+            app.settle();
+            app.effect_progress()
+                .iter()
+                .any(|update| matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }))
+        });
+        let inspection = app.harness().inspection_json().unwrap();
+        assert!(inspection.contains("Grün 🌍"), "{inspection}");
+        assert!(
+            app.agent_surface()
+                .to_string()
+                .contains("database.query-result"),
+            "the result is published as a live row"
         );
-        drop(app);
-        std::fs::remove_file(&database).unwrap();
-        std::fs::remove_dir(&directory).unwrap();
+        assert_eq!(
+            app.read_document(|doc| doc.clone().get_heads()),
+            heads,
+            "running SQL copies no result into the shared document"
+        );
     }
 
-    /// Resource queries stay pending until the worker finishes; the live tree covers schema, results and transactions without secrets and stays schema-qualified.
+    /// Resource queries stay pending until the worker finishes; the live rows cover schema, results and transactions without secrets and stay schema-qualified.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
     fn resource_tree_and_queries_are_schema_qualified_and_secret_free() {
         // --- phase: resource_query_is_pending_until_the_database_worker_finishes ---
@@ -1769,52 +1966,62 @@ mod tests {
             ));
         }
 
-        // --- phase: live_resource_tree_covers_schema_results_and_transactions_without_secrets ---
+        // --- phase: live_rows_cover_schema_results_and_transactions_without_secrets ---
         {
-            let (mut app, doc) = synced();
+            use ui::tilo_resource::Effect as _;
+
+            let (mut app, _doc) = synced();
             app.session.connections[0].password = "never-publish-this".into();
-            let resources = ui::resources::resources(&app, &doc);
-            assert_eq!(resources.len(), 1, "root discovery is bounded");
-            assert!(resources[0].children.is_empty());
+            let rows: Vec<Resource> = app
+                .live_rows()
+                .into_iter()
+                .map(LiveRow::into_resource)
+                .collect();
+            assert!(
+                rows.iter().all(|row| !matches!(
+                    row.kind.as_str(),
+                    "database.table" | "database.view" | "database.column"
+                )),
+                "the published rows stay bounded; relations resolve by id"
+            );
+            assert!(
+                rows.iter()
+                    .all(|row| !row.label.contains("never-publish-this")
+                        && !row.id.as_str().contains("never-publish-this")),
+                "no row carries a password"
+            );
             let connection = app.session.active_connection().unwrap().id.to_string();
             let schema = &app.session.schema.schemas[0];
             let relation = &schema.tables[0];
             let relation_id =
                 catalog_resource_id("relation", &[&connection, &schema.name, &relation.name]);
-            let resolved =
-                ui::resources::resource(&app, &doc, &relation_id).expect("exact relation resolves");
+            let resolved = app
+                .live_row(&relation_id)
+                .expect("exact relation resolves")
+                .into_resource();
             assert_eq!(resolved.id.as_str(), relation_id);
             assert!(resolved.actions.iter().any(|action| action.id == "browse"));
-            let run_sql = resources[0]
-                .actions
-                .iter()
+            let run_sql = crate::resource::DbEffect::specs()
+                .into_iter()
                 .find(|action| action.id == "query")
-                .expect("Run SQL is an exported action");
+                .expect("Run SQL is an effect");
             assert_eq!(run_sql.contract.risk, tilo_actions::RiskLevel::Destructive);
             assert_eq!(
                 run_sql.contract.confirmation,
                 tilo_actions::ConfirmationPolicy::Confirm,
                 "an arbitrary SQL envelope is never advertised as harmless"
             );
-            assert!(
-                ui::resources::resource(&app, &doc, "database")
-                    .expect("root resolves exactly")
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "query"),
-                "directory and exact root resolution publish the same actionable root"
-            );
         }
 
         // --- phase: relation_resources_and_browse_payloads_remain_schema_qualified ---
         {
-            let (mut app, mut doc) = synced();
+            let (mut app, _doc) = synced();
             let original = app.session.schema.schemas[0].tables[0].clone();
             app.session.schema.schemas.push(crate::model::SchemaInfo {
                 name: "other:schema".into(),
                 tables: vec![original.clone()],
             });
-            app.search_index.sync(&app.session, &mut doc).unwrap();
+            app.search_index.sync(&app.session).unwrap();
             let connection = app.session.active_connection().unwrap().id.to_string();
             let first_id = catalog_resource_id(
                 "relation",
@@ -1827,8 +2034,10 @@ mod tests {
             let second_id =
                 catalog_resource_id("relation", &[&connection, "other:schema", &original.name]);
             assert_ne!(first_id, second_id, "encoded ids cannot collide on colons");
-            let resolved =
-                ui::resources::resource(&app, &doc, &second_id).expect("exact relation resolves");
+            let resolved = app
+                .live_row(&second_id)
+                .expect("exact relation resolves")
+                .into_resource();
             let browse = resolved
                 .actions
                 .iter()
@@ -1880,49 +2089,12 @@ mod tests {
         }
     }
 
-    /// A starter query replaces the editor's text, an error stays until it is dismissed, and the data pages follow the page controls.
+    /// An error stays until it is dismissed, and the data pages follow the page controls.
     #[test]
-    fn starter_queries_errors_and_pages() {
-        // --- phase: a_starter_query_replaces_the_editors_text ---
-        {
-            let mut harness = mounted(DbClientApp::new_demo());
-            harness.relayout();
-            harness
-                .root_mut::<DbClientApp>()
-                .link
-                .ask(Intent::LoadSnippet(1));
-            harness.relayout();
-            let (_, expected) = crate::sample::starter_queries()[1];
-            assert_eq!(
-                crate::doc::EditorDoc::read_sql(&harness.state().doc),
-                expected
-            );
-            assert_eq!(app(&harness).link.sql(), expected);
-        }
-
-        // --- phase: choosing_from_the_starter_menu_loads_that_query ---
-        {
-            let mut harness = mounted(DbClientApp::new_demo());
-            harness.relayout();
-            harness
-                .click_named("db.query.snippets")
-                .expect("the starter menu is on the toolbar");
-            harness.key("ArrowDown");
-            harness.key("Enter");
-            harness.relayout();
-            harness.relayout();
-            let queries = crate::sample::starter_queries();
-            let loaded = crate::doc::EditorDoc::read_sql(&harness.state().doc);
-            assert!(
-                queries.iter().any(|(_, sql)| *sql == loaded),
-                "the menu's choice replaced the query: {loaded}"
-            );
-            assert_ne!(loaded, crate::sample::DEFAULT_QUERY);
-        }
-
+    fn errors_and_pages() {
         // --- phase: an_error_stays_until_it_is_dismissed ---
         {
-            let mut harness = mounted(DbClientApp::new_demo());
+            let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
             harness
                 .root_mut::<DbClientApp>()
@@ -1944,7 +2116,7 @@ mod tests {
 
         // --- phase: the_page_intents_move_through_the_table ---
         {
-            let mut harness = mounted(DbClientApp::new_demo());
+            let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
             let root = harness.root_mut::<DbClientApp>();
             root.session.data_page_size = 5;
@@ -1981,7 +2153,7 @@ mod tests {
             assert!(issues.is_empty(), "{what}: {issues:?}");
         };
 
-        let mut harness = mounted(DbClientApp::new_demo());
+        let mut harness = mounted(DbClientApp::sampled());
         harness.relayout();
         audit(&harness, "query");
         for (tab, what) in [(MainTab::Data, "data"), (MainTab::Structure, "structure")] {
@@ -2007,37 +2179,18 @@ mod tests {
         audit(&harness, "first run");
     }
 
-    /// A standalone SQL edit is submitted through the action host.
-    #[test]
-    fn a_standalone_sql_edit_is_submitted_through_the_action() {
-        let mut app = DbClientApp::new();
-        assert!(!app.actions.is_hosted());
-        let mut doc = automerge::AutoCommit::new();
-        app.replace_editor_sql(&mut doc, "select 1");
-        assert_eq!(crate::doc::EditorDoc::read_sql(&doc), "select 1");
-        let recorded = app
-            .actions
-            .local
-            .last_dispatched()
-            .expect("the SQL edit is submitted through the action sink");
-        assert_eq!(recorded.type_id.as_str(), crate::actions::DB_ACTION_TYPE);
-    }
-
     /// The staged captures are what they claim: the track listing holds the query that produced its rows, and the failed connection is a remote one with no stale results.
     #[test]
     fn staged_captures_are_consistent() {
         // --- phase: the_track_listing_shows_its_own_query_and_rows ---
         {
-            let mut demo = DbClientApp::new_demo();
-            demo.run_starter_query("Track listing");
-            let mut harness = mounted(demo);
+            let mut sampled = DbClientApp::sampled();
+            sampled.stage_scenario(Some("wide"));
+            let mut harness = mounted(sampled);
+            let sql = scenario_query(Some("wide"));
+            write_sql(&mut harness, sql);
             harness.relayout();
-            harness.relayout();
-            let (_, sql) = crate::sample::starter_queries()
-                .iter()
-                .find(|(name, _)| *name == "Track listing")
-                .expect("the starter exists");
-            assert_eq!(&app(&harness).link.sql(), sql, "the editor holds the query");
+            assert_eq!(app(&harness).link.sql(), sql, "the editor holds the query");
             let columns = app(&harness)
                 .link
                 .read(|model| model.query.as_ref().map(|result| result.columns.clone()));
@@ -2050,13 +2203,24 @@ mod tests {
                 ),
                 "the rows are the ones the query selects"
             );
+
+            let capture =
+                ui::framework::testing::TestApp::<crate::resource::DbClientShell>::capture(Some(
+                    "wide",
+                ))
+                .unwrap();
+            assert_eq!(
+                capture.state().editor_sql,
+                sql,
+                "the capture's workspace holds the query it shows the rows of"
+            );
         }
 
         // --- phase: a_failed_connection_is_a_remote_one_with_nothing_open ---
         {
-            let mut demo = DbClientApp::new_demo();
-            demo.fail_connecting("Production analytics", "Connection refused");
-            let mut harness = mounted(demo);
+            let mut sampled = DbClientApp::sampled();
+            sampled.stage_scenario(Some("error"));
+            let mut harness = mounted(sampled);
             harness.relayout();
             let (name, connected, results, failed) = app(&harness).link.read(|model| {
                 (

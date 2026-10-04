@@ -6,12 +6,19 @@ set -euo pipefail
 
 command -v busctl >/dev/null
 command -v gdbus >/dev/null
+# TILO_FILES_SESSION_OPENER names a client that asks the running Tilo session
+# to open Files, as a user would, and prints its AT-SPI bus and pid. The
+# installed-image gate uses it: an installed app is launched by the session,
+# inside its sandbox and attached to the session's runtime host.
+session_opener="${TILO_FILES_SESSION_OPENER:-}"
 binary="${TILO_FILES_BINARY:-}"
-if [[ -z "$binary" ]]; then
+if [[ -n "$session_opener" ]]; then
+    :
+elif [[ -z "$binary" ]]; then
     repo_root=$(git rev-parse --show-toplevel)
     binary="$repo_root/target/debug/file-explorer"
 fi
-if [[ ! -x "$binary" ]]; then
+if [[ -z "$session_opener" && ! -x "$binary" ]]; then
     if [[ -n "${repo_root:-}" ]]; then
         cargo build -p file-explorer
     else
@@ -45,11 +52,21 @@ atspi_address=$(
         | sed -E "s/^\('([^']+)'.*/\1/"
 )
 
-env \
-    XDG_CONFIG_HOME="$smoke_dir/config" \
-    TILO_USER_HOME="$smoke_dir" \
-    "$binary" >"$smoke_dir/file-explorer.log" 2>&1 &
-app_pid=$!
+app_bus=""
+if [[ -n "$session_opener" ]]; then
+    read -r app_bus app_pid < <("$session_opener" open Files 2>"$smoke_dir/file-explorer.log") || true
+    if [[ -z "${app_pid:-}" ]]; then
+        echo "the session did not open Files" >&2
+        sed -n '1,40p' "$smoke_dir/file-explorer.log" >&2
+        exit 1
+    fi
+else
+    env \
+        XDG_CONFIG_HOME="$smoke_dir/config" \
+        TILO_USER_HOME="$smoke_dir" \
+        "$binary" >"$smoke_dir/file-explorer.log" 2>&1 &
+    app_pid=$!
+fi
 
 property() {
     local bus_name=$1 object_path=$2 property_name=$3
@@ -72,8 +89,8 @@ first_object_path() {
     grep -Eo '/org/a11y/atspi/accessible/[0-9/]+' | head -n 1
 }
 
-app_bus=""
 for _ in $(seq 1 200); do
+    [[ -n "$app_bus" ]] && break
     app_bus=$(
         busctl --address="$atspi_address" list --no-pager \
             | awk -v pid="$app_pid" '$2 == pid { print $1; exit }'

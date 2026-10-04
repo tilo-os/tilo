@@ -1,8 +1,10 @@
-//! Remote connections — standard Tilo application entry point.
+//! Remote connections — standard Tilo application entry point: the live
+//! window and the framework's `--shots`, `--headless` and `--native-audit`
+//! modes.
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-pub fn main() {
-    ui::launch::run_or_exit(&remote::launch_spec());
+fn main() {
+    ui::framework::run::<remote::RemoteShell>();
 }

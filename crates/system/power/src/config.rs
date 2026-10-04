@@ -57,22 +57,19 @@ pub fn settings_path() -> Option<PathBuf> {
     settings_store::settings_path()
 }
 
-/// Load the policy from the shared settings file, falling back to the
-/// Settings defaults on any read/parse failure.
-pub fn load_policy() -> PowerPolicy {
-    load_policy_for_profile(active_power_profile().as_deref())
-}
-
-/// Load Settings policy for a profile already obtained from
-/// power-profiles-daemon. This avoids spawning its CLI from the D-Bus monitor.
+/// Load the policy from the shared settings file for the power-profiles-daemon
+/// profile the power service last observed ([`crate::PowerBridge::active_profile`]),
+/// falling back to the Settings defaults on any read/parse failure. Never asks
+/// the daemon itself: the compositor reloads this on its frame thread.
+/// The result is already narrowed to this machine's duty: a host never
+/// suspends on its own.
 pub fn load_policy_for_profile(active_profile: Option<&str>) -> PowerPolicy {
-    let Some(path) = settings_path() else {
-        return default_policy();
-    };
-    match std::fs::read_to_string(&path) {
-        Ok(text) => policy_from_settings_json_for_profile(&text, active_profile),
-        Err(_) => default_policy(),
-    }
+    let configured = settings_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map_or_else(default_policy, |text| {
+            policy_from_settings_json_for_profile(&text, active_profile)
+        });
+    configured.for_duty(crate::policy::this_machine_duty())
 }
 
 /// The policy a freshly-installed machine runs (Settings defaults). This
@@ -86,10 +83,10 @@ pub fn default_policy() -> PowerPolicy {
     }
 }
 
-/// Parse a [`PowerPolicy`] from a full `settings.json` document. Never fails;
-/// unknown/missing fields take defaults.
+/// Parse a [`PowerPolicy`] from a full `settings.json` document with no
+/// active power profile. Never fails; unknown/missing fields take defaults.
 pub fn policy_from_settings_json(text: &str) -> PowerPolicy {
-    policy_from_settings_json_for_profile(text, active_power_profile().as_deref())
+    policy_from_settings_json_for_profile(text, None)
 }
 
 pub fn policy_from_settings_json_for_profile(
@@ -106,9 +103,10 @@ pub fn policy_from_settings_json_for_profile(
     policy_from_section_for_profile(section, active_profile)
 }
 
-/// Parse a [`PowerPolicy`] from just the `"power"` object.
+/// Parse a [`PowerPolicy`] from just the `"power"` object, with no active
+/// power profile.
 pub fn policy_from_section(section: &serde_json::Value) -> PowerPolicy {
-    policy_from_section_for_profile(section, active_power_profile().as_deref())
+    policy_from_section_for_profile(section, None)
 }
 
 /// Resolve a policy for a known power-profiles-daemon profile.
@@ -199,22 +197,6 @@ pub fn policy_from_section_for_profile(
         ),
         critical_action: action("critical_action", defaults.critical_action),
     }
-}
-
-fn active_power_profile() -> Option<String> {
-    let output = bounded_command::run(
-        "powerprofilesctl",
-        &["get"],
-        None,
-        64 * 1024,
-        Duration::from_secs(3),
-    )
-    .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let profile = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    (!profile.is_empty()).then_some(profile)
 }
 
 #[cfg(test)]

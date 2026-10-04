@@ -8,7 +8,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use accounts::SecretItemKind;
-use automerge::{AutoCommit, ObjId};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -22,6 +21,7 @@ use vello::kurbo::{Affine, Point};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::actions::PasswordsEffect;
 use crate::list_pane::ListPane;
 use crate::search::VaultSearchProvider;
 use crate::vault::{Core, Dialog, Request, Requests, Screen, Shared, VaultFilter};
@@ -220,23 +220,18 @@ impl PasswordsSurface {
             last_window: vello::kurbo::Rect::ZERO,
             painted_toast: None,
         };
-        surface.settle(&mut AutoCommit::new());
+        surface.settle();
         surface
     }
 
-    /// The live app on the person's vault (opened on the first sync).
-    pub fn live() -> Self {
-        Self::with_core(Core::live())
+    /// The window over the vault in `model`: the person's in a live window.
+    pub fn new(model: crate::PasswordsModel) -> Self {
+        Self::with_core(Core::with_model(model))
     }
 
     /// The fixture vault, for tests and captures.
     pub fn demo() -> Self {
         Self::with_core(Core::demo())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_model(model: crate::PasswordsModel) -> Self {
-        Self::with_core(Core::with_model(model))
     }
 
     #[cfg(test)]
@@ -257,14 +252,14 @@ impl PasswordsSurface {
     /// Apply what controls asked for, then bring the window in step: the
     /// content page, the overview, its title, the front pane and the
     /// search index.
-    pub(crate) fn settle(&mut self, doc: &mut AutoCommit) {
+    pub(crate) fn settle(&mut self) {
         loop {
             let requests = std::mem::take(&mut *self.requests.borrow_mut());
             if requests.is_empty() {
                 break;
             }
             for request in requests {
-                self.core.borrow_mut().apply(request, doc);
+                self.core.borrow_mut().apply(request);
             }
         }
         self.core.borrow_mut().expire();
@@ -311,80 +306,56 @@ impl PasswordsSurface {
         }
     }
 
-    pub(crate) fn attach_framework(
-        &self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Passwords>,
-    ) {
-        self.core.borrow_mut().actions.attach(dispatcher);
+    /// Answer an effect invoked by the palette, an agent, a script or a
+    /// search hit, and bring the window in step.
+    pub(crate) fn perform_effect(&mut self, effect: PasswordsEffect) -> Result<(), String> {
+        let answer = self.core.borrow_mut().perform(effect);
+        self.settle();
+        answer
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.core.borrow().actions.is_hosted()
+    /// Whether a draft is open in the editor.
+    pub(crate) fn is_editing(&self) -> bool {
+        self.core.borrow().is_editing()
     }
 
-    /// Test-only: mark the surface hosted without a real framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&self) {
-        self.core.borrow_mut().actions.mark_hosted_for_test();
+    /// Live vault rows, one per item.
+    pub(crate) fn item_rows(&self) -> Vec<ui::framework::LiveRow> {
+        self.core.borrow().item_rows()
     }
 
-    /// Adopt collaborative view prefs; never clear the local vault cache.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::VaultState) {
-        self.core.borrow_mut().adopt_resource_state(state);
-        self.settle(&mut AutoCommit::new());
-    }
-
-    #[cfg(test)]
-    pub(crate) fn commit_view(
-        &self,
-        doc: &mut AutoCommit,
-        action: &crate::resource::PasswordsAction,
-    ) {
-        self.core.borrow_mut().commit_view(doc, action);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn last_document_action(&self) -> Option<ui::tilo_actions::EncodedAction> {
-        self.core.borrow().actions.last_dispatched().cloned()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn item_count(&self) -> usize {
-        self.core.borrow().items.len()
-    }
-
-    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
-        self.core.borrow().publish_resources(doc)
+    /// The live row `id`, whether or not the list shows it now.
+    pub(crate) fn item_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        self.core.borrow().item_row(id)
     }
 
     /// Stage a capture on the fixture vault: `None` is the default frame.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        let mut doc = AutoCommit::new();
         {
             let mut core = self.core.borrow_mut();
             core.load_demo();
             match scenario {
                 Some("editor") => core.begin_edit(),
                 Some("new-item") => core.begin_add(),
-                Some("favorites") => core.select_filter(&mut doc, VaultFilter::Favorites),
-                Some("review") => core.navigate(&mut doc, "review"),
-                Some("app-access") => core.navigate(&mut doc, "app-access"),
-                Some("transfer") => core.navigate(&mut doc, "transfer"),
+                Some("favorites") => core.select_filter(VaultFilter::Favorites),
+                Some("review") => core.navigate("review"),
+                Some("app-access") => core.navigate("app-access"),
+                Some("transfer") => core.navigate("transfer"),
                 Some("import") => {
-                    core.navigate(&mut doc, "transfer");
+                    core.navigate("transfer");
                     let rows = crate::demo::import_rows();
                     let skipped = core.import_skips(&rows);
                     core.dialog = Some(Dialog::ImportPreview { rows, skipped });
                 }
                 Some("export") => {
-                    core.navigate(&mut doc, "transfer");
+                    core.navigate("transfer");
                     core.dialog = Some(Dialog::ExportPlaintext {
                         acknowledged: false,
                         reminded: false,
                     });
                 }
                 Some("backup") => {
-                    core.navigate(&mut doc, "transfer");
+                    core.navigate("transfer");
                     core.dialog = Some(Dialog::Backup { error: None });
                 }
                 Some("delete") => {
@@ -406,7 +377,7 @@ impl PasswordsSurface {
             Some(name @ ("detail" | "sidebar" | "editor" | "new-item")) => Some(name.to_owned()),
             _ => None,
         };
-        self.settle(&mut doc);
+        self.settle();
     }
 
     fn stage_pending(&mut self) {
@@ -420,7 +391,7 @@ impl PasswordsSurface {
         self.shell.snap();
     }
 
-    fn handle_shortcut(&self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+    fn handle_shortcut(&self, event: &WindowEvent, ctx: &ui::widget::EventCtx<'_>) -> bool {
         let WindowEvent::KeyboardInput { event: key, .. } = event else {
             return false;
         };
@@ -432,11 +403,11 @@ impl PasswordsSurface {
         let screen = self.core.borrow().screen;
         let request = match &key.logical_key {
             Key::Named(NamedKey::ArrowDown) if screen == Screen::Vault && !command => {
-                self.core.borrow_mut().step(ctx.state, true);
+                self.core.borrow_mut().step(true);
                 return true;
             }
             Key::Named(NamedKey::ArrowUp) if screen == Screen::Vault && !command => {
-                self.core.borrow_mut().step(ctx.state, false);
+                self.core.borrow_mut().step(false);
                 return true;
             }
             Key::Named(NamedKey::Escape) if screen == Screen::Editor => Request::CancelEdit,
@@ -496,9 +467,7 @@ impl ui::widget::Decorator for PasswordsSurface {
     }
 
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn ui::resources::PublishesResources>() {
-            request.provide::<dyn ui::resources::PublishesResources>(self);
-        } else if request.wants::<dyn ui::search::capability::SearchSource>() {
+        if request.wants::<dyn ui::search::capability::SearchSource>() {
             request.provide::<dyn ui::search::capability::SearchSource>(self);
         } else {
             Widget::provide(&self.shell, request);
@@ -506,60 +475,25 @@ impl ui::widget::Decorator for PasswordsSurface {
     }
 
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn ui::resources::PublishesResources>() {
-            request.provide::<dyn ui::resources::PublishesResources>(self);
-        } else if request.wants::<dyn ui::search::capability::SearchSource>() {
+        if request.wants::<dyn ui::search::capability::SearchSource>() {
             request.provide::<dyn ui::search::capability::SearchSource>(self);
         } else {
             Widget::provide_mut(&mut self.shell, request);
         }
     }
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        let answered =
-            self.core
-                .borrow_mut()
-                .answer_operation(request.type_id, request.payload, doc)?;
-        self.settle(doc);
-        Ok(answered.then(|| {
-            ui::widget::ResourceOperationStart::Completed(ui::tilo_actions::ActionOutput::default())
-        }))
-    }
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         {
-            let (doc, _) = ui::doc::document(state, path);
-            {
-                let mut core = self.core.borrow_mut();
-                core.open_pending();
-                core.transfer_poll_deadline.set(None);
-                core.poll_transfers();
-            }
-            self.settle(doc);
+            let mut core = self.core.borrow_mut();
+            core.transfer_poll_deadline.set(None);
+            core.poll_transfers();
         }
+        self.settle();
         Widget::sync(&mut self.shell, state, path);
     }
 
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        {
-            let (doc, _) = ui::doc::document(state, path);
-            self.settle(doc);
-        }
+        self.settle();
         if self.settled_layouts >= SETTLED_LAYOUTS {
             self.stage_pending();
         }
@@ -606,7 +540,7 @@ impl ui::widget::Decorator for PasswordsSurface {
         if !*ctx.handled && self.handle_shortcut(event, ctx) {
             *ctx.handled = true;
         }
-        self.settle(ctx.state);
+        self.settle();
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -652,40 +586,6 @@ impl ui::search::capability::SearchSource for PasswordsSurface {
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(self.search.clone())]
     }
-}
-
-impl ui::resources::PublishesResources for PasswordsSurface {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// the vault door: keep only the live item and session extras.
-    fn resources(&self, doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
-        if self.is_hosted() {
-            return self.core.borrow().live_item_extras();
-        }
-        self.publish_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<ui::tilo_actions::Resource> {
-        if self.is_hosted() && id == crate::actions::VAULT_RESOURCE_ID {
-            return None;
-        }
-        find_resource(&self.publish_resources(doc), id)
-    }
-}
-
-fn find_resource(
-    resources: &[ui::tilo_actions::Resource],
-    id: &str,
-) -> Option<ui::tilo_actions::Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
 }
 
 #[cfg(test)]

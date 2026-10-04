@@ -2,7 +2,7 @@
 # Format: <path relative to the repository root> <pattern> <count>
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
 crates/sdk/ui-core/src/widget/app_widget.rs legacy_size_api 1
-crates/sdk/ui-core/src/widget/block_editor.rs legacy_size_api 23
+crates/sdk/ui-core/src/widget/block_editor.rs legacy_size_api 20
 crates/sdk/ui-core/src/widget/block_editor.rs literal_font_size 4
 crates/sdk/ui-core/src/widget/block_editor_table.rs legacy_size_api 1
 crates/sdk/ui-core/src/widget/checkbox.rs font_size_const 1

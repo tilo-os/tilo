@@ -3,15 +3,17 @@
 # The terminal hosts an `ush` guest rather than executing `$SHELL` directly;
 # app sandboxes have no executable directory or complete system root.
 #
-# The guest combines a read-only host root with a user layer and receives
-# `/usr/bin`, terminfo, and `/etc/passwd` from the session supervisor over the
-# `ush` service socket. The terminal cannot create namespaces itself.
+# The guest is built from an environment record — this app declares the kind —
+# whose read-only images provide `/usr/bin`, terminfo, and `/etc/passwd`; the
+# session supervisor builds it and hands back a pty over the `ush` service
+# socket. The terminal cannot create namespaces itself.
 #
 # The PTY is provided by the guest's fresh devpts mount; host `/dev/ptmx` and
 # `/dev/pts` remain unbound.
 #
 # No filesystem capability is requested. `perm trust-dir` inside the guest
-# grants and revokes access using the same CapOverride shown by Permissions.
+# grants and revokes access with the same CapOverride shown by Permissions,
+# kept in the environment record.
 #
 
 

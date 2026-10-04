@@ -83,6 +83,7 @@ pub mod certification;
 pub mod cloud_enrollment;
 pub mod directory;
 pub mod enrollment;
+pub mod fleet;
 pub mod image;
 #[cfg(target_os = "macos")]
 mod keychain;
@@ -119,6 +120,7 @@ pub use enrollment::{
     decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
     verify_enrollment_token,
 };
+pub use fleet::{CertifiedFleet, DeviceStanding, FleetError};
 pub use image::{
     IMAGE_ENDORSEMENT_PREIMAGE_TAG, IMAGE_SIGNING_AUTHORIZATION_PREIMAGE_TAG, ImageEndorsement,
     ImageEndorsementError, ImageSigningAuthorization, ImageSigningAuthorizationError,
@@ -129,8 +131,8 @@ pub use image::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use persist::{
-    DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, joined_device_is_ready,
-    load_or_create_device_key, provision_joined_device,
+    DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, install_device_cert,
+    joined_device_is_ready, load_or_create_device_key, provision_joined_device,
 };
 pub use projection::{
     GovernedDeviceIdentityV2, GovernedHumanIdentityV1, GovernedHumanIdentityV2,

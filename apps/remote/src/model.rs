@@ -10,6 +10,8 @@
 //! deliberately kept out of the shared document: two people browsing the
 //! same connection list should be able to look at different machines.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -193,9 +195,8 @@ impl AuthMethod {
     }
 }
 
-/// Reachability of a saved machine, as last observed. For live
-/// connections this is refreshed by a background probe; offline it's the
-/// seed value so the screenshot reads as a populated, lived-in list.
+/// Reachability of a saved machine, as this device last observed it. Live
+/// state of this device, never part of the saved profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Presence {
     /// Reachable on the last probe.
@@ -221,11 +222,9 @@ pub struct Connection {
     pub user: String,
     pub kind: ConnectionKind,
     pub auth: AuthMethod,
-    /// When a session to this machine was last opened, in Unix seconds;
-    /// `None` until the first one. Rendered relative to the clock the person
-    /// reads (`ui::clock`), so it never goes stale.
-    pub last_used: Option<i64>,
-    pub presence: Presence,
+    /// When a session to this machine was last opened, in milliseconds
+    /// since the Unix epoch, on any of the person's devices.
+    pub last_used_ms: Option<i64>,
     /// Optional one-line note / tag (e.g. "prod", "lab").
     pub group: String,
     /// Whether the user pinned this connection to the top of the list.
@@ -394,8 +393,7 @@ impl ConnectionDraft {
             },
             kind: self.kind,
             auth: self.auth,
-            last_used: None,
-            presence: Presence::Unknown,
+            last_used_ms: None,
             group: self.group.trim().to_string(),
             favorite: false,
         }
@@ -408,6 +406,8 @@ impl ConnectionDraft {
 #[derive(Clone, Debug, Default)]
 pub struct Workspace {
     pub connections: Vec<Connection>,
+    /// Reachability this device observed, per connection.
+    pub presence: HashMap<ConnectionId, Presence>,
 }
 
 impl Workspace {
@@ -484,11 +484,16 @@ impl Workspace {
         out
     }
 
+    /// Reachability this device last observed for `id`.
+    pub fn presence_of(&self, id: ConnectionId) -> Presence {
+        self.presence.get(&id).copied().unwrap_or(Presence::Unknown)
+    }
+
     /// Count of currently-online connections — drives the header stat.
     pub fn online_count(&self) -> usize {
         self.connections
             .iter()
-            .filter(|c| c.presence == Presence::Online)
+            .filter(|c| self.presence_of(c.id) == Presence::Online)
             .count()
     }
 }
@@ -508,8 +513,7 @@ mod tests {
             user: "user".into(),
             kind,
             auth: AuthMethod::Password,
-            last_used: None,
-            presence: Presence::Online,
+            last_used_ms: None,
             group: String::new(),
             favorite: false,
         }
@@ -664,6 +668,17 @@ mod tests {
             w.upsert(sample("Office NAS", ConnectionKind::Vnc));
             let hits: Vec<_> = w.filtered("build").iter().map(|c| c.name.clone()).collect();
             assert_eq!(hits, vec!["Build Box"]);
+        }
+
+        eprintln!("phase reachability_is_observed_per_device");
+        {
+            let mut w = Workspace::new();
+            let a = w.upsert(sample("a", ConnectionKind::Ssh));
+            let b = w.upsert(sample("b", ConnectionKind::Ssh));
+            assert_eq!(w.presence_of(a), Presence::Unknown, "never probed");
+            w.presence.insert(a, Presence::Online);
+            w.presence.insert(b, Presence::Offline);
+            assert_eq!(w.online_count(), 1);
         }
     }
 }

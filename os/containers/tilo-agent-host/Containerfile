@@ -37,6 +37,8 @@ COPY --from=github-assets / /
 # ---- Stage 1: builder --------------------------------------------------------
 FROM ${BASE_REF} AS builder
 
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         rust cargo capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
@@ -146,6 +148,8 @@ RUN --mount=type=cache,target=/build/.cargo-home \
 # ---- Stage 2: runtime --------------------------------------------------------
 FROM quay.io/fedora/fedora-minimal:44
 
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 # Runtime dependency: CA roots for rustls connections to hosted Iroh relay
 # endpoints. Iroh does not use the system OpenSSL ABI. BusyBox is statically
 # linked, so it remains usable after removing the package manager, coreutils,

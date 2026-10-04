@@ -299,9 +299,17 @@ def validate_physical(plan, stage_receipt, current, target):
     require(stage.disk_matches(plan, current), "Windows disk identity or state changed")
     require(normalized(current.get("partitions", [])) == rows,
             "Windows partition map differs from reviewed final map")
-    _, physical_rows = read_gpt(target, plan["windows_disk"]["size_bytes"])
+    physical_guid, physical_rows = read_gpt(target, plan["windows_disk"]["size_bytes"])
     require(same_gpt_content(physical_rows, rows), "physical GPT differs from Windows partition map")
-    return rows, final_rows
+    return rows, final_rows, physical_guid
+
+
+def verified_disk_readback(plan, target, rows, expected_guid):
+    """Bind the receipt to both GPT copies without conflating hardware UniqueId."""
+    disk_guid, post_rows = read_gpt(target, plan["windows_disk"]["size_bytes"])
+    require(disk_guid == expected_guid, "physical GPT disk GUID changed during final copy")
+    require(same_gpt_content(post_rows, rows), "physical GPT changed during final copy")
+    return {**plan["windows_disk"], "disk_guid": disk_guid}
 
 
 def transfer(source, target, rows, final_rows, expected_hashes, *, write,
@@ -436,16 +444,17 @@ def run(args):
                     and source_receipt.get("loader_sha256") == loader_hash,
                     "VM source ESP loader differs from source receipt")
     with stage.open_physical_drive(disk_number) as target:
-        validate_physical(plan, stage_receipt, current, target)
+        _, _, physical_guid = validate_physical(plan, stage_receipt, current, target)
         with args.source_raw.open("rb", buffering=0) as source:
             result = transfer(source, target, rows, final_rows, hashes,
                               write=args.command == "execute",
                               live_windows_partition_number=live_number)
-        _, post_rows = read_gpt(target, plan["windows_disk"]["size_bytes"])
-        require(same_gpt_content(post_rows, rows), "physical GPT changed during final copy")
-    require(normalized(stage.snapshot(disk_number)["partitions"]) == rows,
+        reviewed_disk = verified_disk_readback(plan, target, rows, physical_guid)
+    post_snapshot = stage.snapshot(disk_number)
+    require(stage.disk_matches(plan, post_snapshot), "Windows disk identity changed during final copy")
+    require(normalized(post_snapshot["partitions"]) == rows,
             "Windows partition map changed during final copy")
-    output = {"schema": "tilo.windows-direct-final-readback.v1", "disk": plan["windows_disk"],
+    output = {"schema": "tilo.windows-direct-final-readback.v2", "disk": reviewed_disk,
               "final": result,
               "static_preserved_partitions_sha256_compared": len(rows) - len(final_rows) - 1,
               "live_windows_partition": live_number,

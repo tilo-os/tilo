@@ -86,6 +86,13 @@ impl DocumentOpenReply {
     }
 }
 
+/// The person's answer to [`AppHostIntent::AllowHostShell`]: `None` until
+/// they choose, then whether the device's own shell was allowed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HostShellAllow {
+    pub answer: Option<bool>,
+}
+
 /// A typed, device-local request from app content to shell chrome. Keeping
 /// this on the common app contract lets both in-process tiles and future IPC
 /// adapters use one destination without an app reaching into compositor
@@ -110,6 +117,12 @@ pub enum AppHostIntent {
         capability: DocumentOpenCapability,
         token: u64,
         reply: Weak<RefCell<DocumentOpenReply>>,
+    },
+    /// Terminal asks for the device's own shell, which the person has not
+    /// allowed on this device yet. The shell raises its permission prompt
+    /// and records the answer where the shell runtime reads it.
+    AllowHostShell {
+        reply: Weak<RefCell<HostShellAllow>>,
     },
 }
 
@@ -152,6 +165,10 @@ impl PartialEq for AppHostIntent {
                     && Weak::ptr_eq(left_reply, right_reply)
             }
             (Self::OpenSearch(left), Self::OpenSearch(right)) => left == right,
+            (
+                Self::AllowHostShell { reply: left_reply },
+                Self::AllowHostShell { reply: right_reply },
+            ) => Weak::ptr_eq(left_reply, right_reply),
             _ => false,
         }
     }
@@ -1016,6 +1033,16 @@ mod component_adapter {
             };
             let root = self.component.root.as_deref()?;
             root.accessibility_child_path(child_index)
+        }
+        fn accessibility_represents_child(&self, child_index: usize) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            self.component
+                .root
+                .as_deref()
+                .is_some_and(|root| root.accessibility_represents_child(child_index))
         }
         fn perform_action(
             &mut self,

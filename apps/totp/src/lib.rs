@@ -19,15 +19,12 @@
 //! * [`list`] — the [`list::AccountList`] main screen.
 //! * [`add_panel`] — the [`add_panel::AddAccountPanel`] sheet.
 //! * [`qr`] — QR ingestion: pure-Rust, offline decode from an image file.
-//! * [`app`] — the [`app::AuthenticatorApp`] content widget that ties them
+//! * [`app`] — the [`app::AuthenticatorApp`] surface that ties them
 //!   together.
-//! * [`resource`] — the resource and the framework app: the navigation shell
-//!   with its header row around the content widget.
-//! * [`storage`] — encrypted local vault persistence with explicit durability
-//!   status.
-//!
-//! [`launch_spec`] is the single integration point used by `main.rs` for
-//! both the live event loop and the `--shots` offscreen renderer.
+//! * [`resource`] — the [`Totp`] resource, its effects and the
+//!   [`TotpShell`] app: the navigation shell with its header row around the
+//!   surface.
+//! * `secrets` — each account's seed in this device's secret store.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -66,8 +63,7 @@ pub mod list;
 pub mod model;
 pub mod qr;
 pub mod resource;
-pub mod search_provider;
-pub mod storage;
+mod secrets;
 pub mod totp;
 
 #[cfg(test)]
@@ -76,9 +72,9 @@ pub(crate) mod test_events;
 pub use app::AuthenticatorApp;
 pub use model::{Account, Algorithm, Vault};
 
+pub use resource::{Totp, TotpEffect, TotpShell};
+
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<TotpShell>()
 }
-
-pub use resource::{Totp, TotpShell, launch_spec};

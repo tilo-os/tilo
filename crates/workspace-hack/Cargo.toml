@@ -451,6 +451,7 @@ brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.5" }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
@@ -490,6 +491,7 @@ brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.5" }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
@@ -529,6 +531,7 @@ brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.5" }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
@@ -568,6 +571,7 @@ brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
 harfrust = { version = "0.5" }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }

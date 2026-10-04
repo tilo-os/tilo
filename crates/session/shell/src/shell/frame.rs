@@ -1249,6 +1249,14 @@ impl FrameBuilder {
         self.pump_room_contents();
         let rooms_done = std::time::Instant::now();
         self.host.sync(doc, root);
+        // First-login setup gives the session its identity mid-session; that
+        // principal is "me" too, or the owner sees presence over their windows.
+        {
+            let chrome = self.chrome.borrow();
+            if !self.presence.is_own_identity(&chrome.local_user_id) {
+                self.presence.add_own_identity(&chrome.local_user_id);
+            }
+        }
         let sync_done = std::time::Instant::now();
         let changed = self.host.update(doc, root);
         let update_done = std::time::Instant::now();
@@ -2402,7 +2410,14 @@ impl FrameBuilder {
     /// sources by label; empty when the loop may idle. For tests and
     /// diagnostics.
     pub fn animation_owners(&self) -> Vec<String> {
-        let demand = self.animation_demand();
+        self.animation_owners_at(Instant::now())
+    }
+
+    /// [`Self::animation_owners`] with the chrome's animations read at
+    /// `now`. An animation a frame started after `now` still counts, so a
+    /// test can ask whether a frame began one without racing its length.
+    pub fn animation_owners_at(&self, now: Instant) -> Vec<String> {
+        let demand = self.animation_demand_at(now);
         let mut owners: Vec<String> = crate::shell::animation_diagnostics::host_labels(demand.host)
             .filter(|label| *label != "content")
             .map(str::to_string)
@@ -2431,8 +2446,12 @@ impl FrameBuilder {
     }
 
     pub(crate) fn animation_demand(&self) -> AnimationDemand {
+        self.animation_demand_at(Instant::now())
+    }
+
+    fn animation_demand_at(&self, now: Instant) -> AnimationDemand {
         AnimationDemand {
-            host: self.host.animation_demand_bits(Instant::now()),
+            host: self.host.animation_demand_bits(now),
             floating: self
                 .floating_overlays
                 .iter()
@@ -3635,7 +3654,6 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 mod tests {
     use super::*;
     use crate::shell::state::FreshId as _;
-    use automerge::ReadDoc;
     use automerge::transaction::Transactable;
     use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey};
@@ -4339,6 +4357,37 @@ mod tests {
             .cloned()
     }
 
+    #[test]
+    fn an_open_palette_reaches_assistive_technology_once() {
+        // The host publishes the palette (with its filter band) itself; the
+        // palette widget must not be exported a second time, or a screen
+        // reader sees two palettes and may type into the hidden one.
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.host_mut().set_palette_visible(true);
+        fb.host_mut().set_palette_focus(true);
+        fb.host_mut().force_palette_settled();
+        fb.relayout();
+        let update = fb.build_a11y_tree_update(None, 1.0);
+        let named = |name: &str| {
+            update
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.label() == Some(name))
+                .count()
+        };
+        assert_eq!(named("Command palette"), 1, "one palette");
+        assert_eq!(named("Search filters"), 1, "its filter band, once");
+        let queries = update
+            .nodes
+            .iter()
+            .filter(|(_, node)| {
+                node.role() == ui::accesskit::Role::TextInput
+                    && node.supports_action(ui::accesskit::Action::SetValue)
+            })
+            .count();
+        assert_eq!(queries, 1, "one editable query");
+    }
+
     fn onboarding_frame() -> (FrameBuilder, tempfile::TempDir) {
         let identity_dir = tempfile::tempdir().expect("temporary identity directory");
         let mut fb = FrameBuilder::new((1280, 800));
@@ -4365,7 +4414,10 @@ mod tests {
             let (mut fb, _identity_dir) = onboarding_frame();
             let mut focus = None;
             fb.reconcile_native_focus(&mut focus);
-            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Use my existing Tilo identity")
+            );
         }
 
         fn native_oobe_exports_named_roles_state_and_focus_to_accesskit() {
@@ -4374,17 +4426,19 @@ mod tests {
             fb.reconcile_native_focus(&mut focus);
 
             let update = fb.build_a11y_tree_update(focus, 1.0);
-            let (existing_id, existing) = exported_node_named(&update, "Use existing")
-                .expect("existing-identity action reaches the external tree");
-            let (_, create) = exported_node_named(&update, "Create identity")
+            let (existing_id, existing) =
+                exported_node_named(&update, "Use my existing Tilo identity")
+                    .expect("existing-identity action reaches the external tree");
+            let (_, create) = exported_node_named(&update, "Create a new identity")
                 .expect("create-identity action reaches the external tree");
             // Identity setup has distinct backup and final hand-off states, so
             // its semantic progress surface contains four stages.
             let (_, progress) = exported_node_named(&update, "Identity setup, step 1 of 4: Choose")
                 .expect("the OOBE progress state reaches the external tree");
 
-            assert_eq!(existing.role(), ui::accesskit::Role::Button);
-            assert_eq!(create.role(), ui::accesskit::Role::Button);
+            // The ways forward are one list of rows that each open a flow.
+            assert_eq!(existing.role(), ui::accesskit::Role::ListItem);
+            assert_eq!(create.role(), ui::accesskit::Role::ListItem);
             assert_eq!(progress.role(), ui::accesskit::Role::ProgressIndicator);
             assert!(existing.supports_action(ui::accesskit::Action::Focus));
             assert!(existing.supports_action(ui::accesskit::Action::Click));
@@ -4402,10 +4456,23 @@ mod tests {
             fb.reconcile_native_focus(&mut focus);
 
             let intro = fb.build_a11y_tree_update(focus, 1.0);
-            let (existing_id, _) = exported_node_named(&intro, "Use existing")
+            let (existing_id, _) = exported_node_named(&intro, "Use my existing Tilo identity")
                 .expect("the external tree exposes the Connect-existing action");
             assert!(fb.dispatch_a11y_action(
                 existing_id,
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+
+            let choice = fb.build_a11y_tree_update(focus, 1.0);
+            let (restore_id, _) = exported_node_named(&choice, "Restore from a backup")
+                .expect("the use-existing choice offers its restore flow");
+            assert!(fb.dispatch_a11y_action(
+                restore_id,
                 &ui::a11y::Action::Activate,
                 &mut doc,
                 &automerge::ROOT,
@@ -4467,7 +4534,7 @@ mod tests {
             let protect = fb.build_a11y_tree_update(focus, 1.0);
 
             assert!(
-                exported_node_named(&protect, "Use existing").is_none(),
+                exported_node_named(&protect, "Use my existing Tilo identity").is_none(),
                 "nodes from the replaced step must leave the exported tree"
             );
             assert!(
@@ -4544,7 +4611,10 @@ mod tests {
                 &automerge::ROOT,
                 &mut focus,
             ));
-            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Create a new identity")
+            );
             assert!(fb.dispatch_event(
                 &key_press(Key::Named(NamedKey::Enter)),
                 &Modifiers::default(),
@@ -4552,14 +4622,8 @@ mod tests {
                 &automerge::ROOT,
                 &mut focus,
             ));
-            assert_eq!(
-                doc.get(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN)
-                    .expect("read begin action")
-                    .and_then(|(value, _)| value.as_bool()),
-                Some(true),
-                "activation must write the begin action into the document"
-            );
-
+            // The activated choice row reports to the onboarding view, whose
+            // next sync turns it into the begin action.
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
             fb.pump_apps(&mut doc, &automerge::ROOT);
@@ -4675,11 +4739,17 @@ mod tests {
                 &automerge::ROOT,
                 &mut focus,
             ));
-            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Create a new identity")
+            );
 
             let shift = Modifiers::from(ModifiersState::SHIFT);
             assert!(fb.dispatch_event(&tab, &shift, &mut doc, &automerge::ROOT, &mut focus,));
-            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Use my existing Tilo identity")
+            );
         }
 
         fn native_oobe_focus_order_excludes_disabled_controls() {
@@ -5066,6 +5136,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
     fn native_oobe_transitions_and_rebuilds_reseat_focus_and_keep_pointer_state() {
         fn native_oobe_pointer_motion_is_retained_before_modal_dispatch() {
             let (mut fb, _identity_dir) = onboarding_frame();
@@ -5095,7 +5169,10 @@ mod tests {
             let mut focus = None;
             let mut doc = AutoCommit::new();
             fb.reconcile_native_focus(&mut focus);
-            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Use my existing Tilo identity")
+            );
 
             doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
                 .expect("begin identity setup");
@@ -5115,8 +5192,14 @@ mod tests {
             let mut doc = AutoCommit::new();
             fb.reconcile_native_focus(&mut focus);
 
-            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_CONNECT, true)
-                .expect("open identity restore");
+            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_EXISTING, true)
+                .expect("open the use-existing choice");
+            doc.put(
+                &automerge::ROOT,
+                crate::onboarding_view::KEY_CHOOSE_RESTORE,
+                true,
+            )
+            .expect("open identity restore");
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
             fb.reconcile_native_focus(&mut focus);
@@ -5151,14 +5234,17 @@ mod tests {
                 &automerge::ROOT,
                 &mut focus,
             ));
-            assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
+            assert_eq!(
+                focused_name(&fb, focus).as_deref(),
+                Some("Create a new identity")
+            );
 
             fb.rebuild_layout_tree();
             fb.relayout();
             fb.reconcile_native_focus(&mut focus);
             assert_eq!(
                 focused_name(&fb, focus).as_deref(),
-                Some("Create identity"),
+                Some("Create a new identity"),
                 "an unrelated structure refresh must preserve the focused ordinal"
             );
         }

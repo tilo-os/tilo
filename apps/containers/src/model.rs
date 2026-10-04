@@ -312,6 +312,88 @@ impl Engine {
 // Sample data (for --shots and as a graceful offline fallback)
 // =====================================================================
 
+/// Which top-level section is showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    Containers,
+    Images,
+    Volumes,
+    Distrobox,
+}
+
+impl Section {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Section::Containers => "containers",
+            Section::Images => "images",
+            Section::Volumes => "volumes",
+            Section::Distrobox => "distrobox",
+        }
+    }
+    /// The section a key names; `None` for any other text.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "containers" => Some(Section::Containers),
+            "images" => Some(Section::Images),
+            "volumes" => Some(Section::Volumes),
+            "distrobox" => Some(Section::Distrobox),
+            _ => None,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Section::Containers => "Containers",
+            Section::Images => "Images",
+            Section::Volumes => "Volumes",
+            Section::Distrobox => "Distrobox",
+        }
+    }
+}
+
+/// Which tab of the container detail view is active.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DetailTab {
+    Logs,
+    Stats,
+    Inspect,
+    Terminal,
+}
+
+impl DetailTab {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DetailTab::Logs => "logs",
+            DetailTab::Stats => "stats",
+            DetailTab::Inspect => "inspect",
+            DetailTab::Terminal => "terminal",
+        }
+    }
+    /// The tab a key names; `None` for any other text.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "logs" => Some(DetailTab::Logs),
+            "stats" => Some(DetailTab::Stats),
+            "inspect" => Some(DetailTab::Inspect),
+            "terminal" => Some(DetailTab::Terminal),
+            _ => None,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            DetailTab::Logs => "Logs",
+            DetailTab::Stats => "Stats",
+            DetailTab::Inspect => "Inspect",
+            DetailTab::Terminal => "Terminal",
+        }
+    }
+    pub const ALL: [DetailTab; 4] = [
+        DetailTab::Logs,
+        DetailTab::Stats,
+        DetailTab::Inspect,
+        DetailTab::Terminal,
+    ];
+}
+
 /// A populated engine snapshot used when no live podman socket
 /// is reachable (notably the headless `--shots` renderer). Mirrors what a
 /// developer machine running a small web stack would show.

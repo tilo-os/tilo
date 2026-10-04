@@ -13,6 +13,13 @@
 //! exhausted-but-empty batch triggers no fallback push, callers repeat the
 //! fetch instead.
 
+mod execution_activity;
+#[cfg(test)]
+mod execution_activity_tests;
+use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
+pub use execution_activity::{ExecutionActivity, ExecutionStatus};
+#[cfg(test)]
+mod app_settings_tests;
 mod committed_document;
 mod durable_local_invocation;
 #[path = "invocation_journal.rs"]
@@ -1095,6 +1102,7 @@ pub struct InvocationJob {
 
 #[derive(Clone)]
 struct PendingInvocation {
+    activity: Option<ActivityTarget>,
     owner: InvocationOwner,
     network_evidence: Option<tilo_relay::client::CertifiedAction>,
     original: Option<Arc<OriginalInvocationData>>,
@@ -1439,6 +1447,7 @@ impl CapnpBrokerState {
             request.peer_id,
             offered,
             InvocationInputs {
+                execution: None,
                 argument: request.argument.as_deref(),
                 actor: &admitted.broker_actor(),
                 confirmation_token: confirmation,
@@ -1655,6 +1664,29 @@ enum DirectoryReply {
 }
 
 impl DirectoryReply {
+    /// The longest this asker is waited for. The shell's own surfaces ask
+    /// for a person mid-frame and keep their last results past a short
+    /// deadline. A remote caller has a deadline of its own and gives up by
+    /// dropping its answer, which ends the wait sooner; the bound here only
+    /// stops an owner that never answers from pinning the request.
+    fn patience(&self) -> Duration {
+        match self {
+            Self::Oneshot(_) => CapnpBrokerState::DIRECTORY_BRIDGE_TIMEOUT,
+            Self::Pending(_) => CapnpBrokerState::DIRECTORY_OWNER_HUNG,
+        }
+    }
+
+    /// `answer`, awaited for as long as this asker still wants it: the
+    /// owning app answers on its next turn, and a turn running a heavy
+    /// action or frame is busy, not gone. `Err(TimedOut)` once the asker's
+    /// patience ran out, `Err(Unavailable)` once it stopped asking.
+    async fn awaited<T>(
+        &self,
+        answer: impl std::future::Future<Output = T>,
+    ) -> Result<T, ActionDirectoryBridgeError> {
+        await_while_asked(self.patience(), || !self.is_closed(), answer).await
+    }
+
     fn is_closed(&self) -> bool {
         match self {
             Self::Oneshot(sender) => sender.is_closed(),
@@ -1669,6 +1701,86 @@ impl DirectoryReply {
             }
             Self::Pending(completer) => completer.complete(reply),
         }
+    }
+}
+
+/// `answer`, or why it stopped being awaited: `patience` ran out
+/// (`TimedOut`) or `asking` turned false (`Unavailable`).
+async fn await_while_asked<T>(
+    patience: Duration,
+    asking: impl Fn() -> bool,
+    answer: impl std::future::Future<Output = T>,
+) -> Result<T, ActionDirectoryBridgeError> {
+    const ASKER_CHECK: Duration = Duration::from_millis(100);
+    let deadline = tokio::time::sleep(patience);
+    tokio::pin!(answer, deadline);
+    let mut check = tokio::time::interval(ASKER_CHECK);
+    loop {
+        tokio::select! {
+            value = &mut answer => return Ok(value),
+            () = &mut deadline => return Err(ActionDirectoryBridgeError::TimedOut),
+            _ = check.tick() => {
+                if !asking() {
+                    return Err(ActionDirectoryBridgeError::Unavailable);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod directory_patience_tests {
+    use super::{
+        ActionDirectoryBridgeError, CapnpBrokerState, DirectoryReply, Duration, await_while_asked,
+    };
+
+    /// A remote caller (an agent, another device) waits for an app whose
+    /// owner thread is busy with a heavy action or frame for longer than the
+    /// shell's own surfaces do; how long is the caller's to say.
+    #[test]
+    fn a_remote_asker_outwaits_a_busy_owner_and_stops_when_it_gives_up() {
+        let (completer, answer) =
+            tilo_actions::remote::pending::<super::ActionDirectoryBridgeReply>();
+        let remote = DirectoryReply::Pending(tilo_actions::remote::pending().0);
+        let (shell, _receiver) = tokio::sync::oneshot::channel();
+        let shell = DirectoryReply::Oneshot(shell);
+        assert!(remote.patience() > shell.patience());
+        assert!(
+            CapnpBrokerState::DIRECTORY_OWNER_HUNG
+                > CapnpBrokerState::DIRECTORY_BRIDGE_TIMEOUT * 10
+        );
+        drop(remote);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let busy = Duration::from_millis(300);
+            let answered = await_while_asked(Duration::from_secs(5), || true, async {
+                tokio::time::sleep(busy).await;
+                7
+            })
+            .await;
+            assert_eq!(answered, Ok(7), "a busy owner is waited for");
+
+            let hung = await_while_asked(
+                Duration::from_millis(200),
+                || true,
+                std::future::pending::<()>(),
+            )
+            .await;
+            assert_eq!(hung, Err(ActionDirectoryBridgeError::TimedOut));
+
+            let reply = DirectoryReply::Pending(completer);
+            drop(answer);
+            let abandoned = tilo_test_env::within(
+                "an abandoned asker stops the wait",
+                reply.awaited(std::future::pending::<()>()),
+            )
+            .await;
+            assert_eq!(abandoned, Err(ActionDirectoryBridgeError::Unavailable));
+        });
     }
 }
 
@@ -2221,6 +2333,7 @@ struct PendingWorker {
 /// as, the one-use confirmation token it presents and its ambient context.
 /// Admission checks every field; none of them grants authority by itself.
 struct InvocationInputs<'a> {
+    execution: Option<ExecutionScope>,
     argument: Option<&'a str>,
     actor: &'a BrokerActor,
     confirmation_token: Option<&'a str>,
@@ -2304,6 +2417,7 @@ pub struct CapnpBrokerState {
     /// Bumped whenever a pending or completed invocation changes, so hosts
     /// can refresh retained invocation projections exactly when needed.
     invocation_generation: AtomicU64,
+    execution_activity: ActivityBus,
     /// Admission serialization covers policy, one-use confirmation, the durable
     /// barrier and the single application delivery. Never held across awaits.
     admission_lock: Mutex<()>,
@@ -2491,6 +2605,7 @@ impl CapnpBrokerState {
                 }
             };
         }
+        self.execution_activity.close();
         clear!(self.host_workers);
         clear!(self.channels);
         clear!(self.surfaces);
@@ -2624,7 +2739,13 @@ impl CapnpBrokerState {
     const DIRECTORY_MAX_BYTES: u32 = 256 * 1024;
     const DIRECTORY_MAX_WORK: u32 = 4_096;
     const DIRECTORY_MAX_DEPTH: u16 = 32;
+    /// How long the shell's own surfaces (palette, search) wait for an app's
+    /// directory before keeping their last results.
     const DIRECTORY_BRIDGE_TIMEOUT: Duration = Duration::from_secs(2);
+    /// An app that has not answered its directory in this long is hung, not
+    /// busy: its asker hears it timed out. Remote askers normally give up
+    /// sooner, on their own deadline.
+    const DIRECTORY_OWNER_HUNG: Duration = Duration::from_secs(60);
 
     fn expire_stale_invocations(&self) {
         self.expire_stale_invocations_at(
@@ -2730,8 +2851,12 @@ impl CapnpBrokerState {
                 .persist_invocation(&pending, update.clone(), pending.journal_key.is_some())
                 .is_err()
             {
+                self.execution_activity
+                    .publish_status(pending.activity.as_ref(), ExecutionStatus::OutcomeUnknown);
                 continue;
             }
+            self.execution_activity
+                .publish(pending.activity.as_ref(), &update);
             self.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = self.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -2985,6 +3110,7 @@ impl CapnpBrokerState {
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
                 step_prompts: crate::automation::StepPrompts::default(),
                 invocation_generation: AtomicU64::new(0),
+                execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),
                 journal: Mutex::new(journal),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
@@ -3279,24 +3405,19 @@ impl CapnpBrokerState {
                         if reply.is_closed() {
                             return;
                         }
-                        let response = tokio::time::timeout(
-                            Self::DIRECTORY_BRIDGE_TIMEOUT,
-                            state.query_action_directory_for_actor(
+                        let response = reply
+                            .awaited(state.query_action_directory_for_actor(
                                 &directories,
                                 &actor,
                                 &cluster_id,
                                 &query,
-                            ),
-                        )
-                        .await
-                        .map_or_else(
-                            |_| Err(ActionDirectoryBridgeError::TimedOut),
-                            |result| {
+                            ))
+                            .await
+                            .and_then(|result| {
                                 result
                                     .map(ActionDirectoryBridgeResponse::Page)
                                     .map_err(|_| ActionDirectoryBridgeError::Unavailable)
-                            },
-                        );
+                            });
                         reply.send(response);
                     }
                     ActionDirectoryBridgeRequest::Resolve {
@@ -3311,9 +3432,8 @@ impl CapnpBrokerState {
                         if reply.is_closed() {
                             return;
                         }
-                        let response = tokio::time::timeout(
-                            Self::DIRECTORY_BRIDGE_TIMEOUT,
-                            state.resolve_action_directory_for_actor(
+                        let response = reply
+                            .awaited(state.resolve_action_directory_for_actor(
                                 &directories,
                                 &actor,
                                 &cluster_id,
@@ -3321,17 +3441,13 @@ impl CapnpBrokerState {
                                 &revision,
                                 &resource,
                                 &action,
-                            ),
-                        )
-                        .await
-                        .map_or_else(
-                            |_| Err(ActionDirectoryBridgeError::TimedOut),
-                            |result| {
+                            ))
+                            .await
+                            .and_then(|result| {
                                 result
                                     .map(ActionDirectoryBridgeResponse::Resolution)
                                     .map_err(|_| ActionDirectoryBridgeError::Unavailable)
-                            },
-                        );
+                            });
                         reply.send(response);
                     }
                     ActionDirectoryBridgeRequest::Start {
@@ -3344,23 +3460,18 @@ impl CapnpBrokerState {
                         if reply.is_closed() {
                             return;
                         }
-                        let response = tokio::time::timeout(
-                            Self::DIRECTORY_BRIDGE_TIMEOUT,
-                            state.start_action_directory_for_actor(
+                        let response = reply
+                            .awaited(state.start_action_directory_for_actor(
                                 &directories,
                                 &actor,
                                 &target,
                                 argument.as_deref(),
                                 confirmation,
-                            ),
-                        )
-                        .await
-                        .map_or_else(
-                            |_| Err(ActionDirectoryBridgeError::TimedOut),
-                            |result| {
+                            ))
+                            .await
+                            .and_then(|result| {
                                 result.map(ActionDirectoryBridgeResponse::StartedDirectoryAction)
-                            },
-                        );
+                            });
                         reply.send(response);
                     }
                 }
@@ -3593,6 +3704,7 @@ impl CapnpBrokerState {
                 peer_id,
                 (surface, published),
                 InvocationInputs {
+                    execution: None,
                     argument,
                     actor,
                     confirmation_token: confirmation_token.as_deref(),
@@ -4049,6 +4161,7 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                execution: None,
                 argument,
                 actor: &BrokerActor::person(actor),
                 confirmation_token,
@@ -4157,6 +4270,7 @@ impl CapnpBrokerState {
         provenance: AdmissionProvenance<'_>,
     ) -> Result<InvocationJob, String> {
         let InvocationInputs {
+            execution,
             argument,
             actor,
             confirmation_token,
@@ -4333,61 +4447,66 @@ impl CapnpBrokerState {
             None
         };
         drop(journal_guard);
-        self.pending_invocations
+        // Keep acceptance before an immediately completing application's first
+        // update. Sending to the unbounded app queue and bounded observation
+        // bus never waits or calls back into the broker.
+        let mut registry = self
+            .pending_invocations
             .lock()
-            .map_err(|_| "the invocation registry is unavailable".to_string())?
-            .insert(
-                id,
-                PendingInvocation {
-                    owner,
-                    network_evidence: durable.and_then(DurableContext::network),
-                    original: OriginalInvocationData::capture(
-                        ui::invocation_scope::PublishedInvocationRequest {
-                            wire_id: id,
-                            invocation,
-                            address: tilo_actions::ActionAddress {
-                                resource: offered.1.resource.clone(),
-                                action: offered.1.action.clone(),
-                            },
-                            argument: argument.map(str::to_string),
-                            actor: actor.id.clone(),
-                            participant: invoker::invoker_participant(context.as_ref()),
+            .map_err(|_| "the invocation registry is unavailable".to_string())?;
+        registry.insert(
+            id,
+            PendingInvocation {
+                activity: ActivityTarget::new(execution, actor, &offered.0, &offered.1),
+                owner,
+                network_evidence: durable.and_then(DurableContext::network),
+                original: OriginalInvocationData::capture(
+                    ui::invocation_scope::PublishedInvocationRequest {
+                        wire_id: id,
+                        invocation,
+                        address: tilo_actions::ActionAddress {
+                            resource: offered.1.resource.clone(),
+                            action: offered.1.action.clone(),
                         },
-                        offered.0.route.clone(),
-                        &offered.1,
-                        revision,
-                        durable.map(DurableContext::origin).or(origin),
-                        policy_time.clone(),
-                    ),
-                    policy_time,
-                    journal_key,
-                    peer_id,
-                    tx,
-                    update: tilo_actions::InvocationUpdate::Accepted { invocation },
-                    last_sequence: 0,
-                    actor: actor.id.clone(),
-                    cancellable: matches!(
-                        offered.1.contract.execution,
-                        tilo_actions::ExecutionMode::Background { cancellable: true }
-                            | tilo_actions::ExecutionMode::Streaming {
-                                cancellable: true,
-                                ..
-                            }
-                    ),
-                    retryable_on_disconnect: matches!(
-                        offered.1.contract.retry,
-                        tilo_actions::RetryPolicy::Idempotent
-                            | tilo_actions::RetryPolicy::RetryWithInvocationId
-                    ),
-                    execution: offered.1.contract.execution.clone(),
-                    result: offered.1.contract.result.clone(),
-                    operation_kind: offered.1.operation_kind,
-                    cluster_id: offered.0.route.cluster_id.clone(),
-                    context: receipt_context,
-                    last_activity: std::time::Instant::now(),
-                    cancellation_requested_at: None,
-                },
-            );
+                        argument: argument.map(str::to_string),
+                        actor: actor.id.clone(),
+                        participant: invoker::invoker_participant(context.as_ref()),
+                    },
+                    offered.0.route.clone(),
+                    &offered.1,
+                    revision,
+                    durable.map(DurableContext::origin).or(origin),
+                    policy_time.clone(),
+                ),
+                policy_time,
+                journal_key,
+                peer_id,
+                tx,
+                update: tilo_actions::InvocationUpdate::Accepted { invocation },
+                last_sequence: 0,
+                actor: actor.id.clone(),
+                cancellable: matches!(
+                    offered.1.contract.execution,
+                    tilo_actions::ExecutionMode::Background { cancellable: true }
+                        | tilo_actions::ExecutionMode::Streaming {
+                            cancellable: true,
+                            ..
+                        }
+                ),
+                retryable_on_disconnect: matches!(
+                    offered.1.contract.retry,
+                    tilo_actions::RetryPolicy::Idempotent
+                        | tilo_actions::RetryPolicy::RetryWithInvocationId
+                ),
+                execution: offered.1.contract.execution.clone(),
+                result: offered.1.contract.result.clone(),
+                operation_kind: offered.1.operation_kind,
+                cluster_id: offered.0.route.cluster_id.clone(),
+                context: receipt_context,
+                last_activity: std::time::Instant::now(),
+                cancellation_requested_at: None,
+            },
+        );
         self.invocation_generation.fetch_add(1, Ordering::Relaxed);
         if sender
             .send(InvocationEnvelope {
@@ -4401,11 +4520,8 @@ impl CapnpBrokerState {
             })
             .is_err()
         {
-            let removed = self
-                .pending_invocations
-                .lock()
-                .ok()
-                .and_then(|mut jobs| jobs.remove(&id));
+            let removed = registry.remove(&id);
+            drop(registry);
             self.invocation_generation.fetch_add(1, Ordering::Relaxed);
             if let Some(pending) = removed {
                 let _ = self.persist_invocation(
@@ -4416,8 +4532,25 @@ impl CapnpBrokerState {
             }
             return Err("the application invocation stream closed; outcome unknown".into());
         }
+        if let Some(pending) = registry.get(&id) {
+            self.execution_activity
+                .publish(pending.activity.as_ref(), &pending.update);
+        }
+        drop(registry);
         self.local_turn.notify_one();
         Ok(InvocationJob { id, completion: rx })
+    }
+
+    /// Observe subsequent broker execution events without scheduling app work.
+    /// The fixed 256-event buffer reports `Lagged` rather than concealing loss;
+    /// consumers must clear stale presence on lag/closure. Dropping a receiver
+    /// changes neither sessions nor app state. This is host-local provenance,
+    /// not a substitute for authenticated transport or current room authority.
+    #[must_use]
+    pub fn subscribe_execution_activity(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<Arc<ExecutionActivity>> {
+        self.execution_activity.subscribe()
     }
 
     /// Changes whenever a pending or completed invocation changes.
@@ -4576,6 +4709,10 @@ impl CapnpBrokerState {
         self.persist_cancellation(job)?;
         if job.cancellation_requested_at.is_none() {
             job.cancellation_requested_at = Some(std::time::Instant::now());
+            self.execution_activity.publish_status(
+                job.activity.as_ref(),
+                ExecutionStatus::CancellationRequested,
+            );
             self.invocation_generation.fetch_add(1, Ordering::Relaxed);
         }
         drop(pending);
@@ -4876,6 +5013,7 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                execution: None,
                 argument,
                 actor: &BrokerActor::agent(run.agent_id),
                 confirmation_token: None,
@@ -4963,8 +5101,14 @@ impl CapnpBrokerState {
                         )
                         .is_err()
                     {
+                        self.execution_activity.publish_status(
+                            invocation.activity.as_ref(),
+                            ExecutionStatus::OutcomeUnknown,
+                        );
                         continue;
                     }
+                    self.execution_activity
+                        .publish(invocation.activity.as_ref(), &update);
                     self.record_completion(id, invocation.completion_owner(), update.clone());
                     if let Ok(mut requests) = self.cancellation_requests.lock() {
                         requests.remove(&id);
@@ -5758,6 +5902,33 @@ impl CapnpChannelHandle {
     }
 }
 
+/// The `AppSettings` capability of the app `route` certifies: its own
+/// entries and the shared sections, in the host's settings source, for as
+/// long as the channel stays admitted.
+fn app_settings_capability(
+    state: &Arc<CapnpBrokerState>,
+    route: CrdtRoute,
+    identity: AdmittedJoinIdentity,
+) -> Result<runtime_collab::collab_capnp::app_settings::Client, capnp::Error> {
+    if route.app_id.is_empty() {
+        return Err(capnp::Error::failed(
+            "settings belong to a certified app route".into(),
+        ));
+    }
+    let Some(source) = state.services.settings.clone() else {
+        return Err(capnp::Error::failed(
+            "this host keeps no settings for apps".into(),
+        ));
+    };
+    let app_id = route.app_id.clone();
+    let state = Arc::clone(state);
+    let revalidate: runtime_collab::settings::host::Revalidate =
+        Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
+    Ok(capnp_rpc::new_client(
+        runtime_collab::settings::host::AppSettingsServer::new(app_id, source, revalidate),
+    ))
+}
+
 fn delegate_realtime_command(
     services: &HostServices,
     context: &crate::services::RealtimeRequestContext,
@@ -6162,6 +6333,27 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         results.get().set_reply_json(&reply);
         Promise::ok(())
+    }
+
+    fn settings(
+        self: Rc<Self>,
+        _params: channel_handle::SettingsParams,
+        mut results: channel_handle::SettingsResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        match app_settings_capability(&self.state, route, self.verified_identity.clone()) {
+            Ok(settings) => {
+                results.get().set_settings(settings);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(error),
+        }
     }
 
     fn wifi_continuity_command(
@@ -7400,6 +7592,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
             drop(registry);
+            state
+                .execution_activity
+                .publish(pending.activity.as_ref(), &update);
             state.record_completion(id, pending.completion_owner(), update.clone());
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -7655,6 +7850,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
                             confirmation_token: None,
@@ -7690,6 +7886,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
                             confirmation_token: Some(&token),
@@ -7717,6 +7914,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
                             confirmation_token: Some(&token),
@@ -13235,6 +13433,7 @@ pub mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let invocation = tilo_actions::InvocationId::new();
         let pending = PendingInvocation {
+            activity: None,
             owner: InvocationOwner::Local {
                 actor: "agent:Scribe".into(),
             },
@@ -14394,6 +14593,22 @@ fn validate_invocation_update(
 }
 
 impl CapnpBrokerState {
+    fn publish_pending_activity(
+        &self,
+        pending: &PendingInvocation,
+        update: &tilo_actions::InvocationUpdate,
+    ) {
+        if pending.cancellation_requested_at.is_some() && !update.is_terminal() {
+            self.execution_activity.publish_status(
+                pending.activity.as_ref(),
+                ExecutionStatus::CancellationRequested,
+            );
+        } else {
+            self.execution_activity
+                .publish(pending.activity.as_ref(), update);
+        }
+    }
+
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the pending entry borrows the registry until it is staged; the lint misreads the borrow"
@@ -14464,6 +14679,7 @@ impl CapnpBrokerState {
         pending.last_activity = std::time::Instant::now();
         pending.last_sequence = next_sequence;
         pending.update = update.clone();
+        state.publish_pending_activity(pending, &update);
         state.invocation_generation.fetch_add(1, Ordering::Relaxed);
         if update.is_terminal() {
             let completion = match &update {

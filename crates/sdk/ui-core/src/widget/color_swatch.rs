@@ -7,7 +7,10 @@
 //!   keep their own layout.
 //! * [`ColorSwatchPicker`] is a grid of swatches as a widget. Clicking a
 //!   swatch records its index; the host reads it with
-//!   [`ColorSwatchPicker::take_choice`] and writes the colour to its model.
+//!   [`ColorSwatchPicker::take_choice`] (or is told through
+//!   [`ColorSwatchPicker::on_change`]) and writes the colour to its model.
+//!   [`ColorSwatchPicker::with_painter`] paints a sample in each cell instead
+//!   of the flat colour, for a choice among brushes or patterns.
 //!   [`super::ColorPicker::with_swatches`] uses the same swatches as quick
 //!   picks beside its full colour field.
 
@@ -150,28 +153,7 @@ impl ColorSwatchFace {
         let radius = f64::from(theme.tokens.radii.item);
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(Fill::NonZero, transform, self.color, None, &shape);
-        let outline = crate::surface::edge_outline(self.rect, radius);
-        // The chosen swatch and keyboard focus are rings in your colour; a
-        // hovered one a ring that reads on its own fill; at rest an edge
-        // derived from the fill (HIG §9.5), so a white swatch on paper or a
-        // black one on a dark panel keeps its outline.
-        let (width, ring) = if self.selected || self.focused {
-            (2.0, colors.intent.you)
-        } else if self.hovered {
-            (
-                1.5,
-                colors.ink_on_any(&[self.color], colors.text_primary, 3.0),
-            )
-        } else {
-            (1.0, crate::surface::edge_on(self.color))
-        };
-        scene.stroke(
-            &vello::kurbo::Stroke::new(width),
-            transform,
-            ring,
-            None,
-            &outline,
-        );
+        self.paint_ring(scene, transform, theme);
         if let Some(marker) = &self.marker {
             let style = theme.text(TextRole::Caption).strong();
             let ink = colors.ink_on_any(&[self.color], colors.text_primary, 4.5);
@@ -189,7 +171,39 @@ impl ColorSwatchFace {
             );
         }
     }
+
+    /// The swatch's ring alone, over a sample the host painted in its rect:
+    /// the chosen swatch and keyboard focus are rings in your colour; a
+    /// hovered one a ring that reads on its own fill; at rest an edge
+    /// derived from the fill (HIG §9.5), so a white swatch on paper or a
+    /// black one on a dark panel keeps its outline.
+    pub fn paint_ring(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let colors = &theme.tokens.colors;
+        let radius = f64::from(theme.tokens.radii.item);
+        let outline = crate::surface::edge_outline(self.rect, radius);
+        let (width, ring) = if self.selected || self.focused {
+            (2.0, colors.intent.you)
+        } else if self.hovered {
+            (
+                1.5,
+                colors.ink_on_any(&[self.color], colors.text_primary, 3.0),
+            )
+        } else {
+            (1.0, crate::surface::edge_on(self.color))
+        };
+        scene.stroke(
+            &vello::kurbo::Stroke::new(width),
+            transform,
+            ring,
+            None,
+            &outline,
+        );
+    }
 }
+
+/// Paints swatch `index` into its rect in place of its flat colour:
+/// `(scene, transform, rect, index, theme, text)`.
+pub type SwatchPainter = dyn FnMut(&mut Scene, Affine, Rect, usize, &Theme, &mut TextRenderer);
 
 /// A grid of [`ColorSwatch`]es as a widget.
 pub struct ColorSwatchPicker {
@@ -207,6 +221,18 @@ pub struct ColorSwatchPicker {
     hovered: Option<usize>,
     focused: bool,
     focus_index: usize,
+    /// Told each chosen index, as well as [`ColorSwatchPicker::take_choice`].
+    on_change: Option<Box<dyn FnMut(usize)>>,
+    /// Lay the grid out without its outer inset: a palette inline in a
+    /// form, aligned with the fields above and below it.
+    bare: bool,
+    /// The cell's width (and height, unless `cell_height`), when it is not
+    /// a pointer target.
+    cell_width: Option<f64>,
+    /// The cell's height, when it is not as tall as it is wide.
+    cell_height: Option<f64>,
+    /// Paints each swatch in place of its flat colour.
+    painter: Option<Box<SwatchPainter>>,
 }
 
 impl ColorSwatchPicker {
@@ -226,7 +252,69 @@ impl ColorSwatchPicker {
             hovered: None,
             focused: false,
             focus_index: 0,
+            on_change: None,
+            bare: false,
+            cell_width: None,
+            cell_height: None,
+            painter: None,
         }
+    }
+
+    /// Run `f` with each index the person chooses.
+    #[must_use]
+    pub fn on_change(mut self, f: impl FnMut(usize) + 'static) -> Self {
+        self.on_change = Some(Box::new(f));
+        self
+    }
+
+    /// Without the grid's outer inset, so the swatches line up with the
+    /// form around them.
+    #[must_use]
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
+        self
+    }
+
+    /// Cells `cell` wide (and tall) rather than a pointer target, to fit a
+    /// given number of columns across a panel.
+    #[must_use]
+    pub fn with_cell(mut self, cell: f64) -> Self {
+        self.cell_width = Some(cell.max(1.0));
+        self
+    }
+
+    /// Cells `height` tall rather than square, for samples wider than they
+    /// are tall.
+    #[must_use]
+    pub fn with_cell_height(mut self, height: f64) -> Self {
+        self.cell_height = Some(height.max(1.0));
+        self
+    }
+
+    /// Paint each swatch with `painter` instead of its flat colour, for a
+    /// choice among samples (brush strokes, patterns) rather than colours.
+    /// The swatches' names still name the entries.
+    #[must_use]
+    pub fn with_painter(
+        mut self,
+        painter: impl FnMut(&mut Scene, Affine, Rect, usize, &Theme, &mut TextRenderer) + 'static,
+    ) -> Self {
+        self.painter = Some(Box::new(painter));
+        self
+    }
+
+    /// Show `idx` as chosen (`None`: none is), without telling
+    /// [`Self::on_change`].
+    pub fn set_selected(&mut self, idx: Option<usize>) {
+        self.selected = idx.filter(|idx| *idx < self.swatches.len());
+    }
+
+    fn row_height(&self) -> f64 {
+        self.cell_height.unwrap_or(self.cell)
+    }
+
+    fn inset(&self) -> f64 {
+        if self.bare { 0.0 } else { self.pad }
     }
 
     #[must_use]
@@ -257,16 +345,18 @@ impl ColorSwatchPicker {
         // Each swatch fills its pointer-target cell less a gap, so cells
         // touch and the whole grid is clickable.
         let gap = self.pad;
+        let inset = self.inset();
+        let row = self.row_height();
         for i in 0..self.swatches.len() {
             let r = i.checked_div(self.columns).unwrap_or(0) as f64;
             let c = i.checked_rem(self.columns).unwrap_or(0) as f64;
-            let x = self.rect.x0 + self.pad + c * self.cell;
-            let y = self.rect.y0 + self.pad + r * self.cell;
+            let x = self.rect.x0 + inset + c * self.cell;
+            let y = self.rect.y0 + inset + r * row;
             self.swatch_rects.push(Rect::new(
                 x + gap / 2.0,
                 y + gap / 2.0,
                 x + self.cell - gap / 2.0,
-                y + self.cell - gap / 2.0,
+                y + row - gap / 2.0,
             ));
         }
     }
@@ -280,14 +370,17 @@ impl ColorSwatchPicker {
                   far below f32's exact-integer range"
     )]
     fn grid_size(&self) -> (f32, f32) {
-        let w = self.columns as f64 * self.cell + self.pad * 2.0;
-        let h = self.rows() as f64 * self.cell + self.pad * 2.0;
+        let w = self.columns as f64 * self.cell + self.inset() * 2.0;
+        let h = self.rows() as f64 * self.row_height() + self.inset() * 2.0;
         (w as f32, h as f32)
     }
 
     fn choose(&mut self, index: usize) {
         self.selected = Some(index);
         self.choice = Some(index);
+        if let Some(on_change) = self.on_change.as_mut() {
+            on_change(index);
+        }
     }
 }
 
@@ -298,7 +391,9 @@ impl Widget for ColorSwatchPicker {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.cell = f64::from(theme.tokens.metrics.min_pointer_target);
+        self.cell = self
+            .cell_width
+            .unwrap_or_else(|| f64::from(theme.tokens.metrics.min_pointer_target));
         self.pad = f64::from(theme.tokens.spacing.s1);
         let (w, h) = self.grid_size();
         let node = taffy.leaf_node(Style {
@@ -343,11 +438,17 @@ impl Widget for ColorSwatchPicker {
         _presence: &PresenceCtx,
     ) {
         for (i, (swatch, rect)) in self.swatches.iter().zip(&self.swatch_rects).enumerate() {
-            ColorSwatchFace::of(*rect, swatch)
+            let face = ColorSwatchFace::of(*rect, swatch)
                 .selected(self.selected == Some(i))
                 .focused(self.focused && self.focus_index == i)
-                .hovered(self.hovered == Some(i))
-                .paint(scene, transform, text_renderer, theme);
+                .hovered(self.hovered == Some(i));
+            match self.painter.as_mut() {
+                Some(painter) => {
+                    painter(scene, transform, *rect, i, theme, text_renderer);
+                    face.paint_ring(scene, transform, theme);
+                }
+                None => face.paint(scene, transform, text_renderer, theme),
+            }
         }
     }
 
@@ -593,6 +694,62 @@ mod tests {
             event,
             is_synthetic: false,
         }
+    }
+
+    #[test]
+    fn a_bare_sampled_grid_tells_each_choice_and_paints_its_samples() {
+        let chosen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let told = std::rc::Rc::clone(&chosen);
+        let painted = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let counted = std::rc::Rc::clone(&painted);
+        let mut picker = ColorSwatchPicker::new(palette(), 3)
+            .bare()
+            .with_cell(60.0)
+            .with_cell_height(40.0)
+            .with_painter(move |_, _, _, _, _, _| counted.set(counted.get() + 1))
+            .on_change(move |index| told.borrow_mut().push(index));
+        lay_out(&mut picker);
+        assert_eq!(
+            picker.get_rect().size(),
+            (180.0, 40.0).into(),
+            "no outer inset"
+        );
+        let first = picker.swatch_rects[0];
+        assert!(first.width() > first.height(), "cells are wider than tall");
+        let third = picker.swatch_rects[2].center();
+
+        dispatch(
+            &mut picker,
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(third.x, third.y),
+            },
+        );
+        dispatch(
+            &mut picker,
+            &WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(*chosen.borrow(), vec![2]);
+
+        // Showing a choice made elsewhere tells no one.
+        picker.set_selected(Some(0));
+        assert_eq!(picker.selected, Some(0));
+        assert_eq!(*chosen.borrow(), vec![2]);
+
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        picker.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+        assert_eq!(painted.get(), 3, "every cell is painted by the sampler");
     }
 
     #[test]

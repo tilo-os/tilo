@@ -19,6 +19,12 @@ tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
 # Secret bytes are wiped from memory when dropped.
 zeroize.workspace = true
 
+# A machine without a keychain keeps its secrets in sealed owner-only files.
+[target.'cfg(unix)'.dependencies]
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+sha2.workspace = true
+libc.workspace = true
+
 # The freedesktop Secret Service, spoken directly: no `secret-tool` process.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { workspace = true, features = ["tokio", "blocking-api"] }
@@ -35,6 +41,8 @@ js-sys = "=0.3.85"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

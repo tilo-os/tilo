@@ -82,6 +82,9 @@ tilo-sandbox-core = { path = "../../system/sandbox-core" }
 # The egress gate and the in-sandbox relay serve their connections as tasks on
 # a bounded runtime rather than an OS thread (or two) per connection.
 tilo-rt.workspace = true
+# Asks the session for the AT-SPI bus address (`org.a11y.Bus.GetAddress`),
+# which the launcher's filtered accessibility proxy forwards.
+zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 workspace-hack = { version = "0.1" }
 

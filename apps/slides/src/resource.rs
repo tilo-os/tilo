@@ -17,7 +17,9 @@ impl ResourceApp for SlidesShell {
     const ID: &'static str = "so.tilo.slides";
     const TITLE: &'static str = "Slides";
     const ICON: Option<&'static str> = Some("slides");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<SlidesDeck>) -> Element {
         cx.surface(SlidesApp::new())
@@ -40,6 +42,12 @@ impl ResourceSurface<SlidesDeck> for SlidesApp {
 
     fn attach(&mut self, cx: SurfaceCx<SlidesDeck>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    // Edits bound to where the user is publish as hand-built rows of the
+    // widget's own rather than as `bound_declarations`.
+    fn publishes_document_actions(&self) -> bool {
+        true
     }
 }
 

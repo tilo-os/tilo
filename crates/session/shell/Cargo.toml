@@ -236,6 +236,8 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # sandbox. Library-only use here — see `shell::shell::launcher` for why
 # the sandbox itself is built by the binary rather than in-process.
 launcher = { path = "../../packaging/launcher" }
+# Names a legacy VM's forwarded windows (`legacy.<guest>.<app id>`).
+legacy-agent-protocol = { path = "../../runtime/legacy-agent-protocol" }
 # The wire of the shell's own file choosers, served to apps with no portal.
 tilo-dialogs.workspace = true
 package-store = { path = "../../packaging/package-store" }
@@ -301,6 +303,11 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["te
 tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
+# A browser in the room a node governs, for the node's own session to share
+# sealed records with.
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
+# The CPU replay of shell scenes, checked against vello on the same scenes.
+tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }
 rand_chacha.workspace = true
 pollster.workspace = true
 wgpu.workspace = true
@@ -358,9 +365,11 @@ wayland-protocols = "0.32.12"
 # The compositor's own input method connection, which commits text the
 # shell inserts (a picked emoji) while no trusted input method owns the seat.
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
+# No `backend_winit`: the hosted backend drives its window itself
+# (`compositor/backend/winit.rs`), and Smithay's backend matches every winit
+# event, so it would not build against the fork's `WindowEvent::PenSample`.
 smithay = { version = "0.7", default-features = false, features = [
     "wayland_frontend",
-    "backend_winit",
     "desktop",
     # DRM/KMS + libseat + udev + libinput backend for running on a bare TTY.
     "backend_drm",
@@ -386,3 +395,6 @@ greetd-client = { path = "../greetd-client" }
 # launcher registry and fresh workspace capability authority.
 compat-service = { path = "../../windows/compat-service" }
 windows-vm = { path = "../../windows/windows-vm" }
+# The shell runtime's policy, where the person's allow for Terminal's Host
+# target (the device's own shell) is recorded.
+ush = { path = "../../runtime/ush" }

@@ -104,7 +104,12 @@ impl ResourceApp for TypstEditorShell {
     const ID: &'static str = "so.tilo.typst-editor";
     const TITLE: &'static str = "Typst";
     const ICON: Option<&'static str> = Some("typst-editor");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    /// The narrow-window scenarios are captured at a phone width.
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        scenario
+            .and_then(|name| matches!(name, "preview" | "documents").then_some((520, 820)))
+            .unwrap_or((1280, 800))
+    }
 
     fn view(cx: &mut ViewCx<TypstEditor>) -> Element {
         // Live path starts empty (no demo seed).
@@ -126,11 +131,6 @@ impl ResourceApp for TypstEditorShell {
             "stale",
             "status",
         ]
-    }
-
-    /// The narrow-window scenarios are captured at a phone width.
-    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
-        matches!(name, "preview" | "documents").then_some((520, 820))
     }
 }
 

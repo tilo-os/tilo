@@ -96,6 +96,12 @@ struct Config {
     /// scratch budget (`SurfaceCaps::CONSERVATIVE`).
     #[serde(default)]
     conservative_gpu: bool,
+    /// The page takes the desktop's invitations (`mountDesktop({onInvite})`).
+    #[serde(default)]
+    invite: bool,
+    /// The name a desktop seeded for this mount gives its workspace.
+    #[serde(default)]
+    workspace_name: Option<String>,
 }
 
 impl Config {
@@ -231,6 +237,8 @@ struct Desktop {
     live: Rc<RefCell<crate::live_view::LiveLayout>>,
     /// LIVE_V1: app+record ids keyed by desktop tab id.
     tab_records: Rc<RefCell<std::collections::BTreeMap<u64, (String, String)>>>,
+    /// What the desktop asked of the page since its last status.
+    requests: crate::shell::HostRequests,
 }
 
 impl Mount {
@@ -632,7 +640,7 @@ struct Presentation {
 
 enum Root {
     Component(Box<ui::application::AppComponent>),
-    Desktop(Box<tilo_desktop_surface::DesktopSurface>),
+    Desktop(Box<crate::shell::BrowserShell>),
 }
 
 fn present_desktop(
@@ -662,6 +670,7 @@ fn present_desktop(
         },
         dyn_store,
         config.apps.as_deref(),
+        config.workspace_name.as_deref(),
         Arc::new(move || {
             let _ = wake.send_event(id);
         }),
@@ -680,8 +689,24 @@ fn present_desktop(
         surface.set_app_notifications(inbox);
     }
     DESKTOPS.with_borrow_mut(|desktops| desktops.insert(id));
+    let generation = format!("mount-{id}");
+    let requests = crate::shell::HostRequests::default();
+    let wake = proxy()?;
+    let shell = crate::shell::BrowserShell::new(
+        surface,
+        handle.clone(),
+        generation.clone(),
+        crate::shell::HostOffers {
+            invite: config.invite,
+            mac: config.mac,
+        },
+        Rc::clone(&requests),
+        Arc::new(move || {
+            let _ = wake.send_event(id);
+        }),
+    );
     Ok(Presentation {
-        root: Root::Desktop(Box::new(surface)),
+        root: Root::Desktop(Box::new(shell)),
         stores: Rc::clone(&shared.stores),
         checkout: None,
         images: Rc::clone(&shared.images),
@@ -689,9 +714,10 @@ fn present_desktop(
             handle,
             shared,
             persistence,
-            generation: format!("mount-{id}"),
+            generation,
             live: Rc::default(),
             tab_records: Rc::default(),
+            requests,
         }),
     })
 }
@@ -1465,6 +1491,7 @@ impl Mount {
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
             "searchOpen": self.desktop.as_ref().is_some_and(|d| d.handle.search_open()),
+            "hostRequests": self.desktop.as_ref().map(|d| std::mem::take(&mut *d.requests.borrow_mut())).filter(|r| !r.is_empty()),
             "ime": ime,
         });
         let mut value = value;
@@ -1698,11 +1725,8 @@ pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
         m.desktop
             .as_ref()
             .map(|d| {
-                serde_json::to_string(
-                    &d.handle
-                        .snapshot(&d.generation, crate::desktop::catalogue()),
-                )
-                .map_err(error)
+                serde_json::to_string(&d.handle.snapshot(&d.generation, d.shared.catalogue()))
+                    .map_err(error)
             })
             .transpose()
     })
@@ -1771,6 +1795,68 @@ pub fn desktop_peer_windows(id: u64) -> Result<Option<String>, JsValue> {
                 serde_json::to_string(&windows).map_err(error)
             })
             .transpose()
+    })
+}
+
+/// List the legacy applications the node beside the host runs (`[{id,
+/// title}]` JSON, `id` what the node opens): desktop search and the
+/// navigation catalogue offer them, and opening one is handed to the page
+/// ([`desktop_take_node_app_requests`]).
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount or malformed JSON.
+#[wasm_bindgen]
+pub fn desktop_set_node_apps(id: u64, apps: &str) -> Result<(), JsValue> {
+    let apps: Vec<crate::desktop::NodeApp> = serde_json::from_str(apps).map_err(error)?;
+    with_mount(id, |m| {
+        m.desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?
+            .shared
+            .set_node_apps(apps);
+        Ok(())
+    })
+}
+
+/// The node applications the person asked to open since the last call (a
+/// JSON array of their ids): the page asks the node to open each, and its
+/// window arrives as a legacy window.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_take_node_app_requests(id: u64) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        let requests = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?
+            .shared
+            .take_node_app_requests();
+        serde_json::to_string(&requests).map_err(error)
+    })
+}
+
+/// The legacy windows the person closed since the last call (a JSON array
+/// of their keys): the page asks their sources to close them, and the
+/// desktop does not open them again while they still stream.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_dismissed_peer_windows(id: u64) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let keys = desktop
+            .handle
+            .read(|tree| desktop.shared.take_dismissed_peer_windows(tree));
+        serde_json::to_string(&keys).map_err(error)
     })
 }
 

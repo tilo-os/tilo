@@ -2,8 +2,14 @@
 import configparser
 import hashlib
 import importlib.util
+import json
+import os
+import shutil
+import stat
+import sys
 from pathlib import Path
 import struct
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,7 +19,8 @@ spec = importlib.util.spec_from_file_location('dev_target', SCRIPT)
 dev = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dev)
 UKI_TOOL = SCRIPT.parents[2] / 'dev/uki-cmdline.py'
-KERNEL, INITRD, DTB = b'exact CI kernel', b'exact CI initrd', b'exact pinned device tree'
+KERNEL, INITRD = b'exact CI kernel', b'exact CI initrd'
+DTB = struct.pack('>10I', 0xD00DFEED, 40, 40, 40, 40, 17, 16, 0, 0, 0)
 DIGEST = 'a' * 128
 MANIFEST = 'sha256:' + 'b' * 64
 ORIGIN = 'registry.tilo.so/tilo/tilo-vm:main-fixture-lenovo-83ed'
@@ -66,19 +73,53 @@ class DevelopmentTarget(unittest.TestCase):
                               f'initrd /EFI/Linux/bootc_composefs-{DIGEST}/initrd\n'
                               f'options quiet root=tilo-auto composefs={DIGEST} tilo.install\n')
         self.selected = {'target_digest': MANIFEST, 'update_origin': ORIGIN}
-        self.loader = dev.load_module
-        self.dtb = self.kdir / 'dtb/qcom/board.dtb'
-        class Profile:
-            def resolve_profile(_self, root, version, architecture):
-                self.assertEqual((root, version, architecture), (self.image, '7.2.7', 'aarch64'))
-                return self.dtb
-        def load(path, name):
-            if str(path).endswith('uki-hardware-profile.py'):
-                return Profile()
-            return self.loader(UKI_TOOL, name)
-        self.load = patch.object(dev, 'load_module', side_effect=load)
-        self.load.start()
-        self.addCleanup(self.load.stop)
+        # Split-kernel tests model the constructor alongside the fake build()
+        # output. Do not depend on ukify being installed on the CI test runner.
+        # Sealed/no-constructor tests override this lookup to return None.
+        constructor = patch.object(dev.shutil, 'which', return_value='/fixture/bin/ukify')
+        constructor.start()
+        self.addCleanup(constructor.stop)
+        self.dtb = self.kdir / 'dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb'
+        self.dtb.write_bytes(DTB)
+        tools = self.root / 'runtime/usr/lib/tilo'
+        tools.mkdir(parents=True)
+        builder = (SCRIPT.parents[2] / 'dev/build-custom-installer.sh').read_text()
+        start = builder.index('# Runtime validation must survive')
+        end = builder.index('install -Dm0755', start)
+        env = dict(os.environ, TILO_OS_DIR=str(SCRIPT.parents[2]),
+                   INSTALLER_CONTEXT=str(self.root / 'packaging'))
+        subprocess.run(['bash', '-eu', '-c', builder[start:end]], env=env, check=True)
+        shutil.copytree(self.root / 'packaging/rootfs/usr/lib/tilo', tools, dirs_exist_ok=True)
+        # Use the real packaged validator and its real transitive import, with
+        # no build-time /usr/local/bin helper available in this runtime fixture.
+        self.addCleanup(lambda: sys.modules.pop('hardware_profile', None))
+        sys.modules.pop('hardware_profile', None)
+        old_path = sys.path[:]
+        self.addCleanup(lambda: sys.path.__setitem__(slice(None), old_path))
+        for name, value in [('PROFILE_TOOLS', tools), ('UKI_TOOL', UKI_TOOL)]:
+            mocked = patch.object(dev, name, value)
+            mocked.start()
+            self.addCleanup(mocked.stop)
+        profile_dir = self.image / 'usr/lib/tilo'
+        shutil.copyfile(SCRIPT.parents[2] / 'hardware/profiles/lenovo-83ed.json',
+                        profile_dir / 'hardware-profile-definition.json')
+        (profile_dir / 'hardware-profile.json').write_text(json.dumps({
+            'schema_version': 1, 'id': 'lenovo-83ed', 'architecture': 'aarch64',
+            'devicetree': '/' + self.dtb.relative_to(self.image).as_posix(),
+            'devicetree_sha256': hashlib.sha256(DTB).hexdigest(),
+            'target_update_ref': 'code.tilo.so/tilo/tilo:fixture-lenovo-83ed',
+        }))
+        # Model immutable root-owned Linux metadata on Windows too. All bytes
+        # and validator imports remain real filesystem reads.
+        original_lstat = Path.lstat
+        def image_lstat(path, *args, **kwargs):
+            info = list(original_lstat(path, *args, **kwargs))
+            info[0] = stat.S_IFMT(info[0]) | (0o755 if stat.S_ISDIR(info[0]) else 0o644)
+            info[4] = 0
+            return os.stat_result(info)
+        metadata = patch.object(Path, 'lstat', image_lstat)
+        metadata.start()
+        self.addCleanup(metadata.stop)
 
     def build(self, argv):
         self.assertEqual(argv[:2], ['ukify', 'build'])
@@ -89,6 +130,15 @@ class DevelopmentTarget(unittest.TestCase):
         output.write_bytes(pe({'.linux': KERNEL, '.initrd': INITRD,
                               '.cmdline': cmdline + b'\0', '.dtb': DTB}))
         return ''
+
+    def test_runtime_profile_import_and_pinned_dtb_fail_closed(self):
+        self.assertEqual(dev.image_inputs(self.image)[3], self.dtb)
+        self.dtb.write_bytes(DTB[:-1] + b'X')
+        with self.assertRaisesRegex(ValueError, 'pinned SHA-256'):
+            dev.image_inputs(self.image)
+        (dev.PROFILE_TOOLS / 'hardware_profile.py').unlink()
+        with self.assertRaises(FileNotFoundError):
+            dev.image_inputs(self.image)
 
     def test_conversion_preserves_ci_identity_and_boot_bytes(self):
         with patch.object(dev, 'command', side_effect=self.build):
@@ -117,12 +167,34 @@ class DevelopmentTarget(unittest.TestCase):
         self.origin.write_text(self.origin.read_text().replace('boot_type=bls', 'boot_type=uki'))
         self.entry.write_text(f'title Tilo\nversion {DIGEST}\nsort-key bootc-tilo-0\nefi /EFI/Linux/bootc/bootc_composefs-{DIGEST}.efi\n')
         old_origin, old_entry = self.origin.read_bytes(), self.entry.read_bytes()
-        with patch.object(dev, 'command', side_effect=self.build):
+        with patch.object(dev, 'command', side_effect=AssertionError('sealed projection must not invoke a constructor')), patch.object(dev.shutil, 'which', return_value=None):
             self.assertEqual(dev.promote(self.image, self.target, self.esp, self.selected), DIGEST)
         self.assertEqual(self.origin.read_bytes(), old_origin)
         self.assertEqual(self.entry.read_bytes(), old_entry)
         self.assertEqual(image_uki.read_bytes(), original)
         self.assertIn(dev.MOUNT.encode(), dev.sections(target_uki)['.cmdline'])
+        tool = dev.load_module(UKI_TOOL, 'test_editor')
+        hdr, raw, raw_size, _, _ = tool.find_cmdline_room(original)
+        unchanged = bytearray(target_uki.read_bytes())
+        unchanged[raw:raw + raw_size] = original[raw:raw + raw_size]
+        unchanged[hdr + 8:hdr + 12] = original[hdr + 8:hdr + 12]
+        self.assertEqual(bytes(unchanged), original)
+        # A full command-line section refuses growth without touching the
+        # installed UKI, origin or loader; no constructor fallback is allowed.
+        full = pe({'.linux': KERNEL, '.initrd': INITRD,
+                   '.cmdline': (words + ' x=' + 'z' * (512 - len(words) - 3)).encode(), '.dtb': DTB})
+        target_uki.write_bytes(full)
+        with self.assertRaisesRegex(SystemExit, 'only 512 are available'):
+            dev.promote(self.image, self.target, self.esp, self.selected)
+        self.assertEqual(target_uki.read_bytes(), full)
+        self.assertEqual(self.origin.read_bytes(), old_origin)
+        self.assertEqual(self.entry.read_bytes(), old_entry)
+
+    def test_split_constructor_missing_fails_during_image_preflight(self):
+        with patch.object(dev.shutil, 'which', return_value=None):
+            with self.assertRaisesRegex(ValueError, 'runtime ukify constructor before installation'):
+                dev.image_inputs(self.image)
+        self.assertFalse((self.esp / f'EFI/Linux/bootc/bootc_composefs-{DIGEST}.efi').exists())
 
     def test_wrong_payload_or_ci_manifest_fails_before_mutation(self):
         original_entry, original_origin = self.entry.read_bytes(), self.origin.read_bytes()

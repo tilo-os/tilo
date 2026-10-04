@@ -104,6 +104,7 @@ impl Resource for Weather {
                 anchor: Some(crate::actions::location_resource_id(location.id)),
                 title: location.name.clone(),
                 text: location.region.clone(),
+                action: None,
             })
             .collect()
     }
@@ -117,7 +118,12 @@ impl ResourceApp for WeatherShell {
     const ID: &'static str = "so.tilo.weather";
     const TITLE: &'static str = "Weather";
     const ICON: Option<&'static str> = Some("weather");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    /// The pushed forecast is a narrow window's screen.
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        scenario
+            .and_then(|name| name.starts_with("detail").then_some((560, 820)))
+            .unwrap_or((1280, 800))
+    }
 
     fn view(cx: &mut ViewCx<Weather>) -> Element {
         cx.surface(WeatherApp::live())
@@ -125,11 +131,6 @@ impl ResourceApp for WeatherShell {
 
     fn scenarios() -> &'static [&'static str] {
         crate::app::SCENARIOS
-    }
-
-    /// The pushed forecast is a narrow window's screen.
-    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
-        name.starts_with("detail").then_some((560, 820))
     }
 }
 

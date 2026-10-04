@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -36,6 +37,8 @@ def fixture(directory):
               'preserved_gpt_verified': True, 'preserved_edge_samples_verified': True,
               'final_partition_count': 3, 'final_partuuids': ids}
     board = {'schema': 'tilo.windows-vm-install-proof-check.v4', 'guest_proof': guest,
+             'installer_code_runtime': {'schema':'tilo.installer-code-runtime.v1',
+                 'channel':{'schema':'tilo.installer-code-runtime.v1', 'enabled':False, 'port':None, 'source':None}, 'history':[]},
              'source_check': source, 'installer_composefs': 'f' * 128,
              'first_boot_verified': False, 'installer_medium_sha256': '1' * 64}
     generic = json.loads(json.dumps(board))
@@ -53,6 +56,21 @@ def fixture(directory):
 
 
 class AdmissionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # CI's shallow PR checkout may omit this separately published immutable
+        # assembly branch. Fetch only missing reviewed objects; the admission
+        # validator still refuses unavailable or mismatched objects and bytes.
+        repository = Path(__file__).resolve().parents[2]
+        revisions = {*admission.PROFILE_FIX_PAIR, *admission.SEALED_FIX_PAIR}
+        for revision in sorted(revisions):
+            result = subprocess.run(['git', '-C', str(repository), 'cat-file', '-e',
+                                     revision + '^{commit}'], capture_output=True)
+            if result.returncode:
+                subprocess.run(['git', '-C', str(repository), 'fetch', '--no-tags',
+                                '--depth=1', 'origin', revision],
+                               capture_output=True, check=True, timeout=60)
+
     def test_execute_never_trusts_development_receipt_without_fresh_admission(self):
         copy = admission.module('dev_copy_entry', 'copy-windows-direct-final-install.py')
         with tempfile.TemporaryDirectory() as directory:
@@ -191,6 +209,45 @@ class AdmissionTests(unittest.TestCase):
                         self.assertEqual(checked['schema'], 'tilo.windows-vm-install-proof-check.v4')
                         self.assertEqual(gate['development_admission']['board_ci'], ci)
                     self.assertEqual(live.call_count, 2)
+
+    def test_reviewed_profile_packaging_compatibility_uses_immutable_git_bytes(self):
+        generic, board = admission.PROFILE_FIX_PAIR
+        record = admission.assembly_compatibility(generic, board)
+        self.assertEqual(record['kind'], 'runtime-profile-packaging-fix')
+        self.assertEqual(record['runtime_file_sha256'], admission.PROFILE_FIX_BLOBS)
+        for revisions in ((board, generic), (generic, 'e' * 40), ('e' * 40, board)):
+            with self.subTest(revisions=revisions):
+                with self.assertRaisesRegex(ValueError, 'unreviewed assembly identities'):
+                    admission.assembly_compatibility(*revisions)
+        with patch.object(admission, 'PROFILE_FIX_BLOBS', {
+                path: {revision: '0' * 64 for revision in pins}
+                for path, pins in admission.PROFILE_FIX_BLOBS.items()}):
+            with self.assertRaisesRegex(ValueError, 'helper bytes differ'):
+                admission.assembly_compatibility(generic, board)
+        with patch.object(admission, 'PROFILE_FIX_CHANGED', {'os/Containerfile'}):
+            with self.assertRaisesRegex(ValueError, 'input closure differs'):
+                admission.assembly_compatibility(generic, board)
+
+    def test_sealed_ci_uki_compatibility_binds_exact_helpers_and_all_diffs(self):
+        generic, board = admission.SEALED_FIX_PAIR
+        record = admission.assembly_compatibility(generic, board)
+        self.assertEqual(record['kind'], 'sealed-ci-uki-projection-fix')
+        self.assertEqual(record['runtime_file_sha256'], admission.SEALED_FIX_BLOBS)
+        self.assertEqual(record['file_diff_sha256'], admission.SEALED_FIX_DIFFS)
+        for revisions in ((board, generic), (generic, 'e' * 40)):
+            with self.assertRaisesRegex(ValueError, 'unreviewed assembly identities'):
+                admission.assembly_compatibility(*revisions)
+        with patch.object(admission, 'SEALED_FIX_BLOBS', {
+                path: {revision: '0' * 64 for revision in pins}
+                for path, pins in admission.SEALED_FIX_BLOBS.items()}):
+            with self.assertRaisesRegex(ValueError, 'helper bytes differ'):
+                admission.assembly_compatibility(generic, board)
+        with patch.object(admission, 'SEALED_FIX_DIFFS', {}):
+            with self.assertRaisesRegex(ValueError, 'assembly diffs differ'):
+                admission.assembly_compatibility(generic, board)
+        with patch.object(admission, 'PROFILE_FIX_CHANGED', {'os/Containerfile'}):
+            with self.assertRaisesRegex(ValueError, 'input closure differs'):
+                admission.assembly_compatibility(generic, board)
 
     def test_pagefile_is_only_a_shrink_gate(self):
         common = admission.module('common_gate', 'windows-direct-common.py')
