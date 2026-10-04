@@ -597,4 +597,269 @@ impl App {
         }
         handled
     }
+    /// The modifier keys held, as the surface reports them.
+    pub fn set_surface_modifiers(&mut self, modifiers: winit::event::Modifiers) {
+        self.input.modifiers = modifiers;
+    }
+
+    /// Run one frame of the app on `surface` and paint it into `scene`, in
+    /// the surface's logical pixels from the app's own origin: its model
+    /// pumped (collaboration, invocations, publication), synchronized, laid
+    /// out and drawn, as a window of its own runs it. Returns whether the app
+    /// wants another frame.
+    pub fn surface_frame(&mut self, surface: &dyn AppSurface, scene: &mut Scene) -> bool {
+        let _entry = self.enter_wake_scope();
+        let replaced = self.swap_requested_component();
+        self.pump_hosted_model();
+        if self.layout.root_node.is_none() {
+            self.init_layout();
+        }
+        let size = surface.inner_size();
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "scale factor is intentionally narrowed to f32 for the render pipeline"
+        )]
+        let scale_factor = surface.scale_factor() as f32;
+        self.layout.last_frame_size = Some(size);
+        self.layout.structure_dirty |= self.root_widget.take_structure_dirty() || replaced;
+        let structure_rebuilt = self.layout.structure_dirty;
+        if structure_rebuilt {
+            self.rebuild_structure();
+        }
+        let Some(root_node) = self.layout.root_node else {
+            return true;
+        };
+        if run_layout_pass(
+            self,
+            root_node,
+            size.width,
+            size.height,
+            scale_factor,
+            structure_rebuilt,
+            None,
+        )
+        .is_none()
+        {
+            return true;
+        }
+        let search_pending = self
+            .actions
+            .action_palette
+            .as_mut()
+            .is_some_and(|palette| palette.advance_search_page().pending);
+        draw_frame_content(self, scene, size.width, size.height, scale_factor, None);
+        complete_native_frame_content(self, |_| {});
+        search_pending
+            || self.needs_sync
+            || self.layout.layout_dirty
+            || self.root_widget.needs_redraw()
+            || self.history_needs_redraw()
+            || self
+                .root_widget
+                .next_wake_deadline()
+                .is_some_and(|deadline| deadline <= crate::time::now())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    thread_local! {
+        static CLICKS: RefCell<Option<Rc<RefCell<Vec<Point>>>>> = const { RefCell::new(None) };
+    }
+
+    /// Records where it is clicked, in its own logical coordinates.
+    struct ClickProbe {
+        rect: KurboRect,
+        pointer: Point,
+        clicks: Rc<RefCell<Vec<Point>>>,
+    }
+
+    impl Widget for ClickProbe {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy
+                .new_leaf(taffy::Style {
+                    size: taffy::Size {
+                        width: taffy::Dimension::percent(1.0),
+                        height: taffy::Dimension::percent(1.0),
+                    },
+                    ..taffy::Style::default()
+                })
+                .unwrap();
+            nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let layout = taffy.layout(node).unwrap();
+            self.rect = KurboRect::from_origin_size(
+                (
+                    origin.x + f64::from(layout.location.x),
+                    origin.y + f64::from(layout.location.y),
+                ),
+                (f64::from(layout.size.width), f64::from(layout.size.height)),
+            );
+        }
+        fn draw(
+            &mut self,
+            scene: &mut Scene,
+            transform: Affine,
+            _text: &mut TextRenderer,
+            theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.base,
+                None,
+                &self.rect,
+            );
+        }
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    self.pointer =
+                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                }
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                } if self.rect.contains(self.pointer) => {
+                    self.clicks.borrow_mut().push(self.pointer);
+                    *ctx.handled = true;
+                }
+                _ => {}
+            }
+        }
+        fn name(&self) -> &'static str {
+            "Clicks"
+        }
+        fn get_rect(&self) -> KurboRect {
+            self.rect
+        }
+    }
+
+    impl crate::widget::AppWidget for ClickProbe {
+        fn app_kind(&self) -> crate::widget::AppKind {
+            crate::widget::AppKind::Editor
+        }
+        fn app_title(&self) -> &'static str {
+            "Clicks"
+        }
+        fn app_icon(&self) -> crate::widget::IconDescriptor {
+            crate::widget::IconDescriptor::Glyph("C")
+        }
+        fn permission_hint(&self) -> Option<crate::widget::AppKind> {
+            None
+        }
+    }
+
+    fn clicks_factory(
+        mut context: crate::application::HostContext,
+        _: crate::application::LaunchTarget,
+        _: crate::application::RestoreInput,
+    ) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
+        context
+            .initialize_new_record(|_| Ok(()))
+            .map_err(crate::launch::LaunchError::Record)?;
+        let clicks = Rc::new(RefCell::new(Vec::new()));
+        CLICKS.with_borrow_mut(|slot| *slot = Some(Rc::clone(&clicks)));
+        Ok(crate::application::AppComponent::new(
+            context,
+            Box::new(ClickProbe {
+                rect: KurboRect::ZERO,
+                pointer: Point::ZERO,
+                clicks,
+            }),
+            tilo_actions::ActionRegistry::new(),
+        ))
+    }
+
+    /// A region of a host's scene, in logical pixels.
+    struct Region {
+        size: (u32, u32),
+        redraw: Cell<bool>,
+    }
+
+    impl AppSurface for Region {
+        fn scale_factor(&self) -> f64 {
+            1.0
+        }
+        fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+            winit::dpi::PhysicalSize::new(self.size.0, self.size.1)
+        }
+        fn request_redraw(&self) {
+            self.redraw.set(true);
+        }
+        fn set_cursor(&self, _cursor: CursorIcon) {}
+    }
+
+    /// An app shown in a region of a host's scene lays out at the region's
+    /// size, paints there, and takes the region's pointer input in its own
+    /// coordinates, as it would in a window of that size.
+    #[test]
+    fn an_app_on_a_host_surface_lays_out_paints_and_takes_input_there() {
+        let host = crate::application_test_support::ProbeHost::new();
+        let definition = crate::application_test_support::definition(clicks_factory);
+        let target = crate::application::LaunchTarget::New;
+        let context = host
+            .prepare_with_permissions(
+                &definition,
+                71,
+                &target,
+                crate::application_test_support::runner_permissions(),
+            )
+            .unwrap();
+        let component = definition
+            .instantiate(context, target, crate::application::RestoreInput::None)
+            .unwrap();
+        let mut app =
+            App::from_component(component, crate::application_test_support::runner_inputs())
+                .unwrap();
+        let clicks = CLICKS.with_borrow(|slot| Rc::clone(slot.as_ref().unwrap()));
+        let region = Region {
+            size: (320, 200),
+            redraw: Cell::new(false),
+        };
+
+        let mut scene = Scene::new();
+        let _ = app.surface_frame(&region, &mut scene);
+        assert!(
+            !scene.encoding().is_empty(),
+            "the app paints into the host's scene"
+        );
+        assert_eq!(
+            app.root_widget.get_rect().size(),
+            vello::kurbo::Size::new(320.0, 200.0),
+            "the app lays out at the region's size"
+        );
+
+        let device = winit::event::DeviceId::dummy();
+        assert!(!app.surface_input(
+            &region,
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (40.0, 30.0).into(),
+            },
+            false,
+        ));
+        assert!(app.surface_input(
+            &region,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+            false,
+        ));
+        assert_eq!(*clicks.borrow(), vec![Point::new(40.0, 30.0)]);
+    }
 }
