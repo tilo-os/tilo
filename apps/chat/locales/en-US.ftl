@@ -50,8 +50,11 @@ chat-call-select-input = Select microphone
 chat-call-input = Input
 chat-call-input-hint = Input from call status
 
+# The call window's connection line under its video.
 chat-call-connected = Connected
 chat-call-reconnecting = Reconnecting
 chat-call-joining = Joining
-chat-call-unavailable = Unavailable
-chat-call-stream-status = { $status }, { $count } audio streams
+chat-call-unavailable = Voice unavailable
+
+# An attachment the reader has no access to: the card says why it cannot open.
+chat-attachment-no-access = You don't have access to this file

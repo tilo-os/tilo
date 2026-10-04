@@ -142,4 +142,15 @@ mod tests {
         assert!(view_ok, "a member can read the workspace");
         assert!(!p.can_participate(), "but cannot write to it");
     }
+
+    #[test]
+    fn the_no_access_shot_is_a_reader_the_workspace_granted_no_files() {
+        let ctx = crate::app::ChatApp::shot_permission("no-access").expect("staged context");
+        let p = ChatPermissions::from_context(ctx);
+        assert!(
+            !p.can_embed(crate::images::DEMO_CLIP),
+            "attachments stay closed"
+        );
+        assert!(crate::app::ChatApp::shot_permission("call").is_none());
+    }
 }

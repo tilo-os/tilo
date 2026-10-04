@@ -162,19 +162,32 @@ impl ChatApp {
             *painted = fingerprint;
         }
         view.show(&m.blocks());
-        // The view's paragraphs keep a field's side padding; widen it by that
-        // padding so the text itself starts on the message's left edge.
-        let pad = f64::from(theme.padding_standard);
-        view.layout(
-            Rect::new(
-                origin.x - pad,
+        // The view's paragraphs keep a field's side padding. Lay the view out
+        // that far to the leading side so the text itself starts on the
+        // message column's edge; the padding is read back from the laid-out
+        // paragraph, so it is the toolkit's and never a guess.
+        let mut height = 0.0;
+        for _ in 0..2 {
+            let inset = self.body_text_inset.get();
+            let rect = Rect::new(
+                origin.x - inset,
                 origin.y,
-                origin.x + f64::from(width) + pad,
+                origin.x + f64::from(width) + inset,
                 origin.y,
-            ),
-            theme,
-            tr,
-        )
+            );
+            height = view.layout(rect, theme, tr);
+            let measured = view
+                .editor_mut()
+                .blocks()
+                .iter()
+                .find(|block| matches!(block.kind, ui::widget::BlockKind::Paragraph))
+                .map_or(inset, |block| block.line.caret_rect(theme, 0).x0 - rect.x0);
+            if (measured - inset).abs() < 0.25 {
+                break;
+            }
+            self.body_text_inset.set(measured);
+        }
+        height
     }
 
     /// Paint a message's body where [`Self::layout_body`] last put it.
@@ -850,19 +863,14 @@ impl ChatApp {
             h,
             max,
         );
+        // The topic is secondary: it shows whole or yields to the name and
+        // the actions, never as an elided fragment.
         if !topic.is_empty() {
             let tx = left + drawn + f64::from(sp.s3);
             let avail = cluster_left - f64::from(sp.s3) - tx;
-            if avail >= f64::from(sp.s16) {
-                line_in(
-                    &mut ctx,
-                    &topic,
-                    &theme.text(TextRole::Body),
-                    theme.text_dim,
-                    tx,
-                    h,
-                    avail,
-                );
+            let topic_style = theme.text(TextRole::Body);
+            if width_of(ctx.text, &topic, &topic_style) <= avail {
+                line_in(&mut ctx, &topic, &topic_style, theme.text_dim, tx, h, avail);
             }
         }
     }
@@ -994,7 +1002,8 @@ impl ChatApp {
             theme,
         } = paint;
         let text_x = area.x0 + self.chrome.text_inset();
-        let text_w = (area.x1 - text_x - self.chrome.gutter).max(80.0) as f32;
+        let text_w =
+            (area.x1 - text_x - self.chrome.gutter).max(f64::from(theme.tokens.spacing.s16)) as f32;
         let column = MessageColumn {
             area,
             text_x,
@@ -1230,8 +1239,10 @@ impl ChatApp {
         // The editor measures its live working text so the timeline reflows as
         // you type; a static message measures its stored body.
         let body_h = if editing {
+            // The editor's text wraps inside its field's side padding.
+            let wrap = (f64::from(text_w) - self.body_text_inset.get()).max(1.0) as f32;
             f64::from(
-                tr.measure_style(&self.edit_input.value(), Some(text_w), &self.chrome.body)
+                tr.measure_style(&self.edit_input.value(), Some(wrap), &self.chrome.body)
                     .1,
             )
             .max(self.chrome.body_line)
@@ -1257,8 +1268,9 @@ impl ChatApp {
         };
         // While editing, the "Edited" marker gives way to the editor's own
         // controls row.
+        // The marker keeps an `s1` of air above whatever follows it.
         let edited_h = if m.edited && !editing {
-            line_of(tr, &theme.text(TextRole::Caption))
+            line_of(tr, &theme.text(TextRole::Caption)) + f64::from(sp.s1)
         } else {
             0.0
         };
@@ -1447,7 +1459,12 @@ impl ChatApp {
             let style = theme.text(TextRole::Caption);
             let label = "Edited";
             let w = width_of(tr, label, &style);
-            let band = Rect::new(text_x, *y, text_x + w, *y + rm.edited_h);
+            let band = Rect::new(
+                text_x,
+                *y,
+                text_x + w,
+                *y + rm.edited_h - f64::from(theme.tokens.spacing.s1),
+            );
             let ink = if self.hovered(band) {
                 theme.text_primary
             } else {
@@ -1512,17 +1529,25 @@ impl ChatApp {
         } = column;
         let sp = &theme.tokens.spacing;
         let pad = f64::from(sp.s2);
+        // The field's text starts on the message column's edge, where the
+        // body it replaces stood, and the field ends where the column (and
+        // the composer below it) ends.
+        let inset = self.body_text_inset.get();
         let field = Rect::new(
-            text_x - pad,
+            text_x - inset,
             *y,
-            text_x + f64::from(text_w) + pad,
+            text_x + f64::from(text_w),
             *y + rm.body_h + 2.0 * pad,
         );
         let focused = self.is_focused();
         paint_field(scene, tf, theme, field, focused);
         self.edit_input.set_placeholder("Edit message");
         self.edit_input.set_mention_paint(self.mention_paint(theme));
-        self.edit_input.layout(field.inset(-pad), theme, tr);
+        self.edit_input.layout(
+            Rect::new(field.x0, field.y0 + pad, field.x1, field.y1 - pad),
+            theme,
+            tr,
+        );
         self.edit_input.set_focus(focused);
         self.edit_input.draw(scene, tf, tr, theme, presence);
         ChatApp::push_hit(hits, field, Hit::FocusEdit);
@@ -1760,7 +1785,7 @@ impl ChatApp {
                 max_w,
                 icon,
                 att.name(),
-                "You don't have access to this file",
+                &crate::i18n::t("chat-attachment-no-access"),
             );
             return;
         }
@@ -1802,11 +1827,16 @@ impl ChatApp {
                     Rect::new(origin.x, origin.y, origin.x + w, origin.y + h),
                 );
             }
-            Attachment::Video { .. } => {
-                // A real frame needs the media engine's decoder; until then
-                // the card shows the generated art, never a fabricated still.
+            Attachment::Video { blob, .. } => {
+                // A frame needs the media engine's decoder, so the card shows
+                // the poster the image store resolves for the clip (the demo
+                // recording ships one) and the generated art otherwise.
+                let poster = self.video_poster(blob);
+                let art = poster
+                    .as_ref()
+                    .map_or(MediaArt::Placeholder, MediaArt::Image);
                 let meta = media_meta(att);
-                let (w, face) = media_face(att, MediaArt::Placeholder, &meta, max_w, theme);
+                let (w, face) = media_face(att, art, &meta, max_w, theme);
                 let h = face.height(ctx.text, theme, w);
                 face.paint(
                     &mut ctx,
@@ -2002,7 +2032,7 @@ impl ChatApp {
             emoji.x0 - f64::from(sp.s1),
             rect.y1 - inset,
         );
-        let wrap_w = full.width().max(40.0) as f32;
+        let wrap_w = full.width().max(f64::from(sp.s8)) as f32;
         let probe = if draft.is_empty() { "Ag" } else { draft };
         let content_h = f64::from(tr.measure_style(probe, Some(wrap_w), &self.chrome.body).1);
         centered_band(full, content_h, f64::from(sp.s1))
@@ -2228,7 +2258,7 @@ impl ChatApp {
         let sp = &theme.tokens.spacing;
         let side = AvatarSize::Small.side(theme);
         let tx = column.x0 + side + f64::from(sp.s2);
-        let tw = (column.x1 - tx).max(60.0) as f32;
+        let tw = (column.x1 - tx).max(f64::from(theme.tokens.spacing.s16)) as f32;
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         self.paint_avatar(
             &mut ctx,

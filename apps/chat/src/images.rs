@@ -41,8 +41,16 @@ pub const DEMO_CALL_GRID: &str = "tilo-demo://call-grid";
 pub const DEMO_SHARED_SHOT: &str = "tilo-demo://shared-shot";
 /// The demo conversation's shared notes file (no picture to decode).
 pub const DEMO_NOTES: &str = "tilo-demo://transport-notes";
-/// The demo conversation's screen recording (no frame to decode).
+/// The demo conversation's screen recording, whose poster frame is
+/// synthesised like the demo pictures.
 pub const DEMO_CLIP: &str = "tilo-demo://tile-promotion";
+
+/// The image key of a video's poster frame, where one exists without a
+/// video decoder: the demo recording has one; a stored clip has none until
+/// the media engine decodes a frame.
+pub fn poster_key(blob: &str) -> Option<String> {
+    blob.starts_with(DEMO_SCHEME).then(|| blob.to_string())
+}
 
 /// The fetcher injected into the app's [`ui::ImageStore`]. Reads verified
 /// bytes from `content` or synthesises a PNG for the demo scheme. Runs on the
@@ -67,6 +75,7 @@ fn synth_demo_png(id: &str) -> Option<Vec<u8>> {
     let (w, h, buf) = match id {
         "call-grid" => call_grid(),
         "shared-shot" => shared_shot(),
+        "tile-promotion" => tile_promotion_poster(),
         _ => return None,
     };
     encode_png(w, h, buf)
@@ -217,8 +226,113 @@ fn shared_shot() -> (u32, u32, Vec<u8>) {
     (w, h, c.into_rgba())
 }
 
+/// The poster frame of the demo screen recording: a desktop of window tiles
+/// mid-way through promoting one of them, which grows out of its slot over
+/// its neighbours.
+fn tile_promotion_poster() -> (u32, u32, Vec<u8>) {
+    let (w, h) = (640u32, 360u32);
+    let mut c = Canvas::new(w, h);
+    c.vgradient([40, 46, 62], [24, 27, 38]);
+    let margin = 24.0;
+    let gap = 14.0;
+    let cols = 3.0;
+    let rows = 2.0;
+    let tw = (f64::from(w) - 2.0 * margin - (cols - 1.0) * gap) / cols;
+    let th = (f64::from(h) - 2.0 * margin - (rows - 1.0) * gap) / rows;
+    let palette = [
+        [214, 220, 232],
+        [62, 68, 86],
+        [228, 222, 210],
+        [58, 64, 80],
+        [220, 226, 236],
+        [70, 64, 82],
+    ];
+    for (i, base) in palette.iter().enumerate() {
+        let col = (i % 3) as f64;
+        let row = (i / 3) as f64;
+        let r = Rectf {
+            x: margin + col * (tw + gap),
+            y: margin + row * (th + gap),
+            w: tw,
+            h: th,
+        };
+        window_tile(&mut c, r, *base);
+    }
+    // The tile being promoted: lifted out of the middle slot and part-way
+    // to filling the screen.
+    let grow = 0.42;
+    let from = Rectf {
+        x: margin + tw + gap,
+        y: margin,
+        w: tw,
+        h: th,
+    };
+    let to = Rectf {
+        x: margin,
+        y: margin,
+        w: f64::from(w) - 2.0 * margin,
+        h: f64::from(h) - 2.0 * margin,
+    };
+    let lerp = |a: f64, b: f64| a + (b - a) * grow;
+    let promoted = Rectf {
+        x: lerp(from.x, to.x),
+        y: lerp(from.y, to.y) + 10.0,
+        w: lerp(from.w, to.w),
+        h: lerp(from.h, to.h),
+    };
+    c.round_rect(
+        Rectf {
+            x: promoted.x - 3.0,
+            y: promoted.y - 3.0,
+            w: promoted.w + 6.0,
+            h: promoted.h + 6.0,
+        },
+        14.0,
+        [18, 20, 28],
+    );
+    window_tile(&mut c, promoted, [244, 245, 248]);
+    (w, h, c.into_rgba())
+}
+
+/// One window tile on the poster: its body, a header strip and a few lines
+/// of content in a tone that reads on the body.
+fn window_tile(c: &mut Canvas, r: Rectf, base: [u8; 3]) {
+    let light = u16::from(base[0]) + u16::from(base[1]) + u16::from(base[2]) > 384;
+    let line = if light {
+        [196, 200, 212]
+    } else {
+        [92, 98, 118]
+    };
+    c.round_rect(r, 10.0, base);
+    c.round_rect(
+        Rectf {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: (r.h * 0.16).max(12.0),
+        },
+        10.0,
+        lighten(base, if light { -14 } else { 14 }),
+    );
+    let mut y = r.y + r.h * 0.28;
+    for i in 0..4 {
+        let share = if i % 2 == 0 { 0.72 } else { 0.5 };
+        c.round_rect(
+            Rectf {
+                x: r.x + r.w * 0.08,
+                y,
+                w: r.w * share,
+                h: (r.h * 0.06).max(4.0),
+            },
+            3.0,
+            line,
+        );
+        y += r.h * 0.15;
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Tiny software raster canvas (enough for the two demo thumbnails)
+// Tiny software raster canvas (enough for the demo thumbnails)
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
