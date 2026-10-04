@@ -362,6 +362,34 @@ impl HostedTileInputs {
     pub(crate) fn document(&self, tab: TabId) -> Option<HostedDocumentState> {
         self.documents.borrow().get(&tab).cloned()
     }
+
+    /// Notes for tab `tab` of `room`, on a notebook of its own holding
+    /// `markdown` as the note `name`, as Notes opens a Markdown file it is
+    /// handed. `None` for a host that mounts no apps in-process.
+    pub fn mount_note(
+        &self,
+        room: &str,
+        tab: TabId,
+        name: &str,
+        markdown: &str,
+    ) -> Option<Result<ui::application::AppComponent, ui::launch::LaunchError>> {
+        let apps = self.in_process.as_ref()?;
+        let file = match ui::application::OpenFile::new(
+            name,
+            "text/markdown",
+            markdown.as_bytes().to_vec(),
+        ) {
+            Ok((file, _receipt)) => file,
+            Err(error) => return Some(Err(ui::launch::LaunchError::Operation(error))),
+        };
+        Some(apps.borrow_mut().mount(
+            notes::definition(),
+            room,
+            tab,
+            ui::record::RecordId::minted(),
+            |context| context.provide_open_file(file),
+        ))
+    }
 }
 
 #[derive(Debug)]

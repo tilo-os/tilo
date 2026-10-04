@@ -133,7 +133,16 @@ impl Rig {
                 .expect("the agent registers with the daemon");
             (bluez, service)
         });
-        let mut fb = FrameBuilder::new((W, H));
+        // The dialog over the bare desktop: an app page behind it, painted
+        // in the same ground as the capture placeholder, would make what
+        // the dialog shows locally indistinguishable from the placeholder.
+        let mut tree = shell::shell::state::WorkspaceTree::bootstrap_demo();
+        for workspace in &mut tree.desktop.workspaces {
+            for strip in &mut workspace.strips {
+                strip.window_groups.clear();
+            }
+        }
+        let mut fb = FrameBuilder::with_tree(tree, (W, H));
         fb.host_mut().set_pairing_prompt_handle(handle);
         let mut rig = Self {
             rt,

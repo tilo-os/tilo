@@ -71,9 +71,6 @@ fn lexical_strength(needle: &str, result: &SearchResult) -> f32 {
     }
 }
 
-/// Top of every shell provider's ranker-derived score.
-pub(crate) const MAX_PROVIDER_SCORE: i32 = 100;
-
 /// Map a field rank onto the provider scale; see
 /// [`ui::search::system::provider_score`].
 pub(crate) use ui::search::system::provider_score;
@@ -1647,12 +1644,10 @@ mod tests {
         {
             use crate::shell::search::providers::{
                 actions::ActionsProvider, applications::ApplicationsProvider, files::FilesProvider,
-                notes::NotesProvider,
             };
             let providers: Vec<Rc<dyn SearchProvider>> = vec![
                 Rc::new(ActionsProvider::new()),
                 Rc::new(ApplicationsProvider::new()),
-                Rc::new(NotesProvider::new()),
                 Rc::new(FilesProvider::new()),
             ];
             for p in providers {

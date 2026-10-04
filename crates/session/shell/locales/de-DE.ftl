@@ -1233,8 +1233,6 @@ search-opens-here = Öffnet sich hier als Tab
 # Suchquellen, wie die Aktionen der Sucheinstellungen sie nennen
 search-provider-now-playing = Aktuelle Wiedergabe
 search-provider-records = Einträge
-search-provider-notes = Notizen
-search-provider-editor = Editor
 search-provider-session = Sitzung
 search-provider-shortcuts = Kurzbefehle
 search-provider-tray = Statusbereich
@@ -1442,8 +1440,6 @@ search-action-peer-invite-named = Mitwirkende benennen und Einladung öffnen
 search-action-peer-invite-named-subtitle = Den Anzeigenamen festhalten und dann die Einladung prüfen, bevor sie erstellt wird
 search-action-agent-invite = Agenten in den Arbeitsbereich einladen
 search-action-agent-invite-subtitle = Eine eingegrenzte Agenten-Einrichtung starten; jeden Bereich wählen, den er nutzen darf
-search-action-text-insert = Text in die fokussierte Notiz einfügen
-search-action-text-insert-subtitle = An einer Zeichenposition in den fokussierten Notizen- oder Editor-Tab schreiben
 search-action-record-bring = Element zu diesem Arbeitsbereich hinzufügen
 search-action-record-bring-subtitle = Hier verfügbar machen, ohne das Original zu verschieben
 search-action-quick-settings-brightness-set = Bildschirmhelligkeit festlegen

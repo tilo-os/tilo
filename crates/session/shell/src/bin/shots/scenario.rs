@@ -1316,20 +1316,17 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
             });
         }
         Action::SeedLongNotes(group_idx) => {
-            let strip_id = {
+            let target = {
                 let chrome = driver.chrome();
                 let tree = chrome.tree();
-                tree.desktop
-                    .active_workspace()
-                    .and_then(|workspace| workspace.strips.first())
-                    .map(|strip| strip.id)
+                tree.desktop.active_workspace().and_then(|workspace| {
+                    let strip = workspace.strips.first()?;
+                    let group = strip.window_groups.get(*group_idx)?;
+                    Some((strip.id, workspace.room.to_string(), group.active_tab))
+                })
             };
-            if let Some(strip_id) = strip_id
-                && let Some(host) = driver
-                    .host_mut()
-                    .group_at_for_tests(strip_id, *group_idx)
-                    .and_then(|group| group.active_host_mut())
-            {
+            let inputs = driver.chrome().hosted_inputs().clone();
+            if let Some((strip_id, room, tab)) = target {
                 let body = (1..=52)
                     .map(|line| {
                         format!(
@@ -1337,11 +1334,21 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                         )
                     })
                     .collect::<Vec<_>>()
-                    .join("\n");
-                host.replace_content(ui::widget::TileContent::App(Box::new(
-                    shell::shell::notes_app::NotesApp::with_seed(body),
-                )));
-                driver.relayout();
+                    .join("\n\n");
+                match inputs.mount_note(&room, tab, "Complete capture.md", &body) {
+                    Some(Ok(component)) => {
+                        if let Some(host) = driver
+                            .host_mut()
+                            .group_at_for_tests(strip_id, *group_idx)
+                            .and_then(|group| group.active_host_mut())
+                        {
+                            let _closed = host.replace_component(component);
+                        }
+                        driver.relayout();
+                    }
+                    Some(Err(error)) => eprintln!("shots: the long note did not mount: {error}"),
+                    None => eprintln!("shots: this host mounts no Notes"),
+                }
             }
         }
         Action::SwitchWorkspace(idx) => {
