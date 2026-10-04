@@ -234,6 +234,33 @@ fn demote_direct(entry: &mut ScanoutEntry, hdr: bool, stage: &str, reason: &str)
     );
 }
 
+/// Direct-scanout failures since the outputs last ran direct stably.
+fn direct_failures(scanouts: &[ScanoutEntry]) -> u32 {
+    scanouts
+        .iter()
+        .map(|entry| {
+            entry
+                .direct_degradation
+                .failures()
+                .max(entry.hdr_direct_degradation.failures())
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Why an output is not on direct scanout, if one is not.
+fn direct_reason(scanouts: &[ScanoutEntry]) -> &str {
+    scanouts
+        .iter()
+        .find_map(|entry| {
+            entry
+                .direct_ineligible
+                .or_else(|| entry.direct_degradation.reason())
+                .or_else(|| entry.hdr_direct_degradation.reason())
+        })
+        .unwrap_or("not-initialized")
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -248,22 +275,6 @@ struct DirectEligibility<'a> {
     renderer_pci: &'a str,
     renderer_drm_matches: bool,
     drm_bus_id: Option<&'a str>,
-}
-
-/// Sparse Vello damage describes the delta from `previous_revision`, but a
-/// direct-scanout swapchain owns multiple independent destination images. A
-/// partial copy is valid only when the selected image contains that exact
-/// predecessor; otherwise both rendering and the destination copy must cross
-/// a dense boundary.
-fn damage_for_direct_target(
-    target_revision: Option<u64>,
-    mut damage: SceneDamage<'_>,
-) -> SceneDamage<'_> {
-    if target_revision != damage.previous_revision {
-        damage.previous_revision = None;
-        damage.regions = None;
-    }
-    damage
 }
 
 fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str> {
@@ -307,6 +318,8 @@ struct PhaseWindow {
     /// work, summed and at most, over the window's direct frames.
     direct_us: u128,
     max_direct_us: u128,
+    /// Direct frames the renderer repaired sparsely rather than in full.
+    direct_sparse_frames: u64,
     readback_bytes: u64,
     output_bytes: u64,
     /// Wall time around the complete renderer bridge call. This remains
@@ -340,6 +353,7 @@ impl Default for PhaseWindow {
             scanout_us: 0,
             direct_us: 0,
             max_direct_us: 0,
+            direct_sparse_frames: 0,
             unprofiled_frames: 0,
         }
     }
@@ -391,11 +405,14 @@ impl PhaseWindow {
         }
     }
 
-    fn record_direct_submit(&mut self, render_us: u128) {
+    fn record_direct_submit(&mut self, render_us: u128, sparse: bool) {
         self.frames = self.frames.saturating_add(1);
         self.direct_frames = self.direct_frames.saturating_add(1);
         self.direct_us = self.direct_us.saturating_add(render_us);
         self.max_direct_us = self.max_direct_us.max(render_us);
+        if sparse {
+            self.direct_sparse_frames = self.direct_sparse_frames.saturating_add(1);
+        }
     }
 
     fn record_direct_drop(&mut self) {
@@ -504,8 +521,8 @@ mod phase_window_tests {
         // Phase `phase_window_records_direct_submission_drop_and_flip_completion`.
         {
             let mut window = PhaseWindow::default();
-            window.record_direct_submit(7_000);
-            window.record_direct_submit(3_000);
+            window.record_direct_submit(7_000, false);
+            window.record_direct_submit(3_000, true);
             window.record_direct_drop();
             window.record_flip_completions(2);
 
@@ -513,6 +530,7 @@ mod phase_window_tests {
             assert_eq!(window.direct_frames, 2);
             assert_eq!(window.direct_us, 10_000);
             assert_eq!(window.max_direct_us, 7_000);
+            assert_eq!(window.direct_sparse_frames, 1);
             assert_eq!(window.direct_dropped, 1);
             assert_eq!(window.flip_completions, 2);
             assert_eq!(window.readback_bytes, 0);
@@ -681,55 +699,6 @@ mod direct_eligibility_tests {
     }
 }
 
-#[cfg(test)]
-mod direct_damage_history_tests {
-    use super::*;
-
-    const REGION: [vello::FineDamageRect; 1] = [vello::FineDamageRect {
-        x: 1,
-        y: 2,
-        width: 2,
-        height: 2,
-    }];
-
-    fn sparse(previous_revision: Option<u64>) -> SceneDamage<'static> {
-        SceneDamage {
-            revision: 9,
-            previous_revision,
-            regions: Some(&REGION),
-        }
-    }
-
-    #[test]
-    fn direct_damage_history_keeps_sparse_damage_only_when_it_matches() {
-        // Phase `matching_scanout_history_preserves_sparse_damage`.
-        {
-            let damage = damage_for_direct_target(Some(8), sparse(Some(8)));
-            assert_eq!(damage.previous_revision, Some(8));
-            assert_eq!(damage.regions, Some(REGION.as_slice()));
-        }
-        // Phase `stale_or_missing_scanout_history_forces_a_dense_boundary`.
-        for target_revision in [None, Some(7), Some(9)] {
-            let damage = damage_for_direct_target(target_revision, sparse(Some(8)));
-            assert_eq!(damage.previous_revision, None);
-            assert_eq!(damage.regions, None);
-        }
-        // Phase `an_already_dense_frame_remains_dense`.
-        {
-            let damage = damage_for_direct_target(
-                Some(8),
-                SceneDamage {
-                    revision: 9,
-                    previous_revision: None,
-                    regions: None,
-                },
-            );
-            assert_eq!(damage.previous_revision, None);
-            assert_eq!(damage.regions, None);
-        }
-    }
-}
-
 impl DrmPresenter {
     /// Frame-production body, identical to the pre-split `submit_frame`.
     fn render(&mut self, scene: &Scene) {
@@ -866,7 +835,8 @@ impl DrmPresenter {
                  unprofiled_frames={} window_us={} avg_submit_us={} \
                  avg_gpu_readback_map_us={} avg_settle_us={} avg_cpu_swizzle_us={} \
                  readback_bytes={} output_bytes={} bridge_us={} scanout_us={} \
-                 avg_direct_us={} max_direct_us={} direct_failures={} \
+                 avg_direct_us={} max_direct_us={} direct_sparse_frames={} \
+                 direct_failures={} \
                  direct_scanout_status={} direct_scanout_reason={:?} \
                  DRM render phase summary",
                 summary.frames,
@@ -900,14 +870,8 @@ impl DrmPresenter {
                     .checked_div(u128::from(summary.direct_frames))
                     .unwrap_or(0),
                 self.phase_window.max_direct_us,
-                self.scanouts
-                    .iter()
-                    .map(|entry| entry
-                        .direct_degradation
-                        .failures()
-                        .max(entry.hdr_direct_degradation.failures()))
-                    .max()
-                    .unwrap_or(0),
+                self.phase_window.direct_sparse_frames,
+                direct_failures(&self.scanouts),
                 if self
                     .scanouts
                     .iter()
@@ -917,13 +881,7 @@ impl DrmPresenter {
                 } else {
                     "unavailable"
                 },
-                self.scanouts
-                    .iter()
-                    .find_map(|entry| entry
-                        .direct_ineligible
-                        .or_else(|| entry.direct_degradation.reason())
-                        .or_else(|| entry.hdr_direct_degradation.reason()))
-                    .unwrap_or("not-initialized"),
+                direct_reason(&self.scanouts),
             );
             self.phase_window.reset(now);
         }
@@ -1544,14 +1502,15 @@ fn paint_scanouts(
                     }
                     if let Some((index, target)) = targets.render_slot() {
                         let revision = damage.map_or(1, |damage| damage.revision.max(1));
-                        let direct_damage = damage_for_direct_target(
-                            targets.previous_revision_for(index),
-                            damage.unwrap_or(SceneDamage {
-                                revision,
-                                previous_revision: None,
-                                regions: None,
-                            }),
-                        );
+                        // The renderer's own retained target holds the
+                        // previous revision whichever slot comes up, and the
+                        // slot receives a whole copy of it: scene damage
+                        // stays sparse across the swapchain.
+                        let direct_damage = damage.unwrap_or(SceneDamage {
+                            revision,
+                            previous_revision: None,
+                            regions: None,
+                        });
                         let render_started = Instant::now();
                         let deadline = render_started
                             .checked_add(DIRECT_FRAME_DEADLINE)
@@ -1570,12 +1529,15 @@ fn paint_scanouts(
                         ) {
                             Ok(stats) => {
                                 let render_us = render_started.elapsed().as_micros();
-                                targets.mark_rendered(index, revision);
                                 match entry.scanout.submit_direct_target(targets, index) {
                                     submitted @ (scanout::DirectSubmit::Queued
                                     | scanout::DirectSubmit::Presented) => {
                                         if let Some(window) = phase_window.as_deref_mut() {
-                                            window.record_direct_submit(render_us);
+                                            window.record_direct_submit(
+                                                render_us,
+                                                stats.sparse_attempts > 0
+                                                    && stats.full_attempts == 0,
+                                            );
                                         }
                                         let degradation = if want_hdr {
                                             &mut entry.hdr_direct_degradation
