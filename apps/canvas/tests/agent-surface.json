@@ -2507,6 +2507,15 @@
     ]
   },
   {
+    "resource": "tilo.control:nav-shell-inspector",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Hide inspector",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
     "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aadd%2Dlayer",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
@@ -2596,6 +2605,42 @@
     ]
   },
   {
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer%2Ddown%2Dlayer%2D1",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer%2Dhide%2Dlayer%2D1",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer%2Dremove%2Dlayer%2D1",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer%2Dup%2Dlayer%2D1",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
     "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acolor%5Fpicker",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
@@ -2622,34 +2667,7 @@
     ]
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aedit%2Dlayer",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aedit%2Dlayer%2D2",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aedit%2Dlayer%2D3",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aremove%2Dlayer",
+    "resource": "ui:root%7Ek%3Anav%2Dshell%2Dinspector",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
     "label": "Focus",

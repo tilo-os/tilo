@@ -1,6 +1,0 @@
-feature ss11 {
-featureNames {
-  name "Alternate Ampersand";
-};
-sub ampersand by ampersand.ss11;
-} ss11;

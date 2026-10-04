@@ -447,11 +447,9 @@ mod tests {
     #[test]
     fn every_preset_keeps_every_floor_at_every_temperature_for_everyone() {
         for preset in presets() {
-            for step in 0..36_u16 {
-                let palette = Palette {
-                    hue: f32::from(step) * 10.0,
-                    ..preset
-                };
+            let no_temperature = std::iter::once(None);
+            for hue in no_temperature.chain((0..36_u16).map(|step| Some(f32::from(step) * 10.0))) {
+                let palette = Palette { hue, ..preset };
                 for you in PresenceHue::ALL {
                     let colors = Colors::as_authored(
                         &palette,

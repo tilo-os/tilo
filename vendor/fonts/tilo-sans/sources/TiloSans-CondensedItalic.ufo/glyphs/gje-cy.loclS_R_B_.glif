@@ -1,8 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<glyph name="gje-cy.loclSRB" format="2">
-  <advance width="197"/>
-  <outline>
-    <component base="ge-cy.loclSRB"/>
-    <component base="acutecomb" xOffset="15" yOffset="185"/>
-  </outline>
-</glyph>

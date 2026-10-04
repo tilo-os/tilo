@@ -1,9 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<glyph name="iogonek.ss01" format="2">
-  <advance width="196"/>
-  <outline>
-    <component base="idotless"/>
-    <component base="dotaccentcomb.ss01" xOffset="-12"/>
-    <component base="ogonekcomb" xOffset="-72"/>
-  </outline>
-</glyph>
