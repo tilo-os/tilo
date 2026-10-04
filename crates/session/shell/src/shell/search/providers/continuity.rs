@@ -734,6 +734,60 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         }
     }
 
+    for unlock in &view.device_unlocks {
+        let device = if unlock.device_label.is_empty() {
+            t("search-continuity-certified-device")
+        } else {
+            unlock.device_label.clone()
+        };
+        for (approved, verb, title_key) in [
+            (true, "approve", "search-continuity-unlock-approve"),
+            (false, "deny", "search-continuity-unlock-deny"),
+        ] {
+            actions.push(DeviceAction {
+                // The code is the one the waiting boot shows.
+                id: format!(
+                    "{}.{verb}.{}",
+                    crate::shell::device_unlock::DEVICE_UNLOCK_ACTION,
+                    unlock.approval_code
+                ),
+                title: t_args(
+                    title_key,
+                    &[
+                        ("device", device.as_str().into()),
+                        ("code", unlock.approval_code.as_str().into()),
+                    ],
+                ),
+                subtitle: t("search-continuity-unlock-subtitle"),
+                action: DeviceFabricUiAction::AuthorizeDeviceUnlock {
+                    request_digest: unlock.request_digest,
+                    approved,
+                },
+                confirm: approved,
+            });
+        }
+    }
+    for device in view.devices.iter().filter(|device| !device.is_local) {
+        actions.push(DeviceAction {
+            id: format!(
+                "device.remove.{}",
+                opaque(
+                    "so.tilo.continuity.device.v1",
+                    device.id.as_str().as_bytes()
+                )
+            ),
+            title: t_args(
+                "search-continuity-device-remove",
+                &[("device", device.label.as_str().into())],
+            ),
+            subtitle: t("search-continuity-device-remove-subtitle"),
+            action: DeviceFabricUiAction::RemoveDevice {
+                device: device.id.clone(),
+            },
+            confirm: true,
+        });
+    }
+
     let receiver_kinds = [
         (
             RemoteCaptureKind::Camera,

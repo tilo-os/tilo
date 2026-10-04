@@ -6355,6 +6355,21 @@ fn install_device_fabric_bridge(
                         request_id,
                     )?;
                 }
+                DeviceFabricUiAction::AuthorizeDeviceUnlock {
+                    request_digest,
+                    approved,
+                } => {
+                    crate::shell::device_unlock_runtime::decide_device_unlock(
+                        request_digest,
+                        approved,
+                    )?;
+                }
+                DeviceFabricUiAction::RemoveDevice { device } => {
+                    let mut key = [0_u8; 32];
+                    hex::decode_to_slice(device.as_str(), &mut key)
+                        .map_err(|error| error.to_string())?;
+                    crate::shell::device_unlock_runtime::remove_device(key)?;
+                }
                 DeviceFabricUiAction::Place { device, edge } => {
                     crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
                 }
