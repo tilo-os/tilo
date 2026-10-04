@@ -15,6 +15,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use collab_types::caps::Expiry;
 use ush::host::{HostPolicy, TERMINAL_APP_ID, encode_handoff};
 use ush::store::Store;
 use ush::supervisor::{ServeResponse, recv_with_fd};
@@ -85,6 +86,77 @@ fn ask(
     let response = serde_json::from_slice(String::from_utf8_lossy(&payload).trim().as_bytes())
         .unwrap_or_else(|e| panic!("bad reply {payload:?}: {e}"));
     (response, fd, stream)
+}
+
+/// Record an allow as `app` (`None`: the shell) would.
+fn allow(socket: &Path, app: Option<&str>, expiry: Expiry) -> ServeResponse {
+    let stream = UnixStream::connect(socket).unwrap();
+    if let Some(app) = app {
+        (&stream).write_all(&encode_handoff(app).unwrap()).unwrap();
+    }
+    let mut line = serde_json::to_vec(&serde_json::json!({
+        "op": "allow-host",
+        "expiry": expiry,
+    }))
+    .unwrap();
+    line.push(b'\n');
+    (&stream).write_all(&line).unwrap();
+    let mut reply = String::new();
+    BufReader::new(&stream).read_line(&mut reply).unwrap();
+    serde_json::from_str(reply.trim()).unwrap()
+}
+
+#[test]
+fn allows_last_as_long_as_the_person_said_and_only_the_shell_records_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let _env = identities(dir.path(), OWNER, OWNER);
+    let (socket, store) = serving(dir.path());
+
+    // A sandboxed Terminal cannot allow itself.
+    let response = allow(&socket, Some(TERMINAL_APP_ID), Expiry::Never);
+    assert!(reason(&response).contains("shell"), "{response:?}");
+    let (response, _, _) = ask(&socket, Some(TERMINAL_APP_ID), "person");
+    assert!(matches!(response, ServeResponse::HostNotAllowed { .. }));
+
+    // "Allow": one session, then asked again.
+    assert_eq!(
+        allow(&socket, None, Expiry::AfterUse),
+        ServeResponse::Allowed
+    );
+    let (response, fd, _first) = ask(&socket, Some(TERMINAL_APP_ID), "person");
+    assert!(
+        matches!(response, ServeResponse::Session { .. }),
+        "{response:?}"
+    );
+    assert!(fd.is_some());
+    let (response, _, _) = ask(&socket, Some(TERMINAL_APP_ID), "person");
+    assert!(
+        matches!(response, ServeResponse::HostNotAllowed { .. }),
+        "a one-time allow is spent: {response:?}"
+    );
+
+    // "This session": every session until logout, never on disk.
+    assert_eq!(
+        allow(&socket, None, Expiry::EndOfSession),
+        ServeResponse::Allowed
+    );
+    for _ in 0..2 {
+        let (response, _, _session) = ask(&socket, Some(TERMINAL_APP_ID), "person");
+        assert!(
+            matches!(response, ServeResponse::Session { .. }),
+            "{response:?}"
+        );
+    }
+    assert!(
+        HostPolicy::load(&HostPolicy::path(&store))
+            .capabilities
+            .is_empty(),
+        "a session's allow is never written to disk"
+    );
+
+    // "Always": on disk.
+    assert_eq!(allow(&socket, None, Expiry::Never), ServeResponse::Allowed);
+    assert!(HostPolicy::load(&HostPolicy::path(&store)).allows_host_shell(TERMINAL_APP_ID, None));
 }
 
 fn reason(response: &ServeResponse) -> String {

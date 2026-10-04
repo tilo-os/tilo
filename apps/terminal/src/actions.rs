@@ -423,6 +423,7 @@ mod tests {
                     "run",
                     "open-in",
                     "create-environment",
+                    "grant-folder",
                     "rename-environment",
                     "interrupt",
                     "clear",
@@ -718,7 +719,10 @@ mod tests {
                             .filter(|action| {
                                 !matches!(
                                     action.id.as_str(),
-                                    "open-in" | "create-environment" | "rename-environment"
+                                    "open-in"
+                                        | "create-environment"
+                                        | "grant-folder"
+                                        | "rename-environment"
                                 )
                             })
                             .all(|action| {
