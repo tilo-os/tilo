@@ -44,6 +44,7 @@ fn draw_frame_content(
     // frame, so clipping out a static region would just paint background
     // instead of preserving the last frame.
     let __prof_draw = app.profiler.as_ref().map(|_| crate::time::now());
+    let secrets = crate::secret_paint::SecretPaint::begin();
     if let Some(history) = &mut app.history {
         history.draw(
             scene,
@@ -148,6 +149,7 @@ fn draw_frame_content(
         );
     }
     draw_visible_tooltip(app, scene, transform, width, height, scale_factor);
+    app.set_secret_on_screen(secrets.finish());
 
     if let Some(p) = app.profiler.as_mut() {
         p.record_since(crate::profiling::Pass::Draw, __prof_draw);
@@ -574,6 +576,10 @@ pub(crate) fn draw_prepared_component_test_frame(app: &mut App) {
 #[cfg(test)]
 #[path = "prepared_runner_tests.rs"]
 mod prepared_runner_tests;
+
+#[cfg(test)]
+#[path = "secret_capture_tests.rs"]
+mod secret_capture_tests;
 
 #[cfg(test)]
 #[path = "card_grid_host_tests.rs"]
