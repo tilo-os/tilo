@@ -89,6 +89,16 @@ pub enum GridCmd {
     Commit,
 }
 
+/// The formula bar's text and, while editing, the caret, selection and
+/// input-method composition as char indices into it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FormulaBarText {
+    pub text: String,
+    pub caret: Option<usize>,
+    pub selection: Option<(usize, usize)>,
+    pub preedit: Option<(usize, usize)>,
+}
+
 #[derive(Clone)]
 struct EditState {
     addr: Addr,
@@ -685,6 +695,32 @@ impl Grid {
             return e.text();
         }
         self.raw.get(&self.active).cloned().unwrap_or_default()
+    }
+
+    /// What the formula bar draws. While the active cell is being edited it
+    /// is the cell editor's display text, so an input-method composition shows
+    /// (and is underlined) in the bar exactly as in the cell.
+    pub fn formula_bar(&self) -> FormulaBarText {
+        let Some(e) = &self.edit else {
+            return FormulaBarText {
+                text: self.active_display_raw(),
+                ..FormulaBarText::default()
+            };
+        };
+        if e.addr != self.active {
+            return FormulaBarText {
+                text: self.active_display_raw(),
+                caret: Some(e.caret()),
+                selection: e.selection(),
+                preedit: None,
+            };
+        }
+        FormulaBarText {
+            text: e.shown().into_owned(),
+            caret: Some(e.shown_caret()),
+            selection: e.shown_selection(),
+            preedit: e.shown_preedit(),
+        }
     }
 
     /// Return the viewport-sized semantic model for screen readers. Unlike a
@@ -2027,6 +2063,30 @@ impl Grid {
             self.point_anchor = None;
             self.dirty = true;
         }
+    }
+
+    /// Move the edit caret to char index `idx` of the text the formula bar
+    /// draws ([`Self::formula_bar`]). A click inside a composition lands at
+    /// the caret it is composed at; past it, on the committed text it shows.
+    pub fn set_edit_caret_shown(&mut self, idx: usize, extend: bool) {
+        let Some(e) = &self.edit else {
+            return;
+        };
+        if e.addr != self.active || !e.core.has_preedit() {
+            self.set_edit_caret(idx, extend);
+            return;
+        }
+        let shown = e.shown();
+        let byte = shown
+            .char_indices()
+            .nth(idx)
+            .map_or(shown.len(), |(b, _)| b);
+        let committed = e.core.from_display(&e.text, byte);
+        let idx = e
+            .text
+            .get(..committed)
+            .map_or(0, |head| head.chars().count());
+        self.set_edit_caret(idx, extend);
     }
 
     /// Select the whole edit buffer (Ctrl+A inside the formula bar / cell).
