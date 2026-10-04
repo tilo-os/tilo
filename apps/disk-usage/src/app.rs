@@ -27,7 +27,7 @@ use ui::widget::{
 
 use crate::doc::DiskUsageDoc;
 use crate::scan::{Entry, ScanCancellation, ScanResult, UNREADABLE_FOLDER};
-use ui::format::bytes_si;
+use ui::format::{bytes_si, count};
 
 pub(crate) const OPERATION_TYPE: &str = "disk-usage.operation";
 
@@ -89,24 +89,11 @@ fn folder_title(folder: &std::path::Path) -> String {
     folder.to_string_lossy().into_owned()
 }
 
-/// `12842` as `12,842`.
-fn count_text(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, digit) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
-}
-
 fn files_text(n: u64) -> String {
     if n == 1 {
         "1 file".into()
     } else {
-        format!("{} files", count_text(n))
+        format!("{} files", count(n))
     }
 }
 
@@ -114,7 +101,7 @@ fn unreadable_text(n: u64) -> String {
     if n == 1 {
         "1 item couldn’t be read".into()
     } else {
-        format!("{} items couldn’t be read", count_text(n))
+        format!("{} items couldn’t be read", count(n))
     }
 }
 
@@ -165,7 +152,8 @@ fn slice_rows(entries: &[Entry]) -> Vec<SliceRow> {
 /// The donut of one scan. Slice colours come from the theme the chart is
 /// drawn with, and choosing a folder asks the app to analyze it. The donut's
 /// middle names the folder under the pointer (its size and name) and the
-/// whole scan otherwise, so a wedge never needs a tooltip over the legend.
+/// whole scan otherwise; the legend and the folder list already carry every
+/// size, so a wedge gets no tooltip laid over the donut.
 struct SliceChart {
     chart: PieChart,
     rows: Vec<SliceRow>,
@@ -696,13 +684,13 @@ impl DiskUsageApp {
             self.inspected.as_deref(),
             Rc::clone(&self.inbox),
         );
-        let lane = Theme::default().tokens.metrics.panel_width_sheet;
         let mut page = Column::new()
             .with_intrinsic_height()
             .push(Box::new(
                 Container::new()
                     .with_no_padding()
-                    .with_centered_max_width(lane)
+                    .readable()
+                    .centered()
                     .with_child(Box::new(chart)),
             ))
             .push(Box::new(folders));
@@ -1145,10 +1133,6 @@ mod tests {
     /// handful of folders.
     #[test]
     fn counts_are_grouped_and_the_chart_groups_small_folders() {
-        assert_eq!(count_text(0), "0");
-        assert_eq!(count_text(999), "999");
-        assert_eq!(count_text(12_842), "12,842");
-        assert_eq!(count_text(1_000_000), "1,000,000");
         assert_eq!(files_text(1), "1 file");
         assert_eq!(files_text(84_200), "84,200 files");
         assert_eq!(unreadable_text(1), "1 item couldn’t be read");
