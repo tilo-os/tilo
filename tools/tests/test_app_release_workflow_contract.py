@@ -194,6 +194,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
                     'tools/ci/__init__.py',
                     'tools/ci/python.py',
                     'tools/ci/resolve_builder.py',
+                    'tools/ci/images.toml',
                 ],
             )
             for relative, size, digest in bootstrap['FILES']:
