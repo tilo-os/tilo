@@ -63,6 +63,7 @@ impl Resource for Totp {
                 anchor: Some(account_resource_id(account.id)),
                 title: account.title().to_owned(),
                 text: account.label.clone(),
+                action: None,
             })
             .collect()
     }
@@ -76,7 +77,9 @@ impl ResourceApp for TotpShell {
     const ID: &'static str = "so.tilo.totp";
     const TITLE: &'static str = "Authenticator";
     const ICON: Option<&'static str> = Some("totp");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
     // The window shows secrets: captures, recordings and remote viewers get
     // a placeholder in every launch, not only in a standalone build.
     const BEHAVIOUR: ui::application::ComponentBehaviour = ui::application::ComponentBehaviour {

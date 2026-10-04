@@ -100,6 +100,26 @@ pub fn text_resource_id(element: &str) -> String {
     format!("slides.text:{element}")
 }
 
+/// The words of text element `element_id` on slide `slide_id` as the deck's
+/// child rich-text resource: its id, and the deck action each of its edits
+/// is. The editor's dispatcher and the published child both come from here.
+pub fn element_text_child(
+    slide_id: &str,
+    element_id: &str,
+) -> (
+    String,
+    impl Fn(tilo_document::RichTextAction) -> SlidesAction + Send + Sync + 'static,
+) {
+    let (slide_id, element_id) = (slide_id.to_owned(), element_id.to_owned());
+    (text_resource_id(&element_id), move |edit| {
+        SlidesAction::EditElementText {
+            slide_id: slide_id.clone(),
+            element_id: element_id.clone(),
+            edit,
+        }
+    })
+}
+
 pub fn notes_resource_id(slide: &str) -> String {
     format!("slides.notes:{slide}")
 }
@@ -2273,17 +2293,21 @@ fn element_resource(sr: &SlideResource, er: &ElementResource, eager_text: bool) 
             resource_restack_z(sr, false),
         ),
     ));
-    if eager_text && er.kind == ElementKind::Text && !er.text.trim().is_empty() {
+    if eager_text && er.kind == ElementKind::Text {
         resource = resource.with_child(text_resource(sr, er));
     }
     resource
 }
 
+/// An element's words: a rich-text resource of their own whose edits are
+/// the deck's [`SlidesAction::EditElementText`], plus revealing them.
 fn text_resource(sr: &SlideResource, er: &ElementResource) -> Resource {
-    Resource::new(
-        text_resource_id(&er.id),
-        "slides.text",
-        element_label(ElementKind::Text, &er.text),
+    let (id, wrap) = element_text_child(&sr.data.id, &er.id);
+    ui::tilo_resource::publish_child::<tilo_document::RichText, SlidesDeck>(
+        &id,
+        &element_label(ElementKind::Text, &er.text),
+        None,
+        wrap,
     )
     .with_action(operation(
         "open",

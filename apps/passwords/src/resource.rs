@@ -150,7 +150,9 @@ impl ResourceApp for PasswordsShell {
     const ID: &'static str = "so.tilo.passwords";
     const TITLE: &'static str = "Passwords";
     const ICON: Option<&'static str> = Some("passwords");
-    const SHOT_VIEWPORT: (u32, u32) = (1100, 720);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1100, 720)
+    }
     // The window shows secrets: captures, recordings and remote viewers get
     // a placeholder in every launch, not only in a standalone build.
     const BEHAVIOUR: ui::application::ComponentBehaviour = ui::application::ComponentBehaviour {
