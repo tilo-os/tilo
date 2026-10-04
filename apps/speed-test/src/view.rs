@@ -13,7 +13,7 @@ use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Banner, Button, ButtonRole, Column, Container, Decorator, Element, ListRow, ProgressRing,
     ProgressRingSize, Property, PropertyList, Row, Scrollable, Section, StatGroup, StatTile,
-    Stepper, Text, Widget,
+    Stepper, Text, Tone, Widget,
 };
 
 use crate::model::{DialReading, Model, Phase, Quality, age_label, data_label, qualities};
@@ -186,18 +186,19 @@ fn results_column(model: &Model, theme: &Theme) -> Column {
         )));
 
     if let Some(latest) = model.latest() {
-        let rows: Vec<Element> = qualities(latest)
+        let rows = qualities(latest)
             .into_iter()
-            .enumerate()
-            .map(|(index, (use_case, quality))| -> Element {
-                let row = ListRow::new(format!("quality-{index}"), use_case).meta(quality.label());
-                Box::new(match quality {
-                    Quality::Excellent | Quality::Good => row.active(),
-                    Quality::Limited => row.warning(),
+            .map(|(use_case, quality)| {
+                Property::new(use_case, quality.label()).tone(match quality {
+                    Quality::Excellent | Quality::Good => Tone::Success,
+                    Quality::Limited => Tone::Warning,
                 })
             })
             .collect();
-        column = column.push(Box::new(Section::titled("Connection quality", rows)));
+        column = column.push(Box::new(Section::titled(
+            "Connection quality",
+            vec![Box::new(PropertyList::new(rows))],
+        )));
     }
 
     if !model.history.is_empty() {
