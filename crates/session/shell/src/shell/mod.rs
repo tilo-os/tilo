@@ -343,40 +343,22 @@ impl Shell {
     }
 
     /// First row of the first hosted terminal's grid, or `None` if no live
-    /// terminal tile exists. `TerminalWidget::grid` is private to
-    /// `quick-terminal`, but the PTY output is also mirrored into the
-    /// shared doc under `terminal_grid` (see `TerminalPerformer`), so this
-    /// reads it back from the CRDT instead.
+    /// terminal tile exists. An in-process terminal tile has no session
+    /// record of its own, so this reaches through the raw pointer captured at
+    /// construction (same validity argument as `first_file_explorer_ptr`).
     #[cfg(any(test, debug_assertions))]
     pub fn first_terminal_line(&self) -> Option<String> {
-        use automerge::{ObjType, ReadDoc, Value};
-
-        self.first_terminal_ptr?;
-
-        let doc = &self.state.doc;
-        let (grid_val, grid_id) = doc.get(&self.state.root, "terminal_grid").ok().flatten()?;
-        if !matches!(grid_val, Value::Object(ObjType::List)) {
-            return None;
-        }
-        if doc.length(&grid_id) == 0 {
-            return Some(String::new());
-        }
-        let (line_val, line_id) = doc.get(&grid_id, 0).ok().flatten()?;
-        if !matches!(line_val, Value::Object(ObjType::Map)) {
-            return None;
-        }
-        let (text_val, text_id) = doc.get(&line_id, "text").ok().flatten()?;
-        if !matches!(text_val, Value::Object(ObjType::Text)) {
-            return None;
-        }
-        doc.text(&text_id).ok()
+        let ptr = self.first_terminal_ptr?;
+        // SAFETY: the pointer was captured from the boxed widget the tab
+        // still owns, and is live for `&self`.
+        let terminal: &TerminalWidget = unsafe { &*ptr };
+        terminal.grid_text().split('\n').next().map(str::to_owned)
     }
 
     /// Entry names from the first hosted file-explorer, or empty if there
-    /// is none. Unlike the terminal, the file-explorer keeps its listing in
-    /// local widget state rather than the CRDT, so this reaches through the
-    /// raw pointer captured at construction (same validity argument as
-    /// `first_terminal_ptr`).
+    /// is none. The file-explorer keeps its listing in local widget state,
+    /// so this reaches through the raw pointer captured at construction
+    /// (same validity argument as `first_terminal_ptr`).
     #[cfg(any(test, debug_assertions))]
     pub fn first_file_explorer_entries(&self) -> Vec<String> {
         let Some(ptr) = self.first_file_explorer_ptr else {
