@@ -1,87 +1,61 @@
-//! Containers as a [`tilo_resource::Resource`]: view preferences sync in the
-//! shared document; Podman engine rows and in-flight pulls stay live extras
-//! when hosted.
+//! Containers as a [`tilo_resource::Resource`]: the new-container draft is
+//! the document; the podman engine's containers, images, volumes and
+//! distroboxes are live rows the surface publishes; moving around the app is
+//! the surface's own, offered to every caller as effects.
+
+use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
-use ui::automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{
-    Action, ActionError, ActionParam, ActionRegistry, ActionSpec, EncodedAction, OperationKind,
-    ParamType, Resource as PublishedResource,
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp,
+    ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
+use ui::tilo_actions::{Action, ActionError, Resource as PublishedResource};
+use ui::tilo_resource::{
+    self, ActionDecl, Doc, Effect, Invoke, ModelError, PlainText, Resource, TextEdit,
+    child_resource_id, publish_child,
+};
 use ui::widget::Element;
 
 use crate::app::ContainersApp;
-use crate::doc::{CreateField, DetailTab, Section, ViewDoc};
+use crate::doc::{CreateDoc, CreateDraft, CreateField};
+use crate::model::{DetailTab, Engine, Section};
 
-/// Collaborative view preferences. Engine inventory and pull jobs are not
-/// document state — they ride live extras / standalone overlay.
+/// An edit of the new-container draft.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ContainersAction {
-    SetSection {
-        section: String,
-    },
-    SetSelected {
-        id: Option<String>,
-    },
-    SetTab {
-        tab: String,
-    },
-    /// Replace one create-form draft field.
-    SetCreateField {
-        field: String,
-        value: String,
-    },
-    /// Clear the create-form draft after a container is submitted.
+    /// Edit one field of the draft.
+    EditCreate { field: CreateField, edit: TextEdit },
+    /// Empty the draft, once a container was created from it.
     ClearCreate,
 }
 
 impl Action for ContainersAction {
     fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
         match self {
-            Self::SetSection { section } => {
-                ViewDoc::set_section(doc, Section::parse(section));
+            Self::EditCreate { field, edit } => {
+                let text = CreateDoc::field_obj_mut(doc, *field)?;
+                edit.apply_under(doc, &text)
             }
-            Self::SetSelected { id } => {
-                ViewDoc::set_selected(doc, id.as_deref());
+            Self::ClearCreate => {
+                for field in CreateField::ALL {
+                    if let Some(text) = CreateDoc::field_obj(doc, field) {
+                        TextEdit::ReplaceText {
+                            text: String::new(),
+                        }
+                        .apply_under(doc, &text)?;
+                    }
+                }
+                Ok(())
             }
-            Self::SetTab { tab } => {
-                ViewDoc::set_tab(doc, DetailTab::parse(tab));
-            }
-            Self::SetCreateField { field, value } => {
-                let Some(field) = CreateField::ALL
-                    .into_iter()
-                    .find(|candidate| candidate.key() == field)
-                else {
-                    return Err(ActionError::Refused("unknown create field".into()));
-                };
-                ViewDoc::set_create_field(doc, field, value);
-            }
-            Self::ClearCreate => ViewDoc::clear_create(doc),
         }
-        Ok(())
     }
 }
 
-/// View projection stored in the shared document.
-#[derive(Clone, Debug)]
+/// What the document holds: the new-container draft.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ContainersState {
-    pub section: Section,
-    pub selected: Option<String>,
-    pub tab: DetailTab,
-    pub search: String,
-}
-
-impl Default for ContainersState {
-    fn default() -> Self {
-        Self {
-            section: Section::Containers,
-            selected: None,
-            tab: DetailTab::Logs,
-            search: String::new(),
-        }
-    }
+    pub draft: CreateDraft,
 }
 
 /// The containers engine resource.
@@ -95,108 +69,107 @@ impl Resource for Containers {
     type State = ContainersState;
     type Action = ContainersAction;
 
-    fn register(registry: &mut ActionRegistry) {
-        registry.register::<ContainersAction>(Self::ACTION_TYPE);
-    }
-
     fn read(doc: &Doc) -> Result<ContainersState, ModelError> {
         Ok(ContainersState {
-            section: ViewDoc::section(doc),
-            selected: ViewDoc::selected(doc),
-            tab: ViewDoc::tab(doc),
-            search: ViewDoc::search(doc),
+            draft: CreateDoc::read(doc),
         })
+    }
+
+    /// Every replica types into the same draft texts.
+    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
+        CreateDoc::initialize(doc).map_err(|error| ModelError::invalid(error.to_string()))
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
         vec![
-            ActionDecl::new(
-                "set-section",
-                "Show section",
-                vec![
-                    ActionParam::required(
-                        "section",
-                        ParamType::Text,
-                        "containers | images | volumes | distrobox",
-                    )
-                    .with_choices([
-                        "containers",
-                        "images",
-                        "volumes",
-                        "distrobox",
-                    ]),
-                ],
-                |args, _| {
-                    let section = args
-                        .text("section")
-                        .ok_or_else(|| "missing section".to_owned())?
-                        .to_owned();
-                    Ok(ContainersAction::SetSection { section })
-                },
-            )
-            .describe("Switch the shared containers section."),
-            ActionDecl::new(
-                "select-container",
-                "Select container",
-                vec![ActionParam::optional(
-                    "id",
-                    ParamType::Text,
-                    "Container id, or omit to clear selection",
-                )],
-                |args, _| {
-                    let id = args
-                        .text("id")
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(ToOwned::to_owned);
-                    Ok(ContainersAction::SetSelected { id })
-                },
-            )
-            .describe("Focus a container in the shared selection."),
-            ActionDecl::new(
-                "set-tab",
-                "Set detail tab",
-                vec![
-                    ActionParam::required(
-                        "tab",
-                        ParamType::Text,
-                        "logs | stats | inspect | terminal",
-                    )
-                    .with_choices(["logs", "stats", "inspect", "terminal"]),
-                ],
-                |args, _| {
-                    let tab = args
-                        .text("tab")
-                        .ok_or_else(|| "missing tab".to_owned())?
-                        .to_owned();
-                    Ok(ContainersAction::SetTab { tab })
-                },
-            )
-            .describe("Switch the shared container detail tab."),
+            ActionDecl::new("clear-create", "Clear new container", vec![], |_, _| {
+                Ok(ContainersAction::ClearCreate)
+            })
+            .describe("Empty every field of the new-container draft."),
         ]
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        // Create is a View with no document delta. Per-container lifecycle
-        // Effects ride live engine extras (or the standalone overlay).
-        match ActionSpec::operation(
-            "create",
-            "Create container",
-            OperationKind::View,
-            "containers.engine",
-            &["create"],
-        ) {
-            Ok(spec) => vec![spec],
-            Err(_) => Vec::new(),
-        }
+    /// Each field of the draft is a plain text of its own, so the palette,
+    /// agents and scripts fill the form in like someone typing.
+    fn children(state: &ContainersState) -> Vec<PublishedResource> {
+        CreateField::ALL
+            .into_iter()
+            .map(|field| {
+                publish_child::<PlainText, Self>(
+                    &create_field_id(field),
+                    &format!("New container {}", field.title()),
+                    Some(&state.draft.get(field).to_owned()),
+                    move |edit| ContainersAction::EditCreate { field, edit },
+                )
+            })
+            .collect()
     }
 }
 
-/// Hosted-only extras that are not document state: live engine rows and an
-/// in-flight pull. The engine door stays on [`tilo_resource::publish`].
-pub(crate) fn live_extras(app: &ContainersApp) -> Vec<PublishedResource> {
-    app.live_engine_extras()
+/// The id a draft field is published under, as a plain-text child.
+pub(crate) fn create_field_id(field: CreateField) -> String {
+    child_resource_id::<Containers>(&format!("create-{}", field.key()))
 }
+
+/// Edits of one draft field through the resource's dispatcher.
+pub(crate) fn create_field_dispatcher(
+    dispatcher: &Dispatcher<Containers>,
+    field: CreateField,
+) -> Dispatcher<PlainText> {
+    dispatcher.child::<PlainText>(&create_field_id(field), move |edit| {
+        ContainersAction::EditCreate { field, edit }
+    })
+}
+
+/// Moving around the app, for every caller: what the rail, the list and the
+/// detail tabs do. None of it changes the document; it is where this window
+/// is.
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "containers.view")]
+pub enum ContainersEffect {
+    /// Show section.
+    #[effect(permission = "read")]
+    SetSection {
+        #[param("containers | images | volumes | distrobox")]
+        section: String,
+    },
+    /// Select container.
+    #[effect(permission = "read")]
+    SelectContainer {
+        #[param("Container id, or omit to clear the selection")]
+        id: Option<String>,
+    },
+    /// Set detail tab.
+    #[effect(permission = "read")]
+    SetTab {
+        #[param("logs | stats | inspect | terminal")]
+        tab: String,
+    },
+    /// Create container.
+    #[effect(permission = "read")]
+    Create,
+}
+
+/// The screenshots: the default container detail, each section and detail
+/// tab, the create form (with its image suggestions open), a pull in
+/// progress, the collapsed rail, no engine at all, the search palette, and
+/// the confirm and text dialogs.
+const SCENARIOS: &[&str] = &[
+    "images",
+    "volumes",
+    "distrobox",
+    "stats",
+    "inspect",
+    "terminal",
+    "create",
+    "combo",
+    "pull",
+    "collapsed",
+    "empty",
+    "palette",
+    "confirm",
+    "prompt",
+];
 
 /// Framework app.
 pub struct ContainersShell;
@@ -206,277 +179,262 @@ impl ResourceApp for ContainersShell {
     const ID: &'static str = "so.tilo.containers";
     const TITLE: &'static str = "Containers";
     const ICON: Option<&'static str> = Some("containers");
+
+    fn view(cx: &mut ViewCx<Containers>) -> Element {
+        cx.surface(ContainersApp::new())
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
+    }
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1280, 800)
     }
 
-    fn view(cx: &mut ViewCx<Containers>) -> Element {
-        cx.surface(ContainersApp::new(true))
+    /// A screenshot shows a made-up engine (or, for `empty`, none at all)
+    /// instead of the podman of the machine it is taken on.
+    fn fixture(fixture: &mut Fixture<Containers>) {
+        fixture.provide(if fixture.scenario() == Some("empty") {
+            Engine {
+                connection: "No container engine — is podman installed?".into(),
+                live: false,
+                ..Engine::default()
+            }
+        } else {
+            crate::model::sample_engine()
+        });
     }
 
-    fn scenarios() -> &'static [&'static str] {
-        &["confirm", "prompt"]
+    /// The create form is shown filled in.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Containers>> {
+        if !matches!(name, Some("create" | "combo")) {
+            return Vec::new();
+        }
+        [
+            (CreateField::Name, "web-frontend"),
+            (CreateField::Image, "nginx"),
+            (CreateField::Ports, "8080:80, 8443:443"),
+            (CreateField::Env, "TZ=UTC"),
+            (CreateField::Volumes, "site:/usr/share/nginx/html"),
+        ]
+        .into_iter()
+        .filter_map(|(field, text)| {
+            Invoke::apply(&ContainersAction::EditCreate {
+                field,
+                edit: TextEdit::ReplaceText { text: text.into() },
+            })
+            .ok()
+        })
+        .collect()
     }
 }
 
-impl ResourceSurface<Containers> for ContainersApp {
-    fn present(&mut self, state: &std::rc::Rc<ContainersState>) {
-        // Adopt collaborative view prefs only — never clear the local engine.
-        self.adopt_resource_state(state);
+impl ResourceSurface<Containers, ContainersEffect> for ContainersApp {
+    fn present(&mut self, state: &Rc<ContainersState>) {
+        self.present_draft(&state.draft);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Containers>) {
-        self.attach_framework(cx.dispatcher());
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<Containers>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Containers>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    pub(crate) fn dispatch(&mut self, doc: &mut AutoCommit, action: &ContainersAction) {
-        let context =
-            ui::tilo_actions::ActionContext::for_action("so.tilo.containers", "Containers", action);
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last =
-                    tilo_actions::EncodedAction::encode(Containers::ACTION_TYPE, action).ok();
-                let _ = dispatcher.apply_now_with(doc, action, context);
+        let dispatcher = cx.dispatcher();
+        match cx.mode() {
+            RunMode::Live => self.connect(),
+            RunMode::Capture => {
+                if let Some(engine) = cx.fixture::<Engine>() {
+                    self.show_engine((*engine).clone());
+                }
             }
-            None => self
-                .local
-                .dispatch_with_context(doc, Containers::ACTION_TYPE, action, context),
+            RunMode::Past => self.show_past(),
         }
+        self.attach_dispatcher(dispatcher);
     }
 
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scene(scenario);
     }
 
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
+    fn effect(
+        &mut self,
+        effect: ContainersEffect,
+        _cx: &mut EffectCx<Containers, Self>,
+    ) -> EffectAnswer {
+        match effect {
+            ContainersEffect::SetSection { section } => {
+                let section = Section::parse(&section)
+                    .ok_or_else(|| format!("there is no section `{section}`"))?;
+                self.show_section(section);
+            }
+            ContainersEffect::SelectContainer { id } => {
+                let id = id
+                    .map(|id| id.trim().to_owned())
+                    .filter(|id| !id.is_empty());
+                if let Some(id) = &id
+                    && self.engine.find(id).is_none()
+                {
+                    return Err(format!("there is no container `{id}`"));
+                }
+                self.select_container(id);
+            }
+            ContainersEffect::SetTab { tab } => {
+                let tab =
+                    DetailTab::parse(&tab).ok_or_else(|| format!("there is no tab `{tab}`"))?;
+                self.show_tab(tab);
+            }
+            ContainersEffect::Create => self.open_create(),
+        }
+        Ok(Effected::done())
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        if self.engine.live {
+            Vec::new()
         } else {
-            self.local.last_dispatched()
+            vec![EffectStatus::unavailable(
+                ContainersEffect::CREATE,
+                "engine_offline",
+                "Creating containers requires a connected Podman engine",
+            )]
         }
     }
 
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.engine_rows()
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.engine_row(id)
     }
 }
 
-/// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
-pub fn provide_resources(state: &ContainersState) -> Vec<PublishedResource> {
-    vec![ui::tilo_resource::publish::<Containers>(
-        "containers",
-        "Containers",
-        state,
-    )]
+/// The resource as the palette, agents and scripts see it with `state`,
+/// before any surface adds its rows.
+#[cfg(test)]
+fn published(state: &ContainersState) -> PublishedResource {
+    tilo_resource::publish::<Containers>(Containers::KIND, Containers::LABEL, state)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::widget::Widget;
+    use ui::prelude::TestApp;
+    use ui::tilo_resource::Replica;
+
+    fn draft(app: &TestApp<ContainersShell>, field: CreateField) -> String {
+        app.state().draft.get(field).to_owned()
+    }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
-    )]
-    fn resource_publish_owns_engine_door_and_hosted_keeps_only_live_extras() {
-        let mut doc = AutoCommit::new();
-        ContainersAction::SetSection {
-            section: "images".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        ContainersAction::SetSelected {
-            id: Some("abc123".into()),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        ContainersAction::SetTab {
-            tab: "stats".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        ViewDoc::set_search(&mut doc, "nginx");
-        doc.commit();
+    fn the_draft_is_edited_by_splices_and_cleared_whole() {
+        let mut replica = Replica::<Containers>::new();
+        replica
+            .apply(
+                Invoke::apply(&ContainersAction::EditCreate {
+                    field: CreateField::Image,
+                    edit: TextEdit::ReplaceText {
+                        text: "nginx".into(),
+                    },
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        replica
+            .apply(
+                Invoke::apply(&ContainersAction::EditCreate {
+                    field: CreateField::Image,
+                    edit: TextEdit::Splice {
+                        at: 5,
+                        delete: 0,
+                        insert: ":1".into(),
+                    },
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            replica.state().unwrap().draft.get(CreateField::Image),
+            "nginx:1"
+        );
 
-        let state = Containers::read(&doc).expect("seeded containers state");
-        let published =
-            ui::tilo_resource::publish::<Containers>("containers", "Containers", &state);
-        assert_eq!(published.kind, "containers.engine");
-        assert!(
-            published
-                .actions
-                .iter()
-                .any(|action| action.id == "set-section"),
-            "set-section declaration must be on the framework resource"
-        );
-        assert!(
-            published
-                .actions
-                .iter()
-                .any(|action| action.id == "select-container"),
-            "select-container declaration must be on the framework resource"
-        );
-        assert!(
-            published
-                .actions
-                .iter()
-                .any(|action| action.id == "set-tab"),
-            "set-tab declaration must be on the framework resource"
-        );
-        assert!(
-            published.actions.iter().any(|action| action.id == "create"),
-            "create View must be on the framework resource"
-        );
-        assert!(
-            published.children.is_empty(),
-            "shared projection must not carry live engine rows"
-        );
-        assert_eq!(state.section, Section::Images);
-        assert_eq!(state.selected.as_deref(), Some("abc123"));
-        assert_eq!(state.tab, DetailTab::Stats);
-        assert_eq!(state.search, "nginx");
+        replica
+            .apply(Invoke::apply(&ContainersAction::ClearCreate).unwrap())
+            .unwrap();
+        assert!(replica.state().unwrap().draft.is_empty());
+    }
 
-        let mut app = ContainersApp::new(false);
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &ui::automerge::ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "containers.engine");
+    #[test]
+    fn the_published_resource_offers_the_draft_and_no_view_state() {
+        let state = ContainersState {
+            draft: CreateDraft::with(&[(CreateField::Image, "nginx")]),
+        };
+        let published = published(&state);
+        assert_eq!(published.kind, Containers::KIND);
         assert!(
-            !standalone[0].children.is_empty(),
-            "standalone overlays live engine children"
+            published
+                .actions
+                .iter()
+                .any(|action| action.id == "clear-create"),
+            "clearing the draft is an action"
         );
-        assert!(
-            standalone[0]
+        for field in CreateField::ALL {
+            let child = published
                 .children
                 .iter()
-                .any(|child| child.kind == "containers.container"),
-            "standalone publishes container rows from the engine"
-        );
-
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        assert!(ui::resources::resource(&app, &seeded, "containers").is_none());
-        let container_id = standalone[0]
-            .children
-            .iter()
-            .find(|child| child.kind == "containers.container")
-            .map(|child| child.id.as_str().to_owned())
-            .expect("container");
-        assert!(
-            ui::resources::resource(&app, &seeded, &container_id).is_some(),
-            "a hosted container stays the published row"
-        );
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "containers.engine"),
-            "hosted must not republish containers.engine beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
-        assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "containers.container"),
-            "hosted still publishes live container rows: {:?}",
-            extras.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>()
-        );
-
-        let door = provide_resources(&state);
-        assert_eq!(door[0].kind, "containers.engine");
-        assert!(door[0].children.is_empty());
-
-        let mut local = AutoCommit::new();
-        let mut standalone = ContainersApp::new(false);
-        standalone.commit_view(
-            &mut local,
-            &ContainersAction::SetSection {
-                section: "volumes".into(),
-            },
-        );
-        assert!(
-            standalone.last_document_action().is_some(),
-            "ActionSink must record document actions on the local host"
-        );
-        assert_eq!(ViewDoc::section(&local), Section::Volumes);
-    }
-
-    #[test]
-    fn a_standalone_view_edit_is_submitted_through_the_sink() {
-        let mut app = ContainersApp::new(false);
-        assert!(!app.is_hosted());
-        let mut doc = AutoCommit::new();
-        app.apply_view(
-            &mut doc,
-            &ContainersAction::SetSection {
-                section: "images".into(),
-            },
-        );
-        assert!(
-            app.last_document_action().is_some(),
-            "a standalone view edit is recorded on the action sink"
-        );
-        assert_eq!(ViewDoc::section(&doc), Section::Images);
-    }
-
-    #[test]
-    fn create_draft_is_a_replayable_action() {
-        let mut doc = AutoCommit::new();
-        ContainersAction::SetCreateField {
-            field: "image".into(),
-            value: "nginx".into(),
+                .find(|child| child.id.as_str() == create_field_id(field))
+                .unwrap_or_else(|| panic!("the {} field is a child", field.key()));
+            assert!(
+                child
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "replace-text"),
+                "{} is filled in like a text",
+                field.key()
+            );
         }
-        .apply(&mut doc)
+        for gone in ["set-section", "select-container", "set-tab"] {
+            assert!(
+                published.actions.iter().all(|action| action.id != gone),
+                "`{gone}` is where a window is, not a document action"
+            );
+        }
+    }
+
+    /// An agent fills the form in through the published draft fields and
+    /// clears it with the declared action; undo takes the clear back.
+    #[test]
+    fn agents_fill_the_draft_and_undo_takes_a_clear_back() {
+        let mut app = TestApp::<ContainersShell>::capture(None).unwrap();
+        app.invoke_child::<PlainText>(
+            &create_field_id(CreateField::Image),
+            Invoke::<PlainText>::apply(&TextEdit::ReplaceText {
+                text: "quay.io/example/app:2".into(),
+            })
+            .unwrap(),
+        )
         .unwrap();
-        assert_eq!(ViewDoc::create_field(&doc, CreateField::Image), "nginx");
-        ContainersAction::ClearCreate.apply(&mut doc).unwrap();
-        assert_eq!(ViewDoc::create_field(&doc, CreateField::Image), "");
-        assert!(
-            ContainersAction::SetCreateField {
-                field: "not-a-field".into(),
-                value: "x".into(),
-            }
-            .apply(&mut doc)
-            .is_err()
-        );
+        assert_eq!(draft(&app, CreateField::Image), "quay.io/example/app:2");
+
+        app.call("clear-create", serde_json::json!({})).unwrap();
+        assert!(app.state().draft.is_empty());
+        assert!(app.undo());
+        assert_eq!(draft(&app, CreateField::Image), "quay.io/example/app:2");
+    }
+
+    /// Every screenshot is the framework's capture of the sample engine,
+    /// staged where the scenario shows.
+    #[test]
+    fn captures_stage_the_sample_engine() {
+        let mut detail = TestApp::<ContainersShell>::capture(None).unwrap();
+        assert_eq!(detail.harness().inspection().viewport, [1280, 800]);
+        let frame = detail.harness().inspection_json().unwrap();
+        assert!(frame.contains("web-frontend"), "{frame}");
+        assert!(detail.state().draft.is_empty());
+
+        let create = TestApp::<ContainersShell>::capture(Some("create")).unwrap();
+        assert_eq!(draft(&create, CreateField::Image), "nginx");
+        assert_eq!(draft(&create, CreateField::Ports), "8080:80, 8443:443");
+
+        let mut empty = TestApp::<ContainersShell>::capture(Some("empty")).unwrap();
+        let frame = empty.harness().inspection_json().unwrap();
+        assert!(!frame.contains("web-frontend"), "{frame}");
     }
 }
