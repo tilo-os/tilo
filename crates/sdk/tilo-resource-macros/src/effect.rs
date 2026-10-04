@@ -47,6 +47,7 @@ struct VariantOptions {
     cancellable: bool,
     returns: bool,
     destructive: bool,
+    privileged: bool,
     permission: Option<String>,
 }
 
@@ -66,9 +67,11 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.returns = true;
             } else if meta.path.is_ident("destructive") {
                 options.destructive = true;
+            } else if meta.path.is_ident("privileged") {
+                options.privileged = true;
             } else {
                 return Err(meta.error(
-                    "expected `label`, `job`, `cancellable`, `returns`, `destructive` or `permission`",
+                    "expected `label`, `job`, `cancellable`, `returns`, `destructive`, `privileged` or `permission`",
                 ));
             }
             Ok(())
@@ -191,6 +194,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             quote!(#krate::effect::Answers::Nothing)
         };
         let destructive = options.destructive;
+        let privileged = options.privileged;
         decls.push(quote! {
             #krate::effect::EffectDecl {
                 id: #id,
@@ -199,6 +203,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 params: ::std::vec![#(#params),*],
                 answers: #answers,
                 destructive: #destructive,
+                privileged: #privileged,
                 permission: #krate::__private::PermissionRequirement::#permission,
             }
         });

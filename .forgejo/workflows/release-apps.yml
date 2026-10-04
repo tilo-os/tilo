@@ -1,13 +1,10 @@
 name: Release / apps
 
-# PRs select affected apps without release-mode packaging. Main publishes only
+# Pull requests start no jobs here; CI covers their builds. Main publishes only
 # affected tapps and reuses unchanged members of the prior immutable collection.
 # Tags remain credential-free validation inputs only until a trusted
 # default-branch controller or server-enforced tag policy can authorize them.
 on:
-  pull_request:
-    branches: [main]
-    # Always run the cheap plan; app_release.py owns dependency applicability.
   push:
     branches: [main]
     tags: ["apps-v*", "app-*-v*"]
@@ -99,9 +96,8 @@ on:
 
 concurrency:
   group: release-apps-${{ github.ref }}
-  # Published collections advance in commit order; PR validation may supersede
-  # older validation because it does not mutate a channel.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Published collections advance in commit order.
+  cancel-in-progress: false
 
 jobs:
   tag-validation:
@@ -260,8 +256,6 @@ jobs:
           persist-credentials: false
       - name: Resolve one immutable builder for every architecture
         id: builder
-        # PRs only select affected apps; no builder-dependent job runs for them.
-        if: "github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')"
         env:
           REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
         run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py
@@ -281,8 +275,6 @@ jobs:
             base=${BASELINE_SHA:-}
           elif [[ $GITHUB_EVENT_NAME == push ]]; then
             base=${COLLECTION_SOURCE:-}
-          elif [[ $GITHUB_EVENT_NAME != workflow_dispatch ]]; then
-            base='${{ github.event.pull_request.base.sha }}'
           fi
           [[ $base != null ]] || base=
           if [[ -z $base || $base == 0000000000000000000000000000000000000000 ]]; then
@@ -409,13 +401,6 @@ jobs:
               --collection-builder "${COLLECTION_BUILDER:-}" --builder "${BUILDER:-}")
             if ! [[ $base =~ ^[0-9a-f]{40}$ ]] || ! use_base "$base"; then
               args+=(--collection default)
-            fi
-          else
-            base='${{ github.event.pull_request.base.sha }}'
-            if [[ -z $base || $base == null ]]; then
-              args+=(--collection default)
-            else
-              use_base "$base"
             fi
           fi
           echo "complete=$complete" >> "$GITHUB_OUTPUT"

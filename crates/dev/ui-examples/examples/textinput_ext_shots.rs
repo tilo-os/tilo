@@ -1,6 +1,6 @@
 //! Offscreen shots for `TextInput`'s **multiline** mode (soft-wrapped rows,
-//! cross-line selection, and caret) and **secret** mode (masked bullets, with
-//! a revealed variant for contrast).
+//! cross-line selection, and caret) and **secret** mode (masked bullets, a
+//! revealed variant, and keyboard focus on the built-in show/hide control).
 //!
 //! The shots use the normal five-pass pipeline. `set_selection` only prepares
 //! the public selection state for the still frame.
@@ -92,6 +92,14 @@ pub fn run(_args: &[String]) {
         .with_initial_value("hunter2-s3cret");
     revealed.apply_layout_external(Rect::new(30.0, 140.0, 470.0, 180.0));
 
+    let mut eye_focused = TextInput::local()
+        .with_secret(true)
+        .with_initial_value("hunter2-s3cret");
+    eye_focused.apply_layout_external(Rect::new(30.0, 228.0, 470.0, 268.0));
+    for control in Widget::children_mut(&mut eye_focused) {
+        control.set_focus(true);
+    }
+
     let mut scene2 = Scene::new();
     label(
         &mut scene2,
@@ -111,8 +119,17 @@ pub fn run(_args: &[String]) {
         118.0,
     );
     revealed.draw(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &presence);
+    label(
+        &mut scene2,
+        &mut tr,
+        &theme,
+        "Secret TextInput — show/hide control has keyboard focus",
+        30.0,
+        206.0,
+    );
+    eye_focused.draw(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-    let mut r2 = OffscreenRenderer::new(500, 210);
+    let mut r2 = OffscreenRenderer::new(500, 296);
     let out_secret = dir.join("secret.png");
     r2.render_png(&scene2, theme.bg_app, &out_secret);
     println!("wrote {}", out_secret.display());

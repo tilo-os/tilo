@@ -88,7 +88,7 @@ fn close(a: f64, b: f64, what: &str) {
 fn browse_and_secondary_pages_share_one_composition() {
     // Case `browse_summary_shares_the_pickers_centre_line`.
     {
-        let app = store::shots::seeded_app();
+        let app = store::fixture::seeded_app();
         let app = lay_out(app, (1200.0, 800.0));
         let source = by_test_id(&*app, "store.source-filter");
         let category = by_test_id(&*app, "store.category-filter");
@@ -123,8 +123,8 @@ fn browse_and_secondary_pages_share_one_composition() {
     // Case `remotes_heading_hugs_its_first_card`.
     {
         let sp = spacing();
-        let mut app = store::shots::seeded_app();
-        app.show_remotes_for_shot();
+        let mut app = store::fixture::seeded_app();
+        app.stage_scene(Some("remotes"));
         let app = lay_out(app, (1200.0, 800.0));
         let heading = first_named(&*app, "Configured remotes");
         let remote_title = first_named(&*app, "Flathub");
@@ -179,8 +179,8 @@ fn browse_and_secondary_pages_share_one_composition() {
     // Case `compact_detail_hero_keeps_one_section_gap_between_artwork_and_title`.
     {
         let sp = spacing();
-        let mut app = store::shots::seeded_app();
-        app.focus_detail_for_shot("so.tilo.notes");
+        let mut app = store::fixture::seeded_app();
+        app.focus_detail("so.tilo.notes");
         let app = lay_out(app, (480.0, 900.0));
         let artwork = by_widget_name(&*app, "StoreArtwork")[0];
         let title = first_named(&*app, "Notes");
@@ -199,11 +199,11 @@ fn browse_and_secondary_pages_share_one_composition() {
     // Case `secondary_pages_share_one_header_composition`.
     {
         let sp = spacing();
-        let mut remotes = store::shots::seeded_app();
-        remotes.show_remotes_for_shot();
+        let mut remotes = store::fixture::seeded_app();
+        remotes.stage_scene(Some("remotes"));
         let remotes = lay_out(remotes, (1200.0, 800.0));
-        let mut safety = store::shots::seeded_app();
-        safety.show_safety_for_shot();
+        let mut safety = store::fixture::seeded_app();
+        safety.stage_scene(Some("moderation"));
         let safety = lay_out(safety, (1200.0, 800.0));
 
         let remotes_title = first_named(&*remotes, "Flatpak remotes");
@@ -262,7 +262,7 @@ fn status_pill_stays_off_card_actions_at_every_text_scale() {
             (800.0, 700.0),
             (480.0, 900.0),
         ] {
-            let mut app = store::shots::seeded_app();
+            let mut app = store::fixture::seeded_app();
             app.arm_status_bubble_for_shots();
             let app = lay_out(app, (w, h));
             let mut tr = TextRenderer::new();

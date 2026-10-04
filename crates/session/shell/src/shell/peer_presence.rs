@@ -2407,6 +2407,7 @@ mod two_sessions {
                             .expect("empty heads serialise"),
                         room: room.to_string(),
                         invite_id: None,
+                        nonce: 0,
                     },
                 );
             }

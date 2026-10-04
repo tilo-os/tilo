@@ -2817,6 +2817,17 @@ impl FrameHarness {
                 &self.theme,
                 &self.presence,
             );
+            // What the app presents above its window — a navigation card
+            // detached onto the desktop — is stacked over the frame as the
+            // live compositor stacks it, so a capture shows it.
+            crate::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+                self.root.as_mut(),
+                &mut self.scene,
+                Affine::IDENTITY,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            );
             self.root.mark_drawn();
         }
         if self.history_chrome_enabled {
