@@ -14,7 +14,6 @@ use serde_json::{Map, Value};
 const APP_ID: &str = "so.tilo.ebook";
 const BOOKS: &str = "books";
 const WATCHED: &str = "watched_folders";
-const SHORTCUTS: &str = "shortcuts";
 const MAX_ENTRIES: usize = 200;
 const MAX_PATH_BYTES: usize = 4096;
 
@@ -35,9 +34,6 @@ pub(crate) struct LocalLibrary {
     store: Option<ui::storage::Settings<Stored>>,
     pub(crate) books: HashMap<String, PathBuf>,
     pub(crate) watched_folders: Vec<PathBuf>,
-    /// Reader bindings are intentionally local: a collaborator's preferred
-    /// physical keys must never change another reader's device.
-    pub(crate) shortcuts: HashMap<String, String>,
 }
 
 impl LocalLibrary {
@@ -74,31 +70,6 @@ impl LocalLibrary {
         }
     }
 
-    pub(crate) fn shortcut(&self, action: &str, default: &str) -> String {
-        self.shortcuts
-            .get(action)
-            .filter(|key| valid_shortcut(key) && !reserved_reader_key(key))
-            .cloned()
-            .unwrap_or_else(|| default.to_string())
-    }
-
-    /// Set one reader key. Duplicate bindings are refused so pressing a key
-    /// always has one predictable meaning in the reader.
-    pub(crate) fn set_shortcut(&mut self, action: &str, key: &str) -> bool {
-        if !valid_shortcut(key)
-            || reserved_reader_key(key)
-            || self
-                .shortcuts
-                .iter()
-                .any(|(other, bound)| other != action && bound.eq_ignore_ascii_case(key))
-        {
-            return false;
-        }
-        self.shortcuts
-            .insert(action.to_string(), key.to_lowercase());
-        true
-    }
-
     pub(crate) fn save(&self) {
         let Some(store) = &self.store else {
             return;
@@ -130,21 +101,6 @@ impl LocalLibrary {
                 }
             }
         }
-        if let Some(Value::Object(shortcuts)) = section.get(SHORTCUTS) {
-            for (action, value) in shortcuts.iter().take(MAX_ENTRIES) {
-                let Some(key) = value.as_str() else {
-                    continue;
-                };
-                if valid_shortcut(key)
-                    && !out
-                        .shortcuts
-                        .values()
-                        .any(|bound| bound.eq_ignore_ascii_case(key))
-                {
-                    out.shortcuts.insert(action.clone(), key.to_lowercase());
-                }
-            }
-        }
         out
     }
 
@@ -168,17 +124,9 @@ impl LocalLibrary {
             .take(MAX_ENTRIES)
             .map(|path| Value::String(path.to_string_lossy().into_owned()))
             .collect();
-        let shortcuts = self
-            .shortcuts
-            .iter()
-            .filter(|(_, key)| valid_shortcut(key))
-            .take(MAX_ENTRIES)
-            .map(|(action, key)| (action.clone(), Value::String(key.clone())))
-            .collect();
         [
             (BOOKS.to_string(), Value::Object(books)),
             (WATCHED.to_string(), Value::Array(watched_folders)),
-            (SHORTCUTS.to_string(), Value::Object(shortcuts)),
         ]
         .into_iter()
         .collect()
@@ -188,17 +136,6 @@ impl LocalLibrary {
     fn in_file(path: &Path) -> ui::storage::Settings<Stored> {
         ui::storage::Settings::for_app(APP_ID).in_file(path)
     }
-}
-
-/// These reader commands deliberately remain fixed. They are either global
-/// mode controls or selection-sensitive actions, so allowing a configurable
-/// binding to shadow them would make the keyboard contract ambiguous.
-pub(crate) fn reserved_reader_key(key: &str) -> bool {
-    let lowered = key.to_ascii_lowercase();
-    matches!(
-        lowered.as_str(),
-        "t" | "n" | "f" | "c" | "+" | "=" | "-" | "_" | "−" | "[" | "]" | "1" | "2" | "3" | "4"
-    )
 }
 
 fn valid_book_id(id: &str) -> bool {
@@ -217,19 +154,11 @@ fn valid_path(path: &Path) -> bool {
             .any(|component| matches!(component, Component::ParentDir))
 }
 
-fn valid_shortcut(key: &str) -> bool {
-    let mut chars = key.chars();
-    let Some(key) = chars.next() else {
-        return false;
-    };
-    chars.next().is_none() && !key.is_whitespace() && !key.is_control()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Paths round-trip only in private settings, hostile paths and ids fail closed, and shortcuts are local and validated.
+    /// Paths round-trip only in private settings, and hostile paths and ids fail closed.
     #[test]
     fn local_library_settings_stay_private_and_fail_closed() {
         // --- phase: paths_round_trip_only_in_private_settings ---
@@ -273,25 +202,6 @@ mod tests {
             let registry = LocalLibrary::from_section(section.as_object().unwrap());
             assert!(registry.books.is_empty());
             assert_eq!(registry.watched_folders, vec![safe]);
-        }
-
-        // --- phase: shortcuts_are_local_validated_and_do_not_require_book_entries ---
-        {
-            let directory = tempfile::tempdir().unwrap();
-            let safe = directory.path().join("safe");
-            let section = serde_json::json!({
-                SHORTCUTS: { "next-page": "J", "bookmark": "\n", "other": "j" },
-                WATCHED: [&safe]
-            });
-            let mut registry = LocalLibrary::from_section(section.as_object().unwrap());
-            assert_eq!(registry.watched_folders, vec![safe]);
-            assert_eq!(registry.shortcut("next-page", "."), "j");
-            assert_eq!(registry.shortcut("bookmark", "b"), "b");
-            assert!(!registry.set_shortcut("bookmark", "j"));
-            assert!(!registry.set_shortcut("bookmark", "t"));
-            assert!(!registry.set_shortcut("bookmark", "−"));
-            assert!(registry.set_shortcut("bookmark", "x"));
-            assert_eq!(registry.shortcut("bookmark", "b"), "x");
         }
     }
 }
