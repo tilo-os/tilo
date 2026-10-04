@@ -172,6 +172,9 @@ fn desired_legacy_shares(
                 }
             }
             if !peers.is_empty() {
+                // Hosts bridge the window to web members, which draw pages
+                // themselves; any other viewer decodes video.
+                let paint = peers.iter().all(|peer| viewer_hosts.contains(peer));
                 desired.insert(
                     *surface_id,
                     (
@@ -180,6 +183,7 @@ fn desired_legacy_shares(
                             tab: tab.id,
                             viewers: peers,
                             decode_limits,
+                            paint,
                         },
                         workspace.room,
                     ),
@@ -540,8 +544,10 @@ impl LockClock {
         lock: &'a LockController,
         notification_count: usize,
         now_playing: Option<&'a crate::shell::now_playing::PlayerSnapshot>,
+        keyboard: Option<ui::passcode_keyboard::PasscodeKeyboard>,
     ) -> LockView<'a> {
         LockView {
+            keyboard,
             password_len: lock.buffer_len(),
             error: lock.error(),
             clock: &self.clock,
@@ -1094,6 +1100,25 @@ fn pump_chooser_opens(
     }
 }
 
+/// Answer an app's request about its own tab. The app id is the one the
+/// launcher vouched for on this connection.
+fn apply_app_tab_request(
+    frame_builder: &mut FrameBuilder,
+    app_id: &str,
+    instance: Option<u64>,
+    request: crate::shell::app_tabs::AppTabRequest,
+) -> bool {
+    let mut outcome = Ok(());
+    frame_builder.with_chrome(|st| {
+        outcome = crate::shell::app_tabs::apply_request(st, app_id, instance, request);
+        st.bump();
+    });
+    if let Err(error) = outcome {
+        tracing::info!(%app_id, %error, "app tab request refused");
+    }
+    true
+}
+
 // This is the ordered protocol event pump; its branches share authentication
 // and handoff state that is clearer when kept in a single state-machine tick.
 #[allow(
@@ -1396,6 +1421,45 @@ fn pump_floating_surface_service(
                     tracing::debug!(connection, %app_id, protected, "capture protection requested");
                     changed = true;
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::OpenTabBeside {
+                    target,
+                    background,
+                    instance,
+                } => {
+                    changed |= apply_app_tab_request(
+                        frame_builder,
+                        &app_id,
+                        instance,
+                        crate::shell::app_tabs::AppTabRequest::OpenBeside { target, background },
+                    );
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::CloseTab { instance } => {
+                    changed |= apply_app_tab_request(
+                        frame_builder,
+                        &app_id,
+                        instance,
+                        crate::shell::app_tabs::AppTabRequest::Close,
+                    );
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::ReopenClosedTab => {
+                    changed |= apply_app_tab_request(
+                        frame_builder,
+                        &app_id,
+                        None,
+                        crate::shell::app_tabs::AppTabRequest::ReopenClosed,
+                    );
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::PlaceNextWindowBeside {
+                    background,
+                    instance,
+                } => {
+                    changed |= apply_app_tab_request(
+                        frame_builder,
+                        &app_id,
+                        instance,
+                        crate::shell::app_tabs::AppTabRequest::PlaceNextWindowBeside { background },
+                    );
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::Dismiss { id } => {
                     let internal = external_floating_id(connection, &id);
                     capture.dismiss_external_floating(internal.clone());
@@ -1408,17 +1472,53 @@ fn pump_floating_surface_service(
                         &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id },
                     );
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::PaintCapable => {
+                    // The app id is the launcher's, so an app can only ever
+                    // offer its own windows' pages.
+                    state.note_paint_app(&app_id, connection);
+                    changed = true;
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::PaintStream {
+                    payload,
+                    page,
+                    scale,
+                } => {
+                    use base64::Engine as _;
+                    match base64::engine::general_purpose::STANDARD.decode(payload.as_bytes()) {
+                        Ok(payload) => state.receive_paint_frame(
+                            &app_id,
+                            crate::compositor::state::PaintFrame {
+                                payload,
+                                page,
+                                scale,
+                            },
+                        ),
+                        Err(error) => {
+                            tracing::debug!(connection, %app_id, %error, "malformed paint stream frame");
+                        }
+                    }
+                }
             },
             FloatingServiceEvent::Disconnected { connection, app_id } => {
                 for id in connection_ids.remove(&connection).unwrap_or_default() {
                     capture.dismiss_external_floating(id);
                 }
                 state.dismiss_floating_connection(connection);
+                state.drop_paint_connection(connection);
                 foreign::store().release_capture_protection(connection);
                 tracing::debug!(connection, %app_id, "shell-ui client disconnected");
                 changed = true;
             }
         }
+    }
+    // Apps whose pages someone started or stopped watching.
+    for (connection, watched) in state.paint_watch_changes() {
+        let message = if watched {
+            ui::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
+        } else {
+            ui::floating_surface::FloatingSurfaceHostMessage::PaintStop
+        };
+        service.send(connection, &message);
     }
     changed
 }
@@ -2597,6 +2697,16 @@ impl ControlState for FrameBuilderControlState<'_> {
             // The input hardware and last-used modality the chrome adapts
             // to, and the language the desktop help overlay is written in.
             "input": input_environment_json(self.fb.host().interaction_environment(), self.fb.host().shortcut_help_modality()),
+            // The on-screen keyboard: whether its service has a surface,
+            // and where it is painted while it serves the focused field.
+            "on_screen_keyboard": {
+                "connected": self.fb.osk_connected(),
+                "commits": self.fb.osk_commits(),
+                "serves_shell_field": self.fb.osk_serves_shell(),
+                "shown": self.fb.osk_surface_rect().map(|(_, rect)| serde_json::json!({
+                    "x": rect.x0, "y": rect.y0, "w": rect.width(), "h": rect.height(),
+                })),
+            },
             "search_scope": format!("{:?}", chrome.search_scope),
             "displays": self.displays_json(),
             // Applications' status-notifier items and their menus, as the top bar shows them.
@@ -2658,6 +2768,14 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "verifying": self.lock.is_some_and(LockController::is_verifying),
                 "password_len": self.lock.map_or(0, LockController::buffer_len),
                 "error": self.lock.and_then(LockController::error),
+                // The keyboard drawn on the lock screen, while it shows:
+                // where each key sits, never what was typed.
+                "keyboard": self.fb.lock_keyboard_keys().iter().map(|(name, rect)| {
+                    serde_json::json!({
+                        "key": name,
+                        "x": rect.x0, "y": rect.y0, "w": rect.width(), "h": rect.height(),
+                    })
+                }).collect::<Vec<_>>(),
             },
             // Who this session is, and whether they may administer the room they're
             // in — read straight off the production helpers, not guessed from `owner`.
@@ -2792,6 +2910,9 @@ struct TestControlCtx {
     /// precisely the ownership handoff DRM uses before emitting real
     /// `wl_touch` traffic to its Wayland clients.
     direct_touch: DirectTouchOwnership,
+    /// Touch the chrome or a touch-less client receives as pointer input;
+    /// shared by physical and injected touch.
+    touch_pointer: crate::compositor::touch_pointer::TouchPointer,
     /// Synthetic touchpad gestures go through the tracker the DRM runtime
     /// feeds from libinput, so they mean exactly what the fingers would.
     gestures: crate::compositor::backend::drm::gestures::GestureTracker,
@@ -2829,6 +2950,7 @@ impl TestControlCtx {
             focus: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
             direct_touch: DirectTouchOwnership::default(),
+            touch_pointer: crate::compositor::touch_pointer::TouchPointer::default(),
             gestures: crate::compositor::backend::drm::gestures::GestureTracker::default(),
             input: InputEnvironment::default(),
             watch_request: None,
@@ -3207,27 +3329,6 @@ fn dispatch_synth_event(
     );
 }
 
-/// The pointer click a confirmed one-finger tap at `(x, y)` stands for, for
-/// taps that did not already reach a client over `wl_touch`.
-fn touch_tap_pointer_events(x: f64, y: f64) -> [WindowEvent; 3] {
-    [
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(x, y),
-        },
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
-    ]
-}
-
 /// Wire name of an input modality in `state-dump`.
 fn input_modality_name(modality: ui::InputModality) -> &'static str {
     match modality {
@@ -3258,6 +3359,64 @@ fn input_environment_json(
         "available": available,
         "help_modality": input_modality_name(help_modality),
     })
+}
+
+/// The pointer input one raw contact update stands for, if any (see
+/// [`crate::compositor::touch_pointer`]). A contact is translated when it
+/// begins outside every touch-capable client and on no chrome widget that
+/// handles raw touch itself; a shell gesture claiming the stream later
+/// withdraws whatever the translation still had pending.
+fn touch_pointer_events(
+    touch_pointer: &mut crate::compositor::touch_pointer::TouchPointer,
+    touch: &winit::event::Touch,
+    chrome_handled: bool,
+    state: &State,
+    fb: &FrameBuilder,
+) -> Vec<WindowEvent> {
+    if chrome_handled
+        && touch.phase == winit::event::TouchPhase::Moved
+        && touch_pointer.is_emulated(touch.id)
+    {
+        return touch_pointer.cancel(touch);
+    }
+    touch_pointer.events(touch, || {
+        touch_route(
+            chrome_handled || state.touch_down_reached_client(),
+            fb,
+            touch.location.x,
+            touch.location.y,
+        )
+    })
+}
+
+/// How a contact that begins at `(x, y)` is handled: raw by whoever already
+/// took it, else by what the chrome there does with a pointer.
+fn touch_route(
+    taken: bool,
+    fb: &FrameBuilder,
+    x: f64,
+    y: f64,
+) -> crate::compositor::touch_pointer::TouchRoute {
+    use crate::compositor::touch_pointer::TouchRoute;
+    let point = vello::kurbo::Point::new(x, y);
+    if taken || fb.claims_raw_touch_at(point) {
+        TouchRoute::Raw
+    } else {
+        TouchRoute::for_cursor(fb.chrome_cursor_at(point))
+    }
+}
+
+/// The state dump's name for a key of the lock screen's keyboard.
+fn passcode_key_name(key: ui::passcode_keyboard::PasscodeKey) -> String {
+    use ui::passcode_keyboard::PasscodeKey;
+    match key {
+        PasscodeKey::Char(c) => c.to_string(),
+        PasscodeKey::Shift => "shift".into(),
+        PasscodeKey::Symbols => "symbols".into(),
+        PasscodeKey::Space => "space".into(),
+        PasscodeKey::Backspace => "backspace".into(),
+        PasscodeKey::Enter => "enter".into(),
+    }
 }
 
 /// Build the shell-side raw touch event for the test-control adapter. The
@@ -3316,17 +3475,42 @@ fn dispatch_test_control_touch(
     use winit::event::TouchPhase;
 
     let key = DirectTouchOwnership::key(device, slot);
-    let raw = |id, raw_x, raw_y, raw_phase, fb: &mut FrameBuilder, ctx: &mut TestControlCtx| {
+    let raw = |id,
+               raw_x,
+               raw_y,
+               raw_phase,
+               fb: &mut FrameBuilder,
+               ctx: &mut TestControlCtx,
+               state: &mut Option<&mut State>| {
         let event = test_touch_input_event(id, raw_x, raw_y, raw_phase);
         // Direct touch belongs to the shell gesture arena. Unlike pointer
         // input it must not first be routed as a client pointer event.
-        fb.dispatch_event(
+        let handled = fb.dispatch_event(
             &event,
             &ctx.modifiers,
             &mut ctx.doc,
             &ctx.root_obj,
             &mut ctx.focus,
         );
+        let WindowEvent::Touch(touch) = &event else {
+            return;
+        };
+        let reached_client = state
+            .as_deref()
+            .is_some_and(State::touch_down_reached_client);
+        let pointer_events = if handled
+            && touch.phase == TouchPhase::Moved
+            && ctx.touch_pointer.is_emulated(touch.id)
+        {
+            ctx.touch_pointer.cancel(touch)
+        } else {
+            ctx.touch_pointer.events(touch, || {
+                touch_route(handled || reached_client, fb, raw_x, raw_y)
+            })
+        };
+        for pointer_event in pointer_events {
+            dispatch_synth_event(&pointer_event, fb, ctx, state);
+        }
     };
     let frame = |ownership: &mut DirectTouchOwnership,
                  state: &mut Option<&mut State>,
@@ -3339,19 +3523,29 @@ fn dispatch_test_control_touch(
     match phase {
         TouchPhaseKind::Down => match ctx.direct_touch.down(key, (x, y)) {
             DirectTouchDown::ForwardToClient(id) => {
-                raw(id, x, y, TouchPhase::Started, fb, ctx);
+                // The client half first, as on DRM: the raw half then knows
+                // whether a touch-capable client took the contact.
                 forward_test_control_touch(state, fb, BackendTouchEvent::Down { slot: id, x, y });
+                raw(id, x, y, TouchPhase::Started, fb, ctx, state);
             }
             DirectTouchDown::CancelClientForShell(id) => {
-                raw(id, x, y, TouchPhase::Started, fb, ctx);
+                if let Some(state) = state.as_deref_mut() {
+                    state.note_touch_down_withheld_from_clients();
+                }
+                raw(id, x, y, TouchPhase::Started, fb, ctx, state);
                 forward_test_control_touch(state, fb, BackendTouchEvent::Cancel);
                 frame(&mut ctx.direct_touch, state, fb);
             }
-            DirectTouchDown::ShellOwned(id) => raw(id, x, y, TouchPhase::Started, fb, ctx),
+            DirectTouchDown::ShellOwned(id) => {
+                if let Some(state) = state.as_deref_mut() {
+                    state.note_touch_down_withheld_from_clients();
+                }
+                raw(id, x, y, TouchPhase::Started, fb, ctx, state);
+            }
         },
         TouchPhaseKind::Motion => {
             if let Some((id, to_client)) = ctx.direct_touch.motion(&key, (x, y)) {
-                raw(id, x, y, TouchPhase::Moved, fb, ctx);
+                raw(id, x, y, TouchPhase::Moved, fb, ctx, state);
                 if to_client {
                     forward_test_control_touch(
                         state,
@@ -3362,28 +3556,17 @@ fn dispatch_test_control_touch(
             }
         }
         TouchPhaseKind::Up => {
-            if let Some(((last_x, last_y), id, to_client, emulate_pointer)) =
-                ctx.direct_touch.up(&key)
-            {
-                raw(id, last_x, last_y, TouchPhase::Ended, fb, ctx);
+            if let Some(((last_x, last_y), id, to_client)) = ctx.direct_touch.up(&key) {
+                raw(id, last_x, last_y, TouchPhase::Ended, fb, ctx, state);
                 if to_client {
                     forward_test_control_touch(state, fb, BackendTouchEvent::Up { slot: id });
-                }
-                if emulate_pointer
-                    && state
-                        .as_deref()
-                        .is_none_or(State::touch_tap_needs_pointer_click)
-                {
-                    for event in touch_tap_pointer_events(last_x, last_y) {
-                        dispatch_synth_event(&event, fb, ctx, state);
-                    }
                 }
             }
         }
         TouchPhaseKind::Cancel => {
             let forward_cancel = ctx.direct_touch.client_stream_active();
             for (id, (last_x, last_y)) in ctx.direct_touch.cancel() {
-                raw(id, last_x, last_y, TouchPhase::Cancelled, fb, ctx);
+                raw(id, last_x, last_y, TouchPhase::Cancelled, fb, ctx, state);
             }
             if forward_cancel {
                 forward_test_control_touch(state, fb, BackendTouchEvent::Cancel);
@@ -3914,8 +4097,9 @@ fn write_snapshot_png(
     // measured at 1920x1080, ~450ms/frame vs ~70ms actual render+encode.
     // See [`SNAPSHOT_RENDERER`] for why the cache is a `static`, not `thread_local!`.
 
-    // `try_new`, not `new` inside `catch_unwind`: the release profile sets
-    // `panic = "abort"`, so a caught panic can't happen — the `Result` is what
+    // `try_new`, not `new` inside `catch_unwind`: in a release build a panic
+    // outside a `tilo_rt::panic_boundary` aborts, so a caught panic can't
+    // happen — the `Result` is what
     // keeps the compositor alive with no wgpu adapter (CI without llvmpipe).
     // Failure isn't cached: the slot stays empty so a later snapshot retries.
     let cache = SNAPSHOT_RENDERER.get_or_init(|| std::sync::Mutex::new(None));
@@ -7293,7 +7477,7 @@ pub fn run() {
         (0, 0) => (1600, 900),
         size => size,
     };
-    let peer_sync_requested = crate::compositor::peer_sync_enabled_from_env_or_marker();
+    let peer_sync_requested = crate::compositor::parse_peer_sync_from_args();
     let identity_store = match crate::shell::identity_provisioning::DiskIdentityStore::from_env() {
         Ok(store) => store,
         Err(error) => {
@@ -7698,6 +7882,12 @@ pub fn run() {
     let mut input_methods =
         crate::compositor::input_method_service::InputMethodServices::start(&event_loop.handle());
     input_methods.reload(&mut state);
+    // The shell's own fields' stand-in for the input method, connected the
+    // first time one takes text.
+    let mut shell_text_input: Option<crate::compositor::shell_text_input::ShellTextInput> = None;
+    // Touch contacts that landed on the on-screen keyboard: they are the
+    // keyboard's alone, even over chrome that otherwise captures input.
+    let mut osk_touch_slots: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
     // A second Wayland socket for clients the session trusts with
     // authority-bearing protocols — clipboard-manager access and session
@@ -8169,6 +8359,10 @@ pub fn run() {
     let mut last_lock_clock_refresh = Instant::now();
     let mut lock_player: Option<crate::shell::now_playing::PlayerSnapshot> = None;
     let mut lock_pointer: Option<vello::kurbo::Point> = None;
+    // The keyboard the lock screen draws for unlocking by touch: shown from
+    // the first touch, gone at the next physical key. No input method runs
+    // while locked; the passcode never leaves the lock screen.
+    let mut lock_keyboard = lock_screen::LockTouchKeyboard::default();
     let mut last_lock_media_poll = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
@@ -8481,6 +8675,15 @@ pub fn run() {
             frame_builder.with_chrome(|st| st.set_pad_map(pad_map));
         }
         input_steps.step("tablet");
+        // A finger held still on chrome long enough is a secondary click;
+        // no touch event marks that moment, the clock does.
+        pending_events.extend(
+            test_control_ctx
+                .touch_pointer
+                .poll(Instant::now())
+                .into_iter()
+                .map(BackendEvent::Input),
+        );
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
         let mut accessibility_changed = false;
@@ -8634,6 +8837,9 @@ pub fn run() {
                     }
 
                     let locked = session.is_locked();
+                    // Whether the chrome handled this event itself; for raw
+                    // touch that means a shell gesture or a touch-aware widget.
+                    let mut chrome_handled = false;
                     let route = priority_route(
                         wev,
                         test_control_ctx.modifiers,
@@ -8660,10 +8866,21 @@ pub fn run() {
                     if route == PriorityRoute::LockScreen {
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
+                        let mut key = winit_event_to_lock_key(wev);
                         match wev {
                             WindowEvent::CursorMoved { position, .. } => {
                                 lock_pointer =
                                     Some(vello::kurbo::Point::new(position.x, position.y));
+                            }
+                            WindowEvent::Touch(touch)
+                                if touch.phase == winit::event::TouchPhase::Started =>
+                            {
+                                lock_keyboard.touch_started();
+                            }
+                            WindowEvent::KeyboardInput { event, .. }
+                                if event.state == ElementState::Pressed =>
+                            {
+                                lock_keyboard.physical_key();
                             }
                             WindowEvent::MouseInput {
                                 state: ElementState::Pressed,
@@ -8671,12 +8888,23 @@ pub fn run() {
                                 ..
                             } => {
                                 let outputs =
-                                    lock_outputs(backend.outputs(), frame_builder.viewport());
+                                    lock_outputs(backend.outputs(), frame_builder.scene_size());
                                 let view = LockView {
                                     now_playing: lock_player.as_ref(),
+                                    keyboard: lock_keyboard.shown(),
                                     ..LockView::default()
                                 };
-                                if let Some(transport) = lock_pointer.and_then(|point| {
+                                let pressed = lock_pointer.and_then(|point| {
+                                    lock_screen::keyboard_key_at(
+                                        &outputs,
+                                        frame_builder.theme(),
+                                        &view,
+                                        point,
+                                    )
+                                });
+                                if let Some(pressed) = pressed {
+                                    key = lock_keyboard.press(pressed);
+                                } else if let Some(transport) = lock_pointer.and_then(|point| {
                                     lock_screen::transport_at(
                                         &outputs,
                                         frame_builder.theme(),
@@ -8689,7 +8917,6 @@ pub fn run() {
                             }
                             _ => {}
                         }
-                        let key = winit_event_to_lock_key(wev);
                         lock.handle_key(key);
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
                         session_changed = true;
@@ -8866,20 +9093,29 @@ pub fn run() {
                                 wev,
                                 &test_control_ctx.modifiers,
                             );
-                        if !to_client {
+                        // A finger on the on-screen keyboard types; the chrome
+                        // under the keyboard never sees it.
+                        let keyboard_contact = matches!(
+                            wev,
+                            WindowEvent::Touch(touch)
+                                if u32::try_from(touch.id)
+                                    .is_ok_and(|slot| osk_touch_slots.contains(&slot))
+                        );
+                        if !to_client && !keyboard_contact {
                             session_changed |= client_input::finish_chrome_drag_into_shell(
                                 &mut state,
                                 &mut frame_builder,
                                 wev,
                             );
                             // Dispatch real input through the same wire the headless `execute_planned_action` path uses.
-                            session_changed |= frame_builder.dispatch_event(
+                            chrome_handled = frame_builder.dispatch_event(
                                 wev,
                                 &test_control_ctx.modifiers,
                                 &mut test_control_ctx.doc,
                                 &test_control_ctx.root_obj,
                                 &mut test_control_ctx.focus,
                             );
+                            session_changed |= chrome_handled;
                             // Chrome input can change the active tab/group/workspace. The
                             // backend may have already queued the next physical key in this
                             // same batch, so move the Wayland seat now rather than only after
@@ -8887,6 +9123,23 @@ pub fn run() {
                             // the tab that was active before the click.
                             frame_builder.host_mut().flush_active_tab_writeback();
                             client_input::sync_keyboard_focus(&mut state, &frame_builder);
+                        }
+                    }
+                    // Touch nobody took raw becomes pointer input, processed
+                    // right now through the physical pointer path: the chrome,
+                    // the lock screen and touch-less clients all understand it.
+                    if let WindowEvent::Touch(touch) = wev {
+                        for event in touch_pointer_events(
+                            &mut test_control_ctx.touch_pointer,
+                            touch,
+                            chrome_handled,
+                            &state,
+                            &frame_builder,
+                        )
+                        .into_iter()
+                        .rev()
+                        {
+                            pending_events.push_front(BackendEvent::Input(event));
                         }
                     }
                 }
@@ -8985,11 +9238,26 @@ pub fn run() {
                     // client. Its mandatory `wl_touch.cancel` must still get
                     // through even if that gesture also opened chrome which
                     // now captures ordinary input.
-                    if matches!(
-                        touch,
-                        crate::compositor::backend::TouchEvent::Cancel
-                            | crate::compositor::backend::TouchEvent::Frame
-                    ) || (!session.is_locked() && client_input_allowed(&frame_builder))
+                    use crate::compositor::backend::TouchEvent as Contact;
+                    let on_keyboard = match touch {
+                        Contact::Down { slot, x, y } => {
+                            let hit = frame_builder.osk_surface_hit((x, y)).is_some();
+                            if hit {
+                                osk_touch_slots.insert(slot);
+                            }
+                            hit
+                        }
+                        Contact::Motion { slot, .. } => osk_touch_slots.contains(&slot),
+                        Contact::Up { slot } => osk_touch_slots.remove(&slot),
+                        Contact::Cancel => {
+                            osk_touch_slots.clear();
+                            false
+                        }
+                        Contact::Frame => false,
+                    };
+                    if matches!(touch, Contact::Cancel | Contact::Frame)
+                        || on_keyboard
+                        || (!session.is_locked() && client_input_allowed(&frame_builder))
                     {
                         let target = client_input::touch_target(&state, &frame_builder, &touch);
                         if let Some((surface_id, _)) = target
@@ -9004,16 +9272,6 @@ pub fn run() {
                         state.forward_client_touch(touch, target);
                     } else if matches!(touch, crate::compositor::backend::TouchEvent::Down { .. }) {
                         state.note_touch_down_withheld_from_clients();
-                    }
-                }
-                BackendEvent::TouchTap { x, y } => {
-                    // A tap whose touch sequence reached a client is that
-                    // client's alone. Otherwise it becomes one ordinary click,
-                    // processed right now through the physical pointer path.
-                    if state.touch_tap_needs_pointer_click() {
-                        for event in touch_tap_pointer_events(x, y).into_iter().rev() {
-                            pending_events.push_front(BackendEvent::Input(event));
-                        }
                     }
                 }
                 BackendEvent::InputDeviceAdded { id, capabilities } => {
@@ -9560,6 +9818,9 @@ pub fn run() {
             // The field/status changed (unlocked, or error shown) — repaint.
             session_changed = true;
             if outcome == UnlockOutcome::Unlocked {
+                // The next lock starts without the keyboard and its layer.
+                lock_keyboard = lock_screen::LockTouchKeyboard::default();
+                frame_builder.set_lock_keyboard_keys(Vec::new());
                 for t in session.request_unlock(Instant::now()) {
                     apply_session_transition(
                         t,
@@ -9746,11 +10007,43 @@ pub fn run() {
         let awake_holders =
             inhibit_registry.active_reasons_for(tilo_power_mgmt::inhibit::INHIBIT_IDLE);
         frame_builder.with_chrome(|chrome| chrome.set_awake_holders(awake_holders));
+        // A chrome field with the focus, while no client holds the keyboard,
+        // is served to the seat's input method like an application field.
+        let shell_field = (!session.is_locked() && state.client_input.keyboard_focus().is_none())
+            .then(|| frame_builder.focused_ime_field(test_control_ctx.focus))
+            .flatten();
+        if shell_field.is_some() && shell_text_input.is_none() {
+            match crate::compositor::shell_text_input::ShellTextInput::connect(&mut state) {
+                Ok(proxy) => shell_text_input = Some(proxy),
+                Err(error) => {
+                    tracing::warn!(target: "tilo::input_method", %error, "the shell's fields cannot reach the input method");
+                }
+            }
+        }
+        if let Some(proxy) = shell_text_input.as_mut() {
+            let mut typed = proxy.sync(&mut state, shell_field);
+            state.shell_field_active = proxy.holds_focus(&state);
+            typed.append(&mut state.shell_field_keys);
+            for event in &typed {
+                frame_builder.dispatch_event(
+                    event,
+                    &test_control_ctx.modifiers,
+                    &mut test_control_ctx.doc,
+                    &test_control_ctx.root_obj,
+                    &mut test_control_ctx.focus,
+                );
+            }
+            if !typed.is_empty() {
+                injected_redraw_pending = true;
+            }
+        }
         frame_builder.set_osk_surface(
             state.osk_surface,
             state.client_input.keyboard_focus(),
-            state.text_input_active(),
+            state.shell_field_active.then_some(shell_field).flatten(),
+            state.text_input_active() && input_methods.osk_shown(),
         );
+        frame_builder.set_osk_commits(state.osk_commits);
         pump_checkpoint!("session-focus-and-surfaces");
         let floating_surfaces = state
             .floating_toplevels
@@ -9798,9 +10091,12 @@ pub fn run() {
         // Hand the remote-input firewall this frame's screen: foreign tile
         // positions, keyboard holder, chrome-drawn-over, locked — refreshed before remote events drain.
         client_input::publish_remote_input_view(&mut state, &frame_builder, session.is_locked());
-        if let Some(image) =
-            client_input::sync_pointer_image(&state, &mut frame_builder, session.is_locked())
-        {
+        if let Some(image) = client_input::sync_pointer_image(
+            &state,
+            &mut frame_builder,
+            session.is_locked(),
+            test_control_ctx.input.last_used() == Some(ui::InputModality::Touch),
+        ) {
             backend.set_pointer_image(image);
             // A software cursor is drawn into the frame, so it needs one.
             injected_redraw_pending = true;
@@ -10673,6 +10969,7 @@ pub fn run() {
                     &lock,
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
+                    lock_keyboard.shown(),
                 );
                 publish_accessibility_tree(
                     &mut native_accessibility,
@@ -10712,6 +11009,13 @@ pub fn run() {
                     // Count-only summary on the lock screen — no bodies leak.
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
+                    lock_keyboard.shown(),
+                );
+                frame_builder.set_lock_keyboard_keys(
+                    lock_screen::keyboard_keys(&lock_outputs, &theme, &view)
+                        .into_iter()
+                        .map(|(key, rect)| (passcode_key_name(key), rect))
+                        .collect(),
                 );
                 let wallpaper = {
                     let chrome = frame_builder.chrome();
@@ -11150,6 +11454,7 @@ pub fn run() {
                         &lock,
                         frame_builder.chrome().notification_count(),
                         lock_player.as_ref(),
+                        lock_keyboard.shown(),
                     )
                 });
                 publish_accessibility_tree(
@@ -11427,6 +11732,7 @@ pub fn run() {
                     wayland_client_service_deadline(wayland_client_wake, park_now),
                 ),
                 ("text-commit", state.text_commit_deadline()),
+                ("touch-hold", test_control_ctx.touch_pointer.deadline()),
                 ("legacy-stream", state.legacy_stream_deadline()),
                 (
                     "client-followup",
@@ -12786,18 +13092,20 @@ mod tests {
         workspace.shared_surfaces.share(7, 9);
         let none = std::collections::HashSet::new();
         let nobody = std::collections::BTreeMap::new();
-        let share =
-            |app_id: &str, tab: u64, viewers: &[u64]| crate::compositor::state::LegacyShare {
+        let share = |app_id: &str, tab: u64, viewers: &[u64], paint: bool| {
+            crate::compositor::state::LegacyShare {
                 app_id: app_id.to_string(),
                 tab,
                 viewers: viewers.iter().copied().collect(),
                 decode_limits: HashMap::new(),
-            };
+                paint,
+            }
+        };
 
         let watched = desired_legacy_shares(&tree, true, &none, &nobody);
         assert_eq!(
             watched.get(&7).map(|(share, _)| share),
-            Some(&share("org.gimp.GIMP", 12, &[9]))
+            Some(&share("org.gimp.GIMP", 12, &[9], false))
         );
         assert!(
             !watched.contains_key(&8),
@@ -12807,11 +13115,11 @@ mod tests {
         let through_host = desired_legacy_shares(&tree, true, &hosts, &nobody);
         assert_eq!(
             through_host.get(&7).map(|(share, _)| share),
-            Some(&share("org.gimp.GIMP", 12, &[9, 42]))
+            Some(&share("org.gimp.GIMP", 12, &[9, 42], false))
         );
         assert_eq!(
             through_host.get(&8).map(|(share, _)| share),
-            Some(&share("org.chromium.Chromium", 14, &[42])),
+            Some(&share("org.chromium.Chromium", 14, &[42], true)),
             "a viewer host receives every legacy window of the active workspace"
         );
         assert!(

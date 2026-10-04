@@ -17,6 +17,8 @@ parking_lot.workspace = true
 automerge.workspace = true
 runtime-identity = { path = "../../runtime/runtime-identity" }
 capnp-rpc.workspace = true
+# The broker thread is a panic boundary the session restarts.
+tilo-rt.workspace = true
 futures = { workspace = true, default-features = true }
 ed25519-dalek.workspace = true
 hex.workspace = true

@@ -349,17 +349,17 @@ mod tests {
         // Phase: build_uses_manifest_features_plus_dev_overrides.
         {
             let shell = component(
-                "[[component]]\nname = \"browser\"\npackages = [\"browser\", \"helper\"]\nfeatures = [\"browser/wpe\"]\n",
+                "[[component]]\nname = \"browser\"\npackages = [\"browser\", \"helper\"]\nfeatures = [\"browser/thin\"]\n",
             );
             let metadata = json!({"packages": [
-                {"name": "browser", "features": {"wpe": [], "dev-overrides": []}},
+                {"name": "browser", "features": {"thin": [], "dev-overrides": []}},
                 {"name": "helper", "features": {}},
             ]});
             let extra = dev_features(&metadata, &shell.packages);
             assert_eq!(extra, ["browser/dev-overrides"]);
             assert_eq!(
                 as_cargo(&cargo_build(&shell, &extra)),
-                "cargo build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p browser -p helper --features browser/wpe,browser/dev-overrides"
+                "cargo build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p browser -p helper --features browser/thin,browser/dev-overrides"
             );
             let plain = component(
                 "[[component]]\nname = \"x\"\npackages = [\"x\"]\nprofile = \"thin-app\"\n",

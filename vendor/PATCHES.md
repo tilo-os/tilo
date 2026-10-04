@@ -272,3 +272,15 @@ backend. wgpu-hal's GLES device holds its single context lock for every
 pipeline compile, so parallel initialisation gains nothing there, and on a
 slow driver a queued worker thread exceeds the context lock timeout and
 panics.
+
+## zlink-macros
+
+`vendor/zlink-macros` is crates.io `zlink-macros` 0.7.0 (checksum
+`2fc623b8323797bf2d48333e7633e143077dd92cc66d9cca170014b66c43b1b5`) with one
+change in `src/service/codegen.rs`: the service macro's ReplyStreamParams enum
+emits its variants sorted by type instead of in `HashMap` order, which differs
+per process and made every build of a binary that expands the macro different.
+It is not part of the Tilo workspace. The OS image's bootc build uses it
+through `[patch.crates-io]` (os/external-assets/bootc-runtime/0002-*.patch), so
+bootc builds reproducibly.
+

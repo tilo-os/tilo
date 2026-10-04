@@ -1,5 +1,10 @@
 //! The registries the user pulls Tilo apps from: `registries.toml` under
-//! `$XDG_CONFIG_HOME/tilo-store/`.
+//! `$XDG_CONFIG_HOME/tilo-store/`, the list `app repo` edits.
+//!
+//! The sandboxed Store has a home of its own, so it never reads that file
+//! itself: it asks the app host, which runs `app repo list --json` as the
+//! person ([`repositories`]). A copy in the sandbox would be a second list
+//! `app repo` never edits.
 //!
 //! **Owned by [`app_cli::config`]**, not by this app. The desktop's search
 //! box reads the same file to decide what software the machine could open,
@@ -17,6 +22,22 @@ pub use app_cli::config::{
     DEFAULT_REGISTRY_BASE_URL, RegistriesFile, RegistryConfig, cache_dir, config_dir,
     load_registries, placeholder_owner_pubkey, registries_path,
 };
+
+/// The person's app repositories, through the app host. Without one (a
+/// test, a development run outside a session) the configuration directory
+/// the environment names is read, and nothing is ever written there.
+///
+/// # Errors
+/// Returns why the app host could not report them.
+pub fn repositories(
+    host: Option<&app_host::client::BlockingClient>,
+) -> Result<RegistriesFile, String> {
+    let Some(host) = host else {
+        return Ok(app_cli::config::load_registries_no_seed());
+    };
+    let json = host.repositories()?;
+    serde_json::from_str(&json).map_err(|error| format!("unreadable repository list: {error}"))
+}
 
 #[cfg(test)]
 mod tests {
@@ -58,6 +79,15 @@ mod tests {
                 "one registry list, two readers"
             );
             assert_eq!(config_dir().as_deref(), Some(td.path()));
+        }
+
+        // Case `without_an_app_host_nothing_is_written`.
+        // The Store's own reading never seeds a list in its sandbox.
+        {
+            let td = TempDir::new().unwrap();
+            let _g = scoped_dir(&td);
+            assert!(repositories(None).unwrap().registries.is_empty());
+            assert!(!td.path().join("registries.toml").exists());
         }
 
         // Case `seed_written_when_missing`.

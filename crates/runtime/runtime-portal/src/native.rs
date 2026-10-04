@@ -75,8 +75,21 @@ mod unix {
         if collab.is_none() && identity.is_none() && owner.is_none() {
             return Ok(false);
         }
+        // The automatic host hands over both services. The launcher hands
+        // over the ones the launch has: an app that declares no
+        // collaboration service still gets its identity broker, and a session
+        // without an identity service still hands over collaboration. Every
+        // descriptor that is named must be valid either way.
+        let named: Vec<&Option<std::ffi::OsString>> = if owner.is_some() {
+            vec![&collab, &identity]
+        } else {
+            [&collab, &identity]
+                .into_iter()
+                .filter(|value| value.is_some())
+                .collect()
+        };
         let mut descriptors = Vec::new();
-        for value in [&collab, &identity] {
+        for value in named {
             let fd = value
                 .as_deref()
                 .and_then(OsStr::to_str)
@@ -113,7 +126,7 @@ mod unix {
             }
             descriptors.push(fd);
         }
-        if descriptors.first() == descriptors.get(1) {
+        if descriptors.len() > 1 && descriptors.first() == descriptors.get(1) {
             return Err(invalid(
                 "inherited runtime services must have distinct descriptors",
             ));

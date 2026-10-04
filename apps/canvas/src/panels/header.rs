@@ -6,13 +6,14 @@ use ui::LocalState;
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::text_render::FontChoice;
+use ui::widget::EditableLabel;
 
 use super::icon_button;
-use crate::actions::CanvasAction;
+use crate::actions::{Align, CanvasAction};
 use crate::model::Artwork;
 use crate::resource::ArtworkResource;
 use crate::selection::{Combine, Select, UseSelection};
-use crate::tools::{Tools, ViewRequest};
+use crate::tools::{Sheet, Tools, ViewRequest};
 
 /// The least room the title keeps, so it reads as a title, not a field.
 const TITLE: f32 = 96.0; // about ten letters of the title face: a text width, not spacing
@@ -22,16 +23,26 @@ const READOUT: f32 = 52.0; // "6400%" in the caption face: a text width, not spa
 
 /// The header.
 pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
-    let title = cx
-        .input(
-            |art: &Artwork| art.title.clone(),
-            ArtworkResource::SET_TITLE,
-        )
-        .with_plain_chrome()
-        .with_font_family(FontChoice::Serif)
-        .with_font_size(17.0)
-        .with_placeholder(&ui::i18n::I18nManager::lookup_plain("canvas-untitled"))
-        .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-artwork-title"));
+    // The title reads as a title until it is clicked; the edit lands as
+    // one step when Enter or a click away ends it, not one per letter.
+    let titled = cx.value(|art: &Artwork| art.title.clone());
+    let title = cx.switch(&titled, |cx, title| {
+        Box::new(
+            cx.actions().bind(
+                EditableLabel::new(title)
+                    .edits_on_click()
+                    .with_placeholder(ui::i18n::I18nManager::lookup_plain("canvas-untitled"))
+                    .with_font_family(FontChoice::Serif)
+                    .with_font_size(17.0)
+                    .with_id("canvas-title")
+                    .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
+                        "canvas-artwork-title",
+                    ))
+                    .filling(),
+                ArtworkResource::SET_TITLE,
+            ),
+        ) as Element
+    });
     let lookup = ui::i18n::I18nManager::lookup_plain;
     Box::new(
         Row::new()
@@ -46,10 +57,16 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     .with_no_padding()
                     .with_flex_grow()
                     .with_min_width(TITLE)
-                    .with_child(Box::new(title)),
+                    .with_child(Box::new(
+                        Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .with_gap(0.0)
+                            .push(title)
+                            .push(notice(cx, tools)),
+                    )),
             ))
             .push(add_picture(tools))
-            .push(export(tools))
             .push(Box::new(Spacer::fixed(6.0)))
             .push(Box::new(icon_button(
                 cx,
@@ -70,7 +87,14 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                 &tools.sidebar,
                 "canvas-sidebar",
                 Icon::PanelRight,
-            ))),
+            )))
+            .push(Box::new(sheet_button(
+                tools,
+                "canvas-export-open",
+                Icon::Download,
+                Sheet::Export,
+            )))
+            .push(menu(cx, tools)),
     )
 }
 
@@ -102,27 +126,6 @@ fn add_picture(tools: &Tools) -> Element {
                 *picking.borrow_mut() = Some(request);
             }),
     )
-}
-
-/// Export the artwork as a picture, saved where the person chooses: the
-/// same rendering as the `export` action.
-fn export(tools: &Tools) -> Element {
-    let mut menu = Dropdown::from_state(Vec::new(), &tools.export)
-        .as_menu(Icon::Download)
-        .with_id("canvas-export")
-        .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-export"));
-    menu.set_value_options(
-        ["png", "jpeg", "webp"]
-            .into_iter()
-            .map(|format| {
-                (
-                    format.to_owned(),
-                    ui::i18n::I18nManager::lookup_plain(&format!("canvas-export-{format}")),
-                )
-            })
-            .collect(),
-    );
-    Box::new(menu)
 }
 
 /// What of the artwork the strip over the canvas follows: whether there is
@@ -160,6 +163,7 @@ pub fn context_bar(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         let tools = tools.clone();
         cx.switch(&tools.selection.clone(), move |cx, picked| {
             let combine = picked.len() >= 2;
+            let align = !picked.is_empty();
             let facts = facts.clone();
             let tools = tools.clone();
             cx.switch(&tools.layer.clone(), move |cx, layer| {
@@ -168,7 +172,7 @@ pub fn context_bar(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     .iter()
                     .find(|(mask, _, _)| mask == layer)
                     .map(|(_, owner, name)| (owner.clone(), name.clone()));
-                if !facts.area && !combine && masked.is_none() {
+                if !facts.area && !align && masked.is_none() {
                     return Box::new(Spacer::fixed(0.0)) as Element;
                 }
                 let area = facts.area;
@@ -196,6 +200,8 @@ struct Command {
     id: String,
     bind: Bind,
     edit: Edit,
+    /// Shown by its icon alone at any width, as a row of alignments is.
+    iconic: bool,
 }
 
 impl Command {
@@ -210,7 +216,14 @@ impl Command {
             id: id.to_owned(),
             bind: Box::new(move |button, cx| Box::new(cx.actions().bind(button, action))),
             edit,
+            iconic: false,
         }
+    }
+
+    /// The command by its icon alone, its label its tooltip.
+    fn iconic(mut self) -> Self {
+        self.iconic = true;
+        self
     }
 
     fn label(&self) -> String {
@@ -280,6 +293,9 @@ fn strip(
     if combine {
         groups.push(combine_commands(tools));
     }
+    if tools.selection.with(|picked| !picked.is_empty()) {
+        groups.push(align_commands(tools));
+    }
     let count: usize = groups.iter().map(Vec::len).sum();
     #[allow(clippy::cast_precision_loss, reason = "a handful of buttons")]
     let rules = groups.len().saturating_sub(1) as f32 * 9.0;
@@ -337,6 +353,10 @@ fn strip(
                 .push(Box::new(Spacer::fixed(3.0)));
         }
         for command in group {
+            if command.iconic {
+                row = row.push(command.button(cx, false));
+                continue;
+            }
             // Labels go in order and stop at the first that does not fit,
             // so the labelled commands are always the first ones.
             let wanted = command.label_room();
@@ -432,6 +452,19 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
         using(Icon::SquareDashed, "stroke"),
         using(Icon::Layers, "mask"),
         using(Icon::Eraser, "clear"),
+        refine(tools, Icon::Plus, "canvas-area-grow", Refine::Grow(GROW)),
+        refine(
+            tools,
+            Icon::Minus,
+            "canvas-area-shrink",
+            Refine::Grow(-GROW),
+        ),
+        refine(
+            tools,
+            Icon::Droplet,
+            "canvas-area-feather",
+            Refine::Feather(FEATHER),
+        ),
         Command::new(
             Icon::Contrast,
             "canvas-area-invert",
@@ -455,6 +488,52 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
             }),
         ),
     ]
+}
+
+/// How far, in screen pixels, a click grows or shrinks the selection.
+const GROW: f64 = 4.0; // a step a person sees at the zoom they work at, not spacing
+/// How wide, in screen pixels, a click softens the selection's edge.
+const FEATHER: f64 = 8.0; // a step a person sees at the zoom they work at, not spacing
+
+/// A change of the selection's edge, in screen pixels.
+#[derive(Clone, Copy)]
+enum Refine {
+    Grow(f64),
+    Feather(f64),
+}
+
+/// Grow, shrink or feather the selection by a step seen at the zoom the
+/// artwork is shown at, as a person judges an edge by eye.
+fn refine(tools: &Tools, icon: Icon, id: &str, change: Refine) -> Command {
+    let zoom = tools.zoom.clone();
+    let units = move |pixels: f64| pixels / zoom.with(|zoom| zoom.max(1e-6));
+    let reads = units.clone();
+    let edit = std::sync::Arc::new(move || {
+        let (grow, feather) = match change {
+            Refine::Grow(pixels) => (Some(reads(pixels)), None),
+            Refine::Feather(pixels) => (None, Some(reads(pixels))),
+        };
+        CanvasAction::Select(Box::new(Select {
+            feather,
+            grow,
+            ..Select::default()
+        }))
+    });
+    match change {
+        Refine::Grow(pixels) => Command::new(
+            icon,
+            id,
+            ArtworkResource::SELECT_GROW.map(move |()| units(pixels)),
+            edit,
+        ),
+        Refine::Feather(pixels) => Command::new(
+            icon,
+            id,
+            ArtworkResource::SELECT_FEATHER.map(move |()| units(pixels)),
+            edit,
+        ),
+    }
+    .iconic()
 }
 
 /// Unite, subtract, intersect or exclude the picked shapes.
@@ -483,6 +562,161 @@ fn combine_commands(tools: &Tools) -> Vec<Command> {
     })
     .collect()
 }
+
+/// Line the picked marks up along an edge or centre line, or space them
+/// evenly: among themselves when there are several, on the artwork when
+/// there is one.
+fn align_commands(tools: &Tools) -> Vec<Command> {
+    let edges = [
+        (Icon::AlignStartVertical, "left"),
+        (Icon::AlignCenterVertical, "center"),
+        (Icon::AlignEndVertical, "right"),
+        (Icon::AlignStartHorizontal, "top"),
+        (Icon::AlignCenterHorizontal, "middle"),
+        (Icon::AlignEndHorizontal, "bottom"),
+    ];
+    let to = |picked: &[String]| (picked.len() == 1).then(|| "artwork".to_owned());
+    let mut commands: Vec<Command> = edges
+        .into_iter()
+        .map(|(icon, edge)| {
+            let picked = tools.selection.clone();
+            let reads = picked.clone();
+            Command::new(
+                icon,
+                &format!("canvas-align-{edge}"),
+                ArtworkResource::ALIGN.map(move |()| {
+                    let ids = picked.with(Clone::clone);
+                    let to = to(&ids);
+                    (ids, edge.to_owned(), to)
+                }),
+                std::sync::Arc::new(move || {
+                    let ids = reads.with(Clone::clone);
+                    CanvasAction::Align(Align {
+                        to: to(&ids),
+                        ids,
+                        edge: Some(edge.to_owned()),
+                        distribute: None,
+                    })
+                }),
+            )
+            .iconic()
+        })
+        .collect();
+    // Spacing needs three to have a gap to even out.
+    if tools.selection.with(|picked| picked.len() >= 3) {
+        for (icon, axis) in [
+            (Icon::AlignHorizontalDistributeCenter, "horizontal"),
+            (Icon::AlignVerticalDistributeCenter, "vertical"),
+        ] {
+            let picked = tools.selection.clone();
+            let reads = picked.clone();
+            commands.push(
+                Command::new(
+                    icon,
+                    &format!("canvas-distribute-{axis}"),
+                    ArtworkResource::DISTRIBUTE
+                        .map(move |()| (picked.with(Clone::clone), axis.to_owned())),
+                    std::sync::Arc::new(move || {
+                        CanvasAction::Align(Align {
+                            ids: reads.with(Clone::clone),
+                            edge: None,
+                            distribute: Some(axis.to_owned()),
+                            to: None,
+                        })
+                    }),
+                )
+                .iconic(),
+            );
+        }
+    }
+    commands
+}
+
+/// What the last open, save or export came to, in a caption under the
+/// title: one line, cut short where it would crowd the header.
+fn notice(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+    cx.switch(&tools.notice, |_, notice| {
+        let Some(said) = notice else {
+            return Box::new(Spacer::fixed(0.0)) as Element;
+        };
+        let shown = if said.chars().count() > NOTICE_LETTERS {
+            let cut: String = said.chars().take(NOTICE_LETTERS - 1).collect();
+            format!("{}…", cut.trim_end())
+        } else {
+            said.clone()
+        };
+        Box::new(
+            Text::new(&shown)
+                .with_role(TextRole::Caption)
+                .dimmed()
+                .with_live(ui::a11y::Politeness::Polite),
+        )
+    })
+}
+
+/// The most letters of a notice shown beside the title.
+const NOTICE_LETTERS: usize = 44;
+
+/// A button opening one of the window's dialogs.
+fn sheet_button(tools: &Tools, id: &str, icon: Icon, which: Sheet) -> Button {
+    let sheet = tools.sheet.clone();
+    let name = ui::i18n::I18nManager::lookup_plain(id);
+    Button::new(id, "", None)
+        .with_icon(icon)
+        .ghost()
+        .with_accessible_name(&name)
+        .tooltip(name.clone())
+        .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+        .on_view(move || sheet.set(Some(which)))
+}
+
+/// The artwork's menu: new, open, save, a copy, export, and the keys.
+fn menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+    let tools = tools.clone();
+    cx.switch(&tools.recents.clone(), move |_, recents| {
+        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let items = [
+            ("new", "canvas-menu-new"),
+            ("open", "canvas-menu-open"),
+            ("save", "canvas-menu-save"),
+            ("save-as", "canvas-menu-save-as"),
+            ("duplicate", "canvas-menu-duplicate"),
+            ("export", "canvas-menu-export"),
+            ("keys", "canvas-menu-keys"),
+        ];
+        let entry = |(value, id): &(&str, &str)| ((*value).to_owned(), lookup(id));
+        // New and open first, then the artworks worked on lately to open
+        // again in one step, then saving, exporting and the keys.
+        let (start, rest) = items.split_at(2);
+        let mut options: Vec<(String, String)> = start.iter().map(entry).collect();
+        options.extend(recents.iter().take(MENU_RECENTS).map(|recent| {
+            let name = if recent.title.is_empty() {
+                std::path::Path::new(&recent.path)
+                    .file_stem()
+                    .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned())
+            } else {
+                recent.title.clone()
+            };
+            (
+                format!("{RECENT}{}", recent.path),
+                ui::i18n::I18nManager::format("canvas-menu-recent", &[("name", name.into())]),
+            )
+        }));
+        options.extend(rest.iter().map(entry));
+        // The choice is view state the file desk carries out.
+        let mut menu = Dropdown::from_state(Vec::new(), &tools.menu)
+            .as_menu(Icon::Menu)
+            .with_id("canvas-menu")
+            .with_accessible_name(lookup("canvas-menu"));
+        menu.set_value_options(options);
+        Box::new(menu) as Element
+    })
+}
+
+/// How a recent artwork's menu entry is told from the others.
+pub(crate) const RECENT: &str = "recent:";
+/// How many recent artworks the menu offers.
+const MENU_RECENTS: usize = 5;
 
 /// Zoom out, how near the artwork is now, zoom in, and fit it to the
 /// window.

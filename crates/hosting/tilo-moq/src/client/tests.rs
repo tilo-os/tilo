@@ -66,3 +66,28 @@ async fn inert_proof_input_cannot_mint_authority_or_readiness() {
         Err(ClientError::Denied)
     ));
 }
+
+fn timestamp(frame: u64) -> u64 {
+    frame.saturating_mul(u64::from(voice::FRAME_SAMPLES))
+}
+fn object(sequence: u64, frame: u64) -> VoiceObject {
+    VoiceObject {
+        sequence,
+        timestamp: timestamp(frame),
+        duration: voice::FRAME_SAMPLES,
+        payload: vec![1],
+    }
+}
+#[test]
+fn frames_missing_between_deliveries_count_as_dropped() {
+    let at = |sequence, frame| Delivered {
+        sequence,
+        timestamp: timestamp(frame),
+    };
+    assert_eq!(at(7, 7).skipped(&object(8, 8)), 0);
+    assert_eq!(at(7, 7).skipped(&object(18, 18)), 10);
+    // An abandoned partial group: sequence numbers jump to the next group,
+    // media time does not.
+    assert_eq!(at(12, 12).skipped(&object(15, 13)), 0);
+    assert_eq!(at(12, 12).skipped(&object(20, 18)), 5);
+}

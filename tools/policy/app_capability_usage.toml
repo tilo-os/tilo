@@ -106,7 +106,6 @@ paths = ["ui::speech"]
 crates = ["spellcheck"]
 
 [uses.webview]
-features = ["ui/webview", "ui/webview-wpe"]
 paths = ["ui::webview"]
 
 [uses.threads]

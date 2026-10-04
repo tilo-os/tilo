@@ -99,7 +99,9 @@ Before pushing:
 3. Commit the candidate, then inspect the affected plan with
    `python3 tools/ci/affected_packages.py --base origin/main --shards 2`; unexpected full-workspace
    selection is a bug to understand before pushing.
-4. Push a task branch and use a PR. Do not probe `main` with a direct push. After pushing, let
+4. Push a task branch and use a PR. Do not probe `main` with a direct push. `.githooks/pre-push`
+   refuses a branch that conflicts with the current main or leaves `crates/workspace-hack` stale,
+   the two rejections CI otherwise reports a minute after the push. After pushing, let
    the Codex CI hook report completion; inspect a failure once with
    `fgj actions run view <run> --log-failed` and rerun only the failed job when it is transient.
 

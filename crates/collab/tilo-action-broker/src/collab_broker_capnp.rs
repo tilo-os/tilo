@@ -1054,7 +1054,7 @@ pub struct InvocationEnvelope {
     id: u64,
     invocation: tilo_actions::InvocationId,
     pub resource: String,
-    action: String,
+    pub action: String,
     argument: Option<String>,
     pub actor: String,
     context: Option<tilo_actions::ActionContext>,
@@ -2442,6 +2442,10 @@ pub struct CapnpBrokerState {
     local_turn: std::sync::Arc<tokio::sync::Notify>,
     /// Signed joins on actual private host-worker descriptors; never reconstructed from surfaces.
     host_workers: Mutex<HashMap<u64, AdmittedJoinIdentity>>,
+    /// Peer ids of the broker's own services on its thread's runtime.
+    service_peers: Mutex<Vec<u64>>,
+    /// How often the broker thread unwound and started again.
+    thread_restarts: AtomicU64,
     #[cfg(test)]
     thread_callbacks: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
 }
@@ -2648,6 +2652,14 @@ impl CapnpBrokerState {
             Err(poisoned) => poisoned.into_inner().push(callback),
         }
         self.local_turn.notify_one();
+    }
+
+    #[cfg(test)]
+    fn callbacks_pending(&self) -> usize {
+        match self.thread_callbacks.lock() {
+            Ok(callbacks) => callbacks.len(),
+            Err(poisoned) => poisoned.into_inner().len(),
+        }
     }
 
     /// Allocate a private connected descriptor for an actual host-mounted worker.
@@ -3127,6 +3139,8 @@ impl CapnpBrokerState {
                 worker_admitted: tokio::sync::Notify::new(),
                 local_turn,
                 host_workers: Mutex::new(HashMap::new()),
+                service_peers: Mutex::new(Vec::new()),
+                thread_restarts: AtomicU64::new(0),
                 #[cfg(test)]
                 thread_callbacks: Mutex::new(Vec::new()),
             }),
@@ -5328,6 +5342,29 @@ impl CapnpBrokerState {
         // Peer table torn down: racing with shutdown. Hand out a
         // placeholder id; the caller drops it on the next tokio yield.
         self.fanout.upgrade().map_or(u64::MAX, |t| t.next_peer_id())
+    }
+
+    /// A peer id for one of the broker's own services, which runs on the
+    /// broker thread's runtime and is started again with it.
+    fn next_service_peer_id(&self) -> u64 {
+        let peer_id = self.next_peer_id();
+        match self.service_peers.lock() {
+            Ok(mut peers) => peers.push(peer_id),
+            Err(poisoned) => poisoned.into_inner().push(peer_id),
+        }
+        peer_id
+    }
+
+    /// Withdraw the services a broker thread that unwound had started, as
+    /// if their connections had closed, before a new thread starts them.
+    fn forget_service_peers(&self) {
+        let peers = match self.service_peers.lock() {
+            Ok(mut peers) => std::mem::take(&mut *peers),
+            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+        };
+        for peer_id in peers {
+            self.remove_connection(peer_id);
+        }
     }
 
     /// Drive an event onto the subscribed queues `route` addresses,
@@ -9903,12 +9940,8 @@ impl Drop for BrokerThreadShutdown {
 }
 
 #[expect(
-    clippy::too_many_lines,
-    reason = "the one broker thread constructor: every host-owned capability is injected here"
-)]
-#[expect(
     clippy::significant_drop_tightening,
-    reason = "the state handles are clones moved into the broker thread and its connection tasks"
+    reason = "the state handles are clones moved into the broker thread"
 )]
 pub(super) fn spawn_configured(
     socket_path: &Path,
@@ -9976,149 +10009,235 @@ pub(super) fn spawn_configured(
                 state: Arc::clone(&state),
                 fanout: fanout_for_thread,
             };
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    tracing::warn!("capnp broker: tokio runtime init failed: {e}");
-                    return;
-                }
-            };
-            let local = tokio::task::LocalSet::new();
-            local.block_on(&rt, async move {
-                let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
-                if let Err(error) = state.start_desktop_commands() {
-                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                        failure.get_or_insert(error);
-                    }
-                    return;
-                }
-                if let Err(error) = state.start_document_imports() {
-                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                        failure.get_or_insert(error);
-                    }
-                    return;
-                }
-                if let Err(error) = state.start_workspace_collaboration() {
-                    if let Ok(mut failure) = state.owner_commit_failure.lock() {
-                        failure.get_or_insert(error);
-                    }
-                    return;
-                }
-                state.start_peer_action_bridge(Rc::clone(&directories));
-                let listener = match tokio::net::UnixListener::from_std(std_listener) {
-                    Ok(l) => l,
+            let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
+            loop {
+                let listener = match std_listener.try_clone() {
+                    Ok(listener) => listener,
                     Err(e) => {
-                        tracing::warn!(
-                            "capnp broker: adopting {} into the reactor failed: {e}",
-                            socket_path_for_thread.display()
-                        );
+                        tracing::warn!("capnp broker: cannot take up its socket again: {e}");
                         return;
                     }
                 };
-                loop {
-                    #[cfg(test)]
-                    {
-                        let callbacks = match state.thread_callbacks.lock() {
-                            Ok(mut callbacks) => std::mem::take(&mut *callbacks),
-                            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
-                        };
-                        for callback in callbacks {
-                            callback();
-                        }
-                    }
-                    let workers = state
-                        .workers
-                        .lock()
-                        .map(|mut workers| std::mem::take(&mut *workers))
-                        .unwrap_or_default();
-                    for worker in workers {
-                        let state = state.clone();
-                        let directories = directories.clone();
-                        let peer_id = state.next_peer_id();
-                        tokio::task::spawn_local(async move {
-                            let result = async {
-                                let stream = tokio::net::UnixStream::from_std(worker.stream)
-                                    .map_err(capnp::Error::from)?;
-                                drive_connection(
-                                    stream,
-                                    state,
-                                    directories,
-                                    peer_id,
-                                    Some(worker.binding),
-                                )
-                                .await
-                            }
-                            .await;
-                            if let Err(error) = result {
-                                let error_class = match error.kind {
-                                    capnp::ErrorKind::Failed => "failed",
-                                    capnp::ErrorKind::Overloaded => "overloaded",
-                                    capnp::ErrorKind::Disconnected => "disconnected",
-                                    capnp::ErrorKind::Unimplemented => "unimplemented",
-                                    _ => "protocol",
-                                };
-                                tracing::warn!(
-                                    peer_id,
-                                    phase = "local_worker_rpc",
-                                    error_class,
-                                    "capnp broker: local worker disconnected"
-                                );
-                            }
-                        });
-                    }
-                    state.drain_action_directory_bridge(&directories);
-                    if quit.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let deadline = state.next_invocation_deadline();
-                    // The loop is also the broker's turn: in-process door
-                    // calls and connected apps progress on it. Cap it at the
-                    // old cadence, and sooner when an invocation is about to
-                    // expire. `local_turn` wakes it immediately for queued work.
-                    let tick = deadline
-                        .map_or(Duration::from_millis(100), |deadline| {
-                            deadline.saturating_duration_since(std::time::Instant::now())
-                        })
-                        .min(Duration::from_millis(100));
-                    let stream = tokio::select! {
-                        biased;
-                        () = tokio::time::sleep(tick) => {
-                            // Expiration must not depend on a caller polling
-                            // status: completion waiters deserve a terminal
-                            // answer even after an app goes silent.
-                            state.expire_stale_invocations();
-                            continue;
-                        },
-                        conn = listener.accept() => conn,
-                        () = state.local_turn.notified() => continue,
-                        () = state.worker_admitted.notified() => continue,
-                    };
-                    let (stream, _) = match stream {
-                        Ok(s) => s,
-                        Err(e) => {
-                            tracing::warn!("capnp broker: accept failed: {e}; retrying");
-                            continue;
-                        }
-                    };
+                let run = {
                     let state = Arc::clone(&state);
                     let directories = Rc::clone(&directories);
-                    let peer_id = state.next_peer_id();
-                    tokio::task::spawn_local(async move {
-                        if let Err(e) =
-                            drive_connection(stream, state, directories, peer_id, None).await
+                    let quit = Arc::clone(&quit);
+                    let socket_path = socket_path_for_thread.clone();
+                    tilo_rt::panic_boundary::isolate(move || {
+                        let rt = match tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
                         {
-                            tracing::warn!("capnp broker: peer-{peer_id} disconnected: {e}");
+                            Ok(rt) => rt,
+                            Err(e) => {
+                                tracing::warn!("capnp broker: tokio runtime init failed: {e}");
+                                return;
+                            }
+                        };
+                        tokio::task::LocalSet::new().block_on(
+                            &rt,
+                            serve_broker_thread(state, directories, listener, socket_path, quit),
+                        );
+                    })
+                };
+                match run {
+                    Ok(()) => return,
+                    Err(panic) => {
+                        if !state.restart_after_unwind(panic.as_ref()) {
+                            return;
                         }
-                    });
+                    }
                 }
-            });
+            }
         })?;
     fanout.attach_capnp(attached_state);
 
     Ok(thread)
+}
+
+/// Most broker threads a session starts after one unwound, before the
+/// broker stays down for the rest of the session.
+const BROKER_THREAD_RESTARTS: u64 = 5;
+
+impl CapnpBrokerState {
+    /// After the broker thread's runtime unwound: withdraw the services it
+    /// ran and say whether to start it again. Its connections closed with
+    /// the runtime; apps reconnect to the same socket.
+    fn restart_after_unwind(&self, panic: &(dyn std::any::Any + Send)) -> bool {
+        let message = tilo_rt::panic_boundary::message(panic);
+        let restarts = self
+            .thread_restarts
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        self.forget_service_peers();
+        if restarts > BROKER_THREAD_RESTARTS || self.stopped.load(Ordering::Acquire) {
+            tracing::error!(
+                restarts,
+                panic = message,
+                "capnp broker: stopped after its thread failed again; apps lose collaboration until the session restarts"
+            );
+            return false;
+        }
+        tracing::error!(
+            restarts,
+            panic = message,
+            "capnp broker: its thread failed; starting it again"
+        );
+        // A thread that fails at once again backs off rather than spin;
+        // tests restart at once.
+        if !cfg!(test) {
+            let _ = tilo_rt::sleep_thread(Duration::from_millis(
+                100_u64.saturating_mul(1 << restarts.min(5)),
+            ));
+        }
+        true
+    }
+
+    /// How often the broker thread failed and was started again.
+    #[must_use]
+    pub fn thread_restarts(&self) -> u64 {
+        self.thread_restarts.load(Ordering::Relaxed)
+    }
+}
+
+/// One run of the broker thread: start the broker's own services, then
+/// accept and drive connections until asked to quit.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the broker's turn: service start, worker admission, accept and expiry in one loop"
+)]
+#[expect(
+    clippy::future_not_send,
+    reason = "Cap'n Proto RPC and its action-directory registry are Rc-backed and run only on the broker LocalSet"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the state handles are clones moved into the connection tasks"
+)]
+async fn serve_broker_thread(
+    state: Arc<CapnpBrokerState>,
+    directories: Rc<LocalActionDirectoryRegistry>,
+    std_listener: std::os::unix::net::UnixListener,
+    socket_path_for_thread: PathBuf,
+    quit: Arc<AtomicBool>,
+) {
+    if let Err(error) = state.start_desktop_commands() {
+        if let Ok(mut failure) = state.owner_commit_failure.lock() {
+            failure.get_or_insert(error);
+        }
+        return;
+    }
+    if let Err(error) = state.start_document_imports() {
+        if let Ok(mut failure) = state.owner_commit_failure.lock() {
+            failure.get_or_insert(error);
+        }
+        return;
+    }
+    if let Err(error) = state.start_workspace_collaboration() {
+        if let Ok(mut failure) = state.owner_commit_failure.lock() {
+            failure.get_or_insert(error);
+        }
+        return;
+    }
+    state.start_peer_action_bridge(Rc::clone(&directories));
+    let listener = match tokio::net::UnixListener::from_std(std_listener) {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!(
+                "capnp broker: adopting {} into the reactor failed: {e}",
+                socket_path_for_thread.display()
+            );
+            return;
+        }
+    };
+    loop {
+        #[cfg(test)]
+        {
+            let callbacks = match state.thread_callbacks.lock() {
+                Ok(mut callbacks) => std::mem::take(&mut *callbacks),
+                Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+            };
+            for callback in callbacks {
+                callback();
+            }
+        }
+        let workers = state
+            .workers
+            .lock()
+            .map(|mut workers| std::mem::take(&mut *workers))
+            .unwrap_or_default();
+        for worker in workers {
+            let state = state.clone();
+            let directories = directories.clone();
+            let peer_id = state.next_peer_id();
+            tokio::task::spawn_local(async move {
+                let result = async {
+                    let stream = tokio::net::UnixStream::from_std(worker.stream)
+                        .map_err(capnp::Error::from)?;
+                    drive_connection(stream, state, directories, peer_id, Some(worker.binding))
+                        .await
+                }
+                .await;
+                if let Err(error) = result {
+                    let error_class = match error.kind {
+                        capnp::ErrorKind::Failed => "failed",
+                        capnp::ErrorKind::Overloaded => "overloaded",
+                        capnp::ErrorKind::Disconnected => "disconnected",
+                        capnp::ErrorKind::Unimplemented => "unimplemented",
+                        _ => "protocol",
+                    };
+                    tracing::warn!(
+                        peer_id,
+                        phase = "local_worker_rpc",
+                        error_class,
+                        "capnp broker: local worker disconnected"
+                    );
+                }
+            });
+        }
+        state.drain_action_directory_bridge(&directories);
+        if quit.load(Ordering::Relaxed) {
+            break;
+        }
+        let deadline = state.next_invocation_deadline();
+        // The loop is also the broker's turn: in-process door
+        // calls and connected apps progress on it. Cap it at the
+        // old cadence, and sooner when an invocation is about to
+        // expire. `local_turn` wakes it immediately for queued work.
+        let tick = deadline
+            .map_or(Duration::from_millis(100), |deadline| {
+                deadline.saturating_duration_since(std::time::Instant::now())
+            })
+            .min(Duration::from_millis(100));
+        let stream = tokio::select! {
+            biased;
+            () = tokio::time::sleep(tick) => {
+                // Expiration must not depend on a caller polling
+                // status: completion waiters deserve a terminal
+                // answer even after an app goes silent.
+                state.expire_stale_invocations();
+                continue;
+            },
+            conn = listener.accept() => conn,
+            () = state.local_turn.notified() => continue,
+            () = state.worker_admitted.notified() => continue,
+        };
+        let (stream, _) = match stream {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("capnp broker: accept failed: {e}; retrying");
+                continue;
+            }
+        };
+        let state = Arc::clone(&state);
+        let directories = Rc::clone(&directories);
+        let peer_id = state.next_peer_id();
+        tokio::task::spawn_local(async move {
+            if let Err(e) = drive_connection(stream, state, directories, peer_id, None).await {
+                tracing::warn!("capnp broker: peer-{peer_id} disconnected: {e}");
+            }
+        });
+    }
 }
 
 /// Dial the capnp socket at `path` for tests. Production apps go through
@@ -10243,10 +10362,104 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
     ))
 }
 
+/// A launcher's handoff, read whole: the stream is now where the app's
+/// first Cap'n Proto message begins.
+struct LauncherHandoff {
+    handoff: CollabLaunchHandoff,
+    pid: u32,
+    media_process: Option<native_media::PeerProcess>,
+}
+
+/// Why a connection was refused before its first Cap'n Proto call.
+struct LaunchRefusal {
+    error: capnp::Error,
+    /// What the connection said it was, as far as it got: the process and
+    /// the app and room its launcher named.
+    peer: String,
+    /// The handoff was read whole, so the app can still be told the reason
+    /// over Cap'n Proto instead of seeing its connection reset.
+    answerable: bool,
+}
+
 async fn authenticate_launcher_handoff(
     stream: &mut tokio::net::UnixStream,
     services: &HostServices,
-) -> Result<Option<Arc<native_media::LocalAppConnection>>, capnp::Error> {
+) -> Result<Option<Arc<native_media::LocalAppConnection>>, LaunchRefusal> {
+    let LauncherHandoff {
+        handoff,
+        pid,
+        media_process,
+    } = match read_launcher_handoff(stream).await {
+        Ok(Some(read)) => read,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            let peer = stream.peer_cred().ok().and_then(|c| c.pid()).map_or_else(
+                || "a peer without credentials".to_owned(),
+                |pid| format!("pid {pid}"),
+            );
+            return Err(LaunchRefusal {
+                error,
+                peer,
+                answerable: false,
+            });
+        }
+    };
+    let peer = format!(
+        "pid {pid} launching {} in room {}",
+        handoff.app_id, handoff.workspace_id
+    );
+    if handoff.protocol != collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION
+        || handoff.app_id.trim().is_empty()
+        || handoff.workspace_id.trim().is_empty()
+    {
+        return Err(LaunchRefusal {
+            error: capnp::Error::failed(
+                "collaboration launch handoff has an unsupported or empty identity".into(),
+            ),
+            peer,
+            answerable: true,
+        });
+    }
+
+    // `spawn_launch` records immediately after `Command::spawn`; the child
+    // can connect first on a fast machine. Retry only this narrow registration
+    // race. A direct tilo-launcher command never obtains a record and fails
+    // closed instead of becoming a way around admin/admission checks.
+    for attempt in 0..=LAUNCH_RECORD_RACE_RETRIES {
+        if services.launcher.as_ref().is_some_and(|service| {
+            service.attest_process(pid, &handoff.app_id, &handoff.workspace_id)
+        }) {
+            return Ok(media_process.and_then(|process| {
+                native_media::LocalAppConnection::attested(
+                    handoff.app_id,
+                    handoff.workspace_id,
+                    process,
+                )
+            }));
+        }
+        if attempt < LAUNCH_RECORD_RACE_RETRIES {
+            tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
+        }
+    }
+    let error = if services.launcher.is_none() {
+        "collaboration launch cannot be attested: this broker has no launcher service"
+    } else {
+        "collaboration launch is not an authenticated shell-managed process: the \
+         shell holds no live launch record for this process, app and room (an app \
+         started by hand through tilo-launcher, or one whose record expired)"
+    };
+    Err(LaunchRefusal {
+        error: capnp::Error::failed(error.into()),
+        peer,
+        answerable: true,
+    })
+}
+
+/// Read the launcher's marker and handoff off `stream`; `None` for a raw
+/// client that sent no marker.
+async fn read_launcher_handoff(
+    stream: &mut tokio::net::UnixStream,
+) -> Result<Option<LauncherHandoff>, capnp::Error> {
     if !has_collab_launch_marker(stream).await? {
         return Ok(None);
     }
@@ -10306,39 +10519,37 @@ async fn authenticate_launcher_handoff(
     let handoff: CollabLaunchHandoff = serde_json::from_slice(&bytes).map_err(|error| {
         capnp::Error::failed(format!("invalid collaboration launch handoff: {error}"))
     })?;
-    if handoff.protocol != collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION
-        || handoff.app_id.trim().is_empty()
-        || handoff.workspace_id.trim().is_empty()
-    {
-        return Err(capnp::Error::failed(
-            "collaboration launch handoff has an unsupported or empty identity".into(),
-        ));
-    }
-
-    // `spawn_launch` records immediately after `Command::spawn`; the child
-    // can connect first on a fast machine. Retry only this narrow registration
-    // race. A direct tilo-launcher command never obtains a record and fails
-    // closed instead of becoming a way around admin/admission checks.
-    for attempt in 0..=LAUNCH_RECORD_RACE_RETRIES {
-        if services.launcher.as_ref().is_some_and(|service| {
-            service.attest_process(pid, &handoff.app_id, &handoff.workspace_id)
-        }) {
-            return Ok(media_process.and_then(|process| {
-                native_media::LocalAppConnection::attested(
-                    handoff.app_id,
-                    handoff.workspace_id,
-                    process,
-                )
-            }));
-        }
-        if attempt < LAUNCH_RECORD_RACE_RETRIES {
-            tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
-        }
-    }
-    Err(capnp::Error::failed(
-        "collaboration launch is not an authenticated shell-managed process".into(),
-    ))
+    Ok(Some(LauncherHandoff {
+        handoff,
+        pid,
+        media_process,
+    }))
 }
+
+/// Tell a refused app why over the protocol it speaks: every call on the
+/// service it bootstraps fails with `error`. Dropping the socket instead
+/// leaves its first message unread, and the app only sees its connection
+/// reset. Bounded, so a peer that never hangs up holds nothing for long.
+#[allow(
+    clippy::future_not_send,
+    reason = "Cap'n Proto RPC is Rc-backed and runs only on the broker LocalSet"
+)]
+async fn answer_refused_launch(stream: tokio::net::UnixStream, error: capnp::Error) {
+    let (reader, writer) = stream.into_split();
+    let network = Box::new(twoparty::VatNetwork::new(
+        futures::io::BufReader::new(reader.compat()),
+        futures::io::BufWriter::new(writer.compat_write()),
+        rpc_twoparty_capnp::Side::Server,
+        capnp::message::ReaderOptions::default(),
+    ));
+    let refused: collab_service::Client =
+        capnp_rpc::new_future_client(std::future::ready(Err(error)));
+    let rpc = RpcSystem::new(network, Some(refused.client));
+    let _ = tokio::time::timeout(REFUSED_LAUNCH_ANSWER_WINDOW, rpc).await;
+}
+
+/// How long a refused app's connection is kept open to hear why.
+const REFUSED_LAUNCH_ANSWER_WINDOW: Duration = Duration::from_secs(5);
 
 #[allow(
     clippy::future_not_send,
@@ -10358,7 +10569,23 @@ async fn drive_connection(
     };
     let mut stream = stream;
     let local_media = if worker.is_none() {
-        authenticate_launcher_handoff(&mut stream, &state.services).await?
+        match authenticate_launcher_handoff(&mut stream, &state.services).await {
+            Ok(local_media) => local_media,
+            Err(refusal) => {
+                // Error, not warning: an app the shell launched is about to
+                // exit for this, and the default session log keeps errors only.
+                tracing::error!(
+                    peer_id,
+                    peer = %refusal.peer,
+                    reason = %refusal.error,
+                    "capnp broker: refused a collaboration connection before its first call",
+                );
+                if refusal.answerable {
+                    answer_refused_launch(stream, refusal.error).await;
+                }
+                return Ok(());
+            }
+        }
     } else {
         None
     };
@@ -10718,6 +10945,109 @@ pub mod tests {
         state.stop();
     }
 
+    /// An app whose launch the shell holds no record of (one started by hand
+    /// through tilo-launcher, or one whose record is gone) is refused. It used
+    /// to be refused by dropping its socket with its first call unread, so the
+    /// app saw only "Connection reset by peer" and the shell logged nothing it
+    /// keeps. The app must hear why, as an ordinary failed call.
+    #[test]
+    fn an_unattested_launch_is_told_why_it_was_refused() {
+        struct NoLaunchRecords;
+        impl crate::services::LauncherServices for NoLaunchRecords {
+            fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+                Vec::new()
+            }
+            fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+                Err("this broker launches nothing".into())
+            }
+            fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+                false
+            }
+        }
+        let directory = tempfile::tempdir().expect("temporary socket directory");
+        let socket = lifecycle_socket(&directory, "unattested");
+        let config = crate::peer_actions::NativePeerBrokerConfig {
+            journal_root: directory.path().join("unattested-invocations"),
+            certificate_authority: Arc::new(LifecycleAuthority),
+        };
+        let _broker = crate::collab_broker::spawn_with_test_services(
+            socket.clone(),
+            None,
+            PeerPublisher::disabled(),
+            Some(&config),
+            HostServices {
+                launcher: Some(Arc::new(NoLaunchRecords)),
+                ..Default::default()
+            },
+            None,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        )
+        .expect("test broker");
+
+        // What tilo-launcher writes before handing the descriptor to the app.
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket).expect("connect");
+        let handoff = serde_json::to_vec(&serde_json::json!({
+            "protocol": collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION,
+            "app_id": "so.tilo.calculator",
+            "workspace_id": "5ba25f73-87c5-447f-a5a6-880dc4249a81",
+        }))
+        .expect("handoff json");
+        std::io::Write::write_all(
+            &mut stream,
+            &collab_types::local_transport::COLLAB_LAUNCH_MAGIC,
+        )
+        .expect("marker");
+        std::io::Write::write_all(
+            &mut stream,
+            &launcher::services::COLLAB_LAUNCH_FRAMING
+                .encode(&handoff)
+                .expect("framed handoff"),
+        )
+        .expect("handoff");
+        stream.set_nonblocking(true).expect("nonblocking");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let error = tokio::task::LocalSet::new().block_on(&runtime, async move {
+            let stream = tokio::net::UnixStream::from_std(stream).expect("tokio stream");
+            let (reader, writer) = stream.into_split();
+            let network = Box::new(twoparty::VatNetwork::new(
+                futures::io::BufReader::new(reader.compat()),
+                futures::io::BufWriter::new(writer.compat_write()),
+                rpc_twoparty_capnp::Side::Client,
+                capnp::message::ReaderOptions::default(),
+            ));
+            let mut rpc = RpcSystem::new(network, None);
+            let client = runtime_collab::CollabClient::from_raw(
+                rpc.bootstrap(rpc_twoparty_capnp::Side::Server),
+            );
+            tokio::task::spawn_local(async move {
+                let _ = rpc.await;
+            });
+            match client
+                .join_channel(
+                    "5ba25f73-87c5-447f-a5a6-880dc4249a81#app:so.tilo.calculator",
+                    b"",
+                )
+                .await
+            {
+                Ok(_) => panic!("an unattested launch joined a channel"),
+                Err(error) => error.to_string(),
+            }
+        });
+        assert!(
+            error.contains("not an authenticated shell-managed process"),
+            "the refused app must learn why, not see its connection reset: {error}",
+        );
+        assert!(
+            !error.contains("reset by peer"),
+            "the refusal arrived as a reset: {error}",
+        );
+    }
+
     #[test]
     fn public_sink_can_drop_its_broker_without_self_join_or_early_unlink() {
         let directory = tempfile::tempdir().expect("temporary socket directory");
@@ -11061,10 +11391,46 @@ pub mod tests {
         )
         .expect("test broker");
         let facade = broker.app_action_broker().expect("live broker facade");
-        fanout
-            .capnp_state()
-            .expect("attached broker state")
-            .enqueue_thread_callback(Box::new(|| panic!("broker-thread unwind fixture")));
+        let state = fanout.capnp_state().expect("attached broker state");
+
+        // A failing broker thread is started again on the same socket, and
+        // the session's handles to it stay live.
+        state.enqueue_thread_callback(Box::new(|| panic!("broker-thread unwind fixture")));
+        tilo_test_env::wait_until("the broker thread to start again", || {
+            state.thread_restarts() == 1
+        });
+        let (reached, answered) = std::sync::mpsc::channel();
+        state.enqueue_thread_callback(Box::new(move || {
+            let _ = reached.send(tilo_rt::panic_boundary::is_isolated());
+        }));
+        assert!(
+            tilo_test_env::recv("the restarted thread's turn", &answered),
+            "the restarted thread runs inside its panic boundary"
+        );
+        assert!(socket.exists(), "a restart keeps the socket");
+        assert!(
+            !state.stopped.load(Ordering::Acquire),
+            "a restart keeps the broker's state live"
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("client runtime");
+        tokio::task::LocalSet::new().block_on(&runtime, async {
+            let (_client, rpc) = dial_capnp_for_test(socket.clone())
+                .await
+                .expect("a client connects after the restart");
+            rpc.abort();
+        });
+
+        // One that keeps failing stays down and releases what it held.
+        for _ in 0..BROKER_THREAD_RESTARTS {
+            state.enqueue_thread_callback(Box::new(|| panic!("broker-thread unwind fixture")));
+            tilo_test_env::wait_until("the broker thread to fail", || {
+                !socket.exists() || state.callbacks_pending() == 0
+            });
+        }
+        drop(state);
 
         tilo_test_env::wait_until("the broker to remove its socket", || !socket.exists());
         assert!(!socket.exists(), "unwind releases owned socket custody");

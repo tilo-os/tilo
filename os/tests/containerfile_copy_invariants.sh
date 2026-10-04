@@ -32,8 +32,7 @@ containerfile="$repo/os/Containerfile"
 # into its loader, so the former systemd environment override is absent.
 # Tilo build outputs are installed through os/components.toml, so their rows
 # name the manifest component and build output instead of a builder /out path;
-# every destination is unchanged, and /out/optional/ -> /usr/bin/ is now the
-# explicit optional /usr/bin/browser entry it always carried. The VM console
+# every destination is unchanged. The VM console
 # port udev rule and the generated bash/fish/zsh completions for app and tilo
 # (with their store/system aliases) are deliberate additions, as is the
 # sandboxed PDF engine helper at /usr/libexec/tilo-pdf-helper, and the
@@ -91,9 +90,17 @@ containerfile="$repo/os/Containerfile"
 # The extension-manifest public key ships beside the helper.
 # The release gate's greetd session-context check ships beside the other
 # booted-guest checks in /usr/libexec/tilo.
+# The image ships one login session and no peer-sync marker unit.
 # The release gate's input hotplug check and the device admin's action-model
 # check ship beside them.
-expected_contract=ea7981bb8af6a2c8c3901f9ff7117d7b565926e33c7186d5e7aafe19b4380281
+# The boot units gate ships with the rollback units whose confirmation it gates.
+# The ush supervisor ships with what it runs: the two relay helpers for
+# Terminal, and the legacy VM service behind app shims. The WPE engine overlay
+# and /usr/bin/browser are deliberate removals: the Browser is a tapp in the
+# app store and its Chromium engine a signed runtime bundle under
+# /usr/lib/tilo-runtime, both already copied.
+# NetworkManager's Wake-on-LAN default ships as a conf.d drop-in.
+expected_contract=fb77b1b34324b5c154bcb7f5be72bb7554061fd133bf685c39140e74f457fd08
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -137,8 +144,9 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # kernel image identity into that layer's cache key adds one ARG (153).
 # Redeclaring RPMS_REF before the first snapshot install, for the same reason,
 # adds one more (154).
-[ "$instructions" -le 154 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 154)" >&2
+# NetworkManager's Wake-on-LAN drop-in adds one COPY (155).
+[ "$instructions" -le 155 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 155)" >&2
   exit 1
 }
 
