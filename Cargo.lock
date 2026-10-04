@@ -15982,7 +15982,9 @@ dependencies = [
  "agent-provider-config",
  "base64",
  "clap",
+ "image",
  "libc",
+ "local-model-service",
  "reqwest",
  "serde",
  "serde_json",
@@ -15992,6 +15994,7 @@ dependencies = [
  "tilo-clock",
  "tilo-net",
  "tilo-rt",
+ "tilo-segment",
  "tokio",
  "url",
  "wire-frame",
@@ -16769,6 +16772,20 @@ dependencies = [
  "tilo-files",
  "tracing",
  "web-time",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-subject"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "hex",
+ "image",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tilo-model-gateway",
+ "tilo-segment",
  "workspace-hack",
 ]
 
