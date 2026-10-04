@@ -2076,15 +2076,15 @@
         "name": "quality",
         "ty": "integer",
         "required": false,
-        "description": "JPEG quality, 1 to 100 (default 90).",
+        "description": "JPEG quality (default 90).",
         "schema": {
           "type": [
             "integer",
             "null"
           ],
-          "minimum": 0,
-          "maximum": 255,
-          "description": "JPEG quality, 1 to 100 (default 90)."
+          "minimum": 1,
+          "maximum": 100,
+          "description": "JPEG quality (default 90)."
         },
         "nullable": true
       },

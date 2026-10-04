@@ -238,7 +238,8 @@ pub struct Export {
     pub scale: Option<f64>,
     /// `png` (default, or the path's), `jpeg` or `webp` (lossless).
     pub format: Option<String>,
-    /// JPEG quality, 1 to 100 (default 90).
+    /// JPEG quality (default 90).
+    #[schema(range(min = 1, max = 100))]
     pub quality: Option<u8>,
     /// An absolute `.png`, `.jpg` or `.webp` path to write it to.
     pub path: Option<String>,
