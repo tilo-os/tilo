@@ -25,6 +25,9 @@ path = "src/main.rs"
 # this binary. Off by default -- a normal `cargo build --release -p
 # word-processor` is an unchanged static build.
 thin = ["dep:runtime-dylib"]
+# Writer's publication without a window, for peers in other crates' tests
+# that serve a Writer document the way its framework app publishes it.
+test-support = []
 
 [dependencies]
 fnv.workspace = true

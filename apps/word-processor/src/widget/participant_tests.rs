@@ -48,14 +48,6 @@ fn selecting(block: &str, from: usize, to: usize) -> ParticipantView {
     }
 }
 
-fn has_action(resources: &[Resource], id: &str) -> bool {
-    fn walk(resource: &Resource, id: &str) -> bool {
-        resource.actions.iter().any(|spec| spec.id == id)
-            || resource.children.iter().any(|child| walk(child, id))
-    }
-    resources.iter().any(|resource| walk(resource, id))
-}
-
 fn has_resource_prefix(resources: &[Resource], prefix: &str) -> bool {
     fn walk(resource: &Resource, prefix: &str) -> bool {
         resource.id.as_str().starts_with(prefix)
@@ -87,20 +79,19 @@ fn two_participants_keep_independent_views_and_trees() {
     assert_eq!(wp.local_participant_view(), local_before);
     assert!(!wp.model().has_selection());
 
-    // Selection-scoped operations exist only in the selecting participant's
-    // tree; the other participant's and the window's trees are caret-only.
-    let agent_tree = wp.participant_resources(Some(&agent), &state.doc);
-    let other_tree = wp.participant_resources(Some(&other), &state.doc);
-    let local_tree = wp.participant_resources(None, &state.doc);
-    let selection = format!("word-processor.selection:{}:0:{}:5", ids[0], ids[0]);
-    assert!(has_action(&agent_tree, "replace-selection"));
-    assert!(has_resource_prefix(&agent_tree, &selection));
-    assert!(!has_action(&other_tree, "replace-selection"));
-    assert!(!has_resource_prefix(
-        &other_tree,
-        "word-processor.selection:"
-    ));
-    assert!(!has_action(&local_tree, "replace-selection"));
+    // Selection-scoped edits are bound only for the selecting participant;
+    // the other participant's and the window's are caret-only.
+    let bound = |participant: Option<&tilo_actions::ParticipantId>| -> Vec<&'static str> {
+        let _scope = participant.map(|participant| {
+            ui::invocation_scope::InvokerScope::enter(
+                ActionInvoker::actor("agent-actor").with_participant(participant.clone()),
+            )
+        });
+        wp.bound_edits().iter().map(|edit| edit.id).collect()
+    };
+    assert!(bound(Some(&agent)).contains(&"replace-selection"));
+    assert!(!bound(Some(&other)).contains(&"replace-selection"));
+    assert!(!bound(None).contains(&"replace-selection"));
 
     // Views are presentation state: the document bytes did not change.
     assert_eq!(state.doc.clone().save(), doc_before);
@@ -127,7 +118,11 @@ fn participant_tree_matches_the_pure_projection_of_its_view() {
     let agent = pid("agent");
     let view = selecting(&ids[1], 1, 4);
     wp.set_participant_view(&agent, &view, &state.doc);
-    let expected = crate::actions::provide_resources(&view.ctx(&state.doc).unwrap(), &state.doc);
+    let expected = crate::actions::bound::view_only(crate::actions::live_presentation_resources(
+        &view.ctx(&state.doc).unwrap(),
+        &state.doc,
+        None,
+    ));
     let actual = wp.participant_resources(Some(&agent), &state.doc);
     let ids_of = |resources: &[Resource]| -> Vec<String> {
         fn walk(resource: &Resource, out: &mut Vec<String>) {
@@ -725,7 +720,7 @@ fn joined_participants_start_at_the_document_end_and_leave_cleanly() {
     assert_eq!(wp.participant_presence(&state.doc).len(), 1);
     // Per-participant resolution through the Widget hooks.
     assert!(
-        ui::resources::resource_for(&wp, Some(&agent), &state.doc, "word-processor.document")
+        ui::resources::resource_for(&wp, Some(&agent), &state.doc, "word-processor.caret")
             .is_some()
     );
     ui::collaboration::participants::leave_participant(&mut wp, &agent);
@@ -776,25 +771,6 @@ fn a_noted_outcome_is_adopted_only_after_its_edit_applied() {
     assert_eq!(
         wp.participant_view(&agent, &state.doc),
         Some(caret(&order[1], 0))
-    );
-}
-
-#[test]
-fn a_participant_host_publishes_the_schema_as_its_own_tree() {
-    let (mut wp, state, _) = widget_with(&["x"]);
-    ui::collaboration::participants::set_participant_host(&mut wp, true);
-    let published = ui::resources::resources(&wp, &state.doc);
-    let schema = wp.publish_catalogue_schema(&state.doc);
-    assert_eq!(published.len(), schema.len());
-    assert_eq!(
-        published
-            .iter()
-            .map(|r| r.id.as_str().to_string())
-            .collect::<Vec<_>>(),
-        schema
-            .iter()
-            .map(|r| r.id.as_str().to_string())
-            .collect::<Vec<_>>()
     );
 }
 
@@ -865,23 +841,20 @@ fn a_delivered_view_operation_moves_only_its_participants_view() {
     assert_eq!(wp.local_participant_view(), local_before);
 }
 
-/// Lab proof6 root cause: a bound component resolves a delivered invocation
-/// through `Widget::resources` on the record document. On a participant
-/// host that returned the catalogue schema, whose synthetic view selects
-/// `[0, 1)` of the first block, so every agent `type-text` replaced the
-/// first character of the first paragraph. During a participant's
-/// resolution, `resources` is that participant's own tree.
+/// A delivered invocation by a participant builds its edit at that
+/// participant's own caret: the edits the document publishes during its
+/// resolution are bound to the invoker's view, never this window's.
 #[test]
-fn a_participant_host_resolves_a_delivered_invocation_against_the_invokers_view() {
-    let (mut wp, state, ids) = widget_with(&["first paragraph", "tail"]);
-    ui::collaboration::participants::set_participant_host(&mut wp, true);
+fn a_delivered_invocation_builds_at_the_invokers_view() {
+    let (mut wp, mut state, ids) = widget_with(&["first paragraph", "tail"]);
     let agent = pid("agent-task:5");
     wp.set_participant_view(&agent, &caret(&ids[1], 4), &state.doc);
-    let tree = {
+    wp.sync(&mut state.doc, &state.root);
+    let (edits, tree) = {
         let _scope = ui::invocation_scope::InvokerScope::enter(
             ActionInvoker::actor("agent-actor").with_participant(agent.clone()),
         );
-        ui::resources::resources(&wp, &state.doc)
+        (wp.bound_edits(), ui::resources::resources(&wp, &state.doc))
     };
     assert_eq!(
         format!(
@@ -897,66 +870,43 @@ fn a_participant_host_resolves_a_delivered_invocation_against_the_invokers_view(
         )
     );
     assert!(
-        !has_action(&tree, "replace-selection"),
-        "no schema selection leaks into a collapsed participant's tree"
+        edits.iter().all(|edit| edit.id != "replace-selection"),
+        "a collapsed participant has no selection to replace"
     );
-    let spec = tree[0]
-        .actions
+    let typing = edits
         .iter()
-        .find(|spec| spec.id == crate::actions::editing::op::TYPE_TEXT)
-        .expect("type-text published");
-    let tilo_actions::ActionInput::Prompted { build, .. } = &spec.input else {
-        panic!("type-text takes its text")
-    };
-    let encoded = build("X");
-    let action: crate::actions::RichTextAction = serde_json::from_slice(&encoded.payload).unwrap();
+        .find(|edit| edit.id == crate::actions::editing::op::TYPE_TEXT)
+        .expect("type-text is bound to the participant");
+    let args = tilo_actions::ActionArgs::bind(
+        &typing.params,
+        [("text".to_owned(), tilo_actions::ArgValue::Text("X".into()))],
+    )
+    .unwrap();
     assert_eq!(
-        action,
+        (typing.build)(&args, 0).unwrap(),
         crate::actions::splice_text_action(RegionKind::Body, &ids[1], 4, 4, "X")
-    );
-    // Outside any invocation the host still publishes the schema.
-    assert_eq!(
-        ui::resources::resources(&wp, &state.doc).len(),
-        wp.publish_catalogue_schema(&state.doc).len()
     );
 }
 
-/// A certified job or a person's command on the host worker carries an
-/// invoker without a participant: it resolves against the worker's own view
-/// (invocable envelopes), never the declaration-only schema.
+/// A certified job or a person's command carries an invoker without a
+/// participant: it builds against this window's own view.
 #[test]
-fn a_participant_host_resolves_a_participantless_invocation_against_its_own_view() {
-    let (mut wp, state, _) = widget_with(&["first paragraph"]);
-    ui::collaboration::participants::set_participant_host(&mut wp, true);
-    let own = wp.own_resources(&state.doc);
-    let tree = {
+fn a_participantless_invocation_builds_at_the_windows_own_view() {
+    let (mut wp, mut state, ids) = widget_with(&["first paragraph"]);
+    wp.sync(&mut state.doc, &state.root);
+    let local: Vec<&str> = wp.bound_edits().iter().map(|edit| edit.id).collect();
+    let edits = {
         let _scope =
             ui::invocation_scope::InvokerScope::enter(ActionInvoker::actor("certified-job"));
-        ui::resources::resources(&wp, &state.doc)
+        wp.bound_edits()
     };
-    let ids = |resources: &[Resource]| -> Vec<String> {
-        fn walk(resource: &Resource, out: &mut Vec<String>) {
-            for spec in &resource.actions {
-                out.push(format!("{}#{}", resource.id.as_str(), spec.id));
-            }
-            for child in &resource.children {
-                walk(child, out);
-            }
-        }
-        let mut out = Vec::new();
-        for resource in resources {
-            walk(resource, &mut out);
-        }
-        out
-    };
-    assert_eq!(ids(&tree), ids(&own));
-    let spec = tree
+    assert_eq!(edits.iter().map(|edit| edit.id).collect::<Vec<_>>(), local);
+    let table = edits
         .iter()
-        .flat_map(|resource| &resource.actions)
-        .find(|spec| spec.id == "insert-table")
-        .expect("insert-table at the worker caret");
-    let tilo_actions::ActionInput::Immediate(encoded) = &spec.input else {
-        panic!("insert-table is immediate")
-    };
-    assert_eq!(encoded.type_id, crate::actions::WORD_PROCESSOR_ACTION_TYPE);
+        .find(|edit| edit.id == "insert-table")
+        .expect("insert-table at the window's caret");
+    assert!(matches!(
+        (table.build)(&tilo_actions::ActionArgs::none(), 0).unwrap(),
+        crate::actions::RichTextAction::InsertTable { ref after, .. } if *after == ids[0]
+    ));
 }
