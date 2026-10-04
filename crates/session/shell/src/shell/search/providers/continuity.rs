@@ -1065,23 +1065,40 @@ fn device_projection(
     view: &DeviceFabricView,
 ) -> (String, Vec<SearchResult>) {
     let actions = device_actions(view);
+    let wake = wake_row(view);
     let revision = projection_revision(
         "so.tilo.continuity.device-action-revision.v1",
         ctx.needle,
-        actions.iter().map(|entry| {
-            (
-                entry.id.as_str(),
-                entry.title.as_str(),
-                entry.subtitle.as_str(),
-                entry.confirm,
-                format!("{:?}", entry.action),
-            )
-        }),
+        actions
+            .iter()
+            .map(|entry| {
+                (
+                    entry.id.as_str(),
+                    entry.title.as_str(),
+                    entry.subtitle.as_str(),
+                    entry.confirm,
+                    format!("{:?}", entry.action),
+                )
+            })
+            .chain(wake.as_ref().map(|(title, subtitle)| {
+                (
+                    WAKE_ACTION_ID,
+                    title.as_str(),
+                    subtitle.as_str(),
+                    false,
+                    String::new(),
+                )
+            })),
     );
-    let fields: Vec<_> = actions
+    let mut fields: Vec<_> = actions
         .iter()
         .map(|entry| action_fields(&entry.title, &entry.subtitle, &entry.id))
         .collect();
+    let mut wake_result = None;
+    if let Some((title, subtitle)) = wake {
+        fields.push(action_fields(&title, &subtitle, WAKE_ACTION_ID));
+        wake_result = Some(wake_search_result(bridge, title, subtitle));
+    }
     let results = actions
         .into_iter()
         .map(|entry| {
@@ -1107,11 +1124,63 @@ fn device_projection(
                 on_begin_invoke: None,
             }
         })
+        .chain(wake_result)
         .collect();
     (
         revision,
         crate::shell::search::rank_rows(ranker, ctx.needle, results, &fields),
     )
+}
+
+/// Wake one of the person's sleeping devices, named by device id or label.
+pub const WAKE_ACTION_ID: &str = "device.wake";
+
+/// The wake row's title and subtitle, offered while the person has another
+/// device to wake.
+fn wake_row(view: &DeviceFabricView) -> Option<(String, String)> {
+    view.devices.iter().any(|device| !device.is_local).then(|| {
+        (
+            t("search-continuity-wake-device"),
+            t("search-continuity-wake-device-subtitle"),
+        )
+    })
+}
+
+fn wake_search_result(
+    bridge: &DeviceFabricBridge,
+    title: String,
+    subtitle: String,
+) -> SearchResult {
+    let bridge = Rc::clone(bridge);
+    SearchResult {
+        kind: ResourceKind::Action,
+        operation_kind: tilo_actions::OperationKind::Effect,
+        provider_id: DEVICE_PROVIDER_ID.into(),
+        id: WAKE_ACTION_ID.into(),
+        title,
+        subtitle: Some(subtitle),
+        badge: None,
+        score: 0,
+        params: vec![ActionParam::required(
+            "device",
+            ParamType::Text,
+            "The device to wake: its name or its device id",
+        )],
+        contract: Some(contract(false)),
+        on_open: Rc::new(move |_doc, _root, _chrome, args| {
+            let device = args
+                .text("device")
+                .filter(|device| !device.trim().is_empty())
+                .ok_or_else(|| ActionError::Refused("name the device to wake".into()))?;
+            bridge(DeviceFabricUiAction::WakeDevice {
+                device: device.to_owned(),
+            })
+            .map_err(ActionError::Refused)?;
+            Ok(())
+        }),
+        on_invoke: None,
+        on_begin_invoke: None,
+    }
 }
 
 pub struct DeviceContinuityActionsProvider {
