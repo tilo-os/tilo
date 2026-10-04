@@ -54,11 +54,9 @@ pub struct PlayerHost {
     node: Option<NodeId>,
 }
 
-/// What the player shows before it has a picture: the video's thumbnail
-/// from the image store, or the same generated art its card shows.
+/// What holds the player's place before it has a picture when the video
+/// has no thumbnail: the same generated art its card shows.
 struct Poster {
-    store: Option<ImageStore>,
-    url: String,
     title: String,
 }
 
@@ -73,16 +71,27 @@ impl PlayerHost {
         }
     }
 
-    /// Show the video's art (`url` from `store`, else the art generated for
-    /// `title`) until the player has a frame to show, so a watch page that is
-    /// still starting playback never stands empty.
+    /// Show the video's art until the player has a frame to show, so a
+    /// watch page that is still starting playback never stands empty: the
+    /// thumbnail (`url` from `store`) is the player's own poster, on its
+    /// letterbox under its controls; without one, the art generated for
+    /// `title` holds the player's place.
     #[must_use]
     pub fn with_poster(mut self, store: Option<ImageStore>, url: &str, title: &str) -> Self {
-        self.poster = Some(Poster {
-            store,
-            url: url.to_string(),
-            title: title.to_string(),
-        });
+        if let Some(store) = store.filter(|_| !url.is_empty()) {
+            self.player
+                .borrow_mut()
+                .set_poster(Some(ui::widget::MediaSource::Url {
+                    store,
+                    url: url.to_string(),
+                }));
+            self.poster = None;
+        } else {
+            self.player.borrow_mut().set_poster(None);
+            self.poster = Some(Poster {
+                title: title.to_string(),
+            });
+        }
         self
     }
 
@@ -105,14 +114,6 @@ impl PlayerHost {
         let Some(poster) = &self.poster else {
             return;
         };
-        let image = poster
-            .store
-            .as_ref()
-            .filter(|_| !poster.url.is_empty())
-            .and_then(|store| store.get(&poster.url));
-        let art = image
-            .as_ref()
-            .map_or(MediaArt::Placeholder, MediaArt::Image);
         // The face sets the title under the art; the poster is the art alone,
         // so the title only seeds the generated art and is clipped away.
         scene.push_layer(
@@ -123,7 +124,7 @@ impl PlayerHost {
             &self.rect,
         );
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-        MediaCardFace::new(art)
+        MediaCardFace::new(MediaArt::Placeholder)
             .aspect(MediaAspect::Wide)
             .title(&poster.title)
             .paint(&mut ctx, self.rect);

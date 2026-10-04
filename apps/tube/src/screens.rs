@@ -145,6 +145,13 @@ fn video_card(ui: Ui<'_>, v: &Video) -> MediaCard {
     .aspect(MediaAspect::Wide)
     .title(v.display_title(dearrow))
     .meta(&v.channel_name);
+    if ui
+        .model
+        .channel(&v.channel_id)
+        .is_some_and(|channel| channel.verified)
+    {
+        card = card.meta_mark(Icon::CircleCheck);
+    }
     let reach = if v.live {
         t_args("tube-watching", &[arg("shown", human_count(v.views))])
     } else {
@@ -548,7 +555,7 @@ pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
         .with_rhythm(ui::tokens::Rhythm::Related)
         .push(Box::new(text(&ch.name, TextRole::Title)));
     if ch.verified {
-        name = name.push(Box::new(ui::widget::IconWidget::new(Icon::Check)));
+        name = name.push(Box::new(ui::widget::IconWidget::new(Icon::CircleCheck)));
     }
     let mut about = stack()
         .with_rhythm(ui::tokens::Rhythm::Tight)
@@ -1032,7 +1039,8 @@ fn up_next_row(ui: Ui<'_>, v: &Video) -> Container {
         format!("up_next_thumb_{}", v.id),
         art(ui.imgs, ui.model.display_thumbnail_url(v)),
     )
-    .aspect(MediaAspect::Wide);
+    .aspect(MediaAspect::Wide)
+    .seed(v.display_title(dearrow));
     thumb = if v.live {
         thumb.badge(OwnedBadge::Live)
     } else if v.duration > 0 {
