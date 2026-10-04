@@ -70,7 +70,7 @@ python3 - "$tmp/plymouth" <<'PY'
 import pathlib, struct, sys
 root = pathlib.Path(sys.argv[1])
 expected = {"tilo-logo.png", "entry.png", "lock.png", "bullet.png",
-            "unlock-heading.png", "unlock-help.png",
+            "unlock-heading.png", "unlock-help.png", "unlock-retry.png",
             "progress-background.png", "progress-fill.png"}
 assert {path.name for path in root.iterdir()} == expected
 for path in root.iterdir():

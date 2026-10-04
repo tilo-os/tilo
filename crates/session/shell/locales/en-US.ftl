@@ -784,6 +784,7 @@ capability-microphone = Microphone access
 capability-screencast = Screen capture
 capability-remote-desktop = Remote control (pointer + keyboard)
 capability-print = Send documents to a printer
+capability-host-shell = Open this device's own shell, outside every sandbox
 capability-network-hosts = Network access to { $hosts }
 capability-network = Network access
 
