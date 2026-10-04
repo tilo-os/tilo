@@ -261,7 +261,6 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
         .with_pane_state(&ui.pane)
         .sidebar(Box::new(LibraryNav::new(&ui)))
         .sidebar_header("", sidebar_actions(&ui))
-        .content_header("", vec![Box::new(ui::widget::history_button())])
         .content(editor_pane(&ui, Rc::clone(&follow)));
     let door = Door::new(Box::new(shell), Rc::clone(&core)).following(Box::new(move || {
         if let Ok(mut follow) = follow.try_borrow_mut() {
