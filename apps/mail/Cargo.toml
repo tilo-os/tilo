@@ -84,14 +84,11 @@ workspace-hack = { version = "0.1" }
 [features]
 thin = ["dep:runtime-dylib"]
 # The default app includes the live account engine; it remains idle without a
-# configured account. HTML WebKit rendering is opt-in and requires WPE.
+# configured account.
 default = ["live"]
 # Compile the IMAP/SMTP backend and remote avatar fetch; requires a TLS/async
 # stack and a configured account at runtime.
 live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
-# Render HTML mail bodies with WPE WebKit; requires the stack from
-# os/dev/build-wpe.sh.
-html-webview = ["ui/webview"]
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

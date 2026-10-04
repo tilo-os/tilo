@@ -117,6 +117,8 @@ pub mod peer;
 mod persistence;
 pub mod position;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod relay_offers;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod room_records;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod rooms;

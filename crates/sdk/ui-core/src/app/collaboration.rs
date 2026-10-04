@@ -637,8 +637,7 @@ impl App {
             self.forward_session_notification(&event);
             any |= Self::collab_event_updates_app_presentation(&event);
             self.apply_collab_presence_event(event);
-            if self.root_widget.take_structure_dirty() {
-                self.layout.structure_dirty = true;
+            if self.forget_replaced_widgets() {
                 any = true;
             }
         }

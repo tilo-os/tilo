@@ -553,9 +553,14 @@ impl WindowGroup {
         let before = spring.value();
         spring.step(dt);
         self.last_width_step = Some(now);
-        if (spring.value() - before).abs() > 0.05 {
-            self.style_dirty = true;
+        if (spring.value() - before).abs() <= 0.05 {
+            // The spring is only stepped while the layout is rebuilt, and a
+            // step this small asks for no rebuild: the rest of the motion,
+            // well under a pixel, would never be taken and the group would
+            // ask for animation frames forever. Finish it now.
+            spring.snap(spring.target());
         }
+        self.style_dirty = true;
         if spring.is_settled() && !self.is_closing() {
             self.width_spring = None;
         }
@@ -4724,6 +4729,35 @@ mod tests {
             );
         }
 
+        // Case `an_opening_slot_settles_when_only_its_own_rebuilds_step_it`.
+        {
+            // The row steps the slot spring only while it rebuilds the
+            // layout, and rebuilds only when a group asks for it. Frames at
+            // 60 and at 20 a second must both end the motion.
+            for frame_ms in [16, 50] {
+                let mut g = group_opening("Files", true, false);
+                g.set_strip_usable_px(1200.0);
+                g.start_spawn_animation();
+                let mut rebuilds = 0;
+                while std::mem::take(&mut g.style_dirty) && rebuilds < 200 {
+                    g.last_width_step = g.last_width_step.map(|_| instant_ago_ms(frame_ms));
+                    g.step_width_spring();
+                    rebuilds += 1;
+                }
+                assert!(
+                    g.width_spring.is_none(),
+                    "{frame_ms} ms frames: the slot spring stalled at {:?} after {rebuilds} rebuilds",
+                    g.width_spring
+                        .as_ref()
+                        .map(|s| (s.value(), s.target(), s.velocity())),
+                );
+                assert!(
+                    (g.layout_width_px() - g.resolved_width_px()).abs() < 0.5,
+                    "{frame_ms} ms frames: the slot ends at its width",
+                );
+            }
+        }
+
         // Case `closing_collapses_the_slot_and_keeps_drawing`.
         {
             let mut g = group_opening("Files", false, false);
@@ -4783,6 +4817,32 @@ mod tests {
                 "reduced motion snaps a running resize to the target",
             );
         }
+    }
+
+    /// A host that lays out at ~12 fps (a headless session rendering in
+    /// software) steps the opening slot 50 ms at a time. The slot must
+    /// still settle at its width; it used to grow until the client was
+    /// configured `i32::MAX` wide.
+    #[test]
+    fn a_slow_host_opens_the_slot_to_its_width() {
+        let mut g = make_group();
+        g.set_strip_usable_px(996.0);
+        let target = g.resolved_width_px();
+        g.start_spawn_animation();
+        for frame in 0..40 {
+            g.last_width_step = g.width_spring.as_ref().map(|_| instant_ago_ms(80));
+            g.step_width_spring();
+            let width = g.layout_width_px();
+            assert!(
+                width <= target * 1.05,
+                "frame {frame}: slot at {width} past its {target} px width",
+            );
+        }
+        assert!(
+            g.width_spring.is_none() && (g.layout_width_px() - target).abs() < 0.5,
+            "the slot settles at {target}, got {}",
+            g.layout_width_px(),
+        );
     }
 
     #[test]

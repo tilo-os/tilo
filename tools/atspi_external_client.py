@@ -16,9 +16,21 @@ accessible name in its tree, ``type BUS TEXT`` sets its first editable text
 field, and ``click BUS NAME`` invokes the click action of the node named NAME
 once it appears.
 
+``page`` opens Browser the same way and serves a page from this machine. Once
+the address field is on the bus it prints ``ready URL``; the caller types that
+address on the real keyboard. The check passes when Browser's engine fetched
+the page and Browser names the loaded document after its title.
+
 ``settings-network`` opens Settings' Network pane and requires what it reads
 out to match ``nmcli`` on the same device: the connected Wi-Fi network, the
 wired link, NetworkManager's connectivity verdict, and no read error.
+
+``new-tab APP_NAME`` proves tabs are the desktop's: it opens the app, prints
+``READY``, and waits for the person (the gate's real keyboard) to press
+Ctrl+T. The app must answer with another instance of itself, in a new
+desktop tab beside the first — one window group grows by exactly one tab
+and a second process of the app joins the bus. Apps have no tab strips of
+their own.
 
 The small ``[accessibility.atspi_acceptance]`` section in a signed app
 manifest is the certification data.  Adding an app is data, not another
@@ -30,6 +42,8 @@ network journeys remain product-specific acceptance work.
 from __future__ import annotations
 
 import argparse
+import html
+import http.server
 import os
 from pathlib import Path
 import re
@@ -37,6 +51,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 from dataclasses import dataclass
@@ -56,6 +71,10 @@ SHELL_TREE_NODE_LIMIT = 1024
 SHELL_BUS_NAME = "org.freedesktop.impl.portal.desktop.tilo"
 OPEN_APP_ACTION = "Open an app"
 LAUNCH_TIMEOUT_SECONDS = 120
+PAGE_TITLE = "Tilo browser engine check"
+# Typing the address and starting the engine, under emulation on some lanes.
+PAGE_TIMEOUT_SECONDS = 300
+BROWSER_TREE_NODE_LIMIT = 512
 
 
 class GateError(RuntimeError):
@@ -478,6 +497,75 @@ def type_in_app(address: str, bus: str, text: str) -> None:
     raise GateError("the app exposed no editable text field over AT-SPI")
 
 
+def tab_lists(shell: AtspiClient) -> list[list[str]]:
+    """The desktop's tab strips, in tree order: each strip's tab names. A
+    window group's strip is an AT-SPI page tab list."""
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    while True:
+        try:
+            tree = shell.tree(SHELL_TREE_NODE_LIMIT)
+            lists: list[list[str]] = []
+            for path in tree:
+                role = shell.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
+                if "'page tab list'" not in role:
+                    continue
+                children = shell.call(path, "org.a11y.atspi.Accessible.GetChildren")
+                tabs = []
+                for child in PATH_RE.findall(children):
+                    child_role = shell.call(
+                        child, "org.a11y.atspi.Accessible.GetRoleName", check=False,
+                    )
+                    if "'page tab'" in child_role:
+                        tabs.append(tree.get(child, shell.property(child, "Name")).strip())
+                lists.append(tabs)
+            return lists
+        except GateError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(POLL_SECONDS)
+
+
+def new_tab(address: str, app_name: str) -> None:
+    """Open APP_NAME, then require that the Ctrl+T the gate presses opens a
+    second instance of it as a tab beside the first, in the same group."""
+    _bus, first = open_in_session(address, app_name)
+    pids = [first]
+    try:
+        shell = shell_client(address)
+        before_tabs = tab_lists(shell)
+        before_bus = set(bus_pids(address))
+        print("READY", flush=True)
+        _second_bus, second = wait_for_new_app(address, before_bus, app_name)
+        pids.append(second)
+        if app_name.lower() not in process_command(second).lower():
+            raise GateError(
+                f"Ctrl+T in {app_name} started {process_command(second)}, not another {app_name}"
+            )
+        deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
+        after_tabs = tab_lists(shell)
+        while time.monotonic() < deadline:
+            grown = [
+                (old, new) for old, new in zip(before_tabs, after_tabs)
+                if len(new) == len(old) + 1
+            ]
+            if len(after_tabs) == len(before_tabs) and len(grown) == 1:
+                old, new = grown[0]
+                print(
+                    f"AT-SPI external client passed: Ctrl+T in {app_name} opened a desktop tab "
+                    f"beside it ({old} -> {new})"
+                )
+                return
+            time.sleep(POLL_SECONDS * 4)
+            after_tabs = tab_lists(shell)
+        raise GateError(
+            f"Ctrl+T in {app_name} started a second instance, but no window group gained "
+            f"exactly one tab: before {before_tabs}, after {after_tabs}"
+        )
+    finally:
+        for pid in pids:
+            close_app(pid)
+
+
 def close_app(pid: int) -> None:
     """End the app the session opened, so the next scenario starts clean."""
     try:
@@ -528,6 +616,74 @@ def exercise(scenario: Scenario, address: str) -> None:
     finally:
         close_app(pid)
     print(f"AT-SPI external client passed: {scenario.app_id} ({scenario.action} action round trip)")
+
+
+def serve_page(title: str) -> tuple[http.server.ThreadingHTTPServer, str, list[str]]:
+    """Serve one page on loopback; return the server, its URL and the paths requested."""
+    escaped = html.escape(title)
+    body = (
+        f"<!doctype html><html><head><meta charset=utf-8><title>{escaped}</title></head>"
+        f"<body><h1>{escaped}</h1><p>Served from this machine.</p></body></html>"
+    ).encode()
+    requests: list[str] = []
+
+    class Page(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - the stdlib's handler name
+            requests.append(self.path)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Page)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}/", requests
+
+
+def wait_for_names(client: AtspiClient, names: tuple[str, ...], timeout: float) -> dict[str, str]:
+    deadline = time.monotonic() + timeout
+    latest: dict[str, str] = {}
+    while time.monotonic() < deadline:
+        try:
+            latest = client.tree(BROWSER_TREE_NODE_LIMIT)
+        except GateError:
+            time.sleep(POLL_SECONDS)
+            continue
+        if all(client.named(latest, name) for name in names):
+            return latest
+        time.sleep(POLL_SECONDS * 4)
+    observed = ", ".join(sorted({value.strip() for value in latest.values() if value.strip()}))
+    raise GateError(f"Browser never exposed {', '.join(names)}; it exposed: {observed}")
+
+
+def load_page(address: str, title: str) -> str:
+    """Open Browser, hand the address to the caller's keyboard, and require the
+    engine to load the page this process serves."""
+    server, url, requests = serve_page(title)
+    try:
+        bus_name, pid = open_in_session(address, "Browser")
+        try:
+            client = AtspiClient(address, bus_name)
+            wait_for_names(client, ("Address and search",), START_TIMEOUT_SECONDS * 3)
+            print(f"ready {url}", flush=True)
+            try:
+                wait_for_names(client, (title,), PAGE_TIMEOUT_SECONDS)
+            except GateError as error:
+                raise GateError(
+                    f"{error}; the page server saw {requests or 'no request'}; "
+                    f"session log: {app_log('Browser')}"
+                ) from error
+            if not requests:
+                raise GateError(f"Browser showed {title!r} without fetching {url}")
+            return url
+        finally:
+            close_app(pid)
+    finally:
+        server.shutdown()
 
 
 # Settings' English labels for NetworkManager's connectivity verdicts.
@@ -687,10 +843,25 @@ def text_nodes(client: AtspiClient) -> dict[str, str]:
     return texts
 
 
-def prepare_typing(address: str, app_name: str, create: str, state: Path) -> None:
+def is_typing_target(client: AtspiClient, path: str, name: str, field: str | None) -> bool:
+    """Whether `path` is where a new document takes typing: the editable text
+    field named FIELD when the app names one, else its document."""
+    if field is not None:
+        return (
+            f"'{field}'" in name
+            and "org.a11y.atspi.EditableText" in client.interfaces(path)
+        )
+    role = client.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
+    return "document" in role and "Component" in client.interfaces(path)
+
+
+def prepare_typing(
+    address: str, app_name: str, create: str, state: Path, field: str | None = None
+) -> None:
     """Open APP_NAME, activate CREATE (its new-document action) and give the
-    document keyboard focus, so the next real key presses type into it. The
-    app's bus, pid and document node are written to STATE for `typed`."""
+    document — or its editable FIELD, for an app whose document is a list of
+    blocks — keyboard focus, so the next real key presses type into it. The
+    app's bus and pid are written to STATE for `typed`."""
     bus_name, pid = open_in_session(address, app_name)
     client = AtspiClient(address, bus_name)
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
@@ -707,15 +878,28 @@ def prepare_typing(address: str, app_name: str, create: str, state: Path) -> Non
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
     document = None
     while document is None:
-        for path in client.tree(TYPING_TREE_NODE_LIMIT):
-            role = client.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
-            if "document" in role and "Component" in client.interfaces(path):
+        seen: list[str] = []
+        try:
+            tree = client.tree(TYPING_TREE_NODE_LIMIT)
+        except GateError:
+            # The app replaces its tree while the new document opens.
+            tree = {}
+        for path, name in tree.items():
+            if is_typing_target(client, path, name, field):
                 document = path
                 break
+            role = client.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
+            seen.append(f"{role.strip()} {name.strip()}")
         else:
             if time.monotonic() >= deadline:
                 close_app(pid)
-                raise GateError(f"{app_name}: {create!r} opened no document to type into")
+                # What the app shows instead says why: the empty state still
+                # up means the action created nothing.
+                raise GateError(
+                    f"{app_name}: {create!r} opened no document to type into; "
+                    f"the app exposes: {'; '.join(seen) or 'nothing'}; "
+                    f"session log: {app_log(app_name)}"
+                )
             time.sleep(POLL_SECONDS * 4)
     client.call(document, "org.a11y.atspi.Component.GrabFocus")
     deadline = time.monotonic() + START_TIMEOUT_SECONDS
@@ -730,6 +914,36 @@ def prepare_typing(address: str, app_name: str, create: str, state: Path) -> Non
         time.sleep(POLL_SECONDS)
     state.write_text(f"{bus_name} {pid}\n")
     print(f"{app_name}: a new document has keyboard focus; type into it now")
+
+
+MEDIA_UNREACHABLE = "document media service is"
+
+
+def check_present(address: str, state: Path, app_name: str, name: str) -> None:
+    """APP_NAME's document opened by `prepare_typing` gained a node named NAME (an
+    image block is named after its alt text), and the app's launch reached
+    the document media service that keeps such content with the document."""
+    bus_name, pid_text = state.read_text().split()
+    pid = int(pid_text)
+    client = AtspiClient(address, bus_name)
+    deadline = time.monotonic() + TYPING_TIMEOUT_SECONDS
+    try:
+        while time.monotonic() < deadline:
+            try:
+                if client.named(client.tree(TYPING_TREE_NODE_LIMIT), name):
+                    break
+            except GateError:
+                pass
+            time.sleep(POLL_SECONDS * 4)
+        else:
+            raise GateError(f"the document never showed a node named {name!r}")
+        log = app_log(app_name)
+        if MEDIA_UNREACHABLE in log:
+            raise GateError(f"the app could not reach the document media service: {log}")
+        print(f"the document shows {name!r}, kept by the document media service")
+    finally:
+        close_app(pid)
+        state.unlink(missing_ok=True)
 
 
 def check_typed(address: str, state: Path, expected: str, status: str | None = None) -> None:
@@ -843,6 +1057,11 @@ def main() -> int:
     typing.add_argument("app_name")
     typing.add_argument("create", help="the accessible name of the app's new-document action")
     typing.add_argument("--state", type=Path, required=True)
+    typing.add_argument(
+        "--field",
+        help="the accessible name of the editable field a new document types into, "
+        "for apps whose document is a list of blocks",
+    )
     typed = sub.add_parser("typed", help="check the document `type-into` opened holds exactly TEXT")
     typed.add_argument("text")
     typed.add_argument("--state", type=Path, required=True)
@@ -854,6 +1073,13 @@ def main() -> int:
     described.add_argument("name")
     described.add_argument("description")
     described.add_argument("--state", type=Path, required=True)
+    present = sub.add_parser(
+        "present",
+        help="check APP_NAME's document `type-into` opened shows a node named NAME, its media service reached",
+    )
+    present.add_argument("app_name")
+    present.add_argument("name")
+    present.add_argument("--state", type=Path, required=True)
     card = sub.add_parser(
         "card", help="activate a launchpad card on the empty workspace; require that it opens its app",
     )
@@ -863,6 +1089,16 @@ def main() -> int:
         "--expect", action="append", default=[], metavar="NAME",
         help="an accessible name the app must expose after the card's action (repeatable)",
     )
+    page = sub.add_parser(
+        "page", help="open Browser, wait for the caller to type the printed address, require the page to load",
+    )
+    page.add_argument("--title", default=PAGE_TITLE)
+    tab = sub.add_parser(
+        "new-tab",
+        help="open an app, print READY, and require that the Ctrl+T pressed next opens it "
+        "again as a desktop tab beside the first",
+    )
+    tab.add_argument("app_name")
     args = parser.parse_args()
     for executable in ("busctl", "gdbus"):
         if not shutil.which(executable):
@@ -873,6 +1109,10 @@ def main() -> int:
         if args.command == "open":
             bus_name, pid = open_in_session(address, args.app_name)
             print(f"{bus_name} {pid}")
+            return 0
+        if args.command == "page":
+            url = load_page(address, args.title)
+            print(f"AT-SPI external client passed: Browser loaded {url} ({args.title!r})")
             return 0
         if args.command == "names":
             print("\n".join(app_names(address, args.bus)))
@@ -887,13 +1127,19 @@ def main() -> int:
             settings_network(address)
             return 0
         if args.command == "type-into":
-            prepare_typing(address, args.app_name, args.create, args.state)
+            prepare_typing(address, args.app_name, args.create, args.state, args.field)
             return 0
         if args.command == "typed":
             check_typed(address, args.state, args.text, args.status)
             return 0
         if args.command == "described":
             check_described(address, args.state, args.name, args.description)
+            return 0
+        if args.command == "present":
+            check_present(address, args.state, args.app_name, args.name)
+            return 0
+        if args.command == "new-tab":
+            new_tab(address, args.app_name)
             return 0
         if args.command == "card":
             _bus_name, pid = open_from_launchpad_card(

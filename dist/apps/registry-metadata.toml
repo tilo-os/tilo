@@ -11,6 +11,9 @@ tagline = "Explore APIs with confidence"
 [apps.backups]
 description = "Protect important work with clear, restorable backups."
 tagline = "Your work, safely recoverable"
+[apps.browser]
+description = "Browse the web with built-in ad blocking, private windows, and Chrome extensions."
+tagline = "The web, without the clutter"
 [apps.calculator]
 description = "A fast calculator for everyday arithmetic, formulas, and graphs."
 tagline = "Work it out"

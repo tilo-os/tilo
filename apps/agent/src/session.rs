@@ -2843,17 +2843,19 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
             end,
             ..
         } => selection_text_anchor(start_block, *start, end_block, *end),
-        RichTextAction::SetMark { spans, .. } => tilo_actions::InteractionAnchor::Text {
-            region: "document".into(),
-            ranges: spans
-                .iter()
-                .map(|span| tilo_actions::InteractionTextRange {
-                    block: span.block.clone(),
-                    start: u64::try_from(span.start).unwrap_or(u64::MAX),
-                    end: u64::try_from(span.end).unwrap_or(u64::MAX),
-                })
-                .collect(),
-        },
+        RichTextAction::SetMark { spans, .. } | RichTextAction::ReplaceMatches { spans, .. } => {
+            tilo_actions::InteractionAnchor::Text {
+                region: "document".into(),
+                ranges: spans
+                    .iter()
+                    .map(|span| tilo_actions::InteractionTextRange {
+                        block: span.block.clone(),
+                        start: u64::try_from(span.start).unwrap_or(u64::MAX),
+                        end: u64::try_from(span.end).unwrap_or(u64::MAX),
+                    })
+                    .collect(),
+            }
+        }
         RichTextAction::SetParagraphStyle { blocks, .. }
         | RichTextAction::ApplyNamedStyle { blocks, .. }
         | RichTextAction::SetBlockAttr { blocks, .. }
@@ -3049,6 +3051,44 @@ mod handoff_test_peer;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replace_matches_anchors_every_original_character_range() {
+        let action = RichTextAction::ReplaceMatches {
+            region: word_processor::actions::RegionKind::Body,
+            spans: vec![
+                word_processor::actions::Span {
+                    block: "first".into(),
+                    start: 3,
+                    end: 8,
+                },
+                word_processor::actions::Span {
+                    block: "second".into(),
+                    start: 7,
+                    end: 12,
+                },
+            ],
+            ins: "β😀".into(),
+        };
+        assert_eq!(
+            word_action_anchor(&action, "unrelated-focus"),
+            tilo_actions::InteractionAnchor::Text {
+                region: "document".into(),
+                ranges: vec![
+                    tilo_actions::InteractionTextRange {
+                        block: "first".into(),
+                        start: 3,
+                        end: 8
+                    },
+                    tilo_actions::InteractionTextRange {
+                        block: "second".into(),
+                        start: 7,
+                        end: 12
+                    },
+                ],
+            }
+        );
+    }
 
     #[test]
     fn word_actions_anchor_the_exact_document_objects_they_change() {

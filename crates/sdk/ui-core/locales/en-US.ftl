@@ -311,9 +311,6 @@ text-input-show-password = Show password
 text-input-hide-password = Hide password
 
 # Authentication surfaces share the system theme and catalog.
-greeter-welcome-back = Welcome back to Tilo
-greeter-sign-in = Sign in to continue
-greeter-passcode-intro = Enter your passcode to open your desktop.
 lock-welcome-back = Welcome back
 
 # Now playing: Quick Settings and the lock screen.
@@ -429,3 +426,9 @@ widget-block-duplicate-selection = Duplicate selected or focused blocks
 
 widget-block-move-selection-up = Move selected blocks up
 widget-block-move-selection-down = Move selected blocks down
+
+block-editor-replace-placeholder = Replace with
+block-editor-replace = Replace
+
+block-editor-replace-all = Replace all
+block-editor-replace-all-help = Replace all — Shift+Enter in the replacement field

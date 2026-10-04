@@ -18,6 +18,21 @@ sys.modules[SPEC.name] = CLIENT
 SPEC.loader.exec_module(CLIENT)
 
 
+class PageServerTests(unittest.TestCase):
+    def test_the_served_page_carries_the_expected_title_and_records_its_fetch(self):
+        import urllib.request
+
+        server, url, requests = CLIENT.serve_page("Engine <check>")
+        try:
+            self.assertTrue(url.startswith("http://127.0.0.1:"))
+            with urllib.request.urlopen(url, timeout=10) as response:
+                body = response.read().decode()
+            self.assertIn("<title>Engine &lt;check&gt;</title>", body)
+            self.assertEqual(requests, ["/"])
+        finally:
+            server.shutdown()
+
+
 class SettingsNetworkTests(unittest.TestCase):
     DEVICES = "ethernet:connected:Wired connection 1\nwifi:connected:caf\\:e\nloopback:connected (externally):lo\n"
 
@@ -94,6 +109,23 @@ class ManifestScenarioTests(unittest.TestCase):
         with self.subTest(phase='name matching uses an atspi string value'):
             tree = {"/node/1": "(< 'Settings' >,)", "/node/2": "(< 'Other' >,)"}
             self.assertEqual(CLIENT.AtspiClient.named(tree, "Settings"), ["/node/1"])
+
+
+class TypingTargetTests(unittest.TestCase):
+    def test_a_named_field_or_else_the_document_takes_typing(self):
+        from unittest import mock
+
+        client = mock.Mock()
+        client.interfaces.return_value = "['org.a11y.atspi.EditableText', 'org.a11y.atspi.Component']"
+        client.call.return_value = "('document frame',)"
+        target = CLIENT.is_typing_target
+        with self.subTest(phase="a block editor's editable line, by name"):
+            self.assertTrue(target(client, "/1", "(<'Block text'>,)", "Block text"))
+            self.assertFalse(target(client, "/2", "(<'Page title'>,)", "Block text"))
+        with self.subTest(phase="without a field name, the document"):
+            self.assertTrue(target(client, "/3", "(<''>,)", None))
+            client.call.return_value = "('push button',)"
+            self.assertFalse(target(client, "/4", "(<'New note'>,)", None))
 
 
 class TypedTextTests(unittest.TestCase):
@@ -184,6 +216,48 @@ class AppDrivingTests(unittest.TestCase):
         finally:
             CLIENT.AtspiClient.tree = original
         self.assertEqual(names, ["App Store", "Update all", "Settings, offered by a test registry"])
+
+
+class FakeShell:
+    """A desktop with two window groups: [Notes] and [Browser, Browser]."""
+
+    ROOT = CLIENT.ROOT_PATH
+    BASE = "/org/a11y/atspi/accessible/"
+
+    def __init__(self):
+        b = self.BASE
+        self.nodes = {
+            self.ROOT: ("frame", "", [b + "1", b + "4"]),
+            b + "1": ("page tab list", "", [b + "2", b + "3"]),
+            b + "2": ("page tab", "Notes", []),
+            b + "3": ("push button", "New tab", []),
+            b + "4": ("page tab list", "", [b + "5", b + "6", b + "7"]),
+            b + "5": ("page tab", "Browser", []),
+            b + "6": ("page tab", "Browser", []),
+            b + "7": ("push button", "New tab", []),
+        }
+
+    def tree(self, _limit):
+        return {path: f"(<'{name}'>,)" for path, (_role, name, _kids) in self.nodes.items()}
+
+    def property(self, path, _name):
+        return f"(<'{self.nodes[path][1]}'>,)"
+
+    def call(self, path, method, *args, check=True):
+        role, _name, kids = self.nodes[path]
+        if method.endswith("GetRoleName"):
+            return f"('{role}',)"
+        if method.endswith("GetChildren"):
+            return "([" + ", ".join(f"(':1.2', objectpath '{kid}')" for kid in kids) + "],)"
+        raise AssertionError(method)
+
+
+class TabListTests(unittest.TestCase):
+    def test_window_group_strips_list_only_their_tabs(self):
+        lists = CLIENT.tab_lists(FakeShell())
+        self.assertEqual(len(lists), 2)
+        self.assertEqual([len(tabs) for tabs in lists], [1, 2])
+        self.assertTrue(all("Browser" in name for name in lists[1]))
 
 
 if __name__ == "__main__":

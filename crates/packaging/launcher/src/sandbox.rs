@@ -488,6 +488,15 @@ fn push_app_metadata(argv: &mut Vec<String>, manifest: &MinimalManifest, payload
     }
 }
 
+/// Mount a further runtime bundle read-only at its runtime mount. Unlike the
+/// app's own runtime it changes no loader path: the app finds what it needs
+/// inside by path. Returns the mount.
+pub fn push_optional_runtime(argv: &mut Vec<String>, root: &Path, version: &str) -> PathBuf {
+    let mount = runtime_mount_for(version);
+    push_bind(argv, "--ro-bind", root, &mount);
+    mount
+}
+
 fn push_runtime_bundle(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
     let Some((runtime_root, runtime_version)) = runtime else {
         return;
@@ -925,6 +934,7 @@ mod tests {
             version: "0.1.0".to_string(),
             kind: crate::manifest::KIND_APP.to_string(),
             runtime: None,
+            optional_runtimes: Vec::new(),
             entrypoint: Entrypoint {
                 bin: "bin/notes".to_string(),
                 r#type: crate::manifest::EntrypointType::Gui,

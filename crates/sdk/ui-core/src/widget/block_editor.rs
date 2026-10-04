@@ -24,7 +24,7 @@ use crate::color_compat::ColorCompat;
 use crate::icons::{Icon, draw_icon};
 use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle};
-use crate::text_selection::{clipboard_copy, clipboard_paste};
+use crate::text_selection::{clipboard_copy, clipboard_copy_accepted, clipboard_paste};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
@@ -32,7 +32,7 @@ use crate::widget::link_popover::{LinkPopover, PageEntry};
 use crate::widget::marks::{Mark, MarkSpan, PageId};
 use crate::widget::rich_text_line::{LineSignal, RichTextLine, TransientColorSpan};
 use crate::widget::slash_menu::SlashMenu;
-use crate::widget::{Button, SearchField};
+use crate::widget::{Button, SearchField, TextInput};
 use crate::widget::{EventCtx, Widget};
 
 /// Deeper nesting runs off the panel's right edge.
@@ -609,6 +609,10 @@ pub struct BlockEditor {
     transclusion_rects: Vec<Option<(Rect, PageId)>>,
     pending_transclusion_opens: Vec<PageId>,
     pending_external_link_opens: Vec<String>,
+    /// Images pasted into the editor, for its host to store and place after
+    /// the caret: the editor holds text, and an image becomes a block once
+    /// the host keeps its bytes with the document.
+    pasted_images: Vec<ImagePasteRequest>,
     /// Painted copy controls for fenced-code runs. Each tuple retains the
     /// inclusive block range so pointer and accessibility activation copy the
     /// exact source, including newlines, without touching document state.
@@ -669,6 +673,17 @@ pub struct BlockEditor {
     /// Shared, document-local find UI. It is an absolute overlay so opening it
     /// never reflows authored content or creates an undo boundary.
     find_field: SearchField,
+    replace_field: TextInput,
+    replace_button: Button,
+    replace_all_button: Button,
+    replace_all_node: Option<NodeId>,
+    replace_all_requested: std::rc::Rc<std::cell::Cell<bool>>,
+    find_snapshot: Vec<BlockContent>,
+    replace_node: Option<NodeId>,
+    replace_button_node: Option<NodeId>,
+    replace_enabled: bool,
+    replace_requested: std::rc::Rc<std::cell::Cell<bool>>,
+    find_target: Option<FindReplaceTarget>,
     find_node: Option<NodeId>,
     find_visible: bool,
     find_matches: Vec<FindMatch>,
@@ -694,6 +709,22 @@ struct FindMatch {
     end: usize,
 }
 
+/// A captured find match. Canonical hosts validate this snapshot before writing.
+#[derive(Clone, Debug)]
+pub struct FindReplaceTarget {
+    pub block: BlockContent,
+    pub start_byte: usize,
+    pub end_byte: usize,
+}
+
+/// One search snapshot, with byte ranges into its blocks.
+#[derive(Clone, Debug)]
+pub struct FindReplaceBatch {
+    pub blocks: Vec<BlockContent>,
+    pub matches: Vec<(usize, std::ops::Range<usize>)>,
+    pub replacement: String,
+}
+
 const DEFAULT_EMPTY_HINT: &str = "Start typing — / for blocks, [[ to link, ![[ to embed";
 const CODE_HEADER_HEIGHT: f64 = 28.0;
 const FORMULA_BLOCK_MIN_HEIGHT: f32 = 164.0;
@@ -708,6 +739,10 @@ impl BlockEditor {
     /// Starts with one empty paragraph — there must be a block to focus.
     pub fn new() -> Self {
         crate::i18n::I18nManager::register_widget_messages();
+        let replace_requested = std::rc::Rc::new(std::cell::Cell::new(false));
+        let requested = replace_requested.clone();
+        let replace_all_requested = std::rc::Rc::new(std::cell::Cell::new(false));
+        let all_requested = replace_all_requested.clone();
         let mut s = Self {
             blocks: Vec::new(),
             focused: None,
@@ -757,6 +792,7 @@ impl BlockEditor {
             transclusion_rects: Vec::new(),
             pending_transclusion_opens: Vec::new(),
             pending_external_link_opens: Vec::new(),
+            pasted_images: Vec::new(),
             code_copy_hits: Vec::new(),
             copied_code_start: None,
             copied_code_feedback: None,
@@ -789,6 +825,28 @@ impl BlockEditor {
                 .with_id("block-editor-find")
                 .with_placeholder("block-editor-find-placeholder")
                 .without_clear(),
+            replace_field: TextInput::local()
+                .with_id("block-editor-replacement")
+                .with_placeholder("block-editor-replace-placeholder"),
+            replace_button: Button::new("block-editor-replace", "block-editor-replace", None)
+                .with_size(96.0, 36.0)
+                .on_click(move || requested.set(true)),
+            replace_all_button: Button::new(
+                "block-editor-replace-all",
+                "block-editor-replace-all",
+                None,
+            )
+            .with_size(120.0, 36.0)
+            .tooltip("block-editor-replace-all-help")
+            .on_click(move || all_requested.set(true)),
+            replace_all_node: None,
+            replace_all_requested,
+            find_snapshot: Vec::new(),
+            replace_node: None,
+            replace_button_node: None,
+            replace_enabled: false,
+            replace_requested,
+            find_target: None,
             find_node: None,
             find_visible: false,
             find_matches: Vec::new(),
@@ -1096,7 +1154,9 @@ impl BlockEditor {
         }
         if self.find_visible {
             self.is_focused = focused;
-            self.find_field.set_focused(focused);
+            let replacement_focus = self.replace_enabled && self.replace_field.is_focused();
+            self.find_field.set_focused(focused && !replacement_focus);
+            self.replace_field.set_focus(focused && replacement_focus);
             for block in &mut self.blocks {
                 block.line.set_focus(false);
             }
@@ -1854,15 +1914,17 @@ impl BlockEditor {
 
     /// Whether the active source line or projected table cell owns an IME preedit.
     pub fn is_composing(&self) -> bool {
-        self.focused
-            .and_then(|index| self.blocks.get(index))
-            .is_some_and(|block| {
-                block.line.inner().is_composing()
-                    || self
-                        .table_editors
-                        .get(&block.id)
-                        .is_some_and(super::table::Table::projected_is_composing)
-            })
+        (self.find_visible && (self.find_field.is_composing() || self.replace_field.is_composing()))
+            || self
+                .focused
+                .and_then(|index| self.blocks.get(index))
+                .is_some_and(|block| {
+                    block.line.inner().is_composing()
+                        || self
+                            .table_editors
+                            .get(&block.id)
+                            .is_some_and(super::table::Table::projected_is_composing)
+                })
     }
 
     pub fn focused_table_cell(&self) -> Option<(String, usize, usize)> {
@@ -1878,7 +1940,11 @@ impl BlockEditor {
     /// state. Hosts may call this for a window-level Find command even when a
     /// sibling field currently owns focus.
     pub fn open_find(&mut self) {
+        if self.is_composing() {
+            return;
+        }
         self.find_visible = true;
+        self.replace_field.set_focus(false);
         self.find_field.set_focused(true);
         self.find_field.select_all();
         for block in &mut self.blocks {
@@ -1890,6 +1956,10 @@ impl BlockEditor {
 
     fn close_find(&mut self) {
         self.find_visible = false;
+        self.replace_field.set_focus(false);
+        self.replace_requested.set(false);
+        self.replace_all_requested.set(false);
+        self.find_snapshot.clear();
         self.find_field.set_focused(false);
         if let Some(index) = self.focused
             && let Some(block) = self.blocks.get_mut(index)
@@ -1903,8 +1973,13 @@ impl BlockEditor {
         let query = self.find_field.value().to_string();
         self.find_matches.clear();
         self.find_active = None;
+        self.find_target = None;
+        self.find_snapshot.clear();
         if query.is_empty() {
             return;
+        }
+        if self.replace_enabled {
+            self.find_snapshot = self.blocks.iter().map(Block::content).collect();
         }
         self.clear_find_document_selection();
         for (block, item) in self.blocks.iter().enumerate() {
@@ -1936,10 +2011,16 @@ impl BlockEditor {
     }
 
     fn activate_find_match(&mut self, active: usize) {
+        let replacement_focus = self.replace_field.is_focused();
         let Some(found) = self.find_matches.get(active).copied() else {
             self.find_active = None;
             return;
         };
+        self.find_target = self.blocks.get(found.block).map(|block| FindReplaceTarget {
+            block: block.content(),
+            start_byte: found.start,
+            end_byte: found.end,
+        });
         self.clear_find_document_selection();
         self.retained_block_selection = None;
         self.document_selection = None;
@@ -1950,7 +2031,7 @@ impl BlockEditor {
             // document range remains visibly selected.
             block.line.set_focus(false);
         }
-        self.find_field.set_focused(true);
+        self.focus_find_input(replacement_focus);
         self.find_active = Some(active);
         self.dirty = true;
     }
@@ -1981,6 +2062,99 @@ impl BlockEditor {
             (Some(_) | None, false) => 0,
         };
         self.activate_find_match(next);
+    }
+
+    fn focus_find_input(&mut self, replacement: bool) {
+        self.find_field.set_focused(!replacement);
+        self.replace_field.set_focus(replacement);
+        for block in &mut self.blocks {
+            block.line.set_focus(false);
+        }
+        self.dirty = true;
+    }
+
+    /// Enable replacement only when a canonical host consumes its requests.
+    pub fn set_find_replace_enabled(&mut self, enabled: bool) {
+        self.replace_enabled = enabled;
+    }
+
+    pub fn take_find_replace_request(&mut self) -> bool {
+        self.replace_requested.replace(false)
+    }
+
+    /// The replacement payload keeps byte endpoints and original block identity.
+    pub fn find_replace_request(&self) -> Option<(FindReplaceTarget, String)> {
+        if !self.replace_enabled || !self.find_visible || self.read_only || self.is_composing() {
+            return None;
+        }
+        let target = self.find_target.as_ref()?;
+        let matched = target.block.text.get(target.start_byte..target.end_byte)?;
+        if matched.is_empty() || matched.to_lowercase() != self.find_field.value().to_lowercase() {
+            return None;
+        }
+        let replacement = self.replace_field.value();
+        if replacement.chars().any(|c| c.is_control() && c != '\t') {
+            return None;
+        }
+        Some((target.clone(), replacement.to_owned()))
+    }
+
+    pub fn take_find_replace_all_request(&mut self) -> bool {
+        self.replace_all_requested.replace(false)
+    }
+
+    pub fn can_replace_all(&self) -> bool {
+        self.replace_enabled
+            && self.find_visible
+            && !self.read_only
+            && !self.is_composing()
+            && !self.find_matches.is_empty()
+            && self.find_matches.len() <= 10_000
+            // Match the canonical action's aggregate text budget before enabling
+            // a control whose payload the host would necessarily refuse.
+            && self.replace_field.value().chars().count().checked_mul(self.find_matches.len())
+                .is_some_and(|total| total <= 1_000_000)
+            && !self
+                .replace_field
+                .value()
+                .chars()
+                .any(|c| c.is_control() && c != '\t')
+    }
+
+    /// Clone the snapshot only when a canonical host consumes the action.
+    pub fn find_replace_all_request(&self) -> Option<FindReplaceBatch> {
+        self.can_replace_all().then(|| FindReplaceBatch {
+            blocks: self.find_snapshot.clone(),
+            matches: self
+                .find_matches
+                .iter()
+                .map(|item| (item.block, item.start..item.end))
+                .collect(),
+            replacement: self.replace_field.value().to_owned(),
+        })
+    }
+
+    pub fn finish_find_replace_all(&mut self) {
+        let replacement_focus = self.replace_field.is_focused();
+        self.refresh_find_matches(true);
+        self.focus_find_input(replacement_focus);
+    }
+
+    /// Move beyond inserted text, refresh matches, and retain overlay focus.
+    pub fn finish_find_replace(&mut self, target: &FindReplaceTarget, replacement_len: usize) {
+        let replacement_focus = self.replace_field.is_focused();
+        if let Some(index) = self
+            .blocks
+            .iter()
+            .position(|block| block.id == target.block.id)
+        {
+            self.focus_block(
+                index,
+                CursorPlacement::Byte(target.start_byte.saturating_add(replacement_len)),
+            );
+        }
+        self.refresh_find_matches(true);
+        self.focus_find_input(replacement_focus);
     }
 
     fn handle_find_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
@@ -2021,12 +2195,36 @@ impl BlockEditor {
         } = event
         {
             match logical_key {
-                Key::Named(NamedKey::Escape) => {
+                Key::Named(NamedKey::Tab) if self.replace_enabled && !self.is_composing() => {
+                    let replacement_focus = !self.replace_field.is_focused();
+                    self.focus_find_input(replacement_focus);
+                    *ctx.handled = true;
+                    return true;
+                }
+                Key::Named(NamedKey::Enter)
+                    if self.replace_enabled
+                        && self.replace_field.is_focused()
+                        && !self.is_composing() =>
+                {
+                    if ctx.modifiers.state().shift_key()
+                        || ctx.modifiers.state().control_key()
+                        || ctx.modifiers.state().super_key()
+                    {
+                        if self.can_replace_all() {
+                            self.replace_all_requested.set(true);
+                        }
+                    } else {
+                        self.replace_requested.set(true);
+                    }
+                    *ctx.handled = true;
+                    return true;
+                }
+                Key::Named(NamedKey::Escape) if !self.is_composing() => {
                     self.close_find();
                     *ctx.handled = true;
                     return true;
                 }
-                Key::Named(NamedKey::Enter | NamedKey::F3) => {
+                Key::Named(NamedKey::Enter | NamedKey::F3) if !self.is_composing() => {
                     self.step_find(ctx.modifiers.state().shift_key());
                     *ctx.handled = true;
                     return true;
@@ -2041,6 +2239,17 @@ impl BlockEditor {
             ..
         } = event
         {
+            if self.is_composing() {
+                let input_rect = if self.replace_field.is_focused() {
+                    self.replace_field.get_rect()
+                } else {
+                    self.find_field.get_rect()
+                };
+                if !input_rect.contains(self.last_mouse_pos) {
+                    *ctx.handled = true;
+                    return true;
+                }
+            }
             if self.find_previous_rect.contains(self.last_mouse_pos) {
                 self.step_find(true);
                 *ctx.handled = true;
@@ -2056,8 +2265,27 @@ impl BlockEditor {
                 *ctx.handled = true;
                 return true;
             }
+            if self.replace_enabled
+                && (self.replace_field.get_rect().contains(self.last_mouse_pos)
+                    || self.replace_button.get_rect().contains(self.last_mouse_pos)
+                    || self
+                        .replace_all_button
+                        .get_rect()
+                        .contains(self.last_mouse_pos))
+            {
+                self.focus_find_input(true);
+            } else if self.find_field.get_rect().contains(self.last_mouse_pos) {
+                self.focus_find_input(false);
+            }
             let controls = self.find_previous_rect.union(self.find_close_rect);
-            if !self.find_field.get_rect().contains(self.last_mouse_pos)
+            if !(self.replace_enabled
+                && (self.replace_field.get_rect().contains(self.last_mouse_pos)
+                    || self.replace_button.get_rect().contains(self.last_mouse_pos)
+                    || self
+                        .replace_all_button
+                        .get_rect()
+                        .contains(self.last_mouse_pos)))
+                && !self.find_field.get_rect().contains(self.last_mouse_pos)
                 && !controls.contains(self.last_mouse_pos)
             {
                 self.close_find();
@@ -2065,6 +2293,30 @@ impl BlockEditor {
             }
         }
 
+        if self.replace_enabled {
+            self.replace_button
+                .set_enabled(self.find_replace_request().is_some());
+            if let Some(node) = self.replace_button_node {
+                self.replace_button
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            }
+            self.replace_all_button.set_enabled(self.can_replace_all());
+            if let Some(node) = self.replace_all_node {
+                self.replace_all_button
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            }
+            if self.replace_field.is_focused() {
+                if let Some(node) = self.replace_node {
+                    self.replace_field
+                        .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+                }
+                if self.replace_field.take_dirty().is_some() {
+                    self.dirty = true;
+                }
+                *ctx.handled = true;
+                return true;
+            }
+        }
         if let Some(node) = self.find_node {
             self.find_field
                 .handle_event(event, &mut ctx.reborrow(ctx.path, node));
@@ -2092,6 +2344,14 @@ impl BlockEditor {
         }
         self.find_field
             .draw(scene, transform, text_renderer, theme, presence);
+        if self.replace_enabled {
+            self.replace_field
+                .draw(scene, transform, text_renderer, theme, presence);
+            self.replace_button
+                .draw(scene, transform, text_renderer, theme, presence);
+            self.replace_all_button
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
 
         let controls = self
             .find_previous_rect
@@ -3108,26 +3368,25 @@ impl BlockEditor {
             self.dirty = true;
             return true;
         }
-        if self.document_selection.is_none()
-            && let Some(index) = self.focused
-            && let Some(block) = self.blocks.get(index)
-            && self
-                .image_attachments
+        // A preview's source is the clipboard candidate, not a live text
+        // selection until a replacement actually succeeds.
+        let image_selection = self.focused.and_then(|index| {
+            let block = self.blocks.get(index)?;
+            self.image_attachments
                 .get(&block.id)
-                .is_some_and(|image| !image.editing)
-        {
-            self.document_selection = Some(DocumentSelection {
-                anchor: DocumentPosition {
-                    block: index,
-                    byte: 0,
-                },
-                cursor: DocumentPosition {
-                    block: index,
-                    byte: block.text().len(),
-                },
-            });
-        }
-        let selection = self.document_selection.or_else(|| {
+                .filter(|image| !image.editing)
+                .map(|_| DocumentSelection {
+                    anchor: DocumentPosition {
+                        block: index,
+                        byte: 0,
+                    },
+                    cursor: DocumentPosition {
+                        block: index,
+                        byte: block.text().len(),
+                    },
+                })
+        });
+        let selection = self.document_selection.or(image_selection).or_else(|| {
             let index = self.focused?;
             let line = &self.blocks.get(index)?.line;
             let (start, end) = line
@@ -3150,6 +3409,9 @@ impl BlockEditor {
         if matches!(command, "copy" | "cut") && selection.anchor == selection.cursor {
             return true;
         }
+        if command == "paste" && self.paste_image() {
+            return true;
+        }
         // An unavailable clipboard must never turn Paste into Delete.
         let replacement = if command == "paste" {
             let Some(value) = clipboard_paste() else {
@@ -3159,19 +3421,21 @@ impl BlockEditor {
         } else {
             String::new()
         };
-        if command != "copy" {
-            self.begin_action_intercept();
-        }
         let prior = self.document_selection;
         self.document_selection = Some(selection);
-        if matches!(command, "copy" | "cut")
-            && let Some(text) = self.selected_text()
-        {
-            clipboard_copy(&text);
+        if matches!(command, "copy" | "cut") {
+            let accepted = self
+                .selected_text()
+                .is_some_and(|text| clipboard_copy_accepted(&text));
+            if command == "cut" && !accepted {
+                self.document_selection = prior;
+                return true;
+            }
         }
         if command == "copy" {
             self.document_selection = prior;
         } else {
+            self.begin_action_intercept();
             self.replace_document_selection(&replacement);
             self.set_focus(true);
             let ops = self.take_intercepted_ops();
@@ -3492,7 +3756,28 @@ impl BlockEditor {
             }
             let control = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
             if control && let Key::Character(key) = logical_key {
-                if matches!(key.as_str(), "c" | "x" | "v") {
+                if key == "c" {
+                    // Browser cut first copies to its event clipboard. Copying
+                    // a preview must not expose a replacement text selection.
+                    clipboard_copy(self.blocks[index].text());
+                    *ctx.handled = true;
+                    return true;
+                }
+                if matches!(key.as_str(), "x" | "v") {
+                    let cutting = key == "x";
+                    if cutting && !clipboard_copy_accepted(self.blocks[index].text()) {
+                        *ctx.handled = true;
+                        return true;
+                    }
+                    let replacement = if cutting {
+                        String::new()
+                    } else {
+                        let Some(text) = clipboard_paste() else {
+                            *ctx.handled = true;
+                            return true;
+                        };
+                        text
+                    };
                     let end = self.blocks[index].text().len();
                     self.select_document_range(
                         DocumentPosition {
@@ -3504,7 +3789,7 @@ impl BlockEditor {
                             byte: end,
                         },
                     );
-                    self.handle_document_selection_ctrl_key(logical_key);
+                    self.replace_document_selection(&replacement);
                     *ctx.handled = true;
                     return true;
                 }
@@ -3669,6 +3954,123 @@ impl BlockEditor {
 
     pub fn take_external_link_open(&mut self) -> Option<String> {
         self.pending_external_link_opens.pop()
+    }
+
+    /// Images for legacy hosts which insert after the caret. Canonical hosts
+    /// use [`Self::take_image_paste_requests`] to replace the captured selection.
+    pub fn take_pasted_images(&mut self) -> Vec<crate::clipboard::ClipboardImage> {
+        self.take_image_paste_requests()
+            .into_iter()
+            .map(|request| request.image)
+            .collect()
+    }
+
+    /// Drain image intents without changing text. The host validates the image
+    /// and applies asset storage and the captured replacement in one action.
+    pub fn take_image_paste_requests(&mut self) -> Vec<ImagePasteRequest> {
+        std::mem::take(&mut self.pasted_images)
+    }
+
+    fn image_paste_target(&self) -> Option<ImagePasteTarget> {
+        let index = self.focused?;
+        let block = self.blocks.get(index)?;
+        let preview = self
+            .image_attachments
+            .get(&block.id)
+            .is_some_and(|image| !image.editing);
+        let selection = self
+            .document_selection
+            .filter(|selection| selection.anchor != selection.cursor)
+            .map(DocumentSelection::ordered)
+            .or_else(|| {
+                let (start, end) = if preview {
+                    (0, block.text().len())
+                } else {
+                    block.line.selection_range()?
+                };
+                (start != end).then_some((
+                    DocumentPosition {
+                        block: index,
+                        byte: start,
+                    },
+                    DocumentPosition {
+                        block: index,
+                        byte: end,
+                    },
+                ))
+            });
+        let Some((start, mut end)) = selection else {
+            return Some(ImagePasteTarget::After(block.id.clone()));
+        };
+        if end.byte == 0 && end.block > start.block {
+            end.block = end.block.saturating_sub(1);
+            end.byte = self.blocks.get(end.block)?.text().len();
+        }
+        let selected = self.blocks.get(start.block..=end.block)?;
+        Some(ImagePasteTarget::Replace {
+            blocks: selected.iter().map(Block::content).collect(),
+            start_byte: start.byte,
+            end_byte: end.byte,
+        })
+    }
+
+    /// Queue an image intent in prose without deleting any selected content.
+    fn paste_image(&mut self) -> bool {
+        if self.read_only || self.is_composing() {
+            return false;
+        }
+        let in_prose = self
+            .focused
+            .and_then(|index| self.blocks.get(index))
+            .is_some_and(|block| {
+                !matches!(
+                    block.kind,
+                    BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
+                )
+            });
+        if !in_prose {
+            return false;
+        }
+        let Some(image) = crate::clipboard_paste_image() else {
+            return false;
+        };
+        let Some(target) = self.image_paste_target() else {
+            return false;
+        };
+        self.pasted_images.push(ImagePasteRequest { image, target });
+        self.dirty = true;
+        true
+    }
+
+    /// Ctrl+V (Cmd+V) with an image on the clipboard.
+    fn try_paste_image_key(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        use winit::event::{ElementState, KeyEvent};
+        use winit::keyboard::Key;
+
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Character(key),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let mods = ctx.modifiers.state();
+        let command = mods.control_key() || mods.super_key();
+        if !self.is_focused
+            || !command
+            || mods.alt_key()
+            || !key.eq_ignore_ascii_case("v")
+            || !self.paste_image()
+        {
+            return false;
+        }
+        *ctx.handled = true;
+        true
     }
 
     fn copy_code_run(&mut self, start: usize, end: usize) -> bool {
@@ -3893,6 +4295,26 @@ impl BlockEditor {
 pub struct DocumentPosition {
     pub block: usize,
     pub byte: usize,
+}
+
+/// A clipboard image and its original target. Capturing the intent never edits
+/// the document; hosts must validate bytes before applying a replacement.
+#[derive(Debug, Clone)]
+pub struct ImagePasteRequest {
+    pub image: crate::clipboard::ClipboardImage,
+    pub target: ImagePasteTarget,
+}
+
+/// Stable IDs and source snapshots prevent a delayed paste from deleting a
+/// different selection or text inserted by a collaborator.
+#[derive(Debug, Clone)]
+pub enum ImagePasteTarget {
+    After(String),
+    Replace {
+        blocks: Vec<BlockContent>,
+        start_byte: usize,
+        end_byte: usize,
+    },
 }
 
 /// Direction-preserving document selection. [`Self::ordered`] provides its
@@ -5035,8 +5457,9 @@ fn handle_visual_formula_key(
                 false
             }
             "x" | "X" => {
-                if let Some(value) = editor.selected_linear() {
-                    clipboard_copy(&value);
+                if let Some(value) = editor.selected_linear()
+                    && clipboard_copy_accepted(&value)
+                {
                     editor.delete_selection();
                     return true;
                 }
@@ -5917,10 +6340,13 @@ impl BlockEditor {
                 Some(true)
             }
             Key::Character(c) if c.eq_ignore_ascii_case("x") => {
-                if let Some(selected) = self.selected_text() {
-                    clipboard_copy(&selected);
+                if self
+                    .selected_text()
+                    .is_some_and(|selected| clipboard_copy_accepted(&selected))
+                {
+                    self.replace_document_selection("");
                 }
-                Some(self.replace_document_selection(""))
+                Some(true)
             }
             Key::Character(c) if c.eq_ignore_ascii_case("v") => {
                 Some(clipboard_paste().is_none_or(|paste| self.replace_document_selection(&paste)))
@@ -7363,6 +7789,31 @@ impl Widget for BlockEditor {
         let _ = taffy.set_style(find_node, find_style);
         self.find_node = Some(find_node);
         layout_children.push(find_node);
+        if self.replace_enabled {
+            self.replace_button
+                .set_enabled(self.find_replace_request().is_some());
+            let field = self.replace_field.build_layout(taffy, theme, node_map);
+            let button = self.replace_button.build_layout(taffy, theme, node_map);
+            self.replace_all_button.set_enabled(self.can_replace_all());
+            let all = self.replace_all_button.build_layout(taffy, theme, node_map);
+            for (node, top, right, width) in [
+                (field, 48.0_f32, 108.0_f32, 248.0_f32),
+                (button, 48.0_f32, 8.0_f32, 96.0_f32),
+                (all, 88.0_f32, 8.0_f32, 120.0_f32),
+            ] {
+                let mut style = taffy.style(node).cloned().unwrap_or_default();
+                style.position = taffy::Position::Absolute;
+                style.inset.top = length(top * theme.text_scale);
+                style.inset.right = length(right * theme.text_scale);
+                style.size.width = length(width * theme.text_scale);
+                style.size.height = length(36.0_f32 * theme.text_scale);
+                let _ = taffy.set_style(node, style);
+                layout_children.push(node);
+            }
+            self.replace_node = Some(field);
+            self.replace_button_node = Some(button);
+            self.replace_all_node = Some(all);
+        }
         let node = taffy.parent_node(
             Style {
                 display: taffy::Display::Flex,
@@ -7545,6 +7996,16 @@ impl Widget for BlockEditor {
                     .map_or(new_origin.y, |viewport| viewport.y0),
             );
             self.find_field.apply_layout(taffy, find_node, find_origin);
+            if let Some(node) = self.replace_node {
+                self.replace_field.apply_layout(taffy, node, find_origin);
+            }
+            if let Some(node) = self.replace_button_node {
+                self.replace_button.apply_layout(taffy, node, find_origin);
+            }
+            if let Some(node) = self.replace_all_node {
+                self.replace_all_button
+                    .apply_layout(taffy, node, find_origin);
+            }
             let field = self.find_field.get_rect();
             let size = 30.0 * self.text_scale;
             let gap = 3.0 * self.text_scale;
@@ -8136,6 +8597,11 @@ impl Widget for BlockEditor {
             .collect::<Vec<_>>();
         if self.find_visible {
             children.push(&self.find_field);
+            if self.replace_enabled {
+                children.push(&self.replace_field);
+                children.push(&self.replace_button);
+                children.push(&self.replace_all_button);
+            }
         }
         children
     }
@@ -8148,8 +8614,31 @@ impl Widget for BlockEditor {
             .collect::<Vec<_>>();
         if self.find_visible {
             children.push(&mut self.find_field);
+            if self.replace_enabled {
+                children.push(&mut self.replace_field);
+                children.push(&mut self.replace_button);
+                children.push(&mut self.replace_all_button);
+            }
         }
         children
+    }
+
+    /// Block lines are not children, so their fields' timers (a settling
+    /// squiggle, a suggestion for the word under the caret) are collected
+    /// here alongside the children's.
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        let mut earliest = self
+            .blocks
+            .iter()
+            .filter_map(|block| block.line.next_wake_deadline())
+            .min();
+        self.for_each_child(&mut |child| {
+            if let Some(deadline) = child.next_wake_deadline() {
+                earliest =
+                    Some(earliest.map_or(deadline, |old: crate::time::Instant| old.min(deadline)));
+            }
+        });
+        earliest
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -8377,6 +8866,9 @@ impl Widget for BlockEditor {
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
         if self.find_visible {
+            if self.replace_enabled && self.replace_field.is_focused() {
+                return Widget::ime_cursor_rect(&self.replace_field);
+            }
             return Widget::ime_cursor_rect(&self.find_field);
         }
         if self.link_popover.is_visible() {
@@ -8482,7 +8974,40 @@ impl Widget for BlockEditor {
         );
         if self.find_visible {
             if let Some(search) = self.find_field.accessibility() {
-                children.push(search.with_name(crate::i18n!("block-editor-find-placeholder")));
+                children.push(
+                    search
+                        .with_name(crate::i18n!("block-editor-find-placeholder"))
+                        .with_action_target("notes.find:query"),
+                );
+            }
+            if self.replace_enabled {
+                if let Some(field) = self.replace_field.accessibility() {
+                    children.push(
+                        field
+                            .with_name(crate::i18n!("block-editor-replace-placeholder"))
+                            .with_action_target("notes.find:replacement"),
+                    );
+                }
+                if let Some(button) = self.replace_all_button.accessibility() {
+                    children.push(
+                        button
+                            .with_action_target("notes.find:replace-all")
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .disabled(!self.can_replace_all()),
+                            ),
+                    );
+                }
+                if let Some(button) = self.replace_button.accessibility() {
+                    children.push(
+                        button.with_action_target("notes.find:replace").with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .disabled(self.find_replace_request().is_none()),
+                        ),
+                    );
+                }
             }
             children.extend([
                 AccessNode::new(Role::Button)
@@ -8810,17 +9335,59 @@ impl Widget for BlockEditor {
         path: &ModelPath,
     ) -> bool {
         self.edit_scope = EditScope::Anywhere;
+        if self.find_visible {
+            match (target, action) {
+                ("notes.find:query", crate::a11y::Action::SetValue(value))
+                    if !self.is_composing() =>
+                {
+                    self.find_field.set_query(value);
+                    self.refresh_find_matches(true);
+                    self.dirty = true;
+                    return true;
+                }
+                ("notes.find:query", crate::a11y::Action::Focus) if !self.is_composing() => {
+                    self.focus_find_input(false);
+                    return true;
+                }
+                ("notes.find:replacement", crate::a11y::Action::SetValue(value))
+                    if self.replace_enabled && !self.is_composing() =>
+                {
+                    self.replace_field.set_text(value);
+                    self.dirty = true;
+                    return true;
+                }
+                ("notes.find:replacement", crate::a11y::Action::Focus)
+                    if self.replace_enabled && !self.is_composing() =>
+                {
+                    self.focus_find_input(true);
+                    return true;
+                }
+                ("notes.find:replace-all", crate::a11y::Action::Activate)
+                    if self.can_replace_all() =>
+                {
+                    self.replace_all_requested.set(true);
+                    return true;
+                }
+                ("notes.find:replace", crate::a11y::Action::Activate)
+                    if self.find_replace_request().is_some() =>
+                {
+                    self.replace_requested.set(true);
+                    return true;
+                }
+                _ => {}
+            }
+        }
         if matches!(action, crate::a11y::Action::Activate) {
             match target {
-                "notes.find:previous" if self.find_visible => {
+                "notes.find:previous" if self.find_visible && !self.is_composing() => {
                     self.step_find(true);
                     return true;
                 }
-                "notes.find:next" if self.find_visible => {
+                "notes.find:next" if self.find_visible && !self.is_composing() => {
                     self.step_find(false);
                     return true;
                 }
-                "notes.find:close" if self.find_visible => {
+                "notes.find:close" if self.find_visible && !self.is_composing() => {
                     self.close_find();
                     return true;
                 }
@@ -9762,25 +10329,28 @@ impl BlockEditor {
     /// feedback); `slash_open_at` remembers where to strip it on commit.
     /// Code blocks excluded — `/` there is meaningful text.
     fn try_open_slash_menu(&mut self, event: &WindowEvent) {
-        use winit::event::{ElementState, KeyEvent};
+        use winit::event::{ElementState, Ime, KeyEvent};
         use winit::keyboard::Key;
 
         if self.slash_menu.is_visible() {
             return;
         }
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Character(c),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return;
+        let character = match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Character(c),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => c.as_str(),
+            // Browser beforeinput delivers ordinary text as a commit. Preedit
+            // and larger insertions remain text, not command activation.
+            WindowEvent::Ime(Ime::Commit(text)) => text.as_str(),
+            _ => return,
         };
-        if c.as_str() != "/" {
+        if character != "/" {
             return;
         }
         let Some(focused_idx) = self.focused else {
@@ -9792,16 +10362,20 @@ impl BlockEditor {
         if !can_open {
             return;
         }
-        let caret_byte = self
-            .blocks
-            .get(focused_idx)
-            .map_or(0, |b| b.line.cursor_pos());
+        // Typing replaces a local selection at its normalized start, which
+        // can precede the caret for a forward selection.
+        let trigger_byte = self.blocks.get(focused_idx).map_or(0, |block| {
+            block
+                .line
+                .selection_range()
+                .map_or(block.line.cursor_pos(), |(start, _)| start)
+        });
         self.slash_menu
             .set_anchor(self.fallback_popover_anchor(focused_idx));
         self.slash_menu.set_filter("");
         self.slash_menu.set_visible(true);
-        self.slash_open_at = Some(caret_byte);
-        self.slash_anchor_caret = Some((focused_idx, caret_byte));
+        self.slash_open_at = Some(trigger_byte);
+        self.slash_anchor_caret = Some((focused_idx, trigger_byte));
     }
 
     /// Focus whichever editable block a left click lands on first, so the
@@ -10042,6 +10616,10 @@ mod retained_layout_tests;
 #[cfg(test)]
 #[path = "block_editor_outline_tests.rs"]
 mod outline_tests;
+
+#[cfg(test)]
+#[path = "block_editor_image_paste_tests.rs"]
+mod image_paste_tests;
 
 impl BlockEditor {
     /// The current representation uses one stable block per source line.
@@ -11119,6 +11697,10 @@ impl BlockEditor {
         }
 
         if self.handle_find_event(event, ctx) {
+            return;
+        }
+
+        if self.try_paste_image_key(event, ctx) {
             return;
         }
 

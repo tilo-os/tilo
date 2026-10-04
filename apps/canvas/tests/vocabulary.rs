@@ -442,11 +442,11 @@ fn stroke_styling_blend_and_shadow_are_validated_by_name() {
             ids: vec!["frame".into()],
             blend: Some("normal".into()),
             dash: Some(Vec::new()),
-            shadow: Some(canvas::model::Shadow {
+            shadow: Some(canvas::actions::Taught(canvas::model::Shadow {
                 offset: [0.0, 0.0],
                 blur: 0.0,
                 colour: None,
-            }),
+            })),
             ..EditMarks::default()
         }),
     )
@@ -743,7 +743,32 @@ fn a_stroke_grows_twigs_or_dabs_and_cuts_in_to_a_shape() {
     };
     art.apply(ArtworkResource::PAINT.with((None, vec![tree, moss, grass])))
         .unwrap();
+    // Shading in one stroke: lines across the area its points enclose.
+    let shade = NewStroke {
+        id: Some("shade".into()),
+        hatch: Some(5.0),
+        angle: Some(30.0),
+        brush: Some("pencil".into()),
+        ..stroke(
+            &[
+                [200.0, 100.0],
+                [300.0, 100.0],
+                [300.0, 150.0],
+                [200.0, 150.0],
+            ],
+            "#333333",
+        )
+    };
+    art.apply(ArtworkResource::PAINT.with((None, vec![shade])))
+        .unwrap();
     let state = art.state().unwrap();
+    let shade = state.mark("shade").unwrap();
+    let lines = canvas::brushes::pieces(shade);
+    assert!((10..=40).contains(&lines.len()), "{} lines", lines.len());
+    assert!(
+        shade.hit(ui::vello::kurbo::Point::new(250.0, 125.0)),
+        "inside is the stroke"
+    );
     let oak = state.mark("oak").unwrap();
     assert!(oak.bounds().width() > 60.0, "twigs reach beyond the limb");
     assert_eq!(state.mark("moss").unwrap().clip, "rock");
@@ -763,7 +788,14 @@ fn a_stroke_grows_twigs_or_dabs_and_cuts_in_to_a_shape() {
                 dabs: Some(10),
                 ..stroke(&[[0.0, 0.0], [10.0, 0.0]], "#000000")
             },
-            "not both",
+            "one of them",
+        ),
+        (
+            NewStroke {
+                hatch: Some(4.0),
+                ..stroke(&[[0.0, 0.0], [10.0, 0.0]], "#000000")
+            },
+            "enclose an area",
         ),
         (
             NewStroke {

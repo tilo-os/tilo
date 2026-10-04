@@ -40,6 +40,8 @@ mod outline_commands;
 mod page_edit_persistence;
 #[path = "page_file_io.rs"]
 mod page_file_io;
+#[path = "paste_image.rs"]
+mod paste_image;
 #[path = "peer_caret_visual.rs"]
 mod peer_caret_visual;
 #[path = "responsive_drawer.rs"]
@@ -123,3 +125,11 @@ mod continuation_discovery;
 
 #[path = "block_commands.rs"]
 mod block_commands;
+
+#[path = "clipboard_safety.rs"]
+mod clipboard_safety;
+
+#[path = "find_replace.rs"]
+mod find_replace;
+
+mod slash_text_input;

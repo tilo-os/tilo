@@ -4,6 +4,7 @@
     reason = "native host runner: the Chromium helper process is supervised by threads"
 )]
 mod protocol;
+pub mod runtime;
 mod shared;
 pub use shared::serve_shared_until_idle;
 
@@ -154,6 +155,14 @@ fn owned_private_root(root: &Path) -> bool {
             .is_ok_and(|value| value == PRIVATE_ROOT_MARKER_CONTENT)
 }
 
+/// Remove a private window's disposable root that no engine will use, if it
+/// is one Browser owns.
+pub fn release_private_root(root: &Path) {
+    if owned_private_root(root) {
+        cleanup_private_root(root);
+    }
+}
+
 fn cleanup_private_root(root: &Path) {
     #[cfg(unix)]
     let _lock = {
@@ -302,32 +311,16 @@ fn deliver_frame(routes: &Routes, tab: u32, frame: super::Frame) {
     }
 }
 
-/// Error-only surface used when a real engine cannot start. It never renders a
-/// page and repeats the diagnostic on navigation so the browser's normal error
-/// presentation remains actionable.
+/// Error-only surface used when the engine is not installed or cannot start.
+/// It never renders a page and answers navigation with its message, which is
+/// written for the person using the app.
 pub struct UnavailableEngine {
     message: String,
     shared: Shared,
-    _private_root: PrivateRootCleanup,
 }
 
 impl UnavailableEngine {
     pub fn new(message: String) -> Arc<Self> {
-        Self::build(message, None)
-    }
-
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the private root is not an owned Browser directory.
-    pub fn new_with_private_root(message: String, root: &Path) -> Result<Arc<Self>, String> {
-        if !owned_private_root(root) {
-            return Err("Private Chromium root is not owned by Browser".into());
-        }
-        Ok(Self::build(message, Some(root.to_owned())))
-    }
-
-    fn build(message: String, private_root: Option<PathBuf>) -> Arc<Self> {
         Arc::new(Self {
             message,
             shared: Shared {
@@ -340,7 +333,6 @@ impl UnavailableEngine {
                 failed: AtomicBool::new(false),
                 remote: None,
             },
-            _private_root: PrivateRootCleanup(private_root),
         })
     }
 }
@@ -357,6 +349,18 @@ impl WebViewEngine for UnavailableEngine {
                     request_id,
                     result: Err(super::PageFailure::new("unavailable", self.message.clone())),
                 })
+            }
+            WebViewCommand::PaintCapture { request_id } => {
+                self.shared.event(WebViewEvent::PaintSnapshot {
+                    request_id,
+                    snapshot: None,
+                });
+            }
+            WebViewCommand::PaintResource { request_id, .. } => {
+                self.shared.event(WebViewEvent::PaintResource {
+                    request_id,
+                    bytes: None,
+                });
             }
             _ => {}
         }
@@ -379,32 +383,10 @@ impl WebViewEngine for UnavailableEngine {
 }
 
 fn host_path() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("TILO_CHROMIUM_HOST") {
-        return Ok(path.into());
-    }
-    #[cfg(test)]
-    let executable = std::env::var_os("TILO_TEST_CHROMIUM_DISCOVERY_EXE")
-        .map(PathBuf::from)
-        .map_or_else(std::env::current_exe, Ok)
-        .map_err(|error| error.to_string())?;
-    #[cfg(not(test))]
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let binary_name = if cfg!(target_os = "macos") {
-        "Browser Engine.app/Contents/MacOS/tilo-chromium-host"
-    } else {
-        "tilo-chromium-host"
-    };
-    for parent in executable.ancestors().skip(1).take(4) {
-        for candidate in [
-            parent.join("chromium").join(binary_name),
-            parent.join("Frameworks").join(binary_name),
-        ] {
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-    }
-    Err("Chromium runtime is missing. Run python3 scripts/browser/build-host.py, or set TILO_CHROMIUM_HOST to its executable.".into())
+    runtime::locate().map_err(|missing| {
+        tracing::warn!(hint = %missing.developer_hint(), "Chromium engine runtime missing");
+        runtime::NOT_INSTALLED_MESSAGE.to_owned()
+    })
 }
 
 /// Every thread the Chromium transport runs is named and spawned here.
@@ -565,13 +547,26 @@ fn validated_extension_paths(extensions: &[PathBuf]) -> Result<Vec<String>, Stri
         .collect::<Result<Vec<String>, String>>()
 }
 
+/// The engine host process. It is not one of the toolkit's thin binaries: it
+/// loads CEF from beside itself and the rest from the system, so the library
+/// path the launcher points at the app's own runtime bundle does not apply to
+/// it. Nor does the hardened allocator the launcher preloads into the app:
+/// Chromium brings its own (PartitionAlloc) and frees through glibc's
+/// internals, so a preloaded allocator aborts the host at start.
+fn host_command(host: &Path) -> Command {
+    let mut command = Command::new(host);
+    command.env_remove("LD_LIBRARY_PATH");
+    command.env_remove("LD_PRELOAD");
+    command
+}
+
 fn launch_host(
     host: &Path,
     profile: &Path,
     extensions: &[String],
     private_root: Option<&Path>,
 ) -> Result<std::process::Child, String> {
-    let mut command = Command::new(host);
+    let mut command = host_command(host);
     if private_root.is_some() {
         command.arg("--private");
     }
@@ -1313,6 +1308,12 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         }
         "history" => value["back"].is_boolean() && value["forward"].is_boolean(),
         "page_result" => super::page::decode_result(value).is_some(),
+        "paint_snapshot" | "paint_resource" => {
+            value["request_id"]
+                .as_u64()
+                .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
+                && value["ok"].is_boolean()
+        }
         "error" => text("url") && text("message"),
         _ => true,
     };
@@ -1359,7 +1360,8 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             *id > 0 && i32::try_from(*id).is_ok() && text.len() <= 4096
         }
         WebViewCommand::SetZoomLevel(level) => level.is_finite() && (-5.0..=9.0).contains(level),
-        WebViewCommand::RequestNavigationHistory { request_id, .. } => {
+        WebViewCommand::RequestNavigationHistory { request_id, .. }
+        | WebViewCommand::PaintCapture { request_id } => {
             *request_id > 0 && i32::try_from(*request_id).is_ok()
         }
         WebViewCommand::NavigateToHistoryEntry { request_id, id } => {
@@ -1373,6 +1375,12 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             request_id,
             request,
         } => *request_id > 0 && i32::try_from(*request_id).is_ok() && request.valid(),
+        WebViewCommand::PaintResource { request_id, url } => {
+            *request_id > 0
+                && i32::try_from(*request_id).is_ok()
+                && !url.is_empty()
+                && url.len() <= 1 << 20
+        }
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::DownloadDecision { id, .. }
         | WebViewCommand::CancelNativeDownload { id }
@@ -1591,6 +1599,30 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             let (request_id, result) = super::page::decode_result(value)?;
             WebViewEvent::PageResult { request_id, result }
         }
+        "paint_snapshot" => WebViewEvent::PaintSnapshot {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            snapshot: value["ok"]
+                .as_bool()?
+                .then(|| value["snapshot"].as_str().map(str::to_owned))
+                .flatten(),
+        },
+        "paint_resource" => WebViewEvent::PaintResource {
+            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
+            bytes: value["ok"]
+                .as_bool()?
+                .then(|| {
+                    let content = value["content"].as_str()?;
+                    if value["base64"].as_bool().unwrap_or(false) {
+                        use base64::Engine as _;
+                        base64::engine::general_purpose::STANDARD
+                            .decode(content)
+                            .ok()
+                    } else {
+                        Some(content.as_bytes().to_vec())
+                    }
+                })
+                .flatten(),
+        },
         "error" => WebViewEvent::LoadFailed {
             uri: value["url"].as_str().unwrap_or_default().into(),
             error: value["message"].as_str()?.into(),
@@ -1703,6 +1735,14 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             request_id,
             request,
         } => super::page::encode_request(request_id, &request),
+        WebViewCommand::PaintCapture { request_id } => json!({
+            "op": "paint_capture",
+            "request_id": request_id,
+            "styles": tilo_paint_stream::snapshot::COMPUTED_STYLES,
+        }),
+        WebViewCommand::PaintResource { request_id, url } => {
+            json!({"op":"paint_resource","request_id":request_id,"url":url})
+        }
         WebViewCommand::StartDownload { .. }
         | WebViewCommand::SetDownloadDestination { .. }
         | WebViewCommand::CancelDownload { .. }
