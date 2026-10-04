@@ -255,6 +255,21 @@ impl WakeHandle {
         }
     }
 
+    /// Compare two original scoped routes while that route is open.
+    /// Detached handles never match. This is transient scheduling metadata,
+    /// not registration, document, callback, or publication authorization.
+    /// A successful comparison does not prevent a concurrent close.
+    #[doc(hidden)]
+    pub fn same_open_scope(&self, other: &Self) -> bool {
+        let (Some(route), Some(other_route)) = (&self.route, &other.route) else {
+            return false;
+        };
+        Weak::ptr_eq(route, other_route)
+            && route
+                .upgrade()
+                .is_some_and(|route| route.open.load(Ordering::Acquire))
+    }
+
     /// Authorize one publication. A prior freshness check is not authorization.
     #[doc(hidden)]
     pub fn authorize_publication(&self) -> bool {
@@ -494,6 +509,118 @@ mod tests {
             assert!(!handle.authorize_publication());
             let replacement = WakeScope::new();
             assert!(!replacement.accepts(&event));
+        }
+    }
+
+    #[test]
+    fn same_open_scope_matches_only_the_original_open_scoped_route() {
+        // Clones and independent captures in the same actual scope match;
+        // another scope does not, and comparisons do not deliver wakes.
+        {
+            let (scope, rx) = bound_scope();
+            let (other_scope, other_rx) = bound_scope();
+            let captured = {
+                let _entry = scope.enter();
+                WakeHandle::new()
+            };
+            let clone = captured.clone();
+            let same_scope = {
+                let _entry = scope.enter();
+                WakeHandle::new()
+            };
+            let other = {
+                let _entry = other_scope.enter();
+                WakeHandle::new()
+            };
+            assert!(captured.same_open_scope(&clone));
+            assert!(clone.same_open_scope(&captured));
+            assert!(captured.same_open_scope(&same_scope));
+            assert!(!captured.same_open_scope(&other));
+            assert!(!other.same_open_scope(&captured));
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+            assert!(matches!(other_rx.try_recv(), Err(TryRecvError::Empty)));
+
+            // Nested construction captures the inner route, then restores outer.
+            let outer = {
+                let _entry = scope.enter();
+                let outer = WakeHandle::new();
+                let inner = {
+                    let _nested = other_scope.enter();
+                    WakeHandle::new()
+                };
+                let restored_outer = WakeHandle::new();
+                assert!(outer.same_open_scope(&restored_outer));
+                assert!(!inner.same_open_scope(&outer));
+                outer
+            };
+            assert!(outer.same_open_scope(&captured));
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+            assert!(matches!(other_rx.try_recv(), Err(TryRecvError::Empty)));
+        }
+
+        // Detached handles retain their existing publication behavior but
+        // never correlate, including when captured under detached entry.
+        {
+            let explicit = WakeHandle::detached();
+            let (scope, rx) = bound_scope();
+            let detached = {
+                let _entry = scope.enter();
+                let _mask = WakeScope::enter_detached();
+                WakeHandle::new()
+            };
+            let scoped = {
+                let _entry = scope.enter();
+                WakeHandle::new()
+            };
+            for handle in [&explicit, &detached] {
+                assert!(handle.is_active());
+                assert!(handle.authorize_publication());
+                assert!(!handle.same_open_scope(handle));
+                assert!(!handle.same_open_scope(&handle.clone()));
+                assert!(!handle.same_open_scope(&scoped));
+            }
+            assert!(!explicit.same_open_scope(&detached));
+            assert!(!scoped.same_open_scope(&explicit));
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        }
+
+        // Closing invalidates correlation immediately and idempotently. A
+        // replacement scope is a distinct route even while both are alive.
+        {
+            let (mut scope, _) = bound_scope();
+            let old = scope.handle();
+            let old_clone = old.clone();
+            assert!(old.same_open_scope(&old_clone));
+            scope.close();
+            assert!(!old.same_open_scope(&old_clone));
+            scope.close();
+            assert!(!old.same_open_scope(&old_clone));
+            let (replacement, _) = bound_scope();
+            let fresh = replacement.handle();
+            assert!(!old.same_open_scope(&fresh));
+            assert!(!fresh.same_open_scope(&old));
+        }
+
+        // A comparison does not retain the route or its sink-captured resource.
+        {
+            let resource = Arc::new(());
+            let weak_resource = Arc::downgrade(&resource);
+            let (tx, _rx) = mpsc::channel();
+            let mut scope = WakeScope::new();
+            scope
+                .bind(move |event| {
+                    std::hint::black_box(&resource);
+                    tx.send(event).unwrap();
+                })
+                .unwrap();
+            let handle = scope.handle();
+            let clone = handle.clone();
+            assert!(handle.same_open_scope(&clone));
+            drop(scope);
+            assert!(weak_resource.upgrade().is_none());
+            assert!(!handle.same_open_scope(&clone));
+            let (replacement, _) = bound_scope();
+            assert!(!handle.same_open_scope(&replacement.handle()));
         }
     }
 
