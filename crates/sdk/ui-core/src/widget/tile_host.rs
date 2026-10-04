@@ -393,6 +393,9 @@ pub struct TileHost {
     live_callback_node: Option<NodeId>,
     retained_invocations: HashMap<tilo_actions::InvocationId, crate::history_mode::HistoryOwner>,
     retained_updates: HashMap<tilo_actions::InvocationId, VecDeque<tilo_actions::InvocationUpdate>>,
+    /// Operations the component shown admitted that have not ended, so a
+    /// component taking its place cannot leave them unanswered.
+    component_invocations: std::collections::HashSet<tilo_actions::InvocationId>,
     owner_bound_work: bool,
     owner_bound_custody: Option<crate::history_mode::HistoryOwner>,
     close_reports: Vec<crate::application::ComponentCloseReport>,
@@ -649,6 +652,7 @@ impl TileHost {
             live_callback_node: None,
             retained_invocations: HashMap::new(),
             retained_updates: HashMap::new(),
+            component_invocations: std::collections::HashSet::new(),
             owner_bound_work: false,
             owner_bound_custody: None,
             close_reports: vec![],
@@ -1308,6 +1312,7 @@ impl TileHost {
         self.settle_outgoing_record();
         self.renew_history_lifetime();
         self.retained_invocations.clear();
+        self.component_invocations.clear();
         self.retained_updates.clear();
         self.owner_bound_work = false;
         self.owner_bound_custody = None;
@@ -1820,7 +1825,17 @@ impl Widget for TileHost {
                 .map_err(|error| error.to_string())??,
             // Unbound local work is polled straight from the app rather than
             // through retained owner custody.
-            None if scope.is_none() => return start(doc, path),
+            None if scope.is_none() => {
+                let started = start(doc, path)?;
+                if matches!(
+                    started,
+                    Some(crate::widget::ResourceOperationStart::Accepted)
+                ) && self.callback_binding().is_some()
+                {
+                    self.component_invocations.insert(op.invocation());
+                }
+                return Ok(started);
+            }
             None => start(doc, path)?,
         };
         if matches!(
@@ -1846,6 +1861,19 @@ impl Widget for TileHost {
         let _running = self.running();
         if let Some(update) = self.take_retained_update(invocation) {
             return Some(update);
+        }
+        if self.component_invocations.contains(&invocation) {
+            let TileContent::App(app) = &mut self.content else {
+                return None;
+            };
+            let update = app.poll_resource_operation(invocation, cancellation_requested, doc, path);
+            if update
+                .as_ref()
+                .is_some_and(tilo_actions::InvocationUpdate::is_terminal)
+            {
+                self.component_invocations.remove(&invocation);
+            }
+            return update;
         }
         // Admitted work belongs to the retained owner even while its local
         // presentation is hidden. A replacement must never inherit the id.
@@ -1965,8 +1993,39 @@ impl Widget for TileHost {
         {
             let (component, outcome) = replacement.into_parts();
             outcome.answer(Ok(()));
+            // The outgoing component answers the operations it admitted (the
+            // open that asked) before it closes; the answers outlive it until
+            // the host polls them, and work it cannot finish is reported
+            // unavailable rather than inherited by the new component.
+            let _ = self.collect_retained_updates_before_release();
+            let mut answers = std::mem::take(&mut self.retained_updates);
+            let (doc, path) = crate::doc::document(s, p);
+            for invocation in std::mem::take(&mut self.component_invocations) {
+                if let TileContent::App(app) = &mut self.content
+                    && let Some(update) = app.poll_resource_operation(invocation, false, doc, path)
+                {
+                    answers.entry(invocation).or_default().push_back(update);
+                }
+                let updates = answers.entry(invocation).or_default();
+                if !updates
+                    .iter()
+                    .any(tilo_actions::InvocationUpdate::is_terminal)
+                {
+                    updates.push_back(Self::unavailable_update(invocation));
+                }
+            }
+            for invocation in self.retained_invocations.keys().copied() {
+                let updates = answers.entry(invocation).or_default();
+                if !updates
+                    .iter()
+                    .any(tilo_actions::InvocationUpdate::is_terminal)
+                {
+                    updates.push_back(Self::unavailable_update(invocation));
+                }
+            }
             let reports = self.replace_component(component);
             self.close_reports.extend(reports);
+            self.retained_updates = answers;
         }
         let Ok(live) = self.resolve_record() else {
             return;

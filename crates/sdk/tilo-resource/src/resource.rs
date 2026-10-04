@@ -483,6 +483,11 @@ pub struct ActionDecl<R: Resource> {
     /// typed: the build reads its content hash as the
     /// [`PROMPTED_PARAM`](tilo_actions::PROMPTED_PARAM) argument.
     pub content: Option<String>,
+    /// A bound edit that refines the resource's declared action of the same
+    /// id: it builds the same action from the same arguments, and also
+    /// places its invoker (the caret an append leaves its writer at).
+    /// See [`bind_declaration`].
+    pub refines: bool,
     pub build: BuildAction<R>,
 }
 
@@ -498,6 +503,7 @@ impl<R: Resource> Clone for ActionDecl<R> {
             result: self.result.clone(),
             tags: self.tags.clone(),
             content: self.content.clone(),
+            refines: self.refines,
             build: Arc::clone(&self.build),
         }
     }
@@ -520,8 +526,17 @@ impl<R: Resource> ActionDecl<R> {
             result: None,
             tags: Vec::new(),
             content: None,
+            refines: false,
             build: Arc::new(build),
         }
+    }
+
+    /// Mark a bound edit as refining the resource's declared action of the
+    /// same id ([`bind_declaration`]).
+    #[must_use]
+    pub fn refining(mut self) -> Self {
+        self.refines = true;
+        self
     }
 
     /// Tag the action's contract (`ContextRequirement::Caret.tag()`, an
@@ -1057,4 +1072,46 @@ pub fn build_action<R: Resource>(
         .ok_or_else(|| format!("{} has no action `{id}`", R::LABEL))?;
     let args = ActionArgs::bind_json(&decl.params, arguments).map_err(|error| error.to_string())?;
     (decl.build)(&args, now_ms)
+}
+
+/// `resource` with the bound edit `decl` published on it.
+///
+/// An id the resource does not declare is added. One it declares is kept,
+/// unless `decl` says it refines it ([`ActionDecl::refining`]) and takes the
+/// same parameters with the same permission and risk: then it builds the
+/// same edit from the same arguments and only adds where it was invoked from
+/// (an append that leaves its writer's caret after the text), and replaces
+/// the declared spec while the binding lasts.
+pub fn bind_declaration<R: Resource>(
+    resource: tilo_actions::Resource,
+    decl: &ActionDecl<R>,
+) -> tilo_actions::Resource {
+    let spec = declaration_spec(decl);
+    let mut resource = resource;
+    match resource
+        .actions
+        .iter_mut()
+        .find(|existing| existing.id == decl.id)
+    {
+        Some(declared) => {
+            if decl.refines && same_shape(&spec, declared) {
+                *declared = spec;
+            }
+            resource
+        }
+        None => resource.with_action(spec),
+    }
+}
+
+fn same_shape(bound: &ActionSpec, declared: &ActionSpec) -> bool {
+    let shape = |spec: &ActionSpec| {
+        spec.params()
+            .iter()
+            .map(|param| (param.name.to_string(), param.ty, param.required))
+            .collect::<Vec<_>>()
+    };
+    bound.kind == declared.kind
+        && shape(bound) == shape(declared)
+        && bound.contract.permission == declared.contract.permission
+        && bound.contract.risk == declared.contract.risk
 }

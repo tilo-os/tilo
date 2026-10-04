@@ -6531,10 +6531,6 @@ impl ui::widget::controls::ActionControls for CalendarApp {
 }
 
 impl CalendarApp {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the complete operation dispatch keeps every canonical Calendar view/effect route and its truthful state transition in one auditable match"
-    )]
     /// Open an item — an event, an occurrence, a task, a project or a
     /// calendar — by its resource id, as its `open` asks.
     pub(crate) fn open_item(&mut self, item: &str) -> Result<(), String> {

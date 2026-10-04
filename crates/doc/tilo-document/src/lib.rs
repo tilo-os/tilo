@@ -732,8 +732,8 @@ impl Resource for RichText {
             )
             .describe("Insert a paragraph after a block."),
             ActionDecl::new(
-                "add-paragraph",
-                "Add paragraph at the end",
+                "append-paragraph",
+                "Append paragraph",
                 vec![ActionParam::required_owned(
                     "text",
                     ParamType::Text,
@@ -744,9 +744,9 @@ impl Resource for RichText {
                     Ok(RichTextAction::AppendParagraph { text })
                 },
             )
-            // Distinct from an editor's `append-paragraph`, which also leaves
-            // its writer's caret after the text for the rest to be typed.
-            .describe("Add a paragraph at the end of the document, with no caret to place."),
+            // An editor with a caret refines it (`bind_declaration`) to also
+            // leave its writer's caret after the text.
+            .describe("Add a new paragraph containing the text at the end of the document."),
         ]
     }
 

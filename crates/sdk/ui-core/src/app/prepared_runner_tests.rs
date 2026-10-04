@@ -1017,6 +1017,35 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
         app.close_components();
     }
 
+    // Case `a_withdrawn_request_leaves_the_window_as_it_is`.
+    {
+        let host = ProbeHost::new();
+        let component = editable_component(&host, 33);
+        let first = component.callback_binding();
+        let reopener = component.reopener();
+        let (context, target) = reopener
+            .prepare(runner_probe_definition(), crate::record::RecordId::minted())
+            .unwrap();
+        let replacement = runner_probe_definition()
+            .instantiate(context, target, RestoreInput::None)
+            .unwrap();
+        let outcome = reopener.replace(replacement, vec![]);
+        let mut app = App::from_component(component, runner_inputs()).unwrap();
+        assert!(outcome.withdraw(), "withdrawn before the host took it");
+        assert!(
+            !app.swap_requested_component(),
+            "the window keeps its record"
+        );
+        assert_eq!(
+            app.root_widget.callback_binding().unwrap().checkout.id,
+            first.checkout.id
+        );
+        assert!(first.lifetime.is_active());
+        assert!(matches!(outcome.get(), Some(Err(_))));
+        assert!(!outcome.withdraw(), "an answered request stays answered");
+        app.close_components();
+    }
+
     // Case `a_tile_swaps_its_component_on_its_next_sync`.
     {
         let host = ProbeHost::new();
@@ -1025,10 +1054,29 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
         let wanted = request_another_record(&component);
         let mut tile = TileHost::from_component(component);
         let mut state = crate::State::new();
+        // An operation the outgoing component admitted is answered when the
+        // tile swaps, never inherited by the component that takes its place.
+        let pending = tilo_actions::InvocationId::new();
+        let started = crate::widget::ResourceOperation::local(
+            pending,
+            tilo_actions::OperationKind::Effect,
+            "probe.pending",
+            &[],
+        )
+        .start(&mut tile, &mut state.doc, &state.root)
+        .unwrap();
+        assert!(matches!(
+            started,
+            Some(crate::widget::ResourceOperationStart::Accepted)
+        ));
         tile.sync(&mut state.doc, &state.root);
         let shown = tile.callback_binding().unwrap();
         assert_eq!(shown.checkout.id, wanted);
         assert!(!first.lifetime.is_active());
+        let answer = tile
+            .poll_resource_operation(pending, false, &state.doc, &state.root)
+            .expect("the outgoing component's operation is answered");
+        assert!(answer.is_terminal());
         crate::component_lifecycle::close_components(&mut tile);
     }
 }
