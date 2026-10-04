@@ -9,6 +9,7 @@
 //! pass and the hit-test consume.
 
 use super::*;
+use crate::doc::VideoDoc;
 
 /// A seeded project laid out at `w`×`h`, the way `--shots` composes one.
 fn app_sized(w: f64, h: f64) -> VideoEditorApp {
@@ -16,6 +17,10 @@ fn app_sized(w: f64, h: f64) -> VideoEditorApp {
     VideoDoc::seed_sample(&mut doc);
     let mut app = VideoEditorApp::new();
     app.rect = Rect::new(0.0, 0.0, w, h);
+    ui::framework::ResourceSurface::<crate::resource::VideoProject>::present(
+        &mut app,
+        &std::rc::Rc::new(VideoDoc::load_project(&doc)),
+    );
     app.sync(&mut doc, &automerge::ROOT);
     app
 }

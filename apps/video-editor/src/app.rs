@@ -37,12 +37,11 @@ use ui::widget::{
 };
 
 use crate::actions::{
-    MarkerTextField, VIDEO_EDITOR_ACTION_TYPE, VideoEditorAction, VideoResourceCtx,
-    clip_field_patch_action, delete_clip_action, remove_media_action, ripple_delete_action,
-    set_project_meta_action, split_clip_action, upsert_clip_action, upsert_media_action,
-    upsert_track_action,
+    MarkerTextField, VideoEditorAction, VideoResourceCtx, clip_field_patch_action,
+    delete_clip_action, remove_media_action, ripple_delete_action, set_project_meta_action,
+    split_clip_action, upsert_clip_action, upsert_media_action, upsert_track_action,
 };
-use crate::doc::VideoDoc;
+
 use crate::export::{Container, ExportSettings, ExportStatus, FrameRate, Resolution};
 use crate::model::{
     Clip, ClipId, EffectKind, Filters, MAX_GAIN_DB, MAX_SPEED, MIN_GAIN_DB, MIN_SPEED, MediaId,
@@ -1019,12 +1018,21 @@ struct RenderPipelineState {
 /// Per-device project-file work deferred until the next `sync`.
 #[derive(Default)]
 struct ProjectSyncState {
+    /// A project the host presented during a drag still waits to replace
+    /// the drag's live preview, which lives only in the in-memory project:
+    /// it lands the moment the drag lets go.
     reload_pending: bool,
     save_requested: bool,
+    /// An open was submitted and the host has not applied it yet.
+    open_submitted: bool,
 }
 
 pub struct VideoEditorApp {
     project: Project,
+    /// The project as the document stores it, last presented by the host:
+    /// what an edit's preconditions are checked against, and what the
+    /// optimistic `project` returns to once a drag lets go.
+    stored: std::rc::Rc<Project>,
     /// The local state each existing clip had immediately before the current
     /// UI edit began. Optimistic actions diff this baseline against the local
     /// result, then check only those old values against the live CRDT. They
@@ -1175,13 +1183,12 @@ pub struct VideoEditorApp {
     /// leaves this false and never fabricates a project — it opens blank.
     last_tick: Instant,
     rect: Rect,
-    /// Framework-owned action dispatch. Every document-mutating affordance
-    /// dispatches its [`VideoEditorAction`](crate::actions::VideoEditorAction)
-    /// through this: the host brackets the undo boundary, applies the action via
-    /// the executor (so it replays byte-identically on peers), and remembers it
-    /// for the affordance == `ActionSpec` covenant test. Ctrl+Z / Ctrl+Y are
-    /// handled OS-wide by the toolkit off the recorded boundary.
-    actions: crate::resource::ActionSink,
+    /// Where every edit goes: the framework's dispatcher, handed over when
+    /// the editor is hosted ([`ui::framework::ResourceSurface::attach`]). The
+    /// host checks each against the participant's permissions, applies it
+    /// through the replayable executor, records it as one undo step and
+    /// attributes it in history.
+    actions: Option<ui::framework::Dispatcher<crate::resource::VideoProject>>,
     /// Copied clips, ready to paste at the playhead (Ctrl+C / Ctrl+X / Ctrl+V).
     /// Holds full clip snapshots — trim window, filters and fades come along —
     /// and pasting preserves their relative offsets and lanes, so copying a
@@ -1316,15 +1323,6 @@ pub struct VideoEditorApp {
     /// frames open for its whole duration, so the chip's words are formatted
     /// and elided when they change rather than once a frame.
     export_chip_text: Option<ExportChipText>,
-    /// Whether [`VideoDoc::load_project`] still owes this widget a rebuild.
-    ///
-    /// Set when the document's heads move and cleared by the reload it asks
-    /// for. Starting `true` is what makes the first `sync` load, without
-    /// having to infer "first" from heads that are legitimately empty for a
-    /// document nobody has written to yet. It also survives a drag: an edit
-    /// that arrives while one is in flight cannot be applied then (the live
-    /// preview lives only in the in-memory project), and this is what
-    /// remembers that it is owed.
     // --- project files ----------------------------------------------------
     /// The file this project is saved in, once it has one. `None` means the
     /// project has never been saved: the work is still safe (the autosave
@@ -1461,6 +1459,7 @@ impl VideoEditorApp {
     pub fn new() -> Self {
         Self {
             project: Project::new("Untitled"),
+            stored: std::rc::Rc::new(Project::new("Untitled")),
             clip_edit_bases: HashMap::new(),
             shot_scenario: ShotScenario::Live,
             shot_lifecycle: ShotLifecycle::default(),
@@ -1474,10 +1473,7 @@ impl VideoEditorApp {
                 ..MediaPipelineState::default()
             },
             render_pipeline: RenderPipelineState::default(),
-            project_sync: ProjectSyncState {
-                reload_pending: true,
-                ..ProjectSyncState::default()
-            },
+            project_sync: ProjectSyncState::default(),
             text_scale: 1.0,
             local_presence: crate::presence::LocalPresence::default(),
             shot_presence: None,
@@ -1522,7 +1518,7 @@ impl VideoEditorApp {
             pending_rename: None,
             last_tick: ui::time::now(),
             rect: Rect::ZERO,
-            actions: crate::resource::ActionSink::default(),
+            actions: None,
             clipboard: Vec::new(),
             shuttle: 0.0,
             bin_flap: FlapState::open_when_docked(),
@@ -2747,35 +2743,40 @@ impl VideoEditorApp {
     }
 
     // ---- mutations (dispatched as replayable actions) --------------------
-    // Every document-mutating edit dispatches a `VideoEditorAction` through the
-    // framework's `ActionHost`: it brackets the undo boundary, applies the
-    // action through the executor (so it replays byte-identically on peers), and
-    // remembers it for the covenant test. There is no per-edit `needs_commit`
-    // flag any more — the host records exactly one undo boundary per event.
+    // Every document-mutating edit submits a `VideoEditorAction` through the
+    // framework's dispatcher: the host applies it through the executor (so it
+    // replays byte-identically on peers) after the event, and every edit one
+    // input event makes is one undo step.
+
+    /// Submit one edit through the host, which applies it after this event.
+    /// A widget the framework has not hosted has nowhere to send it.
+    fn submit(&self, action: &VideoEditorAction) {
+        if let Some(dispatcher) = &self.actions {
+            dispatcher.apply(action);
+        }
+    }
 
     /// Dispatch an optimistic field patch for an existing durable clip. New
     /// clips still need their complete first write; subsequent UI edits never
     /// carry an old snapshot of unrelated fields.
-    fn dispatch_clip(&mut self, doc: &mut AutoCommit, id: ClipId) {
+    fn dispatch_clip(&mut self, id: ClipId) {
         if let Some(c) = self.project.clip(id).cloned() {
-            if VideoDoc::load_project(doc).clip(id).is_some() {
-                self.dispatch_existing_clips(doc, &[id]);
+            if self.stored.clip(id).is_some() {
+                self.dispatch_existing_clips(&[id]);
             } else {
-                self.actions
-                    .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_clip_action(&c));
+                self.submit(&upsert_clip_action(&c));
             }
         }
     }
 
     /// Commit several already-persisted clips as one all-or-nothing optimistic
     /// patch. This is the membership path for link/unlink as well as the
-    /// ordinary linked geometry edits: every precondition is evaluated against
-    /// the same document projection before the action writes its first key.
-    fn dispatch_existing_clips(&mut self, doc: &mut AutoCommit, ids: &[ClipId]) {
+    /// ordinary linked geometry edits: the host checks every precondition
+    /// against the same document before the action writes its first key.
+    fn dispatch_existing_clips(&mut self, ids: &[ClipId]) {
         let mut ids = ids.to_vec();
         ids.sort_unstable();
         ids.dedup();
-        let current = VideoDoc::load_project(doc);
         let mut patches = Vec::new();
         for id in &ids {
             let (Some(before), Some(after)) =
@@ -2787,9 +2788,9 @@ impl VideoEditorApp {
                 // change as a reverse patch.
                 return;
             };
-            if current.clip(*id).is_none() {
-                return;
-            }
+            // A clip that is gone by the time the host applies the patch
+            // refuses it there, so the patch never recreates it; one submitted
+            // earlier in this gesture is there by then.
             let VideoEditorAction::PatchClipFields { clip, changes } =
                 clip_field_patch_action(before, after)
             else {
@@ -2800,11 +2801,7 @@ impl VideoEditorApp {
             }
         }
         if !patches.is_empty() {
-            self.actions.dispatch(
-                doc,
-                VIDEO_EDITOR_ACTION_TYPE,
-                &VideoEditorAction::PatchClipsFields { patches },
-            );
+            self.submit(&VideoEditorAction::PatchClipsFields { patches });
         }
         // Whether the edit changed a field or was a harmless no-op, this
         // authoring attempt is over. A later UI gesture gets a fresh baseline.
@@ -2827,14 +2824,14 @@ impl VideoEditorApp {
     /// baseline map is the authoritative changed-member set: a locked follower
     /// is intentionally not edited, so it must not abandon editable members
     /// merely because it has no local before snapshot.
-    fn dispatch_clip_linked(&mut self, doc: &mut AutoCommit, id: ClipId) {
+    fn dispatch_clip_linked(&mut self, id: ClipId) {
         let group: Vec<_> = self
             .project
             .link_group(id)
             .into_iter()
             .filter(|member| self.clip_edit_bases.contains_key(member))
             .collect();
-        self.dispatch_existing_clips(doc, &group);
+        self.dispatch_existing_clips(&group);
     }
 
     // ---- selection ------------------------------------------------------
@@ -2918,9 +2915,8 @@ impl VideoEditorApp {
 
     /// Split every editable selected clip at the playhead. Only clips whose
     /// span actually covers the playhead split; the rest are left alone. All
-    /// the splits dispatch inside one event, so they collapse into a single
-    /// undo boundary (see [`ui::ActionHost::dispatch`]).
-    fn split_selected(&mut self, doc: &mut AutoCommit) {
+    /// the splits are submitted inside one event, so they are one undo step.
+    fn split_selected(&mut self) {
         let mut right_halves = Vec::new();
         // Cut a linked shot on both its lanes as one edit, so the two tails
         // become a link group of their own rather than joining the heads' —
@@ -2931,11 +2927,7 @@ impl VideoEditorApp {
                 let left = self.project.clip(id).cloned();
                 let right = self.project.clip(rid).cloned();
                 if let (Some(left), Some(right)) = (left, right) {
-                    self.actions.dispatch(
-                        doc,
-                        VIDEO_EDITOR_ACTION_TYPE,
-                        &split_clip_action(&left, &right),
-                    );
+                    self.submit(&split_clip_action(&left, &right));
                 }
                 right_halves.push(rid);
             }
@@ -2948,15 +2940,14 @@ impl VideoEditorApp {
     }
 
     /// Lift every editable selected clip, leaving the gaps where they were.
-    fn delete_selected(&mut self, doc: &mut AutoCommit) {
+    fn delete_selected(&mut self) {
         let ids = self.edit_targets();
         if ids.is_empty() {
             return;
         }
         for id in ids {
             self.project.delete_clip(id);
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &delete_clip_action(&id));
+            self.submit(&delete_clip_action(&id));
         }
         self.selection.clear();
     }
@@ -2967,7 +2958,7 @@ impl VideoEditorApp {
     /// dispatches inside one event, so it lands as a single undo boundary and
     /// replays atomically on a peer. Deleting right-to-left keeps each
     /// remaining clip's start valid while the earlier ones are still there.
-    fn ripple_delete_selected(&mut self, doc: &mut AutoCommit) {
+    fn ripple_delete_selected(&mut self) {
         let mut ids = self.edit_targets();
         if ids.is_empty() {
             return;
@@ -2979,11 +2970,7 @@ impl VideoEditorApp {
                 .iter()
                 .filter_map(|m| self.project.clip(*m).cloned())
                 .collect();
-            self.actions.dispatch(
-                doc,
-                VIDEO_EDITOR_ACTION_TYPE,
-                &ripple_delete_action(&id, &moved),
-            );
+            self.submit(&ripple_delete_action(&id, &moved));
         }
         self.selection.clear();
     }
@@ -3019,9 +3006,9 @@ impl VideoEditorApp {
 
     /// Ctrl+X: copy the selection, then lift it. Both halves happen in one
     /// event, so the removal is one undo boundary.
-    fn cut_selected(&mut self, doc: &mut AutoCommit) {
+    fn cut_selected(&mut self) {
         self.copy_selected();
-        self.delete_selected(doc);
+        self.delete_selected();
     }
 
     /// Paste the clipboard at the playhead. The earliest copied clip lands on
@@ -3031,7 +3018,7 @@ impl VideoEditorApp {
     /// selected clip's track, otherwise any unlocked track of the right kind
     /// (created if the project has none). The pasted clips become the
     /// selection.
-    fn paste_clip(&mut self, doc: &mut AutoCommit) {
+    fn paste_clip(&mut self) {
         let src = self.clipboard.clone();
         if src.is_empty() {
             return;
@@ -3061,7 +3048,7 @@ impl VideoEditorApp {
                 .project
                 .placement_track(kind, Some(clip.track))
                 .or_else(|| self.project.placement_track(kind, near))
-                .unwrap_or_else(|| self.ensure_track_of_kind(doc, kind));
+                .unwrap_or_else(|| self.ensure_track_of_kind(kind));
             let start = snap_to_frame(
                 (self.playhead + (clip.start - base)).max(0.0),
                 self.project.fps,
@@ -3071,7 +3058,7 @@ impl VideoEditorApp {
             from.push((was, id));
             pasted.push(id);
         }
-        self.relink_copies(doc, &from);
+        self.relink_copies(&from);
         if !pasted.is_empty() {
             self.selection.set(pasted);
         }
@@ -3079,7 +3066,7 @@ impl VideoEditorApp {
 
     /// Ctrl+D: drop a copy of the selection immediately after it, on the same
     /// tracks, and select the copies. One event → one undo boundary.
-    fn duplicate_selected(&mut self, doc: &mut AutoCommit) {
+    fn duplicate_selected(&mut self) {
         let ids = self.edit_targets();
         if ids.is_empty() {
             return;
@@ -3106,7 +3093,7 @@ impl VideoEditorApp {
             from.push((was, id));
             copies.push(id);
         }
-        self.relink_copies(doc, &from);
+        self.relink_copies(&from);
         self.selection.set(copies);
     }
 
@@ -3145,7 +3132,7 @@ impl VideoEditorApp {
     /// group becomes one **fresh** group among the copies: duplicating a shot
     /// has to give back a shot whose picture and sound still move together,
     /// without tying either of them to the shot they were copied from.
-    fn relink_copies(&mut self, doc: &mut AutoCommit, from: &[(Option<Uuid>, ClipId)]) {
+    fn relink_copies(&mut self, from: &[(Option<Uuid>, ClipId)]) {
         let mut seen: Vec<Uuid> = Vec::new();
         for (link, _) in from {
             if let Some(l) = link
@@ -3163,7 +3150,7 @@ impl VideoEditorApp {
             self.project.link_clips(&members);
         }
         for (_, id) in from {
-            self.dispatch_clip(doc, *id);
+            self.dispatch_clip(*id);
         }
     }
 
@@ -3197,7 +3184,7 @@ impl VideoEditorApp {
     /// are written inside the caller's event, so the pair lands on one undo
     /// boundary. Returns the audio clip's id, or `None` when there is nothing
     /// to split off.
-    fn attach_linked_audio(&mut self, doc: &mut AutoCommit, video_clip: ClipId) -> Option<ClipId> {
+    fn attach_linked_audio(&mut self, video_clip: ClipId) -> Option<ClipId> {
         let clip = self.project.clip(video_clip)?;
         let (media_id, track_id) = (clip.media, clip.track);
         let media = self.project.media(media_id)?;
@@ -3215,32 +3202,32 @@ impl VideoEditorApp {
         let audio_track = self
             .project
             .placement_track(TrackKind::Audio, None)
-            .unwrap_or_else(|| self.ensure_track_of_kind(doc, TrackKind::Audio));
+            .unwrap_or_else(|| self.ensure_track_of_kind(TrackKind::Audio));
         self.remember_clip_before(video_clip);
         let audio = self.project.add_linked_audio(video_clip, audio_track)?;
         // The picture is already durable, so only its newly assigned group
         // membership is patched. The audio half is genuinely new and gets its
         // one allowed complete first write below.
-        self.dispatch_existing_clips(doc, &[video_clip]);
-        self.dispatch_clip(doc, audio);
+        self.dispatch_existing_clips(&[video_clip]);
+        self.dispatch_clip(audio);
         Some(audio)
     }
 
     /// Break the link on every clip in the selection's groups, leaving two
     /// ordinary independent clips. Writes exactly the clips that changed.
-    fn unlink_selected(&mut self, doc: &mut AutoCommit) {
+    fn unlink_selected(&mut self) {
         let ids = self.edit_targets();
         for id in &ids {
             self.remember_clip_before(*id);
         }
         let changed = self.project.unlink_clips(&ids);
-        self.dispatch_existing_clips(doc, &changed);
+        self.dispatch_existing_clips(&changed);
     }
 
     /// Put every editable selected clip into one fresh link group — the way
     /// back after an unlink, and the way to tie a sound to a picture it was
     /// never imported with.
-    fn link_selected(&mut self, doc: &mut AutoCommit) {
+    fn link_selected(&mut self) {
         let mut ids = self.editable_selection();
         // Re-linking a shot to the sound it was split from: the sound half is
         // not selected — the user picked the picture and asked for the link
@@ -3258,14 +3245,14 @@ impl VideoEditorApp {
         if self.project.link_clips(&ids).is_none() {
             return;
         }
-        self.dispatch_existing_clips(doc, &ids);
+        self.dispatch_existing_clips(&ids);
     }
 
     /// Re-time the selected clip and everything linked to it, and write them
     /// all. The one door every rate affordance goes through — the slider, the
     /// presets, the reverse toggle and the keyboard — so none of them can
     /// leave half a shot at the old speed.
-    fn set_speed_selected(&mut self, doc: &mut AutoCommit, rate: f64, reverse: bool) {
+    fn set_speed_selected(&mut self, rate: f64, reverse: bool) {
         let Some(id) = self.selected() else { return };
         if !self.project.clip_editable(id) {
             return;
@@ -3275,7 +3262,7 @@ impl VideoEditorApp {
             self.remember_clip_before(*id);
         }
         self.project.set_speed_group(&ids, rate, reverse);
-        self.dispatch_clip_linked(doc, id);
+        self.dispatch_clip_linked(id);
     }
 
     /// What the link control offers for the current selection, or `None` when
@@ -3312,13 +3299,13 @@ impl VideoEditorApp {
     }
 
     /// Do whichever of link / unlink the selection currently offers.
-    fn toggle_link_selected(&mut self, doc: &mut AutoCommit) {
+    fn toggle_link_selected(&mut self) {
         match self.link_affordance() {
-            Some(LinkAffordance::Unlink) => self.unlink_selected(doc),
-            Some(LinkAffordance::Link) => self.link_selected(doc),
+            Some(LinkAffordance::Unlink) => self.unlink_selected(),
+            Some(LinkAffordance::Link) => self.link_selected(),
             Some(LinkAffordance::SplitAudio) => {
                 if let Some(id) = self.selected() {
-                    self.attach_linked_audio(doc, id);
+                    self.attach_linked_audio(id);
                 }
             }
             None => {}
@@ -3329,7 +3316,7 @@ impl VideoEditorApp {
     /// trims the head so the clip starts at the current frame. A single-clip
     /// trim by nature — it acts on the anchor, and only when its track allows
     /// edits.
-    fn set_in_at_playhead(&mut self, doc: &mut AutoCommit) {
+    fn set_in_at_playhead(&mut self) {
         let Some(id) = self.selected() else { return };
         if !self.project.clip_editable(id) {
             return;
@@ -3347,12 +3334,12 @@ impl VideoEditorApp {
             self.remember_clip_before(*linked);
         }
         self.project.trim_in_with(id, delta, &also);
-        self.dispatch_clip_linked(doc, id);
+        self.dispatch_clip_linked(id);
     }
 
     /// Set the out-point of the primary selected clip to the playhead (`O`):
     /// trims the tail so the clip ends at the current frame.
-    fn set_out_at_playhead(&mut self, doc: &mut AutoCommit) {
+    fn set_out_at_playhead(&mut self) {
         let Some(id) = self.selected() else { return };
         if !self.project.clip_editable(id) {
             return;
@@ -3370,13 +3357,13 @@ impl VideoEditorApp {
             self.remember_clip_before(*linked);
         }
         self.project.trim_out_with(id, delta, &also);
-        self.dispatch_clip_linked(doc, id);
+        self.dispatch_clip_linked(id);
     }
 
     /// Nudge every editable selected clip by `dt` seconds (arrow keys).
     /// Snaps each result to the frame grid. One event → one undo boundary,
     /// so a multi-clip nudge is a single Ctrl+Z.
-    fn nudge_selected(&mut self, doc: &mut AutoCommit, dt: f64) {
+    fn nudge_selected(&mut self, dt: f64) {
         let ids = self.edit_targets();
         for id in &ids {
             self.remember_clip_before(*id);
@@ -3385,7 +3372,7 @@ impl VideoEditorApp {
             });
             self.project.move_clip(*id, new_start);
         }
-        self.dispatch_existing_clips(doc, &ids);
+        self.dispatch_existing_clips(&ids);
     }
 
     /// Apply `edit` to the selected clip and dispatch an optimistic narrow
@@ -3393,7 +3380,7 @@ impl VideoEditorApp {
     /// transition / palette click, or a keyboard-driven grade) — each is one
     /// undo step. Continuous slider drags use [`Self::preview_edit`] +
     /// [`Self::commit_drag`] instead, so a drag is one action, not one a frame.
-    fn edit_selected(&mut self, doc: &mut AutoCommit, edit: impl FnOnce(&mut Clip)) {
+    fn edit_selected(&mut self, edit: impl FnOnce(&mut Clip)) {
         let Some(id) = self.selected() else { return };
         if !self.project.clip_editable(id) {
             return;
@@ -3402,7 +3389,7 @@ impl VideoEditorApp {
         if let Some(c) = self.project.clip_mut(id) {
             edit(c);
         }
-        self.dispatch_clip(doc, id);
+        self.dispatch_clip(id);
     }
 
     /// Apply `edit` to the selected clip **in memory only** — the live drag
@@ -3472,43 +3459,40 @@ impl VideoEditorApp {
     }
 
     /// Dispatch a whole-track write for the lane the selection sits on.
-    fn dispatch_selected_track(&mut self, doc: &mut AutoCommit) {
+    fn dispatch_selected_track(&self) {
         let Some(t) = self.selected_track().cloned() else {
             return;
         };
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&t));
+        self.submit(&upsert_track_action(&t));
     }
 
     /// Put the selected clip's lane back to unity and centre, as one action
     /// and one undo boundary.
-    fn reset_selected_track_mix(&mut self, doc: &mut AutoCommit) {
+    fn reset_selected_track_mix(&mut self) {
         self.preview_track_edit(|t| {
             t.gain_db = 0.0;
             t.pan = 0.0;
         });
-        self.dispatch_selected_track(doc);
+        self.dispatch_selected_track();
     }
 
     /// Dispatch a whole-media write for one bin source.
-    fn dispatch_media(&mut self, doc: &mut AutoCommit, mid: MediaId) {
+    fn dispatch_media(&self, mid: MediaId) {
         if let Some(m) = self.project.media(mid).cloned() {
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&m));
+            self.submit(&upsert_media_action(&m));
         }
     }
 
     /// Dispatch a whole-media write for the selected clip's source.
-    fn dispatch_selected_media(&mut self, doc: &mut AutoCommit) {
+    fn dispatch_selected_media(&self) {
         if let Some(m) = self.selected_media_item().cloned() {
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&m));
+            self.submit(&upsert_media_action(&m));
         }
     }
 
     /// Apply `edit` to the selected clip's title styling and dispatch it as
     /// one media write. A no-op on a clip whose source is not a title.
-    fn edit_title(&mut self, doc: &mut AutoCommit, edit: impl FnOnce(&mut TextSource)) {
+    fn edit_title(&mut self, edit: impl FnOnce(&mut TextSource)) {
         let has_text = self.selected_media_item().is_some_and(|m| m.text.is_some());
         if !has_text {
             return;
@@ -3530,7 +3514,7 @@ impl VideoEditorApp {
             }
             m.text = Some(t);
         });
-        self.dispatch_selected_media(doc);
+        self.dispatch_selected_media();
     }
 
     /// What a ranged control currently shows. `None` when the control has
@@ -3685,9 +3669,9 @@ impl VideoEditorApp {
     /// parameter reads there. The first key never moves the picture — it is
     /// the *second* one that makes anything animate — so keying is safe to
     /// try, which is what makes the control learnable.
-    fn key_here(&mut self, doc: &mut AutoCommit, param: Param) {
+    fn key_here(&mut self, param: Param) {
         let at = self.playhead;
-        self.edit_selected(doc, move |c| {
+        self.edit_selected(move |c| {
             let now = c.param_at(param, at);
             let interp = c.key_interp_at(param, at).unwrap_or_default();
             c.set_key_at(param, at, now, interp);
@@ -3735,7 +3719,7 @@ impl VideoEditorApp {
     /// Indices count separators, because that is what `ContextMenu::item_at`
     /// reports. The two shapes the menu takes are laid out here beside the
     /// builder that produces them so they cannot drift apart.
-    fn key_menu_choose(&mut self, doc: &mut AutoCommit, param: Param, idx: usize) {
+    fn key_menu_choose(&mut self, param: Param, idx: usize) {
         self.key_menu_param = None;
         let at = self.playhead;
         let on_key = self
@@ -3745,29 +3729,29 @@ impl VideoEditorApp {
         if on_key {
             // 0 remove · 1 sep · 2..4 shapes · 5 sep · 6 prev · 7 next · 8 sep · 9 clear
             match idx {
-                0 => self.edit_selected(doc, move |c| {
+                0 => self.edit_selected(move |c| {
                     c.remove_key_at(param, at);
                 }),
                 2..=4 => {
                     let Some(&shape) = Interp::ALL.get(idx - 2) else {
                         return;
                     };
-                    self.edit_selected(doc, move |c| {
+                    self.edit_selected(move |c| {
                         c.set_interp_at(param, at, shape);
                     });
                 }
                 6 => self.jump_to_key(false),
                 7 => self.jump_to_key(true),
-                9 => self.edit_selected(doc, move |c| c.anim.clear(param)),
+                9 => self.edit_selected(move |c| c.anim.clear(param)),
                 _ => {}
             }
         } else {
             // 0 add · 1 sep · 2 prev · 3 next · 4 sep · 5 clear
             match idx {
-                0 => self.key_here(doc, param),
+                0 => self.key_here(param),
                 2 => self.jump_to_key(false),
                 3 => self.jump_to_key(true),
-                5 => self.edit_selected(doc, move |c| c.anim.clear(param)),
+                5 => self.edit_selected(move |c| c.anim.clear(param)),
                 _ => {}
             }
         }
@@ -3813,30 +3797,29 @@ impl VideoEditorApp {
     /// memory the way every other local edit does: the document is the truth
     /// and `sync` will reload it, but the model must not disagree with it in
     /// between.
-    fn dispatch_project_meta(&mut self, doc: &mut AutoCommit, next: Project) {
+    fn dispatch_project_meta(&mut self, next: Project) {
         let action = set_project_meta_action(&next);
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &action);
+        self.submit(&action);
         self.project = next;
     }
 
     /// Set the project's frame size — the same whole-settings write the
     /// `set-frame-size` action dispatches.
-    fn set_project_frame_size(&mut self, doc: &mut AutoCommit, width: u32, height: u32) {
+    fn set_project_frame_size(&mut self, width: u32, height: u32) {
         let mut next = self.project.clone();
         next.set_frame_size(width, height);
-        self.dispatch_project_meta(doc, next);
+        self.dispatch_project_meta(next);
     }
 
-    fn set_project_fps(&mut self, doc: &mut AutoCommit, fps: f64) {
+    fn set_project_fps(&mut self, fps: f64) {
         let mut next = self.project.clone();
         next.set_fps(fps);
-        self.dispatch_project_meta(doc, next);
+        self.dispatch_project_meta(next);
     }
 
     /// Take the shape of whatever [`Self::format_source`] names as the
     /// project's own — deliberately, so a later import cannot undo it.
-    fn match_project_format(&mut self, doc: &mut AutoCommit) {
+    fn match_project_format(&mut self) {
         let Some(m) = self.format_source().cloned() else {
             return;
         };
@@ -3845,7 +3828,7 @@ impl VideoEditorApp {
         if m.fps > 0.0 {
             next.set_fps(m.fps);
         }
-        self.dispatch_project_meta(doc, next);
+        self.dispatch_project_meta(next);
     }
 
     /// Re-word the project's format if it has moved since the last frame.
@@ -3865,8 +3848,8 @@ impl VideoEditorApp {
     /// Switch the chroma key on or off, opening the section so its sliders
     /// are on screen — the one edit both the enable button and an assistive
     /// technology's activation run, so the two cannot diverge.
-    fn toggle_key_enabled(&mut self, doc: &mut AutoCommit) {
-        self.edit_selected(doc, |c| {
+    fn toggle_key_enabled(&mut self) {
+        self.edit_selected(|c| {
             c.key.enabled = !c.key.enabled;
             // A key switched on with the tolerance wound to zero removes
             // nothing, which reads as the button not working; give it back a
@@ -3881,9 +3864,9 @@ impl VideoEditorApp {
     /// Choose the mask's shape. Turning a mask on lands it over the picture
     /// rather than in the middle of an empty frame, so a masked
     /// picture-in-picture is one press.
-    fn set_mask_shape(&mut self, doc: &mut AutoCommit, shape: crate::model::MaskShape) {
+    fn set_mask_shape(&mut self, shape: crate::model::MaskShape) {
         let (src_aspect, frame_aspect) = self.selected_aspects();
-        self.edit_selected(doc, move |c| {
+        self.edit_selected(move |c| {
             if shape == crate::model::MaskShape::None || c.mask.is_active() {
                 c.mask.shape = shape;
             } else {
@@ -3901,7 +3884,7 @@ impl VideoEditorApp {
     /// the *project's* aspect — an exported file letterboxed into 16:9 with no
     /// exit. A format that was set deliberately is never overridden, and
     /// neither is one whose timeline already has clips cut against it.
-    fn adopt_project_format(&mut self, doc: &mut AutoCommit, media: MediaId) {
+    fn adopt_project_format(&mut self, media: MediaId) {
         if self.project.format_explicit || !self.project.clips.is_empty() {
             return;
         }
@@ -3910,7 +3893,7 @@ impl VideoEditorApp {
         };
         let mut next = self.project.clone();
         if next.adopt_format(&m) {
-            self.dispatch_project_meta(doc, next);
+            self.dispatch_project_meta(next);
         }
     }
 
@@ -3921,31 +3904,31 @@ impl VideoEditorApp {
     /// gets rendered, and the export loop ran the whole timeline
     /// unconditionally — so checking a ten-second fix meant re-rendering
     /// everything.
-    fn mark_in_here(&mut self, doc: &mut AutoCommit) {
+    fn mark_in_here(&mut self) {
         let mut next = self.project.clone();
         next.set_mark_in(self.playhead);
-        self.dispatch_project_meta(doc, next);
+        self.dispatch_project_meta(next);
     }
 
-    fn mark_out_here(&mut self, doc: &mut AutoCommit) {
+    fn mark_out_here(&mut self) {
         let mut next = self.project.clone();
         next.set_mark_out(self.playhead);
-        self.dispatch_project_meta(doc, next);
+        self.dispatch_project_meta(next);
     }
 
     /// Drop both marks, putting the render back to the whole timeline.
-    fn clear_marks(&mut self, doc: &mut AutoCommit) {
+    fn clear_marks(&mut self) {
         if !self.project.has_marks() {
             return;
         }
         let mut next = self.project.clone();
         next.clear_marks();
-        self.dispatch_project_meta(doc, next);
+        self.dispatch_project_meta(next);
     }
 
     /// Add a timeline marker at the playhead and open it for naming, so the
     /// marker is never left as an anonymous tick the user has to hunt for.
-    fn add_marker_here(&mut self, doc: &mut AutoCommit) {
+    fn add_marker_here(&mut self) {
         let mut next = self.project.clone();
         let palette = (next.markers.len() as u8 % 6) + 1;
         let id = next.add_marker(self.playhead, "Marker", palette);
@@ -3953,11 +3936,7 @@ impl VideoEditorApp {
             return;
         };
         self.project = next.clone();
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &VideoEditorAction::AddProjectMarker { marker },
-        );
+        self.submit(&VideoEditorAction::AddProjectMarker { marker });
         self.collapsed.remove(&Section::Markers);
         self.begin_marker_rename(MarkerRef {
             id,
@@ -4075,9 +4054,9 @@ impl VideoEditorApp {
     /// Returns whether the write was accepted — an empty name is refused,
     /// and the caller has to say so rather than silently restoring the old
     /// one.
-    fn commit_marker_rename(&mut self, doc: &mut AutoCommit, m: MarkerRef, text: &str) -> bool {
+    fn commit_marker_rename(&mut self, m: MarkerRef, text: &str) -> bool {
         let field = self.marker_field;
-        self.commit_marker_text(doc, m, field, text)
+        self.commit_marker_text(m, field, text)
     }
 
     /// Write one of a marker's texts through whichever action owns that
@@ -4090,13 +4069,7 @@ impl VideoEditorApp {
     /// Returns whether the document changed, so a caller that has to report
     /// the outcome -- an assistive technology setting the text outright --
     /// can say "refused" rather than claim a write that never happened.
-    fn commit_marker_text(
-        &mut self,
-        doc: &mut AutoCommit,
-        m: MarkerRef,
-        field: MarkerField,
-        text: &str,
-    ) -> bool {
+    fn commit_marker_text(&mut self, m: MarkerRef, field: MarkerField, text: &str) -> bool {
         let text = text.trim().to_string();
         if field == MarkerField::Name && text.is_empty() {
             return false;
@@ -4128,19 +4101,15 @@ impl VideoEditorApp {
                     return false;
                 }
                 self.project = next.clone();
-                self.actions.dispatch(
-                    doc,
-                    VIDEO_EDITOR_ACTION_TYPE,
-                    &VideoEditorAction::SetProjectMarkerText {
-                        marker: m.id.to_string(),
-                        field: match field {
-                            MarkerField::Name => MarkerTextField::Name,
-                            MarkerField::Note => MarkerTextField::Note,
-                        },
-                        expected,
-                        value: text,
+                self.submit(&VideoEditorAction::SetProjectMarkerText {
+                    marker: m.id.to_string(),
+                    field: match field {
+                        MarkerField::Name => MarkerTextField::Name,
+                        MarkerField::Note => MarkerTextField::Note,
                     },
-                );
+                    expected,
+                    value: text,
+                });
                 true
             }
             Some(cid) => {
@@ -4162,20 +4131,16 @@ impl VideoEditorApp {
                     .and_then(|c| c.markers.iter_mut().find(|mk| mk.id == m.id).map(write))
                     .unwrap_or(false);
                 if changed {
-                    self.actions.dispatch(
-                        doc,
-                        VIDEO_EDITOR_ACTION_TYPE,
-                        &VideoEditorAction::SetClipMarkerText {
-                            clip: cid.to_string(),
-                            marker: m.id.to_string(),
-                            field: match field {
-                                MarkerField::Name => MarkerTextField::Name,
-                                MarkerField::Note => MarkerTextField::Note,
-                            },
-                            expected,
-                            value: text,
+                    self.submit(&VideoEditorAction::SetClipMarkerText {
+                        clip: cid.to_string(),
+                        marker: m.id.to_string(),
+                        field: match field {
+                            MarkerField::Name => MarkerTextField::Name,
+                            MarkerField::Note => MarkerTextField::Note,
                         },
-                    );
+                        expected,
+                        value: text,
+                    });
                 }
                 changed
             }
@@ -4205,7 +4170,7 @@ impl VideoEditorApp {
         self.seek_to(m.at);
     }
 
-    fn delete_marker(&mut self, doc: &mut AutoCommit, m: MarkerRef) {
+    fn delete_marker(&mut self, m: MarkerRef) {
         match m.clip {
             None => {
                 let mut next = self.project.clone();
@@ -4213,13 +4178,9 @@ impl VideoEditorApp {
                     return;
                 }
                 self.project = next.clone();
-                self.actions.dispatch(
-                    doc,
-                    VIDEO_EDITOR_ACTION_TYPE,
-                    &VideoEditorAction::RemoveProjectMarker {
-                        marker: m.id.to_string(),
-                    },
-                );
+                self.submit(&VideoEditorAction::RemoveProjectMarker {
+                    marker: m.id.to_string(),
+                });
             }
             Some(cid) => {
                 self.remember_clip_before(cid);
@@ -4228,14 +4189,10 @@ impl VideoEditorApp {
                     .clip_mut(cid)
                     .is_some_and(|c| c.remove_marker(m.id));
                 if gone {
-                    self.actions.dispatch(
-                        doc,
-                        VIDEO_EDITOR_ACTION_TYPE,
-                        &VideoEditorAction::RemoveClipMarker {
-                            clip: cid.to_string(),
-                            marker: m.id.to_string(),
-                        },
-                    );
+                    self.submit(&VideoEditorAction::RemoveClipMarker {
+                        clip: cid.to_string(),
+                        marker: m.id.to_string(),
+                    });
                 }
             }
         }
@@ -4251,7 +4208,7 @@ impl VideoEditorApp {
     /// hydrate, and it renders on every peer immediately — so "add a title"
     /// can go all the way to an editable clip on the timeline in one step
     /// rather than leaving an unnamed item in the bin to be dragged out.
-    fn add_title(&mut self, doc: &mut AutoCommit) {
+    fn add_title(&mut self) {
         let palette = (self.project.media.len() as u8) % 7;
         let item = MediaItem {
             id: Uuid::new_v4(),
@@ -4269,10 +4226,9 @@ impl VideoEditorApp {
         };
         let mid = item.id;
         self.project.media.push(item.clone());
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&item));
+        self.submit(&upsert_media_action(&item));
         self.selected_media = Some(mid);
-        if let Some(cid) = self.place_title_clip(doc, mid) {
+        if let Some(cid) = self.place_title_clip(mid) {
             self.selection.select_only(cid);
             self.reveal_inspector();
         }
@@ -4283,23 +4239,23 @@ impl VideoEditorApp {
     /// Place a fresh title clip at the playhead on the topmost video track
     /// that will take it, so a title lands *over* the picture rather than
     /// under it.
-    fn place_title_clip(&mut self, doc: &mut AutoCommit, mid: MediaId) -> Option<ClipId> {
+    fn place_title_clip(&mut self, mid: MediaId) -> Option<ClipId> {
         let existing = self
             .project
             .display_tracks()
             .into_iter()
             .find(|t| t.kind == TrackKind::Video && !t.locked)
             .map(|t| t.id);
-        let track = existing.unwrap_or_else(|| self.add_track(doc, TrackKind::Video));
+        let track = existing.unwrap_or_else(|| self.add_track(TrackKind::Video));
         let at = snap_to_frame(self.playhead, self.project.fps);
         let cid = self.project.add_clip(track, mid, at)?;
-        self.dispatch_clip(doc, cid);
+        self.dispatch_clip(cid);
         Some(cid)
     }
 
     /// Commit new words for a title: one media write, so the picture, the bin
     /// row and every clip that placed this title all follow from it.
-    fn commit_title_text(&mut self, doc: &mut AutoCommit, mid: MediaId, words: &str) {
+    fn commit_title_text(&mut self, mid: MediaId, words: &str) {
         let Some(m) = self.project.media(mid) else {
             return;
         };
@@ -4317,8 +4273,7 @@ impl VideoEditorApp {
         if let Some(slot) = self.project.media.iter_mut().find(|m| m.id == mid) {
             *slot = next.clone();
         }
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&next));
+        self.submit(&upsert_media_action(&next));
     }
 
     fn begin_title_edit(&mut self, mid: MediaId) {
@@ -4346,10 +4301,10 @@ impl VideoEditorApp {
             .max(0.01)
     }
 
-    fn set_transition(&mut self, doc: &mut AutoCommit, t: Transition) {
-        self.edit_selected(doc, move |c| c.transition = t);
+    fn set_transition(&mut self, t: Transition) {
+        self.edit_selected(move |c| c.transition = t);
     }
-    fn add_effect_to_selected(&mut self, doc: &mut AutoCommit, kind: EffectKind) {
+    fn add_effect_to_selected(&mut self, kind: EffectKind) {
         let Some(id) = self.selected() else { return };
         let Some(clip) = self.project.clip(id) else {
             return;
@@ -4359,17 +4314,13 @@ impl VideoEditorApp {
         if let Some(clip) = self.project.clip_mut(id) {
             clip.effects.push(effect);
         }
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &VideoEditorAction::AddEffect {
-                clip: id.to_string(),
-                ordinal,
-                effect,
-            },
-        );
+        self.submit(&VideoEditorAction::AddEffect {
+            clip: id.to_string(),
+            ordinal,
+            effect,
+        });
     }
-    fn remove_effect_from_selected(&mut self, doc: &mut AutoCommit, idx: usize) {
+    fn remove_effect_from_selected(&mut self, idx: usize) {
         let Some(id) = self.selected() else { return };
         let Some(effect) = self
             .project
@@ -4382,18 +4333,14 @@ impl VideoEditorApp {
         if let Some(clip) = self.project.clip_mut(id) {
             clip.effects.remove(idx);
         }
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &VideoEditorAction::RemoveEffect {
-                clip: id.to_string(),
-                effect: effect.id.to_string(),
-                expected_kind: effect.kind,
-                expected_amount_bits: effect.amount.to_bits(),
-            },
-        );
+        self.submit(&VideoEditorAction::RemoveEffect {
+            clip: id.to_string(),
+            effect: effect.id.to_string(),
+            expected_kind: effect.kind,
+            expected_amount_bits: effect.amount.to_bits(),
+        });
     }
-    fn move_effect_selected(&mut self, doc: &mut AutoCommit, idx: usize, up: bool) {
+    fn move_effect_selected(&mut self, idx: usize, up: bool) {
         let Some(id) = self.selected() else { return };
         let Some(clip) = self.project.clip(id) else {
             return;
@@ -4415,17 +4362,13 @@ impl VideoEditorApp {
         if let Some(clip) = self.project.clip_mut(id) {
             clip.effects.swap(idx, target);
         }
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &VideoEditorAction::MoveEffect {
-                clip: id.to_string(),
-                effect: effect_id.to_string(),
-                expected_index: idx,
-                neighbour: neighbour.to_string(),
-                up,
-            },
-        );
+        self.submit(&VideoEditorAction::MoveEffect {
+            clip: id.to_string(),
+            effect: effect_id.to_string(),
+            expected_index: idx,
+            neighbour: neighbour.to_string(),
+            up,
+        });
     }
     /// Open the "Add effect" picker (the shared context menu) at `at`.
     fn open_effect_menu(&mut self, at: Point) {
@@ -4437,8 +4380,8 @@ impl VideoEditorApp {
         self.bin_menu = menu;
         self.menu_target = Some(MenuTarget::AddEffect);
     }
-    fn set_palette(&mut self, doc: &mut AutoCommit, p: u8) {
-        self.edit_selected(doc, move |c| c.palette = p);
+    fn set_palette(&mut self, p: u8) {
+        self.edit_selected(move |c| c.palette = p);
     }
 
     /// Return the lowest-index *unlocked* track of `kind`, creating one
@@ -4446,7 +4389,7 @@ impl VideoEditorApp {
     /// edit) when the project has none — so placing a clip from the bin works
     /// even on a blank project, and a locked track never silently swallows a
     /// drop.
-    fn ensure_track_of_kind(&mut self, doc: &mut AutoCommit, kind: TrackKind) -> TrackId {
+    fn ensure_track_of_kind(&mut self, kind: TrackKind) -> TrackId {
         if let Some(t) = self
             .project
             .tracks
@@ -4481,8 +4424,7 @@ impl VideoEditorApp {
             pan: 0.0,
         };
         let id = track.id;
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&track));
+        self.submit(&upsert_track_action(&track));
         self.project.tracks.push(track);
         id
     }
@@ -4490,47 +4432,41 @@ impl VideoEditorApp {
     /// Append the given media as a clip on a matching track (creating that track
     /// if the project has none), at the end of that track's content. Returns the
     /// new clip id.
-    fn add_media_to_timeline(&mut self, doc: &mut AutoCommit, media: MediaId) -> Option<ClipId> {
+    fn add_media_to_timeline(&mut self, media: MediaId) -> Option<ClipId> {
         let m = self.project.media(media).cloned()?;
         // Before the clip lands, while the timeline is still empty: a blank
         // project takes its shape from the footage rather than making the
         // user go and find a dialog.
-        self.adopt_project_format(doc, media);
+        self.adopt_project_format(media);
         let kind = if m.kind.is_visual() {
             TrackKind::Video
         } else {
             TrackKind::Audio
         };
-        let track = self.ensure_track_of_kind(doc, kind);
+        let track = self.ensure_track_of_kind(kind);
         let start = self.project.clips_on(track).last().map_or(0.0, |c| c.end());
         let id = self.project.add_clip(track, media, start)?;
-        self.dispatch_clip(doc, id);
+        self.dispatch_clip(id);
         // A picture that carries sound lands as two clips, not one: the sound
         // on its own lane, linked to the picture. Without it there is nothing
         // to slide, level, fade or cut the sound with.
-        self.attach_linked_audio(doc, id);
+        self.attach_linked_audio(id);
         self.selection.select_only(id);
         Some(id)
     }
 
     /// Place `media` on `track` at timeline time `start` (a drag-drop from the
     /// bin), creating and selecting the clip. Returns the new clip id.
-    fn place_media_at(
-        &mut self,
-        doc: &mut AutoCommit,
-        media: MediaId,
-        track: TrackId,
-        start: f64,
-    ) -> Option<ClipId> {
+    fn place_media_at(&mut self, media: MediaId, track: TrackId, start: f64) -> Option<ClipId> {
         // A drag from the bin is just as much "the project's first clip" as
         // an append is, so it adopts the same way.
-        self.adopt_project_format(doc, media);
+        self.adopt_project_format(media);
         let start = snap_to_frame(start.max(0.0), self.project.fps);
         let id = self.project.add_clip(track, media, start)?;
-        self.dispatch_clip(doc, id);
+        self.dispatch_clip(id);
         // Dropping a source on a lane is just as much a placement as
         // appending one, so it splits the sound off the same way.
-        self.attach_linked_audio(doc, id);
+        self.attach_linked_audio(id);
         self.selection.select_only(id);
         Some(id)
     }
@@ -4587,7 +4523,7 @@ impl VideoEditorApp {
     /// A press that never became a drag ends here too: if it armed a rename
     /// intent, this is where the rename actually begins — release-time, so a
     /// drag that started from the same press has already cancelled it.
-    fn release_bin_drag(&mut self, doc: &mut AutoCommit, r: &Regions) {
+    fn release_bin_drag(&mut self, r: &Regions) {
         let Some(bd) = self.bin_drag.take() else {
             return;
         };
@@ -4615,20 +4551,20 @@ impl VideoEditorApp {
         if let Some((tid, kind, _)) = self.bin_drop_lane(r) {
             let t = self.drop_time(p.x, r);
             if kind == want_kind && !self.project.track_locked(tid) {
-                self.place_media_at(doc, bd.media, tid, t);
+                self.place_media_at(bd.media, tid, t);
             } else {
                 // Wrong kind, or the lane refuses edits: fall to a track that
                 // can take it, at the same drop time.
                 let track = self
                     .project
                     .placement_track(want_kind, None)
-                    .unwrap_or_else(|| self.ensure_track_of_kind(doc, want_kind));
-                self.place_media_at(doc, bd.media, track, t);
+                    .unwrap_or_else(|| self.ensure_track_of_kind(want_kind));
+                self.place_media_at(bd.media, track, t);
             }
         } else if r.timeline.contains(p) {
             // On the timeline but not level with any lane (below the last one)
             // → append to a matching track.
-            self.add_media_to_timeline(doc, bd.media);
+            self.add_media_to_timeline(bd.media);
         }
     }
 
@@ -4769,55 +4705,55 @@ impl VideoEditorApp {
 
     /// Act on a chosen context-menu row (indices match the `open_*_menu`
     /// builders for the current [`MenuTarget`]).
-    fn bin_menu_choose(&mut self, doc: &mut AutoCommit, idx: usize) {
+    fn bin_menu_choose(&mut self, idx: usize) {
         match self.menu_target {
             Some(MenuTarget::Media(mid)) => match idx {
                 0 => {
-                    self.add_media_to_timeline(doc, mid);
+                    self.add_media_to_timeline(mid);
                 }
                 1 => self.begin_rename(mid),
-                3 => self.delete_media(doc, mid),
+                3 => self.delete_media(mid),
                 _ => {}
             },
             Some(MenuTarget::Track(tid)) => match idx {
-                0 => self.toggle_track_mute(doc, tid),
-                1 => self.toggle_track_solo(doc, tid),
-                2 => self.toggle_track_lock(doc, tid),
+                0 => self.toggle_track_mute(tid),
+                1 => self.toggle_track_solo(tid),
+                2 => self.toggle_track_lock(tid),
                 4 => {
-                    self.add_track(doc, TrackKind::Video);
+                    self.add_track(TrackKind::Video);
                 }
                 5 => {
-                    self.add_track(doc, TrackKind::Audio);
+                    self.add_track(TrackKind::Audio);
                 }
-                7 => self.delete_track(doc, tid),
+                7 => self.delete_track(tid),
                 _ => {}
             },
             Some(MenuTarget::Clip(_)) => match idx {
-                0 => self.cut_selected(doc),
+                0 => self.cut_selected(),
                 1 => self.copy_selected(),
-                2 => self.duplicate_selected(doc),
-                4 => self.split_selected(doc),
-                6 => self.delete_selected(doc),
-                7 => self.ripple_delete_selected(doc),
+                2 => self.duplicate_selected(),
+                4 => self.split_selected(),
+                6 => self.delete_selected(),
+                7 => self.ripple_delete_selected(),
                 // 8 is the separator; 9 exists only when `open_clip_menu`
                 // found something to link or unlink, so it can only be chosen
                 // when it does.
-                9 => self.toggle_link_selected(doc),
+                9 => self.toggle_link_selected(),
                 _ => {}
             },
             Some(MenuTarget::AddEffect) => {
                 if let Some(&kind) = EffectKind::ALL.get(idx) {
-                    self.add_effect_to_selected(doc, kind);
+                    self.add_effect_to_selected(kind);
                 }
             }
-            Some(MenuTarget::Keyframe(param)) => self.key_menu_choose(doc, param, idx),
+            Some(MenuTarget::Keyframe(param)) => self.key_menu_choose(param, idx),
             None => {}
         }
     }
 
     /// Add a fresh empty track of `kind` above the others of its kind
     /// (index = current max of that kind + 1), dispatched as an action.
-    fn add_track(&mut self, doc: &mut AutoCommit, kind: TrackKind) -> TrackId {
+    fn add_track(&mut self, kind: TrackKind) -> TrackId {
         let index = self
             .project
             .tracks
@@ -4843,14 +4779,13 @@ impl VideoEditorApp {
             pan: 0.0,
         };
         let id = track.id;
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&track));
+        self.submit(&upsert_track_action(&track));
         self.project.tracks.push(track);
         id
     }
 
     /// Delete a track and every clip on it, as one action.
-    fn delete_track(&mut self, doc: &mut AutoCommit, tid: TrackId) {
+    fn delete_track(&mut self, tid: TrackId) {
         let clip_ids: Vec<ClipId> = self
             .project
             .clips
@@ -4859,21 +4794,16 @@ impl VideoEditorApp {
             .map(|c| c.id)
             .collect();
         self.selection.remove_all(&clip_ids);
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &crate::actions::delete_track_action(&tid, &clip_ids),
-        );
+        self.submit(&crate::actions::delete_track_action(&tid, &clip_ids));
     }
 
     /// Toggle a track's mute flag (the header pill), dispatched as an action.
-    fn toggle_track_mute(&mut self, doc: &mut AutoCommit, tid: TrackId) {
+    fn toggle_track_mute(&mut self, tid: TrackId) {
         if let Some(t) = self.project.track(tid) {
             let mut next = t.clone();
             next.muted = !next.muted;
             let muted = next.muted;
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&next));
+            self.submit(&upsert_track_action(&next));
             if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
                 t.muted = muted;
             }
@@ -4883,13 +4813,12 @@ impl VideoEditorApp {
     /// Toggle a track's solo, dispatched as an action. Wired exactly like
     /// mute: the flag lives on the track, replicates, and undoes the same way.
     /// [`Project::track_audible`] is where the two combine.
-    fn toggle_track_solo(&mut self, doc: &mut AutoCommit, tid: TrackId) {
+    fn toggle_track_solo(&mut self, tid: TrackId) {
         if let Some(t) = self.project.track(tid) {
             let mut next = t.clone();
             next.solo = !next.solo;
             let solo = next.solo;
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&next));
+            self.submit(&upsert_track_action(&next));
             if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
                 t.solo = solo;
             }
@@ -4900,15 +4829,14 @@ impl VideoEditorApp {
     /// action so it replicates and undoes like every other edit. Locking is
     /// what [`Project::clip_editable`] reads, so the flag really does hold
     /// every move / trim / delete / split off the track's clips.
-    fn toggle_track_lock(&mut self, doc: &mut AutoCommit, tid: TrackId) {
+    fn toggle_track_lock(&mut self, tid: TrackId) {
         if let Some(t) = self.project.track(tid) {
             let mut next = t.clone();
             next.locked = !next.locked;
             // Reflect it in memory too so the very next press is already
             // guarded, before the document round-trips back through `sync`.
             let locked = next.locked;
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&next));
+            self.submit(&upsert_track_action(&next));
             if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
                 t.locked = locked;
             }
@@ -4930,7 +4858,7 @@ impl VideoEditorApp {
     }
 
     /// Commit an inline rename: dispatch a whole-media write with the new name.
-    fn commit_rename(&mut self, doc: &mut AutoCommit, mid: MediaId, name: &str) {
+    fn commit_rename(&self, mid: MediaId, name: &str) {
         let trimmed = name.trim();
         if trimmed.is_empty() {
             return;
@@ -4941,13 +4869,12 @@ impl VideoEditorApp {
             }
             let mut next = m.clone();
             next.name = trimmed.to_string();
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&next));
+            self.submit(&upsert_media_action(&next));
         }
     }
 
     /// Delete a bin media and every clip that placed it, as one action.
-    fn delete_media(&mut self, doc: &mut AutoCommit, mid: MediaId) {
+    fn delete_media(&mut self, mid: MediaId) {
         let clip_ids: Vec<ClipId> = self
             .project
             .clips
@@ -4957,11 +4884,7 @@ impl VideoEditorApp {
             .collect();
         // Keep the in-memory selection consistent before the reload.
         self.selection.remove_all(&clip_ids);
-        self.actions.dispatch(
-            doc,
-            VIDEO_EDITOR_ACTION_TYPE,
-            &remove_media_action(&mid, &clip_ids),
-        );
+        self.submit(&remove_media_action(&mid, &clip_ids));
         // Mirror the action in memory, the way the import path does. The
         // document is the truth and `sync` will reload it, but the model
         // must not disagree with it in between — a caller that deletes and
@@ -4993,7 +4916,7 @@ impl VideoEditorApp {
     /// Import the files a contents chooser delivered: probed from their
     /// bytes, which are kept in the editor's cache location, and named in
     /// the project by that copy.
-    fn drain_import_contents(&mut self, doc: &mut AutoCommit) {
+    fn drain_import_contents(&mut self) {
         let Some(rx) = self.import_contents_rx.as_ref() else {
             return;
         };
@@ -5009,7 +4932,7 @@ impl VideoEditorApp {
             ui::portal::ContentsOutcome::Picked(files) => {
                 let mut report = ImportReport::default();
                 for file in files {
-                    match self.try_import_contents(doc, &file.name, file.bytes) {
+                    match self.try_import_contents(&file.name, file.bytes) {
                         Ok(()) => report.added += 1,
                         Err(reason) => report.refused.push((file.name, reason)),
                     }
@@ -5023,12 +4946,7 @@ impl VideoEditorApp {
         }
     }
 
-    fn try_import_contents(
-        &mut self,
-        doc: &mut AutoCommit,
-        name: &str,
-        bytes: Vec<u8>,
-    ) -> Result<(), String> {
+    fn try_import_contents(&mut self, name: &str, bytes: Vec<u8>) -> Result<(), String> {
         if bytes.len() > crate::files::KEEP_LIMIT {
             return Err(format!(
                 "is larger than {} MB, the most a browser page imports",
@@ -5057,8 +4975,7 @@ impl VideoEditorApp {
         };
         crate::files::keep_imported(token, bytes);
         self.project.media.push(item.clone());
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&item));
+        self.submit(&upsert_media_action(&item));
         self.selected_media = Some(id);
         Ok(())
     }
@@ -5263,16 +5180,16 @@ impl VideoEditorApp {
 
     /// Drain any pending imports (queued deterministic files first, then a
     /// portal outcome), bringing each chosen file into the bin as a real clip.
-    fn drain_import(&mut self, doc: &mut AutoCommit) {
-        self.drain_import_contents(doc);
+    fn drain_import(&mut self) {
+        self.drain_import_contents();
         if !self.pending_imports.is_empty() {
             let paths = std::mem::take(&mut self.pending_imports);
-            let report = self.import_files(doc, &paths);
+            let report = self.import_files(&paths);
             self.import_notice = Some(import_report_notice(&report));
             if self.media_pipeline.auto_place_imports
                 && let Some(mid) = self.selected_media
             {
-                self.ensure_track_and_place(doc, mid);
+                self.ensure_track_and_place(mid);
             }
         }
         let mut clear = false;
@@ -5292,7 +5209,7 @@ impl VideoEditorApp {
         }
         match outcome {
             Some(ImportOutcome::Selected(paths)) => {
-                let report = self.import_files(doc, &paths);
+                let report = self.import_files(&paths);
                 self.import_notice = Some(import_report_notice(&report));
             }
             Some(ImportOutcome::Cancelled) => {
@@ -5321,11 +5238,11 @@ impl VideoEditorApp {
     /// return only a count, so a partly-failed import collapsed to "Imported
     /// 3 of 5 files" — which names neither of the two files that were
     /// refused nor why, even though the probe knew exactly.
-    fn import_files(&mut self, doc: &mut AutoCommit, paths: &[PathBuf]) -> ImportReport {
+    fn import_files(&mut self, paths: &[PathBuf]) -> ImportReport {
         self.import_notice = None;
         let mut report = ImportReport::default();
         for path in paths {
-            match self.try_import_one(doc, path) {
+            match self.try_import_one(path) {
                 Ok(()) => report.added += 1,
                 Err(reason) => report.refused.push((display_name(path), reason)),
             }
@@ -5342,7 +5259,7 @@ impl VideoEditorApp {
     /// is HTML document") rather than writing a notice itself, so the batch
     /// above can keep *every* refusal instead of whichever one happened to be
     /// written last.
-    fn try_import_one(&mut self, doc: &mut AutoCommit, path: &Path) -> Result<(), String> {
+    fn try_import_one(&mut self, path: &Path) -> Result<(), String> {
         let probed = match probe::probe_file(path) {
             Ok(p) => p,
             Err(e) => return Err(e.to_string()),
@@ -5376,8 +5293,7 @@ impl VideoEditorApp {
         };
         let id = item.id;
         self.project.media.push(item.clone());
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&item));
+        self.submit(&upsert_media_action(&item));
         self.selected_media = Some(id);
         Ok(())
     }
@@ -5386,10 +5302,10 @@ impl VideoEditorApp {
     /// the blank project has none) and park the playhead inside the new clip.
     /// Used by the `--shots`/preload placed-import path so the preview shows the
     /// clip; a normal portal import lands in the bin only.
-    fn ensure_track_and_place(&mut self, doc: &mut AutoCommit, media_id: MediaId) {
+    fn ensure_track_and_place(&mut self, media_id: MediaId) {
         // `add_media_to_timeline` now creates a matching track when the project
         // has none, so this just places and parks the playhead in the new clip.
-        let Some(cid) = self.add_media_to_timeline(doc, media_id) else {
+        let Some(cid) = self.add_media_to_timeline(media_id) else {
             return;
         };
         if let Some(c) = self.project.clip(cid) {
@@ -5773,34 +5689,11 @@ impl VideoEditorApp {
         }
     }
 
-    /// Mark this editor as framework-hosted so
-    /// [`PublishesResources`](ui::resources::PublishesResources) keeps only
-    /// playhead live extras beside the published project door.
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
-        self.actions.set_hosted_for_test(hosted);
-    }
-
-    /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
-    /// publishing only playhead live extras beside the framework door.
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn is_framework_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
     /// Test-only: plant a local project that has not been published through
     /// the framework resource yet.
     #[cfg(test)]
     pub(crate) fn seed_unpublished_project_for_test(&mut self, project: Project) {
         self.project = project;
-    }
-
-    /// Test-only: media ids currently held on the local project surface.
-    #[cfg(test)]
-    pub(crate) fn local_media_names_for_test(&self) -> Vec<String> {
-        self.project.media.iter().map(|m| m.name.clone()).collect()
     }
 
     /// Test-only: move the playhead so hosted extras bind to a known time.
@@ -6125,7 +6018,6 @@ impl VideoEditorApp {
 
 impl Widget for VideoEditorApp {
     ui::provides!(
-        dyn ui::undo::CommittedActions,
         dyn ui::undo::UndoControl,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource,
@@ -6149,7 +6041,7 @@ impl Widget for VideoEditorApp {
             use crate::actions::VideoEditorOperation;
             match &operation {
                 VideoEditorOperation::OpenProject { path: Some(path) } => {
-                    self.begin_open(state, PathBuf::from(path));
+                    self.begin_open(PathBuf::from(path));
                 }
                 VideoEditorOperation::SaveProject { path: Some(path) }
                 | VideoEditorOperation::SaveProjectAs { path: Some(path) } => {
@@ -6159,43 +6051,21 @@ impl Widget for VideoEditorApp {
             }
             self.resource_invocation = Some(invocation);
         }
-        // The document's heads are the cheap "something actually changed"
-        // signal. Reloading the model every frame says nothing; a new head
-        // means a real edit, local or from a peer.
-        // Hosted by the framework, the project arrives through `present`;
-        // a refused edit (read-only participant) re-reads what is stored.
-        if self.actions.take_stale() {
-            self.project_sync.reload_pending = true;
-        }
-        let heads = state.get_heads();
-        if heads != self.doc_heads && !self.actions.is_hosted() {
-            self.doc_heads = heads;
-            self.project_sync.reload_pending = true;
-            #[cfg(any(feature = "gst", feature = "decode"))]
-            {
-                self.media_pipeline.monitor_stale = true;
-            }
-        }
-        // Rebuilding the whole model from the CRDT is the most expensive thing
-        // in this pass — measured at ~1.1ms on the sample project, roughly a
-        // third of the frame budget, and it grows with the project while
-        // `get_heads` does not. `sync` runs every frame for as long as
-        // anything animates (playback, a running render, an open flap), so
-        // this used to re-derive an unchanged model sixty times a second.
-        //
+        // The project arrives through `present`; the document's heads say
+        // whether it has changed since it was saved.
+        self.track_saved_heads(state.get_heads());
         // While a clip-editing drag is in flight, the live preview lives only
-        // in the in-memory project — the CRDT isn't written until the drag
-        // commits — so don't clobber it by reloading a stale document
-        // mid-drag. The reload stays owed and lands the moment the drag lets
-        // go, so an edit that arrived meanwhile is not lost.
+        // in the in-memory project — the document isn't written until the
+        // drag commits — so a project presented meanwhile waits, and lands
+        // the moment the drag lets go, so an edit that arrived is not lost.
         if self.project_sync.reload_pending && !self.drag_is_editing() {
-            self.project = VideoDoc::load_project(state);
+            self.project = Project::clone(&self.stored);
             self.clip_edit_bases.clear();
             self.project_sync.reload_pending = false;
         }
         // Bring in any pending / portal-picked media as real clips (this pushes
         // straight into `self.project.media` and the CRDT).
-        self.drain_import(state);
+        self.drain_import();
         // A project open/save chooser that has come back. Drained after the
         // model load above so an Open replaces a project that is current, and
         // before the passes below so they see what was opened.
@@ -6500,7 +6370,10 @@ impl Widget for VideoEditorApp {
     )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Everything one input event edits is one undo step.
-        let _gesture = self.actions.gesture();
+        let _gesture = self
+            .actions
+            .as_ref()
+            .map(ui::framework::Dispatcher::begin_group);
         let r = self.regions();
         let bin_overlay_open = self.bin_overlay_is_open();
         // An in-flight inline rename owns input: forward every event to the
@@ -6523,7 +6396,7 @@ impl Widget for VideoEditorApp {
             };
             match outcome {
                 EditOutcome::Committed(name) => {
-                    self.commit_rename(ctx.state, mid, &name);
+                    self.commit_rename(mid, &name);
                     self.bin_rename = None;
                 }
                 EditOutcome::Cancelled => self.bin_rename = None,
@@ -6564,7 +6437,7 @@ impl Widget for VideoEditorApp {
                     .and_then(|m| m.text.as_ref())
                     .is_some_and(|t| t.font == family);
                 if !same {
-                    self.edit_title(ctx.state, move |t| t.font = family);
+                    self.edit_title(move |t| t.font = family);
                 }
             }
             if *ctx.handled {
@@ -6587,7 +6460,7 @@ impl Widget for VideoEditorApp {
                     (*mid, field.value().to_string())
                 };
                 if done {
-                    self.commit_title_text(ctx.state, mid, &words);
+                    self.commit_title_text(mid, &words);
                 }
                 self.title_edit = None;
                 *ctx.handled = true;
@@ -6608,7 +6481,7 @@ impl Widget for VideoEditorApp {
                     let (mid, field) = self.title_edit.as_ref().unwrap();
                     (*mid, field.value().to_string())
                 };
-                self.commit_title_text(ctx.state, mid, &words);
+                self.commit_title_text(mid, &words);
                 self.title_edit = None;
                 // Not marked handled: the click still lands on whatever it
                 // was aimed at, which is what makes accepting-on-click-away
@@ -6646,7 +6519,7 @@ impl Widget for VideoEditorApp {
                     // regardless put the old name back with nothing said, so
                     // a marker whose name you had just cleared looked as
                     // though it had simply ignored you.
-                    if self.commit_marker_rename(ctx.state, target, &name) {
+                    if self.commit_marker_rename(target, &name) {
                         self.marker_rename = None;
                     } else {
                         self.project_notice =
@@ -6664,7 +6537,7 @@ impl Widget for VideoEditorApp {
         if self.bin_menu.is_open() {
             self.bin_menu.handle_event(event, ctx);
             if let Some(idx) = self.bin_menu.take_selection() {
-                self.bin_menu_choose(ctx.state, idx);
+                self.bin_menu_choose(idx);
             }
             if *ctx.handled {
                 return;
@@ -6675,7 +6548,7 @@ impl Widget for VideoEditorApp {
             self.project_menu.handle_event(event, ctx);
             if let Some(idx) = self.project_menu.take_selection() {
                 if let Some(item) = self.project_menu_intent(idx) {
-                    self.run_project_menu_item(ctx.state, item);
+                    self.run_project_menu_item(item);
                 }
                 self.project_menu.close();
             }
@@ -6757,7 +6630,7 @@ impl Widget for VideoEditorApp {
                 if self.bin_drag.is_some() {
                     // A bin→timeline drag drops a clip at the release position;
                     // a bin press that never moved may instead begin a rename.
-                    self.release_bin_drag(ctx.state, &r);
+                    self.release_bin_drag(&r);
                     *ctx.handled = true;
                 } else if self.drag.is_some() {
                     // A rubber band resolves to a selection; a press that never
@@ -6770,7 +6643,7 @@ impl Widget for VideoEditorApp {
                     }
                     // Commit the drag's final position / trim / grade as one
                     // action (one undo boundary), then end the drag.
-                    self.commit_drag(ctx.state);
+                    self.commit_drag();
                     self.drag = None;
                     self.marquee = None;
                     *ctx.handled = true;
@@ -6798,7 +6671,7 @@ impl Widget for VideoEditorApp {
                 }
                 // A drop is a batch of one, and reports like one: a refusal
                 // still names the file and carries the probe's own reason.
-                let report = self.import_files(ctx.state, std::slice::from_ref(path));
+                let report = self.import_files(std::slice::from_ref(path));
                 self.import_notice = Some(import_report_notice(&report));
                 *ctx.handled = true;
             }
@@ -7312,7 +7185,10 @@ impl Widget for VideoEditorApp {
         use ui::a11y::{Action, hash_key};
         let (state, _) = ui::doc::document(state, path);
         // An assistive-technology command is one gesture, like a key press.
-        let _gesture = self.actions.gesture();
+        let _gesture = self
+            .actions
+            .as_ref()
+            .map(ui::framework::Dispatcher::begin_group);
         let Some(&pane_key) = key_path.first() else {
             return false;
         };
@@ -7347,7 +7223,7 @@ impl Widget for VideoEditorApp {
                 return false;
             }
             if pane_key == hash_key(&TOPBAR_A11Y_KEY) {
-                return self.a11y_topbar_action(action, &key_path[1..], state);
+                return self.a11y_topbar_action(action, &key_path[1..]);
             }
             if pane_key == hash_key(&"discard") {
                 let Some(&which) = key_path.get(1) else {
@@ -7378,10 +7254,10 @@ impl Widget for VideoEditorApp {
         // Focusing anything inside a pane also moves the pane cursor there, so
         // the keyboard and the reader stay on the same element.
         match pane {
-            Pane::Bin => self.a11y_bin_action(action, rest, state),
+            Pane::Bin => self.a11y_bin_action(action, rest),
             Pane::Transport => self.a11y_transport_action(action, rest),
-            Pane::Timeline => self.a11y_timeline_action(action, rest, state),
-            Pane::Inspector => self.a11y_inspector_action(action, rest, state),
+            Pane::Timeline => self.a11y_timeline_action(action, rest),
+            Pane::Inspector => self.a11y_inspector_action(action, rest),
         }
     }
 
@@ -7458,32 +7334,17 @@ impl ui::search::capability::SearchSource for VideoEditorApp {
 }
 
 impl ui::resources::PublishesResources for VideoEditorApp {
-    /// Publish the open project + its tracks and clips so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // Framework [`tilo_resource::publish`] owns `video_editor.project`,
-        // import/export Effects, and timeline children. Playhead/mix
-        // conveniences are live presentation only — keep that same
-        // standalone slice when hosted, never a second project root.
-        if self.actions.is_hosted() {
-            return crate::actions::live_playhead_resources(&self.video_resource_ctx());
-        }
-        self.publish_resources(doc)
+    /// What the editor adds beside its resource's publication: the
+    /// conveniences bound to where this participant's playhead is.
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        crate::actions::live_playhead_resources(&self.video_resource_ctx())
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.actions.is_hosted() && id == "video.project" {
-            return None;
-        }
-        find_resource(&self.publish_resources(doc), id).or_else(|| {
-            self.actions.is_hosted().then(|| {
-                crate::actions::live_playhead_resources(&self.video_resource_ctx())
-                    .into_iter()
-                    .find(|resource| resource.id.as_str() == id)
-            })?
-        })
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        find_resource(
+            &crate::actions::live_playhead_resources(&self.video_resource_ctx()),
+            id,
+        )
     }
 }
 
@@ -7509,15 +7370,6 @@ impl ui::undo::UndoControl for VideoEditorApp {
     }
     fn take_undo_request(&mut self) -> Option<ui::UndoRequest> {
         self.undo.take_request()
-    }
-}
-
-impl ui::undo::CommittedActions for VideoEditorApp {
-    /// Hand the host the document heads captured before an on-screen affordance
-    /// dispatched its timeline action, so it records exactly one undo boundary
-    /// bracketing it (Ctrl+Z reverts it OS-wide). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 }
 
@@ -8031,7 +7883,7 @@ impl VideoEditorApp {
     /// shape of the clip the drag touched. Called on mouse-up, before the drag
     /// is cleared. Playhead / scrubber drags are presentation and commit
     /// nothing.
-    fn commit_drag(&mut self, doc: &mut AutoCommit) {
+    fn commit_drag(&mut self) {
         let Some(drag) = self.drag else { return };
         match drag {
             Drag::Playhead | Drag::Scrubber | Drag::Scrollbar(_) | Drag::Marquee { .. } => {}
@@ -8044,10 +7896,10 @@ impl VideoEditorApp {
                 if !ids.contains(&id) {
                     ids.push(id);
                 }
-                self.dispatch_existing_clips(doc, &ids);
+                self.dispatch_existing_clips(&ids);
             }
             Drag::TrimIn { id } | Drag::TrimOut { id } => {
-                self.dispatch_clip_linked(doc, id);
+                self.dispatch_clip_linked(id);
             }
             Drag::EffectAmount {
                 idx,
@@ -8064,30 +7916,26 @@ impl VideoEditorApp {
                 else {
                     return;
                 };
-                self.actions.dispatch(
-                    doc,
-                    VIDEO_EDITOR_ACTION_TYPE,
-                    &VideoEditorAction::SetEffectAmount {
-                        clip: id.to_string(),
-                        effect: effect.to_string(),
-                        expected_amount_bits,
-                        amount,
-                    },
-                );
+                self.submit(&VideoEditorAction::SetEffectAmount {
+                    clip: id.to_string(),
+                    effect: effect.to_string(),
+                    expected_amount_bits,
+                    amount,
+                });
             }
             // A title knob writes the *source*, so it commits a media write;
             // everything else on this path is a clip field.
-            Drag::Num(f) if f.is_media() => self.dispatch_selected_media(doc),
+            Drag::Num(f) if f.is_media() => self.dispatch_selected_media(),
             // …and the two lane knobs write the *track*, which is a third
             // destination again. Committed as one whole-track action, so the
             // fader lands on one undo boundary and replays on a peer as the
             // same change the palette's `set-gain` makes.
-            Drag::Num(f) if f.is_track() => self.dispatch_selected_track(doc),
+            Drag::Num(f) if f.is_track() => self.dispatch_selected_track(),
             // Rate is the one field the drag applied to the whole link group,
             // so it is the one that has to commit the whole group.
             Drag::Num(NumField::Speed) => {
                 if let Some(id) = self.selected() {
-                    self.dispatch_clip_linked(doc, id);
+                    self.dispatch_clip_linked(id);
                 }
             }
             Drag::Opacity
@@ -8100,7 +7948,7 @@ impl VideoEditorApp {
             | Drag::TransitionLen
             | Drag::Num(_) => {
                 if let Some(id) = self.selected() {
-                    self.dispatch_clip(doc, id);
+                    self.dispatch_clip(id);
                 }
             }
             Drag::CurvePoint { channel, idx } => {
@@ -8120,7 +7968,7 @@ impl VideoEditorApp {
                     }
                 }
                 if let Some(id) = self.selected() {
-                    self.dispatch_clip(doc, id);
+                    self.dispatch_clip(id);
                 }
             }
         }
@@ -9362,21 +9210,9 @@ impl ui::framework::ResourceSurface<crate::resource::VideoProject> for VideoEdit
     /// in flight keeps its live preview; the new project is loaded when it
     /// lets go, exactly as for the standalone editor.
     fn present(&mut self, project: &std::rc::Rc<Project>) {
+        self.stored = std::rc::Rc::clone(project);
         if self.drag_is_editing() {
             self.project_sync.reload_pending = true;
-            return;
-        }
-        // An empty projection must not wipe a project that has not been
-        // published through the framework resource yet.
-        let incoming_empty = project.media.is_empty()
-            && project.tracks.is_empty()
-            && project.clips.is_empty()
-            && project.markers.is_empty();
-        let local_has_rows = !self.project.media.is_empty()
-            || !self.project.tracks.is_empty()
-            || !self.project.clips.is_empty()
-            || !self.project.markers.is_empty();
-        if incoming_empty && local_has_rows {
             return;
         }
         self.project = Project::clone(project);
@@ -9392,7 +9228,7 @@ impl ui::framework::ResourceSurface<crate::resource::VideoProject> for VideoEdit
     /// does, and places the first on the timeline. A screenshot or a past
     /// version of anything else is hermetic.
     fn attach(&mut self, cx: ui::framework::SurfaceCx<crate::resource::VideoProject>) {
-        self.actions.attach(cx.dispatcher());
+        self.actions = Some(cx.dispatcher());
         let mode = cx.mode();
         self.seed.capture = mode == ui::framework::RunMode::Capture;
         let launched: Vec<PathBuf> = cx.launch_arguments().iter().map(PathBuf::from).collect();

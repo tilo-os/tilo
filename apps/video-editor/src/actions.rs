@@ -37,7 +37,6 @@
 //! (a ripple delete, a split) are carried as one action so they land as a
 //! single undo boundary and replay atomically.
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -3907,32 +3906,6 @@ fn parse_transition(s: &str) -> Transition {
     }
 }
 
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::VideoEditorApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let ctx = self.video_resource_ctx();
-        // The document is the project once it holds one. An unsynced editor
-        // still has the project only on the widget. Playhead and mix stay live.
-        let project = if VideoDoc::is_empty(doc) {
-            ctx.project.clone()
-        } else {
-            VideoDoc::load_project(doc)
-        };
-        let label = if project.name.is_empty() {
-            "Project".to_string()
-        } else {
-            project.name.clone()
-        };
-        let mut root = ui::tilo_resource::publish::<crate::resource::VideoProject>(
-            "video.project",
-            &label,
-            &project,
-        );
-        root.children.extend(live_playhead_resources(&ctx));
-        vec![root]
-    }
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -4388,6 +4361,7 @@ mod tests {
 
     use super::*;
     use crate::app::VideoEditorApp;
+    use automerge::AutoCommit;
     use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
     use ui::testing::action_contract::{find_spec, spec_encoding};
     use ui::widget::Widget;
@@ -4404,6 +4378,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         VideoDoc::seed_sample(&mut doc);
         let mut app = VideoEditorApp::new();
+        ui::framework::ResourceSurface::<crate::resource::VideoProject>::present(
+            &mut app,
+            &std::rc::Rc::new(VideoDoc::load_project(&doc)),
+        );
         app.sync(&mut doc, &automerge::ROOT);
         (app, doc)
     }
@@ -4429,7 +4407,7 @@ mod tests {
         // Drives the real resource hook.
         {
             let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = published(&app, &doc);
             assert_eq!(resources.len(), 1, "one open project");
             let project = &resources[0];
             assert_eq!(project.kind, "video_editor.project");
@@ -4574,7 +4552,7 @@ mod tests {
         // stack through the same narrow effects action the inspector uses.
         {
             let (app, mut doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = published(&app, &doc);
             let clip_res = resources[0]
                 .children
                 .iter()
@@ -4617,11 +4595,28 @@ mod tests {
 
     /// The editor's published tree for `doc`: a fresh editor synced to it,
     /// exactly as the host wires one to its document.
+    /// What the host publishes for an editor showing `doc`: the project's
+    /// own publication, with what the editor adds beside it.
+    fn published(app: &VideoEditorApp, doc: &AutoCommit) -> Vec<Resource> {
+        let project = VideoDoc::load_project(doc);
+        let mut root = ui::tilo_resource::publish::<crate::resource::VideoProject>(
+            <crate::resource::VideoProject as ui::tilo_resource::Resource>::KIND,
+            &project.name,
+            &project,
+        );
+        root.children.extend(ui::resources::resources(app, doc));
+        vec![root]
+    }
+
     fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
         let mut app = VideoEditorApp::new();
         let mut doc = doc.clone();
+        ui::framework::ResourceSurface::<crate::resource::VideoProject>::present(
+            &mut app,
+            &std::rc::Rc::new(VideoDoc::load_project(&doc)),
+        );
         app.sync(&mut doc, &automerge::ROOT);
-        ui::resources::resources(&app, &doc)
+        published(&app, &doc)
     }
 
     fn clip_id(res: &Resource) -> Uuid {
@@ -4720,7 +4715,7 @@ mod tests {
         // inspector edit to 0.9 would — a slider value folded into one action.
         {
             let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = published(&app, &doc);
             let (clip_res, spec) = find_spec(&resources, "video.clip", "set-brightness");
             let from_spec = prompted_encode(spec, "0.9");
 
@@ -4833,7 +4828,7 @@ mod tests {
             use tilo_actions::params::ArgValue;
 
             let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = published(&app, &doc);
             let clip_res = resources[0]
                 .children
                 .iter()
