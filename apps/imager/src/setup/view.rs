@@ -1219,60 +1219,51 @@ impl SetupApp {
         if let Some(resume) = self.internal_resume_card() {
             body = body.push(Box::new(resume));
         }
-        let offered: Vec<Box<dyn Widget>> = [Experience::Desktop, Experience::FullOs]
-            .into_iter()
-            .filter(|experience| self.capabilities.platform.supports(*experience))
-            .map(|experience| Box::new(self.experience_row(experience)) as Box<dyn Widget>)
-            .collect();
-        if !offered.is_empty() {
-            body = body.push(Box::new(Section::new(offered)));
-        }
-        // What is not on offer here, under its name: one sentence each, and
-        // the one way to find out again.
-        if !self.capabilities.platform.supports(Experience::Desktop) {
-            let (sentence, can_recheck) = self.desktop_unavailable();
-            let mut line = Row::new()
-                .with_align_items(taffy::AlignItems::Center)
-                .push(Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_flex_grow()
-                        .with_child(Box::new(
-                            Text::new(&sentence)
-                                .dimmed()
-                                .with_id("setup.desktop.live")
-                                .with_live(Politeness::Polite),
-                        )),
-                ));
-            if can_recheck {
-                line = line.push(Box::new(self.button(
-                    "setup.desktop.recheck",
-                    "Check again",
-                    SetupCommand::RetryDesktop,
-                )));
+        let mut rows: Vec<Box<dyn Widget>> = Vec::new();
+        let mut recheck = false;
+        // What is on offer is a choice; what is not stays in the list as a
+        // disabled row that says why, so nothing is missing without a reason.
+        for experience in [Experience::Desktop, Experience::FullOs] {
+            if self.capabilities.platform.supports(experience) {
+                rows.push(Box::new(self.experience_row(experience)));
+                continue;
             }
-            body = body.push(Box::new(Section::new(vec![Box::new(line)]).with_header(
-                SectionHeader::group(experience_label(Experience::Desktop)),
-            )));
-        }
-        if !self.capabilities.platform.supports(Experience::FullOs) {
-            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
-            let sentence = if self.internal_install.gate() {
-                self.internal_readiness_text()
-            } else {
-                "Not available on this computer yet.".to_string()
+            let (id, sentence) = match experience {
+                Experience::Desktop => {
+                    let (sentence, can_recheck) = self.desktop_unavailable();
+                    recheck = can_recheck;
+                    ("setup.desktop.live", sentence)
+                }
+                Experience::FullOs => {
+                    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+                    let sentence = if self.internal_install.gate() {
+                        self.internal_readiness_text()
+                    } else {
+                        "Not available on this computer yet.".to_string()
+                    };
+                    #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
+                    let sentence = "Not available on this computer yet.".to_string();
+                    ("setup.internal.readiness", sentence)
+                }
             };
-            #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
-            let sentence = "Not available on this computer yet.".to_string();
-            body = body.push(Box::new(
-                Section::new(vec![Box::new(
-                    Text::new(&sentence)
-                        .dimmed()
-                        .with_id("setup.internal.readiness")
-                        .with_live(Politeness::Polite),
-                )])
-                .with_header(SectionHeader::group(experience_label(Experience::FullOs))),
+            rows.push(Box::new(
+                ListRow::new(id, experience_label(experience))
+                    .icon(match experience {
+                        Experience::Desktop => Icon::Monitor,
+                        Experience::FullOs => Icon::HardDrive,
+                    })
+                    .secondary(sentence)
+                    .two_line_secondary()
+                    .with_enabled(false),
             ));
+        }
+        body = body.push(Box::new(Section::new(rows)));
+        if recheck {
+            body = body.push(Box::new(self.button(
+                "setup.desktop.recheck",
+                "Check again",
+                SetupCommand::RetryDesktop,
+            )));
         }
         body
     }
@@ -3586,7 +3577,7 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("setup.internal.readiness")
-                        .name_contains("Not available"),
+                        .value_contains("Not available"),
                 )
                 .unwrap();
             harness
@@ -4247,7 +4238,7 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("setup.desktop.live")
-                        .name_contains("worker stopped"),
+                        .value_contains("worker stopped"),
                 )
                 .unwrap();
             harness
@@ -5384,6 +5375,15 @@ mod tests {
                 .sum::<usize>()
     }
 
+    fn retained_value(root: &dyn Widget, id: &str) -> Option<String> {
+        if root.test_id() == Some(id) {
+            return root.accessibility().and_then(|node| node.value);
+        }
+        root.children()
+            .into_iter()
+            .find_map(|child| retained_value(child, id))
+    }
+
     fn retained_name(root: &dyn Widget, id: &str) -> Option<String> {
         if root.test_id() == Some(id) {
             return root.accessibility().and_then(|node| node.name);
@@ -5509,7 +5509,7 @@ mod tests {
                 "Full Tilo is not offered until the probe passes"
             );
             assert!(
-                retained_name(composition.as_ref(), "setup.internal.readiness")
+                retained_value(composition.as_ref(), "setup.internal.readiness")
                     .unwrap()
                     .starts_with("Checking whether Tilo can be installed")
             );
@@ -5541,7 +5541,7 @@ mod tests {
             );
             let composition = blocked.app.build_composition();
             assert!(
-                retained_name(composition.as_ref(), "setup.internal.readiness")
+                retained_value(composition.as_ref(), "setup.internal.readiness")
                     .unwrap()
                     .contains("MBR")
             );
