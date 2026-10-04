@@ -870,7 +870,7 @@ mod tests {
             let folder_address = folder_hit
                 .action_address()
                 .expect("canonical folder address");
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = app.publish_resources(&doc);
             let encoded = tilo_actions::door::encode(&resources, &folder_address, None)
                 .expect("folder address resolves against Mail's exported tree");
             let heads_before_folder_navigation = doc.get_heads();
