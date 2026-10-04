@@ -5949,7 +5949,8 @@ impl FrameHarness {
             );
         }
         for (target, intent) in registered.components.into_iter().chain(bound.pending) {
-            if !self.take_history_invocation(&intent) {
+            let owner = crate::history_mode::HistoryOwner::component(target.binding.clone());
+            if !self.take_history_invocation(&intent, Some(owner)) {
                 self.dispatch_bound_control(target, &intent);
             }
         }
@@ -5960,14 +5961,16 @@ impl FrameHarness {
             tracing::warn!(%error, "headless legacy drain refused");
         }
         for (target, intent) in registered.legacy.into_iter().chain(batch.controls) {
-            self.dispatch_legacy_control(&target, &intent);
+            if !self.take_history_invocation(&intent, Some(target.owner.clone())) {
+                self.dispatch_legacy_control(&target, &intent);
+            }
         }
         while let Some(intent) = registered
             .outer
             .pop_front()
             .or_else(|| crate::widget::controls::take_control_invocation(self.root.as_mut()))
         {
-            if self.take_history_invocation(&intent) {
+            if self.take_history_invocation(&intent, None) {
                 continue;
             }
             // The remaining controls originated in the outer document. Never

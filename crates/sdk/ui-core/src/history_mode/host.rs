@@ -336,6 +336,25 @@ impl HistoryHost {
         self.registration
             .validate_root_with_owner(root, self.enclosing_owner.as_ref())
     }
+    /// Whether this is the History of the tile that hosts `owner`'s app.
+    pub(crate) fn encloses(&self, owner: &super::HistoryOwner) -> bool {
+        self.enclosing_owner
+            .as_ref()
+            .is_some_and(|enclosing| enclosing.same_owner(owner))
+    }
+    /// The app the tile holding this History hosts.
+    pub(crate) fn enclosing_owner(&self) -> Option<&super::HistoryOwner> {
+        self.enclosing_owner.as_ref()
+    }
+    /// The History door actions a control in the hosted app can run now:
+    /// Open while closed, Hide while open, none for an invalid owner.
+    pub(crate) fn door_addresses(&self) -> std::collections::HashSet<tilo_actions::ActionAddress> {
+        tilo_actions::door::survey(&[self.door_resource()])
+            .into_iter()
+            .filter(|descriptor| descriptor.contract.availability.is_available())
+            .map(|descriptor| descriptor.address)
+            .collect()
+    }
     pub(crate) fn set_enclosing_owner(&mut self, owner: Option<super::HistoryOwner>) {
         self.embedded = true;
         let replaced = self.enclosing_owner.as_ref().is_some_and(|existing| {

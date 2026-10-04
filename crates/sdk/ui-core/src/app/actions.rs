@@ -2960,6 +2960,10 @@ impl App {
             tracing::warn!(%error, "legacy control drain refused");
         }
         for (target, intent) in registered.into_iter().chain(batch.controls) {
+            if self.take_history_invocation(&intent, Some(target.owner.clone())) {
+                dispatched = dispatched.saturating_add(1);
+                continue;
+            }
             let argument = format!(
                 "{}{}",
                 tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -3037,7 +3041,12 @@ impl App {
         }
         for (target, intent) in registered.components.into_iter().chain(bound.pending) {
             if self.take_search_invocation(&intent, Some(&target.binding))
-                || self.take_history_invocation(&intent)
+                || self.take_history_invocation(
+                    &intent,
+                    Some(crate::history_mode::HistoryOwner::component(
+                        target.binding.clone(),
+                    )),
+                )
                 || self.dispatch_bound_control_invocation(&target, &intent)
             {
                 dispatched = dispatched.saturating_add(1);
@@ -3050,7 +3059,9 @@ impl App {
             .pop_front()
             .or_else(|| crate::widget::controls::take_control_invocation(self.root_widget.as_mut()))
         {
-            if self.take_search_invocation(&intent, None) || self.take_history_invocation(&intent) {
+            if self.take_search_invocation(&intent, None)
+                || self.take_history_invocation(&intent, None)
+            {
                 dispatched = dispatched.saturating_add(1);
                 continue;
             }
@@ -3474,23 +3485,38 @@ impl App {
         self.document_history.has_search()
     }
 
-    /// Take a control invocation addressed to the host search door: open
-    /// search here, or queue it for the shell hosting `owner`.
     /// A control in the app's tree bound to the window's History door (the
     /// History control in the app's header row) runs there, as the History
-    /// shortcut does, never as an app action. Returns whether it was one.
-    fn take_history_invocation(&mut self, intent: &tilo_actions::ControlInvocation) -> bool {
+    /// shortcut does, never as an app action. An app `owner` hosted in a tile
+    /// opens that tile's History. Returns whether it was one.
+    fn take_history_invocation(
+        &mut self,
+        intent: &tilo_actions::ControlInvocation,
+        owner: Option<crate::history_mode::HistoryOwner>,
+    ) -> bool {
         if intent.address.resource != crate::standalone_history_host::HISTORY_RESOURCE {
             return false;
         }
-        let argument = format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::Value::Object(intent.arguments.clone())
-        );
-        let result = self
-            .invoke_history_address_local(&intent.address, Some(&argument))
-            .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())));
+        let embedded = owner.and_then(|owner| {
+            crate::history_mode::embedded::invoke_door(self.root_widget.as_mut(), &owner, intent)
+        });
+        let result = if let Some(result) = embedded {
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+            result.map(|()| {
+                crate::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )
+            })
+        } else {
+            let argument = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::Value::Object(intent.arguments.clone())
+            );
+            self.invoke_history_address_local(&intent.address, Some(&argument))
+                .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())))
+        };
         crate::widget::controls::on_control_invocation_result(
             self.root_widget.as_mut(),
             &intent.address,

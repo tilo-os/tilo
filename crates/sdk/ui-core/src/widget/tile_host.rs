@@ -1579,8 +1579,19 @@ impl Widget for TileHost {
             request.deliver_effect(self, interactive);
             return Ok(());
         }
+        let history_doors = self
+            .history
+            .as_ref()
+            .map(|history| history.door_addresses())
+            .unwrap_or_default();
         if let TileContent::App(live) = &mut self.content {
-            request.tile(owner.as_ref(), separate, interactive, live.as_mut())
+            request.tile(
+                owner.as_ref(),
+                separate,
+                interactive,
+                &history_doors,
+                live.as_mut(),
+            )
         } else {
             Ok(())
         }
