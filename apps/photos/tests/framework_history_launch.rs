@@ -217,7 +217,7 @@ fn binary(
         std::fs::read_to_string(dir.join("targets.json"))
             .unwrap()
             .contains(if import {
-                "history-open"
+                "window-history"
             } else {
                 "activity_timeline"
             })
@@ -353,7 +353,7 @@ fn actual_binary_saved_current_blank_history_restore_and_explicit_import() {
         binary(
             &store,
             dir,
-            &serde_json::json!([{"click_named":"history-open"}]),
+            &serde_json::json!([{"click_named":"window-history"}]),
             false,
         );
         child(&store, "verify_unchanged", dir, kind);
@@ -366,7 +366,7 @@ fn actual_binary_saved_current_blank_history_restore_and_explicit_import() {
         binary(
             &store,
             dir,
-            &serde_json::json!([{"click_named":"history-open"},{"perform":{"target":"activity_timeline","semantic_target":target,"action":"activate"}},{"click_named":"history-restore"},{"key":"Enter"}]),
+            &serde_json::json!([{"click_named":"window-history"},{"perform":{"target":"activity_timeline","semantic_target":target,"action":"activate"}},{"click_named":"history-restore"},{"key":"Enter"}]),
             false,
         );
         child(&store, "verify_restored", dir, kind);
