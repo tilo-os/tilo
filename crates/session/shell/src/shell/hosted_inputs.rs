@@ -48,6 +48,9 @@ pub struct HostedTileInputs {
     native_apps: Arc<[NativeAppRegistration]>,
     documents: Rc<RefCell<HashMap<TabId, HostedDocumentState>>>,
     file_directories: Rc<RefCell<HashMap<TabId, PathBuf>>>,
+    /// The framework apps this host mounts in its own process; `None`
+    /// hosts their tabs as plain widgets.
+    in_process: Option<super::in_process::SharedInProcessApps>,
 }
 
 struct FixtureDirectory(PathBuf);
@@ -158,7 +161,18 @@ impl HostedTileInputs {
             native_apps: Arc::default(),
             documents: Rc::default(),
             file_directories: Rc::default(),
+            in_process: None,
         })
+    }
+
+    /// Mount framework apps (the terminal) in this process through `apps`:
+    /// each tab the app's own component on a record of its own.
+    pub fn mount_apps_in_process(&mut self, apps: super::in_process::InProcessApps) {
+        self.in_process = Some(Rc::new(RefCell::new(apps)));
+    }
+
+    pub(crate) fn in_process(&self) -> Option<&super::in_process::SharedInProcessApps> {
+        self.in_process.as_ref()
     }
 
     pub(crate) fn file_services(&self) -> Option<&file_explorer::files_app::HostedFileServices> {

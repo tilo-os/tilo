@@ -80,6 +80,7 @@ pub mod host_shell_allow;
 pub mod hosted_inputs;
 pub mod i18n;
 pub mod identity_provisioning;
+pub mod in_process;
 pub mod input_policy;
 pub mod install_card;
 pub mod keyboard_shortcuts;
@@ -1524,6 +1525,9 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
         &mut self,
         request: tilo_desktop::resolver::TileRequest<'_>,
     ) -> tilo_desktop::resolver::TileResolution {
+        if let Some(mounted) = mount_in_process(&request, self.inputs) {
+            return mounted;
+        }
         tilo_desktop::resolver::TileResolution::Content(to_ui_tile_for_tab_with_inputs(
             &request.tab.tile,
             request.tab.id,
@@ -1536,6 +1540,41 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
     fn tab_icon(&self, tab: &state::Tab) -> Option<ui::icons::AppImage> {
         crate::app_icons::for_tile(&tab.tile)
     }
+}
+
+/// The tab as the framework app's own component, when the host mounts that
+/// app in its own process: the terminal, on its tab's record, opening
+/// sessions through the session's process supervisor.
+fn mount_in_process(
+    request: &tilo_desktop::resolver::TileRequest<'_>,
+    inputs: &hosted_inputs::HostedTileInputs,
+) -> Option<tilo_desktop::resolver::TileResolution> {
+    use tilo_desktop::resolver::TileResolution;
+    let apps = inputs.in_process()?;
+    let ShellTile::AppPlaceholder {
+        kind: ShellKind::Terminal,
+        ..
+    } = &request.tab.tile
+    else {
+        return None;
+    };
+    let mounted = apps.borrow_mut().mount(
+        terminal::definition(),
+        &request.room.to_string(),
+        request.tab.id,
+        |context| {
+            // A fixture shows terminals that open no session.
+            context.lend(if inputs.is_fixture() {
+                terminal::HostedProcessServices::unavailable()
+            } else {
+                terminal::HostedProcessServices::default()
+            });
+        },
+    );
+    Some(match mounted {
+        Ok(component) => TileResolution::Component(component),
+        Err(error) => TileResolution::Failed(error),
+    })
 }
 
 /// The native chrome the shared desktop surface is built with: the session's
@@ -1659,7 +1698,18 @@ pub fn build_tilo_overlay_host_with_records(
     #[cfg(test)]
     let inputs = hosted_inputs::HostedTileInputs::fixture().expect("test Files fixture");
     #[cfg(not(test))]
-    let inputs = hosted_inputs::HostedTileInputs::default();
+    let inputs = {
+        let mut inputs = hosted_inputs::HostedTileInputs::default();
+        // The session mounts the apps it hosts itself as their own
+        // components, on records it keeps beside its scratch tabs'.
+        match in_process::InProcessApps::native(&state::local_user_id()) {
+            Ok(apps) => inputs.mount_apps_in_process(apps),
+            Err(error) => {
+                tracing::warn!(%error, "apps hosted in the session keep no records");
+            }
+        }
+        inputs
+    };
     build_tilo_overlay_host_with_inputs(tree_handle, enable_peer_sync, records, inputs)
 }
 
