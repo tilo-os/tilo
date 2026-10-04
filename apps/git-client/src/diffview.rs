@@ -170,8 +170,9 @@ fn hanging_indent(content: &str, cols: usize) -> usize {
 
 /// Where each line of code breaks to fit `cols` monospace cells: the byte
 /// range of every visual line, at least one. Continuation rows are
-/// [`hanging_indent`] cells narrower. A break prefers the last space in the
-/// second half of a visual line, so words stay whole where they can.
+/// [`hanging_indent`] cells narrower. A break prefers the last space, or the
+/// last place a word meets punctuation, in the second half of a visual line,
+/// so words stay whole where they can.
 fn wrap(content: &str, cols: usize) -> Vec<Range<usize>> {
     let first_cols = cols.max(1);
     let indent = hanging_indent(content, first_cols);
@@ -182,7 +183,14 @@ fn wrap(content: &str, cols: usize) -> Vec<Range<usize>> {
     // space: its byte offset and how many characters precede it.
     let mut count = 0;
     let mut soft: Option<(usize, usize)> = None;
+    let mut previous: Option<char> = None;
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
     for (i, c) in content.char_indices() {
+        // A word ends where punctuation follows it.
+        if previous.is_some_and(is_word) && !is_word(c) && !c.is_whitespace() {
+            soft = Some((i, count));
+        }
+        previous = Some(c);
         if count == cols {
             let (end, used) = match soft {
                 Some((end, used)) if used * 2 > cols => (end, used),
@@ -968,7 +976,7 @@ mod tests {
     }
 
     /// A long line wraps onto more rows of its pane instead of being cut at
-    /// the pane edge, breaking after a space where one falls late enough,
+    /// the pane edge, breaking after a space or a word where one falls late enough,
     /// and the row grows with it; a wide pane keeps it on one row.
     #[test]
     fn long_lines_wrap_inside_their_pane() {
@@ -982,7 +990,7 @@ mod tests {
                 .iter()
                 .all(|r| line[r.clone()].chars().count() <= 20)
         );
-        assert_eq!(&line[segments[0].clone()], "let value = ");
+        assert_eq!(&line[segments[0].clone()], "let value = compute");
         assert_eq!(wrap("short", 20), vec![0..5]);
         let nested = "        call(first_argument, second_argument);";
         let rows = wrap(nested, 24);
@@ -1018,5 +1026,16 @@ mod tests {
                 "{layout:?}: a wide pane keeps every line on one row"
             );
         }
+    }
+
+    /// A word is not cut from the punctuation that follows it when the break
+    /// can fall between them.
+    #[test]
+    fn a_break_falls_between_a_word_and_its_punctuation() {
+        let line = "    let x = blur_params);";
+        let cols = 24;
+        let rows = wrap(line, cols);
+        assert!(rows.len() > 1);
+        assert_eq!(&line[rows[0].clone()], "    let x = blur_params");
     }
 }
