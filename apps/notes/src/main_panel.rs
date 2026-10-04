@@ -647,13 +647,6 @@ impl MainPanel {
         }
     }
 
-    /// Drain a request to browse a durable tag collection. The panel only
-    /// records intent; the app is responsible for dispatching the canonical
-    /// resource operation against the current CRDT snapshot.
-    pub fn take_tag_open(&mut self) -> Option<crate::model::TagId> {
-        self.header.take_tag_open()
-    }
-
     /// Replace the incoming-link projection after the app's bounded canonical
     /// index advances. The source-page id, not the visible title, is retained
     /// for activation so a remote rename/deletion cannot misroute a click.
@@ -661,11 +654,6 @@ impl MainPanel {
         if self.header.set_backlinks(backlinks) {
             self.header_changed();
         }
-    }
-
-    /// Drain a request to reveal the source of a canonical incoming link.
-    pub fn take_backlink_open(&mut self) -> Option<PageId> {
-        self.header.take_backlink_open()
     }
 
     /// Say whether the note cannot be saved. A failure stays in view, under

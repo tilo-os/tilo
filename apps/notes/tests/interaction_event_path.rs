@@ -1213,14 +1213,11 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         let mut app = settle_layout(app, state, 1200, 800);
         assert_eq!(app.workspace_pages_for_test().len(), 1);
 
-        let no_mods = Modifiers::default();
         let btn = app.sidebar_new_page_btn_center_for_test();
-        dispatch(&mut app, no_mods, &cursor_moved(btn.x, btn.y));
-        dispatch(&mut app, no_mods, &mouse_press());
-        // A button acts on release.
-        let handled = dispatch(&mut app, no_mods, &mouse_release());
+        // The button's view operation runs through the host, as a person's
+        // click does.
+        Framed::harness_mut(&mut app).click_at(btn.x, btn.y);
 
-        assert!(handled, "clicking the + button must be consumed");
         let pages = app.workspace_pages_for_test();
         assert_eq!(pages.len(), 2, "the + button must add exactly one page");
         let new_id = app.selected_for_test().unwrap();
