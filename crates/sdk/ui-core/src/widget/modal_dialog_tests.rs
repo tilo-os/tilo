@@ -182,21 +182,30 @@ fn dispatch<C: Widget + 'static>(d: &mut ModalDialog<C>, event: &WindowEvent) ->
     handled
 }
 
-/// Run the retained passes with the dialog's node filling `area`.
+/// Run the retained passes with the dialog's node filling `area`, through
+/// the production solver (measure functions and layout adjustments), as a
+/// host does.
 fn lay_out<C: Widget + 'static>(d: &mut ModalDialog<C>, area: Rect, theme: &Theme) {
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = d.build_layout(&mut taffy, theme, &mut node_map);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let mut bindings = crate::bound_dispatch::BoundNodeMap::default();
     #[allow(clippy::cast_possible_truncation, reason = "test geometry")]
-    taffy
-        .compute_layout(
-            node,
-            Size {
-                width: taffy::AvailableSpace::Definite(area.width() as f32),
-                height: taffy::AvailableSpace::Definite(area.height() as f32),
-            },
+    let available = Size {
+        width: taffy::AvailableSpace::Definite(area.width() as f32),
+        height: taffy::AvailableSpace::Definite(area.height() as f32),
+    };
+    // SAFETY: `node_map` describes the tree just built from `d`, which this
+    // function holds exclusively.
+    unsafe {
+        bindings.rebuild(d, &taffy, node, &node_map);
+        crate::widget::layout::compute_widget_layout(
+            &mut taffy, node, available, &node_map, &bindings, &mut text,
         )
         .unwrap();
+    }
     d.apply_layout(&taffy, node, area.origin());
 }
 
@@ -847,4 +856,390 @@ fn open_dialog_captures_input_and_closed_dialog_is_inert() {
         assert!(!dispatch(&mut d, &left_press()));
         assert_eq!(events.get(), 0);
     }
+}
+
+fn wheel(dy: f32) -> WindowEvent {
+    WindowEvent::MouseWheel {
+        device_id: synth_device(),
+        delta: winit::event::MouseScrollDelta::LineDelta(0.0, dy),
+        phase: winit::event::TouchPhase::Moved,
+    }
+}
+
+fn counter() -> (Rc<Cell<usize>>, impl FnMut() + 'static) {
+    let count = Rc::new(Cell::new(0));
+    let c = Rc::clone(&count);
+    (count, move || c.set(c.get() + 1))
+}
+
+#[test]
+fn a_hosted_dialog_focuses_its_fields_by_pointer_and_its_footer_by_tab() {
+    use crate::headless::Framed;
+    use crate::widget::{Column, TextInput};
+    let (cancelled, cancel) = counter();
+    let (connected, connect) = counter();
+    let content = Column::new()
+        .push(Box::new(TextInput::local().with_placeholder("Name")))
+        .push(Box::new(TextInput::local().with_placeholder("Host")));
+    let dialog = ModalDialog::new("Connection", content)
+        .primary_action("Connect", connect)
+        .secondary_action("Cancel", cancel)
+        .open(true);
+    let mut framed = Framed::new(crate::State::new(), dialog, (800, 600), Theme::dark());
+    let _ = Framed::harness_mut(&mut framed).poll_frame();
+    let focused = |framed: &Framed<ModalDialog<Column>>| -> Vec<bool> {
+        framed
+            .content()
+            .children()
+            .iter()
+            .map(|field| field.is_focused())
+            .collect()
+    };
+    let host = framed.content().children()[1].get_rect().center();
+    let name = framed.content().children()[0].get_rect().center();
+    assert!(
+        framed.dialog_rect().contains(host),
+        "the field is laid out inside the sheet: {host:?} in {:?}",
+        framed.dialog_rect()
+    );
+    Framed::harness_mut(&mut framed).click_at(host.x, host.y);
+    assert_eq!(
+        focused(&framed),
+        [false, true],
+        "a click focuses the field it lands on"
+    );
+    Framed::harness_mut(&mut framed).click_at(name.x, name.y);
+    assert_eq!(focused(&framed), [true, false], "and blurs the one before");
+    Framed::harness_mut(&mut framed).type_text("db1");
+    assert_eq!(
+        framed.content().children()[0]
+            .accessibility()
+            .and_then(|node| node.value),
+        Some("db1".to_string()),
+        "typing lands in the focused field"
+    );
+    // Tab runs from the fields into the footer, in the order it stands.
+    let harness = Framed::harness_mut(&mut framed);
+    harness.tab(false);
+    harness.tab(false);
+    let keys: Vec<(Slot, bool)> = framed.keys.iter().map(|k| (k.slot, k.focused)).collect();
+    assert_eq!(
+        keys,
+        [(Slot::Secondary, true), (Slot::Primary, false)],
+        "after the fields, Tab reaches Cancel first"
+    );
+    Framed::harness_mut(&mut framed).key("Enter");
+    assert_eq!(
+        cancelled.get(),
+        1,
+        "Enter on a focused footer action takes it"
+    );
+    assert_eq!(connected.get(), 0);
+}
+
+#[test]
+fn a_tall_body_scrolls_inside_a_sheet_that_takes_the_window() {
+    let theme = Theme::dark();
+    let mut d = ModalDialog::new(
+        "Shortcuts",
+        CountingContent {
+            height: 2000.0,
+            ..CountingContent::default()
+        },
+    )
+    .open(true);
+    lay_out(&mut d, WINDOW, &theme);
+    present(&mut d, WINDOW, &theme);
+    let layout = d.layout.clone().expect("laid out");
+    assert!(layout.body_overflows);
+    // Too tall to stand below the header row, the sheet takes the whole
+    // window inside the gutter, footer and all.
+    let pad = f64::from(theme.tokens.spacing.s6);
+    assert!(
+        layout.card.y0 >= WINDOW.y0 + pad - 0.5 && layout.card.y1 <= WINDOW.y1 - pad + 0.5,
+        "a tall sheet stays inside the window's gutter: {:?}",
+        layout.card
+    );
+    dispatch(&mut d, &cursor_at(layout.body.center()));
+    dispatch(&mut d, &wheel(-3.0));
+    let scrolled = d.scroll_offset();
+    assert!(scrolled > 0.0, "the wheel scrolls the body");
+    lay_out(&mut d, WINDOW, &theme);
+    assert!(
+        (d.content().get_rect().y0 - (d.body_rect().y0 - scrolled)).abs() < 0.5,
+        "the content moves up by the scroll"
+    );
+    // Scrolling never runs past either end.
+    for _ in 0..200 {
+        dispatch(&mut d, &wheel(-3.0));
+    }
+    let max = 2000.0 - d.body_rect().height();
+    assert!(d.scroll_offset() <= max + 0.5);
+    for _ in 0..200 {
+        dispatch(&mut d, &wheel(3.0));
+    }
+    assert!(d.scroll_offset().abs() < 1e-9);
+}
+
+#[test]
+fn a_three_way_question_stands_in_the_platform_order() {
+    use crate::platform::{Platform, PlatformConventions};
+    let (saved, save) = counter();
+    let (discarded, discard) = counter();
+    let (cancelled, cancel) = counter();
+    let mut d = ModalDialog::new("Save changes to notes.md?", TestContent)
+        .primary_action("Save", save)
+        .tertiary_action("Don't save", discard)
+        .with_destructive_tertiary(true)
+        .secondary_action("Cancel", cancel)
+        .open(true);
+    lay_out(&mut d, WINDOW, &Theme::dark());
+    d.set_platform_conventions(PlatformConventions::new(Platform::MacOs));
+    let card = d.dialog_rect();
+    let pad = f64::from(Theme::dark().tokens.spacing.s6);
+    assert!(
+        (d.tertiary_rect().x0 - (card.x0 + pad)).abs() < 0.5,
+        "Don't save stands apart at the leading edge"
+    );
+    assert!(d.secondary_rect().x0 < d.primary_rect().x0);
+    assert!(d.tertiary_rect().x1 < d.secondary_rect().x0);
+    // Focus opens on Cancel and reaches Don't save last, wherever it stands.
+    lay_out(&mut d, WINDOW, &Theme::dark());
+    let order: Vec<Slot> = d.keys.iter().map(|k| k.slot).collect();
+    assert_eq!(order, [Slot::Secondary, Slot::Primary, Slot::Tertiary]);
+    d.set_platform_conventions(PlatformConventions::new(Platform::Windows));
+    assert!(d.primary_rect().x0 < d.tertiary_rect().x0);
+    assert!(d.tertiary_rect().x0 < d.secondary_rect().x0);
+    // Enter is never the alternate; Escape is Cancel when there is no
+    // dismiss handler.
+    dispatch(&mut d, &key_press_event(NamedKey::Enter));
+    assert_eq!(saved.get(), 1);
+    dispatch(&mut d, &key_press_event(NamedKey::Escape));
+    assert_eq!(cancelled.get(), 1);
+    let t = d.tertiary_rect().center();
+    dispatch(&mut d, &cursor_at(t));
+    dispatch(&mut d, &left_press());
+    assert_eq!(discarded.get(), 1);
+    let node = Widget::accessibility(&d).unwrap();
+    assert!(
+        node.children
+            .iter()
+            .any(|c| c.name.as_deref() == Some("Don't save")),
+        "the third answer is announced"
+    );
+}
+
+#[test]
+fn a_disabled_or_gated_primary_action_is_inert_and_announced() {
+    let (fired, fire) = counter();
+    let mut d = ModalDialog::new("Erase disk", TestContent)
+        .primary_action("Erase", fire)
+        .with_destructive(true)
+        .open(true);
+    d.set_primary_enabled(false);
+    lay_out(&mut d, WINDOW, &Theme::dark());
+    dispatch(&mut d, &key_press_event(NamedKey::Enter));
+    let p = d.primary_rect().center();
+    dispatch(&mut d, &cursor_at(p));
+    dispatch(&mut d, &left_press());
+    assert_eq!(
+        fired.get(),
+        0,
+        "neither Enter nor a click takes a disabled action"
+    );
+    let node = Widget::accessibility(&d).unwrap();
+    assert!(node.children[0].state.disabled);
+    d.set_primary_enabled(true);
+    d.set_primary_label("Erase 2 partitions");
+    lay_out(&mut d, WINDOW, &Theme::dark());
+    dispatch(&mut d, &key_press_event(NamedKey::Enter));
+    assert_eq!(fired.get(), 1);
+    let node = Widget::accessibility(&d).unwrap();
+    assert_eq!(node.children[0].name.as_deref(), Some("Erase 2 partitions"));
+
+    // A gate reads the content every time.
+    let mut gated = ModalDialog::new("Erase disk", crate::widget::PromptBody::new("Name", "sdb"))
+        .primary_action("Erase", || {})
+        .primary_enabled_if(|body| body.value() == "sdb")
+        .open(true);
+    assert!(!gated.primary_enabled());
+    gated.content_mut().set_value("sdb");
+    assert!(gated.primary_enabled());
+}
+
+#[test]
+fn a_long_title_wraps_to_two_lines() {
+    let theme = Theme::dark();
+    let short = lay(&ModalSpec::new("Rename"), &theme);
+    let long = lay(
+        &ModalSpec::new(
+            "Move the 14 selected photos from the Summer in Lisbon album to the shared family album?",
+        )
+        .max_width(360.0),
+        &theme,
+    );
+    let line = f64::from(theme.text(TextRole::Title).line_height_px());
+    assert!(
+        long.title.height() >= line * 2.0 - 0.5,
+        "two lines: {:?}",
+        long.title
+    );
+    assert!(short.title.height() < line * 2.0, "one line stays one line");
+    assert!(long.body.y0 > long.title.y1, "the body follows the title");
+}
+
+#[test]
+fn an_open_list_in_the_content_takes_the_press_before_the_scrim() {
+    /// Content whose list is open: it captures the pointer and takes every
+    /// press.
+    struct OpenList(CountingContent);
+    impl Widget for OpenList {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.0.build_layout(taffy, theme, node_map)
+        }
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            self.0.apply_layout(taffy, node, origin);
+        }
+        fn draw(
+            &mut self,
+            scene: &mut Scene,
+            transform: Affine,
+            text_renderer: &mut TextRenderer,
+            theme: &Theme,
+            presence: &PresenceCtx,
+        ) {
+            self.0
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+            self.0.handle_event(event, ctx);
+        }
+        fn wants_pointer_capture(&self) -> bool {
+            true
+        }
+        fn name(&self) -> &'static str {
+            "OpenList"
+        }
+        fn get_rect(&self) -> Rect {
+            self.0.get_rect()
+        }
+    }
+    let (dismissed, dismiss) = counter();
+    let events = Rc::new(Cell::new(0));
+    let mut d = ModalDialog::new(
+        "Settings",
+        OpenList(CountingContent {
+            events: Rc::clone(&events),
+            consume: true,
+            ..CountingContent::default()
+        }),
+    )
+    .on_dismiss(dismiss)
+    .open(true);
+    lay_out(&mut d, WINDOW, &Theme::dark());
+    // Below the sheet, where the list hangs.
+    let below = Point::new(d.dialog_rect().center().x, d.dialog_rect().y1 + 20.0);
+    dispatch(&mut d, &cursor_at(below));
+    let before = events.get();
+    dispatch(&mut d, &left_press());
+    assert!(events.get() > before, "the list sees the press");
+    assert_eq!(
+        dismissed.get(),
+        0,
+        "the press is the list's, not the scrim's"
+    );
+}
+
+#[test]
+fn an_immediate_sheet_paints_hit_tests_and_answers_without_a_renderer() {
+    let theme = Theme::dark();
+    let mut sheet = ModalSheet::new();
+    let actions = [
+        ModalAction::primary("Reload"),
+        ModalAction::alternate_danger("Overwrite"),
+        ModalAction::secondary("Cancel"),
+    ];
+    let spec = ModalSpec::new("notes.md changed on disk")
+        .actions(&actions)
+        .closable(false)
+        .dismiss_on_scrim(false);
+    let mut scene = Scene::new();
+    sheet.paint_message(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &theme,
+        WINDOW,
+        &spec,
+        "Something else wrote this file after you opened it.",
+    );
+    let layout = sheet.layout().cloned().expect("the paint keeps its layout");
+    assert!(
+        layout.body.height() > 0.0,
+        "the message is measured into the body"
+    );
+    // The pointer: press and release on an action answer with it.
+    let overwrite = layout.actions[1].center();
+    assert_eq!(sheet.handle(&cursor_at(overwrite), 1.0), None);
+    assert_eq!(sheet.handle(&left_press(), 1.0), None);
+    let release = WindowEvent::MouseInput {
+        device_id: synth_device(),
+        state: ElementState::Released,
+        button: MouseButton::Left,
+    };
+    assert_eq!(sheet.handle(&release, 1.0), Some(SheetResponse::Action(1)));
+    // The scrim swallows without answering when the spec says so.
+    sheet.handle(&cursor_at(Point::new(5.0, 5.0)), 1.0);
+    assert_eq!(sheet.handle(&left_press(), 1.0), None);
+    // The keyboard: Enter is the default, Tab walks the actions in the
+    // order they stand, Escape dismisses.
+    assert_eq!(
+        sheet.handle(&key_press_event(NamedKey::Enter), 1.0),
+        Some(SheetResponse::Action(0))
+    );
+    sheet.handle(&key_press_event(NamedKey::Tab), 1.0);
+    let first = sheet.focused_action().expect("Tab focuses an action");
+    let leftmost = (0..3)
+        .min_by(|a, b| layout.actions[*a].x0.total_cmp(&layout.actions[*b].x0))
+        .unwrap();
+    assert_eq!(first, leftmost, "Tab starts at the leading action");
+    assert_eq!(
+        sheet.handle(&key_press_event(NamedKey::Enter), 1.0),
+        Some(SheetResponse::Action(first))
+    );
+    assert_eq!(
+        sheet.handle(&key_press_event(NamedKey::Escape), 1.0),
+        Some(SheetResponse::Dismiss)
+    );
+}
+
+#[test]
+fn footer_actions_are_addressable_by_name() {
+    let mut d = ModalDialog::new("Delete note?", TestContent)
+        .with_test_id("notes.delete")
+        .primary_action("Delete", || {})
+        .secondary_action("Cancel", || {})
+        .open(true);
+    lay_out(&mut d, WINDOW, &Theme::dark());
+    let ids: Vec<Option<String>> = Widget::children(&d)
+        .iter()
+        .map(|c| c.test_id().map(str::to_string))
+        .collect();
+    assert!(ids.contains(&Some("notes.delete.primary".into())));
+    assert!(ids.contains(&Some("notes.delete.secondary".into())));
+    let primary = Widget::children(&d)
+        .into_iter()
+        .find(|c| c.test_id() == Some("notes.delete.primary"))
+        .map(Widget::get_rect)
+        .unwrap();
+    assert_eq!(
+        primary,
+        d.primary_rect(),
+        "the address stands where the action is painted"
+    );
 }

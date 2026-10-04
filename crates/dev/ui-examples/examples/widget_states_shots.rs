@@ -24,8 +24,10 @@
 //! Run:  `cargo run -p ui-examples --example ui-shots -- widget_states [OUT_DIR]`
 //! Out:  `OUT_DIR` (default `/tmp/widget_states`): `<page>-<theme>.png` for
 //!       the pages `controls`, `sizes`, `inputs`, `rows`, `panes`,
-//!       `navigation`, `icons`, `content`, `editor` (and `editor-large` at
-//!       200 % text), `overlays`, `overlays-opaque` and `modal`.
+//!       `navigation`, `icons`, `content`, `editor` (and `controls-large`,
+//!       `inputs-large` and `editor-large` at 200 % text), `overlays`,
+//!       `overlays-narrow` (800 × 600), `overlays-opaque`, `modal`,
+//!       `modal-question` and `modal-tall` (800 × 600).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -51,7 +53,7 @@ use tilo_ui::theme::Theme;
 use tilo_ui::time::Duration;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui::widget::toast::ToastKind;
-use tilo_ui::widget::toggle_group::Segment;
+use tilo_ui::widget::toggle_group::{Segment, SegmentedStyle};
 use tilo_ui::widget::toolbar::Orientation;
 use tilo_ui::widget::tree_view::TreeNode;
 use tilo_ui::widget::{
@@ -234,6 +236,25 @@ fn control_specs() -> Vec<Spec> {
         widget("Button, plain", 56.0, |c, _| {
             button(ButtonRole::Plain, "Details", c)
         }),
+        widget("Key", 56.0, |c, _| match c.st {
+            St::Error => None,
+            st => boxed(
+                Button::new("key", "7", None)
+                    .role(ButtonRole::Key)
+                    .control_size(ControlSize::Large)
+                    .toggled(st == St::Selected)
+                    .with_enabled(st != St::Disabled),
+            ),
+        }),
+        widget("Star toggle", 56.0, |c, _| match c.st {
+            St::Error => None,
+            st => boxed(
+                Button::icon_only("star", Icon::Star, "Star")
+                    .control_size(c.size)
+                    .toggled(st == St::Selected)
+                    .with_enabled(st != St::Disabled),
+            ),
+        }),
         widget("Icon button", 56.0, |c, _| match c.st {
             St::Selected | St::Error => None,
             st => boxed(
@@ -275,6 +296,45 @@ fn control_specs() -> Vec<Spec> {
                     ],
                     usize::from(c.st == St::Selected),
                 )
+                .control_size(c.size),
+            ),
+        }),
+        widget("Segmented, none", 56.0, |c, _| match c.st {
+            St::Error | St::Selected => None,
+            st => boxed(
+                ToggleGroup::unchosen(vec![
+                    Segment::icon(Icon::List, "List"),
+                    Segment::icon(Icon::LayoutGrid, "Grid"),
+                ])
+                .control_size(c.size)
+                .with_enabled(st != St::Disabled),
+            ),
+        }),
+        filling("Weekdays", 112.0, |c, _| match c.st {
+            St::Error => None,
+            st => boxed(
+                ToggleGroup::multiple(
+                    ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                        .iter()
+                        .map(|day| Segment::new(*day))
+                        .collect(),
+                    vec![true, true, st == St::Selected, true, true, false, false],
+                )
+                .control_size(ControlSize::Small)
+                .with_enabled(st != St::Disabled),
+            ),
+        }),
+        filling("Tabs", 56.0, |c, _| match c.st {
+            St::Error | St::Disabled => None,
+            _ => boxed(
+                ToggleGroup::new(
+                    ["Overview", "Activity", "Members", "Settings"]
+                        .iter()
+                        .map(|tab| Segment::new(*tab))
+                        .collect(),
+                    usize::from(c.st == St::Selected),
+                )
+                .with_style(SegmentedStyle::Tabs)
                 .control_size(c.size),
             ),
         }),
@@ -586,8 +646,11 @@ fn photo_rgba(width: u32, height: u32) -> Vec<u8> {
 
 /// Draw one grid page: the state header, then each row's label and cells.
 fn grid_page(theme: &Theme, cols: &[Col], specs: &[Spec], out: &Path) {
+    // Rows grow with the text, so a page at 200 % text keeps its rows apart.
+    let grow = f64::from(theme.text_scale.max(1.0));
     let cell_w = (PAGE_W - 2.0 * MARGIN - LABEL_W) / cols.len() as f64;
-    let height = MARGIN * 2.0 + HEADER_H + specs.iter().map(|s| s.height).sum::<f64>();
+    let height =
+        MARGIN * 2.0 + HEADER_H * grow + specs.iter().map(|s| s.height * grow).sum::<f64>();
     let page = Rect::new(0.0, 0.0, PAGE_W, height);
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
@@ -609,22 +672,23 @@ fn grid_page(theme: &Theme, cols: &[Col], specs: &[Spec], out: &Path) {
             &caption,
         );
     }
-    let mut y = MARGIN + HEADER_H;
+    let mut y = MARGIN + HEADER_H * grow;
     let mut drawn = Vec::new();
     for spec in specs {
+        let row_h = spec.height * grow;
         let (_, label_h) = tr.measure_style(spec.name, None, &label_style);
         tr.draw_style(
             &mut scene,
             spec.name,
             theme.tokens.colors.text_dim,
-            Affine::translate((MARGIN, y + (spec.height - f64::from(label_h)) / 2.0)),
+            Affine::translate((MARGIN, y + (row_h - f64::from(label_h)) / 2.0)),
             None,
             &label_style,
         );
         for (i, col) in cols.iter().enumerate() {
             let x0 = MARGIN + LABEL_W + i as f64 * cell_w;
             // Leave a gutter between cells so nothing in one touches the next.
-            let cell = Rect::new(x0, y, x0 + cell_w - 16.0, y + spec.height);
+            let cell = Rect::new(x0, y, x0 + cell_w - 16.0, y + row_h);
             let mut canvas = Canvas {
                 scene: &mut scene,
                 tr: &mut tr,
@@ -634,7 +698,7 @@ fn grid_page(theme: &Theme, cols: &[Col], specs: &[Spec], out: &Path) {
             };
             drawn.extend(draw_cell(&mut canvas, cell, spec, *col));
         }
-        y += spec.height;
+        y += row_h;
     }
     // The top layer goes over every cell, as a window presents it.
     let presence = PresenceCtx::default();
@@ -1569,6 +1633,64 @@ impl Widget for ToastProbe {
     }
 }
 
+/// The find band and a media control bar, painted as a painted host paints
+/// them: the band across the prose, the bar over the photograph.
+struct ChromeProbe {
+    band: Rect,
+    media: Rect,
+    find: tilo_ui::widget::FindBar,
+    bar: tilo_ui::widget::floating_surface::ControlBar,
+}
+
+impl Widget for ChromeProbe {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        _nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy
+            .new_leaf(taffy::Style::default())
+            .unwrap_or_else(|_| NodeId::new(0))
+    }
+    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        use tilo_ui::widget::floating_surface::{BarControl, ControlBar};
+        // The band stands at the foot of its area, as a find bar under a
+        // document does.
+        let height = self.find.height(theme);
+        let band = Rect::new(
+            self.band.x0,
+            self.band.y1 - height,
+            self.band.x1,
+            self.band.y1,
+        );
+        self.find.layout(band, theme, tr);
+        self.find.paint(scene, transform, tr, theme, presence);
+        let controls = [
+            BarControl::new(Icon::Camera, "Take photo"),
+            BarControl::new(Icon::Mic, "Record sound").toggled(true),
+            BarControl::new(Icon::Timer, "Timer"),
+            BarControl::new(Icon::Settings, "Settings").enabled(false),
+        ];
+        let rect = ControlBar::bottom_centre(self.media, controls.len(), theme);
+        self.bar.paint(scene, transform, tr, theme, rect, &controls);
+    }
+    fn name(&self) -> &'static str {
+        "ChromeProbe"
+    }
+    fn get_rect(&self) -> Rect {
+        self.band
+    }
+}
+
 /// A busy page: a photograph across the top and prose under it, so the
 /// floating material over it has something to blur.
 fn busy_page() -> Column {
@@ -1594,7 +1716,9 @@ fn busy_page() -> Column {
         )))
 }
 
-fn overlays(theme: &Theme, out: &Path) {
+fn overlays(theme: &Theme, out: &Path, viewport: (u32, u32)) {
+    use tilo_ui::platform::Shortcut;
+    let width = f64::from(viewport.0);
     let mut menu =
         Popover::new()
             .with_label("Sort by")
@@ -1605,39 +1729,147 @@ fn overlays(theme: &Theme, out: &Path) {
         .side(PopoverSide::Below)
         .open(true);
     let mut context = ContextMenu::new();
-    context.push(MenuItem::selection("Open"));
+    context.push(MenuItem::selection("Open").with_shortcut(Shortcut::command("O")));
     context.push(MenuItem::selection("Rename").with_icon(Icon::Pencil));
+    context.push(MenuItem::submenu(
+        "New",
+        vec![
+            MenuItem::selection("Text file"),
+            MenuItem::selection("Markdown file"),
+            MenuItem::selection("Folder").with_shortcut(Shortcut::command("N").shift()),
+        ],
+    ));
     context.push(MenuItem::selection("Show hidden files").with_checked(true));
     context.push(MenuItem::separator());
-    context.push(MenuItem::destructive_selection("Move to bin").with_icon(Icon::Trash));
-    context.open_at([600.0, 60.0]);
-    context.focus_item(1);
+    context.push(
+        MenuItem::destructive_selection("Move to bin")
+            .with_icon(Icon::Trash)
+            .with_shortcut(Shortcut::key("Delete")),
+    );
+    let context_x = (width / 2.0).min(600.0);
+    context.open_anchored(
+        Rect::new(context_x, 60.0, context_x, 60.0),
+        Rect::new(0.0, 0.0, width, f64::from(viewport.1)),
+    );
+    context.focus_item(2);
+    context.open_submenu(2, false);
+    let mut prompt = Popover::prompt("Go to offset", "0x1F or 31", "Hex with 0x, or decimal")
+        .with_field_chars(16)
+        .side(PopoverSide::Above);
+    prompt.open_prompt(Rect::new(24.0, 360.0, 140.0, 384.0), "0x0400");
     let dropdown = Dropdown::from_state(
         vec!["Low".into(), "Medium".into(), "High".into()],
         &LocalState::new("Medium".to_owned()),
     )
     .open();
-    let root = busy_page()
+    let toolbar = Toolbar::new(Orientation::Horizontal)
+        .push_icon_toggle(Icon::List, "Show outline", true, || {})
+        .push_button("Compile", || {})
+        .push_button("Reset", || {})
+        .with_enabled(false)
+        .push_separator()
+        .push_icon(Icon::Minus, "Zoom out", || {})
+        .push_icon(Icon::Plus, "Zoom in", || {})
+        .joined()
+        .push_menu(
+            "Sort",
+            vec![
+                MenuItem::selection("By name"),
+                MenuItem::selection("By date"),
+            ],
+        )
+        .push_button("Export PDF", || {})
+        .push_button("Print", || {});
+    let mut find = tilo_ui::widget::FindBar::new().with_hex_mode();
+    find.set_query("revenue");
+    let chrome = ChromeProbe {
+        band: Rect::new(160.0, 560.0, width - 24.0, f64::from(viewport.1) - 8.0),
+        media: Rect::new(24.0, 24.0, width - 24.0, 324.0),
+        find,
+        bar: tilo_ui::widget::floating_surface::ControlBar::new(),
+    };
+    let mut root = busy_page()
+        .push(Box::new(toolbar))
         .push(Box::new(
             Row::new()
                 .push(Box::new(dropdown))
                 .push(Box::new(Button::new("x", "Export", None))),
         ))
+        .push(Box::new(chrome))
         .push(Box::new(menu))
         .push(Box::new(detail))
         .push(Box::new(context))
-        .push(Box::new(TooltipProbe {
-            anchor: Rect::new(980.0, 120.0, 1012.0, 152.0),
+        .push(Box::new(prompt));
+    // A narrow window has no free corner for the tooltip.
+    if width >= 1000.0 {
+        root = root.push(Box::new(TooltipProbe {
+            anchor: Rect::new(width - 300.0, 120.0, width - 268.0, 152.0),
             label: "Share this report",
         }));
+    }
     let root = root.push(Box::new(ToastProbe {
-        area: Rect::new(24.0, 24.0, 1256.0, 324.0),
+        area: Rect::new(24.0, 24.0, width - 24.0, 324.0),
     }));
     let mut harness =
-        FrameHarness::new_with_theme(State::new(), Box::new(root), (1280, 640), theme.clone());
+        FrameHarness::new_with_theme(State::new(), Box::new(root), viewport, theme.clone());
     harness.settle_for_capture(SETTLE);
     harness.render_png(out);
     println!("wrote {}", out.display());
+}
+
+/// A three-way question whose title wraps, and a form taller than a short
+/// window allows: it scrolls inside the sheet, under a fixed title and
+/// footer.
+fn modal_pages(theme: &Theme, out_question: &Path, out_tall: &Path) {
+    let question = busy_page().push(Box::new(
+        ModalDialog::new(
+            "Save the changes you made to Quarterly report before closing it?",
+            Text::new("Your changes will be lost if you don't save them."),
+        )
+        .open(true)
+        .primary_action("Save", || {})
+        .tertiary_action("Don't save", || {})
+        .with_destructive_tertiary(true)
+        .secondary_action("Cancel", || {}),
+    ));
+    let mut harness =
+        FrameHarness::new_with_theme(State::new(), Box::new(question), (1280, 640), theme.clone());
+    harness.settle_for_capture(SETTLE);
+    harness.render_png(out_question);
+    println!("wrote {}", out_question.display());
+
+    let mut section = tilo_ui::widget::FormSection::new("Server");
+    for label in [
+        "Name",
+        "Host",
+        "Port",
+        "Database",
+        "User",
+        "Password",
+        "Schema",
+        "Timeout",
+        "Certificate",
+        "Notes",
+    ] {
+        section = section.field(Field::new(
+            label,
+            TextInput::local().with_placeholder(label),
+        ));
+    }
+    let form = tilo_ui::widget::Form::new().section(section);
+
+    let tall = busy_page().push(Box::new(
+        ModalDialog::new("New connection", form)
+            .open(true)
+            .primary_action("Connect", || {})
+            .with_primary_enabled(false)
+            .secondary_action("Cancel", || {}),
+    ));
+    let mut harness =
+        FrameHarness::new_with_theme(State::new(), Box::new(tall), (800, 600), theme.clone());
+    harness.settle_for_capture(SETTLE);
+    harness.render_png(out_tall);
+    println!("wrote {}", out_tall.display());
 }
 
 fn modal(theme: &Theme, out: &Path) {
@@ -1697,6 +1929,15 @@ pub fn run(args: &[String]) {
         grid_page(&theme, CONTROL_COLS, &control_specs(), &file("controls"));
         grid_page(&theme, SIZE_COLS, &size_specs(), &file("sizes"));
         grid_page(&theme, INPUT_COLS, &input_specs(), &file("inputs"));
+        // The controls again at 200 % text: labels, icons and bands grow.
+        let large = theme.clone().with_text_scale(2.0);
+        grid_page(
+            &large,
+            CONTROL_COLS,
+            &control_specs(),
+            &file("controls-large"),
+        );
+        grid_page(&large, INPUT_COLS, &input_specs(), &file("inputs-large"));
         grid_page(&theme, ROW_COLS, &row_specs(), &file("rows"));
         block_page(&theme, &pane_blocks(), &file("panes"));
         block_page(&theme, &navigation_blocks(), &file("navigation"));
@@ -1708,12 +1949,15 @@ pub fn run(args: &[String]) {
             &editor_blocks(),
             &file("editor-large"),
         );
-        overlays(&theme, &file("overlays"));
+        overlays(&theme, &file("overlays"), (1280, 640));
+        overlays(&theme, &file("overlays-narrow"), (800, 600));
         overlays(
             &theme.clone().with_reduce_transparency(true),
             &file("overlays-opaque"),
+            (1280, 640),
         );
         modal(&theme, &file("modal"));
+        modal_pages(&theme, &file("modal-question"), &file("modal-tall"));
     }
 }
 

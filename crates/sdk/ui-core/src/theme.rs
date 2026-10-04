@@ -73,6 +73,12 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
     tokens.spacing = crate::tokens::Spacing::BASE
         .scaled(clamp_to(document.density.spacing, &ThemeDensity::USABLE));
     tokens.typography.set_face(&document.type_.face);
+    tokens.typography.set_reading_face(&document.type_.reading);
+    tokens
+        .typography
+        .set_ground(crate::text_render::TextGround::of(
+            tokens.colors.surfaces.content,
+        ));
     tokens.typography.distinct_letters = document.type_.distinguishes_letters();
     let size = clamp_to(document.type_.base_size, &ThemeType::USABLE) / ThemeType::BASE_SIZE;
     tokens.typography.scale = tokens.typography.scale.scaled(size);
@@ -305,6 +311,10 @@ impl Theme {
         c.text_tertiary = on.ink_tertiary;
         c.intent.selection = c.lift_on(ground, 1.0);
         c.intent.selection_hover = c.lift_on(ground, 0.5);
+        theme
+            .tokens
+            .typography
+            .set_ground(crate::text_render::TextGround::of(ground));
         theme.refresh_colour_shortcuts();
         theme
     }
@@ -532,6 +542,22 @@ impl Theme {
 
     fn multiply_type_sizes(&mut self, factor: f32) {
         self.tokens.typography.scale = self.tokens.typography.scale.scaled(factor);
+    }
+
+    /// This theme with the accessibility text scale taken back out: type at
+    /// its 1× sizes, everything else unchanged. For content whose size is
+    /// the document's own (a slide's text, laid out at the slide's size and
+    /// then scaled as a whole), which must not grow a second time with the
+    /// reader's text setting. [`Theme::with_text_scale`] multiplies, so it
+    /// cannot undo a scale already applied.
+    #[must_use]
+    pub fn at_unit_text_scale(&self) -> Self {
+        let mut theme = self.clone();
+        if (theme.text_scale - 1.0).abs() > f32::EPSILON {
+            theme.multiply_type_sizes(1.0 / theme.text_scale);
+            theme.text_scale = 1.0;
+        }
+        theme
     }
 
     /// `1.0` = unchanged. Multiplies spacing, radii, and type together,

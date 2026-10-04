@@ -21,14 +21,10 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
+use crate::text_render::{FontChoice, TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, TextInputKind, Widget};
-
-/// Same ratio [`TextInput`] centres its own glyph band against, so text
-/// doesn't jump vertically when the field enters/leaves edit mode.
-const LINE_HEIGHT_RATIO: f32 = 1.25;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditOutcome {
@@ -48,10 +44,13 @@ pub struct EditableLabel {
     /// editing affordance.
     input: TextInput,
     editing: bool,
-    family: FontChoice,
-    /// The 1× size of the label's role, shared with the editing field so the
-    /// text does not shift between idle and editing.
-    size: f32,
+    /// An explicit family; otherwise the role's.
+    family: Option<FontChoice>,
+    /// What the label is; its idle text is set in the theme's style for it.
+    role: crate::tokens::TextRole,
+    /// The role resolved in the latest theme (stock before the first
+    /// layout): size, weight, line height and family, at the text scale.
+    style: TextStyle,
     idle_color: Option<vello::peniko::Color>,
     rect: Rect,
     /// Tracked so a press can be classified as inside (caret) vs. outside
@@ -69,8 +68,9 @@ impl EditableLabel {
             value: value.to_string(),
             input: TextInput::local().with_kind(TextInputKind::Name),
             editing: false,
-            family: FontChoice::SansSerif,
-            size: crate::tokens::typography::stock().size(crate::tokens::TextRole::Body),
+            family: None,
+            role: crate::tokens::TextRole::Body,
+            style: crate::tokens::typography::stock().style(crate::tokens::TextRole::Body),
             idle_color: None,
             rect: Rect::ZERO,
             last_pointer: Point::ZERO,
@@ -81,7 +81,7 @@ impl EditableLabel {
     #[must_use]
     pub fn with_font_family(mut self, family: FontChoice) -> Self {
         self.input.set_font_family(Some(family.clone()));
-        self.family = family;
+        self.family = Some(family);
         self
     }
 
@@ -95,8 +95,24 @@ impl EditableLabel {
 
     /// Change the label's role; see [`Self::with_text_role`].
     pub fn set_text_role(&mut self, role: crate::tokens::TextRole) {
-        self.size = crate::tokens::typography::stock().size(role);
+        self.role = role;
+        self.style = crate::tokens::typography::stock().style(role);
         self.input.set_text_role(role);
+    }
+
+    /// The idle style: the theme's style for the role, in an explicit
+    /// family when one was given.
+    fn adopt_theme(&mut self, theme: &Theme) {
+        let mut style = theme.text(self.role);
+        if let Some(family) = &self.family {
+            style = style.with_family(family.clone());
+        }
+        self.style = style;
+    }
+
+    /// The label's band: the role's line, never under the minimum target.
+    fn band(&self) -> f32 {
+        self.style.line_height_px().max(28.0)
     }
 
     /// Hide the insertion caret beneath a modal without committing an edit.
@@ -197,9 +213,10 @@ impl EditableLabel {
         self.input.apply_layout_external(rect);
     }
 
-    /// Matches [`TextInput`]'s own centring so text doesn't shift on edit.
+    /// The idle text's line, centred in the rect as the editing field
+    /// centres its own.
     fn text_band(&self) -> (f64, f64) {
-        let line_height = f64::from(self.size * LINE_HEIGHT_RATIO);
+        let line_height = f64::from(self.style.line_height_px());
         let top = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
         (top, line_height)
     }
@@ -209,13 +226,14 @@ impl Widget for EditableLabel {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.adopt_theme(theme);
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::auto(),
-                height: Dimension::length((self.size * LINE_HEIGHT_RATIO).max(28.0)),
+                height: Dimension::length(self.band()),
             },
             flex_shrink: 1.0,
             flex_grow: 0.0,
@@ -231,17 +249,10 @@ impl Widget for EditableLabel {
         _available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let (w, _) = text_renderer.measure_font(
-            self.current_text(),
-            self.size,
-            None,
-            TextWeight::Regular,
-            false,
-            &self.family,
-        );
+        let (w, _) = text_renderer.measure_style(self.current_text(), None, &self.style);
         taffy::Size {
             width: w + 4.0,
-            height: (self.size * LINE_HEIGHT_RATIO).max(28.0),
+            height: self.band(),
         }
     }
 
@@ -264,6 +275,7 @@ impl Widget for EditableLabel {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.adopt_theme(theme);
         if self.editing {
             self.input.apply_layout_external(self.rect);
             self.input
@@ -291,7 +303,7 @@ impl Widget for EditableLabel {
             color,
             text_transform,
             Some(width),
-            &TextStyle::new(self.size).with_family(self.family.clone()),
+            &self.style,
         );
     }
 
@@ -703,5 +715,21 @@ mod tests {
 
         modal_paint_suppression_retains_title_draft_and_selection();
         ctrl_a_selects_all_through_embedded_field();
+    }
+    #[test]
+    fn the_idle_label_sets_in_its_roles_style() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut label =
+            EditableLabel::new("Groceries").with_text_role(crate::tokens::TextRole::Title);
+        let mut tree = TaffyTree::new();
+        let node = label.build_layout(&mut tree, &theme, &mut HashMap::new());
+        let style = theme.text(crate::tokens::TextRole::Title);
+        assert_eq!(label.style, style, "weight, size and leading of the role");
+        let height = tree.style(node).unwrap().size.height;
+        assert_eq!(
+            height,
+            Dimension::length(style.line_height_px().max(28.0)),
+            "the band is the role's scaled line"
+        );
     }
 }

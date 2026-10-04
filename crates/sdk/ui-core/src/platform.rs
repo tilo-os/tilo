@@ -99,6 +99,17 @@ impl Shortcut {
         }
     }
 
+    /// A key pressed on its own, without the command modifier: F3, Delete,
+    /// or a single letter a view answers while it has focus.
+    pub fn key(key: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            command: false,
+            shift: false,
+            alt: false,
+        }
+    }
+
     #[must_use]
     pub fn shift(mut self) -> Self {
         self.shift = true;
@@ -112,8 +123,12 @@ impl Shortcut {
     }
 
     /// The key this shortcut is pressed with, as a keycap legend.
-    pub fn key(&self) -> &str {
+    pub fn key_name(&self) -> &str {
         &self.key
+    }
+
+    pub fn has_command(&self) -> bool {
+        self.command
     }
 
     pub fn has_shift(&self) -> bool {
@@ -216,7 +231,7 @@ mod tests {
             ] {
                 let shortcut = service.shortcut(conventions);
                 assert_eq!(
-                    HostShortcut::resolve(conventions, shortcut.key(), shortcut.has_shift()),
+                    HostShortcut::resolve(conventions, shortcut.key_name(), shortcut.has_shift()),
                     Some(service),
                     "{platform:?} {service:?}"
                 );

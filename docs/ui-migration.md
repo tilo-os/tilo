@@ -199,7 +199,7 @@ and presence palette. There is no accent colour any more: nothing in
 | `border_white_10` / `_20` | `overlay_border_subtle` / `overlay_border_strong` |
 | `PaletteSpec`, `Colors::themed`, `Colors::set_accent`, `Colors::set_overlays` | delete; colours come from a theme document (`Theme::from_document`, `Theme::preset`, `Colors::of_palette`) |
 | `Colors::tilo_blue()`, `Theme::{tilo_blue, dracula, nord, gruvbox, gruvbox_light, catppuccin_mocha, catppuccin_latte, solarized, oled, warm_light, rose_pine}` | `Theme::dark()` / `Theme::light()` (`Theme::ALL` is now `Dark`, `Light`, `High Contrast`); a different temperature is `theme.with_neutral_hue(h)` |
-| `CustomThemeSpec` (every schema), `Theme::from_custom_spec`, `appearance.theme`, `appearance.custom_theme` | `ThemeDocument` schema 5 (`Theme::from_document`); see [Theming](#theming) |
+| `CustomThemeSpec` (every schema), `Theme::from_custom_spec`, `appearance.theme`, `appearance.custom_theme` | `ThemeDocument` schema 6 (`Theme::from_document`); see [Theming](#theming) |
 | `ContentSurface::accent` | delete |
 | `QueryInk::accented(text, placeholder, accent)` | `QueryInk::of(&theme.tokens.colors)` (caret and selection in your colour) |
 | `palette.surface_radius_px()` (`CommandPalette`) | `CommandPalette::surface_radius_px(theme)` (the panel radius) |
@@ -297,10 +297,13 @@ section).
 | `RichSpan::kind(TextKind)` | A rich-text run that knows what it is; mention marks are `Identifier` and external link marks `Url` already. |
 | `TextInputKind::Secret`, `TextInputKind::text_kind()` | A code or key typed in the clear; every field kind sets its text kind while typing. |
 | `ui::UiFace::{Default, Hyperlegible}`, `Typography::set_face(name)`, `Typography::face_name()`, `UI_HYPERLEGIBLE_FAMILY` | Theme authors: the UI face by the name a theme document stores. |
+| `ui::ReadingFace::{Default, Libertinus, Literata, Garamond, SourceSerif}`, `ReadingFace::{ALL, name, family, from_name}`, `Typography::set_reading_face(name)` / `with_reading_face(name)` / `reading_face_name()` | The `Reading` role's face, by name ([Reading faces](#reading-faces)). |
+| `ui::TextGround::{Light, Dark}`, `TextGround::of(colour)`, `TextStyle::with_ground` | The ground text is set on. Theme roles carry their theme's; a surface that paints its own page (a sepia book page in a dark theme) sets it, so the reading face keeps its sturdier cut on a dark page. |
 | `TextStyle::with_content_size(px)` / `Text::with_content_size(px)` / `TextStyle::content(px)` | Text sized by its content (a canvas, a slide, a document's own type): the size is used as given and never grown by the text scale. |
 | `PaintCtx::text_role`, `measure_role`, `line_box`, `text_role_in_band` | Custom painters: paint, measure, size a row, or centre one line in a band in a role. |
 | `ui::widget::ControlSize::{Small, Regular, Large}` | A control's size: label role (`Label`, `Label`, `Body`) and height (`bar_control_height`, `min_pointer_target`, `bar_height`). |
-| `with_text_role(role)` on `TextInput`, `Autocomplete`, `EditableLabel`, `Link`, `RichTextLine`, `RichTextEditor`; `set_text_role` on `TextInput`, `EditableLabel`, `RichTextLine`; `TextInput::text_role()`, `BlockEditor::text_role()` | The role a text widget sets its text in. `RichTextEditor` maps `Reading` to the serif and `Code` to the mono family. |
+| `with_text_role(role)` on `TextInput`, `Autocomplete`, `EditableLabel`, `Link`, `RichTextLine`, `RichTextEditor`; `set_text_role` on `TextInput`, `EditableLabel`, `RichTextLine`; `TextInput::text_role()`, `BlockEditor::text_role()` | The role a text widget sets its text in. The role sets the family too: `Reading` is serif and `Code` mono in a `TextInput`, its placeholder and a `RichTextEditor`, and an `EditableLabel` sets its idle text in the role's whole style (weight and leading included). |
+| `TextInput::with_content_size(px)` / `set_content_size(Some(px))` | Editing text in place at a document's own size (a note on a zoomed page): never grown by the text scale. |
 | `Typography::with_base_size(body_px)`, `typography.size(role)`, `ui::tokens::REFERENCE_BODY_PX` (14) | Theme authors and geometry only: the body size every role derives from, and a role's resolved size. Not for building a style. |
 | `ui::TextScaling::{Renderer, Resolved, Content}` (field `TextStyle::scaling`) | What a style's size is relative to. Role styles are `Resolved`, `content(px)` is `Content`; `TextStyle::new(px)` is `Renderer`, kept for the few renderer-relative callers in the toolkit. |
 
@@ -322,7 +325,9 @@ section).
 | `tr.measure(s, px, w)` / `measure_weighted` / `measure_styled` | `tr.measure_style(s, w, &theme.text(role))` or `ctx.measure_role(s, role, w)` |
 | `tr.elide_to_width(s, px, max)` / `elide_to_width_weighted` | `tr.elide_to_width_style(s, max, &theme.text(role))` |
 | `tr.clamp_to_lines(s, px, max_w, n)` | `tr.clamp_to_lines(s, &theme.text(role), max_w, n)` |
-| `TextInput::with_font_size(px)` / `set_font_size(px)` | `with_text_role(role)` / `set_text_role(role)` (default `Body`) |
+| `TextInput::with_font_size(px)` / `set_font_size(px)` | `with_text_role(role)` / `set_text_role(role)` (default `Body`); a document's own size: `with_content_size(px)` |
+| `TextInput::with_text_role(TextRole::Reading).with_font_family(FontChoice::Serif)` (and `Code` + `Monospace`) | `with_text_role(role)` alone: the role sets the family |
+| `EditableLabel::with_text_role(role).with_font_family(..)` for a title | `with_text_role(role)`: the idle label draws and centres from `theme.text(role)` |
 | `Autocomplete::with_font_size`, `Link::with_font_size`, `EditableLabel::with_font_size` / `set_font_size` | `with_text_role(role)` / `set_text_role(role)` |
 | `RichTextLine::with_size(px)` / `set_size(px)` / `font_size()` | `with_text_role(role)` / `set_text_role(role)`; a block kind's role comes from `BlockKind` (paragraphs `Body`, H1 `LargeTitle`, H2 `Title`, H3+ `Heading`, code and tables `Code`) |
 | `BlockEditor::font_size()` | `BlockEditor::text_role()` |
@@ -366,6 +371,7 @@ set it themselves.
 | `.with_font_family(FontChoice::Monospace)` on source or terminal text | `.with_kind(TextKind::Code)`, or the `Code` role |
 | A numeric `DataTable` column drawn by hand to line digits up | `ColumnDef::with_text(…).with_kind(TextKind::Numeric)` |
 | `.with_font_feature(*b"ss01", 1)` or any stylistic set for a look | Delete; the face is the theme's |
+| `.with_numeric_style(NumericStyle::ProportionalOldstyle)` on `Reading` text | Delete; the `Reading` role sets old-style proportional figures itself, and `.numeric()` turns them tabular lining |
 
 ### The UI face
 
@@ -376,6 +382,27 @@ accessibility layer may choose the built-in `Hyperlegible` face instead. Code
 never names a family: `TextRole` picks sans, serif (`Reading`) or mono
 (`Code`), and `FontChoice::{SansSerif, Serif, Monospace}` remains for the rare
 explicit choice.
+
+### Reading faces
+
+The `Reading` role is set in New Computer Modern, the way TeX sets it: the
+toolkit picks its 8 pt, Book or Regular cut for the size each run is set at
+(`docs/typography.md`, Reading faces). Noto Serif is gone; `FontChoice::Serif`
+is New Computer Modern. A theme document's `type.reading` names the face, and
+an app that lets a reader choose (Books) passes the chosen face by name:
+
+| Old | New |
+|---|---|
+| `FontChoice::Named("Noto Serif".into())`, any serif family literal for long-form text | `theme.text(TextRole::Reading)` |
+| A reader's serif choice stored as a family or file name | `ui::ReadingFace::name()` stored, `ReadingFace::from_name(stored)` read back; set with `.with_family(FontChoice::Named(face.family().to_owned()))` on the `Reading` style |
+| `"Noto Serif"` / `"New Computer Modern Book"` / a cut's family in app code | Delete; name the face (`ReadingFace`), the toolkit picks the cut |
+| `.with_small_caps(true)` on a book's opening words or a chapter label | Keep in document engines (Books, the word processor): small caps, ligatures and kerning reach every reading face through the shaping path |
+
+The reading faces a theme or reader can choose are `ReadingFace::ALL`: New
+Computer Modern (default), Libertinus, Literata, EB Garamond and Source Serif.
+Books lists each as an entry of its font registry (`FontKind::Reading(name)`,
+id `reading-<name>`), so the typography popover offers them beside the system
+reading face, the UI face, mono and families the reader added.
 
 ## Ground & regions
 
@@ -868,6 +895,11 @@ there: `ModalDialog::with_destructive(true)` and a painted modal action made wit
 | a fixed-width button that truncates its label | delete the width; buttons size to their label and never elide while the parent has room |
 | a solid red "Delete" next to "Cancel" | `ButtonRole::Destructive`; the filled face appears only in the `ModalDialog` that confirms it |
 | an accent/blue primary | `ButtonRole::Primary` (inverted: primary ink fill, content-surface label) |
+| keypad and on-screen keyboard keys painted by hand, a one-letter square toggle ("B", "I") | `ButtonRole::Key` (a faint lift at rest, the label in `Title`); a toggle with `.toggled(on)` |
+| a star or pin glyph swapped for a filled one when on | nothing: a toggled button with `Icon::Star` / `Icon::Pin` draws it filled |
+| a plain text button nudged so its text lines up with the content edge ("Back", "Show") | nothing: a labelled `Plain` button's ink sits on its layout edge; its lift and hit area reach outward |
+| `set_enabled` called from a state watcher | `Button::enabled_from(&state)` |
+| a `Link` whose activation runs an app action through a callback | `Link::action(label, binding)` / `Link::on_action(binding)` |
 
 ### Segmented controls and tabs
 
@@ -883,6 +915,15 @@ there: `ModalDialog::with_destructive(true)` and a painted modal action made wit
 | accent-filled selected segment, a selected segment painted by the app | `ToggleGroup` / `SegmentedFace`: the chosen segment is a lift thumb |
 | hand-drawn tab row with an accent underline | `ToggleGroup::new(..).with_style(SegmentedStyle::Tabs)` (2 px primary-ink underline) |
 | `TriStateControl` | `ToggleGroup` with three segments |
+| a strip with nothing chosen yet, `selected = 0` as a stand-in | `ToggleGroup::unchosen(segments)` / `set_selection(None)`; `selection() -> Option<usize>`; a painted strip `SegmentedFace::selection(None)` |
+| `on_change` that only mirrors the index into a `LocalState` | `.bind_selection(&state)` |
+| a row of hand-drawn weekday toggles | `ToggleGroup::multiple(segments, chosen).on_chosen_change(f)`: each its own toggle, as wide as its label, wrapping |
+| an icon drawn over a segment, an icon-only segment with an empty label | `Segment::icon(Icon::List, "List")` (the name is spoken) |
+| a strip greyed out by hand | `ToggleGroup::with_enabled(false)` / `set_enabled`; `SegmentedFace::disabled(true)` |
+| a label stacked over a strip | `ToggleGroup::caption("Repeat")` |
+| `SegmentedFace::new(rects, labels, i)` with a hand-picked short label | `SegmentedFace::of_segments(rects, &segments, i)` (short forms where the full label does not fit), split with `SegmentedFace::partition_segments(rect, &segments, style, size, ..)` |
+| tabs inset from the content edge, equal-width tabs, a long tab strip that elides | nothing: `SegmentedStyle::Tabs` packs tabs from the leading edge (first label and underline flush) and scrolls sideways when longer than its room |
+| `use ui::widget::toggle_group::Segment` | `use ui::widget::Segment` |
 
 ### Switches, sliders, checkboxes
 
@@ -893,6 +934,11 @@ there: `ModalDialog::with_destructive(true)` and a painted modal action made wit
 | `CheckboxFace::transparent_unchecked()` | delete; an unchecked box always has its raised face and edge |
 | a non-square checkbox rect | nothing: the face paints the largest square in it |
 | a slider squeezed to a knob in a row | nothing: a `Slider` keeps six knob widths of track |
+| a `0..1` slider scaled into the app's units by hand, a percentage spoken for seconds | `Slider::range(min, max).step(s).value_text(f)`; the value, binding and callbacks are in those units; arrow, Page Up/Down and Home/End keys work |
+| a slider inset so its knob does not leave the column | nothing: the track runs flush with the slider's rect and the knob overhangs it; a painted host hit-tests with `SliderFace::hit_rect` and maps with `SliderFace::value_at` (`SliderFace::overhang()` is the room it reaches out) |
+| `ToggleFace` sized with a literal 44×24 | `ToggleFace::size(theme)` |
+| a labelled checkbox spanning its row next to other controls | `Checkbox::with_label(..).intrinsic_width()` |
+| a checkbox edge strengthened by hand on light grounds | nothing: the unchecked edge reaches 3:1 on its ground |
 
 ### Menus and dropdowns
 
@@ -905,11 +951,46 @@ there: `ModalDialog::with_destructive(true)` and a painted modal action made wit
 | `menu.draw(scene, t, text, theme, presence)` in a painted widget's `draw` | delete it: a `ContextMenu` paints only in the window's top layer. Call `menu.draw_overlay(..)` from the widget's own `draw_overlay`, or return the menu from `children_mut` while it is open so the default `draw_overlay` reaches it |
 | `floating_surface::paint_armed_row(scene, t, row, theme)` | `paint_armed_row(scene, t, row, inset, theme)`, `inset` the row's distance from the panel edge (`menu_inset(theme)` for a menu on it) |
 | a menu placed by hand next to its button | `ContextMenu::open_anchored(button_rect, window)`; it opens under the button, aligns to its trailing edge at the window's edge and flips above near the bottom |
-| a hand-drawn caption above a dropdown ("Level" over a filter) | `Dropdown::new(..).caption("Level")` and delete the caption text |
+| a hand-drawn caption above a dropdown ("Level" over a filter) | `Dropdown::new(..).caption("Level")` and delete the caption text; placed by hand, give it `DropdownFace::outer_height` and `apply_layout_external` keeps the caption above the field |
+| a dropdown that spans its row by default | nothing: a dropdown is as wide as its widest option; `.fill()` where it should span (a form column) |
+| a closed dropdown painted by a canvas host (camera, reader settings) | `DropdownFace::new(rect, value).caption(..).leading_icon(..).open(b).hovered(b).paint(..)`, sized with `DropdownFace::height(size, theme)` / `outer_height` × `intrinsic_width(options, ..)`, hit-tested with `contains`; the list is an option `Popover` opened at `field_rect(theme)` |
+| a "Type to filter…" prompt, a filter on a short list | nothing: the value stays while open, the query shows once the person types, and lists under `FILTER_MIN_OPTIONS` (8) never filter (a typed letter arms the next match) |
+| `Dropdown::with_accessible_name(already_localized)` | `with_resolved_accessible_name(name)` |
 | a hand-drawn `▾` / chevron path on a dropdown-like field | `Dropdown` |
 | `Dropdown` at a fixed 40 px | nothing: it is a `Regular` control; `.control_size(ControlSize::Small)` in a toolbar |
 | `NumberInput::with_size(w, h)` | delete; `.control_size(size)`. The width is measured to hold every value in range |
 | a hand-drawn `− value +` stepper (zoom, page, point size, copies) | `NumberInput::new(v).with_range(..).with_step(..).with_suffix("%").compact()` |
+| a button whose click opens a `ContextMenu` placed from its rect (header More, a Sort menu), the rect walked out of a `NavShell` header | `Button::icon_only(id, Icon::MoreHorizontal, "More").with_menu(items)` (a `MenuButton`): it anchors the menu to its own rect wherever it stands, also in `NavShell` header actions. Add `.aligned(PanelAlign::Trailing)` at the end of a row. Poll `menu_mut().take_selection()` or use the row callbacks |
+| a `Toolbar` one control wide so every command lands in its More menu | `Button::with_menu(items)`; delete the one-wide container |
+| a button that opens a `Popover` placed by hand | `Button::new(..).with_popover(content)` (a `PopoverButton`); `popover_mut()` reaches the content |
+| a second `ContextMenu` opened beside a row as a flyout ("New file ›"), a row label ending in `…` or `›` | `MenuItem::submenu(label, items)`: a chevron, opens on hover, click, Enter or the arrow towards it; `take_submenu_selection()` reports `(row, nested row)` |
+| a shortcut painted beside a menu row, or in its label ("Save (Ctrl+S)") | `MenuItem::with_shortcut(Shortcut::command("S"))`; a key on its own is `Shortcut::key("Delete")` |
+| `Shortcut::key()` (the legend getter) | `Shortcut::key_name()`; `Shortcut::key(k)` now builds a modifier-free shortcut |
+| a popover or menu aligned to a trailing anchor by hand | `Popover::aligned(PanelAlign::Trailing)`, `ContextMenu::set_align(PanelAlign::Trailing)`; it flips to the leading edge only when it would leave the window |
+| a viewport inset by hand so a menu or popover keeps off the window edge | delete: every anchored panel keeps `floating_surface::viewport_margin(theme)` from the window's edges |
+| a form wrapper around one `TextInput` in a popover (caption, field, hint, Enter submits) | `Popover::prompt(caption, placeholder, hint).with_field_chars(n).with_field(\|input\| input.with_kind(..))`; `open_prompt(anchor, initial)`, `take_submitted()` |
+
+### Text fields and pickers
+
+| Old | New |
+|---|---|
+| a 40 px field beside 32 px buttons, `TextInput` placed in a hand-sized band | nothing: a single-line field is a Regular control (32); `.control_size(ControlSize::Small / Large)` to match its row |
+| a multiline field given a hand-made minimum height or inset | `TextInput::with_min_lines(n)`: never below the single-line band, the same text inset |
+| `take_submit()` polled by a tree-owned field, Enter caught by the parent | `.on_submit(\|text\| ..)` or `.on_submit_action(binding)` |
+| a clear "×" drawn over a field, a reveal or picker glyph beside it | `.with_clear_button()`; any other: `.with_trailing_accessory(icon, name, AccessoryAction::Run(f))` |
+| a plain field padded by hand inside a pane that already has its gutter | nothing: a plain-chrome field has no horizontal inset |
+| the caret moved to the end after `set_text` | nothing: `set_text` (and `SearchField::set_query`, `Autocomplete::set_text`) parks the caret at the end |
+| a focused field filled darker | nothing: focus keeps the rest fill; the ring marks focus |
+| a placeholder in a hand-picked dim ink or the sans face of a serif field | nothing: placeholders draw in the field's own style, in the tertiary ink |
+| a formula or query coloured by repainting over the field | `TextInput::with_span_highlighter(\|text, theme\| ranges)`; a field painted by a canvas host: `FieldFace::new(rect, text).focused(b).invalid(b).paint(..)` / `.paint_chrome(..)`, `FieldFace::height(size, theme)`, `text_rect(theme)` |
+| `NumberInput` showing a value through a wrapper string ("Now", "10:57") | `NumberInput::with_value_format(format, parse)` |
+| `"50 %"` spelled in English | nothing: the unit sits where the locale puts it (`50%`, `50 %` in German) |
+| a suggestion popup placed, flipped and scrolled by hand under a caret | `SuggestionList` (`set_anchor`, `set_viewport`, `set_suggestions`, `set_highlight`, `row_at`, `paint`); `Autocomplete` is built on it |
+| an autocomplete status line with a hand-drawn spinner | `Autocomplete::set_busy(true)` with `set_status(Some(..))` |
+| `Autocomplete::new()` reconfigured through private fields | `Autocomplete::with_input(TextInput::local().with_placeholder(..))` |
+| a month calendar framed by hand in a sidebar, event dots painted over it | `DatePicker::new(day).navigator().marked(days)`; `intrinsic_height(width)` for a painted host |
+| a shortcut recorder whose keycaps sit off the `InputHint` column | nothing: its keycaps start on its leading edge like an `InputHint`'s |
+| a "Search everywhere" label in dim text, a filter count that disappears at zero | nothing: it is a plain button and "0 of N" stays |
 
 ### Chips and badges
 
@@ -957,6 +1038,18 @@ mention, something live). Danger red is only a status: `Tinted(Tone::Danger)`.
 | `chrome::paint_bar(scene, t, theme, rect)` | `ui::widget::toolbar::paint_band(scene, t, theme, rect)` (no fill, a bottom hairline) |
 | `chrome::bar_padding(theme)` | `ui::widget::toolbar::band_padding(theme)` |
 | a toolbar that wraps or clips commands on a narrow window | `Toolbar`: commands that do not fit go to its More menu |
+| an icon command that is on or off, painted by hand next to the toolbar | `.push_icon_toggle(icon, name, active, f)` |
+| a command left out (or hidden) while it cannot run | `.set_enabled(index, false)` (or `.with_enabled(false)` after pushing): dimmed, announced as disabled, inert |
+| a toolbar rebuilt to change one label ("Problems (3)") | `.set_label(index, text)` |
+| items ordered by importance, or a re-layout so a pair (zoom out / in) is not split | `.with_priority(p)` after pushing: higher stays visible longer, equals give way from the end; `.joined()` after the second of a pair keeps it with the one before, so they fold together |
+| a toggle whose visible label is not its name ("Aa") | `.with_accessible_name("Match case")` after pushing, or `set_accessible_name(index, name)` |
+| a ContextMenu anchored to a toolbar item by hand, or reading private item rects | `.push_menu(label, items)`; `item_rect(index)` for anything else anchored to an item |
+| `Rc<Cell<..>>` flags set by command closures | `take_activated() -> Option<usize>` after routing each event |
+| `lay_out_in(Rect::ZERO, ..)` then `measure` to learn the toolbar's size | `intrinsic_size(text, theme)` |
+| placing a hosted toolbar only in `draw` (no renderer in `apply_layout`) | `lay_out_at(rect, theme)`: the cached measurements place it, measured again only when a label or the text scale changed |
+| a stage hook that cannot show the More menu | `open_overflow()` |
+| a `ToggleGroup`, `NumberInput` or colour well drawn beside the toolbar | `.push_element(Box::new(control))`: it stands in the row and never goes to the More menu |
+| a badge or dot painted over a toolbar item | `.set_dot(index, true)` |
 
 ### Scrolling
 
@@ -974,6 +1067,8 @@ mention, something live). Danger red is only a status: `Tinted(Tone::Danger)`.
 | `with_accessible_labels(..)` | the swatch names |
 | `picker.color_at(i)` | `picker.swatch(i).map(|s| s.color)` |
 | `ui::widget::color_picker::ColorSwatch` | `ui::widget::ColorSwatch` (same type, now in `color_swatch`) |
+| a padding added so swatches line up with text, a selected swatch ringed in your colour | nothing: the first swatch sits on the content edge, and the chosen one is a concentric primary-ink ring with a gap of the ground (focus is that ring in your colour) |
+| `ColorPicker::rgb_string()` drawn beside the picker, the picker clipped by hand | nothing: the picker adapts to the width it is given, its hex field and every part lie inside `preferred_size()` / `preferred_height(w)`, and its channel sliders are the shared `Slider` |
 
 ### Delete
 
@@ -996,10 +1091,25 @@ mention, something live). Danger red is only a status: `Tinted(Tone::Danger)`.
 | `ToggleGroup::{fill, control_size}`, `Segment::short`, `SegmentedStyle::{Segmented, Tabs, Quiet}`, `SegmentedFace::{focused, control_size, height, intrinsic_width}` | Segmented strips |
 | `ToggleColors` | A switch face's resolved colours |
 | `MenuItem::with_checked`, `ContextMenu::anchor_row` | State rows; the row a menu acts on |
-| `Dropdown::{caption, control_size}` | Stacked caption; size |
-| `NumberInput::{compact, control_size}` | Inline stepper; size |
+| `Dropdown::{caption, control_size, fill, leading_icon, with_resolved_accessible_name}`, `DropdownFace::{height, outer_height, intrinsic_width, field_rect, contains, paint}`, `FILTER_MIN_OPTIONS` | Stacked caption; size; span; glyph; a resolved name; the painted closed control |
+| `NumberInput::{compact, control_size, with_value_format}` | Inline stepper; size; the app's own words for a value |
+| `ButtonRole::Key`, `Button::enabled_from`, `Link::{action, on_action}` | Keys; enabled from a state; links that run actions |
+| `ToggleGroup::{unchosen, multiple, on_chosen_change, bind_selection, caption, with_accessible_name, with_enabled, selection, set_selection}`, `Segment::icon`, `SegmentedFace::{of_segments, partition_segments, selection, chosen, disabled}`, `NONE_CHOSEN` | No choice yet; many choices; bound selection; icon segments; painted strips |
+| `TextInput::{control_size, with_min_lines, on_submit, on_submit_action, with_clear_button, with_trailing_accessory, with_content_size, with_span_highlighter}`, `AccessoryAction`, `FieldFace` | Fields |
+| `Slider::{range, step, value_text}`, `SliderFace::{hit_rect, value_at, overhang}`, `ToggleFace::size`, `Checkbox::intrinsic_width` | Ranged sliders; painted switches; a hugging checkbox |
+| `SuggestionList`, `Autocomplete::{with_input, set_busy, list_rect}` | The floating suggestion list |
+| `DatePicker::{navigator, marked, set_marked, intrinsic_height}` | A sidebar month |
+| `FormControl` for `ToggleGroup` and `Autocomplete` | Both take a `labeled_field` label as their accessible name |
 | `ChipStyle::{Neutral, Tinted(Tone), Live}`, `ChipFace`, `BadgeFace`, `ChipColors`, `Chip::{style, with_lead}`, `Badge::style` | Chips and badges |
 | `Toolbar::{push_icon, push_toggle, set_active, lay_out_in}`, `toolbar::{paint_band, band_padding}` | Toolbars |
+| `Toolbar::{push_icon_toggle, push_menu, push_element, with_priority, joined, with_enabled, with_accessible_name, set_enabled, set_label, set_dot, set_menu, item_rect, intrinsic_size, lay_out_at, take_activated, open_overflow}` | Toolbar commands with state, menus, hosted controls and overflow priority |
+| `Button::with_menu(items) -> MenuButton`, `Button::with_popover(content) -> PopoverButton` | A button that opens a menu or a popover at its own rect |
+| `MenuItem::{submenu, with_shortcut, shortcut, submenu_items}`, `ContextMenu::{with_items, set_items, set_align, open_submenu, close_submenu, take_submenu_selection}` | Nested menus, shortcuts, alignment |
+| `floating_surface::{PanelAlign, place_aligned, viewport_margin, panel_room, control_inset, single_row_radius, paint_rounded, paint_armed_row_in}` | Panel alignment, edge margin and concentric insets |
+| `Popover::{prompt, aligned, set_align}`, `PopoverPrompt` | A one-field prompt next to its trigger |
+| `Shortcut::key(k)`, `Shortcut::key_name()` | A shortcut without the command modifier; its legend |
+| `TabBar::{closable, without_new_tab, set_mark, mark, mark_rect, take_mark_click}`, `TabMark::{Busy, Playing, Muted}` | A strip of fixed views; what a tab's content is doing |
+
 | `Metrics::{menu_row_height, scrollbar_gutter}` | Menu rows; scroll bar gutter |
 | `ColorSwatch`, `ColorSwatchPicker::new(swatches, columns)`, `ColorSwatchFace::{of, focused}` | Swatches |
 | `InputHint::keycap_height(theme)` | Centring a row of keycaps |
@@ -1553,7 +1663,25 @@ input and everything drawn around it.
      `FindBar::height(theme)` tall at the top of the content.
    - Delete the app's find field, counter, case/word toggles, next/previous
      buttons, its Ctrl+F / F3 / Enter handling and its match colour.
+   - A hosted bar, with what used to need a workaround:
+
+     | Workaround | Instead |
+     |---|---|
+     | replacing the `FindBar` to clear a sticky `close_requested()` | `take_close_requested()` after `drive`; the bar keeps its query and options for the next open |
+     | `set_query(query)` again to make the counter follow content that changed under an open bar (terminal output, a reloaded file, PDF text arriving page by page) | `refresh()`: the next `drive` finds again and keeps the current match |
+     | a byte view whose bar opens on Text | `FindBar::with_mode(FindMode::Hex)` / `set_mode`; `set_options(options)` restores a view's last find |
+     | an engine that finds on its own (a web page) faking `Vec<FindMatch>` | return no matches from `find`, report with `FindBar::set_results(total, current)`, and step in `Findable::step(forward) -> true` |
+     | a regex toggle drawn beside the bar | `Findable::supports_regex() -> true` (or `FindBar::with_regex()`); `FindMode::Regex` reaches `find` |
+     | a second field focused by hand for Ctrl+H | `focus_replace()` |
+     | insetting the band and repainting its hairline so the field lines up with the content | `with_content_inset(leading, trailing)` / `set_content_inset` |
+     | a bare `FindBar` hosted because `FindScope` binds plain Ctrl+F (a terminal) | `FindScope::new(view).with_shortcut(Shortcut::command("F").shift())`, or `.without_shortcut()` and `FindScope::open()` from the app's own key |
+
+     The bar's labels come from the toolkit's catalogue (`find-bar-*`), its
+     Match case / Whole word / Regular expression options are toggle buttons,
+     Text / Hex is one segmented strip, and its only X is the bar's close
+     control.
 8. **Keys.** Delete every app handler for Ctrl+K, `/` and Ctrl+F that opens
+
    search or find: Ctrl+K and `/` open the platform search (a focused text
    field or terminal still types `/`), Ctrl+F belongs to the `FindScope` or
    `Filtered` around the content.
@@ -1666,6 +1794,58 @@ Scrims that covered only a pane (calendar, shortcuts, containers,
 word-processor) cover the window once the dialog is mounted as above; delete
 any per-pane scrim rect.
 
+A dialog (or a popover with content) mounted in a retained tree lays its
+content out in the window's own tree, out of flow: its node takes no room
+from the column it stands in, a click on a field focuses that field and
+blurs the one before, opening it focuses its first control, and Tab runs
+from the content into the footer actions and around inside the trap. A
+painted host that routes events through `handle_detached` keeps its content
+in the dialog's own tree; mount the dialog as a child node instead when its
+fields need the window's focus.
+
+What used to need a workaround around `ModalDialog`:
+
+| Workaround | Instead |
+|---|---|
+| translating a field's focus request to the window's node (`field_under`, `host_field_nodes`), a decorator that makes the dialog's node absolute | delete: the content is in the window's tree |
+| a `Scrollable` with a computed `max_height` as the body, MouseWheel routed to it by the app, a `fit` pass per window size | delete: a body taller than the window allows scrolls inside the sheet, with the wheel, a scroll thumb and hairlines at the scrolled edges, and ends on a row boundary |
+| rebuilding or re-measuring the dialog after the content changed size | `invalidate_layout()`; a structure change the content reports does it by itself |
+| `ModalSpec`/`paint_backdrop`/`paint_actions` to ask a question with three answers | `.primary_action("Save", ..).tertiary_action("Don't save", ..).with_destructive_tertiary(true).secondary_action("Cancel", ..)`: the third answer stands apart, Enter never fires it, Escape is Cancel |
+| a type-to-confirm gate painted by hand, or a primary action that looks enabled while locked | `set_primary_enabled(bool)` / `with_primary_enabled`, or `primary_enabled_if(\|content\| ..)`; `set_primary_label(text)` for a label that follows the content |
+| a typed-phrase confirmation body built by hand | `ModalDialog::new(title, PromptBody::confirm_phrase(message, phrase)).primary_enabled_if(PromptBody::confirms)` |
+| a title elided on one line | nothing: the title wraps to two lines before it elides |
+| a sheet that covers the window's header row | nothing: a sheet that fits below the header row stands below it; only one too tall for that room takes the whole window (inside the gutter) |
+| a dropdown inside a dialog whose list closes the dialog when picked below the sheet | nothing: an overlay the content opened gets the press before the scrim |
+| tests that could not find the footer buttons by name | `click_named("modal.primary")` (or `"<dialog test id>.primary"`, `.secondary`, `.tertiary`) |
+
+An immediate-mode host that asks a question from a painted widget uses
+`ModalSheet`, which keeps the layout of its last paint so the event path can
+hit-test without a renderer:
+
+```rust
+// draw_overlay
+let window = presence.viewport.get().unwrap_or(self.rect);
+let actions = [
+    ModalAction::primary("Save"),
+    ModalAction::alternate_danger("Don't save"),
+    ModalAction::secondary("Cancel"),
+];
+let spec = ModalSpec::new("Save changes to notes.md?").actions(&actions);
+self.sheet.paint_message(scene, transform, text, theme, window, &spec, "Your changes will be lost.");
+// handle_event
+match self.sheet.handle(event, ctx.scale_factor) {
+    Some(SheetResponse::Action(0)) => self.save(),
+    Some(SheetResponse::Action(1)) => self.discard(),
+    Some(SheetResponse::Action(_) | SheetResponse::Dismiss) => self.cancel(),
+    None => {}
+}
+*ctx.handled = true;
+```
+
+Delete the cached `ModalLayout` field, the hover index and the hit-testing
+around it. `ModalSheet::paint` takes a closure for a body that is not a
+message.
+
 ### Choosing modal or popover
 
 - Confirms a destructive or irreversible step, asks for a value, or blocks
@@ -1688,6 +1868,7 @@ any per-pane scrim rect.
 |---|---|
 | Ln/Col, word or character count, selection size, unresolved conflict count, zoom level that the person checks while working | `chrome::status_bar`: `let (content, bar) = ui::chrome::status_bar::split(region, theme);` lay the region's content out in `content`, then `ui::chrome::status_bar::draw(scene, t, tr, theme, bar, left, right)` |
 | A change worth noticing once: "Saved", "Synced", a page turn, a zoom step | `StatusBubble` |
+| A readout that does something when clicked (a zoom level, an offset that opens Go to) | `ui::chrome::status_bar::draw_readouts(scene, t, tr, theme, bar, &left, &right, hovered)` with `StatusReadout::action(text)`; it returns each readout's rect to hit-test. `status_bar::height` grows with the `Caption` line at a large text scale |
 | An error or warning the person has to act on, that stays until resolved | `Banner` (in the flow, above the content it concerns), with the action that resolves it inside it (`.with_action(button)`) |
 | A standing notice where nothing is wrong (a private window, a read-only copy) | `Banner::neutral(..)` |
 | A transient result or a recoverable error ("Copied", "Upload failed, retrying") | `Toast` (`ToastStack`, or `toast::paint_transient` for a painted app) |
@@ -1728,11 +1909,22 @@ and `draw_pill`, and draws its arrows with `ui::icons::Icon::ChevronLeft` /
   and draw that text in `theme.tokens.colors.media.ink` (secondary:
   `media.ink_dim`).
 - Controls over media (capture toolbars, editor transport, photo info) → a
-  floating Panel shaped to the controls:
+  `ui::widget::floating_surface::ControlBar`: `ControlBar::bottom_centre(area,
+  count, theme)` (or `size`), `bar.paint(scene, t, text, theme, rect,
+  &[BarControl::new(icon, name).toggled(on).enabled(ok)])`, and
+  `bar.handle(event, scale)` returns the control a click activated. It owns
+  the panel, the `control_inset(theme)` around the buttons (panel radius less
+  control radius, so their corners run concentric), the gaps and the hit
+  rects; delete the app's constants for them. Anything else over media is a
+  floating Panel shaped to it:
   `ui::widget::floating_surface::paint(scene, t, rect, theme)`, inked with
   `let ink = theme.on_ground(ui::chrome::panel_ground(theme));`
-  (`ink.text_primary`, `ink.text_dim`). Glyphs are `metrics.icon_md` in
-  `metrics.min_pointer_target` hit rects that do not overlap.
+  (`ink.text_primary`, `ink.text_dim`).
+- A floating surface attached to an app (a call, picture in picture) that
+  must keep clear of the window's header row →
+  `FloatingPlacement::set_safe_insets([0.0, header, 0.0, 0.0])`; keep
+  `set_attached_chrome` for the surface's own decoration.
+
 - The area around a frame (letterbox, an empty viewfinder) →
   `theme.tokens.colors.media.letterbox`, never `surfaces.base`.
 - An idle or error state over media → text only; never draw a play glyph
@@ -1959,7 +2151,7 @@ A host that draws floating surfaces and renders the result itself:
 
 ## Theming
 
-A theme is one versioned document (`ui::theme::ThemeDocument`, schema 5) of
+A theme is one versioned document (`ui::theme::ThemeDocument`, schema 6) of
 semantic roles; `docs/architecture/theming.md` is the contract. Apps read
 tokens and never a theme's name, and Settings and Theme Studio are the only
 writers of the appearance state.
@@ -1969,7 +2161,7 @@ writers of the appearance state.
 | Old | New |
 |---|---|
 | `CustomThemeSpec`, `CUSTOM_THEME_SCHEMA_VERSION`, `CUSTOM_THEME_SCHEMA_MIN`, `Theme::from_custom_spec` | `ThemeDocument`, `THEME_SCHEMA_VERSION`, `Theme::from_document` (`None` for a document this build does not admit) |
-| `CustomThemeSpec::{spacing_px, font, motion_scale, material_scale, icon_scale, chrome_weight, motion_character, dark_base, neutral_hue}` | `density.spacing` (a multiple of the 4 px scale), `type.{face, base_size, distinct_letters}`, `motion.character`, `material.{blur, tint_opacity}`, `palette.{dark, hue, chroma}`; icon scale, chrome weight and the duration scale are not theme roles |
+| `CustomThemeSpec::{spacing_px, font, motion_scale, material_scale, icon_scale, chrome_weight, motion_character, dark_base, neutral_hue}` | `density.spacing` (a multiple of the 4 px scale), `type.{face, reading, base_size, distinct_letters}`, `motion.character`, `material.{blur, tint_opacity}`, `palette.{dark, hue, chroma}`; icon scale, chrome weight and the duration scale are not theme roles |
 | `tokens::Material`, `Colors::of_material`, `Tokens::of_material`, `colors.material`, `colors.neutral_hue` | `tokens::Palette` (`Palette::dark()` …), `Colors::of_palette` / `Colors::stock`, `Tokens::around`, `colors.palette`, `colors.palette.hue` |
 | `Theme::high_contrast()` as the accessibility track | `theme.with_high_contrast()` (the high-contrast palette of the theme's own polarity); `Theme::high_contrast()` is the dark preset |
 | `Theme::ALL = ["Dark", "Light", "High Contrast"]`, the name `"High Contrast"` | `Preset::ALL` / `Theme::ALL` (seven presets, sentence case: `"High contrast"`, `"High contrast light"`). Never compare `theme.name`; ask `theme.colors_are_forced()` |

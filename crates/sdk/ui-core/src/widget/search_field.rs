@@ -419,48 +419,59 @@ impl SearchField {
         theme: &Theme,
     ) {
         self.escalate_rect = Rect::ZERO;
-        let right = if self.clear_visible() {
+        let mut right = if self.clear_visible() {
             self.rect.x1 - CLEAR_GUTTER
         } else {
             self.rect.x1 - SLOT_PAD
         };
+        // The count stays, "0 of 120" included: it is what tells the person
+        // nothing here matches.
+        if let Some(count) = self.count {
+            let style = theme.text(TextRole::Caption).numeric();
+            let text = format!("{} of {}", count.shown, count.total);
+            let (w, h) = text_renderer.measure_style(&text, None, &style);
+            let x0 = right - f64::from(w);
+            if x0 >= self.rect.x0 + ICON_GUTTER {
+                let top = centered_text_top(self.rect.y0, self.rect.height(), f64::from(h));
+                #[allow(
+                    clippy::arithmetic_side_effects,
+                    reason = "Affine composition is float matrix math and cannot overflow"
+                )]
+                let at = transform * Affine::translate((x0, top));
+                text_renderer.draw_style(scene, &text, theme.text_tertiary, at, None, &style);
+                right = x0 - SLOT_PAD;
+            }
+        }
         if self.escalation_shows() {
-            let style = theme.text(TextRole::Label);
+            // "Search everywhere" is an action: a plain button, its ink on
+            // its layout edge, lifted under the pointer.
             let label = "Search everywhere";
-            let (w, h) = text_renderer.measure_style(label, None, &style);
-            let x0 = (right - f64::from(w)).max(self.rect.x0 + ICON_GUTTER);
-            let top = centered_text_top(self.rect.y0, self.rect.height(), f64::from(h));
-            self.escalate_rect = Rect::new(x0 - SLOT_PAD / 2.0, self.rect.y0, right, self.rect.y1);
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine composition is float matrix math and cannot overflow"
-            )]
-            let at = transform * Affine::translate((x0, top));
-            let ink = if self.escalate_rect.contains(self.last_cursor) {
-                theme.text_primary
-            } else {
-                theme.text_dim
-            };
-            text_renderer.draw_style(scene, label, ink, at, None, &style);
-            return;
+            let size = ControlSize::Small;
+            let face = crate::widget::ButtonFace::new(Rect::ZERO, label)
+                .role(crate::widget::ButtonRole::Plain)
+                .control_size(size);
+            let width = face.intrinsic_width(text_renderer, theme);
+            let height = crate::widget::ButtonFace::height(size, theme).min(self.rect.height());
+            let x0 = right - width;
+            if x0 < self.rect.x0 + ICON_GUTTER {
+                return;
+            }
+            let cy = self.rect.center().y;
+            let rect = Rect::new(x0, cy - height / 2.0, right, cy + height / 2.0);
+            let face = crate::widget::ButtonFace::new(rect, label)
+                .role(crate::widget::ButtonRole::Plain)
+                .control_size(size);
+            let hit = face.hit_rect(theme);
+            let hovered = hit.contains(self.last_cursor);
+            crate::widget::Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &face.hovered(hovered),
+            );
+            self.escalate_rect = hit;
         }
-        let Some(count) = self.count else {
-            return;
-        };
-        let style = theme.text(TextRole::Caption).numeric();
-        let text = format!("{} of {}", count.shown, count.total);
-        let (w, h) = text_renderer.measure_style(&text, None, &style);
-        let x0 = right - f64::from(w);
-        if x0 < self.rect.x0 + ICON_GUTTER {
-            return;
-        }
-        let top = centered_text_top(self.rect.y0, self.rect.height(), f64::from(h));
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine composition is float matrix math and cannot overflow"
-        )]
-        let at = transform * Affine::translate((x0, top));
-        text_renderer.draw_style(scene, &text, theme.text_tertiary, at, None, &style);
     }
 
     /// Draw the scope token chip and return the width it takes.

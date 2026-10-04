@@ -1625,13 +1625,9 @@ impl Widget for TypstApp {
     ) {
         // The diagnostic's hover card and the controls' open lists float
         // above both panes.
-        self.editor.draw_tooltip(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.diagnostics.diags(),
-        );
+        let window = presence.viewport.get().unwrap_or(self.rect);
+        self.editor
+            .draw_tooltip(scene, transform, text_renderer, theme, window);
         for child in self.chrome.children_mut() {
             child.draw_overlay(scene, transform, text_renderer, theme, presence);
         }

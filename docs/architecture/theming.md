@@ -76,7 +76,7 @@ and a theme sets them through one document:
 | `presence` | Lightness and chroma of the twelve presence hues (hues stay 30° apart) | `presence` (`PresencePalette`), and through it `intent.you`, `selection_tint`, `border_focus` | `tokens/colors.rs` |
 | `shape` | `window_radius` | `radii.{tile, panel, control, item, detail}` derived concentrically (`Radii::from_window_radius`) | `tokens/radii.rs` |
 | `density` | `spacing`, a multiple of the 4 px scale | `spacing.s0`–`s16`; `Metrics` (pointer targets, control heights) stay put | `tokens/spacing.rs` |
-| `type` | `face` (a built-in face by name, `Default` or `Hyperlegible`, or any family name), `base_size`, `distinct_letters` (optional; absent follows the face: on with Hyperlegible) | `typography.sans_family`, the body size every `TextRole` derives from (`Theme::text(role)`), `typography.distinct_letters` (every look-alike set apart in all text, `docs/typography.md`) | `tokens/typography.rs` (`UiFace`, `Typography::set_face`), `theme_document.rs` (`ThemeType::distinguishes_letters`) |
+| `type` | `face` (a built-in face by name, `Default` or `Hyperlegible`, or any family name), `reading` (a reading face by name, `New Computer Modern`, `Libertinus`, `Literata`, `EB Garamond` or `Source Serif`, or any family name), `base_size`, `distinct_letters` (optional; absent follows the face: on with Hyperlegible) | `typography.sans_family`, `typography.serif_family` (the `Reading` role's face, set in the optical cut its size calls for), the body size every `TextRole` derives from (`Theme::text(role)`), `typography.distinct_letters` (every look-alike set apart in all text, `docs/typography.md`) | `tokens/typography.rs` (`UiFace`, `ReadingFace`, `Typography::set_face`, `Typography::set_reading_face`), `theme_document.rs` (`ThemeType::distinguishes_letters`) |
 | `motion` | `character`: 0 calm, 1 stock, 2 lively | the shared UI springs, `motion_character` | `tokens/motion.rs` |
 | `material` | `blur`, `tint_opacity` of floating chrome | `surfaces.material_blur_px`, `surfaces.material_opacity`, `surfaces.material` | `tokens/colors.rs`, `backdrop.rs` |
 
@@ -95,11 +95,11 @@ at the palette's hue and chroma, so a hue never moves contrast.
 ### Data, versioned
 
 The document is `ThemeDocument`
-(`crates/sdk/ui-core/src/theme_document.rs`, `THEME_SCHEMA_VERSION` = 5):
+(`crates/sdk/ui-core/src/theme_document.rs`, `THEME_SCHEMA_VERSION` = 6):
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "id": "ember",
   "name": "Ember",
   "palette": {
@@ -114,7 +114,7 @@ The document is `ThemeDocument`
   "presence": { "lightness": 0.74, "chroma": 0.14 },
   "shape": { "window_radius": 14.0 },
   "density": { "spacing": 1.0 },
-  "type": { "face": "Noto Sans", "base_size": 14.0 },
+  "type": { "face": "Noto Sans", "reading": "Literata", "base_size": 14.0 },
   "motion": { "character": 1.0 },
   "material": { "blur": 24.0, "tint_opacity": 0.72 }
 }
@@ -350,7 +350,7 @@ that **no theme and no app can reproduce**:
 
 Verified against the code at the time of writing:
 
-- **The document and its presets.** `ThemeDocument` schema 5 with the
+- **The document and its presets.** `ThemeDocument` schema 6 with the
   roles above; `Preset` ships Dark (default, chroma 0), Dark cool, Dark
   graphite, Dark soft, Light and both high-contrast palettes;
   `Theme::from_document` builds a theme, `Theme::named` finds a preset.

@@ -177,7 +177,8 @@ pub struct RichTextLine {
 impl RichTextLine {
     pub fn new() -> Self {
         // Block-editor cells render as document copy, not a form field.
-        let inner = TextInput::local().with_plain_chrome();
+        let mut inner = TextInput::local().with_plain_chrome();
+        inner.keep_document_inset();
         Self {
             inner,
             signal: None,
@@ -552,7 +553,8 @@ impl RichTextLine {
             return self.inner.get_rect().x0;
         }
         let idx = byte.min(xs.len().saturating_sub(1));
-        let pad = self.inner.text_padding_x(theme);
+        // The same inset the line's text is laid out at, multiline or not.
+        let pad = self.text_inset(theme);
         let x = xs.get(idx).copied().unwrap_or(0.0);
         self.inner.get_rect().x0 + pad + x - self.inner.scroll_x()
     }
@@ -863,10 +865,14 @@ impl RichTextLine {
     }
 
     /// The fixed row height of a line that is not measured, and the minimum
-    /// of one that is: `font_size * 1.5`, so headings stand taller than
-    /// paragraph rows without a measure pass.
+    /// of one that is: the line's size at its role's leading (Body 1.45,
+    /// Heading 1.3, a title tighter), so headings stand taller than
+    /// paragraph rows without a measure pass and the rhythm is the one
+    /// every other surface uses.
     pub(super) fn row_height(&self, text_scale: f32) -> f32 {
-        (self.font_size * text_scale * 1.5).max(20.0 * text_scale)
+        let style = crate::tokens::typography::stock().style(self.inner.text_role());
+        let leading = (style.line_height_px() / style.size.max(1.0)).max(1.0);
+        (self.font_size * text_scale * leading).max(20.0 * text_scale)
     }
 
     /// Whether the line's height comes from measuring its content rather

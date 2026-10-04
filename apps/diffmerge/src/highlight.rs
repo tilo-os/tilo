@@ -11,10 +11,9 @@
 use std::path::Path;
 
 use ui::paint::PaintCtx;
-use ui::tokens::{SyntaxPalette, TextRole};
-use ui::widget::code_editor::{Span, SyntaxHighlighter, TokenKind};
+use ui::tokens::TextRole;
+use ui::widget::code_editor::{Span, SyntaxHighlighter};
 use vello::kurbo::Point;
-use vello::peniko::Color;
 
 /// A panel label as the file it names and the revision it shows: the label
 /// `rate_limiter.rs (working tree)` is `("rate_limiter.rs", Some("working tree"))`.
@@ -61,16 +60,6 @@ pub fn document<'a>(
         .collect()
 }
 
-/// The colour a token paints in. The theme's syntax palette sets attributes,
-/// macros, tags and keys (a TOML `host = …`) in the danger hue, which reads as
-/// an error on a line that has none; they take the type colour instead.
-fn token_colour(syntax: &SyntaxPalette, kind: TokenKind) -> Color {
-    match kind {
-        TokenKind::Attribute | TokenKind::Preprocessor => syntax.type_name,
-        other => syntax.color(other),
-    }
-}
-
 /// Paint `text` at `origin` (the top of its line box) in the `Code` role as
 /// runs coloured by `spans`. A line with no spans (its side was never
 /// tokenized) paints as body text.
@@ -91,7 +80,7 @@ pub fn draw_line(ctx: &mut PaintCtx<'_>, origin: Point, text: &str, spans: &[Spa
         if run.is_empty() {
             continue;
         }
-        ctx.text(run, &style, token_colour(syntax, span.kind), at, None);
+        ctx.text(run, &style, syntax.color(span.kind), at, None);
         let (w, _) = ctx.text.measure_style(run, None, &style);
         at.x += f64::from(w);
     }
