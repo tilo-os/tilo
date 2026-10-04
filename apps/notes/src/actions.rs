@@ -1970,7 +1970,7 @@ fn with_daily_note_action(
     ctx: &NotesResourceCtx,
     index: &PageResourceIndex<'_>,
 ) -> Resource {
-    let title = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let title = ui::clock::local_now().format("%Y-%m-%d").to_string();
     if let Some(page) = ctx.pages.iter().find(|page| page.title == title) {
         if let Some(open) = view_operation_spec(
             "daily-note",
