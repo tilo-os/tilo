@@ -8,7 +8,7 @@
 //!                   Updates (1)        ┌ card ┐
 //!                   On this device (2) ┌ card ┐ ┌ card ┐
 //!                   Discover (3)       ┌ card ┐ ┌ card ┐ ┌ card ┐
-//! details           ← Back to apps
+//! details           (the window's Back returns here)
 //!                   [icon] Name, its badges, its actions and description,
 //!                   then Details (one property list) and Trust
 //! flatpak remotes   the add form and the configured remotes
@@ -777,7 +777,11 @@ pub struct StoreApp {
     rect: Rect,
     /// Root of the built layout so events can be routed to the
     /// composed sub-tree.
-    root: Option<Box<dyn Widget>>,
+    root: Option<Box<ui::widget::NavShell>>,
+    /// Whether the open page has somewhere to go back to; the window's Back reads it.
+    can_go_back: Rc<Cell<bool>>,
+    /// The window's Back was pressed; the next event or sync returns to the catalogue.
+    back_requested: Rc<Cell<bool>>,
     pending_lifecycle_actions: Vec<(String, ActionKind, tilo_actions::InvocationId)>,
     pending_lifecycle_refresh: Option<tilo_actions::InvocationId>,
     pending_lifecycle_remote: Vec<(RemoteIntent, tilo_actions::InvocationId)>,
@@ -847,6 +851,8 @@ impl StoreApp {
             structure_dirty: true,
             rect: Rect::ZERO,
             root: None,
+            can_go_back: Rc::new(Cell::new(false)),
+            back_requested: Rc::new(Cell::new(false)),
             pending_lifecycle_actions: Vec::new(),
             pending_lifecycle_refresh: None,
             pending_lifecycle_remote: Vec::new(),
@@ -986,6 +992,26 @@ impl StoreApp {
             moderation_status_label(case.status)
         );
         self.structure_dirty = true;
+    }
+
+    /// The page's title in the window header; the catalogue leaves it to the window's own name.
+    fn page_title(&self) -> &'static str {
+        if self.safety_open {
+            "Trust and moderation"
+        } else if self.remotes_open {
+            "Flatpak remotes"
+        } else if self.focused_detail.is_some() {
+            "App details"
+        } else {
+            ""
+        }
+    }
+
+    /// Return to the catalogue from whichever page is open.
+    fn show_catalogue(&mut self) {
+        self.focused_detail = None;
+        self.remotes_open = false;
+        self.safety_open = false;
     }
 
     pub fn focus_detail_for_shot(&mut self, id: &str) {
@@ -1556,7 +1582,21 @@ impl Widget for StoreApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.structure_dirty = false;
-        let mut root = self.compose(theme);
+        let page = self.compose(theme);
+        self.can_go_back
+            .set(self.safety_open || self.remotes_open || self.focused_detail.is_some());
+        let title = self.page_title();
+        let mut root = self.root.take().unwrap_or_else(|| {
+            let can = Rc::clone(&self.can_go_back);
+            let requested = Rc::clone(&self.back_requested);
+            Box::new(
+                ui::widget::NavShell::new()
+                    .with_id("store.shell")
+                    .on_back(move || can.get(), move || requested.set(true)),
+            )
+        });
+        root.set_content_header(title, Vec::new());
+        root.set_content(page);
         let child = root.build_layout(taffy, theme, node_map);
         self.root = Some(root);
         // A column, so the page's scroller can absorb the window's height.
@@ -1659,6 +1699,10 @@ impl Widget for StoreApp {
             && let Some(&child_node) = children.first()
         {
             root.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+        }
+        if self.back_requested.take() {
+            self.show_catalogue();
+            self.structure_dirty = true;
         }
     }
 
@@ -2156,11 +2200,7 @@ impl StoreApp {
         if kind == OperationKind::View && type_id == "store.navigation" {
             let target: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
             match target.as_str() {
-                "catalogue" => {
-                    self.focused_detail = None;
-                    self.remotes_open = false;
-                    self.safety_open = false;
-                }
+                "catalogue" => self.show_catalogue(),
                 "previous-page" => {
                     self.catalog_page = self.catalog_page.saturating_sub(1);
                     self.scroll_offset.set((0.0, 0.0));

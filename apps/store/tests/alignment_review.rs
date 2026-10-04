@@ -171,11 +171,9 @@ fn catalogue_has_no_title_no_status_pill_and_a_toolbar_that_fits() {
     }
 }
 
-/// Secondary pages share one header composition: back control, title, body.
+/// Secondary pages share one header composition: the window's title, then the body.
 #[test]
 fn secondary_pages_share_one_header_composition() {
-    let theme = ui::Theme::dark();
-    let group = f64::from(theme.tokens.spacing.rhythm.group);
     let remotes = lay_out(staged("remotes"), (1200.0, 800.0));
     let safety = lay_out(staged("moderation"), (1200.0, 800.0));
 
@@ -190,23 +188,6 @@ fn secondary_pages_share_one_header_composition() {
         remotes_title.y0,
         safety_title.y0,
         "titles start on one line",
-    );
-    let remotes_back = by_test_id(&*remotes, "store.remotes.back");
-    let safety_back = by_test_id(&*safety, "store.safety.back");
-    close(
-        remotes_title.y0 - remotes_back.y1,
-        group,
-        "remotes: back control to title is one group step",
-    );
-    close(
-        safety_title.y0 - safety_back.y1,
-        group,
-        "trust: back control to title is one group step",
-    );
-    close(
-        remotes_back.x0,
-        safety_back.x0,
-        "back controls start on one edge",
     );
 }
 
@@ -223,17 +204,6 @@ fn details_page_aligns_identity_and_facts() {
             source.y0 - title.y1,
             tight,
             "name to its source line is one tight step",
-        );
-        let back = by_test_id(&*app, "store.detail.back");
-        let icon = by_widget_name(&*app, "Avatar")[0];
-        assert!(
-            icon.y0 > back.y1,
-            "the app icon {icon:?} stays below the back control {back:?}"
-        );
-        close(
-            icon.x0,
-            back.x0,
-            "icon and back control start on the content edge",
         );
         let details = first_named(&*app, "Details");
         let trust = first_named(&*app, "Trust");
@@ -256,24 +226,18 @@ fn pages_share_one_leading_edge_and_reading_pages_one_trailing_edge() {
     for width in [800.0, 1200.0] {
         let catalogue = lay_out(store::shots::seeded_app(), (width, 800.0));
         let edge = first_named(&*catalogue, "6 apps from 2 sources").x0;
-        for (scenario, title, back_id) in [
-            ("detail", "Notes", "store.detail.back"),
-            ("remotes", "Flatpak remotes", "store.remotes.back"),
-            ("moderation", "Trust and moderation", "store.safety.back"),
-        ] {
+        for scenario in ["detail", "remotes", "moderation"] {
             let page = lay_out(staged(scenario), (width, 1400.0));
             let first = if scenario == "detail" {
                 by_widget_name(&*page, "Avatar")[0]
             } else {
-                first_named(&*page, title)
+                by_widget_name(&*page, "Section")[0]
             };
             close(
                 first.x0,
                 edge,
                 &format!("{scenario} starts on the catalogue's edge at {width}"),
             );
-            let back = by_test_id(&*page, back_id);
-            close(back.x0, edge, "the way back starts on the same edge");
             let sections = by_widget_name(&*page, "Section");
             let trailing = sections[0].x1;
             for section in &sections {
