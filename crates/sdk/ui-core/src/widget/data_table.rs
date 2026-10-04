@@ -34,11 +34,6 @@ use crate::virtual_viewport::{
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, TaffyTreeExt, Widget};
 
-/// Matches [`crate::widget::Scrollable`] so a `DataTable` bar and a
-/// wrapping `Scrollable` bar read identically.
-const BAR_THICKNESS: f64 = 8.0;
-const BAR_MARGIN: f64 = 2.0;
-
 /// One line of `role` as the renderer will lay it out: the role's resolved
 /// size times its leading, so a band sized from this at layout time agrees
 /// with the line the widget measures and centres at paint time.
@@ -92,14 +87,24 @@ pub enum ColumnWidth {
 }
 
 /// Register one per column via [`ColumnDef::with_text_render`]; columns
-/// without one render nothing (header + chrome still draw). Also gets
+/// without one render nothing (header + chrome still draw). Gets the
+/// table's transform (the cell rect is in the table's coordinates) and
 /// whether the row is selected, so text colour can flip for contrast.
 pub type CellTextRender<Row> =
-    Box<dyn Fn(&Row, &mut Scene, &mut TextRenderer, Rect, &Theme, bool) + Send + Sync>;
+    Box<dyn Fn(&Row, &mut Scene, Affine, &mut TextRenderer, Rect, &Theme, bool) + Send + Sync>;
 
-/// Coordinates are absolute scene space; the table-level transform is already applied.
+/// A cell painter: the cell rect is in the table's coordinates, and the
+/// transform is the one the table paints with (an outer scroll's offset
+/// included).
 pub type CellRender<Row> =
-    Box<dyn Fn(&Row, &mut Scene, &Theme, &mut TextRenderer, Rect) + Send + Sync>;
+    Box<dyn Fn(&Row, &mut Scene, Affine, &Theme, &mut TextRenderer, Rect) + Send + Sync>;
+
+/// A cell's badge: a short label and the tone it carries (a status, a
+/// level). An empty label paints nothing.
+pub type CellBadge<Row> = Arc<dyn Fn(&Row) -> (String, crate::widget::Tone) + Send + Sync>;
+
+/// Whether a checkbox column's box is ticked for a row.
+pub type CellChecked<Row> = Arc<dyn Fn(&Row) -> bool + Send + Sync>;
 
 /// Builds a real retained widget for one visible cell. The widget is keyed by
 /// the row's stable identity and the column key, so it survives sorting and
@@ -131,6 +136,17 @@ pub struct ColumnDef<Row> {
     pub kind: TextKind,
     /// What an absent value reads as, dimmed.
     pub absent: String,
+    /// How many lines a cell's text may wrap to before it is elided; the
+    /// row grows to hold them.
+    pub max_lines: usize,
+    /// Which columns give way first when the table is narrow: `0` never
+    /// hides, higher numbers hide before lower ones.
+    pub priority: u8,
+    /// A badge the table measures and paints in the cell.
+    pub badge: Option<CellBadge<Row>>,
+    /// A checkbox column: the box is ticked by this and toggled through the
+    /// table's checkbox callback.
+    pub checked: Option<CellChecked<Row>>,
     pub(crate) resize_handle_px: f32,
 }
 
@@ -142,14 +158,81 @@ impl<Row> ColumnDef<Row> {
             width,
             sortable: false,
             text_render: None,
-            render_cell: Box::new(|_, _, _, _, _| {}),
+            render_cell: Box::new(|_, _, _, _, _, _| {}),
             widget: None,
             accessible_value: None,
             text: None,
             kind: TextKind::Prose,
             absent: String::from("—"),
+            max_lines: 1,
+            priority: 0,
+            badge: None,
+            checked: None,
             resize_handle_px: 6.0,
         }
+    }
+
+    /// A column of checkboxes (an enabled header, a selected file): the table
+    /// paints the box, toggles it with a pointer or Space, and reports the
+    /// row through [`DataTable::on_check`].
+    pub fn checkbox(
+        key: impl Into<String>,
+        header: impl Into<String>,
+        checked: impl Fn(&Row) -> bool + Send + Sync + 'static,
+    ) -> Self
+    where
+        Row: 'static,
+    {
+        let checked: CellChecked<Row> = Arc::new(checked);
+        let spoken = Arc::clone(&checked);
+        let mut column = Self::new(key, header, ColumnWidth::Auto);
+        column.checked = Some(checked);
+        column.accessible_value = Some(Arc::new(move |row| {
+            if spoken(row) {
+                "Checked"
+            } else {
+                "Not checked"
+            }
+            .to_owned()
+        }));
+        column
+    }
+
+    /// Let the cell text wrap to `max_lines` lines before it is elided (a
+    /// message, a description); the row grows to hold them.
+    #[must_use]
+    pub fn wrapping(mut self, max_lines: usize) -> Self {
+        self.max_lines = max_lines.max(1);
+        self
+    }
+
+    /// Hide this column when the table is too narrow for every column:
+    /// higher priorities give way first; `0` (the default) never hides.
+    #[must_use]
+    pub fn priority(mut self, priority: u8) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    /// A badge in each cell (a level, a status), measured and painted by the
+    /// table: `badge(row)` gives its label and tone; an empty label paints
+    /// none. The label is the cell's accessible value unless the column has
+    /// text.
+    #[must_use]
+    pub fn with_badge(
+        mut self,
+        badge: impl Fn(&Row) -> (String, crate::widget::Tone) + Send + Sync + 'static,
+    ) -> Self
+    where
+        Row: 'static,
+    {
+        let badge: CellBadge<Row> = Arc::new(badge);
+        if self.accessible_value.is_none() {
+            let spoken = Arc::clone(&badge);
+            self.accessible_value = Some(Arc::new(move |row| spoken(row).0));
+        }
+        self.badge = Some(badge);
+        self
     }
 
     /// Say what the column's values are: [`TextKind::Numeric`] for counts,
@@ -369,6 +452,26 @@ struct MountedCell {
 
 type RowKey<Row> = Box<dyn Fn(&Row) -> u64 + Send + Sync>;
 
+/// `(display_index, point, row_rect)`.
+type RowContext = Box<dyn FnMut(usize, Point, Rect)>;
+
+/// A table whose rows are a flattened tree (a process tree, a folder
+/// listing): each row's depth, whether it has children and whether they
+/// show; the host owns the flattening and folds rows in `on_toggle`.
+struct TreeRows<Row> {
+    depth: Box<dyn Fn(&Row) -> usize>,
+    has_children: Box<dyn Fn(&Row) -> bool>,
+    expanded: Box<dyn Fn(&Row) -> bool>,
+    on_toggle: Box<dyn FnMut(usize, bool)>,
+}
+
+/// The blank row after the last one that adds a row (a new header, a new
+/// parameter).
+struct AddRow {
+    label: String,
+    on_add: Box<dyn FnMut()>,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "focus, selection, scrolling, and invalidation are independent table states"
@@ -456,6 +559,35 @@ pub struct DataTable<Row> {
     auto_widths: HashMap<String, f32>,
     /// Theme values the layout pass measures with.
     measure_theme: Option<Theme>,
+    /// Rows a small control tall (`Compact`) rather than a pointer target
+    /// and a step (`Regular`).
+    compact: bool,
+    /// The row height at the current density and theme.
+    default_row_h: f64,
+    /// `metrics.scrollbar_gutter` and the lift's bleed, from the theme.
+    gutter: f64,
+    bleed: f64,
+    /// Dragging the body scrolls it (touch always does).
+    drag_scroll_enabled: bool,
+    on_row_context: Option<RowContext>,
+    on_row_drag_begin: Option<RowContext>,
+    /// The row a press landed on and where, until it becomes a drag.
+    row_press: Option<(usize, Point)>,
+    /// Horizontal scroll: how far the columns are scrolled, and how wide
+    /// they are together.
+    h_offset: f64,
+    content_w: f64,
+    hbar: Scrollbar,
+    /// The table takes the height its parent gives it and scrolls inside.
+    fill_height: bool,
+    /// Columns hidden for room, by priority.
+    hidden: Vec<bool>,
+    tree: Option<TreeRows<Row>>,
+    /// A sort shown on a header without the table reordering its rows.
+    sort_indicator: Option<(String, bool)>,
+    add_row: Option<AddRow>,
+    /// `(display_index, checked)` when a checkbox cell is toggled.
+    on_check: Option<Box<dyn FnMut(usize, bool)>>,
 }
 
 impl<Row> DataTable<Row> {
@@ -515,6 +647,185 @@ impl<Row> DataTable<Row> {
             ruled: false,
             auto_widths: HashMap::new(),
             measure_theme: None,
+            compact: false,
+            default_row_h: ROW_HEIGHT,
+            gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
+            bleed: f64::from(crate::tokens::Spacing::BASE.s2),
+            drag_scroll_enabled: false,
+            on_row_context: None,
+            on_row_drag_begin: None,
+            row_press: None,
+            h_offset: 0.0,
+            content_w: 0.0,
+            hbar: Scrollbar::horizontal(),
+            fill_height: false,
+            hidden: Vec::new(),
+            tree: None,
+            sort_indicator: None,
+            add_row: None,
+            on_check: None,
+        }
+    }
+
+    /// Rows a small control tall (32 at the default scale) instead of 40:
+    /// a dense grid (query results, logs).
+    #[must_use]
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
+    }
+
+    /// Let a pointer drag on the body scroll it, as a finger does. Off by
+    /// default for a mouse, so a press selects at once and a drag can
+    /// begin a row drag ([`Self::on_row_drag_begin`]).
+    #[must_use]
+    pub fn drag_scroll(mut self) -> Self {
+        self.drag_scroll_enabled = true;
+        self
+    }
+
+    /// Run `f(row, point, row_rect)` when a row is right-clicked or asked
+    /// for its menu by assistive technology. The row is selected first,
+    /// unless it already is.
+    #[must_use]
+    pub fn on_row_context_menu(mut self, f: impl FnMut(usize, Point, Rect) + 'static) -> Self {
+        self.on_row_context = Some(Box::new(f));
+        self
+    }
+
+    /// Run `f(row, point, row_rect)` when a pointer drag starts on a row,
+    /// to begin a drag and drop. Use [`Self::row_rect`] and
+    /// [`Self::row_at_point`] to find drop targets.
+    #[must_use]
+    pub fn on_row_drag_begin(mut self, f: impl FnMut(usize, Point, Rect) + 'static) -> Self {
+        self.on_row_drag_begin = Some(Box::new(f));
+        self
+    }
+
+    /// Take the height the parent gives the table and scroll the rows
+    /// inside it, with the shared scroll bar.
+    #[must_use]
+    pub fn fill_height(mut self) -> Self {
+        self.fill_height = true;
+        self.layout_dirty = true;
+        self
+    }
+
+    /// The header band's height at the current text scale.
+    pub fn header_height(&self) -> f64 {
+        self.header_h
+    }
+
+    /// Show the rows as a flattened tree: each row indented by `depth(row)`,
+    /// with a chevron when `has_children(row)` that shows `expanded(row)`.
+    /// Pressing the chevron, or Right and Left on the selected row, calls
+    /// `on_toggle(row, expand)`; the host refolds its rows.
+    #[must_use]
+    pub fn tree(
+        mut self,
+        depth: impl Fn(&Row) -> usize + 'static,
+        has_children: impl Fn(&Row) -> bool + 'static,
+        expanded: impl Fn(&Row) -> bool + 'static,
+        on_toggle: impl FnMut(usize, bool) + 'static,
+    ) -> Self {
+        self.tree = Some(TreeRows {
+            depth: Box::new(depth),
+            has_children: Box::new(has_children),
+            expanded: Box::new(expanded),
+            on_toggle: Box::new(on_toggle),
+        });
+        self
+    }
+
+    /// Show `key`'s header as sorted without reordering the rows: the host
+    /// sorted them itself.
+    pub fn set_sort_indicator(&mut self, key: impl Into<String>, ascending: bool) {
+        self.sort_indicator = Some((key.into(), ascending));
+    }
+
+    /// A blank row after the last one that adds a row when pressed (a new
+    /// header, a new parameter); `label` is its placeholder.
+    #[must_use]
+    pub fn with_add_row(
+        mut self,
+        label: impl Into<String>,
+        on_add: impl FnMut() + 'static,
+    ) -> Self {
+        self.add_row = Some(AddRow {
+            label: label.into(),
+            on_add: Box::new(on_add),
+        });
+        self
+    }
+
+    /// Run `f(row, checked)` when a checkbox column's box is toggled.
+    #[must_use]
+    pub fn on_check(mut self, f: impl FnMut(usize, bool) + 'static) -> Self {
+        self.on_check = Some(Box::new(f));
+        self
+    }
+
+    /// The rows, for editing in place; follow with [`Self::apply_changes`].
+    pub fn rows_mut(&mut self) -> &mut Vec<Row> {
+        &mut self.rows
+    }
+
+    /// Reconcile edits made through [`Self::rows_mut`]: cell controls stay
+    /// mounted by row key (so a field being typed into keeps its focus),
+    /// and only the rows named in [`TableModelChange::RowsChanged`] rebuild
+    /// theirs. Give the table a [`Self::with_row_key`] for keys that
+    /// survive inserts and removals.
+    pub fn apply_changes(&mut self, changes: &[TableModelChange]) {
+        if self.model.is_some() {
+            self.notify_model_changes(changes);
+            return;
+        }
+        let anchor = self.capture_view_anchor();
+        self.rebuild_row_keys();
+        self.view = (0..self.rows.len()).collect();
+        if changes
+            .iter()
+            .any(|change| matches!(change, TableModelChange::Reset))
+        {
+            self.mounted_cells.clear();
+        } else {
+            self.mounted_cells.retain(|cell| {
+                !changes.iter().any(|change| match change {
+                    TableModelChange::RowsChanged { keys } => keys.contains(&cell.row_key.value),
+                    _ => false,
+                })
+            });
+        }
+        self.reapply_sort_with_anchor(anchor.as_ref());
+        self.structure_dirty = true;
+        self.layout_dirty = true;
+    }
+
+    /// The rect of display row `index` (the lift's rect), for drop targets.
+    pub fn row_rect(&self, index: usize) -> Option<Rect> {
+        let top = self.viewport.item_view_top(index)?;
+        let height = self.viewport.item_height(index)?;
+        let band = self.columns_band();
+        let y0 = self.rect.y0 + self.header_h + top;
+        Some(Rect::new(band.x0, y0, band.x1, y0 + height))
+    }
+
+    /// The display row under `point`, if any.
+    pub fn row_at_point(&self, point: Point) -> Option<usize> {
+        self.row_at(point)
+    }
+
+    /// Scroll display row `index` into view, by the nearest edge.
+    pub fn reveal_row(&mut self, index: usize) {
+        if index >= self.display_len() {
+            return;
+        }
+        self.momentum.stop();
+        let before = self.viewport.offset();
+        self.viewport
+            .scroll_to_index(index, ScrollAlignment::Nearest);
+        if self.viewport.offset().to_bits() != before.to_bits() {
+            self.visible_window_changed();
         }
     }
 
@@ -902,7 +1213,14 @@ impl<Row> DataTable<Row> {
         if let Some((key, ascending)) = &self.model_sort {
             return Some((key.as_str(), *ascending));
         }
-        self.sort.as_ref().map(|s| (s.key.as_str(), s.ascending))
+        self.sort
+            .as_ref()
+            .map(|s| (s.key.as_str(), s.ascending))
+            .or_else(|| {
+                self.sort_indicator
+                    .as_ref()
+                    .map(|(key, ascending)| (key.as_str(), *ascending))
+            })
     }
 
     /// Stores the comparator + key + direction so `set_rows` re-applies the
@@ -1105,6 +1423,13 @@ impl<Row> DataTable<Row> {
             default_pad: f64::from(tokens.spacing.s2),
             authored_pad: f64::from(tokens.spacing.s1),
         });
+        self.default_row_h = f64::from(if self.compact {
+            tokens.metrics.min_pointer_target
+        } else {
+            tokens.metrics.min_pointer_target + tokens.spacing.s2
+        });
+        self.gutter = f64::from(tokens.metrics.scrollbar_gutter);
+        self.bleed = crate::chrome::row_bleed(theme);
         self.refresh_row_estimate();
     }
 
@@ -1112,7 +1437,7 @@ impl<Row> DataTable<Row> {
     /// authored estimate and the label type seen so far (see
     /// [`row_estimate`]). Called when either input changes.
     fn refresh_row_estimate(&mut self) {
-        let estimate = row_estimate(self.authored_row_height, ROW_HEIGHT, self.row_type);
+        let estimate = row_estimate(self.authored_row_height, self.default_row_h, self.row_type);
         let before = self.viewport.estimated_height();
         self.viewport.set_estimated_height(estimate);
         if self.viewport.estimated_height().to_bits() != before.to_bits() {
@@ -1239,35 +1564,29 @@ impl<Row> DataTable<Row> {
         self.viewport.viewport() > 0.0 && self.v_metrics().overflows()
     }
 
-    /// The band the columns share: the table less the row inset on both
-    /// sides, so the first and last cells keep their padding inside the
-    /// selection lift and the stripe, and less the scroll bar's width at the
-    /// trailing edge while it shows, so the bar never covers a column.
+    /// The band the columns share, by the one content edge (HIG §9.3): the
+    /// first column's text starts on the table's leading edge and the last
+    /// column's ends on its trailing edge, each cell padded by the bleed, so
+    /// the band, and the lift and stripe that fill it, stand the bleed past
+    /// the table on both sides. While the scroll bar shows, the band stops
+    /// at the bar's gutter, so the bar never covers a column.
     fn columns_band(&self) -> Rect {
-        let inset = self.row_inset();
-        let bar = if self.internal_scroll() {
-            BAR_THICKNESS + 2.0 * BAR_MARGIN
+        let x0 = self.rect.x0 - self.bleed;
+        let x1 = if self.internal_scroll() {
+            self.rect.x1 - self.gutter
         } else {
-            0.0
+            self.rect.x1 + self.bleed
         };
-        let x0 = (self.rect.x0 + inset).min(self.rect.x1);
-        Rect::new(
-            x0,
-            self.rect.y0,
-            (self.rect.x1 - inset - bar).max(x0),
-            self.rect.y1,
-        )
+        Rect::new(x0, self.rect.y0, x1.max(x0), self.rect.y1)
     }
 
-    /// How far a row's lift and stripe stand in from the table's edges: the
-    /// list inset `s2` (HIG §9.3).
-    fn row_inset(&self) -> f64 {
-        f64::from(
-            self.measure_theme
-                .as_ref()
-                .map_or(crate::tokens::Spacing::BASE.s2, |theme| {
-                    theme.tokens.spacing.s2
-                }),
+    /// The body's rect: under the header, as tall as the viewport.
+    fn body_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0 + self.header_h,
+            self.rect.x1,
+            self.rect.y0 + self.header_h + self.body_viewport_h(),
         )
     }
 
@@ -1275,14 +1594,48 @@ impl<Row> DataTable<Row> {
         if !self.internal_scroll() {
             return None;
         }
-        let x1 = self.rect.x1 - BAR_MARGIN;
-        let x0 = x1 - BAR_THICKNESS;
-        let y0 = self.rect.y0 + self.header_h + BAR_MARGIN;
-        let y1 = self.rect.y0 + self.header_h + self.body_viewport_h() - BAR_MARGIN;
-        if y1 - y0 <= crate::widget::scrollbar::MIN_THUMB_LEN.min(1.0) {
+        let track = crate::widget::scrollbar::vertical_track(self.body_rect(), self.gutter);
+        if track.height() <= crate::widget::scrollbar::MIN_THUMB_LEN.min(1.0) {
             return None;
         }
-        Some(Rect::new(x0, y0, x1, y1))
+        Some(track)
+    }
+
+    /// Whether the columns are wider than the band and scroll sideways.
+    fn h_overflow(&self) -> bool {
+        self.content_w > self.columns_band().width() + 0.5
+    }
+
+    fn h_metrics(&self) -> ScrollMetrics {
+        ScrollMetrics::new(self.content_w, self.columns_band().width(), self.h_offset)
+    }
+
+    fn h_track(&self) -> Option<Rect> {
+        if !self.h_overflow() {
+            return None;
+        }
+        let band = self.columns_band();
+        let body = self.body_rect();
+        let track = crate::widget::scrollbar::horizontal_track(
+            Rect::new(band.x0, body.y0, band.x1, body.y1),
+            self.gutter,
+        );
+        (track.width() > crate::widget::scrollbar::MIN_THUMB_LEN).then_some(track)
+    }
+
+    fn set_h_offset(&mut self, offset: f64) {
+        let max = (self.content_w - self.columns_band().width()).max(0.0);
+        let next = offset.clamp(0.0, max);
+        if (next - self.h_offset).abs() > f64::EPSILON {
+            self.h_offset = next;
+            self.layout_dirty = true;
+            self.structure_dirty = true;
+        }
+    }
+
+    /// The horizontal scroll offset of the columns.
+    pub fn scroll_x(&self) -> f64 {
+        self.h_offset
     }
 
     /// `None` when the bar is inactive (no viewport set, or rows fit).
@@ -1292,25 +1645,133 @@ impl<Row> DataTable<Row> {
     }
 
     fn draw_scrollbar(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let Some(track) = self.v_track() else { return };
-        let radius = BAR_THICKNESS / 2.0;
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            crate::widget::scrollbar::track_color(theme),
-            None,
-            &RoundedRect::from_rect(track, radius),
-        );
-        if let Some(thumb) = self.vbar.thumb_rect(track, self.v_metrics()) {
-            let color = crate::widget::scrollbar::thumb_color(theme, self.vbar.is_active());
+        for (track, bar, metrics) in [
+            (self.v_track(), &self.vbar, self.v_metrics()),
+            (self.h_track(), &self.hbar, self.h_metrics()),
+        ] {
+            let Some(track) = track else { continue };
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                color,
+                crate::widget::scrollbar::track_color(theme),
                 None,
-                &RoundedRect::from_rect(thumb, radius),
+                &RoundedRect::from_rect(track, track.width().min(track.height()) / 2.0),
             );
+            bar.draw(scene, transform, track, metrics, theme, false);
         }
+    }
+
+    /// The first column shown (a tree's chevron and indent sit in it).
+    fn first_shown_column(&self) -> Option<usize> {
+        (0..self.columns.len()).find(|&i| !self.hidden.get(i).copied().unwrap_or(false))
+    }
+
+    /// How far a tree row's content stands in: its depth in `s4` steps, then
+    /// the chevron's slot.
+    fn tree_indent(&self, theme: &Theme, depth: usize) -> f64 {
+        let tokens = &theme.tokens;
+        f64::from(tokens.spacing.s4) * depth as f64
+            + f64::from(tokens.metrics.icon_sm)
+            + f64::from(tokens.spacing.s1)
+    }
+
+    /// The chevron of tree row `index` in the first column, if it has one.
+    fn tree_chevron(&self, index: usize, theme: &Theme) -> Option<Rect> {
+        let tree = self.tree.as_ref()?;
+        let Some(TableRowState::Ready(row)) = self.row_state_at(index) else {
+            return None;
+        };
+        if !(tree.has_children)(row) {
+            return None;
+        }
+        let column = self.col_rects.get(self.first_shown_column()?)?;
+        let row_rect = self.row_rect(index)?;
+        let icon = f64::from(theme.tokens.metrics.icon_sm);
+        let x =
+            column.x0 + self.bleed + f64::from(theme.tokens.spacing.s4) * (tree.depth)(row) as f64;
+        Some(Rect::new(
+            x,
+            row_rect.center().y - icon / 2.0,
+            x + icon,
+            row_rect.center().y + icon / 2.0,
+        ))
+    }
+
+    /// Toggle tree row `index` to `expand`; `false` when it has no children
+    /// or is already so.
+    fn fold_tree_row(&mut self, index: usize, expand: bool) -> bool {
+        let Some(tree) = &self.tree else {
+            return false;
+        };
+        let state = match self.row_state_at(index) {
+            Some(TableRowState::Ready(row)) => {
+                Some(((tree.has_children)(row), (tree.expanded)(row)))
+            }
+            _ => None,
+        };
+        let Some((has_children, expanded)) = state else {
+            return false;
+        };
+        if !has_children || expanded == expand {
+            return false;
+        }
+        if let Some(tree) = &mut self.tree {
+            (tree.on_toggle)(index, expand);
+        }
+        true
+    }
+
+    /// The checkbox cell under `pt`: its row and column.
+    fn check_cell_at(&self, pt: Point) -> Option<(usize, usize)> {
+        let row = self.row_at(pt)?;
+        let column = self
+            .col_rects
+            .iter()
+            .position(|c| pt.x >= c.x0 && pt.x < c.x1)?;
+        self.columns.get(column)?.checked.as_ref()?;
+        Some((row, column))
+    }
+
+    fn toggle_check(&mut self, row: usize, column: usize) -> bool {
+        let checked = match (self.row_state_at(row), self.columns.get(column)) {
+            (Some(TableRowState::Ready(data)), Some(col)) => {
+                col.checked.as_ref().map(|checked| checked(data))
+            }
+            _ => None,
+        };
+        let Some(checked) = checked else {
+            return false;
+        };
+        if let Some(on_check) = &mut self.on_check {
+            on_check(row, !checked);
+        }
+        true
+    }
+
+    /// The blank add row's rect, after the last row.
+    fn add_row_rect(&self) -> Option<Rect> {
+        self.add_row.as_ref()?;
+        let band = self.columns_band();
+        let y0 = self.rect.y0 + self.header_h + self.content_body_h() - self.viewport.offset();
+        Some(Rect::new(band.x0, y0, band.x1, y0 + self.default_row_h))
+    }
+
+    fn drag_scroll_enabled(&self) -> bool {
+        self.drag_scroll_enabled || !self.interaction.supports_hover()
+    }
+
+    fn open_row_context(&mut self, row: usize, point: Point) -> bool {
+        if self.on_row_context.is_none() || row >= self.display_len() {
+            return false;
+        }
+        if !self.is_row_selected(row) {
+            self.select_only_index(row);
+        }
+        let rect = self.row_rect(row).unwrap_or(self.rect);
+        if let Some(callback) = &mut self.on_row_context {
+            callback(row, point, rect);
+        }
+        true
     }
 
     fn resize_handle_rect_for(&self, index: usize) -> Option<Rect> {
@@ -1363,14 +1824,11 @@ impl<Row> DataTable<Row> {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let header_rect = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y0 + self.header_h,
-        );
+        let band = self.columns_band();
+        let header_rect = Rect::new(band.x0, self.rect.y0, band.x1, self.rect.y0 + self.header_h);
         // The header sits on the table's ground; one rule derived from that
-        // ground closes it, on the band's last pixel row.
+        // ground closes it, on the band's last pixel row, as wide as the
+        // rows' lift.
         crate::surface::separator(
             scene,
             transform,
@@ -1380,11 +1838,14 @@ impl<Row> DataTable<Row> {
             0.0,
             tokens.colors.surfaces.content,
         );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &header_rect,
+        );
 
-        let text_style = header_style(theme);
-        let pad_x = f64::from(tokens.spacing.s2);
-        let icon = f64::from(tokens.metrics.icon_sm);
-        let icon_gap = f64::from(tokens.spacing.s1);
         for (i, col) in self.columns.iter().enumerate() {
             let Some(cr) = self.col_rects.get(i) else {
                 continue;
@@ -1398,54 +1859,19 @@ impl<Row> DataTable<Row> {
                 .or_else(|| {
                     self.model_sort
                         .as_ref()
+                        .or(self.sort_indicator.as_ref())
                         .filter(|(key, _)| *key == col.key)
                         .map(|(_, ascending)| *ascending)
                 });
-            let room = (cr.width()
-                - 2.0 * pad_x
-                - if sorted.is_some() {
-                    icon + icon_gap
-                } else {
-                    0.0
-                })
-            .max(0.0);
-            let header = text_renderer.elide_to_width_style(&header, px(room), &text_style);
-            let (header_w, header_h) = text_renderer.measure_style(&header, None, &text_style);
-            let label_y = centered_text_top(header_rect.y0, self.header_h, header_h);
-            let numeric = col.kind == TextKind::Numeric;
-            let label_x = if numeric {
-                cr.x1 - pad_x - f64::from(header_w)
-            } else {
-                cr.x0 + pad_x
-            };
-            text_renderer.draw_style(
-                scene,
+            paint_header_label(
+                &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                Rect::new(cr.x0, header_rect.y0, cr.x1, header_rect.y1),
                 &header,
-                tokens.colors.text_dim,
-                translated(transform, label_x, label_y),
-                None,
-                &text_style,
+                col.kind == TextKind::Numeric,
+                sorted,
             );
-            if let Some(ascending) = sorted {
-                // The sort direction is an icon beside the label: before a
-                // trailing-aligned numeric header, after a leading one.
-                let x0 = if numeric {
-                    label_x - icon_gap - icon
-                } else {
-                    label_x + f64::from(header_w) + icon_gap
-                };
-                let glyph = Rect::from_center_size(
-                    Point::new(x0 + icon / 2.0, header_rect.center().y),
-                    (icon, icon),
-                );
-                let arrow = if ascending {
-                    crate::icons::Icon::ChevronUp
-                } else {
-                    crate::icons::Icon::ChevronDown
-                };
-                arrow.draw(scene, transform, glyph, tokens.colors.text_dim);
-            }
         }
+        scene.pop_layer();
         if self.ruled {
             self.draw_column_rules(scene, transform, theme);
         }
@@ -1456,7 +1882,11 @@ impl<Row> DataTable<Row> {
     fn draw_column_rules(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let rule = crate::surface::edge_on(theme.tokens.colors.surfaces.content);
         let y1 = self.rect.y0 + self.header_h + self.body_viewport_h();
+        let band = self.columns_band();
         for cr in self.col_rects.iter().skip(1) {
+            if cr.width() <= 0.0 || cr.x0 <= band.x0 || cr.x0 >= band.x1 {
+                continue;
+            }
             let x = (cr.x0 - 0.5).round();
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -1533,12 +1963,62 @@ impl<Row> DataTable<Row> {
             }
             match row_state {
                 TableRowState::Ready(row) => {
+                    let first = self.first_shown_column();
                     for (i, col) in self.columns.iter().enumerate() {
-                        let cell_rect = match self.col_rects.get(i) {
-                            Some(cr) => Rect::new(cr.x0, y0, cr.x1, y1),
-                            None => continue,
+                        let mut cell_rect = match self.col_rects.get(i) {
+                            Some(cr) if cr.width() > 0.0 => Rect::new(cr.x0, y0, cr.x1, y1),
+                            _ => continue,
                         };
-                        (col.render_cell)(row, scene, theme, text_renderer, cell_rect);
+                        if first == Some(i)
+                            && let Some(tree) = &self.tree
+                        {
+                            let depth = (tree.depth)(row);
+                            if (tree.has_children)(row) {
+                                let icon = f64::from(tokens.metrics.icon_sm);
+                                let x = cell_rect.x0
+                                    + self.bleed
+                                    + f64::from(tokens.spacing.s4) * depth as f64;
+                                let glyph = Rect::new(
+                                    x,
+                                    cell_rect.center().y - icon / 2.0,
+                                    x + icon,
+                                    cell_rect.center().y + icon / 2.0,
+                                );
+                                let chevron = if (tree.expanded)(row) {
+                                    crate::icons::Icon::ChevronDown
+                                } else {
+                                    crate::icons::Icon::ChevronRight
+                                };
+                                chevron.draw(scene, transform, glyph, tokens.colors.text_dim);
+                            }
+                            cell_rect.x0 += self.tree_indent(theme, depth);
+                        }
+                        (col.render_cell)(row, scene, transform, theme, text_renderer, cell_rect);
+                        if let Some(checked) = &col.checked {
+                            let side = f64::from(tokens.metrics.icon_md);
+                            crate::widget::Checkbox::paint(
+                                scene,
+                                transform,
+                                theme,
+                                &crate::widget::CheckboxFace::new(
+                                    Rect::from_center_size(cell_rect.center(), (side, side)),
+                                    checked(row),
+                                ),
+                            );
+                        }
+                        if let Some(badge) = &col.badge {
+                            let (label, tone) = badge(row);
+                            paint_cell_badge(
+                                scene,
+                                transform,
+                                text_renderer,
+                                theme,
+                                cell_rect,
+                                col.kind == TextKind::Numeric,
+                                &label,
+                                tone,
+                            );
+                        }
                         if let Some(value) = &col.text {
                             paint_cell_text(
                                 scene,
@@ -1551,7 +2031,15 @@ impl<Row> DataTable<Row> {
                             );
                         }
                         if let Some(tr) = &col.text_render {
-                            tr(row, scene, text_renderer, cell_rect, theme, selected);
+                            tr(
+                                row,
+                                scene,
+                                transform,
+                                text_renderer,
+                                cell_rect,
+                                theme,
+                                selected,
+                            );
                         }
                     }
                 }
@@ -1568,7 +2056,7 @@ impl<Row> DataTable<Row> {
                         color,
                         translated(
                             transform,
-                            band.x0 + f64::from(tokens.spacing.s2),
+                            band.x0 + self.bleed,
                             centered_text_top(y0, row_h, text_h),
                         ),
                         None,
@@ -1576,6 +2064,39 @@ impl<Row> DataTable<Row> {
                     );
                 }
             }
+        }
+        if let (Some(add), Some(rect)) = (&self.add_row, self.add_row_rect())
+            && rect.y0 < body_bottom
+        {
+            // The blank row that adds one: its placeholder where the first
+            // cell's text starts, in tertiary ink.
+            let style = cell_style(theme, TextKind::Prose);
+            let x = self
+                .first_shown_column()
+                .and_then(|i| self.col_rects.get(i))
+                .map_or(rect.x0, |c| c.x0)
+                + self.bleed;
+            let icon = f64::from(tokens.metrics.icon_sm);
+            let glyph = Rect::new(
+                x,
+                rect.center().y - icon / 2.0,
+                x + icon,
+                rect.center().y + icon / 2.0,
+            );
+            crate::icons::Icon::Plus.draw(scene, transform, glyph, tokens.colors.text_tertiary);
+            let (_, h) = text_renderer.measure_style(&add.label, None, &style);
+            text_renderer.draw_style(
+                scene,
+                &add.label,
+                tokens.colors.text_tertiary,
+                translated(
+                    transform,
+                    x + icon + f64::from(tokens.spacing.s1),
+                    centered_text_top(rect.y0, rect.height(), h),
+                ),
+                None,
+                &style,
+            );
         }
     }
 
@@ -1598,6 +2119,28 @@ impl<Row> DataTable<Row> {
             *handled = true;
             return;
         }
+        if self.hbar.is_dragging() {
+            if let Some(track) = self.h_track()
+                && let Some(target) = self.hbar.drag_to(track, self.h_metrics(), pt)
+            {
+                self.set_h_offset(target);
+            }
+            *handled = true;
+            return;
+        }
+        // A press on a row that moves past the slop begins a row drag.
+        if let Some((row, origin)) = self.row_press
+            && self.on_row_drag_begin.is_some()
+            && (pt - origin).hypot() > DRAG_SLOP
+        {
+            self.row_press = None;
+            let rect = self.row_rect(row).unwrap_or(self.rect);
+            if let Some(begin) = &mut self.on_row_drag_begin {
+                begin(row, origin, rect);
+            }
+            *handled = true;
+            return;
+        }
         if self.drag_scroll.is_tracking() {
             let now = crate::time::now();
             if let Some(update) = self.drag_scroll.update(pt.y, now) {
@@ -1612,6 +2155,11 @@ impl<Row> DataTable<Row> {
             self.vbar.update_hover(track, self.v_metrics(), pt);
         } else {
             self.vbar.set_hover(false);
+        }
+        if let Some(track) = self.h_track() {
+            self.hbar.update_hover(track, self.h_metrics(), pt);
+        } else {
+            self.hbar.set_hover(false);
         }
     }
 
@@ -1636,6 +2184,20 @@ impl<Row> DataTable<Row> {
                 }
                 PressOutcome::Page(target) => {
                     self.set_scroll_y(px(target));
+                    *handled = true;
+                    return;
+                }
+                PressOutcome::Miss => {}
+            }
+        }
+        if let Some(track) = self.h_track() {
+            match self.hbar.press(track, self.h_metrics(), pt) {
+                PressOutcome::Thumb => {
+                    *handled = true;
+                    return;
+                }
+                PressOutcome::Page(target) => {
+                    self.set_h_offset(target);
                     *handled = true;
                     return;
                 }
@@ -1676,20 +2238,60 @@ impl<Row> DataTable<Row> {
             }
             return;
         }
-        // 3. An internally scrolling body defers row activation until
-        // release so the same gesture can become a drag without selecting.
+        // 3. The blank add row, a tree row's chevron and a checkbox cell
+        // act before the row is selected.
+        if let Some(rect) = self.add_row_rect()
+            && rect.contains(pt)
+            && pt.y < self.body_rect().y1
+        {
+            if let Some(add) = &mut self.add_row {
+                (add.on_add)();
+            }
+            *focus_target = Some(node_id);
+            *handled = true;
+            return;
+        }
+        if let Some(theme) = self.measure_theme.clone()
+            && let Some(row) = self.row_at(pt)
+            && self
+                .tree_chevron(row, &theme)
+                .is_some_and(|chevron| chevron.inflate(4.0, 4.0).contains(pt))
+        {
+            let expanded = match (self.tree.as_ref(), self.row_state_at(row)) {
+                (Some(tree), Some(TableRowState::Ready(data))) => (tree.expanded)(data),
+                _ => false,
+            };
+            self.fold_tree_row(row, !expanded);
+            *focus_target = Some(node_id);
+            *handled = true;
+            return;
+        }
+        if let Some((row, column)) = self.check_cell_at(pt) {
+            self.toggle_check(row, column);
+            *focus_target = Some(node_id);
+            *handled = true;
+            return;
+        }
+        // 4. A body that drags to scroll (touch, or opted in) defers row
+        // activation until release so the gesture can become a drag.
         let in_body = pt.x >= self.rect.x0
             && pt.x <= self.rect.x1
             && pt.y >= self.rect.y0 + self.header_h
             && pt.y <= self.rect.y1;
-        if self.internal_scroll() && in_body {
+        if self.internal_scroll() && in_body && self.drag_scroll_enabled() {
             self.drag_scroll
                 .begin(pt.y, self.viewport.offset(), crate::time::now());
             *focus_target = Some(node_id);
             *handled = true;
             return;
         }
+        if let Some(row) = self.row_at(pt) {
+            self.row_press = Some((row, pt));
+        }
         self.select_row_at_cursor(modifiers, handled, focus_target, node_id);
+        if in_body && self.row_at(pt).is_some() {
+            *focus_target = Some(node_id);
+        }
     }
 
     fn select_row_at_cursor(
@@ -1738,11 +2340,15 @@ impl<Row> DataTable<Row> {
         node_id: NodeId,
     ) {
         let mut did = false;
+        self.row_press = None;
         if self.resize.is_some() {
             self.end_resize();
             did = true;
         }
         if self.vbar.release() {
+            did = true;
+        }
+        if self.hbar.release() {
             did = true;
         }
         if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
@@ -1765,7 +2371,37 @@ impl<Row> DataTable<Row> {
 
     /// `WindowEvent::MouseWheel` — only live when this table owns its scroll
     /// internally (an outer `Scrollable` otherwise consumes the wheel first).
-    fn on_wheel(&mut self, delta: &MouseScrollDelta, phase: TouchPhase, handled: &mut bool) {
+    fn on_wheel(
+        &mut self,
+        delta: &MouseScrollDelta,
+        phase: TouchPhase,
+        sideways: bool,
+        handled: &mut bool,
+    ) {
+        // Shift turns the wheel sideways, as does a trackpad's horizontal
+        // swipe, over columns wider than the table.
+        if self.h_overflow() {
+            let (dx, dy) = match delta {
+                MouseScrollDelta::LineDelta(x, y) => (
+                    f64::from(*x) * self.default_row_h,
+                    f64::from(*y) * self.default_row_h,
+                ),
+                MouseScrollDelta::PixelDelta(p) => (p.x, p.y),
+            };
+            let along = if sideways {
+                -(if dx.abs() > dy.abs() { dx } else { dy })
+            } else if dx.abs() > dy.abs() {
+                -dx
+            } else {
+                0.0
+            };
+            if along != 0.0 {
+                let before = self.h_offset;
+                self.set_h_offset(before + along);
+                *handled = (self.h_offset - before).abs() > f64::EPSILON;
+                return;
+            }
+        }
         if self.internal_scroll() {
             self.drag_scroll.cancel();
             self.last_tick = Some(crate::time::now());
@@ -1851,6 +2487,18 @@ impl<Row> DataTable<Row> {
                 }
                 *handled = true;
             }
+            Key::Named(NamedKey::ArrowRight) if self.tree.is_some() => {
+                *handled = cur.is_some_and(|c| self.fold_tree_row(c, true));
+            }
+            Key::Named(NamedKey::ArrowLeft) if self.tree.is_some() => {
+                *handled = cur.is_some_and(|c| self.fold_tree_row(c, false));
+            }
+            Key::Named(NamedKey::Space) => {
+                let column = self.columns.iter().position(|c| c.checked.is_some());
+                if let (Some(c), Some(column)) = (cur, column) {
+                    *handled = self.toggle_check(c, column);
+                }
+            }
             Key::Character(s) if (s == "a" || s == "A") && modifiers.state().control_key() => {
                 if self.model.is_some() {
                     self.model_selection.select_all();
@@ -1890,7 +2538,12 @@ impl<Row> DataTable<Row> {
 }
 
 const HEADER_HEIGHT: f64 = 32.0;
-const ROW_HEIGHT: f64 = 32.0;
+/// How far a press on a row travels before it becomes a row drag.
+const DRAG_SLOP: f64 = 4.0;
+/// A regular row at the stock theme: a pointer target and a step (40); a
+/// compact row is a pointer target (32). The live values come from the
+/// theme's metrics.
+const ROW_HEIGHT: f64 = 40.0;
 
 /// A column header: `Caption` in its strong weight, sentence case.
 fn header_style(theme: &Theme) -> crate::text_render::TextStyle {
@@ -1920,7 +2573,26 @@ fn paint_cell_text<Row>(
         Some(value) => (value, theme.text_primary),
         None => (column.absent.as_str(), theme.text_tertiary),
     };
-    let label = text.elide_to_width_style(label, px((cell.width() - 2.0 * pad).max(0.0)), &style);
+    let room = px((cell.width() - 2.0 * pad).max(0.0));
+    if column.max_lines > 1 {
+        // A wrapping cell: its lines centred on the row as one block.
+        let lines = text.clamp_to_lines(label, &style, room, column.max_lines);
+        let line_h = f64::from(style.line_height_px());
+        let block = line_h * lines.len() as f64;
+        let mut y = centered_text_top(cell.y0, cell.height(), px(block));
+        for line in &lines {
+            let (w, _) = text.measure_style(line, None, &style);
+            let x = if numeric {
+                cell.x1 - pad - f64::from(w)
+            } else {
+                cell.x0 + pad
+            };
+            text.draw_style(scene, line, ink, translated(transform, x, y), None, &style);
+            y += line_h;
+        }
+        return;
+    }
+    let label = text.elide_to_width_style(label, room, &style);
     let (w, h) = text.measure_style(&label, None, &style);
     let x = if numeric {
         cell.x1 - pad - f64::from(w)
@@ -1935,6 +2607,48 @@ fn paint_cell_text<Row>(
         None,
         &style,
     );
+}
+
+/// Paint a cell's badge: a quiet pill tinted with its tone at the cell's
+/// leading (or, numeric, trailing) edge, centred on the row.
+fn paint_cell_badge(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    cell: Rect,
+    numeric: bool,
+    label: &str,
+    tone: crate::widget::Tone,
+) {
+    if label.is_empty() {
+        return;
+    }
+    let pad = f64::from(theme.tokens.spacing.s2);
+    let w = crate::widget::BadgeFace::intrinsic_width(label, text, theme)
+        .min((cell.width() - 2.0 * pad).max(0.0));
+    let h = crate::widget::BadgeFace::height(theme);
+    let x = if numeric {
+        cell.x1 - pad - w
+    } else {
+        cell.x0 + pad
+    };
+    let style = if tone == crate::widget::Tone::Neutral {
+        crate::widget::ChipStyle::Neutral
+    } else {
+        crate::widget::ChipStyle::Tinted(tone)
+    };
+    crate::widget::BadgeFace::new(
+        Rect::new(
+            x,
+            cell.center().y - h / 2.0,
+            x + w,
+            cell.center().y + h / 2.0,
+        ),
+        label,
+    )
+    .style(style)
+    .paint(scene, transform, text, theme);
 }
 
 /// Row-stacking variant of [`crate::text_metrics::centered_text_top`]: text
@@ -2066,15 +2780,41 @@ impl<Row: 'static> Widget for DataTable<Row> {
             cell.node = Some(child);
             child_nodes.push(child);
         }
+        let add_row = if self.add_row.is_some() {
+            self.default_row_h
+        } else {
+            0.0
+        };
         let body_height = if self.viewport.viewport() > 0.0 {
             self.viewport.viewport()
         } else {
             self.viewport
                 .content_extent()
                 .max(self.viewport.estimated_height())
+                + add_row
         };
         let height = self.header_h + body_height;
-        let node = taffy.parent_node(
+        let style = if self.fill_height {
+            // The parent's height: the rows scroll inside it.
+            Style {
+                size: Size {
+                    width: percent(1.0_f32),
+                    height: Dimension::auto(),
+                },
+                min_size: Size {
+                    width: Dimension::auto(),
+                    height: Dimension::length(px(self.header_h + self.default_row_h)),
+                },
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
+                flex_basis: Dimension::length(0.0),
+                overflow: taffy::Point {
+                    x: taffy::Overflow::Clip,
+                    y: taffy::Overflow::Clip,
+                },
+                ..Default::default()
+            }
+        } else {
             Style {
                 size: Size {
                     width: percent(1.0_f32),
@@ -2085,9 +2825,9 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     y: taffy::Overflow::Clip,
                 },
                 ..Default::default()
-            },
-            &child_nodes,
-        );
+            }
+        };
+        let node = taffy.parent_node(style, &child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.structure_dirty = false;
         node
@@ -2110,26 +2850,98 @@ impl<Row: 'static> Widget for DataTable<Row> {
         let header = header_style(&theme);
         let floor = 4.0 * type_line_height(&tokens.typography, TextRole::Caption);
         let (start, end) = self.visible_row_range();
+        let first = self.first_shown_column();
         let mut next = HashMap::new();
-        for col in &self.columns {
+        for (column_index, col) in self.columns.iter().enumerate() {
             if col.width != ColumnWidth::Auto {
                 continue;
             }
             let label = crate::i18n::I18nManager::lookup_plain(&col.header);
             let mut width = f64::from(text.measure_style(&label, None, &header).0)
                 + if col.sortable { sort_room } else { 0.0 };
-            if let Some(value) = &col.text {
-                let style = cell_style(&theme, col.kind);
-                for ri in start..end {
-                    if let Some(TableRowState::Ready(row)) = self.row_state_at(ri) {
-                        let cell = value(row).unwrap_or_else(|| col.absent.clone());
-                        width = width.max(f64::from(text.measure_style(&cell, None, &style).0));
+            if col.checked.is_some() {
+                width = width.max(f64::from(tokens.metrics.icon_md));
+            }
+            let style = cell_style(&theme, col.kind);
+            for ri in start..end {
+                let Some(TableRowState::Ready(row)) = self.row_state_at(ri) else {
+                    continue;
+                };
+                let indent = match &self.tree {
+                    Some(tree) if first == Some(column_index) => {
+                        self.tree_indent(&theme, (tree.depth)(row))
                     }
+                    _ => 0.0,
+                };
+                if let Some(value) = &col.text {
+                    let cell = value(row).unwrap_or_else(|| col.absent.clone());
+                    width =
+                        width.max(f64::from(text.measure_style(&cell, None, &style).0) + indent);
+                }
+                if let Some(badge) = &col.badge {
+                    let (label, _) = badge(row);
+                    if !label.is_empty() {
+                        width = width.max(
+                            crate::widget::BadgeFace::intrinsic_width(&label, text, &theme)
+                                + indent,
+                        );
+                    }
+                }
+            }
+            // Widget cells: the widest mounted control's own measure.
+            for cell in &mut self.mounted_cells {
+                if cell.column_index == column_index {
+                    let measured = cell.widget.measure(
+                        taffy::Size {
+                            width: None,
+                            height: None,
+                        },
+                        taffy::Size {
+                            width: taffy::AvailableSpace::MaxContent,
+                            height: taffy::AvailableSpace::MaxContent,
+                        },
+                        text,
+                    );
+                    width = width.max(f64::from(measured.width) - pad);
                 }
             }
             next.insert(col.key.clone(), px((width + pad).max(floor).ceil()));
         }
-        if next == self.auto_widths {
+        // Wrapping cells grow their rows to hold their lines.
+        let mut grew = false;
+        if self.columns.iter().any(|c| c.max_lines > 1) {
+            let line = f64::from(theme.text(TextRole::Caption).line_height_px());
+            let pad_y = f64::from(tokens.spacing.s2);
+            for ri in start..end {
+                let Some(TableRowState::Ready(row)) = self.row_state_at(ri) else {
+                    continue;
+                };
+                let mut lines = 1_usize;
+                for (i, col) in self.columns.iter().enumerate() {
+                    if col.max_lines <= 1 {
+                        continue;
+                    }
+                    let (Some(value), Some(cr)) = (&col.text, self.col_rects.get(i)) else {
+                        continue;
+                    };
+                    if cr.width() <= 0.0 {
+                        continue;
+                    }
+                    let cell = value(row).unwrap_or_default();
+                    let room = px((cr.width() - pad).max(1.0));
+                    let n = text
+                        .clamp_to_lines(&cell, &cell_style(&theme, col.kind), room, col.max_lines)
+                        .len();
+                    lines = lines.max(n);
+                }
+                let height =
+                    (line * lines as f64 + 2.0 * pad_y).max(self.viewport.estimated_height());
+                if let Some(key) = self.row_identity_at(ri) {
+                    grew |= self.viewport.measure(ri, key, height);
+                }
+            }
+        }
+        if next == self.auto_widths && !grew {
             return false;
         }
         self.auto_widths = next;
@@ -2144,10 +2956,40 @@ impl<Row: 'static> Widget for DataTable<Row> {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        // User-resized widths in `col_widths_px` override the declared `ColumnWidth`.
-        let mut widths = self.auto_widths.clone();
-        widths.extend(self.col_widths_px.iter().map(|(k, v)| (k.clone(), *v)));
-        let next_columns = compute_column_rects(&self.columns, self.columns_band(), &widths);
+        if self.fill_height {
+            // The rows scroll inside whatever height the parent gave.
+            let body = (self.rect.height() - self.header_h).max(0.0);
+            if (body - self.viewport.viewport()).abs() > 0.5 {
+                self.viewport.set_viewport(body);
+                self.viewport
+                    .set_overscan(self.viewport.estimated_height() * 2.0);
+                self.structure_dirty = true;
+                self.layout_dirty = true;
+            }
+        }
+        // User-resized widths in `col_widths_px` override the declared
+        // `ColumnWidth`; columns give way by priority when the band is
+        // narrow, and what still does not fit scrolls sideways.
+        let band = self.columns_band();
+        self.hidden = hidden_for_room(
+            &self.columns,
+            band.width(),
+            &self.col_widths_px,
+            &self.auto_widths,
+        );
+        let (mut next_columns, content_w) = compute_column_rects(
+            &self.columns,
+            band,
+            &self.col_widths_px,
+            &self.auto_widths,
+            &self.hidden,
+        );
+        self.content_w = content_w;
+        let max_h = (content_w - band.width()).max(0.0);
+        self.h_offset = self.h_offset.clamp(0.0, max_h);
+        for rect in &mut next_columns {
+            *rect = *rect - vello::kurbo::Vec2::new(self.h_offset, 0.0);
+        }
         let columns_changed = self.col_rects != next_columns;
         self.col_rects = next_columns;
         let mut row_heights = HashMap::<usize, f64>::new();
@@ -2158,12 +3000,19 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 .col_rects
                 .get(cell.column_index)
                 .map_or(self.rect.x0, |column| column.x0);
-            let desired_y = self.rect.y0
+            // A control centres on its row's line.
+            let row_top = self.rect.y0
                 + self.header_h
                 + self
                     .viewport
                     .item_view_top(cell.row_index)
                     .unwrap_or_default();
+            let row_h = self
+                .viewport
+                .item_height(cell.row_index)
+                .unwrap_or_default();
+            let desired_y =
+                row_top + ((row_h - f64::from(child_layout.size.height)) / 2.0).max(0.0);
             // Position from live viewport/column geometry rather than only
             // the absolute Taffy style captured at tree-build time. Scroll
             // frames can then reposition retained controls without forcing a
@@ -2212,10 +3061,13 @@ impl<Row: 'static> Widget for DataTable<Row> {
         }
         // No ground of its own: the table stands on its region's ground.
         self.draw_header(scene, transform, text_renderer, theme);
+        // The body clips at the band, so the lift and stripe bleed past the
+        // table's content edges as a list row's do.
+        let band = self.columns_band();
         let body = Rect::new(
-            self.rect.x0,
+            band.x0,
             self.rect.y0 + self.header_h,
-            self.rect.x1,
+            band.x1,
             self.rect.y0 + self.header_h + self.body_viewport_h(),
         );
         // Rows and mounted cells paint whole-row geometry inside one body
@@ -2270,7 +3122,21 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 self.on_left_release(*ctx.modifiers, ctx.handled, ctx.focus_target, ctx.node_id);
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
-                self.on_wheel(delta, *phase, ctx.handled);
+                let sideways = ctx.modifiers.state().shift_key();
+                self.on_wheel(delta, *phase, sideways, ctx.handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                if let Some(pt) = self.last_cursor
+                    && let Some(row) = self.row_at(pt)
+                    && self.open_row_context(row, pt)
+                {
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
+                }
             }
             WindowEvent::KeyboardInput { event: ke, .. }
                 if self.selectable && self.is_focused && ke.state == ElementState::Pressed =>
@@ -2434,10 +3300,21 @@ impl<Row: 'static> Widget for DataTable<Row> {
                     .columns
                     .iter()
                     .enumerate()
+                    .filter(|(ci, _)| !self.hidden.get(*ci).copied().unwrap_or(false))
                     .map(|(ci, col)| {
-                        let mut cell = AccessNode::new(Role::Cell)
+                        let role = if col.checked.is_some() {
+                            Role::Checkbox
+                        } else {
+                            Role::Cell
+                        };
+                        let mut cell = AccessNode::new(role)
                             .with_name(crate::i18n::I18nManager::lookup_plain(&col.header))
                             .with_position(ci.saturating_add(1), col_count);
+                        if let Some(TableRowState::Ready(row)) = row_state
+                            && let Some(checked) = &col.checked
+                        {
+                            cell = cell.with_state(AccessState::new().checked(checked(row)));
+                        }
                         if let Some(TableRowState::Ready(row)) = row_state
                             && let Some(value) = &col.accessible_value
                         {
@@ -2472,6 +3349,14 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 };
                 if let Some(bounds) = row_bounds {
                     row = row.with_bounds(bounds);
+                }
+                if let Some(tree) = &self.tree
+                    && let Some(TableRowState::Ready(data)) = row_state
+                {
+                    row = row.with_level((tree.depth)(data).saturating_add(1));
+                    if (tree.has_children)(data) {
+                        row.state.expanded = Some((tree.expanded)(data));
+                    }
                 }
                 if (self.row_key.is_some() || self.model.is_some())
                     && (self.selectable || self.on_activate.is_some())
@@ -2548,6 +3433,14 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 self.refresh_view_anchor();
                 true
             }
+            Action::Expand => self.fold_tree_row(row, true),
+            Action::Collapse => self.fold_tree_row(row, false),
+            Action::ShowContextMenu => {
+                let point = self
+                    .row_rect(row)
+                    .map_or(self.rect.center(), |r| r.center());
+                self.open_row_context(row, point)
+            }
             _ => false,
         }
     }
@@ -2592,57 +3485,453 @@ impl<Row: 'static> Widget for DataTable<Row> {
     }
 }
 
+/// The width a column is laid out at when the band is tight: a resized or
+/// fixed width as given, a measured `Auto` width, and the minimum for a
+/// flexible column. `None` for a flexible column (and an `Auto` one not yet
+/// measured), which takes a share of what is left.
+fn column_floor<Row>(
+    column: &ColumnDef<Row>,
+    overrides: &HashMap<String, f32>,
+    auto: &HashMap<String, f32>,
+) -> (f32, Option<f32>) {
+    if let Some(px) = overrides.get(&column.key).copied() {
+        return (px, Some(px));
+    }
+    match column.width {
+        ColumnWidth::Fixed(px) => (px, Some(px)),
+        ColumnWidth::Auto => auto
+            .get(&column.key)
+            .copied()
+            .map_or((DataTable::<Row>::MIN_COL_WIDTH, None), |px| (px, Some(px))),
+        ColumnWidth::Flex(_) => (DataTable::<Row>::MIN_COL_WIDTH, None),
+    }
+}
+
+/// Which columns to hide so the rest fit `width`: those with the highest
+/// [`ColumnDef::priority`] first, never one at priority `0`.
+fn hidden_for_room<Row>(
+    columns: &[ColumnDef<Row>],
+    width: f64,
+    overrides: &HashMap<String, f32>,
+    auto: &HashMap<String, f32>,
+) -> Vec<bool> {
+    let mut hidden = vec![false; columns.len()];
+    let floors: Vec<f32> = columns
+        .iter()
+        .map(|c| column_floor(c, overrides, auto).0)
+        .collect();
+    let mut order: Vec<usize> = (0..columns.len())
+        .filter(|&i| columns.get(i).is_some_and(|c| c.priority > 0))
+        .collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(columns.get(i).map_or(0, |c| c.priority)));
+    let total = |hidden: &[bool]| -> f64 {
+        floors
+            .iter()
+            .zip(hidden)
+            .filter(|(_, h)| !**h)
+            .map(|(w, _)| f64::from(*w))
+            .sum()
+    };
+    for index in order {
+        if total(&hidden) <= width {
+            break;
+        }
+        if let Some(slot) = hidden.get_mut(index) {
+            *slot = true;
+        }
+    }
+    hidden
+}
+
+/// Lay the columns out in `host`: fixed, resized and measured `Auto` columns
+/// at their widths, flexible columns sharing what is left by weight (or,
+/// with none, the `Auto` columns sharing it). When the floors do not fit the
+/// columns keep them and the table scrolls sideways. Returns the rects
+/// (zero-width for hidden columns) and the columns' total width.
 fn compute_column_rects<Row>(
     columns: &[ColumnDef<Row>],
     host: Rect,
     overrides: &HashMap<String, f32>,
-) -> Vec<Rect> {
-    let total_w = px(host.width());
-    let mut fixed_sum = 0.0_f32;
-    let mut flex_sum = 0.0_f32;
-    for c in columns {
-        if let Some(px) = overrides.get(&c.key).copied() {
-            fixed_sum += px;
+    auto: &HashMap<String, f32>,
+    hidden: &[bool],
+) -> (Vec<Rect>, f64) {
+    let shown = |i: usize| !hidden.get(i).copied().unwrap_or(false);
+    let total_w = host.width();
+    let mut sized = 0.0_f64;
+    let mut flex_sum = 0.0_f64;
+    let mut floor_sum = 0.0_f64;
+    let mut measured_auto = 0_usize;
+    for (i, c) in columns.iter().enumerate() {
+        if !shown(i) {
             continue;
         }
-        match c.width {
-            ColumnWidth::Fixed(px) => fixed_sum += px,
-            ColumnWidth::Flex(w) => flex_sum += w.max(0.0),
-            ColumnWidth::Auto => flex_sum += 1.0,
+        let (floor, fixed) = column_floor(c, overrides, auto);
+        floor_sum += f64::from(floor);
+        match fixed {
+            Some(w) => {
+                sized += f64::from(w);
+                if c.width == ColumnWidth::Auto && !overrides.contains_key(&c.key) {
+                    measured_auto += 1;
+                }
+            }
+            None => {
+                flex_sum += match c.width {
+                    ColumnWidth::Flex(w) => f64::from(w.max(0.0)),
+                    _ => 1.0,
+                };
+            }
         }
     }
-    let flex_remaining = (total_w - fixed_sum).max(0.0);
+    let leftover = (total_w - sized).max(0.0);
+    let overflow = floor_sum > total_w + 0.5;
     let mut rects = Vec::with_capacity(columns.len());
     let mut x = host.x0;
     let y0 = host.y0;
     let y1 = host.y0 + HEADER_HEIGHT;
-    for c in columns {
-        let w = if let Some(px) = overrides.get(&c.key).copied() {
-            px
-        } else {
-            match c.width {
-                ColumnWidth::Fixed(px) => px,
-                ColumnWidth::Flex(w) => {
-                    if flex_sum <= 0.0 {
-                        0.0
-                    } else {
-                        flex_remaining * (w.max(0.0) / flex_sum)
-                    }
+    for (i, c) in columns.iter().enumerate() {
+        if !shown(i) {
+            rects.push(Rect::new(x, y0, x, y1));
+            continue;
+        }
+        let (floor, fixed) = column_floor(c, overrides, auto);
+        let w = match fixed {
+            _ if overflow => f64::from(floor),
+            Some(w) => {
+                let auto_share = flex_sum <= 0.0
+                    && measured_auto > 0
+                    && c.width == ColumnWidth::Auto
+                    && !overrides.contains_key(&c.key);
+                if auto_share {
+                    f64::from(w) + leftover / measured_auto as f64
+                } else {
+                    f64::from(w)
                 }
-                ColumnWidth::Auto => {
-                    if flex_sum <= 0.0 {
-                        0.0
-                    } else {
-                        flex_remaining * (1.0 / flex_sum)
-                    }
+            }
+            None => {
+                let weight = match c.width {
+                    ColumnWidth::Flex(w) => f64::from(w.max(0.0)),
+                    _ => 1.0,
+                };
+                if flex_sum <= 0.0 {
+                    0.0
+                } else {
+                    leftover * (weight / flex_sum)
                 }
             }
         };
-        let next = x + f64::from(w);
+        let next = x + w;
         rects.push(Rect::new(x, y0, next, y1));
         x = next;
     }
-    rects
+    (rects, x - host.x0)
+}
+
+/// Paint one column header in `cell` (the column's rect at the header's
+/// height): `Caption` strong in secondary ink, leading or (numeric)
+/// trailing, with the sort direction as a chevron beside it.
+fn paint_header_label(
+    ctx: &mut crate::paint::PaintCtx<'_>,
+    cell: Rect,
+    label: &str,
+    numeric: bool,
+    sorted: Option<bool>,
+) {
+    if cell.width() <= 0.0 {
+        return;
+    }
+    let theme = ctx.theme;
+    let tokens = &theme.tokens;
+    let text_style = header_style(theme);
+    let pad_x = f64::from(tokens.spacing.s2);
+    let icon = f64::from(tokens.metrics.icon_sm);
+    let icon_gap = f64::from(tokens.spacing.s1);
+    let room = (cell.width()
+        - 2.0 * pad_x
+        - if sorted.is_some() {
+            icon + icon_gap
+        } else {
+            0.0
+        })
+    .max(0.0);
+    let label = ctx.text.elide_to_width_style(label, px(room), &text_style);
+    let (label_w, label_h) = ctx.text.measure_style(&label, None, &text_style);
+    let label_y = centered_text_top(cell.y0, cell.height(), label_h);
+    let label_x = if numeric {
+        cell.x1 - pad_x - f64::from(label_w)
+    } else {
+        cell.x0 + pad_x
+    };
+    ctx.text(
+        &label,
+        &text_style,
+        tokens.colors.text_dim,
+        Point::new(label_x, label_y),
+        None,
+    );
+    if let Some(ascending) = sorted {
+        // The sort direction is an icon beside the label: before a
+        // trailing-aligned numeric header, after a leading one.
+        let x0 = if numeric {
+            label_x - icon_gap - icon
+        } else {
+            label_x + f64::from(label_w) + icon_gap
+        };
+        let glyph =
+            Rect::from_center_size(Point::new(x0 + icon / 2.0, cell.center().y), (icon, icon));
+        let arrow = if ascending {
+            crate::icons::Icon::ChevronUp
+        } else {
+            crate::icons::Icon::ChevronDown
+        };
+        arrow.draw(ctx.scene, ctx.transform, glyph, tokens.colors.text_dim);
+    }
+}
+
+/// One column of a [`DataTableFace`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FaceColumn<'a> {
+    pub header: &'a str,
+    pub width: ColumnWidth,
+    /// [`TextKind::Numeric`] aligns the column to the trailing edge.
+    pub kind: TextKind,
+}
+
+impl<'a> FaceColumn<'a> {
+    pub fn new(header: &'a str, width: ColumnWidth) -> Self {
+        Self {
+            header,
+            width,
+            kind: TextKind::Prose,
+        }
+    }
+
+    #[must_use]
+    pub fn with_kind(mut self, kind: TextKind) -> Self {
+        self.kind = kind;
+        self
+    }
+}
+
+/// An immediate-mode table for a painted host (a track list): the
+/// [`DataTable`]'s header, columns, row heights, zebra and lift, painted per
+/// frame. `paint` takes the table's content rect; the lift and the stripe
+/// bleed past it by [`crate::chrome::row_bleed`] as the retained table's do.
+/// The host hit-tests with [`Self::row_at`] and scrolls by passing the rows
+/// it shows.
+#[derive(Clone, Debug)]
+pub struct DataTableFace<'a> {
+    columns: &'a [FaceColumn<'a>],
+    rows: &'a [&'a [&'a str]],
+    /// The display index of `rows[0]`, so stripes keep their parity while a
+    /// host scrolls.
+    first_row: usize,
+    selected: Option<usize>,
+    hovered: Option<usize>,
+    sort: Option<(usize, bool)>,
+    compact: bool,
+}
+
+impl<'a> DataTableFace<'a> {
+    pub fn new(columns: &'a [FaceColumn<'a>], rows: &'a [&'a [&'a str]]) -> Self {
+        Self {
+            columns,
+            rows,
+            first_row: 0,
+            selected: None,
+            hovered: None,
+            sort: None,
+            compact: false,
+        }
+    }
+
+    /// The display index of the first row given.
+    #[must_use]
+    pub fn first_row(mut self, index: usize) -> Self {
+        self.first_row = index;
+        self
+    }
+
+    /// The selected row, by index into the rows given.
+    #[must_use]
+    pub fn selected(mut self, row: Option<usize>) -> Self {
+        self.selected = row;
+        self
+    }
+
+    /// The row under the pointer.
+    #[must_use]
+    pub fn hovered(mut self, row: Option<usize>) -> Self {
+        self.hovered = row;
+        self
+    }
+
+    /// The sorted column and its direction.
+    #[must_use]
+    pub fn sorted_by(mut self, column: usize, ascending: bool) -> Self {
+        self.sort = Some((column, ascending));
+        self
+    }
+
+    /// Rows a small control tall.
+    #[must_use]
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
+        self
+    }
+
+    /// The header band's height.
+    pub fn header_height(theme: &Theme) -> f64 {
+        let tokens = &theme.tokens;
+        text_band(
+            f64::from(tokens.metrics.min_pointer_target),
+            type_line_height(&tokens.typography, TextRole::Caption),
+            f64::from(tokens.spacing.s3),
+        )
+    }
+
+    /// One row's height.
+    pub fn row_height(&self, theme: &Theme) -> f64 {
+        let tokens = &theme.tokens;
+        let floor = f64::from(if self.compact {
+            tokens.metrics.min_pointer_target
+        } else {
+            tokens.metrics.min_pointer_target + tokens.spacing.s2
+        });
+        text_band(
+            floor,
+            type_line_height(&tokens.typography, TextRole::Caption),
+            f64::from(tokens.spacing.s2),
+        )
+    }
+
+    /// The header and every row given.
+    pub fn height(&self, theme: &Theme) -> f64 {
+        Self::header_height(theme) + self.row_height(theme) * self.rows.len() as f64
+    }
+
+    /// Each column's rect in `rect`, at the header's height: the band runs
+    /// the bleed past the content edges, `Auto` columns measured from their
+    /// header and cells.
+    pub fn column_rects(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> Vec<Rect> {
+        let bleed = crate::chrome::row_bleed(theme);
+        let pad = 2.0 * f64::from(theme.tokens.spacing.s2);
+        let mut auto = HashMap::new();
+        let defs: Vec<ColumnDef<()>> = self
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                if c.width == ColumnWidth::Auto {
+                    let mut width =
+                        f64::from(text.measure_style(c.header, None, &header_style(theme)).0);
+                    let style = cell_style(theme, c.kind);
+                    for row in self.rows {
+                        if let Some(cell) = row.get(i) {
+                            width = width.max(f64::from(text.measure_style(cell, None, &style).0));
+                        }
+                    }
+                    auto.insert(i.to_string(), px((width + pad).ceil()));
+                }
+                ColumnDef::new(i.to_string(), c.header, c.width)
+            })
+            .collect();
+        let band = Rect::new(rect.x0 - bleed, rect.y0, rect.x1 + bleed, rect.y1);
+        let hidden = vec![false; defs.len()];
+        compute_column_rects(&defs, band, &HashMap::new(), &auto, &hidden)
+            .0
+            .into_iter()
+            .map(|r| Rect::new(r.x0, rect.y0, r.x1, rect.y0 + Self::header_height(theme)))
+            .collect()
+    }
+
+    /// Row `index`'s lift rect in a table painted into `rect`.
+    pub fn row_rect(&self, rect: Rect, index: usize, theme: &Theme) -> Rect {
+        let bleed = crate::chrome::row_bleed(theme);
+        let h = self.row_height(theme);
+        let y0 = rect.y0 + Self::header_height(theme) + h * index as f64;
+        Rect::new(rect.x0 - bleed, y0, rect.x1 + bleed, y0 + h)
+    }
+
+    /// The row under `point` in a table painted into `rect`.
+    pub fn row_at(&self, rect: Rect, point: Point, theme: &Theme) -> Option<usize> {
+        let top = rect.y0 + Self::header_height(theme);
+        if point.y < top || point.x < rect.x0 || point.x > rect.x1 {
+            return None;
+        }
+        let index = ((point.y - top) / self.row_height(theme)).floor();
+        (index >= 0.0 && (index as usize) < self.rows.len()).then_some(index as usize)
+    }
+
+    /// Paint the header and the rows into `rect`.
+    pub fn paint(&self, ctx: &mut crate::paint::PaintCtx<'_>, rect: Rect) {
+        let theme = ctx.theme;
+        let tokens = &theme.tokens;
+        let ground = tokens.colors.surfaces.content;
+        let columns = self.column_rects(rect, ctx.text, theme);
+        let header_h = Self::header_height(theme);
+        let bleed = crate::chrome::row_bleed(theme);
+        crate::surface::separator(
+            ctx.scene,
+            ctx.transform,
+            rect.x0 - bleed,
+            rect.x1 + bleed,
+            rect.y0 + header_h - 0.5,
+            0.0,
+            ground,
+        );
+        for (i, (column, cell)) in self.columns.iter().zip(&columns).enumerate() {
+            let sorted = self
+                .sort
+                .filter(|(sorted, _)| *sorted == i)
+                .map(|(_, ascending)| ascending);
+            paint_header_label(
+                ctx,
+                *cell,
+                column.header,
+                column.kind == TextKind::Numeric,
+                sorted,
+            );
+        }
+        for (index, row) in self.rows.iter().enumerate() {
+            let band = self.row_rect(rect, index, theme);
+            if band.y0 >= rect.y1 {
+                break;
+            }
+            let selected = self.selected == Some(index);
+            let hovered = self.hovered == Some(index);
+            if selected || hovered {
+                crate::chrome::paint_row_selection(
+                    ctx.scene,
+                    ctx.transform,
+                    band,
+                    crate::chrome::SelectionState::new(selected, hovered, false),
+                    ground,
+                    theme,
+                );
+            } else if self.first_row.saturating_add(index) % 2 == 1 {
+                let radius = f64::from(tokens.radii.item).min(band.height() / 2.0);
+                ctx.scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    ctx.transform,
+                    zebra_on(theme, ground),
+                    None,
+                    &RoundedRect::from_rect(band, radius),
+                );
+            }
+            for ((column, cell), value) in self.columns.iter().zip(&columns).zip(row.iter()) {
+                let def = ColumnDef::<()>::new("", "", column.width).with_kind(column.kind);
+                paint_cell_text(
+                    ctx.scene,
+                    ctx.transform,
+                    ctx.text,
+                    theme,
+                    Rect::new(cell.x0, band.y0, cell.x1, band.y1),
+                    &def,
+                    Some(value),
+                );
+            }
+        }
+    }
 }
 
 /// How much of the selection lift a zebra stripe takes: a quarter of the
@@ -3054,7 +4343,8 @@ mod tests {
         fn compute_column_rects_splits_flex_after_fixed() {
             let cols = sample_cols();
             let host = Rect::new(0.0, 0.0, 200.0, 28.0);
-            let rects = compute_column_rects(&cols, host, &HashMap::new());
+            let (rects, _) =
+                compute_column_rects(&cols, host, &HashMap::new(), &HashMap::new(), &[]);
             assert_eq!(rects.len(), 2);
             assert!((rects[0].width() - 160.0).abs() < 0.01);
             assert!((rects[1].width() - 40.0).abs() < 0.01);
@@ -3779,7 +5069,7 @@ mod tests {
                 ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0))
                     .with_text(|row: &R| row.name.clone()),
                 ColumnDef::new("custom", "Custom", ColumnWidth::Fixed(80.0))
-                    .with_render(Box::new(|_, _, _, _, _| {}))
+                    .with_render(Box::new(|_, _, _, _, _, _| {}))
                     .with_accessible_value(|row: &R| format!("custom {}", row.name)),
                 ColumnDef::new("action", "Action", ColumnWidth::Fixed(80.0))
                     .with_widget(|_, _| Box::new(Button::new("edit", "Edit", None))),
@@ -4090,6 +5380,7 @@ mod tests {
             table.on_wheel(
                 &MouseScrollDelta::LineDelta(0.0, -1.0),
                 TouchPhase::Moved,
+                false,
                 &mut handled,
             );
             assert!(handled);
@@ -4209,7 +5500,10 @@ mod tests {
     /// 100 rows at 300×400, internal-scroll with a 5-row viewport (120 px
     /// body over 2400 px of rows → bar is live). Bar centre x is 294.
     fn scrolling_table() -> (DataTable<R>, TaffyTree<()>, NodeId) {
-        let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
+        // A body that drags to scroll, as a finger's does.
+        let mut t = DataTable::<R>::new(sample_cols())
+            .selectable(true)
+            .drag_scroll();
         t.set_rows(
             (0..100)
                 .map(|i| R {
@@ -4223,40 +5517,43 @@ mod tests {
     }
 
     /// The selection lift, the stripe and the cells share one edge: the
-    /// columns stand `s2` in from the table on both sides (so a cell's own
-    /// `s2` padding keeps its text off the lift's rounded edge), and the
-    /// live scroll bar has its own column at the trailing edge.
+    /// first column's text (a cell pads it by the bleed) starts on the
+    /// table's content edge, the band and its lift stand the bleed past it,
+    /// and the live scroll bar keeps its own gutter at the trailing edge.
     #[test]
     fn rows_share_one_edge_and_the_scroll_bar_keeps_its_own_column() {
         let (mut t, _tree, _node) = scrolling_table();
         let _relaid = lay_out(&mut t);
-        let inset = f64::from(Theme::dark().tokens.spacing.s2);
+        let bleed = f64::from(Theme::dark().tokens.spacing.s2);
+        let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
         let rect = t.get_rect();
         let first = t.col_rects.first().copied().expect("a column");
         let last = t.col_rects.last().copied().expect("a column");
-        assert!((first.x0 - (rect.x0 + inset)).abs() < 1e-6, "{first:?}");
+        assert!((first.x0 - (rect.x0 - bleed)).abs() < 1e-6, "{first:?}");
         let track = t.v_track().expect("the bar is live");
         assert!(
-            last.x1 + inset <= track.x0 + 1e-6,
+            last.x1 <= track.x0 + 1e-6,
             "the last column ends before the bar: {last:?} vs {track:?}"
         );
         let band = t.columns_band();
-        assert!((band.x0 - first.x0).abs() < 1e-6 && band.x1 <= track.x0);
+        assert!((band.x0 - first.x0).abs() < 1e-6);
+        assert!((band.x1 - (rect.x1 - gutter)).abs() < 1e-6 && band.x1 <= track.x0);
 
-        // Without a bar the band runs to the inset on the trailing edge too.
+        // Without a bar the band runs the bleed past the trailing edge too.
         let mut plain = DataTable::<R>::new(sample_cols()).selectable(true);
         plain.set_rows(rows4());
         let _laid = lay_out(&mut plain);
         let band = plain.columns_band();
         let rect = plain.get_rect();
         assert!(
-            (band.x1 - (rect.x1 - inset)).abs() < 1e-6,
+            (band.x1 - (rect.x1 + bleed)).abs() < 1e-6,
             "{band:?} in {rect:?}"
         );
     }
 
     fn bar_x(t: &DataTable<R>) -> f64 {
-        t.get_rect().x1 - BAR_MARGIN - BAR_THICKNESS / 2.0
+        t.v_track()
+            .map_or(t.get_rect().x1, |track| track.center().x)
     }
 
     #[test]
@@ -4551,6 +5848,7 @@ mod tests {
             table.on_wheel(
                 &MouseScrollDelta::LineDelta(0.0, -1.0),
                 TouchPhase::Moved,
+                false,
                 &mut handled,
             );
             assert!(handled);
@@ -4696,5 +5994,492 @@ mod tests {
         // The right-aligned origin lands so the run ends at the padding.
         let x = cell.x1 - pad - f64::from(w);
         assert!(x > cell.center().x, "numbers sit at the trailing edge");
+    }
+}
+
+#[cfg(test)]
+mod content_edge_tests {
+    use super::*;
+    use automerge::AutoCommit;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use winit::event::DeviceId;
+
+    #[derive(Clone)]
+    struct Item {
+        name: String,
+        depth: usize,
+        open: bool,
+        children: bool,
+        on: bool,
+    }
+
+    fn item(name: &str) -> Item {
+        Item {
+            name: name.to_owned(),
+            depth: 0,
+            open: false,
+            children: false,
+            on: false,
+        }
+    }
+
+    fn items(n: usize) -> Vec<Item> {
+        (0..n).map(|i| item(&format!("item {i}"))).collect()
+    }
+
+    fn name_col() -> ColumnDef<Item> {
+        ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0)).with_text(|r: &Item| r.name.clone())
+    }
+
+    /// Lay `table` out at `width` × `height` through the measuring pass the
+    /// host runs, so `Auto` columns and wrapping rows settle.
+    fn settle(table: &mut DataTable<Item>, width: f32, height: f32) -> (TaffyTree<()>, NodeId) {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut node = None;
+        let mut tree = TaffyTree::<()>::new();
+        for _ in 0..4 {
+            tree = TaffyTree::<()>::new();
+            let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let tnode = table.build_layout(&mut tree, &theme, &mut map);
+            let root = tree.parent_node(
+                Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: Size {
+                        width: Dimension::length(width),
+                        height: Dimension::length(height),
+                    },
+                    ..Default::default()
+                },
+                &[tnode],
+            );
+            tree.compute_layout(
+                root,
+                Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::Definite(height),
+                },
+            )
+            .unwrap();
+            let rect = tree.layout(tnode).copied().unwrap_or_default();
+            let _ = rect;
+            table.apply_layout(&tree, tnode, Point::new(24.0, 0.0));
+            let changed = table.adjust_layout_with_measure(&mut tree, tnode, &mut text);
+            node = Some(tnode);
+            if !changed {
+                break;
+            }
+        }
+        (tree, node.unwrap())
+    }
+
+    fn send(
+        table: &mut DataTable<Item>,
+        tree: &TaffyTree<()>,
+        node: NodeId,
+        ev: &WindowEvent,
+        shift: bool,
+    ) -> bool {
+        let mut handled = false;
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        let mods = if shift {
+            winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT)
+        } else {
+            winit::event::Modifiers::default()
+        };
+        table.handle_event(
+            ev,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: tree,
+            },
+        );
+        handled
+    }
+
+    fn at(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+
+    fn button(state: ElementState, button: MouseButton) -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state,
+            button,
+        }
+    }
+
+    #[test]
+    fn the_first_column_starts_on_the_content_edge_and_the_lift_bleeds_past_it() {
+        let mut table = DataTable::new(vec![name_col()]).selectable(true);
+        table.set_rows(items(3));
+        let _ = settle(&mut table, 300.0, 400.0);
+        let theme = Theme::dark();
+        let bleed = crate::chrome::row_bleed(&theme);
+        let rect = table.get_rect();
+        let band = table.columns_band();
+        assert!(
+            (band.x0 - (rect.x0 - bleed)).abs() < 1e-6,
+            "{band:?} {rect:?}"
+        );
+        assert!((band.x1 - (rect.x1 + bleed)).abs() < 1e-6);
+        // A cell pads its text by the bleed: the first column's text is on
+        // the table's own edge.
+        let first = table.col_rects[0];
+        assert!((first.x0 + bleed - rect.x0).abs() < 1e-6);
+        let row = table.row_rect(0).unwrap();
+        assert!((row.x0 - band.x0).abs() < 1e-6 && (row.x1 - band.x1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rows_are_forty_regular_and_thirty_two_compact() {
+        let theme = Theme::dark();
+        let metrics = theme.tokens.metrics;
+        let mut regular = DataTable::new(vec![name_col()]);
+        regular.set_rows(items(2));
+        let _ = settle(&mut regular, 300.0, 400.0);
+        assert_eq!(
+            regular.viewport.item_height(0),
+            Some(f64::from(
+                metrics.min_pointer_target + theme.tokens.spacing.s2
+            ))
+        );
+        let mut compact = DataTable::new(vec![name_col()]).compact();
+        compact.set_rows(items(2));
+        let _ = settle(&mut compact, 300.0, 400.0);
+        assert_eq!(
+            compact.viewport.item_height(0),
+            Some(f64::from(metrics.min_pointer_target))
+        );
+        let face = DataTableFace::new(&[], &[]);
+        assert!((face.row_height(&theme) - 40.0).abs() < 0.01);
+        assert!((DataTableFace::header_height(&theme) - regular.header_height()).abs() < 0.01);
+    }
+
+    #[test]
+    fn narrow_tables_hide_columns_by_priority_then_scroll_sideways() {
+        let cols = || {
+            vec![
+                name_col(),
+                ColumnDef::new("a", "A", ColumnWidth::Fixed(120.0)).priority(2),
+                ColumnDef::new("b", "B", ColumnWidth::Fixed(120.0)).priority(1),
+                ColumnDef::new("c", "C", ColumnWidth::Fixed(120.0)),
+            ]
+        };
+        let mut table = DataTable::new(cols());
+        table.set_rows(items(3));
+        let _ = settle(&mut table, 600.0, 400.0);
+        assert_eq!(table.hidden, [false, false, false, false]);
+        let _ = settle(&mut table, 300.0, 400.0);
+        assert_eq!(
+            table.hidden,
+            [false, true, false, false],
+            "A gives way first"
+        );
+        let (tree, node) = settle(&mut table, 120.0, 400.0);
+        assert_eq!(table.hidden, [false, true, true, false]);
+        assert!(table.h_overflow(), "what still does not fit scrolls");
+        let before = table.scroll_x();
+        send(&mut table, &tree, node, &at(60.0, 60.0), false);
+        let wheel = WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+            phase: TouchPhase::Moved,
+        };
+        assert!(
+            send(&mut table, &tree, node, &wheel, true),
+            "shift-wheel scrolls sideways"
+        );
+        assert!(table.scroll_x() > before);
+        assert!(table.h_track().is_some(), "the bar shows");
+    }
+
+    #[test]
+    fn auto_columns_share_the_leftover_without_a_flexible_one() {
+        let mut table = DataTable::new(vec![
+            ColumnDef::new("name", "Name", ColumnWidth::Auto).with_text(|r: &Item| r.name.clone()),
+            ColumnDef::new("kind", "Kind", ColumnWidth::Auto).with_text(|_| "File".to_owned()),
+        ]);
+        table.set_rows(items(3));
+        let _ = settle(&mut table, 500.0, 400.0);
+        let band = table.columns_band();
+        let last = *table.col_rects.last().unwrap();
+        assert!((last.x1 - band.x1).abs() < 0.5, "the columns fill the band");
+        assert!(table.col_rects[0].width() > 60.0);
+    }
+
+    #[test]
+    fn a_tree_table_folds_by_chevron_and_arrows_and_reads_levels() {
+        let toggles = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&toggles);
+        let mut table = DataTable::new(vec![name_col()]).selectable(true).tree(
+            |r: &Item| r.depth,
+            |r| r.children,
+            |r| r.open,
+            move |row, open| seen.borrow_mut().push((row, open)),
+        );
+        let mut rows = items(3);
+        rows[0].children = true;
+        rows[1].depth = 1;
+        table.set_rows(rows);
+        let (tree, node) = settle(&mut table, 300.0, 400.0);
+        let chevron = table.tree_chevron(0, &Theme::dark()).expect("a parent row");
+        send(
+            &mut table,
+            &tree,
+            node,
+            &at(chevron.center().x, chevron.center().y),
+            false,
+        );
+        send(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Pressed, MouseButton::Left),
+            false,
+        );
+        assert_eq!(*toggles.borrow(), [(0, true)]);
+        let node_a11y = Widget::accessibility(&table).unwrap();
+        assert_eq!(node_a11y.children[0].level, Some(1));
+        assert_eq!(node_a11y.children[0].state.expanded, Some(false));
+        assert_eq!(node_a11y.children[1].level, Some(2));
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_action_at(
+            &mut table,
+            &crate::a11y::Action::Expand,
+            &[0],
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(toggles.borrow().len(), 2);
+    }
+
+    #[test]
+    fn a_sort_indicator_shows_without_reordering() {
+        let mut table = DataTable::new(vec![name_col().sortable(true)]);
+        table.set_rows(vec![item("b"), item("a")]);
+        table.set_sort_indicator("name", true);
+        let names: Vec<String> = table.view_rows().iter().map(|r| r.name.clone()).collect();
+        assert_eq!(names, ["b", "a"]);
+        assert_eq!(
+            table.sort_indicator.as_ref().map(|(k, a)| (k.as_str(), *a)),
+            Some(("name", true))
+        );
+    }
+
+    #[test]
+    fn badges_and_checkboxes_are_measured_painted_and_read() {
+        let checks = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&checks);
+        let mut table = DataTable::new(vec![
+            ColumnDef::checkbox("on", "On", |r: &Item| r.on),
+            ColumnDef::new("level", "Level", ColumnWidth::Auto)
+                .with_badge(|_| ("Warning".to_owned(), crate::widget::Tone::Warning)),
+            name_col(),
+        ])
+        .selectable(true)
+        .on_check(move |row, on| seen.borrow_mut().push((row, on)));
+        table.set_rows(items(2));
+        let (tree, node) = settle(&mut table, 400.0, 300.0);
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let badge = crate::widget::BadgeFace::intrinsic_width("Warning", &mut text, &theme);
+        assert!(table.col_rects[1].width() >= badge);
+        let row = table.row_rect(1).unwrap();
+        let check = table.col_rects[0];
+        send(
+            &mut table,
+            &tree,
+            node,
+            &at(check.center().x, row.center().y),
+            false,
+        );
+        send(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Pressed, MouseButton::Left),
+            false,
+        );
+        assert_eq!(*checks.borrow(), [(1, true)]);
+        let a11y = Widget::accessibility(&table).unwrap();
+        let cell = &a11y.children[0].children[0];
+        assert_eq!(cell.role, crate::a11y::Role::Checkbox);
+        assert_eq!(cell.state.checked, Some(false));
+        assert_eq!(
+            a11y.children[0].children[1].value.as_deref(),
+            Some("Warning")
+        );
+    }
+
+    #[test]
+    fn a_context_menu_selects_its_row_and_a_drag_begins_only_past_the_slop() {
+        let menus = Rc::new(RefCell::new(Vec::new()));
+        let drags = Rc::new(Cell::new(0));
+        let (m, d) = (Rc::clone(&menus), Rc::clone(&drags));
+        let mut table = DataTable::new(vec![name_col()])
+            .selectable(true)
+            .with_viewport(200.0, 40.0)
+            .on_row_context_menu(move |row, _, rect| m.borrow_mut().push((row, rect)))
+            .on_row_drag_begin(move |_, _, _| d.set(d.get() + 1));
+        table.set_rows(items(50));
+        let (tree, node) = settle(&mut table, 300.0, 400.0);
+        let row = table.row_rect(2).unwrap();
+        send(&mut table, &tree, node, &at(60.0, row.center().y), false);
+        assert!(send(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Pressed, MouseButton::Right),
+            false
+        ));
+        assert_eq!(menus.borrow().len(), 1);
+        assert_eq!(menus.borrow()[0].0, 2);
+        assert!(table.is_row_selected(2));
+        // A mouse press on a scrolling body selects at once (no drag-scroll
+        // unless asked for), and a drag past the slop begins a row drag.
+        let row = table.row_rect(1).unwrap();
+        send(&mut table, &tree, node, &at(60.0, row.center().y), false);
+        send(
+            &mut table,
+            &tree,
+            node,
+            &button(ElementState::Pressed, MouseButton::Left),
+            false,
+        );
+        assert!(table.is_row_selected(1));
+        send(
+            &mut table,
+            &tree,
+            node,
+            &at(61.0, row.center().y + 1.0),
+            false,
+        );
+        assert_eq!(drags.get(), 0, "within the slop");
+        send(
+            &mut table,
+            &tree,
+            node,
+            &at(60.0, row.center().y + 20.0),
+            false,
+        );
+        assert_eq!(drags.get(), 1);
+        assert_eq!(
+            table.row_at_point(Point::new(60.0, row.center().y)),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn apply_changes_keeps_cell_controls_mounted_by_key() {
+        let builds = Rc::new(Cell::new(0));
+        let counter = Rc::clone(&builds);
+        let mut table = DataTable::new(vec![
+            name_col(),
+            ColumnDef::new("edit", "Edit", ColumnWidth::Fixed(80.0)).with_widget(
+                move |r: &Item, _| {
+                    counter.set(counter.get() + 1);
+                    Box::new(crate::widget::Text::new(&r.name)) as Element
+                },
+            ),
+        ])
+        .with_row_key(|r: &Item| {
+            r.name
+                .bytes()
+                .fold(7_u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)))
+        });
+        table.set_rows(items(3));
+        let _ = settle(&mut table, 400.0, 300.0);
+        let first = builds.get();
+        assert_eq!(first, 3);
+        table.rows_mut().push(item("new"));
+        table.apply_changes(&[TableModelChange::RowsInserted { index: 3, count: 1 }]);
+        let _ = settle(&mut table, 400.0, 300.0);
+        assert_eq!(builds.get(), first + 1, "only the new row builds");
+    }
+
+    #[test]
+    fn a_filling_table_scrolls_inside_its_parent_and_wrapping_rows_grow() {
+        let mut table = DataTable::new(vec![
+            ColumnDef::new("text", "Message", ColumnWidth::Flex(1.0))
+                .with_text(|r: &Item| r.name.clone())
+                .wrapping(3),
+        ])
+        .fill_height();
+        let mut rows = items(40);
+        rows[0].name =
+            "A message long enough to wrap onto more than one line in a narrow table".into();
+        table.set_rows(rows);
+        let _ = settle(&mut table, 200.0, 300.0);
+        assert!((table.viewport.viewport() - (300.0 - table.header_height())).abs() < 0.5);
+        assert!(table.internal_scroll());
+        let tall = table.viewport.item_height(0).unwrap();
+        let plain = table.viewport.item_height(1).unwrap();
+        assert!(tall > plain, "{tall} vs {plain}");
+    }
+
+    #[test]
+    fn painters_receive_the_table_transform() {
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let sink = Arc::clone(&seen);
+        let mut table = DataTable::new(vec![
+            ColumnDef::new("p", "P", ColumnWidth::Flex(1.0)).with_render(Box::new(
+                move |_, _, transform, _, _, _| {
+                    *sink.lock().unwrap() = Some(transform);
+                },
+            )),
+        ]);
+        table.set_rows(items(1));
+        let _ = settle(&mut table, 200.0, 200.0);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let shift = Affine::translate((0.0, -30.0));
+        table.draw(
+            &mut scene,
+            shift,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+        assert_eq!(*seen.lock().unwrap(), Some(shift));
+    }
+
+    #[test]
+    fn a_table_face_lays_rows_out_and_hit_tests_them() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let columns = [
+            FaceColumn::new("Title", ColumnWidth::Flex(1.0)),
+            FaceColumn::new("Time", ColumnWidth::Auto).with_kind(TextKind::Numeric),
+        ];
+        let rows: [&[&str]; 2] = [&["Blue in green", "5:37"], &["So what", "9:22"]];
+        let face = DataTableFace::new(&columns, &rows)
+            .selected(Some(1))
+            .sorted_by(0, true);
+        let rect = Rect::new(0.0, 0.0, 400.0, face.height(&theme));
+        let cols = face.column_rects(rect, &mut text, &theme);
+        let bleed = crate::chrome::row_bleed(&theme);
+        assert!((cols[0].x0 + bleed).abs() < 1e-6);
+        assert!((cols[1].x1 - (400.0 + bleed)).abs() < 0.5);
+        let second = face.row_rect(rect, 1, &theme);
+        assert_eq!(face.row_at(rect, second.center(), &theme), Some(1));
+        let mut scene = Scene::new();
+        face.paint(
+            &mut crate::paint::PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+            rect,
+        );
+        assert!(scene.encoding().resources.glyph_runs.len() >= 6);
     }
 }
