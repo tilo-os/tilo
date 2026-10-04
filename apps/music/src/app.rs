@@ -593,12 +593,10 @@ pub struct MusicApp {
     offline_results: Vec<tilo_actions::InvocationUpdate>,
     offline_errors: HashMap<String, String>,
 
-    /// Framework-owned action dispatch: brackets the undo boundary (the same undo
-    /// path the Ctrl+K palette takes), encodes and dispatches each on-screen
-    /// affordance's [`crate::actions`] action, and remembers the last one so a
-    /// test can prove a button and the Ctrl+K
-    /// [`ActionSpec`](tilo_actions::ActionSpec) build the byte-identical action.
-    actions: crate::resource::ActionSink,
+    /// Where library edits go: the framework's dispatcher, which applies
+    /// each as the participant's attributed, undoable action. `None` until
+    /// the surface is attached.
+    dispatcher: Option<ui::framework::Dispatcher<crate::resource::Music>>,
     // Drop after the audio engine/downloads so test-owned files are no longer open.
     #[cfg(test)]
     _test_cache_dir: tempfile::TempDir,
@@ -849,7 +847,14 @@ impl MusicApp {
             offline_invocation: None,
             offline_results: Vec::new(),
             offline_errors: HashMap::new(),
-            actions: crate::resource::ActionSink::default(),
+            // A test drives the surface on a document it builds; its edits
+            // land there.
+            #[cfg(test)]
+            dispatcher: Some(ui::framework::testing::dispatcher(
+                <crate::MusicShell as ui::framework::ResourceApp>::ID,
+            )),
+            #[cfg(not(test))]
+            dispatcher: None,
             #[cfg(test)]
             _test_cache_dir: test_cache_dir,
         }
@@ -918,10 +923,7 @@ impl MusicApp {
         if self.library_heads.as_ref() == Some(&heads) {
             return;
         }
-        let mut next_library = doc::load_library(state);
-        // `Library` carries cache state only as a convenient render projection.
-        // Its authoritative copy is local to this device, not the shared doc.
-        next_library.cache = self.device_cache.clone();
+        let next_library = doc::load_library(state);
         let searchable_catalog_changed = self.lib.tracks != next_library.tracks
             || self.lib.albums != next_library.albums
             || self.lib.artists != next_library.artists
@@ -1050,9 +1052,6 @@ impl MusicApp {
             return Ok(());
         }
         crate::storage::save_device_profile(&crate::storage::DeviceProfile {
-            // Do not persist a marker for media bytes we do not own. Playback
-            // resume remains durable, device-local state.
-            cache: BTreeMap::new(),
             local_file: self.local_file.clone(),
             playback: self.pb.clone(),
         })
@@ -1072,28 +1071,31 @@ impl MusicApp {
         } else {
             self.device_cache.insert(id.to_string(), state);
         }
-        self.lib.cache = self.device_cache.clone();
+    }
+
+    /// Whether this device holds `id`'s media: a download in flight or a
+    /// durable cached copy. Never shared with other devices.
+    pub(crate) fn cache_state(&self, id: &str) -> CacheState {
+        self.device_cache.get(id).copied().unwrap_or_default()
     }
 
     // ---- action dispatch --------------------------------------------------
 
-    /// Dispatch one [`MusicAction`](crate::actions::MusicAction) — the single
-    /// CRDT-mutation path shared with the Ctrl+K palette. The action is applied
-    /// through the Tilo action executor (a pinned actor + committed change, so it
-    /// replays byte-identically on peers), exactly as the palette does. The
-    /// document heads captured just before the first action of the event are
-    /// stashed so the host records **one** undo boundary bracketing it
-    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). Callers reload the
-    /// in-memory library from the document afterward for immediate UI feedback;
-    /// `sync` reconciles it again on the next frame (so a palette dispatch shows
-    /// up the same way).
+    /// Apply one [`MusicAction`](crate::actions::MusicAction) through the
+    /// framework's dispatcher — the one door the Ctrl+K palette, agents and
+    /// every on-screen affordance share: checked against the participant's
+    /// permissions, attributed, undoable and replayed byte-identically on
+    /// peers. Callers reload the in-memory library from the document
+    /// afterward for immediate feedback.
     fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::MusicAction) {
-        self.actions.dispatch_with_context(
-            state,
-            crate::actions::MUSIC_ACTION_TYPE,
-            action,
-            crate::actions::history_context(action),
-        );
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
+        if let Err(error) =
+            dispatcher.apply_now_with(state, action, crate::actions::history_context(action))
+        {
+            self.toast = Some((error.to_string(), ui::time::now()));
+        }
     }
 
     /// Show the shared library, keeping this device's cache.
@@ -1114,21 +1116,19 @@ impl MusicApp {
             || self.lib.albums != state.albums
             || self.lib.artists != state.artists
             || self.lib.playlists != state.playlists;
-        let cache = self.device_cache.clone();
         self.lib = state.clone();
-        self.lib.cache = cache;
         if searchable {
             self.refresh_library_search_provider();
         }
         self.sync_playlist_covers();
     }
 
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
-    pub(crate) fn attach_framework(
+    /// Send library edits through the framework's dispatcher.
+    pub(crate) fn attach_dispatcher(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Music>,
     ) {
-        self.actions.attach(dispatcher);
+        self.dispatcher = Some(dispatcher);
     }
 
     /// The context Ctrl+K needs to build Music's resource tree: the user's
@@ -1177,7 +1177,7 @@ impl MusicApp {
                     label: self.track_label(&track.id),
                     album_id: track.album_id.clone(),
                     artist_id: track.artist_id.clone(),
-                    offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
+                    offline: matches!(self.cache_state(&track.id), CacheState::Cached),
                     liked: self.lib.is_liked(&track.id),
                 })
                 .collect(),
@@ -1316,7 +1316,7 @@ impl MusicApp {
                 label: self.track_label(&track.id),
                 album_id: track.album_id.clone(),
                 artist_id: track.artist_id.clone(),
-                offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
+                offline: matches!(self.cache_state(&track.id), CacheState::Cached),
                 liked: self.lib.is_liked(&track.id),
             });
             return Some(ctx);
@@ -1369,7 +1369,7 @@ impl MusicApp {
                 label: self.track_label(&track.id),
                 album_id: track.album_id.clone(),
                 artist_id: track.artist_id.clone(),
-                offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
+                offline: matches!(self.cache_state(&track.id), CacheState::Cached),
                 liked: self.lib.is_liked(&track.id),
             })
             .collect()

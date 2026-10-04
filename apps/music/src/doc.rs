@@ -332,52 +332,6 @@ pub fn playlist_contains_track(doc: &AutoCommit, playlist_id: &str, track_id: &s
     })
 }
 
-/// Read the exact membership identity at an ordered playlist position.
-pub fn playlist_track_at(doc: &AutoCommit, playlist_id: &str, index: usize) -> Option<String> {
-    let playlist = find_playlist_obj(doc, playlist_id)?;
-    membership_entries(doc, &playlist)
-        .get(index)
-        .map(|(id, _)| id.clone())
-}
-
-pub fn playlist_append_rank(doc: &AutoCommit, playlist_id: &str) -> i64 {
-    find_playlist_obj(doc, playlist_id)
-        .and_then(|playlist| {
-            membership_entries(doc, &playlist)
-                .last()
-                .map(|(_, rank)| *rank)
-        })
-        .unwrap_or(-ORDER_STEP)
-        .saturating_add(ORDER_STEP)
-}
-
-pub fn playlist_rank_for_move(
-    doc: &AutoCommit,
-    playlist_id: &str,
-    track_id: &str,
-    to: usize,
-) -> Option<i64> {
-    let playlist = find_playlist_obj(doc, playlist_id)?;
-    let remaining = membership_entries(doc, &playlist)
-        .into_iter()
-        .filter(|(id, _)| id != track_id)
-        .collect::<Vec<_>>();
-    let insert = to.min(remaining.len());
-    let previous = insert
-        .checked_sub(1)
-        .and_then(|index| remaining.get(index))
-        .map(|(_, rank)| *rank);
-    let next = remaining.get(insert).map(|(_, rank)| *rank);
-    Some(match (previous, next) {
-        (Some(previous), Some(next)) if next.saturating_sub(previous) > 1 => {
-            previous + (next - previous) / 2
-        }
-        (Some(previous), _) => previous.saturating_add(1),
-        (None, Some(next)) => next.saturating_sub(ORDER_STEP),
-        (None, None) => 0,
-    })
-}
-
 /// Assign an authored absolute sparse order key to a stable membership.
 pub fn set_track_rank(doc: &mut AutoCommit, playlist_id: &str, track_id: &str, rank: i64) {
     let Some(pm) = find_playlist_obj(doc, playlist_id) else {
