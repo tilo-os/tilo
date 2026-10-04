@@ -511,71 +511,75 @@ impl Widget for InviteAcceptScreen {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let resolved = self.resolve(theme, text_renderer);
-        let actions = self.actions();
-        let spec = SheetSpec {
-            title: TITLE,
-            max_width: FORM_SHEET_WIDTH,
-            actions: &actions,
-        };
-        let sheet = &resolved.sheet;
-        let plan = &resolved.plan;
+        // Identity ceremonies, invites and joins are security surfaces:
+        // every look-alike letter is set apart.
+        text_renderer.security_surface(|text_renderer| {
+            let resolved = self.resolve(theme, text_renderer);
+            let actions = self.actions();
+            let spec = SheetSpec {
+                title: TITLE,
+                max_width: FORM_SHEET_WIDTH,
+                actions: &actions,
+            };
+            let sheet = &resolved.sheet;
+            let plan = &resolved.plan;
 
-        sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
-        sheet.clip_body(scene, transform);
-        paint_text(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            plan.link_label,
-            LINK_LABEL,
-            Role::Label,
-            Align::Start,
-            false,
-        );
-        self.url
-            .draw(scene, transform, text_renderer, theme, presence);
-        if let Some((banner, expires)) = self.banner_text() {
-            if let Some(rect) = plan.banner {
+            sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+            sheet.clip_body(scene, transform);
+            paint_text(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                plan.link_label,
+                LINK_LABEL,
+                Role::Label,
+                Align::Start,
+                false,
+            );
+            self.url
+                .draw(scene, transform, text_renderer, theme, presence);
+            if let Some((banner, expires)) = self.banner_text() {
+                if let Some(rect) = plan.banner {
+                    paint_text(
+                        &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                        rect,
+                        &banner,
+                        Role::Value,
+                        Align::Start,
+                        true,
+                    );
+                }
+                if let Some(rect) = plan.expires {
+                    paint_text(
+                        &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                        rect,
+                        &expires,
+                        Role::Caption,
+                        Align::Start,
+                        false,
+                    );
+                }
+            } else if let (Some(rect), Some((text, role))) = (plan.status, self.status_text()) {
                 paint_text(
                     &mut PaintCtx::new(scene, transform, text_renderer, theme),
                     rect,
-                    &banner,
-                    Role::Value,
+                    &text,
+                    role,
                     Align::Start,
                     true,
                 );
             }
-            if let Some(rect) = plan.expires {
+            if let (Some(rect), Some(err)) = (plan.error, self.accept_error.as_deref()) {
                 paint_text(
                     &mut PaintCtx::new(scene, transform, text_renderer, theme),
                     rect,
-                    &expires,
-                    Role::Caption,
+                    err,
+                    Role::Error,
                     Align::Start,
-                    false,
+                    true,
                 );
             }
-        } else if let (Some(rect), Some((text, role))) = (plan.status, self.status_text()) {
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                &text,
-                role,
-                Align::Start,
-                true,
-            );
-        }
-        if let (Some(rect), Some(err)) = (plan.error, self.accept_error.as_deref()) {
-            paint_text(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                err,
-                Role::Error,
-                Align::Start,
-                true,
-            );
-        }
-        scene.pop_layer();
-        sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+            scene.pop_layer();
+            sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
+        });
     }
 
     fn name(&self) -> &'static str {

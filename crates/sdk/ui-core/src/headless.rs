@@ -1307,7 +1307,7 @@ impl FrameHarness {
         } else {
             text.set_text_scale(theme.text_scale);
         }
-        text.set_ui_face(&theme.tokens.typography.sans_family);
+        text.apply_typography(&theme.tokens.typography);
         let control_domain = crate::control_custody::ControlDomain::outer();
         let mut root = root;
         crate::widget::controls::install_control_custody(
@@ -1525,8 +1525,7 @@ impl FrameHarness {
     ) -> Result<(), crate::widget::WidgetLayoutError> {
         self.theme = theme;
         self.text.set_text_scale(self.theme.text_scale);
-        self.text
-            .set_ui_face(&self.theme.tokens.typography.sans_family);
+        self.text.apply_typography(&self.theme.tokens.typography);
         self.invalidate_layout_tree();
         self.relayout_at(viewport)
     }
@@ -1940,8 +1939,7 @@ impl FrameHarness {
         self.pump_component_wakes();
         self.theme = theme;
         self.text.set_text_scale(self.theme.text_scale);
-        self.text
-            .set_ui_face(&self.theme.tokens.typography.sans_family);
+        self.text.apply_typography(&self.theme.tokens.typography);
         self.invalidate_layout_tree();
         self.relayout();
     }
