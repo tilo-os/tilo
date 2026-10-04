@@ -482,11 +482,6 @@ pub struct RetainedGpuTarget {
     last_sparse_render_stats: Option<vello::SparseRenderStats>,
 }
 
-/// Most extra devices compiling a CPU renderer's pipelines in parallel. Each opens a device and
-/// builds every pipeline before compiling its share, so beyond a few that setup outweighs the
-/// split.
-const PRECOMPILE_HELPERS: usize = 8;
-
 impl RetainedGpuTarget {
     /// Construct an offscreen target on the supplied context-owned device and queue.
     ///
@@ -544,12 +539,16 @@ impl RetainedGpuTarget {
         if gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu {
             // Lavapipe compiles each pipeline on its first dispatch: on a cold shader cache,
             // seconds of one-at-a-time work the warm-up below would add to the first frame.
-            let helpers = std::thread::available_parallelism()
-                .map_or(1, |cores| cores.get().saturating_sub(1).max(1))
-                .min(PRECOMPILE_HELPERS);
-            target
-                .renderer
-                .precompile_pipelines(&target.device, &target.queue, helpers, &|| gpu.open_peer());
+            // Extra devices come from the session's shared budget; without any, this device
+            // compiles in place.
+            let slots = super::warmup::acquire();
+            target.renderer.precompile_pipelines(
+                &target.device,
+                &target.queue,
+                slots.len(),
+                &|| gpu.open_peer(),
+            );
+            drop(slots);
         }
         target.warm_pipelines()?;
         Ok(target)
