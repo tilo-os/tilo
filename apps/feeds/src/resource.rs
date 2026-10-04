@@ -14,7 +14,7 @@ use ui::tilo_actions::{
     ActionParam, ActionSpec, EncodedAction, OperationKind, PROMPTED_PARAM, ParamType,
     Resource as PublishedResource,
 };
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, ScopeDecl, SearchEntry};
 use ui::widget::Element;
 use uuid::Uuid;
 
@@ -121,18 +121,34 @@ impl Resource for Feeds {
             .collect()
     }
 
+    /// Feeds and their articles. An article's anchor lies under its feed's,
+    /// so a search narrowed to one feed holds that feed's articles.
     fn search(state: &FeedsState) -> Vec<SearchEntry> {
         let feeds = state.store.feeds.iter().map(|feed| SearchEntry {
-            anchor: Some(format!("feeds.subscription:{}", feed.id)),
+            anchor: Some(crate::actions::feed_resource_id(feed.id)),
             title: feed.title.clone(),
             text: feed.url.clone(),
         });
         let articles = state.store.articles.iter().map(|article| SearchEntry {
-            anchor: Some(format!("feeds.article:{}", article.id)),
+            anchor: Some(format!(
+                "{}/{}",
+                crate::actions::feed_resource_id(article.feed_id),
+                crate::actions::article_resource_id(article.id)
+            )),
             title: article.title.clone(),
             text: article.summary.clone(),
         });
         feeds.chain(articles).collect()
+    }
+
+    /// Each feed is a part search can be narrowed to.
+    fn search_scopes(state: &FeedsState) -> Vec<ScopeDecl> {
+        state
+            .store
+            .feeds
+            .iter()
+            .map(|feed| ScopeDecl::new(crate::actions::feed_resource_id(feed.id), &feed.title))
+            .collect()
     }
 }
 
@@ -147,7 +163,11 @@ impl ResourceApp for FeedsShell {
     const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<Feeds>) -> Element {
-        cx.surface(FeedsApp::new())
+        let app = FeedsApp::new();
+        // A picked search hit (or an agent's `open`) shows its item.
+        let opened = app.opener();
+        cx.on_open(move |anchor| opened.borrow_mut().push(anchor.to_owned()));
+        cx.surface(app)
     }
 }
 
