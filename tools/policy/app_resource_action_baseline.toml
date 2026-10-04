@@ -28,7 +28,6 @@
 "apps/chat/src/resource.rs" = 2
 "apps/clocks/src/resource.rs" = 1
 "apps/code-editor/src/resource.rs" = 2
-"apps/contacts/src/resource.rs" = 2
 "apps/diffmerge/src/resource.rs" = 2
 "apps/disk-usage/src/resource.rs" = 1
 "apps/ebook/src/resource.rs" = 2
@@ -78,8 +77,6 @@
 "apps/clocks/src/lib.rs" = 2
 "apps/clocks/src/main.rs" = 2
 "apps/code-editor/src/main.rs" = 1
-"apps/contacts/src/lib.rs" = 2
-"apps/contacts/src/main.rs" = 1
 "apps/diffmerge/src/lib.rs" = 2
 "apps/diffmerge/src/main.rs" = 2
 "apps/ebook/src/main.rs" = 1
@@ -141,7 +138,6 @@
 "apps/calculator/src/framework_history.rs" = 1
 "apps/calendar/src/store.rs" = 1
 "apps/camera/src/search.rs" = 2
-"apps/contacts/src/framework_history.rs" = 1
 "apps/diffmerge/src/framework_history.rs" = 1
 "apps/maps/src/app/interaction.rs" = 1
 "apps/maps/src/offline_panel.rs" = 1
@@ -180,7 +176,6 @@
 # the resource's publication (`ResourceSurface::publishes_document_actions`).
 # The framework drops such actions from every other surface.
 [ratchets.surface_document_actions]
-"apps/contacts/src/resource.rs" = 1
 "apps/ebook/src/resource.rs" = 1
 "apps/settings/src/resource.rs" = 1
 "apps/sheets/src/resource.rs" = 1
