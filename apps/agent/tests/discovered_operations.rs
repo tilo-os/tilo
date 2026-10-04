@@ -18,6 +18,7 @@
 )]
 
 use tilo_automerge::ApplyIncoming;
+use ui::tilo_resource::Effect as _;
 use ui::time::Duration;
 
 use automerge::AutoCommit;
@@ -786,22 +787,21 @@ fn drive_photo_peer(
                         | tilo_actions::ActionInput::Deferred { .. } => None,
                     })
                     .expect("the published export has one immediate operation payload");
-                    let result =
-                        photos::actions::decode_operation(&encoded.type_id, &encoded.payload)
-                            .and_then(|operation| match operation {
-                                Some(photos::actions::PhotosOperation::ExportEditedContent {
-                                    resource_id,
-                                    source_content,
-                                    edits,
-                                }) => photos::actions::export_edited_content(
-                                    &resource_id,
-                                    &source_content,
-                                    edits,
-                                    &photo_replica,
-                                    content,
-                                ),
-                                _ => Err("the export descriptor did not encode an export".into()),
-                            });
+                    let result = photos::actions::PhotosEffect::from_payload(&encoded.payload)
+                        .and_then(|effect| match effect {
+                            photos::actions::PhotosEffect::ExportEditedContent {
+                                resource_id,
+                                source_content,
+                                edits,
+                            } => photos::actions::export_edited_content(
+                                &resource_id,
+                                &source_content,
+                                edits,
+                                &photos::doc::PhotosDoc::library(&photo_replica),
+                                content,
+                            ),
+                            _ => Err("the export descriptor did not encode an export".into()),
+                        });
                     let invocation =
                         tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
                     match result {

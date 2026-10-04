@@ -17,7 +17,10 @@ use ui_core::automerge::AutoCommit;
 use ui_core::permissions::{LivePermissions, PermissionScope};
 use ui_core::presence::{PresenceCtx, PresenceKey};
 use ui_core::record::RecordSaveStatus;
-use ui_core::search::{SearchCursor, SearchPage, SearchProvider, SearchResult};
+use ui_core::search::{
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCursor, SearchPage,
+    SearchProvider, SearchResult,
+};
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::Affine;
@@ -309,8 +312,10 @@ impl<R: Resource> ResourceRoot<R> {
             tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state);
         let mut bound = self.bindings.declarations(state);
         let mut rows = Vec::new();
+        let mut availability = Vec::new();
         self.surfaces(&mut |surface| {
             bound.extend(surface.bound_declarations());
+            availability.extend(surface.availability());
             rows.extend(
                 surface
                     .live_rows()
@@ -325,6 +330,15 @@ impl<R: Resource> ResourceRoot<R> {
                 .any(|existing| existing.id == decl.id)
             {
                 resource = resource.with_action(tilo_resource::declaration_spec(&decl));
+            }
+        }
+        for status in &availability {
+            for spec in resource
+                .actions
+                .iter_mut()
+                .filter(|spec| spec.id == status.id())
+            {
+                status.overlay(spec);
             }
         }
         merge(&mut resource.children, rows);
@@ -597,11 +611,14 @@ impl SearchProvider for ResourceSearch {
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, usize::MAX)
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
     }
 
+    // No caller materialises more than one interactive page in one turn;
+    // complete discovery goes through `search_page`'s cursor.
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.results(query, Page::first(limit)).0
+        self.results(query, Page::first(limit.min(DEFAULT_SEARCH_RESULT_LIMIT)))
+            .0
     }
 
     fn action_directory_generation(&self) -> Option<u64> {
@@ -621,7 +638,9 @@ impl SearchProvider for ResourceSearch {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        let limit = work_budget.min(result_limit);
+        let limit = work_budget
+            .min(DEFAULT_SEARCH_CANDIDATE_LIMIT)
+            .min(result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT));
         let folded = ui_core::search::normalize_search_text(query);
         let offset = cursor
             .map(SearchCursor::opaque_parts)
@@ -859,6 +878,11 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
                 output,
             )));
+        }
+        // An effect reads the resource as the document stands, though no
+        // frame has run since a collaborator's change arrived.
+        if let Err(error) = self.live.sync(doc) {
+            tracing::warn!(%error, kind = R::KIND, "resource unreadable");
         }
         if let Some(started) = self.effects.start(op)? {
             return Ok(Some(started));
@@ -1259,5 +1283,26 @@ mod tests {
             cursor = Some(next);
         }
         assert_eq!(seen.len(), 257, "every match is reachable");
+    }
+
+    #[test]
+    fn no_caller_materialises_more_than_one_page_at_once() {
+        let search = ResourceSearch::over(
+            "Tables",
+            (0..300)
+                .map(|n| SearchEntry::new(format!("table {n}"), ""))
+                .collect(),
+        );
+        assert_eq!(
+            search.search_limited("", usize::MAX).len(),
+            DEFAULT_SEARCH_RESULT_LIMIT
+        );
+        assert_eq!(
+            search
+                .search_page("", None, usize::MAX, usize::MAX)
+                .results
+                .len(),
+            DEFAULT_SEARCH_RESULT_LIMIT
+        );
     }
 }

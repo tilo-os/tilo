@@ -16,40 +16,6 @@ use ui::permissions::PermissionContext;
 
 use crate::surface::AppContract;
 
-/// `action`, and the authorship of the text it adds: the durable `author`
-/// mark over every character the agent wrote, so the document itself
-/// records who wrote them. Applied together as one edit, as the editor
-/// signs what a person types.
-pub fn authored(
-    action: &word_processor::actions::RichTextAction,
-    author: &str,
-) -> Vec<word_processor::actions::RichTextAction> {
-    let mut actions = vec![action.clone()];
-    if let word_processor::actions::RichTextAction::SpliceText {
-        region,
-        block,
-        at,
-        ins,
-        ..
-    } = action
-        && !ins.is_empty()
-        && !author.is_empty()
-    {
-        actions.push(word_processor::actions::RichTextAction::SetMark {
-            region: *region,
-            spans: vec![word_processor::actions::Span {
-                block: block.clone(),
-                start: *at,
-                end: at.saturating_add(ins.chars().count()),
-            }],
-            name: tilo_doc::schema::MARK_AUTHOR.to_string(),
-            value: Some(word_processor::actions::MarkVal::Str(author.to_string())),
-            also_clear: Vec::new(),
-        });
-    }
-    actions
-}
-
 pub struct Editor {
     participant: Participant,
     /// Which app wrote this document.

@@ -481,7 +481,7 @@ impl<R: Resource> Dispatcher<R> {
         (self.submit_now)(&mut self.host.borrow_mut(), doc, action, context)?;
         // Content from outside is nobody's step: it neither continues the
         // open one nor ends it.
-        if R::annotates(action) || !tilo_actions::Action::change_kind(action).is_step() {
+        if !tilo_actions::Action::change_kind(action).is_step() {
             return Ok(());
         }
         // Only an action right after this dispatcher's last one, with nothing

@@ -290,7 +290,6 @@ pub struct BackupsApp {
     shots_status: bool,
     /// Retained complete recovery-point index. The visible resource snapshot
     /// stays bounded, while Ctrl+K searches every already-loaded version.
-    search_index: crate::search_provider::BackupsSearchIndex,
     source_path: Option<PathBuf>,
     destination_path: Option<PathBuf>,
     /// A persisted local configuration can outlive an unplugged drive or a
@@ -336,7 +335,6 @@ impl BackupsApp {
     }
 
     fn with_catalog(catalog: Catalog) -> Self {
-        let search_index = crate::search_provider::BackupsSearchIndex::new(&catalog);
         Self {
             catalog,
             ui: UiCache::default(),
@@ -366,7 +364,6 @@ impl BackupsApp {
             status_bubble: ui::StatusBubble::new(),
             status_shown: String::new(),
             shots_status: false,
-            search_index,
             source_path: None,
             destination_path: None,
             repository_error: None,
@@ -376,10 +373,6 @@ impl BackupsApp {
         }
     }
 
-    fn sync_search_index(&self) {
-        self.search_index.sync(&self.catalog);
-    }
-
     /// Take part in the resource: edits and effects go through the
     /// dispatcher, and the repository shown is this device's (a live
     /// window) or the scenario's (a capture).
@@ -387,7 +380,6 @@ impl BackupsApp {
         self.dispatcher = Some(cx.dispatcher());
         if let Some(demo) = cx.fixture::<DemoRepository>() {
             self.catalog = demo.catalog.clone();
-            self.sync_search_index();
             self.source_path.clone_from(&demo.location.source);
             self.destination_path.clone_from(&demo.location.destination);
             self.repository_error.clone_from(&demo.error);
@@ -430,7 +422,6 @@ impl BackupsApp {
                 );
             }
         }
-        self.sync_search_index();
     }
 
     /// Reload the repository after a job changed it.
@@ -444,7 +435,6 @@ impl BackupsApp {
             error
         })?;
         self.catalog = Catalog::from_local(source, destination, &manifests);
-        self.sync_search_index();
         Ok(())
     }
 
@@ -4806,8 +4796,6 @@ impl BackupsApp {
 }
 
 impl Widget for BackupsApp {
-    ui::provides!(dyn ui::search::capability::SearchSource);
-
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         // Another window, or the Settings app, moved this device's backup
         // location: show the repository there.
@@ -5105,12 +5093,6 @@ impl Widget for BackupsApp {
         self.toast.is_some()
             || self.drawer.is_animating()
             || self.status_bubble.needs_frame(ui::time::now())
-    }
-}
-
-impl ui::search::capability::SearchSource for BackupsApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 }
 

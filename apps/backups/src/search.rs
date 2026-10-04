@@ -1,97 +1,45 @@
-//! Complete, retained search projection for local backup history.
+//! Local backup history as search entries.
 //!
 //! The visible resource tree deliberately publishes a small contextual page of
 //! snapshots. Search is different: a recovery point must remain findable even
-//! when it is older than that page, so this index retains every loaded local
-//! snapshot and lets the shared catalogue enforce bounded query work.
+//! when it is older than that page, so every loaded local snapshot is an
+//! entry, and the framework's search source bounds the query work.
 
-use ui::icons::Icon;
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 use ui::tilo_actions::ActionAddress;
+use ui::tilo_resource::SearchEntry;
 
 use crate::model::{Catalog, Snapshot};
 
 pub const SNAPSHOT_KIND: &str = "Backup recovery points";
 
-#[derive(Clone, Debug)]
-pub struct BackupsSearchIndex {
-    catalog: SearchCatalog,
-}
-
-impl BackupsSearchIndex {
-    pub fn new(backups: &Catalog) -> Self {
-        let index = Self {
-            catalog: SearchCatalog::new("Backups"),
-        };
-        index.sync(backups);
-        index
-    }
-
-    /// Refresh from the already-loaded local catalogue. This is deliberately
-    /// called on a repository refresh, never from a palette keypress.
-    pub fn sync(&self, backups: &Catalog) {
-        let rows = backups.snapshots.iter().map(|snapshot| {
-            let resource_id = snapshot_resource_id(snapshot);
-            let result = SearchResult::for_action(
-                SNAPSHOT_KIND,
+/// Every recovery point in the loaded catalogue, each opening its live row:
+/// found by its id, time, source, destination, kind, retention or status.
+pub fn snapshot_entries(backups: &Catalog) -> Vec<SearchEntry> {
+    backups
+        .snapshots
+        .iter()
+        .map(|snapshot| {
+            SearchEntry::new(
                 format!("{} backup", snapshot.time),
-                ActionAddress::new(&resource_id, "open"),
+                format!(
+                    "{} {} {} {}",
+                    snapshot.id,
+                    snapshot.source_id,
+                    snapshot.dest_id,
+                    snapshot.status_label()
+                ),
             )
-            .with_subtitle(format!(
+            .invoking(ActionAddress::new(snapshot_resource_id(snapshot), "open"))
+            .grouped(SNAPSHOT_KIND)
+            .subtitled(format!(
                 "{} · {} · {}",
                 snapshot.kind.label(),
                 snapshot.retention.label(),
                 ui::format::bytes(snapshot.size_bytes)
             ))
-            .with_icon(Icon::History);
-            let searchable = format!(
-                "{} {} {} {} {} {} {}",
-                snapshot.id,
-                snapshot.time,
-                snapshot.source_id,
-                snapshot.dest_id,
-                snapshot.kind.label(),
-                snapshot.retention.label(),
-                snapshot.status_label()
-            );
-            (resource_id, searchable, result)
-        });
-        // Each row is generated from a stable snapshot id and canonical open
-        // address. An invalid local catalogue is not an excuse to publish a
-        // partial index, so leave the last coherent projection in place.
-        let _ = self.catalog.replace_all(rows);
-    }
-
-    pub fn provider(&self) -> BackupsSearchProvider {
-        BackupsSearchProvider {
-            catalog: self.catalog.clone(),
-        }
-    }
-
-    #[cfg(test)]
-    fn stats(&self) -> ui::search::SearchCatalogStats {
-        self.catalog.stats()
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct BackupsSearchProvider {
-    catalog: SearchCatalog,
-}
-
-impl CatalogSearchProvider for BackupsSearchProvider {
-    fn provider_name(&self) -> &'static str {
-        "Backups"
-    }
-
-    fn catalog(&self) -> Option<SearchCatalog> {
-        Some(self.catalog.clone())
-    }
-
-    fn limited_work_budget(&self, limit: usize) -> usize {
-        // A one-shot query inspects no more candidates than results it asked for.
-        limit
-    }
+            .with_icon("history")
+        })
+        .collect()
 }
 
 pub fn snapshot_resource_id(snapshot: &Snapshot) -> String {
@@ -112,6 +60,11 @@ impl Snapshot {
 mod tests {
     use super::*;
     use ui::search::SearchProvider;
+
+    /// The app's search source over `catalog`, as the framework builds it.
+    fn source(catalog: &Catalog) -> impl SearchProvider + use<> {
+        ui::framework::testing::search_source::<crate::resource::Backups>(snapshot_entries(catalog))
+    }
     use ui::search::testing::{Corpus, LATE_HIT_NEEDLE, assert_late_hit_reachable};
 
     fn large_catalog(corpus: Corpus) -> Catalog {
@@ -143,16 +96,15 @@ mod tests {
         let (provider, hit) = assert_late_hit_reachable(
             |corpus| {
                 let catalog = large_catalog(corpus);
-                let index = BackupsSearchIndex::new(&catalog);
-                assert_eq!(index.stats().records, 3_000);
+                let provider = source(&catalog);
                 loaded = Some(catalog);
-                index.provider()
+                provider
             },
             3_000,
         );
         let catalog = loaded.expect("the corpus was loaded");
         let page = provider.search_page(LATE_HIT_NEEDLE, None, 8, 4);
-        assert_eq!(page.inspected, 1, "unique posting avoids a corpus scan");
+        assert_eq!(page.results.len(), 1, "the one recovery point that matches");
         let address = hit.action_address().expect("canonical address");
         assert_eq!(address.resource, "backups.snapshot:snapshot-002999");
         let resource = crate::actions::live_row(&catalog, None, &address.resource)
@@ -176,20 +128,18 @@ mod tests {
     /// Case of `snapshot_search_is_bounded_and_invalidated_by_catalog_refresh`.
     fn catalog_refresh_invalidates_existing_search_cursors() {
         let catalog = Catalog::sample();
-        let index = BackupsSearchIndex::new(&catalog);
-        let provider = index.provider();
-        let first = provider.search_page("", None, 1, 1);
-        let cursor = first.next.expect("a multi-snapshot catalogue pages");
-        let generation = index.stats().generation;
-
-        let mut refreshed = catalog;
+        let mut refreshed = catalog.clone();
         refreshed.snapshots[0].time = "changed recovery time".into();
-        index.sync(&refreshed);
-
-        assert!(index.stats().generation > generation);
+        assert_ne!(
+            snapshot_entries(&catalog),
+            snapshot_entries(&refreshed),
+            "a refreshed catalogue is new entries, which the framework indexes afresh",
+        );
         assert!(
-            !provider.action_directory_cursor_is_current(&cursor),
-            "a cursor from the prior loaded catalogue is stale"
+            source(&refreshed)
+                .search("changed recovery")
+                .iter()
+                .any(|hit| hit.title == "changed recovery time backup")
         );
     }
 }

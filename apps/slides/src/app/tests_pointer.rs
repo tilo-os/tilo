@@ -9,6 +9,7 @@
 
 use super::bench::{Bench, cursor_ev, deck_of, left_press_ev};
 use super::*;
+use ui::portal::PortalOutcome;
 
 /// The editor over one slide whose single text box is selected, and the
 /// box's id.
@@ -759,38 +760,28 @@ fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
         );
     }
 
-    // Case `image_tool_requests_the_host_portal_then_a_pick_inserts_a_real_image`.
+    // Case `image_tool_asks_the_host_chooser_then_a_pick_inserts_a_real_image`.
     {
         let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
         let before = bench.deck().slides[0].elements.len();
         let path = write_png(directory.path(), "insert.png", 12, 8);
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
-        // The Image tool asks the host portal for a file, without fabricating
-        // an element and without drawing an in-app picker.
-        let asked = ui::host::scoped(&services, || {
-            bench
-                .app
-                .harness()
-                .with_widget_mut::<SlidesApp, _>(|app| {
-                    app.apply_hit(Hit::Insert(ElementKind::Image));
-                    app.portal_rx.is_some()
-                })
-                .unwrap()
+        // The Image tool asks the host's chooser for a file, without
+        // fabricating an element and without drawing an in-app picker.
+        ui::host::scoped(&services, || {
+            bench.app.harness().with_widget_mut::<SlidesApp, _>(|app| {
+                app.apply_hit(Hit::Insert(ElementKind::Image));
+            })
         });
-        assert!(asked, "the Image tool opens the host portal chooser");
         assert_eq!(
             recorder.pick_requests().len(),
             1,
             "exactly one host chooser request"
         );
-        // The frame drains the chosen file and lands a real image in the deck.
+        // A frame takes up the chosen file and lands a real image in the deck.
         bench.frame();
         bench.frame();
-        assert!(
-            bench.read(|app| app.portal_rx.is_none()),
-            "the request resolved"
-        );
         let deck = bench.deck();
         let el = deck.slides[0]
             .elements
@@ -815,7 +806,7 @@ fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
         );
     }
 
-    // Case `a_cancelled_portal_pick_inserts_nothing`.
+    // Case `a_cancelled_pick_inserts_nothing`.
     {
         let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
         let before = bench.deck().slides[0].elements.len();
@@ -828,9 +819,10 @@ fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
         });
         bench.frame();
         bench.frame();
-        assert!(
-            bench.read(|app| app.portal_rx.is_none()),
-            "a cancel clears the channel"
+        assert_eq!(
+            recorder.pick_requests().len(),
+            1,
+            "the Image tool asked the host"
         );
         assert_eq!(
             bench.deck().slides[0].elements.len(),

@@ -13,11 +13,11 @@ use std::rc::Rc;
 
 use automerge::ROOT;
 use ui::framework::{
-    Command, EffectAnswer, EffectCx, Fixture, LiveRow, ResourceApp, ResourceSurface, RunMode,
-    SurfaceCx, ViewCx,
+    Command, EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
+    RunMode, SurfaceCx, ViewCx,
 };
 use ui::tilo_actions::{ActionSpec, OperationKind, Resource as PublishedResource};
-use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{ActionRef, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
@@ -75,8 +75,8 @@ impl Resource for Camera {
     }
 
     fn bound_actions(state: &CameraState) -> Vec<ActionSpec> {
-        // Recording is live state the resource cannot see: mode stays
-        // offered here and the surface refuses a change while recording.
+        // Recording is live state the resource cannot see: the surface
+        // withholds the mode switch while it records.
         bound_mode_facing_actions(state.facing, false)
             .into_iter()
             .filter(|spec| spec.kind == OperationKind::Document)
@@ -259,6 +259,24 @@ impl ResourceSurface<Camera, CameraEffect> for CameraApp {
 
     fn live_rows(&self) -> Vec<LiveRow> {
         crate::actions::live_rows(&self.camera_resource_ctx())
+    }
+
+    /// Switching between photo and video stops nothing: while a video
+    /// records, the switch is unavailable.
+    fn availability(&self) -> Vec<EffectStatus> {
+        if !self.is_recording() {
+            return Vec::new();
+        }
+        ["photo-mode", "video-mode"]
+            .into_iter()
+            .map(|id| {
+                EffectStatus::unavailable(
+                    ActionRef::<Camera, ()>::new(id, &[]),
+                    "recording",
+                    "Stop recording to switch modes",
+                )
+            })
+            .collect()
     }
 }
 

@@ -262,9 +262,9 @@ pub struct MainPanel {
     /// width, text scale, or membership changes, so large text and long tag
     /// names never collide with the first document block.
     tag_area_height: f64,
-    /// A tag chip is a local navigation control. The app drains this retained
-    /// id into `NotesOperation::OpenTag`, which validates the real canonical
-    /// tag resource before changing the local browse view.
+    /// A tag chip is a local navigation control. The app opens the tag it
+    /// names, checking the tag still exists, before changing the local browse
+    /// view.
     pending_tag_open: Option<crate::model::TagId>,
     focused_tag: Option<crate::model::TagId>,
     hovered_tag: Option<crate::model::TagId>,
