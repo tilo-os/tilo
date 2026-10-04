@@ -34,10 +34,10 @@ external-window substitute qualifies as this runner.
 - `cargo clippy --locked -p shell --bin shell --no-default-features`: passed.
 - `bash shell/build-macos.sh`: built and ad-hoc signed `target/macos/Tilo.app`.
   `codesign --verify --deep --strict` and `plutil -lint`: passed.
-- Rendered and visually inspected `/tmp/tilo-macos-shell.png` from the actual
+- Rendered and visually inspected a `--shots` PNG from the actual
   shell host. Final render succeeded without the Linux runtime-path warning.
 - Launched the app through Launch Services. CoreGraphics confirmed an onscreen
-  Tilo window (800 × 632 including window decoration), PID 53185; process remained
+  Tilo window (800 × 632 including window decoration); the process remained
   alive after startup.
 - Independent review found silent shutdown record-save failures; changed to
   `RecordStore::try_flush` and reran tests/Clippy. No other findings.

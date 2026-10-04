@@ -99,7 +99,7 @@ Verify the binary:
 
 ```
 $ ls -la target/release/my-example-hello
--rwxr-xr-x. 2 quinten quinten 3075216  4. Jul 16:49 target/release/my-example-hello
+-rwxr-xr-x. 2 you you 3075216  4. Jul 16:49 target/release/my-example-hello
 ```
 
 3 MB. That's a stripped release build; running under `tilo-install` on

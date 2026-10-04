@@ -158,7 +158,8 @@ fn app_id(tile: &TileContent) -> Option<&str> {
     match tile {
         TileContent::Foreign { app_id, .. }
         | TileContent::LocalApp { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. } => Some(app_id),
+        | TileContent::PeerWindow { app_id, .. }
+        | TileContent::HostedWindow { app_id, .. } => Some(app_id),
         TileContent::AppPlaceholder { .. }
         | TileContent::Stub { .. }
         | TileContent::WorkspaceActivity => None,
@@ -246,7 +247,9 @@ fn move_rows(
 ) {
     if matches!(
         tab.tile,
-        TileContent::WorkspaceActivity | TileContent::PeerWindow { .. }
+        TileContent::WorkspaceActivity
+            | TileContent::PeerWindow { .. }
+            | TileContent::HostedWindow { .. }
     ) {
         return;
     }

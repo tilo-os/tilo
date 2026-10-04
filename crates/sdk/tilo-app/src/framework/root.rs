@@ -394,7 +394,10 @@ impl<R: Resource> ResourceRoot<R> {
         };
         let mut offscreen = ui_core::offscreen::OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
-        let rgba = offscreen.render(&scene, theme.bg_app);
+        // A new renderer reserves room for a modest scene; a denser view
+        // overflows its first frame, which then comes back blank. Answer
+        // only a frame that kept all of its geometry.
+        let rgba = offscreen.try_render_resilient(&scene, theme.bg_app)?;
         let png =
             ui_core::png::encode_rgba8(width, height, &rgba).map_err(|error| error.to_string())?;
         let hash = tilo_content::ContentStore::for_app()
