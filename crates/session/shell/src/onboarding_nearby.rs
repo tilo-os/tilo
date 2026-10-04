@@ -141,7 +141,7 @@ impl NearbyPairing {
         Self::spawn(command, identity_dir, status_path, PROCESS_BOUND)
     }
 
-    fn spawn(
+    pub(crate) fn spawn(
         mut command: Command,
         identity_dir: &Path,
         status_path: &Path,

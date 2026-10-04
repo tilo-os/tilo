@@ -88,6 +88,7 @@ history-mode-unavailable = History unavailable
 history-mode-content-unavailable = Historical content unavailable
 history-mode-back-to-activity = Back to activity
 history-mode-back-to-live = Back to live
+history-mode-earlier = Show earlier changes
 history-mode-before = Before
 history-mode-after = After
 history-mode-showing-before = Historical: Before

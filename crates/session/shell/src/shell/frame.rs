@@ -1248,6 +1248,9 @@ impl FrameBuilder {
         self.layout_osk_overlay();
     }
 
+    /// Dock the keyboard at the bottom of the output it serves. The release
+    /// gate taps its keys from the same placement
+    /// (`keyboard_rect` in `tools/atspi_external_client.py`).
     fn layout_osk_overlay(&mut self) {
         if self.osk_overlay.is_none() {
             return;
@@ -4314,6 +4317,37 @@ mod tests {
         assert_eq!(queries, 1, "one editable query");
     }
 
+    #[test]
+    fn assistive_technology_sets_the_open_palettes_query() {
+        // The palette is published inside the host's tree, so setting its
+        // query from outside reaches the host first; it must still be typed.
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.host_mut().set_palette_visible(true);
+        fb.host_mut().set_palette_focus(true);
+        fb.host_mut().force_palette_settled();
+        fb.relayout();
+        let update = fb.build_a11y_tree_update(None, 1.0);
+        let (query_id, _) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == ui::accesskit::Role::TextInput
+                    && node.supports_action(ui::accesskit::Action::SetValue)
+            })
+            .cloned()
+            .expect("the open palette publishes its query");
+        let mut doc = AutoCommit::new();
+        let mut focus = None;
+        assert!(fb.dispatch_a11y_action(
+            query_id,
+            &ui::a11y::Action::SetValue("photos".into()),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(fb.host().palette_query(), "photos");
+    }
+
     fn onboarding_frame() -> (FrameBuilder, tempfile::TempDir) {
         let identity_dir = tempfile::tempdir().expect("temporary identity directory");
         let mut fb = FrameBuilder::new((1280, 800));
@@ -4697,6 +4731,67 @@ mod tests {
                     .iter()
                     .any(|name| name == "Confirm new backup passphrase"),
                 "backup confirmation must be keyboard reachable: {names:?}"
+            );
+
+            // A screen reader reaches the passphrase as password text it can
+            // focus and type into: AccessKit's AT-SPI adapter offers Text and
+            // EditableText only on a text input with a text run, so the field
+            // carries one that never holds what was typed.
+            // Its visible label shares the name, so pick the field by role.
+            let passphrase_run = |update: &ui::accesskit::TreeUpdate| {
+                let (id, field) = update
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.label() == Some("New backup passphrase")
+                            && node.role() == ui::accesskit::Role::PasswordInput
+                    })
+                    .expect("the passphrase reaches AT-SPI as password text");
+                assert!(field.supports_action(ui::accesskit::Action::Focus));
+                assert!(field.supports_action(ui::accesskit::Action::SetValue));
+                assert_eq!(field.value(), None);
+                let runs: Vec<_> = update
+                    .nodes
+                    .iter()
+                    .filter(|(node_id, node)| {
+                        field.children().contains(node_id)
+                            && node.role() == ui::accesskit::Role::TextRun
+                    })
+                    .collect();
+                let [(_, run)] = runs.as_slice() else {
+                    panic!("one text run among {:?}", field.children());
+                };
+                (*id, run.value().map(str::to_owned))
+            };
+            let (field, typed) = passphrase_run(&fb.build_a11y_tree_update(focus, 1.0));
+            assert_eq!(typed.as_deref(), Some(""));
+            assert!(fb.dispatch_a11y_action(
+                field,
+                &ui::a11y::Action::Focus,
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            assert!(fb.dispatch_a11y_action(
+                field,
+                &ui::a11y::Action::SetValue("tilosecretprobe42".into()),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+            fb.relayout();
+            let update = fb.build_a11y_tree_update(focus, 1.0);
+            assert_eq!(update.focus, field, "AT-SPI focus lands on the field");
+            assert_eq!(passphrase_run(&update).1.as_deref(), Some(""));
+            assert!(
+                update.nodes.iter().all(|(_, node)| {
+                    node.value()
+                        .is_none_or(|value| !value.contains("tilosecretprobe42"))
+                        && node
+                            .label()
+                            .is_none_or(|label| !label.contains("tilosecretprobe42"))
+                }),
+                "a typed passphrase never reaches assistive technology"
             );
             assert!(
                 names

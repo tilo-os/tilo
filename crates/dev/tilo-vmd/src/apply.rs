@@ -205,6 +205,11 @@ pub trait Apply {
         &mut self,
         expect_version: Option<&str>,
     ) -> Result<BootConfirmResult, DaemonError>;
+    /// Make sure [`crate::awake::AWAKE_UNIT`] runs, holding the machine
+    /// awake until the deadline in the lease file `lease`.
+    fn hold_awake(&mut self, lease: &std::path::Path) -> Result<(), DaemonError>;
+    /// Stop holding the machine awake.
+    fn release_awake(&mut self) -> Result<(), DaemonError>;
 }
 
 /// What makes a session equivalent to a greetd one, as read from `/proc`.
@@ -883,6 +888,15 @@ impl Apply for RecordingApply {
             confirmed: true,
             default_entry: None,
         })
+    }
+    fn hold_awake(&mut self, _lease: &std::path::Path) -> Result<(), DaemonError> {
+        self.units.insert(crate::awake::AWAKE_UNIT.to_owned(), true);
+        Ok(())
+    }
+    fn release_awake(&mut self) -> Result<(), DaemonError> {
+        self.units
+            .insert(crate::awake::AWAKE_UNIT.to_owned(), false);
+        Ok(())
     }
     fn session_process(&mut self, session: &Session) -> Option<SessionProcess> {
         self.units

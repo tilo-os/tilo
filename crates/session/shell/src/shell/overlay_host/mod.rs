@@ -3209,6 +3209,11 @@ impl ShellOverlayHost {
         self.session_action_policy.attach(registry);
     }
 
+    /// The registry the session's idle loop consults before suspending.
+    pub fn session_inhibitors(&self) -> tilo_power_mgmt::InhibitRegistry {
+        self.session_action_policy.inhibitors()
+    }
+
     pub fn set_power_bridge(&mut self, bridge: tilo_power_mgmt::PowerBridge) {
         self.power_bridge = Some(bridge);
     }
@@ -8566,12 +8571,25 @@ impl ShellOverlayHost {
             bluetooth,
             bluetooth_available,
             power,
+            power_profiles,
             wired,
             battery,
             radios,
             privacy,
             vpns,
         } = *reading;
+        if let Some(profiles) = power_profiles {
+            use crate::shell::quick_settings::PowerProfile as UiPP;
+            use crate::shell::quick_settings::actions::PowerProfile as ActPP;
+            st.quick_settings.power_profiles = profiles
+                .into_iter()
+                .map(|profile| match profile {
+                    ActPP::Saver => UiPP::Saver,
+                    ActPP::Balanced => UiPP::Balanced,
+                    ActPP::Performance => UiPP::Performance,
+                })
+                .collect();
+        }
         st.quick_settings.brightness_available = brightness.is_some() || !displays.is_empty();
         let brightness = brightness.or_else(|| displays.first().map(|display| display.level));
         if st.quick_settings.displays != displays {
@@ -13249,14 +13267,14 @@ impl ShellOverlayHost {
             }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::Reconcile => {
                 chrome.borrow_mut().bump();
-                self.qs_refresh.kick_fast();
+                self.qs_refresh.kick_fast_after_write();
             }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::ActionFailed { action, error } => {
                 chrome.borrow_mut().push_notification(
                     t_args("qs-action-failed", &[("action", action.into())]),
                     t_args("qs-action-failed-refreshing", &[("error", error.into())]),
                 );
-                self.qs_refresh.kick_fast();
+                self.qs_refresh.kick_fast_after_write();
             }
             crate::shell::quick_settings::wifi::WifiPaneOutcome::JoinOpen(ssid) => {
                 let mut state = chrome.borrow_mut();
@@ -13333,14 +13351,14 @@ impl ShellOverlayHost {
             }
             VpnPaneOutcome::Reconcile => {
                 chrome.borrow_mut().bump();
-                self.qs_refresh.kick_fast();
+                self.qs_refresh.kick_fast_after_write();
             }
             VpnPaneOutcome::ActionFailed { profile, error } => {
                 chrome.borrow_mut().push_notification(
                     t_args("qs-vpn-change-failed", &[("profile", profile.into())]),
                     t_args("qs-action-failed-refreshing", &[("error", error.into())]),
                 );
-                self.qs_refresh.kick_fast();
+                self.qs_refresh.kick_fast_after_write();
             }
         }
     }
@@ -14595,6 +14613,9 @@ impl ShellOverlayHost {
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().show_osd(osd);
                 }
+                // A read sampled before this commit must not snap the
+                // slider back to where it was.
+                self.qs_refresh.kick_fast_after_write();
             }
             Err(error) => {
                 tracing::warn!(target: "tilo::os_actions", op = label, %error, "quick setting failed");
@@ -14610,7 +14631,7 @@ impl ShellOverlayHost {
                 }
                 // Reconcile the optimistic slider with authoritative device
                 // state. Worker completion wakes the idle compositor.
-                self.qs_refresh.kick_fast();
+                self.qs_refresh.kick_fast_after_write();
             }
         }
     }
@@ -14823,7 +14844,7 @@ impl ShellOverlayHost {
         }
         // Even a successful daemon request can be normalized by hardware or
         // policy. Read back the authoritative state; completion wakes paint.
-        self.qs_refresh.kick_fast();
+        self.qs_refresh.kick_fast_after_write();
     }
 
     /// Apply the typed hit produced by [`WorkspaceSettingsOverlay`]. Policy
@@ -15958,6 +15979,10 @@ fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &
     host.qs_root
         .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
 }
+
+/// The semantic target of the open palette's query field, as the palette
+/// widget publishes it.
+const PALETTE_QUERY_TARGET: &str = "command-palette:query";
 
 impl Widget for ShellOverlayHost {
     ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
@@ -18193,6 +18218,21 @@ impl Widget for ShellOverlayHost {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        // The palette is published inside this host's tree (see
+        // `accessibility_represents_child`), so its query's semantic target
+        // arrives here, not at the palette widget. Setting it is typing it:
+        // the results are recomputed for the new text.
+        if target == PALETTE_QUERY_TARGET && self.palette_visible {
+            let before = self.palette.query().to_string();
+            let handled = self
+                .palette
+                .perform_semantic_action(target, action, state, path);
+            if handled && self.palette.query() != before && self.pending_palette_action.is_none() {
+                let (doc, root) = ui::doc::document(state, path);
+                self.refresh_search_results(doc, root);
+            }
+            return handled;
+        }
         if let Some(handled) = self.perform_sheet_action(target, action, state, path) {
             // A sheet's target never falls back to a pointer click: a stale
             // one must not press whatever is now under its old bounds.
@@ -19987,6 +20027,11 @@ impl ShellOverlayHost {
         if open && !self.qs_was_open {
             self.qs_refresh.kick_fast();
             self.qs_refresh.kick_firmware();
+            // The Wi-Fi and Bluetooth tiles name what is connected, which
+            // only these lists know; without them both read "Not connected"
+            // until a drill-in.
+            self.qs_refresh.kick_wifi_networks();
+            self.qs_refresh.kick_bt_devices();
             self.qs_root.reset_focus();
             self.refresh_quick_settings_summaries();
         }
