@@ -457,6 +457,15 @@ mod tests {
     }
 
     #[test]
+    fn the_manifest_asks_for_the_engine_runtime_this_build_drives() {
+        let expected = format!(
+            "\noptional-runtimes = [\"{}\"]\n",
+            ui::webview::chromium::runtime::RUNTIME_REF
+        );
+        assert!(include_str!("../tilo-app.toml").contains(&expected));
+    }
+
+    #[test]
     fn the_window_bookmarks_its_page_and_follows_preferences_through_the_door() {
         let mut app = TestApp::<BrowserShell>::capture(None).unwrap();
         app.harness().click_named("browser.bookmark").unwrap();
