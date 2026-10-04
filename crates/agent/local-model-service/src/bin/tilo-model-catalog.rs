@@ -849,6 +849,9 @@ mod tests {
             assert_eq!(catalog.payload.recommendation, "example/tiny-model");
             assert_eq!(catalog.payload.models[0].artifact.size_bytes, 42);
             assert_eq!(catalog.payload.runtimes[0].release.artifact.size_bytes, 44);
+            let subject = &catalog.payload.models[1];
+            assert_eq!(subject.id, "example/tiny-subject");
+            assert!(subject.runs_in_process() && subject.segmentation);
             assert_eq!(trust.keys.len(), 1);
         }
 
