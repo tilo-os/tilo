@@ -443,12 +443,13 @@ impl SearchField {
             }
         }
         if self.escalation_shows() {
-            // "Search everywhere" is an action: a plain button, its ink on
-            // its layout edge, lifted under the pointer.
+            // "Search everywhere" is an action, not a hint: a small
+            // secondary button with its own face and edge, so it never reads
+            // as a label beside the count.
             let label = "Search everywhere";
             let size = ControlSize::Small;
             let face = crate::widget::ButtonFace::new(Rect::ZERO, label)
-                .role(crate::widget::ButtonRole::Plain)
+                .role(crate::widget::ButtonRole::Secondary)
                 .control_size(size);
             let width = face.intrinsic_width(text_renderer, theme);
             let height = crate::widget::ButtonFace::height(size, theme).min(self.rect.height());
@@ -459,7 +460,7 @@ impl SearchField {
             let cy = self.rect.center().y;
             let rect = Rect::new(x0, cy - height / 2.0, right, cy + height / 2.0);
             let face = crate::widget::ButtonFace::new(rect, label)
-                .role(crate::widget::ButtonRole::Plain)
+                .role(crate::widget::ButtonRole::Secondary)
                 .control_size(size);
             let hit = face.hit_rect(theme);
             let hovered = hit.contains(self.last_cursor);
