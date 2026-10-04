@@ -74,6 +74,8 @@ pub(crate) struct Run {
     pub(crate) file_history: Option<(FileHistorySource, &'static HistoryDefinition)>,
     /// The names of the participants, as the host's roster has them.
     pub(crate) people: super::People,
+    /// Opens another record in this window, in a window someone uses.
+    pub(crate) opener: Option<super::launch::OpenHere>,
 }
 
 /// The arguments, the app's own options, the file and the playback handoff
@@ -99,6 +101,7 @@ impl Run {
             private: false,
             file_history: None,
             people: super::People::new(None),
+            opener: None,
         }
     }
 
@@ -125,7 +128,22 @@ impl Run {
             private: false,
             file_history: None,
             people: super::People::new(None),
+            opener: None,
         }
+    }
+
+    /// The same run, able to open another record in its window.
+    pub(crate) fn opening_with(mut self, opener: Option<super::launch::OpenHere>) -> Self {
+        self.opener = opener;
+        self
+    }
+
+    /// Open what a launch naming `arguments` opens in this window.
+    pub(crate) fn open_here(&self, arguments: &[String]) -> Result<(), String> {
+        self.opener
+            .as_ref()
+            .ok_or_else(|| "this window shows the record it was opened on".to_owned())?
+            .open(arguments)
     }
 
     /// The same run, for the participant `me`.
@@ -282,6 +300,7 @@ impl<R: Resource> Fixture<R> {
             private: false,
             file_history: None,
             people: super::People::new(None),
+            opener: None,
         }
     }
 

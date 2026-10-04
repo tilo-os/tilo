@@ -1958,6 +1958,14 @@ impl Widget for TileHost {
         {
             return;
         }
+        // A component that asked to show another record in its place gets
+        // the tile: its record and history follow.
+        if let TileContent::App(widget) = &mut self.content
+            && let Some(replacement) = crate::component_lifecycle::take_replacement(widget.as_mut())
+        {
+            let reports = self.replace_component(replacement.component);
+            self.close_reports.extend(reports);
+        }
         let Ok(live) = self.resolve_record() else {
             return;
         };
