@@ -24,8 +24,9 @@ use automerge::AutoCommit;
 use settings::SettingsApp;
 use settings::categories::Category;
 use taffy::{NodeId, TaffyTree};
+use ui::framework::HostDelivery as _;
 use ui::text_render::TextRenderer;
-use ui::widget::{HostDelivery as _, Widget};
+use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
 
 const W: f32 = 1200.0;

@@ -789,8 +789,8 @@ impl AppWidget for BrowserWindow {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use ui::framework::HostDelivery as _;
     use ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
-    use ui::widget::HostDelivery as _;
 
     /// A page engine that records commands and replays queued events and new
     /// tab intents.

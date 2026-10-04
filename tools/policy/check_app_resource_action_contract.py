@@ -78,10 +78,11 @@ LEGACY_ENTRY_POINTS = {
 
 # The raw operation protocol between the host and the toolkit's own widgets.
 # An app answers operations as a typed effect vocabulary and, in a test that
-# drives a widget without a host, delivers one through `HostDelivery`; it never
+# drives a widget without a host, delivers one through
+# `ui::framework::HostDelivery`; it never
 # builds, routes or answers a raw operation, in its sources or its tests.
 RAW_OPERATION_PROTOCOL = re.compile(
-    r"\b(?:ResourceOperation|OperationRequest|start_in_children)\b"
+    r"\b(?:ResourceOperation|ResourceOperationStart|OperationRequest|start_in_children|host_operation)\b"
     r"|(?:\.|::)\s*(?:start_operation|poll_resource_operation)\s*\("
 )
 
@@ -946,7 +947,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         line_number(raw, match.start()),
                         "the host's raw operation protocol is the toolkit's, not an app's: "
                         "answer a typed effect vocabulary, and in a test deliver an "
-                        "operation through ui::widget::HostDelivery",
+                        "operation through ui::framework::HostDelivery",
                     )
                 )
 

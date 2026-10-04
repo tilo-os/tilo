@@ -527,7 +527,7 @@ fn certificate_date(base_micros: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::widget::HostDelivery as _;
+    use ui::framework::HostDelivery as _;
 
     struct NativeRecordingEngine(std::sync::Arc<ui::webview::test_engine::TestEngine>);
     impl ui::webview::WebViewEngine for NativeRecordingEngine {
