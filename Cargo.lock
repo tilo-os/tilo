@@ -1556,11 +1556,13 @@ dependencies = [
  "tilo-content",
  "tilo-files",
  "tilo-paths",
+ "tilo-test-env",
  "tilo-wet-media",
  "tracing",
  "usvg",
  "uuid",
  "workspace-hack",
+ "zip",
 ]
 
 [[package]]
