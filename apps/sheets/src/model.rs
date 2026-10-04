@@ -761,14 +761,12 @@ pub fn weekday_from_serial(serial: f64) -> u32 {
     u32::try_from(dow).unwrap_or(0).saturating_add(1)
 }
 
-/// The current instant as an Excel serial (integer days + fractional day).
-/// Uses the system clock in UTC — there is no timezone database in this
-/// environment, so `TODAY()`/`NOW()` read as UTC dates.
+/// The current local date and time as an Excel serial (integer days +
+/// fractional day), read through the toolkit clock so a capture shows the
+/// same `TODAY()` and `NOW()` on every run.
 pub fn now_serial() -> f64 {
-    use ui::time::UNIX_EPOCH;
-    let secs = ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0.0, |d| d.as_secs_f64());
+    let local = ui::clock::local_now().naive_local().and_utc();
+    let secs = local.timestamp() as f64 + f64::from(local.timestamp_subsec_millis()) / 1000.0;
     secs / 86400.0 + 25569.0
 }
 
