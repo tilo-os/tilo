@@ -2160,6 +2160,38 @@ pub(crate) fn library_book_document_resource(
     resource
 }
 
+/// The annotation `id` names, with its declared document actions, when the
+/// published page of books leaves it out: a search hit on an annotation of
+/// any book in the library still edits and deletes it. Books themselves are
+/// published by the reader with its live actions, so they are not resolved
+/// here.
+pub(crate) fn document_child(
+    entries: &[LibraryEntry],
+    annotations: &[Annotation],
+    id: &str,
+) -> Option<Resource> {
+    fn find(resources: Vec<Resource>, id: &str) -> Option<Resource> {
+        resources.into_iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                return Some(resource);
+            }
+            find(resource.children, id)
+        })
+    }
+    let (kind, key) = id.split_once(':')?;
+    let key = key.parse::<Uuid>().ok()?;
+    let book_id = &annotations
+        .iter()
+        .find(|annotation| match kind {
+            "ebook.highlight" => annotation.group == key,
+            "ebook.bookmark" | "ebook.note" | "ebook.comment" => annotation.id == key,
+            _ => false,
+        })?
+        .doc_id;
+    let entry = entries.iter().find(|entry| &entry.id == book_id)?;
+    find(vec![library_book_document_resource(entry, annotations)], id)
+}
+
 /// Nested Document resources under the library: books (with annotations) and
 /// reading settings. Hosted [`PublishesResources`] must not republish these.
 pub(crate) fn publish_document_children(
@@ -2203,6 +2235,57 @@ mod tests {
             "Books library",
             &state,
         )]
+    }
+
+    #[test]
+    fn an_annotation_of_any_book_offers_its_declared_edits() {
+        let (_app, doc, _book_id, group) = open_with_annotations();
+        let state =
+            <crate::resource::Ebook as ui::tilo_resource::Resource>::read(&doc).unwrap_or_default();
+        let ids = |resource: &Resource| -> Vec<String> {
+            resource
+                .actions
+                .iter()
+                .map(|action| action.id.clone())
+                .collect()
+        };
+        let highlight = document_child(
+            &state.entries,
+            &state.annotations,
+            &format!("ebook.highlight:{group}"),
+        )
+        .expect("the highlight resolves by id");
+        let highlight_actions = ids(&highlight);
+        for expected in ["open", "change-color", "delete-highlight", "add-comment"] {
+            assert!(
+                highlight_actions.iter().any(|id| id == expected),
+                "{expected} in {highlight_actions:?}"
+            );
+        }
+        let note = state
+            .annotations
+            .iter()
+            .find(|annotation| {
+                annotation.kind == AnnoKind::Note && annotation.group == annotation.id
+            })
+            .expect("the fixture has a note");
+        let note = document_child(
+            &state.entries,
+            &state.annotations,
+            &format!("ebook.note:{}", note.id),
+        )
+        .expect("the note resolves by id");
+        assert!(ids(&note).iter().any(|id| id == "edit"));
+        assert!(ids(&note).iter().any(|id| id == "delete"));
+        assert!(
+            document_child(
+                &state.entries,
+                &state.annotations,
+                "ebook.note:00000000-0000-0000-0000-000000000000"
+            )
+            .is_none(),
+            "an annotation that is gone resolves to nothing"
+        );
     }
 
     fn registry() -> ActionRegistry {
