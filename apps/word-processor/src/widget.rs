@@ -78,6 +78,7 @@ pub(crate) use participants::note_participant_outcome;
 #[cfg(test)]
 mod participant_tests;
 mod proofing;
+mod semantic_geometry;
 mod text_runs;
 mod toolbar;
 
@@ -8836,6 +8837,7 @@ impl WordProcessorWidget {
         &self,
         scene: &mut Scene,
         ctf: Affine,
+        canvas_clip: Rect,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
@@ -8858,16 +8860,6 @@ impl WordProcessorWidget {
         let now = ui::time::now();
         for interaction in presence.interactions_for_resource("word-processor.document", now) {
             let ranges = match &interaction.anchor {
-                tilo_actions::InteractionAnchor::Text { ranges, .. } => ranges
-                    .iter()
-                    .map(|range| {
-                        (
-                            range.block.as_str(),
-                            usize::try_from(range.start).unwrap_or(usize::MAX),
-                            usize::try_from(range.end).unwrap_or(usize::MAX),
-                        )
-                    })
-                    .collect::<Vec<_>>(),
                 tilo_actions::InteractionAnchor::Objects { ids } => ids
                     .iter()
                     .filter_map(|id| {
@@ -8879,7 +8871,9 @@ impl WordProcessorWidget {
                     .collect(),
                 _ => Vec::new(),
             };
-            let mut rects = Vec::new();
+            let mut rects = self
+                .semantic_text_rects(&interaction.anchor, ctf, canvas_clip)
+                .unwrap_or_default();
             for (block, start, end) in ranges {
                 let Some(l) = self.laid.iter().find(|laid| laid.id == block) else {
                     continue;
@@ -8898,15 +8892,25 @@ impl WordProcessorWidget {
                     },
                 ));
             }
+            if rects.is_empty() {
+                continue;
+            }
+            // This pass runs after the page layer was popped. Clip semantic
+            // highlights and their labels explicitly so they cannot reach
+            // the toolbar, other panes, or the surrounding host chrome.
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                Affine::IDENTITY,
+                &canvas_clip,
+            );
             let user = UserId(interaction.actor.id.clone());
             for rect in &rects {
                 presence.draw_peer_selection(scene, theme, ctf, &user, *rect);
             }
-            if let Some(bounds) = rects
-                .iter()
-                .copied()
-                .reduce(|bounds, rect| bounds.union(rect))
-            {
+            // Label an actual visible span, never a union spanning page gaps.
+            if let Some(bounds) = rects.first().copied() {
                 let label = presence.display_name(&user);
                 presence.draw_peer_outline_labeled(
                     &mut ui::paint::PaintCtx::new(scene, ctf, text_renderer, theme),
@@ -8916,6 +8920,7 @@ impl WordProcessorWidget {
                     3.0,
                 );
             }
+            scene.pop_layer();
         }
         for c in &remote_carets {
             presence.draw_peer_caret_labeled(
@@ -10748,7 +10753,14 @@ impl Widget for WordProcessorWidget {
         // no longer exist) so the next frame can reuse it.
         self.layout_cache = new_cache;
 
-        self.draw_remote_overlays(scene, fg.ctf, text_renderer, theme, presence);
+        self.draw_remote_overlays(
+            scene,
+            fg.ctf,
+            fg.canvas_clip,
+            text_renderer,
+            theme,
+            presence,
+        );
 
         // Contextual styles panel on the right (between toolbar and layout bar).
         if self.styles_panel_visible() {
