@@ -7,14 +7,15 @@ use std::rc::Rc;
 use accounts::SecretId;
 use taffy::{NodeId, Style, TaffyTree};
 use ui::a11y::{AccessNode, Role};
+use ui::chrome::{SelectionState, selection_tier_on};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, PressOutcome, RowAction,
-    RowLeading, ScrollMetrics, Widget,
+    AvatarFace, Button, ButtonFace, EmptyState, EmptyStateContent, Interaction, ListRowFace,
+    PressOutcome, RowAction, RowLeading, ScrollMetrics, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -36,10 +37,84 @@ fn star_label(favorite: bool) -> &'static str {
     }
 }
 
+/// Where a row's favorite toggle sits: the slot of the row's trailing
+/// action.
+fn star_rect(row: Rect, favorite: bool, theme: &Theme) -> Option<Rect> {
+    let action = [RowAction {
+        icon: Icon::Star,
+        label: star_label(favorite),
+    }];
+    ListRowFace::new("")
+        .actions(&action)
+        .interaction(Interaction {
+            hovered: true,
+            ..Interaction::default()
+        })
+        .action_rects(row, theme)
+        .first()
+        .copied()
+}
+
+/// The scroll bar's gutter at the list's trailing edge: rows end before it,
+/// and the thumb runs in its middle lane, clear of the rows and of the
+/// column's edge.
+#[derive(Clone, Copy, Debug, Default)]
+struct Gutter {
+    width: f64,
+    margin: f64,
+}
+
+impl Gutter {
+    fn of(theme: &Theme) -> Self {
+        Self {
+            width: f64::from(theme.tokens.metrics.scrollbar_gutter),
+            margin: f64::from(theme.tokens.spacing.rhythm.tight) / 2.0,
+        }
+    }
+}
+
+/// What a row's favorite toggle depends on.
+#[derive(Clone, Copy)]
+struct StarRow {
+    rect: Rect,
+    favorite: bool,
+    selected: bool,
+    hovered: bool,
+}
+
+/// Paint a row's favorite toggle where it shows: a favorite keeps its star
+/// on, and any row shows it under the pointer. Returns its rect.
+fn paint_star(
+    scene: &mut Scene,
+    t: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    row: StarRow,
+    pointer: Point,
+) -> Option<Rect> {
+    if !row.favorite && !row.hovered {
+        return None;
+    }
+    let star = star_rect(row.rect, row.favorite, theme)?;
+    let face = ButtonFace::icon_only(star, Icon::Star, star_label(row.favorite))
+        .toggled(row.favorite)
+        .hovered(star.contains(pointer));
+    // The toggle stands on the row's lift when the row has one, so "on"
+    // still reads on the open item.
+    if row.selected || row.hovered {
+        let state = SelectionState::new(row.selected, row.hovered, false);
+        let ground = selection_tier_on(theme, state, theme.tokens.colors.surfaces.content);
+        Button::paint(scene, t, text, &theme.on_ground(ground.fill), &face);
+    } else {
+        Button::paint(scene, t, text, theme, &face);
+    }
+    Some(star)
+}
+
 impl Core {
-    fn gutter_track(&self, gutter: f64) -> Rect {
+    fn gutter_track(&self, gutter: Gutter) -> Rect {
         let area = self.list.rect;
-        Rect::new(area.x1 - gutter, area.y0, area.x1, area.y1)
+        Rect::new(area.x1 - gutter.width, area.y0, area.x1, area.y1).inset(-gutter.margin)
     }
 
     fn list_metrics(&self) -> ScrollMetrics {
@@ -55,7 +130,7 @@ impl Core {
         area: Rect,
     ) {
         self.list.rows.clear();
-        self.list.star = None;
+        self.list.stars.clear();
         self.list.empty_action = None;
         let resized = self.list.rect.size() != area.size();
         self.list.rect = area;
@@ -69,7 +144,7 @@ impl Core {
             return;
         }
         let inset = f64::from(theme.tokens.spacing.s2);
-        let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        let gutter = Gutter::of(theme);
         let summaries: Vec<String> = visible.iter().map(summary).collect();
         let height = ListRowFace::new("")
             .leading(RowLeading::Avatar(AvatarFace::new("", "")))
@@ -95,7 +170,7 @@ impl Core {
         let max = (self.list.content - area.height()).max(0.0);
         self.list.scroll = self.list.scroll.clamp(0.0, max);
 
-        let x1 = area.x1 - inset.max(if overflows { gutter } else { 0.0 });
+        let x1 = area.x1 - inset.max(if overflows { gutter.width } else { 0.0 });
         let mut y = area.y0 + inset - self.list.scroll;
         let pointer = self.pointer;
         // A new item is not in the list yet: nothing there is the open item.
@@ -113,10 +188,6 @@ impl Core {
             }
             let hovered = rect.contains(pointer) && area.contains(pointer);
             let favorite = is_favorite(item);
-            let actions = [RowAction {
-                icon: Icon::Star,
-                label: star_label(favorite),
-            }];
             let id = item.id.0.as_str();
             let selected = Some(&item.id) == open.as_ref();
             let face = ListRowFace::new(&item.title)
@@ -125,23 +196,27 @@ impl Core {
                 ))
                 .secondary(secondary)
                 .selected(selected)
-                .actions(&actions)
                 .interaction(Interaction {
                     hovered,
                     ..Interaction::default()
                 });
-            let star = face.action_rects(rect, theme).first().copied();
-            let face = face.hovered_action(star.filter(|r| r.contains(pointer)).map(|_| 0));
             let face = match visible.get(i.saturating_add(1)) {
                 Some(next) => face.separator(Some(&next.id) == open.as_ref()),
                 None => face,
             };
             face.paint(&mut PaintCtx::new(scene, t, text, theme), rect);
-            let shown = rect.intersect(area);
-            if let Some(star) = star {
-                self.list.star = Some((star.intersect(area), item.id.clone()));
+            let row = StarRow {
+                rect,
+                favorite,
+                selected,
+                hovered,
+            };
+            if let Some(star) = paint_star(scene, t, text, theme, row, pointer) {
+                self.list
+                    .stars
+                    .push((star.intersect(area), item.id.clone()));
             }
-            self.list.rows.push((shown, item.id.clone()));
+            self.list.rows.push((rect.intersect(area), item.id.clone()));
         }
         scene.pop_layer();
 
@@ -196,7 +271,7 @@ impl Core {
         &mut self,
         event: &WindowEvent,
         ctx: &ui::widget::EventCtx<'_>,
-        gutter: f64,
+        gutter: Gutter,
         requests: &Requests,
     ) -> bool {
         let area = self.list.rect;
@@ -245,7 +320,7 @@ impl Core {
                 let request = if self.list.empty_action.is_some_and(|r| r.contains(pointer)) {
                     Some(Request::NewItem)
                 } else if let Some((_, id)) =
-                    self.list.star.as_ref().filter(|(r, _)| r.contains(pointer))
+                    self.list.stars.iter().find(|(r, _)| r.contains(pointer))
                 {
                     Some(Request::ToggleFavorite(id.clone()))
                 } else {
@@ -297,7 +372,7 @@ pub(crate) struct ListPane {
     core: Shared,
     requests: Requests,
     rect: Rect,
-    gutter: f64,
+    gutter: Gutter,
 }
 
 impl ListPane {
@@ -306,7 +381,7 @@ impl ListPane {
             core: Rc::clone(core),
             requests: Rc::clone(requests),
             rect: Rect::ZERO,
-            gutter: 0.0,
+            gutter: Gutter::default(),
         }
     }
 }
@@ -319,7 +394,7 @@ impl Widget for ListPane {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        self.gutter = Gutter::of(theme);
         let node = taffy
             .new_leaf(Style {
                 size: taffy::Size {

@@ -561,7 +561,9 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
             }
             assert!(matches!(
                 app.core().dialog,
-                Some(Dialog::ImportPreview { ref rows, conflicts }) if rows.len() == 1 && conflicts == expected_conflicts
+                Some(Dialog::ImportPreview { ref rows, ref skipped })
+                    if rows.len() == 1
+                        && skipped.iter().filter(|skip| **skip).count() == expected_conflicts
             ));
             request(&mut app, &mut doc, Request::ConfirmImport);
             assert_eq!(app.core().model.as_ref().unwrap().items().len(), 1);
