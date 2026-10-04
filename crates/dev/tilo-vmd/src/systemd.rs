@@ -331,6 +331,40 @@ impl Apply for SystemdApply {
         self.boot.confirm(expect_version)
     }
 
+    fn hold_awake(&mut self, lease: &Path) -> Result<(), DaemonError> {
+        let unit = crate::awake::AWAKE_UNIT;
+        if self.unit_state(unit) == "active" {
+            // It rereads the lease and takes the new deadline itself.
+            return Ok(());
+        }
+        let _ = Command::new("systemctl")
+            .args(["reset-failed", unit])
+            .output();
+        let exe = std::env::current_exe().map_err(DaemonError::io("find the tilo-vmd binary"))?;
+        let mut command = Command::new("systemd-run");
+        command
+            .arg(format!("--unit={unit}"))
+            .args(["--collect", "--quiet"])
+            .arg("--description=tilo-vm keeps this machine awake while someone works on it")
+            .arg(exe)
+            .args(["awake-hold", "--lease"])
+            .arg(lease);
+        match run(&format!("systemd-run --unit {unit}"), &mut command) {
+            Ok(_) => Ok(()),
+            // Another connection started it meanwhile.
+            Err(_) if self.unit_state(unit) == "active" => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn release_awake(&mut self) -> Result<(), DaemonError> {
+        let unit = crate::awake::AWAKE_UNIT;
+        if self.unit_state(unit) == "active" {
+            systemctl("stop", unit)?;
+        }
+        Ok(())
+    }
+
     fn ensure_user(&mut self, user: &str) -> Result<u32, DaemonError> {
         if let Some(uid) = uid_of(user) {
             run(
