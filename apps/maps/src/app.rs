@@ -200,11 +200,6 @@ pub struct MapsApp {
     place_search: PlaceSearch,
     /// Opens the platform search from the painted search buttons.
     search_opener: ui::search::SearchOpener,
-    /// The History button, in the panel's header (the top row when narrow),
-    /// so the window draws no History bar over the map.
-    history: Button,
-    /// Where the History button was drawn this frame.
-    history_rect: Rect,
     /// The floating surfaces drawn over the map this frame (the panel, the
     /// controls, the cards, the footer); the markers keep clear of them.
     chrome_rects: Vec<Rect>,
@@ -517,12 +512,6 @@ impl MapsApp {
             map_controls: MapControls::default(),
             place_search,
             search_opener: ui::search::SearchOpener::new(),
-            history: {
-                let mut history = ui::widget::history_button();
-                history.set_compact_toolbar_presentation(true);
-                history
-            },
-            history_rect: Rect::ZERO,
             chrome_rects: Vec::new(),
             status_bubble: ui::StatusBubble::new(),
             endpoints: EndpointEditor::new(),
@@ -2625,7 +2614,6 @@ impl MapsApp {
 
     fn draw_app(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.click_targets.clear();
-        self.history_rect = Rect::ZERO;
         self.text_scale = theme.text_scale;
         self.map_controls.set_metrics(ColumnMetrics::of(theme));
         self.map_controls.set_viewport(self.map_controls_viewport());
@@ -2889,14 +2877,7 @@ impl MapsApp {
                 false,
                 Hit::OpenSearch,
             );
-            let history = Rect::new(
-                search.x1 + f64::from(self.spacing.s2),
-                search.y0,
-                search.x1 + f64::from(self.spacing.s2) + search.width(),
-                search.y1,
-            );
-            self.draw_history_button(scene, t, tr, theme, history, ButtonRole::Secondary);
-            self.floats(menu.union(history));
+            self.floats(menu.union(search));
         }
     }
 
@@ -3480,9 +3461,6 @@ impl MapsApp {
                 Hit::OpenSearch,
             );
             trailing = search.x0;
-            let history = button_at(trailing - side);
-            self.draw_history_button(scene, t, tr, &ink, history, ButtonRole::Plain);
-            trailing = history.x0;
         }
         let title = if matches!(self.model.panel, Panel::Directions) {
             "Directions"
@@ -3534,48 +3512,6 @@ impl MapsApp {
         };
         scene.pop_layer();
         self.content_h = drawn - content.y0 + self.scroll;
-    }
-
-    /// Paint the History button at `rect`.
-    fn draw_history_button(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        role: ButtonRole,
-    ) {
-        self.history.set_role(role);
-        self.history.apply_layout_external(rect);
-        self.history_rect = rect;
-        self.history
-            .draw(scene, t, tr, theme, &PresenceCtx::empty());
-    }
-
-    /// Route a pointer event to the History button; whether it took it.
-    fn drive_history(&mut self, event: &WindowEvent, ctx: &ui::widget::EventCtx<'_>) -> bool {
-        let mut doc = AutoCommit::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let Ok(node) = taffy.new_leaf(Style::default()) else {
-            return false;
-        };
-        let mut handled = false;
-        let mut focus_target: Option<NodeId> = None;
-        self.history.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: ctx.modifiers,
-                state: &mut doc,
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
     }
 
     /// A group label inside the panel, with an optional trailing text action
@@ -4757,15 +4693,6 @@ impl MapsApp {
                     .checked(self.map_controls.traffic_enabled()),
             },
         ];
-        if self.history_rect.area() > 0.0 {
-            targets.push(AccessibilityTarget {
-                rect: self.history_rect,
-                label: "History".to_string(),
-                target: "maps.history".to_string(),
-                role: Role::Button,
-                state: AccessState::new().focusable(true),
-            });
-        }
         targets.retain(|target| target.rect.area() > 0.0);
         if self.navigation_end_rect.area() > 0.0 && self.model.route.is_some() {
             targets.push(AccessibilityTarget {
@@ -4788,10 +4715,8 @@ impl MapsApp {
         if self.overlay_mode() && self.nav_open {
             let panel = self.panel_rect();
             targets.retain(|target| {
-                matches!(
-                    target.target.as_str(),
-                    "maps.navigation" | "maps.search" | "maps.history"
-                ) || panel.contains(target.rect.center())
+                matches!(target.target.as_str(), "maps.navigation" | "maps.search")
+                    || panel.contains(target.rect.center())
             });
         }
         targets
@@ -4924,18 +4849,6 @@ impl Widget for MapsApp {
         dyn ui::search::capability::SearchSource,
         dyn ui::widget::controls::ActionControls
     );
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.history]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(&self.history);
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.history]
-    }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -5119,16 +5032,6 @@ impl Widget for MapsApp {
         if self
             .info_sheet
             .handle_event(event, ctx.scale_factor, *ctx.modifiers, ctx.state)
-        {
-            *ctx.handled = true;
-            return;
-        }
-        // The History button takes its own pointer input.
-        if matches!(
-            event,
-            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
-        ) && self.drive_history(event, ctx)
-            && matches!(event, WindowEvent::MouseInput { .. })
         {
             *ctx.handled = true;
             return;
@@ -5546,11 +5449,6 @@ impl Widget for MapsApp {
             self.clear_route(state);
             return true;
         }
-        // The History button is a real toolkit button: the framework's
-        // exact-rect press reaches it through `handle_event`.
-        if target == "maps.history" {
-            return false;
-        }
         let hit = self.click_targets.iter().find_map(|(_, hit)| {
             (self
                 .accessibility_target_for_hit(hit)
@@ -5732,9 +5630,7 @@ impl ui::search::capability::SearchSource for MapsApp {
 impl ui::widget::controls::ActionControls for MapsApp {
     /// Search opened from the painted search buttons and recent searches.
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.search_opener
-            .take()
-            .or_else(|| ui::widget::controls::take_control_invocation(&mut self.history))
+        self.search_opener.take()
     }
 }
 
