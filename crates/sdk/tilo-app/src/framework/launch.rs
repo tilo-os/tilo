@@ -185,3 +185,32 @@ pub struct Command {
     /// reporting the error, if any.
     pub run: fn(&str) -> Result<(), String>,
 }
+
+/// Opens what a launch naming some arguments opens in the window an app runs
+/// in, in place of the record it shows: what
+/// [`ViewCx::open_here`](super::ViewCx::open_here) does, kept by a custom
+/// surface for the input that later asks for it (a file chosen in a picker).
+#[derive(Clone)]
+pub struct OpenHere(std::rc::Rc<dyn Fn(Vec<String>) -> Result<(), ui_core::launch::LaunchError>>);
+
+impl OpenHere {
+    pub(crate) fn new(
+        open: impl Fn(Vec<String>) -> Result<(), ui_core::launch::LaunchError> + 'static,
+    ) -> Self {
+        Self(std::rc::Rc::new(open))
+    }
+
+    /// Open what a launch naming `arguments` opens, in the window's place.
+    ///
+    /// # Errors
+    /// Returns why the record cannot be opened.
+    pub fn open(&self, arguments: &[String]) -> Result<(), String> {
+        (self.0)(arguments.to_vec()).map_err(|error| error.to_string())
+    }
+}
+
+impl std::fmt::Debug for OpenHere {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OpenHere")
+    }
+}

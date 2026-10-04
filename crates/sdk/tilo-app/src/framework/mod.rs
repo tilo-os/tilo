@@ -98,6 +98,10 @@
 //!   [`ResourceApp::ARGUMENTS`] how many arguments it takes. A handed file's
 //!   bytes are kept in the launch's content store ([`LaunchInput::content`]),
 //!   which the actions name by hash, so the record never carries the file.
+//!   The app's own Open is the same launch in the window it runs in
+//!   ([`ViewCx::open_here`], [`SurfaceCx::opener`]): the window shows the
+//!   record that launch names in place of its own, so a document has one
+//!   record however it was opened.
 //!   An app that offers private windows ([`ResourceApp::PRIVATE_WINDOWS`],
 //!   `--private`) runs one on a profile thrown away with the process,
 //!   attached to no runtime, and its view knows ([`ViewCx::is_private`]).
@@ -313,7 +317,7 @@ pub use effect::{
     Progress, Projection,
 };
 pub use kinds::resource_kind;
-pub use launch::{Command, LaunchInput};
+pub use launch::{Command, LaunchInput, OpenHere};
 pub use live::Live;
 pub use participant::Participant;
 pub use people::People;

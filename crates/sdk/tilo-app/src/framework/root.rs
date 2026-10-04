@@ -267,6 +267,12 @@ impl<R: Resource> ResourceRoot<R> {
         self.content.as_mut()
     }
 
+    /// Open what a launch naming `arguments` opens in this window
+    /// ([`ViewCx::open_here`](super::ViewCx::open_here)).
+    pub(crate) fn open_here(&self, arguments: &[String]) -> Result<(), String> {
+        self.run.open_here(arguments)
+    }
+
     /// What the launch that opened the window named.
     pub(crate) fn launch(&self) -> super::launch::LaunchInput<'_> {
         self.run.launch()

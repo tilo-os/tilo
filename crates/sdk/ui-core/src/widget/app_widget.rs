@@ -1531,6 +1531,9 @@ mod component_adapter {
             self.component.close();
             self.component.take_close_reports()
         }
+        fn take_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
+            self.component.take_replacement()
+        }
         fn take_component_close_reports(
             &mut self,
         ) -> Vec<crate::application::ComponentCloseReport> {

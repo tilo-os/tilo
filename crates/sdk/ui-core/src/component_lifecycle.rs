@@ -73,6 +73,21 @@ pub trait ComponentLifecycle: Widget {
     fn take_window_close_intent(&mut self) -> bool {
         false
     }
+
+    /// The component this root's own component asked to show in its place
+    /// ([`AppComponent::take_replacement`](crate::application::AppComponent::take_replacement)),
+    /// for the host that mounted it. A component nested deeper answers to
+    /// the host that mounted it, so the default reaches no child.
+    fn take_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
+        None
+    }
+}
+
+/// The component `widget`'s own component asked to show in its place.
+pub fn take_replacement(
+    widget: &mut dyn Widget,
+) -> Option<crate::application::ComponentReplacement> {
+    capability_mut::<dyn ComponentLifecycle>(widget)?.take_replacement()
 }
 
 /// Unsaved external documents under `widget`.

@@ -462,9 +462,33 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Self::open(profile, role, &author, &arguments, None, None, None)
     }
 
+    /// Open what a launch naming `arguments` opens in this window, as the
+    /// app's view does with [`ViewCx::open_here`](super::ViewCx::open_here),
+    /// and run the frame that shows it.
+    ///
+    /// # Errors
+    /// Returns why the record cannot be opened.
+    pub fn open_here(&mut self, arguments: &[&str]) -> Result<(), String> {
+        let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.open_here(&arguments))
+            .ok_or_else(|| format!("{} is not hosted here", A::TITLE))??;
+        self.harness().relayout();
+        Ok(())
+    }
+
     /// The record the app shows.
     pub fn record(&self) -> &RecordId {
-        &self.checkout.id
+        &self.checkout().id
+    }
+
+    /// The record the window shows now: the one it was opened on, or one
+    /// its view opened in its place ([`ViewCx::open_here`](super::ViewCx::open_here)).
+    fn checkout(&self) -> &RecordCheckout {
+        self.harness
+            .as_ref()
+            .and_then(FrameHarness::component_record)
+            .unwrap_or(&self.checkout)
     }
 
     /// Make every edit so far durable, as closing the app does.
@@ -862,7 +886,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     )]
     pub fn state(&self) -> <A::Resource as Resource>::State {
         self.records
-            .read(&self.checkout.id, |doc| {
+            .read(&self.checkout().id, |doc| {
                 <A::Resource as Resource>::read(doc)
             })
             .expect("record is open")
@@ -880,7 +904,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     )]
     pub fn read_document<T>(&self, read: impl FnOnce(&tilo_resource::Doc) -> T) -> T {
         self.records
-            .read(&self.checkout.id, read)
+            .read(&self.checkout().id, read)
             .expect("record is open")
     }
 
@@ -903,7 +927,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         peer.merge_incoming(&mut ours)
             .map_err(|error| error.to_string())?;
         self.records
-            .merge_peer_document(&self.checkout, peer.save())?;
+            .merge_peer_document(self.checkout(), peer.save())?;
         self.harness().relayout();
         Ok(())
     }
@@ -911,7 +935,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// The record's version history.
     pub fn versions(&self) -> Vec<tilo_resource::history::Version> {
         self.records
-            .read(&self.checkout.id, |doc| {
+            .read(&self.checkout().id, |doc| {
                 tilo_resource::history::versions(&mut doc.clone())
             })
             .unwrap_or_default()
@@ -928,7 +952,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     ) -> Result<super::preview::PastVersion<A::Resource>, String> {
         let past = self
             .records
-            .read(&self.checkout.id, |doc| doc.clone().fork_at(heads))
+            .read(&self.checkout().id, |doc| doc.clone().fork_at(heads))
             .ok_or("the record is not open")?
             .map_err(|error| error.to_string())?;
         super::preview::render_past::<A>(past, A::shot_viewport(None))
@@ -950,12 +974,12 @@ impl<A: ResourceApp> HeadlessApp<A> {
         use tilo_automerge::ApplyIncoming as _;
         let mut peer = self
             .records
-            .with(&self.checkout.id, tilo_resource::Doc::fork)
+            .with(&self.checkout().id, tilo_resource::Doc::fork)
             .expect("record is open");
         edit(&mut peer);
         peer.commit();
         self.records
-            .with(&self.checkout.id, |doc| doc.merge_incoming(&mut peer))
+            .with(&self.checkout().id, |doc| doc.merge_incoming(&mut peer))
             .expect("record is open")
             .expect("a peer's change merges");
         self.harness().relayout();
