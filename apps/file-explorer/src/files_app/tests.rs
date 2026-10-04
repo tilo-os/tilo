@@ -3545,13 +3545,13 @@ mod command_path_tests {
         // refresh once, then Ctrl+K itself performs no mount traversal.
         widget.refresh_external_search_catalogs();
 
-        let providers = ui::search::capability::search_providers(&widget);
-        // Places and remote-account discovery remain separate providers; find
-        // the collaborative hit by its stable record action rather than by a
-        // brittle provider position or a developer's local account settings.
-        let hit = providers
-            .iter()
-            .flat_map(|provider| provider.search("renamed"))
+        let source = ui::framework::testing::search_source::<crate::resource::FileExplorer>(
+            widget.search_entries_shown(),
+        );
+        // Find the collaborative hit by its stable record action rather than
+        // by position or a developer's local account settings.
+        let hit = ui::search::SearchProvider::search(&source, "renamed")
+            .into_iter()
             .find(|result| {
                 result.action_address()
                     == Some(crate::search_provider::record_reveal_address(record_id))
