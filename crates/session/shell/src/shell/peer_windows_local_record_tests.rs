@@ -113,6 +113,7 @@ fn local_record_restart_keeps_exact_records_and_drops_mismatches() {
         let mut tree = WorkspaceTree::bootstrap_default();
         tree.persist_path = Some(path.clone());
         let tab = adopt(&mut tree, next_id());
+        crate::shell::persist::wait_for_saves();
         let mut json: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         json.as_object_mut().unwrap().remove("local_app_records");
@@ -132,6 +133,7 @@ fn local_record_restart_keeps_exact_records_and_drops_mismatches() {
             let record = next_id();
             let tab = adopt(&mut tree, record);
             let room = tree.desktop.active_workspace().unwrap().room;
+            crate::shell::persist::wait_for_saves();
             let mut json: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             let recorded_room = if mode == "room" { RoomId::new() } else { room };

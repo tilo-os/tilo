@@ -4549,7 +4549,7 @@ impl ShellOverlayHost {
             // that focus hand-off durable at the same boundary: a crash or
             // logout during the animation must not restart with the stale
             // closing group selected.
-            st.tree().flush_to_disk();
+            st.tree().queue_save();
         }
     }
 
@@ -4713,7 +4713,7 @@ impl ShellOverlayHost {
             // Selection is session state, not merely paint state. Persist it
             // in the same input/frame boundary that accepted the click so a
             // compositor crash cannot restore the previously visible tab.
-            tree.flush_to_disk();
+            tree.queue_save();
             drop(tree);
             drop(st);
             for tab in activated_file_tabs {
@@ -4751,7 +4751,7 @@ impl ShellOverlayHost {
                     }
                 }
             }
-            tree.flush_to_disk();
+            tree.queue_save();
         }
         // `RuntimeGroup::set_width` flags its own style dirty; the
         // frame loop's structure sweep is what rebuilds the taffy node
@@ -6365,7 +6365,7 @@ impl ShellOverlayHost {
                 return false;
             }
             group.width = crate::shell::state::WindowWidth::Fraction(next);
-            tree.flush_to_disk();
+            tree.queue_save();
             let result = (strip_id, group_id, next);
             drop(tree);
             drop(st);
@@ -6544,7 +6544,7 @@ impl ShellOverlayHost {
                 if let Some(heir) = heir {
                     tree.desktop.set_active_group(source, heir);
                 }
-                tree.flush_to_disk();
+                tree.queue_save();
             }
             st.focus_strip(destination);
             st.bump();
@@ -6697,7 +6697,7 @@ impl ShellOverlayHost {
                 changed = true;
             }
             if changed {
-                tree.flush_to_disk();
+                tree.queue_save();
             }
         }
         if changed {
@@ -7511,7 +7511,7 @@ impl ShellOverlayHost {
             }
         }
         // Durable like a width change: a split survives the next restart.
-        tree.flush_to_disk();
+        tree.queue_save();
     }
 
     /// `(strip_id, group_id, rect)` triples from the live per-strip
@@ -7798,7 +7798,7 @@ impl ShellOverlayHost {
         }
         tree.desktop.active_strip.insert(ws_id, strip_id);
         tree.desktop.active_group.insert(strip_id, group_id);
-        tree.flush_to_disk();
+        tree.queue_save();
         drop(tree);
         drop(st);
         // Marks this strip at rest so a click doesn't also pan: the
@@ -16184,7 +16184,7 @@ impl Widget for ShellOverlayHost {
             // as the explicit close action.
             let mut tree = state.tree_mut();
             if state.hosted_inputs.prune_documents(&mut tree) {
-                tree.flush_to_disk();
+                tree.queue_save();
             }
             drop(tree);
             let records = state.records().clone();
@@ -18772,7 +18772,7 @@ where
             for id in &changed.revoked {
                 tree.doc_revoke_capability(ws_id, id);
             }
-            tree.flush_to_disk();
+            tree.queue_save();
             Some(())
         }
     };
