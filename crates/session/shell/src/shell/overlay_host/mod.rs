@@ -382,6 +382,22 @@ struct PendingLaunchpadApp {
     give_up_at: Instant,
 }
 
+/// How often a launchpad card's app action, delivered once its app is up,
+/// is asked whether it was admitted.
+const LAUNCHPAD_ACTION_POLL: Duration = Duration::from_millis(100);
+
+/// A launchpad card's app action awaiting admission: the app may be
+/// launching first. The card's title names it if it is refused.
+struct PendingLaunchpadAction {
+    title: String,
+    admission: tilo_actions::remote::Pending<
+        Result<
+            (u64, tilo_actions::remote::InvocationReceipt),
+            tilo_actions::remote::ActionHostError,
+        >,
+    >,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -469,6 +485,9 @@ pub struct ShellOverlayHost {
     /// A launchpad app card awaiting the Applications index; see
     /// [`Self::retry_pending_launchpad_app`].
     pending_launchpad_app: Option<PendingLaunchpadApp>,
+    /// Launchpad cards' app actions awaiting admission; see
+    /// [`Self::poll_pending_launchpad_actions`].
+    pending_launchpad_actions: Vec<PendingLaunchpadAction>,
     /// `palette.query()` after the last fan-out; refresh is
     /// short-circuited when this still matches.
     last_search_query: String,
@@ -2009,6 +2028,7 @@ impl ShellOverlayHost {
             pending_palette_action: None,
             pending_action_admissions: Vec::new(),
             pending_launchpad_app: None,
+            pending_launchpad_actions: Vec::new(),
             last_search_query: String::new(),
             last_search_revision: String::new(),
             active_kind_filter: Vec::new(),
@@ -7138,6 +7158,10 @@ impl ShellOverlayHost {
         let Some(action) = LaunchpadAction::take(doc, root) else {
             return false;
         };
+        if let Some(target) = action.app_action() {
+            self.invoke_launchpad_app_action(doc, root, target, action.label());
+            return true;
+        }
         if let Some((app_id, display_name)) = action.app_target() {
             self.open_launchpad_app(doc, root, app_id, display_name);
             return true;
@@ -7199,6 +7223,99 @@ impl ShellOverlayHost {
                     .unwrap_or_else(Instant::now),
             });
         }
+    }
+
+    /// Invoke the typed action a launchpad card names in its app, as the
+    /// person this device acts for in the active workspace. The action host
+    /// delivers it to the running app or launches the app into the workspace
+    /// first, so the card itself does what it names (starts the call, say)
+    /// rather than leaving the person to find it in the app. A session without
+    /// an action host still opens the app.
+    fn invoke_launchpad_app_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        target: tilo_desktop::launchpad::LaunchpadAppAction,
+        title: String,
+    ) {
+        use tilo_actions::remote::{InvokeArgument, InvokeRequest, application_action_target};
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let Some(broker) = self.shortcut_triggers.broker() else {
+            self.open_launchpad_app(doc, root, target.app_id, target.display_name);
+            return;
+        };
+        let caller = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let caller = tree.desktop.active_workspace().map(|workspace| {
+                let workspace_room = workspace.room.to_string();
+                (
+                    tilo_actions::remote::Caller::local_person(
+                        state.local_user_for_room(&workspace.room),
+                    )
+                    .in_room(&workspace_room),
+                    workspace_room,
+                )
+            });
+            drop(tree);
+            caller
+        };
+        let Some((caller, workspace_room)) = caller else {
+            return;
+        };
+        chrome.borrow_mut().open_target = crate::shell::chrome_state::OpenTarget::Beside;
+        let admission = crate::shell::remote_actions::BrokerActionHost::new(broker).invoke_job(
+            &caller,
+            InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: application_action_target(
+                    &workspace_room,
+                    target.app_id,
+                    target.resource,
+                    target.action,
+                ),
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+            },
+        );
+        self.pending_launchpad_actions
+            .push(PendingLaunchpadAction { title, admission });
+        self.poll_pending_launchpad_actions();
+    }
+
+    /// Settle launchpad card actions whose admission arrived. One that was
+    /// refused names its card and the reason, so a card never fails silently.
+    fn poll_pending_launchpad_actions(&mut self) {
+        use tilo_actions::remote::PendingPoll;
+        let chrome = self.chrome.clone();
+        self.pending_launchpad_actions.retain_mut(|pending| {
+            let refusal = match pending.admission.poll_ready() {
+                PendingPoll::Waiting => return true,
+                PendingPoll::Ready(Ok(_)) => None,
+                PendingPoll::Ready(Err(error)) => Some(error.to_string()),
+                PendingPoll::Abandoned => Some(t("launchpad-action-unanswered")),
+            };
+            if let (Some(reason), Some(chrome)) = (refusal, chrome.as_ref()) {
+                tracing::warn!(
+                    target: "tilo::app_launch",
+                    card = %pending.title,
+                    %reason,
+                    "launchpad card action was refused"
+                );
+                chrome.borrow_mut().push_warning_notification(
+                    t_args(
+                        "host-action-cannot-run",
+                        &[("title", pending.title.as_str().into())],
+                    ),
+                    reason,
+                );
+            }
+            false
+        });
     }
 
     /// Retry a launchpad app card the Applications index could not resolve
@@ -16112,6 +16229,7 @@ impl Widget for ShellOverlayHost {
                     });
         }
         self.retry_pending_launchpad_app(doc, path);
+        self.poll_pending_launchpad_actions();
         // Before the resync, so what an action moved is spliced this frame.
         self.run_requested_shortcut_actions();
         self.latch_overview_transition();
@@ -18498,7 +18616,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 8] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 9] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -18537,6 +18655,12 @@ impl ShellOverlayHost {
                 self.pending_launchpad_app
                     .as_ref()
                     .and_then(|_| now.checked_add(LAUNCHPAD_APP_RETRY)),
+            ),
+            (
+                "launchpad-action",
+                (!self.pending_launchpad_actions.is_empty())
+                    .then(|| now.checked_add(LAUNCHPAD_ACTION_POLL))
+                    .flatten(),
             ),
         ]
     }
