@@ -3899,7 +3899,7 @@ impl crate::widget::Widget for PaletteHistoryOwner {
         _: &mut automerge::AutoCommit,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest {
+        let Some(crate::host_operation::OperationRequest {
             type_id, payload, ..
         }) = op.unscoped()
         else {
@@ -4489,7 +4489,7 @@ impl crate::widget::Widget for ComponentControlOwner {
         _: &mut automerge::AutoCommit,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest {
+        let Some(crate::host_operation::OperationRequest {
             invocation,
             type_id,
             payload,

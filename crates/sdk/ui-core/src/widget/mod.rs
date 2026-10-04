@@ -1,13 +1,10 @@
 mod action_directory_identity;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
-mod resource_operation;
+pub(crate) mod resource_operation;
+// The raw operation protocol between the host and the toolkit's own widgets,
+// reached from outside the toolkit only through `crate::host_operation`.
 pub(crate) use resource_operation::start_without_document_writes;
-// The raw operation protocol between the host and the toolkit's own
-// widgets. Apps never name it: they answer operations as a typed effect
-// vocabulary (`tools/policy/check_app_resource_action_contract.py`).
-pub use resource_operation::HostDelivery;
-#[doc(hidden)]
-pub use resource_operation::{OperationRequest, ResourceOperation, start_in_children};
+pub(crate) use resource_operation::{ResourceOperation, ResourceOperationStart, start_in_children};
 
 use crate::dnd::DragPayload;
 use crate::permissions::PermissionScope;
@@ -36,29 +33,6 @@ pub type ModelPath = dyn std::any::Any;
 /// Shared disabled-state opacity: wrap draw output in
 /// `scene.push_layer(.., DISABLED_ALPHA, ..)` / `pop_layer()`.
 pub const DISABLED_ALPHA: f32 = 0.45;
-
-/// Result of admitting an effect/view operation into a widget.
-///
-/// `Accepted` is deliberately distinct from success: the widget must later
-/// report progress and exactly one terminal [`tilo_actions::InvocationUpdate`]
-/// from [`Widget::poll_resource_operation`]. This keeps queued and streaming
-/// work from being reported as completed merely because it entered a queue.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ResourceOperationStart {
-    Completed(tilo_actions::ActionOutput),
-    Accepted,
-}
-
-impl ResourceOperationStart {
-    /// The output of an operation that finished on return; `None` while it
-    /// is still pending.
-    pub fn completed(self) -> Option<tilo_actions::ActionOutput> {
-        match self {
-            Self::Completed(output) => Some(output),
-            Self::Accepted => None,
-        }
-    }
-}
 
 /// Machine-readable classification of a control's activation path.
 #[derive(Clone, Debug, PartialEq, Eq)]

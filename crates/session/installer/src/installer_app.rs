@@ -4141,19 +4141,22 @@ impl Widget for InstallerApp {
     /// here, after its own resolution, permission and confirmation checks.
     fn start_operation(
         &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
+        op: &ui::host_operation::ResourceOperation<'_>,
         doc: &mut AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
         let Some(request) = op.unscoped().filter(|r| r.type_id == op::OPERATION_TYPE) else {
-            return ui::widget::start_in_children(self, op, doc, path);
+            return ui::host_operation::start_in_children(self, op, doc, path);
         };
         let encoded = tilo_actions::EncodedAction {
             type_id: request.type_id.to_owned(),
             payload: request.payload.to_vec(),
         };
-        self.apply_encoded(&encoded, doc, path)
-            .map(|output| Some(ui::widget::ResourceOperationStart::Completed(output)))
+        self.apply_encoded(&encoded, doc, path).map(|output| {
+            Some(ui::host_operation::ResourceOperationStart::Completed(
+                output,
+            ))
+        })
     }
 
     fn take_focus_reset(&mut self) -> bool {

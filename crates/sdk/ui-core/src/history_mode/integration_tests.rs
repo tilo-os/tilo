@@ -2173,7 +2173,7 @@ impl Widget for RetainedLifecycleProbe {
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         use automerge::ReadDoc;
-        let Some(crate::widget::OperationRequest {
+        let Some(crate::host_operation::OperationRequest {
             invocation,
             type_id,
             ..
@@ -2356,7 +2356,7 @@ impl Widget for ReleasableLifecycleProbe {
         _: &mut automerge::AutoCommit,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest {
+        let Some(crate::host_operation::OperationRequest {
             invocation,
             type_id,
             ..

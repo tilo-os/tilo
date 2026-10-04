@@ -175,7 +175,7 @@ fn workspace_activity_actions_are_local_and_select_empty_workspaces() {
         };
         let previous_view = root.activity.as_ref().map(|activity| activity.pane.view());
         root.start_operation(
-            &ui::widget::ResourceOperation::local(
+            &ui::host_operation::ResourceOperation::local(
                 tilo_actions::InvocationId::new(),
                 tilo_actions::OperationKind::View,
                 OPERATION_TYPE,
@@ -185,7 +185,7 @@ fn workspace_activity_actions_are_local_and_select_empty_workspaces() {
             &automerge::ROOT,
         )
         .unwrap()
-        .and_then(ui::widget::ResourceOperationStart::completed)
+        .and_then(ui::host_operation::ResourceOperationStart::completed)
         .unwrap();
         assert_eq!(
             root.activity.as_ref().map(|activity| activity.pane.view()),
@@ -6202,7 +6202,7 @@ fn group_move_echo_is_not_applied_twice_and_speculation_is_opt_in() {
     let invoke = |root: &mut DesktopRoot, payload: &[u8]| {
         let output = root
             .start_operation(
-                &ui::widget::ResourceOperation::local(
+                &ui::host_operation::ResourceOperation::local(
                     tilo_actions::InvocationId::new(),
                     tilo_actions::OperationKind::View,
                     "tilo.desktop.request",
@@ -6212,7 +6212,7 @@ fn group_move_echo_is_not_applied_twice_and_speculation_is_opt_in() {
                 &automerge::ROOT,
             )
             .unwrap()
-            .and_then(ui::widget::ResourceOperationStart::completed)
+            .and_then(ui::host_operation::ResourceOperationStart::completed)
             .unwrap();
         output
             .value
@@ -6315,7 +6315,7 @@ fn invoke_open(root: &mut DesktopRoot, room: &str, app: &str) -> uuid::Uuid {
     .unwrap();
     let output = root
         .start_operation(
-            &ui::widget::ResourceOperation::local(
+            &ui::host_operation::ResourceOperation::local(
                 tilo_actions::InvocationId::new(),
                 tilo_actions::OperationKind::View,
                 "tilo.desktop.request",
@@ -6325,7 +6325,7 @@ fn invoke_open(root: &mut DesktopRoot, room: &str, app: &str) -> uuid::Uuid {
             &automerge::ROOT,
         )
         .unwrap()
-        .and_then(ui::widget::ResourceOperationStart::completed)
+        .and_then(ui::host_operation::ResourceOperationStart::completed)
         .unwrap();
     output.value.unwrap().as_str().unwrap().parse().unwrap()
 }
