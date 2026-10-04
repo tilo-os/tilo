@@ -21,9 +21,9 @@
 - Acceptance captures:100%1200×800 and480×900;2×800×900; affected short-height800×480. Review actual pixels, exercise described pointer/keyboard routes, then close findings individually. Merely adding a helper or showing a screenshot does not establish event correctness.
 
 
-- Preserve unrelated working changes, especially existing dirty tests and untracked Scratchpad source. No dependency upgrades, pushes or merges.
+- No dependency upgrades.
 - Focused RED/GREEN behavior tests, scoped package checks, fresh actual screenshots and independent review per task. CARGO_BUILD_JOBS=4; CARGO_PROFILE_DEV_DEBUG=0; CARGO_PROFILE_TEST_DEBUG=0.
-- No subagents from implementers. Commit only named/scoped files; do not blanket-stage app directories or format the workspace.
+- Commit only named/scoped files; do not format the whole workspace.
 
 ### Task 1: Sheets automatic metrics and chrome
 
@@ -111,7 +111,7 @@
 
 ### Task 9: File Explorer measured information layout
 
-**Controller update 2026-09-16:** Verify current concurrent FileView/PlacesSidebar/NavShell repairs first; source hashes match the accepted external UX-bench evidence at inspection. Preserve their dirty ownership and add only residual repairs after a fresh check. Evidence and limits: `.superpowers/app-ui-2026-09-15/external-ux-evidence.md`. Existing populated grid/long-name/manual-column/rename/post-scroll interaction acceptance below still applies.
+**Controller update 2026-09-16:** Verify current concurrent FileView/PlacesSidebar/NavShell repairs first; source hashes match the accepted external UX-bench evidence at inspection. Add only residual repairs after a fresh check. Existing populated grid/long-name/manual-column/rename/post-scroll interaction acceptance below still applies.
 
 
 `apps/file-explorer/src/places_sidebar.rs`: ROW_H44, token paint383; `apps/file-explorer/src/files_app.rs` NavShell7995. Normalize sidebar/header/List/Grid labels first; remeasure sidebar row and table header minima, preserve user column widths. Use current list/grid row geometry owners for text, edit field, hit targets, keyboard ensure-visible and scroll extents. Constrain/elide header labels within explicit widths, retaining accessible names; do not resize user columns silently. Tests populated list+grid, long file/place names, Modified header, rename editor, selection/keyboard navigation and drag/drop target after scroll. Empty folder is insufficient acceptance evidence. Narrow redundant chip band is a separate normal-size opportunity; use Mail's opt-in NavShell dependency only if its shared ownership option fits Files without a second chip.
