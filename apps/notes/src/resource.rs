@@ -13,7 +13,8 @@ use ui::permissions::UserId;
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
 // `Resource` is in scope for both `Notebook` and nested `RichText`.
 use crate::actions::{
-    NOTES_ACTION_TYPE, NOTES_OPERATION_TYPE, NotesAction, NotesOperation, encode, new_page_action,
+    NOTES_ACTION_TYPE, NOTES_OPERATION_TYPE, NotesAction, NotesOperation, append_page_action,
+    encode,
 };
 use crate::app::NotesApp;
 use crate::doc::NotesDoc;
@@ -68,7 +69,7 @@ impl Resource for Notebook {
                         .unwrap_or_default()
                         .trim()
                         .to_owned();
-                    Ok(new_page_action(PageId::new_v4(), None, 0, &title))
+                    Ok(append_page_action(PageId::new_v4(), None, &title))
                 },
             )
             .describe("Create a new root note."),
