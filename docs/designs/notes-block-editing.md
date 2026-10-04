@@ -382,3 +382,36 @@ regular expressions and whole-word options remain open.
   The focused Agent test and all-target check cannot run through their shell
   dependency on Darwin: the same 22 unresolved Linux compositor imports stop
   compilation before the new assertion. Linux CI must execute that regression.
+
+
+### Browser rich clipboard transport foundation
+
+Added an optional paired `RichTextOffer` to the shared clipboard API and event
+scope, and implemented it in the browser DataTransfer adapter. Both formats
+come from one event. HTML and its captured plain fallback each have a 1 MiB
+UTF-8 cap; the browser checks size before copying strings into WASM memory.
+Accepted rich offers consume the event once; missing, empty or oversized offers
+leave the existing plain read available. Nested scopes restore their outer
+state, and diagnostics report lengths rather than clipboard contents.
+
+- Eight native event-scope tests pass; strict clipboard all-target Clippy passes.
+- The production JavaScript bound checker passes 1,809 UTF-8 boundary/seeded
+  cases plus seven invalid-value/error cases, including surrogate handling.
+- Four disposable Chrome/WASM transport checks pass, including a real trusted
+  copy/paste event, paired Unicode content, one-read behavior and size refusal.
+  The temporary fixture export was removed before the production build.
+- The final production Notes WASM bundle builds; three real Notes browser
+  regressions pass with zero browser errors, and the fixture export is absent.
+- The required shell test compile still fails on the 22 established Darwin
+  compositor/Wayland import errors at this main base; no assertions weakened.
+- Extra strict WASM lint checks reproduce four advisory-lock errors and 31
+  browser-runtime errors with unchanged baseline browser source. None reports
+  the changed clipboard adapter; this is not a passing WASM lint qualification.
+- No browser host, geometry, authority, History or Wayland implementation changed
+  in this increment. Browser/Wayland file ownership is now confirmed separately.
+
+This is transport support, not released formatted Notes paste. Its SDK decoder
+and canonical caller remain on the History-held rich-paste branch. The current
+browser host also rejects HTML-only offers before dispatch; changing that host
+preflight requires its owner's scoped follow-up. Real Notes rich-paste
+undo/redo and full-browser caller qualification remain release gates.
