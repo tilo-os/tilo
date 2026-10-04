@@ -6610,8 +6610,8 @@ fn semantic_text_anchor(block: &str, start: u64, end: u64) -> tilo_actions::Inte
 }
 
 fn semantic_text_fixture(text: &str) -> Framed<WordProcessorWidget> {
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, text);
     mount(state, wp, 1100, 760)
@@ -6742,8 +6742,8 @@ fn semantic_text_geometry_refuses_invalid_or_unretained_targets() {
 
 #[test]
 fn semantic_text_geometry_never_turns_an_image_hit_test_layout_into_a_caret() {
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_image_bytes(&mut state.doc, TEST_PNG);
     let framed = mount(state, wp, 1100, 760);
