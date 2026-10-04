@@ -138,6 +138,25 @@ impl ViewStorage {
         self.person.as_ref()?.open::<P>()
     }
 
+    /// The person's records the views opened, as published resources.
+    pub(crate) fn person_resources(&self) -> Vec<tilo_actions::Resource> {
+        self.person
+            .as_ref()
+            .map(super::person::PersonState::resources)
+            .unwrap_or_default()
+    }
+
+    /// Answer an undo or redo of one of the person's records.
+    pub(crate) fn person_history(
+        &self,
+        payload: &[u8],
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        self.person
+            .as_ref()
+            .ok_or_else(|| "this window keeps no records of yours".to_owned())?
+            .answer(payload)
+    }
+
     /// The routes of the person's records the views opened.
     pub(crate) fn person_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
         self.person
