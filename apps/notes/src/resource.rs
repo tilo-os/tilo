@@ -95,7 +95,6 @@ impl ResourceApp for NotesShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
-        crate::notebook::adopt_content(cx.content().as_ref());
         // `present` installs the framework's workspace before the first frame.
         let author = UserId(cx.me().unwrap_or("local").to_owned());
         let mut app = NotesApp::empty_surface(&author, cx.save_status());
@@ -107,7 +106,6 @@ impl ResourceApp for NotesShell {
 
     /// A Markdown file the app is launched on becomes a note.
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Notebook>> {
-        crate::notebook::adopt_content(input.content());
         let Some((page, file)) = launched_note(input) else {
             return Vec::new();
         };

@@ -602,6 +602,9 @@ impl HostContext {
     /// opaque bytes addressed by hash that outlive the component and that
     /// other components of the same scope read too.
     pub fn provide_content(&mut self, store: tilo_content::ContentStore) {
+        // The window's code finds it wherever it runs: an action applying,
+        // an action's arguments being built.
+        tilo_resource::content::register(&self.wake_scope.handle(), store.clone());
         self.content = Some(store);
     }
     /// The content store the host lent, if any.

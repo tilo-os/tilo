@@ -72,10 +72,10 @@ pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
         .map_err(|error| error.to_string())
 }
 
-/// The picture behind a content address, from the app's content store.
-pub fn bytes_of(address: &str) -> Option<Vec<u8>> {
+/// The picture behind a content address, from `content`.
+pub fn bytes_of(content: &tilo_content::ContentStore, address: &str) -> Option<Vec<u8>> {
     let hash = ui::tilo_actions::content_hash(address)?;
-    crate::content::store().read(hash)
+    content.read(hash)
 }
 
 /// The frame, crop and turn of an image mark.
@@ -383,6 +383,10 @@ pub struct Pictures {
     /// export: they must show it) or decoded in the background while a
     /// placeholder shows (the canvas: a frame must not wait).
     pub patient: bool,
+    /// The store the pictures' bytes are read from: the window's, handed
+    /// over when the window attaches. Without one, the store of the window
+    /// whose code is running.
+    content: Option<tilo_content::ContentStore>,
 }
 
 impl Default for Pictures {
@@ -393,14 +397,15 @@ impl Default for Pictures {
             clock: 0,
             decoding: HashMap::new(),
             patient: true,
+            content: None,
         }
     }
 }
 
 /// A picture's bytes decoded and halved down to a thumbnail's size, every
 /// copy made at once: work for a background thread.
-fn decode_all(address: &str) -> Option<Vec<ImageData>> {
-    let full = bytes_of(address).and_then(|bytes| decode(&bytes).ok())?;
+fn decode_all(content: &tilo_content::ContentStore, address: &str) -> Option<Vec<ImageData>> {
+    let full = bytes_of(content, address).and_then(|bytes| decode(&bytes).ok())?;
     let mut levels = vec![full];
     while let Some(last) = levels.last() {
         if last.width.max(last.height) <= 64 {
@@ -413,6 +418,15 @@ fn decode_all(address: &str) -> Option<Vec<ImageData>> {
 }
 
 impl Pictures {
+    /// Read the pictures' bytes from `content` from now on.
+    pub fn read_from(&mut self, content: tilo_content::ContentStore) {
+        self.content = Some(content);
+    }
+
+    fn content(&self) -> tilo_content::ContentStore {
+        self.content.clone().unwrap_or_else(crate::content::store)
+    }
+
     /// Whether pictures are still being decoded in the background: the
     /// canvas draws again until they are.
     pub fn decoding(&self) -> bool {
@@ -459,9 +473,11 @@ impl Pictures {
         }
         let (sender, receiver) = std::sync::mpsc::channel();
         let owned = address.to_owned();
+        // The thread reads the window's store, handed to it here.
+        let content = self.content();
         let started = ui::rt::background::Background::current()
             .spawn("canvas-picture", move || {
-                let _ = sender.send(decode_all(&owned));
+                let _ = sender.send(decode_all(&content, &owned));
             })
             .is_ok();
         if started {
@@ -492,7 +508,7 @@ impl Pictures {
             let levels = match self.decoding.remove(address) {
                 // Already on its way: wait for it rather than decode twice.
                 Some(channel) => channel.recv().ok().flatten(),
-                None => bytes_of(address)
+                None => bytes_of(&self.content(), address)
                     .and_then(|bytes| decode(&bytes).ok())
                     .map(|full| vec![full]),
             };

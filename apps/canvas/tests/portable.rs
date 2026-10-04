@@ -45,8 +45,10 @@ fn colour_at(app: &TestApp<App>, region: [f64; 4]) -> [u8; 4] {
         format: Some("png".into()),
         ..Look::default()
     };
+    let mut renderer = Renderer::default();
+    renderer.pictures.read_from(app.content());
     let (picture, _) = view_ops::look(
-        &mut Renderer::default(),
+        &mut renderer,
         &mut ui::TextRenderer::new(),
         &app.state(),
         &look,
