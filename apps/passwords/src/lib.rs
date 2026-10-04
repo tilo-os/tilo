@@ -8,14 +8,14 @@ use accounts::{
     CredentialGrant, GeneratedPasswordPolicy, SecretCustody, SecretId, SecretItem, SecretStore,
 };
 use std::collections::HashMap;
-use ui::widget::Widget;
 
-mod actions;
-mod doc;
+pub mod actions;
 pub mod resource;
 mod showcase;
 mod transfer;
-pub use showcase::{PasswordsSurface, ShowcaseMode};
+pub use actions::PasswordsEffect;
+pub use resource::{Passwords, PasswordsShell};
+pub use showcase::PasswordsSurface;
 
 pub struct PasswordsModel {
     store: SecretStore,
@@ -242,27 +242,10 @@ impl PasswordsModel {
     }
 }
 
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(PasswordsSurface::live())
-}
-
-/// The app as every host mounts it: the live root.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.passwords", app_root).as_definition("Passwords")
+    ui::framework::definition::<PasswordsShell>()
 }
-pub fn app_root_demo() -> Box<dyn Widget> {
-    Box::new(PasswordsSurface::demo(ShowcaseMode::Vault))
-}
-
-pub fn app_root_showcase(mode: ShowcaseMode) -> Box<dyn Widget> {
-    Box::new(PasswordsSurface::demo(mode))
-}
-
-pub fn app_root_long_list_showcase() -> Box<dyn Widget> {
-    Box::new(PasswordsSurface::demo_long_list())
-}
-
-pub use resource::{Passwords, PasswordsShell, launch_spec};
 
 #[cfg(test)]
 mod tests {
