@@ -1380,6 +1380,10 @@ pub struct ShellNetwork {
     /// Artifacts of records in the person's own room this session has held.
     /// Their history is answered to nobody on a room topic.
     person_artifacts: Mutex<std::collections::HashSet<collab_types::ArtifactId>>,
+    /// Another of this person's devices (re)appeared on an authenticated
+    /// route: the local apps holding person-room records owe it their
+    /// snapshots, since it missed whatever was written while it was away.
+    person_snapshots_wanted: std::sync::atomic::AtomicBool,
     /// Received app-presence frames awaiting fan-out to local apps.
     inbound_app_presence: Arc<Mutex<Vec<InboundAppPresence>>>,
     /// This device's presence per room as workspace-host live frames.
@@ -1478,6 +1482,8 @@ pub use tilo_action_broker::channel_encryption::InboundChannelGovernance;
 /// may answer with a `ScrollbackResponse` if its op log holds the range.
 #[derive(Debug, Clone)]
 pub struct InboundScrollbackRequest {
+    /// The room topic it was asked on; only that room's history answers it.
+    pub workspace_topic: u64,
     /// Hashed peer id of the asker; used to address the reply.
     pub requester: u64,
     pub artifact: collab_types::ArtifactId,
@@ -1823,6 +1829,7 @@ impl ShellNetwork {
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
             wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
             person_artifacts: Mutex::default(),
+            person_snapshots_wanted: std::sync::atomic::AtomicBool::new(false),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             live_presence: Mutex::default(),
             live_labels: Mutex::default(),
@@ -2581,6 +2588,17 @@ impl ShellNetwork {
             .is_some_and(|room| RoomId::parse(cluster_id) == Some(room))
     }
 
+    /// The person room, once after another of this person's devices
+    /// appeared on an authenticated route: the broker then asks each local
+    /// app holding one of its records for a snapshot to send that device.
+    pub fn take_person_snapshot_request(&self) -> Option<String> {
+        self.person_snapshots_wanted
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+            .then(|| self.local_person_room())
+            .flatten()
+            .map(|room| room.to_string())
+    }
+
     fn remember_person_artifact(&self, artifact: collab_types::ArtifactId) {
         if let Ok(mut artifacts) = self.person_artifacts.lock() {
             artifacts.insert(artifact);
@@ -3204,13 +3222,19 @@ impl ShellNetwork {
     /// app's `FetchScrollback` returned `exhausted=true` with an empty
     /// batch — the broker has nothing more in-memory, but the app still
     /// wants the range.
+    /// Asked on `cluster_id`'s own topic: only that room's members hold, and
+    /// may answer with, its history.
     pub fn publish_scrollback_request(
         &self,
+        cluster_id: &str,
         artifact: collab_types::ArtifactId,
         before_seq: u64,
         max: u16,
     ) {
-        if self.is_person_artifact(&artifact) {
+        let Some(room) = RoomId::parse(cluster_id).filter(|room| !room.is_nil()) else {
+            return;
+        };
+        if self.local_person_room() == Some(room) || self.is_person_artifact(&artifact) {
             return;
         }
         let msg = NeighbourMsg::ScrollbackRequest {
@@ -3219,13 +3243,15 @@ impl ShellNetwork {
             max,
             requester: self.local_peer_id_hash(),
         };
-        let _ = self.publish_message(msg);
+        let ws = room_topic_id(room);
+        let _ = self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok();
     }
 
     /// Publish a `NeighbourMsg::ScrollbackResponse` for an artifact
-    /// whose log has matching ops.
+    /// whose log has matching ops, on the topic the request came from.
     pub fn publish_scrollback_response(
         &self,
+        workspace_topic: u64,
         artifact: collab_types::ArtifactId,
         ops: Vec<Box<collab_types::SignedOp>>,
     ) {
@@ -3237,12 +3263,29 @@ impl ShellNetwork {
             ops,
             responder: self.local_peer_id_hash(),
         };
-        let _ = self.publish_message(msg);
+        let _ = self.join_topic(workspace_topic)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::Publish {
+                    ws: workspace_topic,
+                    msg,
+                })
+                .is_ok();
+    }
+
+    /// Whether history of an artifact bound to `cluster_id` may be answered
+    /// on `workspace_topic`: only on that room's own topic, and never for
+    /// the person's own room, which no topic carries.
+    pub fn scrollback_answer_allowed(&self, cluster_id: &str, workspace_topic: u64) -> bool {
+        RoomId::parse(cluster_id)
+            .filter(|room| !room.is_nil() && self.local_person_room() != Some(*room))
+            .is_some_and(|room| room_topic_id(room) == workspace_topic)
     }
 
     /// Queue a received `ScrollbackRequest` for the broker's drainer.
     pub fn handle_scrollback_request_message(
         &self,
+        workspace_topic: u64,
         requester: u64,
         artifact: collab_types::ArtifactId,
         before_seq: u64,
@@ -3250,6 +3293,7 @@ impl ShellNetwork {
     ) {
         if let Ok(mut buf) = self.inbound_scrollback_request.lock() {
             buf.push(InboundScrollbackRequest {
+                workspace_topic,
                 requester,
                 artifact,
                 before_seq,
@@ -6101,6 +6145,10 @@ impl ShellNetwork {
                         device,
                     },
                 );
+                drop(routes);
+                self.person_snapshots_wanted
+                    .store(true, std::sync::atomic::Ordering::Release);
+                self.drain_wake.poke();
             }
             return;
         }
@@ -6227,7 +6275,7 @@ impl ShellNetwork {
                 before_seq,
                 max,
                 requester,
-            } => self.dispatch_scrollback_request(requester, artifact, before_seq, max),
+            } => self.dispatch_scrollback_request(ws, requester, artifact, before_seq, max),
             NeighbourMsg::ScrollbackResponse {
                 artifact,
                 ops,
@@ -6616,6 +6664,7 @@ impl ShellNetwork {
     /// broker's drainer. Split out of [`Self::dispatch_neighbour_msg`].
     fn dispatch_scrollback_request(
         &self,
+        workspace_topic: u64,
         requester: u64,
         artifact: collab_types::ArtifactId,
         before_seq: u64,
@@ -6624,7 +6673,13 @@ impl ShellNetwork {
         // A collaborator who guesses a person-room record's artifact gets no
         // page of it.
         if requester != self.local_peer_hash && !self.is_person_artifact(&artifact) {
-            self.handle_scrollback_request_message(requester, artifact, before_seq, max);
+            self.handle_scrollback_request_message(
+                workspace_topic,
+                requester,
+                artifact,
+                before_seq,
+                max,
+            );
         }
     }
 
@@ -7161,6 +7216,7 @@ pub(crate) fn shell_network_for_test(
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
         wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
         person_artifacts: Mutex::default(),
+        person_snapshots_wanted: std::sync::atomic::AtomicBool::new(false),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         live_presence: Mutex::default(),
         live_labels: Mutex::default(),
@@ -11953,7 +12009,8 @@ mod tests {
                 payload: collab_types::PeerPresencePayload::Arrived,
             },
         );
-        net.publish_scrollback_response(artifact, Vec::new());
+        net.publish_scrollback_response(room_topic_id(person_room), artifact, Vec::new());
+        net.publish_scrollback_request(&person_room.to_string(), artifact, u64::MAX, 8);
         net.request_room_replay(&person_room.to_string());
         let leaked: Vec<_> = std::iter::from_fn(|| sent.try_recv().ok()).collect();
         assert!(
@@ -11961,7 +12018,7 @@ mod tests {
             "nothing about the person room leaves for anyone but the person's devices: {leaked:?}"
         );
 
-        net.dispatch_scrollback_request(0xBEEF, artifact, u64::MAX, 8);
+        net.dispatch_scrollback_request(room_topic_id(person_room), 0xBEEF, artifact, u64::MAX, 8);
         assert!(
             net.inbound_scrollback_request.lock().unwrap().is_empty(),
             "a peer asking for a person-room record's history gets no page"
@@ -12003,6 +12060,136 @@ mod tests {
             1,
             "another person's device is no route into the person room"
         );
+    }
+
+    /// A device that was away misses what its sibling wrote meanwhile; when
+    /// it comes back on an authenticated route, this device asks its local
+    /// apps for their person-room snapshots, once. Nobody else's arrival,
+    /// and no ordinary room peer, asks for them.
+    #[test]
+    fn a_returning_device_is_caught_up_on_person_records() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xEB; 32]);
+        let user = root.verifying_key().to_bytes();
+        let laptop_signing = ed25519_dalek::SigningKey::from_bytes(&[0xEC; 32]);
+        let phone = iroh::SecretKey::from_bytes(&[0xED; 32]);
+        let (net, mut sent) = personal_continuity_network_for_test(user);
+
+        net.publish_document(
+            "so.tilo.tube".into(),
+            collab_types::person_room(&user).to_string(),
+            "history",
+            person_document(&user, "history", &laptop_signing),
+        );
+        assert!(
+            std::iter::from_fn(|| sent.try_recv().ok()).all(|command| !matches!(
+                command,
+                NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::Publish { .. }
+            )),
+            "an edit made while the phone is away reaches nobody"
+        );
+        assert_eq!(net.take_person_snapshot_request(), None);
+
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[0xEE; 32]);
+        authenticated_personal_peer_on_topic(
+            &net,
+            &stranger,
+            &iroh::SecretKey::from_bytes(&[0xEF; 32]),
+            crate::network::actor::MembershipEpoch::for_test(1),
+            personal_continuity_topic_id(&user),
+        );
+        authenticated_personal_peer_on_topic(
+            &net,
+            &root,
+            &phone,
+            crate::network::actor::MembershipEpoch::for_test(1),
+            room_topic_id(RoomId::new()),
+        );
+        assert_eq!(
+            net.take_person_snapshot_request(),
+            None,
+            "another person's device, or a room peer, is owed nothing"
+        );
+
+        authenticated_personal_peer(&net, &root, &phone);
+        assert_eq!(
+            net.take_person_snapshot_request(),
+            Some(collab_types::person_room(&user).to_string()),
+            "the phone's return asks the local apps for their snapshots"
+        );
+        assert_eq!(net.take_person_snapshot_request(), None, "once");
+    }
+
+    /// History of a person-room record kept by an earlier session is
+    /// answered to nobody: not on the person room's topic, not on a shared
+    /// room's. A shared room's history is still answered, on its own topic
+    /// only.
+    #[test]
+    fn earlier_sessions_person_history_is_answered_to_nobody() {
+        let user = [0xF0; 32];
+        let person_room = RoomId::from(collab_types::person_room(&user));
+        let shared_room = RoomId::new();
+        let device = ed25519_dalek::SigningKey::from_bytes(&[0xF1; 32]);
+        let sealed_op = |room: RoomId| {
+            let cluster = room.to_string();
+            let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
+                b"sealed history".to_vec(),
+                collab_types::document_artifact_id("so.tilo.tube", &cluster, "history"),
+                collab_types::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+                collab_types::document_attestation_id("so.tilo.tube", &cluster, "history"),
+                collab_types::OpClass::Splice,
+                std::time::SystemTime::now(),
+                1,
+                collab_types::EncryptionMetadata::content_key(
+                    1,
+                    collab_types::document_channel_id("so.tilo.tube", &cluster, "history"),
+                    collab_types::ContentRetention::Delta,
+                ),
+            );
+            collab_types::sign_op(&mut op, &device).expect("device signs");
+            op
+        };
+        let dir = tempfile::tempdir().expect("temp");
+        let store = || {
+            tilo_action_broker::collab_history::CollabHistoryStore::open(dir.path().join("history"))
+                .expect("history store")
+        };
+        let person_op = sealed_op(person_room);
+        let shared_op = sealed_op(shared_room);
+        {
+            let mut earlier = crate::shell::collab_broker::BrokerChannels {
+                history: Some(store()),
+                ..Default::default()
+            };
+            earlier.record_history(&person_room.to_string(), &person_op);
+            earlier.record_history(&shared_room.to_string(), &shared_op);
+        }
+
+        let (net, _commands) = personal_continuity_network_for_test(user);
+        assert!(!net.is_person_artifact(&person_op.artifact));
+        let channels = Mutex::new(crate::shell::collab_broker::BrokerChannels {
+            history: Some(store()),
+            ..Default::default()
+        });
+        let answer = |artifact, room: RoomId| {
+            crate::shell::collab_broker::scrollback_answer(
+                &net,
+                &channels,
+                &InboundScrollbackRequest {
+                    workspace_topic: room_topic_id(room),
+                    requester: 0xBEEF,
+                    artifact,
+                    before_seq: u64::MAX,
+                    max: 8,
+                },
+            )
+        };
+        assert_eq!(
+            answer(shared_op.artifact, shared_room),
+            vec![shared_op.clone()]
+        );
+        assert!(answer(shared_op.artifact, RoomId::new()).is_empty());
+        assert!(answer(person_op.artifact, person_room).is_empty());
+        assert!(answer(person_op.artifact, shared_room).is_empty());
     }
 
     /// No invite, enrollment or continuation turns the person's own room
@@ -12564,10 +12751,11 @@ mod tests {
         fn publish_scrollback_request_emits_a_publish_command() {
             use collab_types::ArtifactId;
             let tree = WorkspaceTree::bootstrap_demo().shared();
+            let room = tree.read().rooms()[0];
             let (net, mut cmd_rx) = shell_network_for_test(tree, 0xDEAD_u64);
-            let expected_topic = net.active_ws_for_publish();
+            let expected_topic = room_topic_id(room);
             let artifact = ArtifactId::new();
-            net.publish_scrollback_request(artifact, 100, 25);
+            net.publish_scrollback_request(&room.to_string(), artifact, 100, 25);
             let cmd = cmd_rx
                 .try_recv()
                 .expect("publish_scrollback_request must enqueue a NetCmd");
@@ -12599,7 +12787,7 @@ mod tests {
             let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
             let handle = net.inbound_scrollback_request_handle();
             let artifact = ArtifactId::new();
-            net.handle_scrollback_request_message(7u64, artifact, 50, 10);
+            net.handle_scrollback_request_message(DEFAULT_WS_TOPIC, 7u64, artifact, 50, 10);
             let buf = handle.lock().unwrap().clone();
             assert_eq!(buf.len(), 1);
             assert_eq!(buf[0].requester, 7u64);
