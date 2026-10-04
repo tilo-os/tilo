@@ -543,11 +543,12 @@ impl Widget for ProbeRoot {
     }
     fn start_operation(
         &mut self,
-        op: &tilo_ui::widget::ResourceOperation<'_>,
+        op: &tilo_ui::host_operation::ResourceOperation<'_>,
         _: &mut AutoCommit,
         _: &ObjId,
-    ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
-        let Some(tilo_ui::widget::OperationRequest { kind, type_id, .. }) = op.unscoped() else {
+    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
+        let Some(tilo_ui::host_operation::OperationRequest { kind, type_id, .. }) = op.unscoped()
+        else {
             return Ok(None);
         };
         if !self.local_resource_operation_handlers().contains(&type_id) {
@@ -555,12 +556,16 @@ impl Widget for ProbeRoot {
         }
         if type_id == "probe.pending" {
             self.operations.borrow_mut().push("pending".into());
-            return Ok(Some(tilo_ui::widget::ResourceOperationStart::Accepted));
+            return Ok(Some(
+                tilo_ui::host_operation::ResourceOperationStart::Accepted,
+            ));
         }
         self.operations.borrow_mut().push(format!("{kind:?}"));
-        Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
     fn poll_resource_operation(
         &mut self,

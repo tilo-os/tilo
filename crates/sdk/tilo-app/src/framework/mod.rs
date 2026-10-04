@@ -295,6 +295,7 @@ mod app;
 mod controls;
 // In-place reload swaps native code into a running process; a browser build
 // has neither the thin shared library nor the host that loads it.
+mod delivery;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dev_reload;
 mod dispatch;
@@ -328,6 +329,7 @@ pub use app::launch_spec;
 pub use app::run;
 pub use app::{FileHistory, ResourceApp, SeedCx, definition, run_helper};
 pub use controls::{ActionControl, Actions};
+pub use delivery::HostDelivery;
 pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;
 pub use effect::{

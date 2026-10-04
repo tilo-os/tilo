@@ -464,7 +464,7 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
         .unwrap();
     assert!(matches!(
         invoked,
-        tilo_ui::widget::ResourceOperationStart::Completed(_)
+        tilo_ui::host_operation::ResourceOperationStart::Completed(_)
     ));
     frame.resize((320, 240)).unwrap();
     assert_eq!(
@@ -592,14 +592,16 @@ impl Widget for WithdrawableResource {
     }
     fn start_operation(
         &mut self,
-        _: &tilo_ui::widget::ResourceOperation<'_>,
+        _: &tilo_ui::host_operation::ResourceOperation<'_>,
         _: &mut automerge::AutoCommit,
         _: &automerge::ObjId,
-    ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
 }
 

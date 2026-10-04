@@ -9,8 +9,9 @@ use ui_core::widget::{AppModel, ModelPath};
 use tilo_resource::{ActionDecl, Effect, NoEffect, Resource, SearchEntry};
 use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{AutoCommit, ObjId};
+use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 use ui_core::presence::PresenceKey;
-use ui_core::widget::{Decorator, ResourceOperation, ResourceOperationStart, Widget};
+use ui_core::widget::{Decorator, Widget};
 use ui_core::{PresencePayload, WakeHandle};
 
 use super::controls::Actions;
@@ -690,7 +691,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         // the toolkit's own widgets inside it (a button bound to a view)
         // answer theirs, never the surface by hand.
         let before = doc.pending_ops();
-        let started = ui_core::widget::start_in_children(&mut self.surface, op, doc, path);
+        let started = ui_core::host_operation::start_in_children(&mut self.surface, op, doc, path);
         refuse_raw_writes(doc, before, "start_operation");
         started
     }

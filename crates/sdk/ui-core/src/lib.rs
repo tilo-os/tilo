@@ -222,6 +222,17 @@ pub mod text_assistance;
 pub mod text_break;
 pub use text_break::{LineBreakKind, line_break_opportunities};
 pub mod close_admission;
+/// The raw operation protocol between a host and the toolkit's widgets: the
+/// operation the host admits, how a widget starts it, and the routing to a
+/// widget's children. For the toolkit's hosts (the app framework, the shell,
+/// the browser runtime, the installer); an app answers operations as a typed
+/// effect vocabulary and never names these
+/// (`tools/policy/check_app_resource_action_contract.py`).
+pub mod host_operation {
+    pub use crate::widget::resource_operation::{
+        OperationRequest, ResourceOperation, ResourceOperationStart, start_in_children,
+    };
+}
 pub mod host_palette;
 pub mod reader_hud;
 pub mod record;
