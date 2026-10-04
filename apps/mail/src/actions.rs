@@ -351,24 +351,51 @@ pub enum MailAction {
     /// First baseline for messages hydrated from the mail server. Existing
     /// flags win, so a later fetch cannot overwrite a `MailAction`.
     IngestBaselines { messages: Vec<IngestBaseline> },
+    /// The mail server confirmed it holds what the update asked of it.
+    ServerApplied(ServerUpdate),
 }
 
-/// A message id plus the server flags used only when the document has none yet.
+/// A message id plus the flags its source reports, used where the document
+/// has none yet. A message fetched from a server also names where it lives
+/// there: the account and its `Message-ID`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IngestBaseline {
     pub id: String,
     pub read: Option<bool>,
     pub starred: Option<bool>,
     pub folder: Option<String>,
+    #[serde(default)]
+    pub account: Option<String>,
+    #[serde(default)]
+    pub locator: Option<String>,
 }
 
 impl IngestBaseline {
+    /// A message that exists only here: a draft, a sent copy, the sample.
     pub fn from_message(message: &crate::model::Message) -> Self {
         Self {
             id: message.id.to_string(),
             read: Some(message.read),
             starred: Some(message.starred),
             folder: Some(message.folder.as_key().to_string()),
+            account: None,
+            locator: None,
+        }
+    }
+
+    /// A message `account`'s server reported, as it reported it. One without
+    /// a `Message-ID` cannot be found on the server again, so it is recorded
+    /// like a local one.
+    pub fn fetched(message: &crate::model::Message, account: &str) -> Self {
+        let locator = message
+            .rfc_message_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|locator| !locator.is_empty() && !account.trim().is_empty());
+        Self {
+            account: locator.map(|_| account.to_owned()),
+            locator: locator.map(str::to_owned),
+            ..Self::from_message(message)
         }
     }
 
@@ -378,6 +405,92 @@ impl IngestBaseline {
             read: None,
             starred: None,
             folder: None,
+            account: None,
+            locator: None,
+        }
+    }
+}
+
+/// One change a mail server still has to be told about, as
+/// [`MailDoc::server_updates`] finds it: the message, where it lives on the
+/// server, and what to do there.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ServerUpdate {
+    /// Set the message's read and starred flags (`UID STORE`).
+    Flags {
+        id: String,
+        account: String,
+        locator: String,
+        folder: Folder,
+        read: bool,
+        starred: bool,
+    },
+    /// Move the message from one server folder to another (`UID MOVE`).
+    Move {
+        id: String,
+        account: String,
+        locator: String,
+        from: Folder,
+        to: Folder,
+    },
+    /// Delete the message for good (`UID STORE \Deleted` + `UID EXPUNGE`).
+    Remove {
+        id: String,
+        account: String,
+        locator: String,
+        folder: Folder,
+    },
+}
+
+impl ServerUpdate {
+    /// The message it is about.
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Flags { id, .. } | Self::Move { id, .. } | Self::Remove { id, .. } => id,
+        }
+    }
+
+    /// The account whose server it goes to.
+    pub fn account(&self) -> &str {
+        match self {
+            Self::Flags { account, .. }
+            | Self::Move { account, .. }
+            | Self::Remove { account, .. } => account,
+        }
+    }
+
+    /// The message as the engine finds it on the server: by its
+    /// `Message-ID`, in the folder it is in there, with the flags to set.
+    pub fn locate(&self) -> crate::model::Message {
+        let (locator, folder, read, starred) = match self {
+            Self::Flags {
+                locator,
+                folder,
+                read,
+                starred,
+                ..
+            } => (locator, *folder, *read, *starred),
+            Self::Move { locator, from, .. } => (locator, *from, false, false),
+            Self::Remove {
+                locator, folder, ..
+            } => (locator, *folder, false, false),
+        };
+        crate::model::Message {
+            id: self.id().parse().unwrap_or_default(),
+            rfc_message_id: Some(locator.clone()),
+            in_reply_to: None,
+            from: crate::model::Addr::new("", ""),
+            to: Vec::new(),
+            cc: Vec::new(),
+            subject: String::new(),
+            body: String::new(),
+            html_body: None,
+            attachments: Vec::new(),
+            timestamp_min: 0,
+            read,
+            starred,
+            folder,
+            labels: Vec::new(),
         }
     }
 }
@@ -525,16 +638,10 @@ impl Action for MailAction {
             }
             MailAction::IngestBaselines { messages } => {
                 for message in messages {
-                    let folder = message.folder.as_deref().and_then(Folder::from_key);
-                    MailDoc::ingest_baseline(
-                        doc,
-                        &message.id,
-                        message.read,
-                        message.starred,
-                        folder,
-                    );
+                    MailDoc::ingest_baseline(doc, message);
                 }
             }
+            MailAction::ServerApplied(update) => MailDoc::server_applied(doc, update),
         }
         Ok(())
     }
@@ -548,7 +655,9 @@ impl Action for MailAction {
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         match self {
             MailAction::SetRead { .. } => tilo_actions::ChangeKind::Housekeeping,
-            MailAction::IngestBaselines { .. } => tilo_actions::ChangeKind::External,
+            MailAction::IngestBaselines { .. } | MailAction::ServerApplied(_) => {
+                tilo_actions::ChangeKind::External
+            }
             _ => tilo_actions::ChangeKind::Content,
         }
     }

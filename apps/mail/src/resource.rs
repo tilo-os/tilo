@@ -10,14 +10,14 @@
 
 use tilo_document::RichText;
 use ui::framework::{
-    Dispatcher, Fixture, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
+    Dispatcher, Effected, Fixture, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
 use ui::tilo_actions::{ActionSpec, Resource as PublishedResource};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry, publish_child};
 use ui::widget::Element;
 
 use crate::actions::{
-    MAIL_ACTION_TYPE, MailAction, MessageRow, mailbox_bound_document_actions,
+    MAIL_ACTION_TYPE, MailAction, MessageRow, ServerUpdate, mailbox_bound_document_actions,
     mailbox_local_operations, publish_document_children, register,
 };
 use crate::app::MailApp;
@@ -36,6 +36,9 @@ pub struct MailboxState {
     /// Whether a persisted draft has recipients / subject / body text.
     pub has_draft: bool,
     pub has_draft_body: bool,
+    /// What mail servers still have to be told: the document's flags, moves
+    /// and permanent deletions they do not hold yet.
+    pub server_updates: Vec<ServerUpdate>,
 }
 
 /// The mail mailbox resource.
@@ -76,6 +79,7 @@ impl Resource for Mail {
             messages,
             has_draft,
             has_draft_body: MailDoc::draft_body(doc).is_some(),
+            server_updates: MailDoc::server_updates(doc),
         })
     }
 
@@ -254,8 +258,33 @@ impl ResourceSurface<Mail> for MailApp {
         // unpublished local mailbox corpus or in-flight compose.
     }
 
+    /// Every change the document records that a mail server does not hold
+    /// yet — whoever made it — goes to the server from a live window on a
+    /// device with the account, and the engine's acknowledgement records it
+    /// as applied.
     fn attach(&mut self, cx: SurfaceCx<Mail>) {
         self.attach_framework(cx.dispatcher());
+        let outbox = self.server_outbox();
+        let projection = cx.drain(
+            |state: &MailboxState| {
+                state
+                    .server_updates
+                    .iter()
+                    .map(|update| (update.clone(), update.clone()))
+                    .collect()
+            },
+            move |update: ServerUpdate, cx| {
+                let reply = cx.reply();
+                outbox.borrow_mut().push(
+                    update,
+                    Box::new(move |result| {
+                        reply.finish(result.map(|()| tilo_actions::ActionOutput::default()));
+                    }),
+                );
+                Ok(Effected::Pending)
+            },
+        );
+        self.follow_projection(projection);
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -430,6 +459,70 @@ mod tests {
             assert_ne!(after, before, "S toggled the selected message's star");
             assert!(app.undo());
             assert_eq!(starred(&app), before);
+        }
+
+        /// A change from any door — an agent's action, an undo, a
+        /// collaborator's edit — is what the server has to be told, exactly
+        /// as a click on the message is.
+        #[test]
+        fn every_door_reaches_the_server_through_the_document() {
+            use crate::actions::{IngestBaseline, MailAction, ServerUpdate};
+            use crate::doc::MailDoc;
+            use ui::tilo_resource::Invoke;
+
+            ui::i18n::I18nManager::init("en-US");
+            let mut app = TestApp::<MailShell>::capture(Some("wide")).unwrap();
+            let row = app
+                .state()
+                .messages
+                .iter()
+                .find(|message| message.folder == Folder::Inbox && !message.read)
+                .cloned()
+                .expect("an unread inbox message");
+            let fetched = IngestBaseline {
+                id: row.id.clone(),
+                read: Some(false),
+                starred: Some(false),
+                folder: Some("inbox".into()),
+                account: Some("you@example.test".into()),
+                locator: Some("launch@example.test".into()),
+            };
+            app.invoke(
+                Invoke::apply(&MailAction::IngestBaselines {
+                    messages: vec![fetched],
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            assert!(app.state().server_updates.is_empty());
+
+            app.invoke(
+                Invoke::apply(&MailAction::SetStarred {
+                    ids: vec![row.id.clone()],
+                    starred: true,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            assert!(matches!(
+                app.state().server_updates.as_slice(),
+                [ServerUpdate::Flags { starred: true, .. }]
+            ));
+            assert!(app.undo());
+            assert!(
+                app.state().server_updates.is_empty(),
+                "undone before the server heard of it"
+            );
+
+            let id = row.id;
+            app.merge_peer_edit(|doc| MailDoc::set_folder_for(doc, &id, Folder::Archive));
+            assert!(matches!(
+                app.state().server_updates.as_slice(),
+                [ServerUpdate::Move {
+                    to: Folder::Archive,
+                    ..
+                }]
+            ));
         }
 
         /// A capture is the same on every run: the sample mailbox's ids do
