@@ -160,14 +160,38 @@ struct LibraryRow {
     seed: MaterializationSeed,
 }
 
+impl MaterializationSeed {
+    /// The id of the effect the row's resource offers to open it: a hit
+    /// invokes it under that id.
+    fn opened_by(&self) -> &'static str {
+        match self {
+            Self::Library => "view-library",
+            Self::Timeline { .. } | Self::TimelineMonth { .. } | Self::TimelineDay { .. } => {
+                "view-timeline"
+            }
+            Self::Places { .. } => "view-places",
+            Self::Albums { .. } => "view-albums",
+            Self::Photo(_) => "view",
+            Self::Album { .. } => "view-album",
+            Self::Folder { .. } => "view-folder",
+            Self::Person { .. } => "view-person",
+            Self::Tag { .. } => "view-tag",
+            Self::Object { .. } => "view-object",
+            Self::Pet { .. } => "view-pet",
+            Self::Place { .. } => "view-place",
+        }
+    }
+}
+
 impl LibraryRow {
     fn open(id: &str, title: impl Into<String>, subtitle: impl Into<String>) -> Self {
+        let seed = MaterializationSeed::Library;
         Self {
             text: String::new(),
             title: title.into(),
             subtitle: subtitle.into(),
             icon: "image",
-            action: ActionAddress::new(id, "open"),
+            action: ActionAddress::new(id, seed.opened_by()),
             anchor: None,
             seed: MaterializationSeed::Library,
         }
@@ -179,6 +203,7 @@ impl LibraryRow {
     }
 
     fn seeded(mut self, seed: MaterializationSeed) -> Self {
+        self.action = ActionAddress::new(self.action.resource.clone(), seed.opened_by());
         self.seed = seed;
         self
     }
@@ -793,11 +818,11 @@ mod tests {
                     })
                     .and_then(SearchResult::action_address)
                     .unwrap_or_else(|| panic!("missing timeline search result for {query}"));
-                assert_eq!(address.action, "open");
+                assert_eq!(address.action, "view-timeline");
                 let resource = PhotosResources
                     .publish_resource(&doc, &address.resource)
                     .expect("search must resolve the exact timeline resource");
-                assert!(resource.actions.iter().any(|action| action.id == "open"));
+                assert!(resource.actions.iter().any(|action| action.id == "view-timeline"));
             }
         }
 
@@ -965,13 +990,13 @@ mod tests {
             let address = hit.action_address().expect("album hit has an action route");
             assert_eq!(address.resource, "photos.album:79");
             assert_eq!(
-                address.action, "open",
+                address.action, "view-album",
                 "search activation must not mutate membership"
             );
             let resource = PhotosResources
                 .publish_resource(&doc, &address.resource)
                 .expect("the late stable album id resolves lazily");
-            assert!(resource.actions.iter().any(|action| action.id == "open"));
+            assert!(resource.actions.iter().any(|action| action.id == "view-album"));
         }
 
         {
@@ -994,7 +1019,7 @@ mod tests {
                         .filter(|address| address.resource == "photos.albums")
                 })
                 .expect("album browsing is a global-search destination");
-            assert_eq!(address.action, "open");
+            assert_eq!(address.action, "view-albums");
             let resource = LibraryIndex::new(&doc)
                 .unwrap()
                 .resource(&address.resource)
@@ -1029,7 +1054,7 @@ mod tests {
             assert_eq!(page.results.len(), 1);
             assert!(page.inspected <= 2, "query work exceeded its hard budget");
             assert_eq!(page.results[0].title, "旅行-needle-夏.png");
-            assert_eq!(page.results[0].action_address().unwrap().action, "open");
+            assert_eq!(page.results[0].action_address().unwrap().action, "view");
         }
 
         {
@@ -1067,7 +1092,7 @@ mod tests {
             assert_eq!(page.results, vec![hit.clone()]);
             assert!(page.inspected <= 2);
             let address = hit.action_address().unwrap();
-            assert_eq!(address.action, "open");
+            assert_eq!(address.action, "view");
             assert!(index.resource(&address.resource).is_some());
             let (seeds, prebuilt_action_trees) = index.retained_seed_stats();
             assert_eq!(seeds, expected_records);

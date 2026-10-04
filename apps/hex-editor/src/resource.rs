@@ -11,7 +11,7 @@ use automerge::transaction::Transactable as _;
 use automerge::{ObjId, ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
 use ui::framework::{LaunchInput, ResourceApp, ViewCx};
 use ui::record::RecordId;
-use ui::tilo_actions::{ActionError, ActionSpec};
+use ui::tilo_actions::ActionError;
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
@@ -377,10 +377,6 @@ impl ResourceApp for HexEditorShell {
             .name
             .clone()
             .unwrap_or_else(|| HexEditor::LABEL.to_owned())
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        crate::actions::view_operations()
     }
 
     /// The buffer of a file is a record of its own, derived from the

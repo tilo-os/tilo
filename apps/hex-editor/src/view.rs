@@ -1820,33 +1820,6 @@ fn ui_accent_idx() -> usize {
 }
 
 impl Widget for HexView {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::HEX_EDITOR_VIEW_TYPE]
-    }
-
-    /// The editor's views — the search bar, the go-to prompt — opened by
-    /// the palette, an agent or a script.
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        _doc: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        let Some(panel) = crate::actions::decode_view(request.type_id, request.payload)? else {
-            return Ok(None);
-        };
-        if !self.has_file {
-            return Err("open a file first".into());
-        }
-        self.open_panel(panel);
-        Ok(Some(ui::widget::ResourceOperationStart::Completed(
-            ui::tilo_actions::ActionOutput::default(),
-        )))
-    }
-
     fn sync(&mut self, _doc: &mut AppModel, _path: &ModelPath) {
         // Drain a closed file chooser first, so a freshly opened buffer is
         // submitted before this frame lays out.
@@ -2206,10 +2179,23 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
     }
 
     fn effect(&mut self, effect: HexEffect, cx: &mut EffectCx<HexEditor, Self>) -> EffectAnswer {
+        let panel = match effect {
+            HexEffect::Search => Some(HexPanel::Search),
+            HexEffect::GotoOffset => Some(HexPanel::GotoOffset),
+            _ => None,
+        };
+        if let Some(panel) = panel {
+            if !self.has_file {
+                return Err("open a file first".into());
+            }
+            self.open_panel(panel);
+            return Ok(Effected::done());
+        }
         if self.io.is_some() {
             return Err("another file operation is already running".into());
         }
         match effect {
+            HexEffect::Search | HexEffect::GotoOffset => Ok(Effected::done()),
             HexEffect::Open { path: Some(path) } => {
                 self.open_path(PathBuf::from(path))?;
                 Ok(Effected::done())
@@ -2244,6 +2230,8 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
             vec![
                 EffectStatus::unavailable(HexEffect::SAVE, "no_file", "Open a file first"),
                 EffectStatus::unavailable(HexEffect::SAVE_AS, "no_file", "Open a file first"),
+                EffectStatus::unavailable(HexEffect::SEARCH, "no_file", "Open a file first"),
+                EffectStatus::unavailable(HexEffect::GOTO_OFFSET, "no_file", "Open a file first"),
             ]
         }
     }
