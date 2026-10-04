@@ -137,7 +137,8 @@ pub(crate) enum DraftField {
 pub(crate) enum Dialog {
     ImportPreview {
         rows: Vec<ImportLogin>,
-        conflicts: usize,
+        /// Per row: already in the vault, so the import skips it.
+        skipped: Vec<bool>,
     },
     ExportPlaintext {
         acknowledged: bool,
@@ -344,8 +345,9 @@ pub(crate) struct ListState {
     pub(crate) line: f64,
     /// Each row's rect and item.
     pub(crate) rows: Vec<(Rect, SecretId)>,
-    /// The favorite action of the hovered row.
-    pub(crate) star: Option<(Rect, SecretId)>,
+    /// The favorite toggle of each row that shows one: the favorites, and
+    /// the row under the pointer.
+    pub(crate) stars: Vec<(Rect, SecretId)>,
     pub(crate) bar: ui::widget::Scrollbar,
     pub(crate) empty_action: Option<Rect>,
 }
@@ -359,7 +361,7 @@ impl Default for ListState {
             content: 0.0,
             line: 0.0,
             rows: Vec::new(),
-            star: None,
+            stars: Vec::new(),
             bar: ui::widget::Scrollbar::vertical(),
             empty_action: None,
         }
@@ -1402,20 +1404,17 @@ impl Core {
         self.touch_page();
     }
 
-    pub(crate) fn import_conflicts(&self, rows: &[ImportLogin]) -> usize {
-        let existing = self
-            .model
-            .as_ref()
-            .map_or_else(Vec::new, crate::PasswordsModel::items);
+    /// Per row of an import: whether the vault already holds that login.
+    pub(crate) fn import_skips(&self, rows: &[ImportLogin]) -> Vec<bool> {
         rows.iter()
-            .filter(|row| {
-                existing.iter().any(|item| {
+            .map(|row| {
+                self.items.iter().any(|item| {
                     item.title.eq_ignore_ascii_case(&row.title)
                         && item.username.eq_ignore_ascii_case(&row.username)
                         && origins_match(item, &row.origin)
                 })
             })
-            .count()
+            .collect()
     }
 
     pub(crate) fn apply_import(&mut self) {
@@ -1562,8 +1561,8 @@ impl Core {
             match rx.try_recv() {
                 Ok(Ok(rows)) => {
                     self.import_parse = None;
-                    let conflicts = self.import_conflicts(&rows);
-                    self.dialog = Some(Dialog::ImportPreview { rows, conflicts });
+                    let skipped = self.import_skips(&rows);
+                    self.dialog = Some(Dialog::ImportPreview { rows, skipped });
                     self.touch_page();
                 }
                 Ok(Err(error)) => {

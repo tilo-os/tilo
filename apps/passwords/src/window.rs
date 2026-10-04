@@ -205,8 +205,7 @@ impl PasswordsSurface {
             .overview_header(
                 title.clone(),
                 vec![Box::new(search) as Element, Box::new(new_item)],
-            )
-            .content_header("", vec![Box::new(ui::widget::history_button()) as Element]);
+            );
         let mut surface = Self {
             core,
             requests,
@@ -373,10 +372,9 @@ impl PasswordsSurface {
                 Some("transfer") => core.navigate(&mut doc, "transfer"),
                 Some("import") => {
                     core.navigate(&mut doc, "transfer");
-                    core.dialog = Some(Dialog::ImportPreview {
-                        rows: crate::demo::import_rows(),
-                        conflicts: 1,
-                    });
+                    let rows = crate::demo::import_rows();
+                    let skipped = core.import_skips(&rows);
+                    core.dialog = Some(Dialog::ImportPreview { rows, skipped });
                 }
                 Some("export") => {
                     core.navigate(&mut doc, "transfer");
