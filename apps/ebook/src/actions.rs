@@ -207,6 +207,17 @@ pub enum EbookAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         content: Option<String>,
     },
+    /// A book found in a folder the reader watches joins the shelf: content
+    /// from outside, which syncs like any row but is nobody's undo step.
+    /// The same row as [`Self::RestoreLibraryBook`].
+    ShelveFoundBook {
+        book_id: String,
+        shared: bool,
+        title: String,
+        author: String,
+        subject: String,
+        added: u64,
+    },
     /// Replace the authored reading-preference snapshot. Every field is an
     /// absolute value, making replay independent of a receiver's UI state.
     SetReadingSettings {
@@ -403,6 +414,23 @@ impl EbookAction {
         }
     }
 
+    fn validate_entry(
+        book_id: &str,
+        title: &str,
+        author: &str,
+        subject: &str,
+        added: u64,
+    ) -> Result<(), ActionError> {
+        Self::validate_book_id(book_id)?;
+        Self::validate_text(title, MAX_LABEL_BYTES, "book title")?;
+        Self::validate_text(author, MAX_LABEL_BYTES, "book author")?;
+        Self::validate_text(subject, MAX_LABEL_BYTES, "book subject")?;
+        if added > i64::MAX as u64 {
+            return Err(Self::refused("book timestamp is invalid"));
+        }
+        Ok(())
+    }
+
     fn validate_text(value: &str, limit: usize, field: &str) -> Result<(), ActionError> {
         if value.len() <= limit {
             Ok(())
@@ -459,13 +487,7 @@ impl EbookAction {
                 content,
                 ..
             } => {
-                Self::validate_book_id(book_id)?;
-                Self::validate_text(title, MAX_LABEL_BYTES, "book title")?;
-                Self::validate_text(author, MAX_LABEL_BYTES, "book author")?;
-                Self::validate_text(subject, MAX_LABEL_BYTES, "book subject")?;
-                if *added > i64::MAX as u64 {
-                    return Err(Self::refused("book timestamp is invalid"));
-                }
+                Self::validate_entry(book_id, title, author, subject, *added)?;
                 if let Some(content) = content {
                     let names_book = content
                         .get(..32)
@@ -475,6 +497,14 @@ impl EbookAction {
                     }
                 }
             }
+            Self::ShelveFoundBook {
+                book_id,
+                title,
+                author,
+                subject,
+                added,
+                ..
+            } => Self::validate_entry(book_id, title, author, subject, *added)?,
             Self::SetReadingSettings { before, settings } => {
                 for value in [before, settings] {
                     if !value.font_scale.is_finite()
@@ -984,6 +1014,28 @@ impl Action for EbookAction {
                 );
                 Ok(())
             }
+            EbookAction::ShelveFoundBook {
+                book_id,
+                shared,
+                title,
+                author,
+                subject,
+                added,
+            } => {
+                BooksDoc::restore_library_entry(
+                    doc,
+                    &LibraryEntry {
+                        id: book_id.clone(),
+                        shared: *shared,
+                        title: title.clone(),
+                        author: author.clone(),
+                        subject: subject.clone(),
+                        added: *added,
+                        content: None,
+                    },
+                );
+                Ok(())
+            }
             EbookAction::SetReadingSettings { before, settings } => {
                 BooksDoc::write_settings_delta(doc, before, settings);
                 Ok(())
@@ -1143,6 +1195,7 @@ impl Action for EbookAction {
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         match self {
             Self::SetProgress { .. } => tilo_actions::ChangeKind::Housekeeping,
+            Self::ShelveFoundBook { .. } => tilo_actions::ChangeKind::External,
             _ => tilo_actions::ChangeKind::Content,
         }
     }
@@ -1192,6 +1245,18 @@ pub fn restore_library_book_action(entry: &LibraryEntry) -> EbookAction {
         subject: entry.subject.clone(),
         added: entry.added,
         content: entry.content.clone(),
+    }
+}
+
+/// The shelf row for a book found in a watched folder.
+pub fn shelve_found_book_action(entry: &LibraryEntry) -> EbookAction {
+    EbookAction::ShelveFoundBook {
+        book_id: entry.id.clone(),
+        shared: entry.shared,
+        title: entry.title.clone(),
+        author: entry.author.clone(),
+        subject: entry.subject.clone(),
+        added: entry.added,
     }
 }
 

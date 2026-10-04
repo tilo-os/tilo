@@ -13,9 +13,13 @@
 use std::rc::Rc;
 
 use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, Fixture, LaunchInput, ResourceApp, ResourceSurface, SeedCx,
+    SurfaceCx, ViewCx,
+};
+use ui::prelude::Effect;
 use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource as PublishedResource};
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{self, ActionRef, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
@@ -23,6 +27,7 @@ use crate::actions::{
     publish_document_children, register,
 };
 use crate::app::BooksApp;
+use crate::component::EPUB_MEDIA_TYPE;
 use crate::doc::BooksDoc;
 use crate::model::{Annotation, ColorScheme, FontEntry, LibraryEntry, LibraryPrefs, Settings};
 
@@ -104,20 +109,25 @@ impl Resource for Ebook {
     }
 }
 
-/// Framework app: the reader widget is the surface over [`Ebook`].
+/// Books: the reader widget is the surface over the [`Ebook`] library.
 pub struct EbookShell;
+
+/// Open the book whose bytes the content store holds as `content`, shelving
+/// it first: what a launch on a book takes.
+const OPEN_STORED: ActionRef<Ebook, (String, String)> =
+    ActionRef::new("open-stored", &["content", "name"]);
 
 impl ResourceApp for EbookShell {
     type Resource = Ebook;
     const ID: &'static str = "so.tilo.ebook";
     const TITLE: &'static str = "Books";
     const ICON: Option<&'static str> = Some("ebook");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
+    const OPENS: &'static [&'static str] = &[EPUB_MEDIA_TYPE];
+    /// A book to open (`ebook book.epub`).
+    const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Ebook>) -> Element {
-        cx.surface(BooksApp::new())
+        cx.surface(BooksApp::new(bundled_library()))
     }
 
     fn label(state: &EbookState) -> String {
@@ -127,17 +137,107 @@ impl ResourceApp for EbookShell {
             format!("{} books", state.entries.len())
         }
     }
+
+    /// A book handed over (opened with Books, named on the command line)
+    /// is kept in the content store and opened from there, so the shelf row
+    /// names its bytes and every mount of the library reads them.
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Ebook>> {
+        launch_file(input).into_iter().collect()
+    }
+
+    /// Where files have no paths (the browser), a new library holds the
+    /// book compiled into the app: the one book there is to read.
+    fn seed(_cx: &SeedCx<'_>) -> Vec<Invoke<Ebook>> {
+        bundled_seed(bundled_library())
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        crate::scenarios::SCENARIOS
+    }
+
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
+
+    fn fixture(fixture: &mut Fixture<Ebook>) {
+        crate::scenarios::fixture(fixture);
+    }
+
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Ebook>> {
+        crate::scenarios::actions(name)
+    }
 }
 
-impl ResourceSurface<Ebook> for BooksApp {
+/// Whether the host has no native files, so the one book there is to read is
+/// the one compiled into the app: the browser.
+pub(crate) fn bundled_library() -> bool {
+    !crate::content::native_paths()
+}
+
+/// What a new library starts with: the bundled book where the library is
+/// bundled, else nothing.
+pub(crate) fn bundled_seed(bundled: bool) -> Vec<Invoke<Ebook>> {
+    if !bundled {
+        return Vec::new();
+    }
+    crate::content::bundled_book_entry()
+        .and_then(|entry| Invoke::apply(&crate::actions::restore_library_book_action(&entry)).ok())
+        .into_iter()
+        .collect()
+}
+
+/// The launch's book, kept in the launch's content store, as the effect that
+/// opens it.
+pub(crate) fn launch_file(input: &LaunchInput<'_>) -> Option<Invoke<Ebook>> {
+    let file = input.file()?;
+    let Some(content) = input.content() else {
+        tracing::warn!(
+            name = file.name(),
+            "ebook: no content store to keep a handed book in"
+        );
+        return None;
+    };
+    match content.put(file.bytes()) {
+        Ok(hash) => Some(OPEN_STORED.with((hash, file.name().to_owned()))),
+        Err(error) => {
+            tracing::warn!(%error, name = file.name(), "ebook: a handed book could not be kept");
+            None
+        }
+    }
+}
+
+/// What Books does that changes no document by itself.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "ebook.effect")]
+pub enum BooksEffect {
+    /// Open a book the content store holds, putting it on the shelf.
+    #[effect(job)]
+    OpenStored {
+        #[param("Content hash of the book's bytes")]
+        content: String,
+        #[param("The book's file name, for messages")]
+        name: String,
+    },
+}
+
+impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
     fn present(&mut self, state: &Rc<EbookState>) {
-        // Adopt shared shelf / settings only — never wipe a local library that
-        // has not been published yet.
         self.adopt_resource_state(state);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Ebook>) {
+        self.attach_host(&cx);
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario.unwrap_or("read"));
+    }
+
+    fn effect(&mut self, effect: BooksEffect, cx: &mut EffectCx<Ebook, Self>) -> EffectAnswer {
+        match effect {
+            BooksEffect::OpenStored { content, name } => self.open_stored(content, name, cx),
+        }
     }
 
     // Edits bound to where the user is publish as hand-built rows of the
@@ -254,10 +354,6 @@ pub(crate) fn library_dispatcher_for_test() -> (
     (app, dispatcher)
 }
 
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<EbookShell>()
-}
-
 /// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
 pub fn provide_resources(state: &EbookState) -> Vec<PublishedResource> {
     vec![ui::tilo_resource::publish::<Ebook>(
@@ -265,25 +361,6 @@ pub fn provide_resources(state: &EbookState) -> Vec<PublishedResource> {
         "Books",
         state,
     )]
-}
-
-pub fn standalone_launch() -> bool {
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--data-dir" => {
-                let _ = args.next();
-            }
-            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return true,
-            "--size" => {
-                let _ = args.next();
-                return true;
-            }
-            file if !file.starts_with('-') => return true,
-            _ => {}
-        }
-    }
-    false
 }
 
 #[cfg(test)]
@@ -545,6 +622,84 @@ mod tests {
         assert_eq!(text(app.state()).as_deref(), Some("from an agent"));
         assert!(app.undo());
         assert_eq!(text(app.state()).as_deref(), Some("first"));
+    }
+
+    /// The open reader shows its page to assistive technology as a document
+    /// named after the open chapter.
+    fn reads_chapter(app: &mut ui::framework::testing::TestApp<EbookShell>, title: &str) -> bool {
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(10), |harness| {
+                harness.a11y_node_named(title).is_some()
+            })
+    }
+
+    #[test]
+    fn launching_on_an_epub_keeps_it_in_the_content_store_shelves_and_opens_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("handed-off.epub");
+        std::fs::write(&path, crate::content::SAMPLE_EPUB).unwrap();
+        let mut app =
+            ui::framework::testing::TestApp::<EbookShell>::launched(&[path.to_str().unwrap()])
+                .unwrap();
+        let id = crate::epub::content_id(crate::content::SAMPLE_EPUB);
+        let book = crate::component::book_resource(&id);
+        assert!(
+            app.harness()
+                .wait_until(ui::time::Duration::from_secs(10), |harness| harness
+                    .bound_resources(Some(&book))
+                    .is_ok_and(|resources| !resources.is_empty())),
+            "the handed-off book joins the library"
+        );
+        let first_chapter = crate::content::bundled_sample().unwrap().chapters[0]
+            .title
+            .clone();
+        assert!(
+            reads_chapter(&mut app, &first_chapter),
+            "the handed-off book opens in the reader"
+        );
+        let shelf = app.state().entries;
+        assert_eq!(shelf.len(), 1, "and is now on the shelf: {shelf:?}");
+        assert_eq!(
+            shelf[0].content.as_deref(),
+            Some(tilo_content::hash_bytes(crate::content::SAMPLE_EPUB).as_str()),
+            "its row names the bytes the content store keeps, not a path"
+        );
+
+        // Reopened with nothing named, the shelf still reads it.
+        let mut again = app.reopen().unwrap();
+        assert_eq!(again.state().entries.len(), 1);
+        assert!(
+            again
+                .harness()
+                .wait_until(ui::time::Duration::from_secs(10), |harness| harness
+                    .bound_resources(Some(&book))
+                    .is_ok_and(|resources| !resources.is_empty())),
+            "the reopened library reads the book from the content store"
+        );
+    }
+
+    #[test]
+    fn every_scenario_stages_the_sample_shelf_through_the_librarys_actions() {
+        for scenario in
+            std::iter::once(None).chain(crate::scenarios::SCENARIOS.iter().copied().map(Some))
+        {
+            let app = ui::framework::testing::TestApp::<EbookShell>::capture(scenario)
+                .unwrap_or_else(|error| panic!("{scenario:?}: {error}"));
+            let shelf = app.state().entries.len();
+            if scenario == Some("onboarding") {
+                assert_eq!(shelf, 0, "the first start is an empty shelf");
+            } else {
+                assert_eq!(shelf, 3, "{scenario:?} shows the sample shelf");
+            }
+        }
+        let mut comments =
+            ui::framework::testing::TestApp::<EbookShell>::capture(Some("comments")).unwrap();
+        assert!(
+            comments.harness().a11y_nodes().iter().any(|(_, node)| node
+                .label()
+                .is_some_and(|label| label.contains("colour that keeps the time of day"))),
+            "the comments scenario has the highlight's comments open"
+        );
     }
 
     fn restore_and_annotate(doc: &mut AutoCommit, entry: &LibraryEntry) {
