@@ -12,7 +12,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -26,8 +25,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::widget::{
-    AppModel, AvatarFace, ControlSize, Dropdown, EmptyState, EmptyStateContent, Interaction,
-    ListRowFace, ModelPath, RowLeading, ScrollMetrics, Scrollbar, TaffyTreeExt, Widget,
+    AppModel, AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, ModelPath,
+    RowLeading, ScrollMetrics, Scrollbar, TaffyTreeExt, Widget,
 };
 
 use crate::form::{RowKind, TypeTarget};
@@ -43,6 +42,8 @@ pub(crate) struct ListEntry {
     pub name: String,
     /// The one secondary fact: the organization, or the job title.
     pub secondary: String,
+    /// A favourite carries a filled star after the name.
+    pub favorite: bool,
 }
 
 /// What the person asked for, queued by a pane or a header button and
@@ -59,8 +60,6 @@ pub(crate) enum Request {
     /// The list's order was chosen.
     Sort(crate::model::SortKey),
     NewContact,
-    /// The overview header's More button.
-    More,
     ToggleFavorite,
     EditSelected,
     DeleteSelected,
@@ -304,6 +303,9 @@ impl ContactList {
                         focused: false,
                         disabled: false,
                     });
+                if row.favorite {
+                    face = face.mark(Icon::Star);
+                }
                 if let Some(next) = bridge.rows.get(index + 1) {
                     face = face.separator(bridge.selected == Some(next.id));
                 }
@@ -517,10 +519,13 @@ impl Widget for ContactList {
             .filter_map(|(offset, (id, rect))| {
                 let row = bridge.rows.iter().find(|row| row.id == *id)?;
                 let identity = row.id.to_string();
-                let face = ListRowFace::new(&row.name)
+                let mut face = ListRowFace::new(&row.name)
                     .secondary(&row.secondary)
                     .leading(RowLeading::Avatar(AvatarFace::new(&row.name, &identity)))
                     .selected(bridge.selected == Some(row.id));
+                if row.favorite {
+                    face = face.mark(Icon::Star);
+                }
                 Some(
                     face.accessibility(*rect, select_target(row.id))
                         .with_position(start + offset + 1, total)
@@ -653,62 +658,5 @@ impl ui::widget::Decorator for EmptyPane {
 
     fn test_id(&self) -> Option<&str> {
         Some("contacts.empty")
-    }
-}
-
-/// A dropdown as wide as its widest choice instead of an equal share of the
-/// row it stands in: a phone's kind beside its number, the list's order.
-pub(crate) struct Compact {
-    menu: Dropdown,
-    labels: Vec<String>,
-    size: ControlSize,
-}
-
-impl Compact {
-    pub(crate) fn new(menu: Dropdown, labels: Vec<String>, size: ControlSize) -> Self {
-        Self {
-            menu: menu.control_size(size),
-            labels,
-            size,
-        }
-    }
-}
-
-impl ui::widget::Decorator for Compact {
-    type Inner = Dropdown;
-
-    fn inner(&self) -> &Dropdown {
-        &self.menu
-    }
-
-    fn inner_mut(&mut self) -> &mut Dropdown {
-        &mut self.menu
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = Widget::build_layout(&mut self.menu, taffy, theme, node_map);
-        let style = self.size.label_style(theme);
-        let widest = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-            self.labels
-                .iter()
-                .map(|label| text.measure_style(label, None, &style).0)
-                .fold(0.0_f32, f32::max)
-        });
-        // The label, the chevron's pointer-sized slot and the field's
-        // insets on both sides.
-        let width =
-            widest + theme.tokens.metrics.min_pointer_target + 2.0 * theme.tokens.spacing.s3;
-        if let Ok(current) = taffy.style(node) {
-            let mut layout = current.clone();
-            layout.size.width = length(width.ceil());
-            layout.flex_shrink = 0.0;
-            let _ = taffy.set_style(node, layout);
-        }
-        node
     }
 }

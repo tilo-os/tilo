@@ -14,7 +14,7 @@ use ui::widget::{
 };
 
 use crate::model::{Address, Birthday, Contact, GroupEntry, Labeled, group_names_equal};
-use crate::view::{Compact, Request, Shared, queue};
+use crate::view::{Request, Shared, queue};
 
 /// The kinds of a phone number, an email or an address, in menu order:
 /// the stored vCard type and the label the menu shows.
@@ -554,7 +554,7 @@ impl EditForm {
         input
     }
 
-    fn type_menu(&self, target: TypeTarget) -> Option<Compact> {
+    fn type_menu(&self, target: TypeTarget) -> Option<Dropdown> {
         let (_, state) = self
             .types
             .iter()
@@ -562,12 +562,12 @@ impl EditForm {
         let current = read(state);
         let options = type_options(&current);
         let labels: Vec<String> = options.iter().map(|(_, label)| label.clone()).collect();
-        let mut menu = Dropdown::from_state(labels.clone(), state)
+        let mut menu = Dropdown::from_state(labels, state)
             .with_id(&format!("contacts.form.type.{}", target.key()))
             .with_accessible_name(format!("{} type", target.spoken()));
         menu.set_value_options(options);
         // The kind stands at the field's height beside the value.
-        Some(Compact::new(menu, labels, ControlSize::Large))
+        Some(menu.control_size(ControlSize::Large))
     }
 
     /// `[kind][value][remove]`: one phone, email or the first line of an

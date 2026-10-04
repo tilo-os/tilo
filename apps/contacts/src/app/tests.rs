@@ -250,16 +250,12 @@ fn the_sort_control_orders_the_list() {
     sorted.sort();
     assert_eq!(names, sorted, "the list is sorted by last name");
 
-    app.open_menu_at(PendingMenu::More, Rect::new(500.0, 40.0, 532.0, 72.0));
-    let Some(OpenMenu::More(rows)) = &app.open_menu else {
-        panic!("the More menu is open");
-    };
     assert!(
-        !rows.contains(&Some(MoreAction::ReviewDuplicate)),
+        !app.more_rows()
+            .iter()
+            .any(|(action, _)| *action == MoreAction::ReviewDuplicate),
         "no review is offered without a likely duplicate"
     );
-    app.menu.close();
-    app.open_menu = None;
     ask(&mut app, &mut doc, Request::Sort(SortKey::Org));
     assert!(
         app.sort_choice.with(|value| value == "organization"),
@@ -1076,15 +1072,11 @@ fn export_asks_a_format_and_writes_the_chosen_file() {
     let (mut app, mut doc) = synced();
     app.set_group_filter(Some("Friends".into()));
     app.publish();
-    app.open_menu_at(PendingMenu::More, Rect::new(500.0, 40.0, 532.0, 72.0));
-    let Some(OpenMenu::More(rows)) = &app.open_menu else {
-        panic!("the More menu is open");
-    };
-    let export = rows
-        .iter()
-        .position(|row| *row == Some(MoreAction::Export))
-        .unwrap();
-    app.run_menu_choice(&mut doc, export);
+    assert!(
+        app.more_rows().contains(&(MoreAction::Export, true)),
+        "the More menu offers the export"
+    );
+    app.execute_more_action(&doc, MoreAction::Export);
     app.publish();
     let draft = app.export.as_ref().expect("export asks for a format");
     assert_eq!(draft.ids.len(), 2, "the group's people are exported");
@@ -1569,15 +1561,12 @@ fn duplicates_are_reviewed_field_by_field_before_merging() {
         "the copy is a likely duplicate"
     );
 
-    app.open_menu_at(PendingMenu::More, Rect::new(500.0, 40.0, 532.0, 72.0));
-    let Some(OpenMenu::More(rows)) = &app.open_menu else {
-        panic!("the More menu is open");
-    };
-    let review = rows
-        .iter()
-        .position(|row| *row == Some(MoreAction::ReviewDuplicate))
-        .expect("the More menu offers the review");
-    app.run_menu_choice(&mut doc, review);
+    assert!(
+        app.more_rows()
+            .contains(&(MoreAction::ReviewDuplicate, true)),
+        "the More menu offers the review"
+    );
+    app.execute_more_action(&doc, MoreAction::ReviewDuplicate);
     app.publish();
     let opened = app.duplicate_review.as_ref().expect("the review is open");
     assert_eq!(opened.survivor.id, ada.id);
