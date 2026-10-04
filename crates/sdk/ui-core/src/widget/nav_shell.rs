@@ -836,8 +836,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 (sidebar_header, sidebar_body) =
                     drawer_split(g.sidebar_column, hh, inputs.header_wanted(Column::Sidebar));
                 g.scrim = Rect::new(0.0, hh, w, h);
-                g.scrim_strength =
-                    crate::widget::sidebar::DRAWER_SCRIM_STRENGTH * unit_f32(sidebar_reveal);
+                g.scrim_strength = crate::overlay::scrim::MODAL_STRENGTH * unit_f32(sidebar_reveal);
             }
         }
         SidebarPlacement::Screen => {
@@ -898,7 +897,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 if g.scrim == Rect::ZERO {
                     g.scrim = Rect::new(0.0, hh, w, h);
                     g.scrim_strength =
-                        crate::widget::sidebar::DRAWER_SCRIM_STRENGTH * unit_f32(inspector_reveal);
+                        crate::overlay::scrim::MODAL_STRENGTH * unit_f32(inspector_reveal);
                 }
             }
         }
