@@ -821,6 +821,9 @@ pub struct PdfApp {
     /// The source hash whose existing markup was asked for, so it is
     /// asked for once.
     existing_request: Option<String>,
+    /// The loaded document's record still needs what opening it adds: a
+    /// page plan, the pinned source, the markup taken over from the PDF.
+    seed_pending: bool,
     /// Whether page images currently leave the document's own markup out.
     reader_markup_hidden: bool,
 }
@@ -1236,6 +1239,7 @@ impl PdfApp {
             stored_annotations: Vec::new(),
             adopted: Vec::new(),
             existing_request: None,
+            seed_pending: true,
             reader_markup_hidden: false,
             markup_style: model::MarkupStyle::Highlight,
         }
@@ -1363,6 +1367,8 @@ impl PdfApp {
     pub(crate) fn set_read_only(&mut self, read_only: bool) {
         if self.read_only != read_only {
             self.read_only = read_only;
+            // Allowed to write now, the record gets what opening it adds.
+            self.seed_pending |= !read_only;
             self.dirty = true;
         }
     }
@@ -1546,7 +1552,7 @@ impl PdfApp {
 
     /// Take over the markup already in the PDF the first time the record
     /// meets these bytes (see [`crate::adopt`]): ask the PDF owner for it,
-    /// once per source.
+    /// once per source. Whether it was asked or is not needed.
     #[cfg_attr(
         not(test),
         allow(
@@ -1554,16 +1560,16 @@ impl PdfApp {
             reason = "the synchronous test backend records the import at once"
         )
     )]
-    fn adopt_existing(&mut self, state: &mut AutoCommit) {
+    fn adopt_existing(&mut self, state: &mut AutoCommit) -> bool {
         let Some((hash, _)) = self.source_blob.clone() else {
-            return;
+            return true;
         };
         if self.read_only
             || PdfDoc::source(state).is_none_or(|(pinned, _, _)| pinned != hash)
             || PdfDoc::imported_source(state).as_deref() == Some(hash.as_str())
             || self.existing_request.as_deref() == Some(hash.as_str())
         {
-            return;
+            return true;
         }
         self.existing_request = Some(hash);
         #[cfg(test)]
@@ -1575,17 +1581,18 @@ impl PdfApp {
                     self.status_note = Some(format!("Could not read the PDF's markup: {error}"));
                 }
             }
-            return;
+            return true;
         }
         let requested = match (self.raster_handle.as_ref(), self.raster_document.as_ref()) {
             (Some(handle), Some(document)) => handle.read_existing(document.id),
             _ => Err(crate::source::RasterSubmitError::Stopped),
         };
         if let Err(error) = requested {
-            // Try again on a later frame.
             self.existing_request = None;
             tracing::debug!(%error, "asking for the PDF's own markup failed");
+            return false;
         }
+        true
     }
 
     /// Record the markup `existing` (read from the bytes hashed `hash`).
@@ -2016,6 +2023,27 @@ impl PdfApp {
         self.dirty = true;
     }
 
+    /// Add what opening the loaded document adds to its record, once per
+    /// document: its page plan, the source it pins, the markup taken over
+    /// from the PDF. A reader that may not write adds it once it may.
+    fn seed_record(&mut self, state: &mut AutoCommit) {
+        if self.read_only {
+            self.seed_pending = true;
+            return;
+        }
+        if !PdfDoc::has_page_plan(state) {
+            self.perform_action(
+                state,
+                &crate::actions::PdfViewerAction::EnsurePagePlan {
+                    source_page_count: self.source_pages.len().max(1),
+                },
+            );
+        }
+        self.pin_source(state);
+        // Asked again on the next frame while the PDF owner cannot be asked.
+        self.seed_pending = !self.adopt_existing(state);
+    }
+
     /// Adopt the durable, collaboration-replayed page plan into whichever
     /// local renderer is available. A peer without source bytes still keeps
     /// the shared intent in its record; a renderer with the original source
@@ -2024,16 +2052,7 @@ impl PdfApp {
         clippy::too_many_lines,
         reason = "one pass per renderer keeps the plan adoption auditable"
     )]
-    fn reconcile_shared_page_plan(&mut self, state: &mut AutoCommit) {
-        let source_count = self.source_pages.len().max(1);
-        if !PdfDoc::has_page_plan(state) && !self.read_only {
-            self.perform_action(
-                state,
-                &crate::actions::PdfViewerAction::EnsurePagePlan {
-                    source_page_count: source_count,
-                },
-            );
-        }
+    fn reconcile_shared_page_plan(&mut self, state: &AutoCommit) {
         let plan = PdfDoc::list_page_plan(state);
         if plan.is_empty() {
             return;
@@ -4484,6 +4503,7 @@ impl PdfApp {
                 self.reader_markup_hidden = false;
                 self.raster = Some(loaded.raster);
                 self.has_document = true;
+                self.seed_pending = true;
                 self.doc_name = loaded.name;
                 self.source_path = Some(path.to_path_buf());
                 self.load_error = None;
@@ -4583,6 +4603,7 @@ impl PdfApp {
                     self.applied_worker_plan = None;
                     self.worker_plan_blobs.clear();
                     self.has_document = true;
+                    self.seed_pending = true;
                     self.doc_name = name;
                     self.source_path = Some(request.path.clone());
                     self.load_error = None;
@@ -5004,9 +5025,10 @@ impl Widget for PdfApp {
         self.drain_portal_import(state);
 
         if self.has_document {
+            if std::mem::take(&mut self.seed_pending) {
+                self.seed_record(state);
+            }
             self.reconcile_shared_page_plan(state);
-            self.pin_source(state);
-            self.adopt_existing(state);
         }
         if std::mem::take(&mut self.staged_import) {
             self.demo_import_image(state);
@@ -6339,6 +6361,30 @@ mod tests {
         app.recompute_regions();
         app.sync_viewport_frame();
         (app, st)
+    }
+
+    /// Opening a document adds its page plan once; later frames leave the
+    /// record alone.
+    #[test]
+    fn opening_seeds_the_record_once_not_every_frame() {
+        let mut app = crate::scenarios::sample_reader();
+        let mut st = ui::State::new();
+        sync_fixture(&mut app, &mut st);
+        assert!(PdfDoc::has_page_plan(&st.doc), "opening adds the page plan");
+        let seeded = st.doc.get_heads();
+        for _ in 0..3 {
+            sync_fixture(&mut app, &mut st);
+        }
+        assert_eq!(st.doc.get_heads(), seeded, "frames write nothing");
+
+        app.set_read_only(true);
+        app.set_read_only(false);
+        sync_fixture(&mut app, &mut st);
+        assert_eq!(
+            st.doc.get_heads(),
+            seeded,
+            "a record that has its plan gets nothing more when writing is allowed again"
+        );
     }
 
     fn any_access_node(
