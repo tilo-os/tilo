@@ -476,6 +476,7 @@ fn create<A: ResourceApp>(
             )
             .map_err(LaunchError::Record)?;
     }
+    record_content(&mut context);
     let file = context.take_open_file();
     let arguments = context.take_launch_arguments();
     let options = context.take_launch_options();
@@ -552,6 +553,25 @@ fn create<A: ResourceApp>(
     }
     .map_err(|error| LaunchError::Operation(error.to_string()))?;
     Ok(component)
+}
+
+/// Join the content store the host lent a window to its record's route:
+/// content the record references and this device lacks is asked of the
+/// route, and content the app stores reaches the record's other readers.
+/// A capture keeps its fixture's store as it is: it reaches nothing outside.
+fn record_content(context: &mut HostContext) {
+    if context.capture().is_some() {
+        return;
+    }
+    let Some(local) = context.content().cloned() else {
+        return;
+    };
+    let lane = ui_core::collaboration::record_content::ContentLane::of(
+        context.app_id(),
+        context.record().id.as_str(),
+    );
+    context
+        .provide_content(ui_core::collaboration::record_content::RecordContent::store(local, lane));
 }
 
 /// Prepare a capture's scene before its view is built: the app's fixture,

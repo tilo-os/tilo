@@ -518,9 +518,6 @@ pub struct MusicApp {
     /// A deferred `--shots` staging action, applied once on the first `sync`
     /// after the library has loaded (the catalog is empty at construction).
     shot_stage: Option<ShotStage>,
-    /// The real catalogue a `live-*` capture shows, fetched before it was
-    /// built.
-    live_capture: Option<Rc<crate::capture::LiveCapture>>,
 
     // ---- real artwork + live content -------------------------------------
     /// Async remote-image cache: real album/artist/playlist covers fetched off
@@ -681,24 +678,6 @@ impl MusicApp {
         self.persist_device_profile = false;
     }
 
-    /// The app for a screenshot: offline, showing the real catalogue a
-    /// `live-*` scenario fetched into its fixture.
-    pub(crate) fn for_capture(live: Option<Rc<crate::capture::LiveCapture>>) -> Self {
-        let mut app = Self::offline();
-        if let Some(live) = live {
-            app.images = ImageStore::new(&live.fetcher());
-            if let Some(home) = &live.home {
-                app.absorb_home(home);
-                app.home = Some(home.clone());
-            } else {
-                app.home_failed = true;
-            }
-            app.home_requested = true;
-            app.live_capture = Some(live);
-        }
-        app
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "flat struct-literal initializing every MusicApp field once; splitting it would only relocate the field assignments, not reduce them"
@@ -820,7 +799,6 @@ impl MusicApp {
             lyrics_for: None,
             lyrics_synced: false,
             shot_stage: None,
-            live_capture: None,
             images: ImageStore::new(&image_fetcher()),
             art_urls: HashMap::new(),
             home: None,
@@ -3871,32 +3849,8 @@ impl MusicApp {
             "album-page" => self.snap_album_page(),
             "error" => self.snap_error_page(),
             "membership-open" => self.snap_membership_open(),
-            crate::capture::LIVE_LYRICS => self.snap_live_lyrics(),
             _ => {}
         }
-    }
-
-    /// Stage the real track a `live-lyrics` capture fetched playing in the
-    /// lyrics view, its synced lyrics part way in.
-    fn snap_live_lyrics(&mut self) {
-        self.view = View::Lyrics;
-        let Some((hit, lyrics)) = self
-            .live_capture
-            .as_ref()
-            .and_then(|live| live.playing.clone())
-        else {
-            return;
-        };
-        self.absorb_tracks(std::slice::from_ref(&hit));
-        let id = hit_to_live(&hit).track.id;
-        self.lyrics_cache
-            .insert(id.clone(), (lyrics.lines, lyrics.synced));
-        self.pb.queue = vec![id.clone()];
-        self.pb.queue_index = 0;
-        self.pb.current = Some(id);
-        self.pb.playing = true;
-        self.playhead_ms = 40_000.0;
-        self.bound_track.clone_from(&self.pb.current);
     }
 
     /// Stage the sidebar for a deterministic `--shots` frame (no event loop to
