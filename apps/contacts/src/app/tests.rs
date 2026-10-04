@@ -1937,7 +1937,7 @@ fn edits_commit_only_on_save_and_cancel_discards() {
             store_before,
             "a half-typed new contact isn't in the store"
         );
-        assert_eq!(h.book().len(), doc_before, "nor in the doc",);
+        assert_eq!(h.book().len(), doc_before, "nor in the doc");
         // Cancel → still nothing, no "No Name"/"Ghost" phantom left behind.
         h.press_left(h.app.hit.cancel.center());
         assert_eq!(h.app.mode, Mode::View);
