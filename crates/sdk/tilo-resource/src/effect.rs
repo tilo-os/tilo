@@ -397,17 +397,17 @@ mod tests {
         assert_eq!(rename.contract.execution, ExecutionMode::Immediate);
 
         let paint = &specs[4];
-        assert_eq!(paint.params[0].description, "The colour");
+        assert_eq!(paint.params()[0].description, "The colour");
         let choices = |index: usize| -> Vec<&str> {
-            paint.params[index]
+            paint.params()[index]
                 .choices
                 .iter()
-                .map(|choice| choice.as_ref())
+                .map(std::convert::AsRef::as_ref)
                 .collect()
         };
         assert_eq!(choices(0), ["red", "green"]);
         assert_eq!(choices(1), ["light", "dark"]);
-        assert!(!paint.params[1].required);
+        assert!(!paint.params()[1].required);
 
         let wipe = &specs[2];
         assert_eq!(wipe.label, "Wipe");
