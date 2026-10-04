@@ -5592,6 +5592,75 @@ fn bound() -> (ui::State, WordProcessorWidget) {
     (state, wp)
 }
 
+fn send_ime(wp: &mut WordProcessorWidget, state: &mut ui::State, ime: winit::event::Ime) {
+    let taffy: TaffyTree<()> = TaffyTree::new();
+    let mut handled = false;
+    let mut focus: Option<NodeId> = None;
+    wp.handle_event(
+        &WindowEvent::Ime(ime),
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: NodeId::new(0),
+            taffy: &taffy,
+        },
+    );
+}
+
+/// The input method's composition shows at the caret and reaches the
+/// document only when committed; Backspace and Delete take whole clusters.
+#[test]
+fn typing_composes_with_the_input_method_and_erases_whole_clusters() {
+    use winit::event::Ime;
+    let (mut state, mut wp) = bound();
+    wp.lifecycle.focused = true;
+    send_ime(&mut wp, &mut state, Ime::Commit("a".into()));
+    send_ime(
+        &mut wp,
+        &mut state,
+        Ime::Preedit("かな".into(), Some((3, 3))),
+    );
+    assert_eq!(wp.inner.preedit(), "かな");
+    assert_eq!(
+        wp.inner.preedit_before_cursor(),
+        "か",
+        "the caret sits inside"
+    );
+    assert_eq!(body_text(&wp, &state), ["a"], "not typed until committed");
+    send_ime(&mut wp, &mut state, Ime::Commit("仮名".into()));
+    assert_eq!(wp.inner.preedit(), "");
+    for typed in ["e\u{301}", "👍🏽", "🇩🇪"] {
+        send_ime(&mut wp, &mut state, Ime::Commit(typed.into()));
+    }
+    assert_eq!(body_text(&wp, &state), ["a仮名e\u{301}👍🏽🇩🇪"]);
+
+    press_named(&mut wp, &mut state, NamedKey::Backspace);
+    assert_eq!(body_text(&wp, &state), ["a仮名e\u{301}👍🏽"]);
+    press_named(&mut wp, &mut state, NamedKey::ArrowLeft);
+    press_named(&mut wp, &mut state, NamedKey::ArrowLeft);
+    press_named(&mut wp, &mut state, NamedKey::Delete);
+    assert_eq!(body_text(&wp, &state), ["a仮名👍🏽"]);
+    press_named(&mut wp, &mut state, NamedKey::ArrowRight);
+    press_named(&mut wp, &mut state, NamedKey::Backspace);
+    assert_eq!(body_text(&wp, &state), ["a仮名"]);
+
+    // A commit replaces the selection, as typing does.
+    select_range(&mut wp, 1, 3);
+    send_ime(&mut wp, &mut state, Ime::Preedit("x".into(), None));
+    send_ime(&mut wp, &mut state, Ime::Disabled);
+    assert_eq!(
+        wp.inner.preedit(),
+        "",
+        "an abandoned composition leaves nothing"
+    );
+    send_ime(&mut wp, &mut state, Ime::Commit("x".into()));
+    assert_eq!(body_text(&wp, &state), ["ax"]);
+}
+
 #[test]
 fn hosted_lookup_returns_a_published_child_not_the_document_root() {
     let (state, mut wp) = bound();
