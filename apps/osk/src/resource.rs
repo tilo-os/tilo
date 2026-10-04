@@ -1,27 +1,27 @@
-//! The on-screen keyboard as a resource: this person's keyboard preferences
-//! (letter layout, suggestions, personalization, recent emoji), changed only
-//! by [`SetPreference`], and the app that shows them as the keyboard.
+//! The on-screen keyboard as a resource: the door its preference effects
+//! and rows are published on, and the app that shows the keyboard.
 //!
-//! What is typed is never part of it: the word being composed, the key under
-//! a finger and the field's purpose live in the keyboard surface and are
-//! published nowhere, so the palette, agents and scripts see the keyboard's
-//! configuration and never its keystrokes.
+//! The keyboard edits no document of its own. This person's keyboard
+//! preferences (letter layout, suggestions, personalization, recent emoji)
+//! are their settings ([`OskPreferences`]), which follow them to their other
+//! devices; what typing teaches it is their person record
+//! ([`crate::learned::Learned`]). What is typed is never part of either: the
+//! word being composed, the key under a finger and the field's purpose live
+//! in the keyboard surface and are published nowhere, so the palette, agents
+//! and scripts see the keyboard's configuration and never its keystrokes.
 
-use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+use serde::{Deserialize, Serialize};
 use ui::application::{ComponentBehaviour, WindowRole};
 use ui::framework::{ResourceApp, ViewCx};
-use ui::tilo_actions::{ActionParam, ActionRegistry, ParamType, Resource as PublishedResource};
-use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource};
+use ui::tilo_resource::{Doc, ModelError, NoAction, Resource};
 use ui::widget::Element;
 
-use crate::actions::{
-    LAYOUT, LETTER_LAYOUTS, PERSONALIZATION, SUGGESTIONS, SetPreference, TYPE_ID,
-    layout_declaration, preference_children, read_recents, recents_declaration,
-};
+use crate::actions::LETTER_LAYOUTS;
 use crate::surface::OskSurface;
 
-/// The keyboard preferences a document holds.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// This person's keyboard preferences.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct OskPreferences {
     /// The letter layout text fields open in.
     pub layout: String,
@@ -44,91 +44,24 @@ impl Default for OskPreferences {
     }
 }
 
-/// The on-screen keyboard resource.
+impl ui::storage::SettingsSchema for OskPreferences {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
+}
+
+/// The on-screen keyboard resource: the door its effects and rows are
+/// published on.
 pub struct Osk;
 
 impl Resource for Osk {
     const KIND: &'static str = "osk.keyboard";
     const LABEL: &'static str = "On-screen keyboard";
-    const ACTION_TYPE: &'static str = TYPE_ID;
+    const ACTION_TYPE: &'static str = "osk.keyboard.action";
 
-    type State = OskPreferences;
-    type Action = SetPreference;
+    type State = ();
+    type Action = NoAction;
 
-    fn register(registry: &mut ActionRegistry) {
-        registry.register::<SetPreference>(TYPE_ID);
-    }
-
-    fn read(doc: &Doc) -> Result<OskPreferences, ModelError> {
-        let defaults = OskPreferences::default();
-        Ok(OskPreferences {
-            layout: read_str(doc, LAYOUT)
-                .filter(|layout| LETTER_LAYOUTS.iter().any(|(name, _)| name == layout))
-                .unwrap_or(defaults.layout),
-            suggestions: read_bool(doc, SUGGESTIONS).unwrap_or(defaults.suggestions),
-            personalization: read_bool(doc, PERSONALIZATION).unwrap_or(defaults.personalization),
-            emoji_recents: read_recents(doc),
-        })
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        let enabled = |id, label, description, value: fn(bool) -> SetPreference| {
-            ActionDecl::new(
-                id,
-                label,
-                vec![ActionParam::required(
-                    "value",
-                    ParamType::Boolean,
-                    "Enabled",
-                )],
-                move |args, _| {
-                    args.boolean("value")
-                        .map(value)
-                        .ok_or_else(|| "missing value".to_owned())
-                },
-            )
-            .describe(description)
-        };
-        vec![
-            layout_declaration("set-layout"),
-            enabled(
-                "set-suggestions",
-                "Set suggestions",
-                "Enable or disable the suggestion bar.",
-                SetPreference::Suggestions,
-            ),
-            enabled(
-                "set-personalization",
-                "Set personalization",
-                "Enable or disable adapting to what this person types.",
-                SetPreference::Personalization,
-            ),
-            recents_declaration("set-emoji-recents"),
-        ]
-    }
-
-    fn children(state: &OskPreferences) -> Vec<PublishedResource> {
-        preference_children(state)
-    }
-}
-
-fn read_str(doc: &Doc, key: &str) -> Option<String> {
-    match doc.get(ROOT, key).ok().flatten() {
-        Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
-            ScalarValue::Str(text) => Some(text.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn read_bool(doc: &Doc, key: &str) -> Option<bool> {
-    match doc.get(ROOT, key).ok().flatten() {
-        Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
-            ScalarValue::Boolean(flag) => Some(*flag),
-            _ => None,
-        },
-        _ => None,
+    fn read(_doc: &Doc) -> Result<(), ModelError> {
+        Ok(())
     }
 }
 
@@ -176,17 +109,6 @@ impl ResourceApp for OskShell {
             _ => (720, 360),
         }
     }
-
-    fn scenario(name: Option<&str>) -> Vec<Invoke<Osk>> {
-        let staged = match name {
-            Some("french") => SetPreference::Layout("azerty".into()),
-            Some("emoji") => {
-                SetPreference::EmojiRecents(["👍", "😂", "❤️", "🎉"].map(str::to_owned).to_vec())
-            }
-            _ => return Vec::new(),
-        };
-        Invoke::apply(&staged).into_iter().collect()
-    }
 }
 
 #[cfg(test)]
@@ -195,6 +117,11 @@ mod tests {
     use crate::actions::OskEffect;
     use ui::framework::testing::TestApp;
     use ui::tilo_resource::Effect;
+
+    /// The person's keyboard preferences in the test profile's settings.
+    fn prefs(app: &TestApp<OskShell>) -> OskPreferences {
+        app.settings::<OskPreferences>().get()
+    }
 
     fn keyboard() -> TestApp<OskShell> {
         let mut app = TestApp::<OskShell>::new().unwrap();
@@ -231,6 +158,9 @@ mod tests {
             "osk.keyboard.emoji",
             "clear-personal",
             "set-layout",
+            "English (QWERTY)",
+            "French (AZERTY)",
+            "Clear learned suggestions",
         ] {
             assert!(published.contains(address), "{address} is published");
         }
@@ -263,8 +193,8 @@ mod tests {
             .unwrap();
         app.call("set-suggestions", serde_json::json!({ "value": false }))
             .unwrap();
-        assert_eq!(app.state().layout, "azerty");
-        assert!(!app.state().suggestions);
+        assert_eq!(prefs(&app).layout, "azerty");
+        assert!(!prefs(&app).suggestions);
         assert!(
             app.call_on(
                 "osk.keyboard.layout",
@@ -276,9 +206,9 @@ mod tests {
         );
 
         let app = app.reopen().unwrap();
-        assert_eq!(app.state().layout, "azerty");
-        assert!(!app.state().suggestions);
-        assert!(app.state().personalization);
+        assert_eq!(prefs(&app).layout, "azerty");
+        assert!(!prefs(&app).suggestions);
+        assert!(prefs(&app).personalization);
     }
 
     #[test]
@@ -298,12 +228,12 @@ mod tests {
             )
             .unwrap();
         app.settle();
-        assert_eq!(app.state().emoji_recents, [first]);
+        assert_eq!(prefs(&app).emoji_recents, [first]);
 
         app.call("set-personalization", serde_json::json!({ "value": false }))
             .unwrap();
-        assert!(app.state().emoji_recents.is_empty());
-        assert!(!app.state().personalization);
+        assert!(prefs(&app).emoji_recents.is_empty());
+        assert!(!prefs(&app).personalization);
     }
 
     #[test]
@@ -314,12 +244,12 @@ mod tests {
             serde_json::json!({ "value": ["👍", "🎉"] }),
         )
         .unwrap();
-        assert_eq!(app.state().emoji_recents, ["👍", "🎉"]);
+        assert_eq!(prefs(&app).emoji_recents, ["👍", "🎉"]);
         app.effect_on_confirmed("osk.keyboard.suggestions", &OskEffect::ClearPersonal)
             .unwrap();
         app.settle();
-        assert!(app.state().emoji_recents.is_empty());
-        assert!(app.state().personalization);
+        assert!(prefs(&app).emoji_recents.is_empty());
+        assert!(prefs(&app).personalization);
         assert_eq!(OskEffect::ClearPersonal.id(), "clear-personal");
     }
 
@@ -366,7 +296,7 @@ mod tests {
             .unwrap();
         app.settle();
         assert!(learned(&mut app).is_empty());
-        assert!(app.state().personalization);
+        assert!(prefs(&app).personalization);
     }
 
     #[test]
@@ -396,24 +326,6 @@ mod tests {
             app.harness().relayout();
         }
         let french = TestApp::<OskShell>::capture(Some("french")).unwrap();
-        assert_eq!(french.state().layout, "azerty");
-    }
-
-    // The keyboard publishes its preferences as client-local
-    // `osk.preference` document actions plus the clear-learned effect;
-    // keystrokes never become actions.
-    ui::action_contract_tests! {
-        seed: ui::automerge::AutoCommit::new(),
-        registry: {
-            let mut registry = ui::tilo_actions::ActionRegistry::new();
-            Osk::register(&mut registry);
-            registry
-        },
-        resources: |doc| vec![ui::tilo_resource::publish::<Osk>(
-            crate::actions::KEYBOARD_RESOURCE_ID,
-            Osk::LABEL,
-            &Osk::read(doc).unwrap(),
-        )],
-        palette: ["English (QWERTY)", "French (AZERTY)", "Clear learned suggestions"],
+        assert_eq!(prefs(&french).layout, "azerty");
     }
 }
