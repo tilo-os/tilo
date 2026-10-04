@@ -30,6 +30,7 @@ pub use transport::{
 #[cfg(feature = "broker-transport")]
 mod broker;
 #[cfg(feature = "broker-transport")]
+pub mod channel_live_activity;
 mod channel_settings;
 pub mod handoff;
 mod history;
