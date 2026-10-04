@@ -56,7 +56,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     bindings: Bindings<R>,
     /// The effect handlers and projection drains the view registered.
     effects: Effects<R>,
-    content: Element,
+    /// The app's view: the custom surface itself when the view is one.
+    pub(crate) content: Element,
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
     presentation: Vec<tilo_actions::ActionSpec>,

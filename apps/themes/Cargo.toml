@@ -19,9 +19,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -30,7 +28,8 @@ winit.workspace = true
 taffy.workspace = true
 
 [dev-dependencies]
-tilo-test-env = { path = "../../crates/dev/test-env" }
+tempfile.workspace = true
+tilo-automerge.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
