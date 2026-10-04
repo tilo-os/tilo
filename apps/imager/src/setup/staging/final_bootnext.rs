@@ -493,7 +493,7 @@ mod tests {
                 schema: "tilo.windows-direct-final-readback.v2".into(),
                 disk: ReviewedDisk {
                     number: 3,
-                    unique_id: "eui.002538A441BE8A46".into(),
+                    unique_id: "eui.0025380000000001".into(),
                     disk_guid: DISK_GUID.into(),
                     size_bytes: disk.size_bytes,
                 },
@@ -696,7 +696,7 @@ mod tests {
         // GPT identity must refuse firmware writes, even with the hardware ID.
         for guid in [
             "",
-            "eui.002538A441BE8A46",
+            "eui.0025380000000001",
             "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee",
         ] {
             let (mut platform, mut receipt) = FilePlatform::new(true);

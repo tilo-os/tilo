@@ -429,7 +429,65 @@ pub enum ServeRequest {
         /// grants nothing a user typing it at the prompt would not have.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         command: Vec<String>,
+        /// Who asked the app for this session. Agents never reach
+        /// [`Target::Host`].
+        #[serde(default)]
+        requested_by: crate::host::RequestedBy,
     },
+    /// The environments there are, for Terminal's picker and its
+    /// environments panel.
+    ListEnvironments,
+    /// Make a new environment on the default environment's runtime, with
+    /// nothing added and nothing granted. Answers with every environment.
+    CreateEnvironment { name: String },
+    /// Apply one of the record's actions (`rename`) to an environment.
+    /// Answers with every environment.
+    EnvironmentAction {
+        record: String,
+        action: String,
+        #[serde(default)]
+        args: serde_json::Value,
+    },
+}
+
+/// One environment as an app sees it: what it is called, what it has, and
+/// which directories it was granted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EnvironmentEntry {
+    pub key: String,
+    pub name: String,
+    /// The packages its tools provide.
+    pub tools: Vec<String>,
+    /// Granted directories, `(path, writable)`.
+    pub grants: Vec<(String, bool)>,
+}
+
+impl EnvironmentEntry {
+    fn of(key: &str, env: &Environment) -> Self {
+        let policy = Policy::new(env.grants.0.clone());
+        let now = Some(unix_now());
+        let writable = policy.trusted_dirs(now);
+        let mut grants: Vec<(String, bool)> = writable
+            .iter()
+            .map(|dir| (dir.display().to_string(), true))
+            .collect();
+        grants.extend(
+            policy
+                .readable_dirs(now)
+                .iter()
+                .map(|dir| (dir.display().to_string(), false)),
+        );
+        Self {
+            key: key.to_owned(),
+            name: env.name.clone(),
+            tools: env
+                .tools
+                .iter()
+                .flat_map(|tool| tool.packages.iter().cloned())
+                .collect(),
+            grants,
+        }
+    }
 }
 
 fn default_cols() -> u16 {
@@ -451,6 +509,15 @@ pub enum ServeResponse {
     Denied {
         reason: String,
     },
+    /// The device's own shell needs the person's allow first. Everything
+    /// else about the request was acceptable, so asking makes sense.
+    HostNotAllowed {
+        reason: String,
+    },
+    /// Every environment, by key.
+    Environments {
+        environments: Vec<EnvironmentEntry>,
+    },
 }
 
 /// Decide one request: the environment record it names (`None` for the
@@ -461,11 +528,13 @@ pub enum ServeResponse {
 /// Returns the reason a target cannot be served: the host target (not served
 /// here), or a record key an app may not use.
 pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
-    let ServeRequest::OpenSession { target, .. } = req;
+    let ServeRequest::OpenSession { target, .. } = req else {
+        return Err("not a session request".into());
+    };
     match target {
         Target::Host => Err(
-            "not available: this supervisor builds environments only; the host target \
-             (your own login shell) is not served here"
+            "not available as an environment: the host target (your own login shell) \
+             is decided by the host gate"
                 .into(),
         ),
         Target::Environment { record: None } => Ok(None),
@@ -568,7 +637,9 @@ fn systemd_listener(expected: &Path) -> anyhow::Result<Option<UnixListener>> {
 
 fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Result<()> {
     let mut writer = stream.try_clone()?;
-    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut raw = stream.try_clone()?;
+    let (caller, carried) = crate::host::read_caller(&mut raw)?;
+    let mut reader = BufReader::new(std::io::Cursor::new(carried).chain(raw));
     let mut line = String::new();
     reader.read_line(&mut line)?;
 
@@ -584,6 +655,22 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
             );
         }
     };
+    match &req {
+        ServeRequest::ListEnvironments
+        | ServeRequest::CreateEnvironment { .. }
+        | ServeRequest::EnvironmentAction { .. } => {
+            let response = match directory(&req, store) {
+                Ok(environments) => ServeResponse::Environments { environments },
+                Err(reason) => ServeResponse::Denied { reason },
+            };
+            return reply(&mut writer, &response, None);
+        }
+        ServeRequest::OpenSession {
+            target: Target::Host,
+            ..
+        } => return serve_host(stream, &mut writer, store, &caller, &req),
+        ServeRequest::OpenSession { .. } => {}
+    }
     let environment = match decide_serve(&req) {
         Ok(e) => e,
         Err(reason) => {
@@ -601,7 +688,10 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
         term,
         command,
         ..
-    } = req;
+    } = req
+    else {
+        return Ok(());
+    };
     let (master, slave) = open_pty(cols, rows)?;
 
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -648,8 +738,160 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
     // When the guest exits first, this worker reaps it at once and closes the
     // connection, which is how Terminal tells a finished session from the
     // hand-off window in which its PTY master also reports `EIO`.
-    let mut child = child;
-    let termination = match wait_for_guest_or_terminal(stream, &child) {
+    let termination = finish_session(stream, child);
+    AuditLog::at(store.audit_dir()).append(
+        &crate::audit::AuditRecord::new(&id, &record, "close-session", true).because(termination),
+    );
+    Ok(())
+}
+
+/// Answer a request about the environments themselves.
+fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>, String> {
+    let records = Records::at(store.records_root());
+    match req {
+        ServeRequest::CreateEnvironment { name } => {
+            let name = name.trim();
+            if name.is_empty() {
+                return Err("an environment needs a name".into());
+            }
+            // A new environment starts on the default environment's runtime
+            // release, or on the newest one this device holds.
+            let env = if let Ok(Some(default)) = records.load(tilo_environment::DEFAULT_RECORD) {
+                Environment {
+                    name: name.to_owned(),
+                    runtime: default.runtime,
+                    ..Environment::default()
+                }
+            } else {
+                let (release, image) = crate::images::on_this_device().current_runtime()?;
+                Environment::new(name, &release, tilo_environment::host_arch(), &image)
+            };
+            let id: String = uuid::Uuid::new_v4()
+                .simple()
+                .to_string()
+                .chars()
+                .take(12)
+                .collect();
+            let key = format!("env-{id}");
+            records.create(&key, &env).map_err(|e| e.to_string())?;
+        }
+        ServeRequest::EnvironmentAction {
+            record,
+            action,
+            args,
+        } => {
+            let invoke = match action.as_str() {
+                "rename" => Environment::RENAME.with(
+                    args.get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                ),
+                other => {
+                    return Err(format!(
+                        "`{other}` is not an environment action an app may ask for here"
+                    ));
+                }
+            };
+            records.apply(record, invoke).map_err(|e| e.to_string())?;
+        }
+        ServeRequest::ListEnvironments | ServeRequest::OpenSession { .. } => {}
+    }
+    let mut out = Vec::new();
+    for key in records.keys().map_err(|e| e.to_string())? {
+        if let Ok(Some(env)) = records.load(&key) {
+            out.push(EnvironmentEntry::of(&key, &env));
+        }
+    }
+    Ok(out)
+}
+
+/// Run the device's own login shell on a fresh pty and hand its master to
+/// the app — once [`crate::host::decide_host`] allows `caller` this request.
+fn serve_host(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    caller: &crate::host::Caller,
+    req: &ServeRequest,
+) -> anyhow::Result<()> {
+    let ServeRequest::OpenSession {
+        cols,
+        rows,
+        term,
+        command,
+        requested_by,
+        ..
+    } = req
+    else {
+        return Ok(());
+    };
+    let policy = crate::host::HostPolicy::load(&crate::host::HostPolicy::path(store));
+    let ownership = crate::host::SessionOwnership::discover();
+    if let Err(denied) =
+        crate::host::decide_host(caller, *requested_by, &ownership, &policy, Some(unix_now()))
+    {
+        let reason = denied.reason();
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new("serve", "host", "open-session", false)
+                .because(&reason),
+        );
+        let response = if denied == crate::host::HostDenied::NotAllowed {
+            ServeResponse::HostNotAllowed { reason }
+        } else {
+            ServeResponse::Denied { reason }
+        };
+        return reply(writer, &response, None);
+    }
+    let term = term.as_deref().unwrap_or("xterm-256color");
+    let (cols, rows) = (*cols, *rows);
+    let Some(account) = crate::host::login_account() else {
+        return reply(
+            writer,
+            &ServeResponse::Denied {
+                reason: "this account has no passwd entry to take a login shell from".into(),
+            },
+            None,
+        );
+    };
+    let (master, slave) = open_pty(cols, rows)?;
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
+        &id,
+        "host",
+        "open-session",
+        true,
+    ));
+    let child = spawn_on_pty(crate::host::host_command(&account, term, command), &slave)?;
+    drop(slave);
+    reply(
+        writer,
+        &ServeResponse::Session {
+            session: id.clone(),
+            environment: "host".into(),
+        },
+        Some(master.as_raw_fd()),
+    )?;
+    drop(master);
+    let termination = finish_session(stream, child);
+    AuditLog::at(store.audit_dir()).append(
+        &crate::audit::AuditRecord::new(&id, "host", "close-session", true).because(termination),
+    );
+    Ok(())
+}
+
+/// Wait for whichever side of a served session ends first and tear the
+/// other down; returns the line the audit log records.
+///
+/// The request connection is the lifetime capability for the session, in
+/// both directions. When Terminal closes (or crashes) its end, this tears
+/// down exactly the child it created: dropping the pty master is not enough
+/// because a PID-namespace init may survive a terminal hangup. When the
+/// child exits first, it is reaped at once and the connection closed, which
+/// is how Terminal tells a finished session from the hand-off window in which
+/// its PTY master also reports `EIO`.
+fn finish_session(stream: &UnixStream, mut child: std::process::Child) -> String {
+    match wait_for_guest_or_terminal(stream, &child) {
         LifetimeEnd::GuestExited => {
             let status = child.wait();
             let _ = stream.shutdown(std::net::Shutdown::Both);
@@ -666,11 +908,7 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
             },
             Err(error) => format!("status failed: {error}"),
         },
-    };
-    AuditLog::at(store.audit_dir()).append(
-        &crate::audit::AuditRecord::new(&id, &record, "close-session", true).because(termination),
-    );
-    Ok(())
+    }
 }
 
 /// Which side ended a hosted session first.
@@ -753,10 +991,6 @@ fn spawn_attached(
     launch: &Launch<'_>,
     slave: &std::fs::File,
 ) -> std::io::Result<std::process::Child> {
-    use std::os::fd::AsRawFd;
-    use std::os::unix::process::CommandExt;
-    use std::process::Stdio;
-
     let exe = runtime_binary()?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("run");
@@ -770,6 +1004,19 @@ fn spawn_attached(
     cmd.env(crate::store::STORE_ENV, launch.store.root());
     cmd.env(crate::store::RECORDS_ENV, launch.store.records_root());
     cmd.env("TERM", launch.term);
+    spawn_on_pty(cmd, slave)
+}
+
+/// Start `cmd` with `slave` as its stdio, in its own session, with the pty as
+/// its controlling terminal.
+fn spawn_on_pty(
+    mut cmd: std::process::Command,
+    slave: &std::fs::File,
+) -> std::io::Result<std::process::Child> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
     cmd.stdin(Stdio::from(slave.try_clone()?));
     cmd.stdout(Stdio::from(slave.try_clone()?));
     cmd.stderr(Stdio::from(slave.try_clone()?));
@@ -893,6 +1140,7 @@ mod tests {
             rows: 24,
             term: None,
             command: Vec::new(),
+            requested_by: crate::host::RequestedBy::Person,
         }
     }
 
@@ -907,6 +1155,36 @@ mod tests {
         );
         let err = decide_serve(&open(Target::Host)).unwrap_err();
         assert!(err.starts_with("not available"), "{err}");
+
+        // The host target says when an agent asked for it; leaving it out is
+        // the person.
+        let host: ServeRequest = serde_json::from_str(
+            r#"{"op":"open-session","target":{"kind":"host"},"requested_by":"agent"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            host,
+            ServeRequest::OpenSession {
+                target: Target::Host,
+                requested_by: crate::host::RequestedBy::Agent,
+                ..
+            }
+        ));
+        assert!(matches!(
+            open(Target::Host),
+            ServeRequest::OpenSession {
+                requested_by: crate::host::RequestedBy::Person,
+                ..
+            }
+        ));
+        let refused: ServeResponse =
+            serde_json::from_str(r#"{"result":"host-not-allowed","reason":"ask"}"#).unwrap();
+        assert_eq!(
+            refused,
+            ServeResponse::HostNotAllowed {
+                reason: "ask".into()
+            }
+        );
         let err = decide_serve(&open(Target::Environment {
             record: Some("../../etc".into()),
         }))
@@ -977,6 +1255,75 @@ mod tests {
             Arc::new(FixtureImages(images)),
             Arc::new(tilo_environment::NoToolBuilder),
         )
+    }
+
+    #[test]
+    fn the_environment_directory_lists_creates_and_renames_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("ush"));
+        store.ensure().unwrap();
+        let records = Records::at(store.records_root());
+        let mut default = Environment::new(
+            tilo_environment::DEFAULT_NAME,
+            "2026.10",
+            tilo_environment::host_arch(),
+            &PackageId::from_bytes([1; 32]),
+        );
+        default.tools.clear();
+        records.create(DEFAULT_RECORD, &default).unwrap();
+
+        let listed = directory(&ServeRequest::ListEnvironments, &store).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].key, DEFAULT_RECORD);
+
+        let created = directory(
+            &ServeRequest::CreateEnvironment {
+                name: " Writing ".into(),
+            },
+            &store,
+        )
+        .unwrap();
+        let writing = created
+            .iter()
+            .find(|entry| entry.key != DEFAULT_RECORD)
+            .expect("the new environment is listed");
+        assert_eq!(writing.name, "Writing");
+        assert!(writing.tools.is_empty() && writing.grants.is_empty());
+        assert_eq!(
+            records.load(&writing.key).unwrap().unwrap().runtime,
+            default.runtime,
+            "a new environment starts on the default environment's runtime"
+        );
+
+        let renamed = directory(
+            &ServeRequest::EnvironmentAction {
+                record: writing.key.clone(),
+                action: "rename".into(),
+                args: serde_json::json!({"name": "Prose"}),
+            },
+            &store,
+        )
+        .unwrap();
+        assert!(renamed.iter().any(|entry| entry.name == "Prose"));
+        assert!(
+            directory(
+                &ServeRequest::EnvironmentAction {
+                    record: writing.key.clone(),
+                    action: "set-runtime".into(),
+                    args: serde_json::Value::Null,
+                },
+                &store,
+            )
+            .is_err(),
+            "only the actions an app may ask for here are applied"
+        );
+        assert!(
+            directory(
+                &ServeRequest::CreateEnvironment { name: "  ".into() },
+                &store
+            )
+            .is_err()
+        );
     }
 
     #[test]
