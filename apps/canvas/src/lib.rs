@@ -34,6 +34,7 @@ pub mod render;
 pub mod resource;
 pub mod sample;
 pub mod selection;
+pub mod settle;
 pub mod strokes;
 pub mod surface;
 pub mod svg;
