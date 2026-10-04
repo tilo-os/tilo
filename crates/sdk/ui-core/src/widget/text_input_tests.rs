@@ -1914,7 +1914,7 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
 }
 
 #[test]
-fn secret_field_carries_a_focusable_show_hide_control() {
+fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
     use crate::a11y::{Action, Role};
 
     // Case `secret_is_hidden_by_default_with_a_named_show_control`.
@@ -1936,7 +1936,10 @@ fn secret_field_carries_a_focusable_show_hide_control() {
         let children = Widget::children(&ti);
         assert_eq!(children.len(), 1, "the control is a real child widget");
         let child = children.first().unwrap();
-        assert!(child.is_focusable(), "keyboard reaches the control");
+        assert!(
+            !child.is_focusable(),
+            "an inline accessory is not a Tab stop"
+        );
         let node = child.accessibility().unwrap();
         assert_eq!(node.role, Role::Button);
         assert_eq!(node.name.as_deref(), Some("Show password"));
@@ -1962,7 +1965,7 @@ fn secret_field_carries_a_focusable_show_hide_control() {
             .next()
             .unwrap()
             .perform_action(&Action::Activate, &mut doc, &automerge::ROOT);
-        assert!(activated, "Enter/Space and AT activation toggle");
+        assert!(activated, "an AT or agent activation toggles");
         assert!(ti.is_revealed());
         assert_eq!(ti.display_text(), "hunter2");
         let child = Widget::children(&ti).into_iter().next().unwrap();
@@ -2045,7 +2048,7 @@ fn secret_field_carries_a_focusable_show_hide_control() {
         assert!(!ti.is_revealed(), "a tap hides it again");
     }
 
-    // Case `tab_order_visits_the_text_then_the_control`.
+    // Case `tab_moves_from_field_to_field_past_the_control`.
     {
         let mut ti = TextInput::local().with_secret(true);
         let mut taffy = TaffyTree::new();
@@ -2053,9 +2056,7 @@ fn secret_field_carries_a_focusable_show_hide_control() {
         let root = ti.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
         let (order, trapped) = crate::focus_navigation::order(root, &ti, &taffy);
         assert!(!trapped);
-        assert_eq!(order.len(), 2, "field, then its show/hide control");
-        assert_eq!(order.first(), Some(&root));
-        assert_eq!(order.get(1), taffy.children(root).unwrap().first());
+        assert_eq!(order, [root], "the field alone, not its show/hide control");
     }
 
     // Case `only_single_line_secrets_carry_the_control`.
