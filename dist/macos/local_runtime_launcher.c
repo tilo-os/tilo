@@ -1,5 +1,6 @@
 /* Bundle-local launcher; exec preserves helper arguments and exit semantics. */
 #include <errno.h>
+#include <CommonCrypto/CommonDigest.h>
 #include <limits.h>
 #include <mach-o/dyld.h>
 #include <pwd.h>
@@ -53,15 +54,23 @@ int main(int argc, char **argv) {
     join(raw, cache, "Caches"); directory(raw);
     join(cache, raw, "so.tilo.local-runtime"); directory(cache);
     join(raw, cache, TILO_PROFILE_KEY); directory(raw);
-    join(cache, raw, "registry-arm64.bin");
+    /* Registry entries carry absolute plugin paths. Distinct app bundles and
+     * moved copies must not reuse another location's registry. */
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    char location[CC_SHA256_DIGEST_LENGTH * 2 + 1];
+    if (!CC_SHA256(plugins, (CC_LONG)strlen(plugins), digest)) fail();
+    for (size_t i = 0; i < sizeof(digest); i++)
+        snprintf(location + 2 * i, 3, "%02x", digest[i]);
+    join(cache, raw, location); directory(cache);
+    join(raw, cache, "registry-arm64.bin");
     variable("GST_PLUGIN_SYSTEM_PATH_1_0", plugins);
     variable("GST_PLUGIN_SYSTEM_PATH", plugins);
     variable("GST_PLUGIN_PATH_1_0", "");
     variable("GST_PLUGIN_PATH", "");
     variable("GST_PLUGIN_SCANNER_1_0", scanner);
     variable("GST_PLUGIN_SCANNER", scanner);
-    variable("GST_REGISTRY_1_0", cache);
-    variable("GST_REGISTRY", cache);
+    variable("GST_REGISTRY_1_0", raw);
+    variable("GST_REGISTRY", raw);
     /* A stale external cache must not suppress local scanner validation. */
     variable("GST_REGISTRY_UPDATE", "yes");
     variable("GST_REGISTRY_FORK", "yes");
