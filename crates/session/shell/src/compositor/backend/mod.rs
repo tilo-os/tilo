@@ -404,14 +404,6 @@ pub enum BackendEvent {
     /// `wl_touch`. The shell receives the same contact as raw
     /// `WindowEvent::Touch` through [`Self::Input`].
     Touch(TouchEvent),
-    /// A confirmed one-finger tap ended at this global position. The
-    /// compositor turns it into a pointer click only when the tap's touch
-    /// sequence did not already reach a client over `wl_touch`; otherwise
-    /// the client would be activated once per protocol.
-    TouchTap {
-        x: f64,
-        y: f64,
-    },
     /// An accessibility filter rejected input (a bounce-keys press) and the
     /// user asked to see it: flash the shell's visual alert.
     VisualAlert,

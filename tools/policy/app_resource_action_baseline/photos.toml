@@ -1,0 +1,8 @@
+# Audited ceilings of apps/photos (tools/policy/check_app_resource_action_contract.py).
+# Each count may only go down; the target is an empty file.
+
+[ratchets.app_action_host]
+"apps/photos/src/resource.rs" = 2
+
+[ratchets.raw_operation_handler]
+"apps/photos/src/app.rs" = 3

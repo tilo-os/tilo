@@ -752,7 +752,12 @@ pub fn resolve_gpu_selection(
     opts: &RunOptions,
 ) -> Option<crate::gpu::GpuSelection> {
     let node = opts.render_node.as_ref()?;
-    let selection = crate::gpu::select_for_node(node, &crate::gpu::IcdSearch::default());
+    // The compositor resolved its node's drivers once and pinned its own
+    // loaders to them; a launch it started inherits that pin. Asking every
+    // installed ICD again here would load each driver on every app launch.
+    let mut selection = crate::gpu::inherited_selection(node)
+        .unwrap_or_else(|| crate::gpu::select_for_node(node, &crate::gpu::IcdSearch::default()));
+    selection.pipeline_seed = crate::gpu::host_pipeline_seed();
     for note in &selection.notes {
         tracing::warn!(target: "tilo_launcher::gpu", package = %manifest.package_id, "{note}");
     }
@@ -1661,20 +1666,7 @@ fn splice_sandbox_shim(
     let payload_mount = crate::sandbox::payload_mount_for(&ctx.manifest.package_id);
     argv.push("--ro".to_string());
     argv.push(payload_mount.display().to_string());
-    if let Some((rt_root, ver)) = ctx.runtime_arg {
-        let rt = crate::sandbox::runtime_mount_for(ver);
-        argv.push("--ro".to_string());
-        argv.push(rt.display().to_string());
-        // Also allow the canonical loader paths re-bound out of the bundle —
-        // otherwise the entry ELF's INTERP is blocked by Landlock despite the bind.
-        for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {
-            let no_slash = canonical.trim_start_matches('/');
-            if rt_root.join("lib").join(no_slash).exists() {
-                argv.push("--ro".to_string());
-                argv.push((*canonical).to_string());
-            }
-        }
-    }
+    push_runtime_landlock_rules(argv, ctx.runtime_arg);
     for p in ctx.extra_ro_paths {
         argv.push("--ro".to_string());
         argv.push(p.clone());
@@ -1723,6 +1715,10 @@ fn splice_sandbox_shim(
         }
         argv.push("--rw".to_string());
         argv.push(sel.node.display().to_string());
+        if sel.pipeline_seed.is_some() {
+            argv.push("--ro".to_string());
+            argv.push(crate::gpu::SANDBOX_PIPELINE_SEED_DIR.to_string());
+        }
     }
     // The app's own directory, named by its in-sandbox path — the host path
     // isn't reachable from inside, so a rule on it would match nothing.
@@ -1756,6 +1752,23 @@ fn splice_sandbox_shim(
     argv.push("--".to_string());
     argv.push(entry);
     Ok(())
+}
+
+fn push_runtime_landlock_rules(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
+    if let Some((rt_root, ver)) = runtime {
+        let rt = crate::sandbox::runtime_mount_for(ver);
+        argv.push("--ro".to_string());
+        argv.push(rt.display().to_string());
+        // Also allow the canonical loader paths re-bound out of the bundle —
+        // otherwise the entry ELF's INTERP is blocked by Landlock despite the bind.
+        for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {
+            let no_slash = canonical.trim_start_matches('/');
+            if rt_root.join("lib").join(no_slash).exists() {
+                argv.push("--ro".to_string());
+                argv.push((*canonical).to_string());
+            }
+        }
+    }
 }
 
 fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &MinimalManifest) {

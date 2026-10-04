@@ -5514,6 +5514,75 @@ fn bound() -> (ui::State, WordProcessorWidget) {
     (state, wp)
 }
 
+fn send_ime(wp: &mut WordProcessorWidget, state: &mut ui::State, ime: winit::event::Ime) {
+    let taffy: TaffyTree<()> = TaffyTree::new();
+    let mut handled = false;
+    let mut focus: Option<NodeId> = None;
+    wp.handle_event(
+        &WindowEvent::Ime(ime),
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: NodeId::new(0),
+            taffy: &taffy,
+        },
+    );
+}
+
+/// The input method's composition shows at the caret and reaches the
+/// document only when committed; Backspace and Delete take whole clusters.
+#[test]
+fn typing_composes_with_the_input_method_and_erases_whole_clusters() {
+    use winit::event::Ime;
+    let (mut state, mut wp) = bound();
+    wp.lifecycle.focused = true;
+    send_ime(&mut wp, &mut state, Ime::Commit("a".into()));
+    send_ime(
+        &mut wp,
+        &mut state,
+        Ime::Preedit("かな".into(), Some((3, 3))),
+    );
+    assert_eq!(wp.inner.preedit(), "かな");
+    assert_eq!(
+        wp.inner.preedit_before_cursor(),
+        "か",
+        "the caret sits inside"
+    );
+    assert_eq!(body_text(&wp, &state), ["a"], "not typed until committed");
+    send_ime(&mut wp, &mut state, Ime::Commit("仮名".into()));
+    assert_eq!(wp.inner.preedit(), "");
+    for typed in ["e\u{301}", "👍🏽", "🇩🇪"] {
+        send_ime(&mut wp, &mut state, Ime::Commit(typed.into()));
+    }
+    assert_eq!(body_text(&wp, &state), ["a仮名e\u{301}👍🏽🇩🇪"]);
+
+    press_named(&mut wp, &mut state, NamedKey::Backspace);
+    assert_eq!(body_text(&wp, &state), ["a仮名e\u{301}👍🏽"]);
+    press_named(&mut wp, &mut state, NamedKey::ArrowLeft);
+    press_named(&mut wp, &mut state, NamedKey::ArrowLeft);
+    press_named(&mut wp, &mut state, NamedKey::Delete);
+    assert_eq!(body_text(&wp, &state), ["a仮名👍🏽"]);
+    press_named(&mut wp, &mut state, NamedKey::ArrowRight);
+    press_named(&mut wp, &mut state, NamedKey::Backspace);
+    assert_eq!(body_text(&wp, &state), ["a仮名"]);
+
+    // A commit replaces the selection, as typing does.
+    select_range(&mut wp, 1, 3);
+    send_ime(&mut wp, &mut state, Ime::Preedit("x".into(), None));
+    send_ime(&mut wp, &mut state, Ime::Disabled);
+    assert_eq!(
+        wp.inner.preedit(),
+        "",
+        "an abandoned composition leaves nothing"
+    );
+    send_ime(&mut wp, &mut state, Ime::Commit("x".into()));
+    assert_eq!(body_text(&wp, &state), ["ax"]);
+}
+
 #[test]
 fn hosted_lookup_offers_caret_edits_not_a_second_document() {
     let (state, wp) = bound();
@@ -6473,6 +6542,353 @@ fn drawn_focused() -> Framed<WordProcessorWidget> {
     let (state, mut wp) = populated();
     wp.set_focus(true);
     mount(state, wp, 1100, 760)
+}
+
+#[test]
+fn semantic_text_caret_is_painted_without_a_selection_or_input() {
+    let framed = drawn_focused();
+    let block = first_block_id(&framed);
+    let mut presence = PresenceCtx::empty();
+    presence
+        .apply_interaction(tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation: tilo_actions::InvocationId::new(),
+            sequence: 1,
+            actor: tilo_actions::InteractionActor {
+                id: "synthetic-semantic-run".into(),
+                kind: tilo_actions::InteractionActorKind::Agent,
+            },
+            phase: tilo_actions::InteractionPhase::Applying,
+            action: tilo_actions::InteractionAction {
+                id: "type-text".into(),
+                label: "Type text".into(),
+                app: None,
+            },
+            resource: tilo_actions::ActionResource {
+                id: "word-processor.document".into(),
+                kind: "document".into(),
+                label: "Synthetic document".into(),
+            },
+            anchor: tilo_actions::InteractionAnchor::Text {
+                region: "body".into(),
+                ranges: vec![tilo_actions::InteractionTextRange {
+                    block,
+                    start: 0,
+                    end: 0,
+                }],
+            },
+            group: None,
+        })
+        .unwrap();
+    let before = (
+        framed.inner.caret.clone(),
+        framed.scroll_y,
+        framed.lifecycle.focused,
+    );
+    let mut scene = Scene::new();
+    framed.draw_remote_overlays(
+        &mut scene,
+        framed.content_transform(Affine::IDENTITY),
+        framed.zoom_viewport,
+        &mut TextRenderer::new(),
+        &Theme::dark(),
+        &presence,
+    );
+    assert!(
+        !scene.encoding().path_tags.is_empty(),
+        "an actual collapsed semantic text range must paint its shaped caret"
+    );
+    assert_eq!(
+        scene.encoding().n_clips,
+        2,
+        "semantic decoration and label share one balanced document clip"
+    );
+    assert_eq!(
+        (
+            framed.inner.caret.clone(),
+            framed.scroll_y,
+            framed.lifecycle.focused
+        ),
+        before,
+        "observing semantic work must not move or focus the local editor"
+    );
+}
+
+fn semantic_text_anchor(block: &str, start: u64, end: u64) -> tilo_actions::InteractionAnchor {
+    tilo_actions::InteractionAnchor::Text {
+        region: "body".into(),
+        ranges: vec![tilo_actions::InteractionTextRange {
+            block: block.into(),
+            start,
+            end,
+        }],
+    }
+}
+
+fn semantic_text_fixture(text: &str) -> Framed<WordProcessorWidget> {
+    let mut state = ui::State::new();
+    let mut wp = WordProcessorWidget::new();
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(&mut state.doc, text);
+    mount(state, wp, 1100, 760)
+}
+
+#[test]
+fn semantic_text_geometry_uses_unicode_character_endpoints_and_real_carets() {
+    let mut framed = semantic_text_fixture("a😀éZ");
+    let (wp, state) = Framed::split(&mut framed);
+    let block = first_block_id(wp);
+    let laid = &wp.laid[0];
+    let layout = &wp.layout_cache[&block].1;
+    let before = (
+        state.doc.save(),
+        wp.inner.caret.clone(),
+        wp.scroll_y,
+        wp.lifecycle.focused,
+    );
+    // Character endpoints 1..3 are UTF-8 byte endpoints 1..7, independently
+    // derived from the literal fixture, not the conversion under test.
+    let expected = layout
+        .selection_rects(1, 7)
+        .into_iter()
+        .map(|(x0, y0, x1, y1)| {
+            Rect::new(
+                laid.text_x + f64::from(x0),
+                laid.layout_y + f64::from(y0),
+                laid.text_x + f64::from(x1),
+                laid.layout_y + f64::from(y1),
+            )
+        })
+        .collect::<Vec<_>>();
+    let transform = wp.content_transform(Affine::IDENTITY);
+    assert_eq!(
+        wp.semantic_text_rects(
+            &semantic_text_anchor(&block, 1, 3),
+            transform,
+            wp.zoom_viewport
+        ),
+        Some(expected)
+    );
+    for (character, byte) in [(0, 0), (3, 7), (4, 8)] {
+        let (x, y, h) = layout.caret_geometry(byte);
+        let expected = Rect::new(
+            laid.text_x + f64::from(x),
+            laid.layout_y + f64::from(y),
+            laid.text_x + f64::from(x) + CARET_WIDTH,
+            laid.layout_y + f64::from(y + h),
+        );
+        assert_eq!(
+            wp.semantic_text_rects(
+                &semantic_text_anchor(&block, character, character),
+                transform,
+                wp.zoom_viewport
+            ),
+            Some(vec![expected])
+        );
+    }
+    assert_eq!(
+        (
+            state.doc.save(),
+            wp.inner.caret.clone(),
+            wp.scroll_y,
+            wp.lifecycle.focused
+        ),
+        before
+    );
+    let empty = semantic_text_fixture("");
+    let rects = empty
+        .semantic_text_rects(
+            &semantic_text_anchor(&first_block_id(&empty), 0, 0),
+            empty.content_transform(Affine::IDENTITY),
+            empty.zoom_viewport,
+        )
+        .unwrap();
+    assert_eq!(rects.len(), 1);
+    assert!(rects[0].width() > 0.0 && rects[0].height() > 0.0);
+}
+
+#[test]
+fn semantic_text_geometry_refuses_invalid_or_unretained_targets() {
+    let mut framed = semantic_text_fixture("abc");
+    let block = first_block_id(&framed);
+    let transform = framed.content_transform(Affine::IDENTITY);
+    let clip = framed.zoom_viewport;
+    for anchor in [
+        semantic_text_anchor(&block, 2, 1),
+        semantic_text_anchor(&block, 0, 4),
+        semantic_text_anchor(&block, u64::MAX, u64::MAX),
+        semantic_text_anchor("missing", 0, 0),
+    ] {
+        assert!(
+            framed
+                .semantic_text_rects(&anchor, transform, clip)
+                .is_none()
+        );
+    }
+    for region in ["header", "footer", "unknown"] {
+        let mut anchor = semantic_text_anchor(&block, 0, 1);
+        let tilo_actions::InteractionAnchor::Text { region: target, .. } = &mut anchor else {
+            unreachable!()
+        };
+        *target = region.into();
+        assert!(
+            framed
+                .semantic_text_rects(&anchor, transform, clip)
+                .is_none()
+        );
+    }
+    for transform in [
+        Affine::scale(0.0),
+        Affine::scale(f64::NAN),
+        Affine::rotate(0.5),
+    ] {
+        assert!(
+            framed
+                .semantic_text_rects(&semantic_text_anchor(&block, 0, 1), transform, clip)
+                .is_none()
+        );
+    }
+    Framed::split(&mut framed).0.layout_cache.remove(&block);
+    assert!(
+        framed
+            .semantic_text_rects(&semantic_text_anchor(&block, 0, 1), transform, clip)
+            .is_none()
+    );
+}
+
+#[test]
+fn semantic_text_geometry_never_turns_an_image_hit_test_layout_into_a_caret() {
+    let mut state = ui::State::new();
+    let mut wp = WordProcessorWidget::new();
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_image_bytes(&mut state.doc, TEST_PNG);
+    let framed = mount(state, wp, 1100, 760);
+    let image = framed
+        .laid
+        .iter()
+        .find(|laid| laid.kind == "image")
+        .unwrap();
+    assert!(
+        framed.layout_cache.contains_key(&image.id),
+        "image fixture has the real empty hit-test layout"
+    );
+    assert!(
+        framed
+            .semantic_text_rects(
+                &semantic_text_anchor(&image.id, 0, 0),
+                framed.content_transform(Affine::IDENTITY),
+                framed.zoom_viewport
+            )
+            .is_none()
+    );
+}
+
+#[test]
+fn semantic_text_geometry_clips_after_pan_and_zoom_without_edge_clamping() {
+    let framed = semantic_text_fixture("abcdefgh");
+    let anchor = semantic_text_anchor(&first_block_id(&framed), 0, 8);
+    let transform = Affine::translate((31.0, 47.0)) * Affine::scale(1.75);
+    let all = framed
+        .semantic_text_rects(
+            &anchor,
+            transform,
+            Rect::new(-10000.0, -10000.0, 10000.0, 10000.0),
+        )
+        .unwrap();
+    assert_eq!(all.len(), 1);
+    let bounds = transform.transform_rect_bbox(all[0]);
+    let clip = Rect::new(bounds.center().x, bounds.y0, bounds.x1, bounds.y1);
+    let partial = framed
+        .semantic_text_rects(&anchor, transform, clip)
+        .unwrap();
+    assert_eq!(partial.len(), 1);
+    let visible = transform.transform_rect_bbox(partial[0]);
+    assert!((visible.x0 - clip.x0).abs() < 1e-8);
+    assert!((visible.x1 - clip.x1).abs() < 1e-8);
+    assert!(
+        framed
+            .semantic_text_rects(&anchor, transform, Rect::new(-100.0, -100.0, -50.0, -50.0))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn semantic_text_geometry_uses_each_visible_page_slices_layout_origin() {
+    let text = "A paragraph spanning real page slices with wrapped words. ".repeat(300);
+    let mut framed = semantic_text_fixture(&text);
+    pipeline_draw(&mut framed, 1100, 3000);
+    let block = first_block_id(&framed);
+    let transform = framed.content_transform(Affine::IDENTITY);
+    let anchor = semantic_text_anchor(&block, 0, text.chars().count() as u64);
+    let rects = framed
+        .semantic_text_rects(&anchor, transform, framed.zoom_viewport)
+        .unwrap();
+    let visible_slices = framed
+        .laid
+        .iter()
+        .filter(|laid| laid.id == block)
+        .filter_map(|laid| laid.clip)
+        .filter(|clip| {
+            let visible = transform
+                .transform_rect_bbox(*clip)
+                .intersect(framed.zoom_viewport);
+            visible.width() > 0.0 && visible.height() > 0.0
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        visible_slices.len() >= 2,
+        "real pagination fixture must expose multiple slices"
+    );
+    for slice in visible_slices {
+        assert!(
+            rects.iter().any(|rect| {
+                let hit = rect.intersect(slice);
+                hit.width() > 0.0 && hit.height() > 0.0
+            }),
+            "every visible slice must resolve its own text lines"
+        );
+    }
+    for rect in &rects {
+        assert!(
+            framed
+                .laid
+                .iter()
+                .filter(|laid| laid.id == block)
+                .filter_map(|laid| laid.clip)
+                .any(|clip| clip.intersect(*rect) == *rect),
+            "selection must not cross a page gap"
+        );
+    }
+    let later = framed
+        .laid
+        .iter()
+        .find(|laid| laid.id == block && laid.layout_y < laid.y_top - 1.0 && laid.clip.is_some())
+        .unwrap();
+    let (_, layout) = &framed.layout_cache[&block];
+    let expected_line = layout
+        .selection_rects(0, text.len())
+        .into_iter()
+        .find(|(_, y0, _, y1)| {
+            let top = later.layout_y + f64::from(*y0);
+            let bottom = later.layout_y + f64::from(*y1);
+            top >= later.y_top && bottom <= later.y_top + later.height
+        })
+        .unwrap();
+    let exact = Rect::new(
+        later.text_x + f64::from(expected_line.0),
+        later.layout_y + f64::from(expected_line.1),
+        later.text_x + f64::from(expected_line.2),
+        later.layout_y + f64::from(expected_line.3),
+    );
+    let only = framed
+        .semantic_text_rects(&anchor, transform, transform.transform_rect_bbox(exact))
+        .unwrap();
+    assert!(!only.is_empty());
+    assert!(
+        only.iter()
+            .all(|rect| (rect.y0 - exact.y0).abs() < 1e-8 && (rect.y1 - exact.y1).abs() < 1e-8)
+    );
 }
 
 /// Remote presence is a no-op without peers, and a peer's caret is labelled with their name or, unnamed,

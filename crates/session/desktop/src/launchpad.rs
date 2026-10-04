@@ -129,6 +129,18 @@ impl LaunchpadAction {
         Some(action)
     }
 
+    /// A stable, untranslated name for the card.
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Notes => "notes",
+            Self::Tasks => "tasks",
+            Self::Meet => "meet",
+            Self::Invite => "invite",
+            Self::Activity => "activity",
+        }
+    }
+
     pub fn label(self) -> String {
         match self {
             Self::Chat => t("launchpad-discuss"),
@@ -293,6 +305,21 @@ impl CollaborationLaunchpad {
             _ => self.rail_clearance,
         };
         Self::card_geometry(self.presentation_rect(), clearance)
+    }
+
+    /// The cards and the "Open an app" button by stable name
+    /// (`launchpad:notes`, `launchpad:open-app`, ...), as laid out in the
+    /// last frame, so a driver can press them like a person would.
+    pub fn targets(&self) -> Vec<(String, Rect)> {
+        LaunchpadAction::ALL
+            .iter()
+            .zip(self.card_rects)
+            .map(|(action, rect)| (format!("launchpad:{}", action.slug()), rect))
+            .chain(std::iter::once((
+                "launchpad:open-app".to_owned(),
+                self.app_button_rect(),
+            )))
+            .collect()
     }
 
     fn fire(action: LaunchpadAction, state: &mut AutoCommit, path: &ObjId) {

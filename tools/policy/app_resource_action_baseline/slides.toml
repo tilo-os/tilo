@@ -1,0 +1,8 @@
+# Audited ceilings of apps/slides (tools/policy/check_app_resource_action_contract.py).
+# Each count may only go down; the target is an empty file.
+
+[ratchets.raw_operation_handler]
+"apps/slides/src/app.rs" = 3
+
+[ratchets.surface_document_actions]
+"apps/slides/src/resource.rs" = 1
