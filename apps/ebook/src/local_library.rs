@@ -10,6 +10,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+#[cfg(test)]
 const APP_ID: &str = "so.tilo.ebook";
 const BOOKS: &str = "books";
 const WATCHED: &str = "watched_folders";
@@ -21,18 +22,17 @@ const MAX_PATH_BYTES: usize = 4096;
 /// keys [`LocalLibrary::from_section`] validates one by one.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-struct Stored(Map<String, Value>);
+pub(crate) struct Stored(Map<String, Value>);
 
 impl ui::storage::SettingsSchema for Stored {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
 }
 
-fn settings() -> ui::storage::Settings<Stored> {
-    ui::storage::Settings::for_app(APP_ID)
-}
-
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LocalLibrary {
+    /// Where the grants are kept: the app's device-local settings in the
+    /// host's settings document. `None` keeps them in memory only.
+    store: Option<ui::storage::Settings<Stored>>,
     pub(crate) books: HashMap<String, PathBuf>,
     pub(crate) watched_folders: Vec<PathBuf>,
     /// Reader bindings are intentionally local: a collaborator's preferred
@@ -41,8 +41,13 @@ pub(crate) struct LocalLibrary {
 }
 
 impl LocalLibrary {
-    pub(crate) fn load() -> Self {
-        Self::from_section(&settings().get().0)
+    /// The grants kept in `store`, which [`Self::save`] writes back to.
+    pub(crate) fn load(store: ui::storage::Settings<Stored>) -> Self {
+        let stored = Self::from_section(&store.get().0);
+        Self {
+            store: Some(store),
+            ..stored
+        }
     }
 
     pub(crate) fn remember_book(&mut self, id: &str, path: &Path) {
@@ -95,7 +100,10 @@ impl LocalLibrary {
     }
 
     pub(crate) fn save(&self) {
-        if let Err(error) = settings().set(&Stored(self.section())) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        if let Err(error) = store.set(&Stored(self.section())) {
             tracing::warn!(%error, "ebook: couldn't persist local library capabilities");
         }
     }
@@ -177,13 +185,8 @@ impl LocalLibrary {
     }
 
     #[cfg(test)]
-    fn from_path(path: &Path) -> Self {
-        Self::from_section(&settings().in_file(path).get().0)
-    }
-
-    #[cfg(test)]
-    fn save_at(&self, path: &Path) -> std::io::Result<()> {
-        settings().in_file(path).set(&Stored(self.section()))
+    fn in_file(path: &Path) -> ui::storage::Settings<Stored> {
+        ui::storage::Settings::for_app(APP_ID).in_file(path)
     }
 }
 
@@ -235,11 +238,11 @@ mod tests {
             let path = directory.path().join("settings.json");
             let books = directory.path().join("books");
             let book = books.join("a.epub");
-            let mut registry = LocalLibrary::default();
+            let mut registry = LocalLibrary::load(LocalLibrary::in_file(&path));
             registry.remember_book("book:0123456789abcdef0123456789abcdef", &book);
             registry.toggle_watch(&books);
             assert_eq!(registry.books.len(), 1);
-            registry.save_at(&path).unwrap();
+            registry.save();
 
             assert!(
                 ui::storage::settings_at(&path)["app_device_local"][APP_ID]
@@ -248,7 +251,7 @@ mod tests {
                 "the paths are the device's own"
             );
 
-            let restored = LocalLibrary::from_path(&path);
+            let restored = LocalLibrary::load(LocalLibrary::in_file(&path));
             assert_eq!(
                 restored.books.get("book:0123456789abcdef0123456789abcdef"),
                 Some(&book)
