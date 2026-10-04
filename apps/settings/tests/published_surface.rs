@@ -60,3 +60,18 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
         .expect("the settings surface is mounted");
     assert_eq!(selected, Category::Bluetooth);
 }
+
+/// A `settings://models/<id>` link opens Settings at Agent Models.
+#[test]
+fn a_model_link_opens_agent_models() {
+    let mut app = TestApp::<SettingsShell>::launched(&["settings://models/u2net-subject"])
+        .expect("settings opens on a link");
+    let shown = app
+        .harness()
+        .wait_until(ui::time::Duration::from_secs(20), |harness| {
+            harness
+                .inspection_json()
+                .is_ok_and(|frame| frame.contains("Private by design"))
+        });
+    assert!(shown, "the link opens Agent Models");
+}
