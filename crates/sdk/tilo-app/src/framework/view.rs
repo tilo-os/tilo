@@ -191,6 +191,15 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.me()
     }
 
+    /// What the launch that opened this window named — the file a person
+    /// opened the app with, its command line — for a view that shows what
+    /// the launch's actions ([`ResourceApp::launch`](super::ResourceApp::launch))
+    /// made: the note a launch imported, opened. Empty for a plain start and
+    /// for a past version.
+    pub fn launch(&self) -> super::launch::LaunchInput<'_> {
+        self.run.launch()
+    }
+
     /// Whether this participant may only view, when the view is built.
     /// Bound controls already follow permission changes on their own; to show
     /// or disable something else while the participant may only view, bind to

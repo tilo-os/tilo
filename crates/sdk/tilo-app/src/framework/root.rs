@@ -235,6 +235,11 @@ impl<R: Resource> ResourceRoot<R> {
         &self.live
     }
 
+    /// What the launch that opened the window named.
+    pub(crate) fn launch(&self) -> super::launch::LaunchInput<'_> {
+        self.run.launch()
+    }
+
     /// Every hosted surface of this resource in the view, in tree order.
     fn surfaces(&self, visit: &mut dyn FnMut(&dyn SurfacePublication<R>)) {
         fn walk<R: Resource>(
