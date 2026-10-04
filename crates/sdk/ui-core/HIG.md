@@ -387,7 +387,9 @@ Choose a shared composition by what the region contains:
 
 | Region | Starting point | Decisions supplied by the framework |
 |---|---|---|
-| Account or settings form | `FormPage`, `Form`, `FormSection`, `Field` | One page gutter, readable width, related-field spacing, measured label placement, wrapping and scrolling |
+| Account or settings form | `FormPage`, `Form`, `FormSection`, `Field` | One page gutter, readable width on the leading edge, one label column for the whole form, related-field spacing, measured label placement, help under the label, wrapping, scrolling and pinned actions |
+| A page of sections (facts, lists, settings) | `Page` with `head(..)` items and `section(..)`s | The readable column on the leading edge, sections a group apart, scrolling with a persisted offset, actions pinned under it; the shell's header titles it |
+| A readable column inside a custom layout | `Container::readable()` | `metrics.readable_width` on the leading edge; `.centered()` only for a page that stands alone (a wizard) |
 | A titled group of content | `Section` with a `SectionHeader` | Heading role, count, one trailing action, `related` gap to the items and `sibling` between them |
 | A list of things | `ListRow`s in a `Section` | Measured row heights, leading column alignment, inset separators hidden beside the selection, hover actions |
 | An object with a title, content and actions | `Card::new(body).with_title(..).with_footer(Actions)` in a `CardGrid` | Content height, consistent card gutter, footer containment and alignment, rows as tall as their tallest card |
@@ -493,10 +495,18 @@ a defect even when both are "authored".
 The framework supplies the values so callers state the relationship, not the
 number:
 
-- `Row::with_gap(px)` / `Column::with_gap(px)` change the gap between children;
-  `Row::with_justify(..)` and `Row::with_align_items(..)` place them along and
-  across the row. Defaults (gap `s3`, children centred, start-packed) are
-  unchanged.
+- `Column::with_rhythm(Rhythm::Section)` / `Row::with_rhythm(..)` space the
+  children by relationship (`Tight`, `Related`, `Sibling`, `Section`,
+  `Group`), resolved from the theme at layout time;
+  `with_padding_rhythm(horizontal, vertical)` insets them the same way.
+  `Row::with_gap(px)` / `Column::with_gap(px)` remain for a gap that is not a
+  relationship; `Row::with_justify(..)` and `Row::with_align_items(..)` place
+  children along and across the row. Defaults (gap `s3`, children centred,
+  start-packed) are unchanged.
+- A child that is absent takes no gap: `optional(None)`, a `When` whose
+  condition is false, bound text (`Text::from_state`) that renders nothing, a
+  `ModelView` that builds nothing, a zero spacer, a `ModalDialog` or a
+  `Popover`. Never add a spacer to make up or cancel a gap.
 - `Spacer::token(SpacingStep::S4)` is a fixed gap that resolves from the Theme
   at layout time and therefore follows `ui_scale`; `Spacer::fixed(px)` is the
   authored-pixel form. Neither grows. `Spacer::new()` still grows to push
@@ -1035,7 +1045,7 @@ edge kept at full strength, so rest and disabled never look the same.
 | Checkbox | unchecked `surfaces.raised`, checked `intent.inverted`; always the largest square in its rect, `radii.item` | `edge_on(raised)`, kept at full strength when disabled (as a switch's) |
 | ProgressBar | track `intent.selection` (a lift of the ground, as a slider's unfilled half), fill `intent.inverted`, `radii.detail` | none |
 | TimePicker | value cells `surfaces.raised` at `radii.control`; step arrows are `Icon::ChevronUp` / `ChevronDown`, lifted under the pointer | `edge_on(raised)`; the focused cell `border_focus` |
-| Scroll thumb | `text_tertiary` at rest, `text_dim` active, each stepped to 3:1 on the ground | none; a vertical `Scrollable` keeps `metrics.scrollbar_gutter` free on its trailing edge |
+| Scroll thumb | `text_tertiary` at rest (a third lighter on a light ground), `text_dim` active stepped to 3:1 on the ground; `metrics.scroll_thumb` thick, centred in its lane | none; a `Scrollable` (or a painted `ScrollRegion`) keeps `metrics.scrollbar_gutter` (thumb plus `s1` each side) free on its trailing edge while its content overflows, and on its bottom edge for a horizontal bar |
 | DataTable header and rules | the region's ground (no fill of its own) | `edge_on(ground)` under the header and, with `.ruled()`, between columns |
 | StatTile, PropertyList, Section | the ground | none: separated by space |
 | MediaCard art | the art | a seated `hairline_on(ground)` inside the art's outline; badges over the art use the floating material |
@@ -1089,7 +1099,12 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   control keeps its 28 px face and reaches the 32 px target through its hit
   rect. A button is as wide as its label (at least twice its height; an
   icon-only button is a square) and never elides while its parent has room.
-- Menu row 32 (`menu_row_height`); scroll bar gutter 12 (`scrollbar_gutter`).
+- Menu row 32 (`menu_row_height`); scroll bar gutter 16 (`scrollbar_gutter`),
+  thumb 8 (`scroll_thumb`), one wheel line 60 (`wheel_line`), a committing
+  swipe 88 (`swipe_commit`).
+- Readable width 720 (`readable_width`) for forms and pages of facts; reading
+  measure 640 (`reading_measure`) for long-form text; a chooser beside its
+  label 224 (`chooser_width`).
 - Panel padding `spacing.s4` (16); gap between Panel sections `spacing.s4`.
 - Panel row / Control height 44 (`panel_row_height`); Selector height 28
   (`selector_height`).

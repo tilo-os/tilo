@@ -13,12 +13,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use super::{Actions, Element, FormControl, Scrollable, Text, Widget};
+use taffy::style_helpers::{line, span};
 
 use super::composition_parts::{Parts, retained_parts};
 mod label;
 mod page;
 use label::FieldLabel;
-pub use page::FormPage;
+pub use page::{FormPage, Page};
 #[cfg(test)]
 mod tests;
 use crate::presence::PresenceCtx;
@@ -58,9 +59,11 @@ fn column_style(gap: f32) -> Style {
             width: percent(1.0_f32),
             height: auto(),
         },
+        // An automatic block minimum: inside a scroll view a form keeps its
+        // content height instead of being squeezed to the viewport.
         min_size: Size {
             width: length(0.0_f32),
-            height: length(0.0_f32),
+            height: auto(),
         },
         flex_shrink: 0.0,
         align_content: Some(taffy::AlignContent::Start),
@@ -138,6 +141,8 @@ impl Form {
 /// ground, separated from the next section by space.
 pub struct FormSection {
     parts: Parts,
+    /// Whether `parts.children[0]` is the section's heading.
+    has_title: bool,
     /// Settings rows: label leading, control trailing, inset separators.
     grouped: bool,
     density: Option<Density>,
@@ -146,15 +151,32 @@ pub struct FormSection {
     inherited: Option<FormLayout>,
     inherited_field_spacing: Option<f32>,
     effective: Option<SectionLayout>,
+    /// The label and control needs of every field of the enclosing
+    /// [`Form`], so all its sections share one label column.
+    form_needs: Option<(f32, f32)>,
+    /// Whether the section's rows currently stand beside their labels.
+    beside: bool,
+    /// The effective field spacing, the gap between stacked grouped rows.
+    stacked_gap: f32,
 }
 impl FormSection {
     pub fn new(title: impl Into<String>) -> Self {
+        let mut section = Self::untitled();
+        section.parts.children.push(Box::new(
+            Text::new(&title.into())
+                .with_role(TextRole::Heading)
+                .with_heading_level(2),
+        ));
+        section.has_title = true;
+        section
+    }
+    /// A section without a heading: the first group of a page whose title
+    /// already says what it is, or a group that continues the one above.
+    /// It emits no heading, visible or accessible.
+    pub fn untitled() -> Self {
         Self {
-            parts: Parts::new(vec![Box::new(
-                Text::new(&title.into())
-                    .with_role(TextRole::Heading)
-                    .with_heading_level(2),
-            )]),
+            parts: Parts::new(Vec::new()),
+            has_title: false,
             grouped: false,
             density: None,
             field_spacing: None,
@@ -162,12 +184,16 @@ impl FormSection {
             inherited: None,
             inherited_field_spacing: None,
             effective: None,
+            form_needs: None,
+            beside: true,
+            stacked_gap: 0.0,
         }
     }
     /// Lay the fields out as a settings list: each a row at least one
     /// grouped-row high, its label leading and its control trailing, with an
     /// inset separator between rows. The rows still stack their label above
-    /// the control when the section is too narrow.
+    /// the control when the section is too narrow; stacked rows are spaced
+    /// like plain fields and their controls take the full width.
     #[must_use]
     pub fn grouped(mut self) -> Self {
         self.grouped = true;
@@ -176,6 +202,15 @@ impl FormSection {
     #[must_use]
     pub fn field(mut self, field: Field) -> Self {
         self.parts.children.push(Box::new(field));
+        self
+    }
+    /// A row of the section with no label of its own: a `Row` of buttons
+    /// ("Export", "Import"), a full-width control. It spans the label and
+    /// control columns, and in a grouped section it is one of the rows,
+    /// with their height and separators.
+    #[must_use]
+    pub fn control_row(mut self, content: Element) -> Self {
+        self.parts.children.push(Box::new(Field::row(content)));
         self
     }
     #[must_use]
@@ -201,60 +236,146 @@ impl FormSection {
     pub fn effective_layout(&self) -> Option<SectionLayout> {
         self.effective
     }
+
+    fn fields_mut(&mut self) -> impl Iterator<Item = &mut Field> {
+        self.parts
+            .children
+            .iter_mut()
+            .filter_map(|child| child.as_any_mut()?.downcast_mut::<Field>())
+    }
+
+    /// The widest label and control need of this section's fields that may
+    /// stand beside their labels.
+    fn own_needs(&mut self, tree: &TaffyTree<()>, text: &mut TextRenderer) -> (f32, f32) {
+        let mut needs = (0.0_f32, 0.0_f32);
+        for field in self.fields_mut() {
+            if !field.shares_label_column() {
+                continue;
+            }
+            let measured = field.needs(tree, text);
+            needs.0 = needs.0.max(measured.0);
+            needs.1 = needs.1.max(measured.1);
+        }
+        needs
+    }
 }
 
-/// One visible label and its ordinarily retained standard control. The same
-/// localization key names both; help and validation are ordinary readable Text.
-/// This does not create label/description relationships in AccessKit.
+/// What a [`Field`] labels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FieldKind {
+    /// A standard control that carries the label as its accessible name.
+    Control,
+    /// Any element (a read-only value, a row of controls): the label is
+    /// announced as a label of its own.
+    Custom,
+    /// No label: a row that spans both columns.
+    Row,
+}
+
+/// One visible label and what it labels: a standard control (which takes
+/// the label as its accessible name, so it is read once), a custom element,
+/// or nothing for a control row. Help copy reads under the label while the
+/// label stands beside the control, and under the control once stacked;
+/// validation copy always stays with the control.
 pub struct Field {
+    /// `[label, body, help?]`.
     parts: Parts,
+    kind: FieldKind,
+    has_help: bool,
     label_placement: Option<LabelPlacement>,
-    /// The control keeps its own width and sits at the trailing edge when
+    /// The control keeps its own width and ends on the trailing edge while
     /// the label is beside it (a settings chooser), instead of filling the
     /// control column.
     trailing_control: bool,
+    /// The field is a row of a grouped section.
+    grouped: bool,
     inherited: Option<SectionLayout>,
     effective: Option<FieldLayout>,
     group_needs: Option<(f32, f32)>,
     pair_gap: f32,
+    stacked_gap: f32,
+    help_gap: f32,
+    first_line: f32,
     comfortable_control: f32,
 }
 impl Field {
     pub fn new<C: FormControl + 'static>(label: impl Into<String>, control: C) -> Self {
         let label = label.into();
+        Self::with_parts(
+            FieldKind::Control,
+            Box::new(
+                Text::new(&label)
+                    .with_role(TextRole::Label)
+                    .naming_its_control(),
+            ),
+            Box::new(control.with_form_accessible_name(&label)),
+        )
+    }
+    /// A label for any element: a read-only value (a `Text`), a `Row` of
+    /// controls or buttons. It lines up with the other fields of its form
+    /// and follows the same placement rules; the label is announced as a
+    /// label, since the element cannot carry it as its name.
+    pub fn custom(label: impl Into<String>, content: Element) -> Self {
+        Self::with_parts(
+            FieldKind::Custom,
+            Box::new(
+                Text::new(&label.into())
+                    .with_role(TextRole::Label)
+                    .announced_as_label(),
+            ),
+            content,
+        )
+    }
+    fn row(content: Element) -> Self {
+        Self::with_parts(FieldKind::Row, Box::new(super::Absent::new()), content)
+    }
+    fn with_parts(kind: FieldKind, label: Element, content: Element) -> Self {
         Self {
             parts: Parts::new(vec![
                 Box::new(FieldLabel {
-                    parts: Parts::new(vec![Box::new(Text::new(&label).with_role(TextRole::Label))]),
+                    parts: Parts::new(vec![label]),
                     top_inset: 0.0,
                 }),
                 Box::new(FieldBody {
-                    parts: Parts::new(vec![Box::new(control.with_form_accessible_name(&label))]),
-                    help: false,
+                    parts: Parts::new(vec![content]),
                     error: false,
                     gap: 0.0,
                 }),
             ]),
+            kind,
+            has_help: false,
             label_placement: None,
             trailing_control: false,
+            grouped: false,
             inherited: None,
             effective: None,
             group_needs: None,
             pair_gap: 0.0,
+            stacked_gap: 0.0,
+            help_gap: 0.0,
+            first_line: 0.0,
             comfortable_control: 0.0,
         }
     }
     #[must_use]
     pub fn with_help(mut self, text: impl Into<String>) -> Self {
-        self.set_copy(&text.into(), false);
+        let copy: Element = Box::new(
+            Text::new(&text.into())
+                .with_role(TextRole::Caption)
+                .dimmed(),
+        );
+        if self.has_help {
+            if let Some(slot) = self.parts.children.get_mut(2) {
+                *slot = copy;
+            }
+        } else {
+            self.parts.children.push(copy);
+            self.has_help = true;
+        }
         self
     }
     #[must_use]
     pub fn with_error(mut self, text: impl Into<String>) -> Self {
-        self.set_copy(&text.into(), true);
-        self
-    }
-    fn set_copy(&mut self, text: &str, error: bool) {
         if let Some(body) = self
             .parts
             .children
@@ -262,20 +383,22 @@ impl Field {
             .and_then(|child| child.as_any_mut())
             .and_then(|any| any.downcast_mut::<FieldBody>())
         {
-            body.set_copy(text, error);
+            body.set_error(&text.into());
         }
+        self
     }
     #[must_use]
     pub fn with_label_placement(mut self, value: Option<LabelPlacement>) -> Self {
         self.label_placement = value;
         self
     }
-    /// A compact chooser (dropdown, segmented switch) that keeps its own
-    /// width: it sits at the trailing edge of the row while the label is
-    /// beside it, and under the label's leading edge once the section stacks.
-    /// The beside/above decision is still the section's measured one, so
-    /// every row of a settings card switches together instead of each
-    /// deciding for itself. Help and validation copy stay with the control.
+    /// A compact chooser (dropdown, segmented switch, switch) that keeps its
+    /// own width: it ends on the trailing edge of the control column while
+    /// the label is beside it, and takes the full width under the label
+    /// once the section stacks. The beside/above decision is still the
+    /// section's measured one, so every row of a settings card switches
+    /// together instead of each deciding for itself. Help copy stays under
+    /// the label and validation copy with the control.
     #[must_use]
     pub fn with_trailing_control(mut self) -> Self {
         self.trailing_control = true;
@@ -285,10 +408,31 @@ impl Field {
         self.effective
     }
 
+    /// Whether this field's label takes part in the shared label column.
+    fn shares_label_column(&self) -> bool {
+        self.kind != FieldKind::Row
+            && !self
+                .effective
+                .is_some_and(|layout| layout.label_placement.value == LabelPlacement::Above)
+    }
+
     fn needs(&mut self, tree: &TaffyTree<()>, text: &mut TextRenderer) -> (f32, f32) {
-        let label = self.parts.children.first_mut().map_or(0.0, |child| {
-            measure_owned(child.as_mut(), AvailableSpace::MaxContent, text).width
-        });
+        let mut label = if self.kind == FieldKind::Row {
+            0.0
+        } else {
+            self.parts.children.first_mut().map_or(0.0, |child| {
+                measure_owned(child.as_mut(), AvailableSpace::MaxContent, text).width
+            })
+        };
+        // Help reads under a beside label, so the label column keeps room
+        // for it to wrap into a few lines, not a word a line: as wide as the
+        // help wants, up to a chooser's measure.
+        if self.has_help
+            && let Some(help) = self.parts.children.get_mut(2)
+        {
+            let help = measure_owned(help.as_mut(), AvailableSpace::MaxContent, text).width;
+            label = label.max(help.min(self.comfortable_control));
+        }
         // The body owns its control directly; help/error do not set its minimum.
         let control_node = self
             .parts
@@ -315,7 +459,7 @@ impl Field {
         let minimum = measured.max(declared);
         (
             label,
-            if expandable {
+            if expandable && self.kind == FieldKind::Control {
                 minimum.max(self.comfortable_control)
             } else {
                 minimum
@@ -350,45 +494,54 @@ fn measure_owned(
     )
 }
 
-// A small retained support-copy stack. This is ordinary host layout, not a
+/// One placement of a field part in the field's grid.
+fn place(
+    row: i16,
+    rows: u16,
+    column: i16,
+) -> (
+    taffy::Line<taffy::GridPlacement>,
+    taffy::Line<taffy::GridPlacement>,
+) {
+    (
+        taffy::Line {
+            start: line(row),
+            end: span(rows),
+        },
+        taffy::Line {
+            start: line(column),
+            end: span(1),
+        },
+    )
+}
+
+// The control and its validation copy. This is ordinary host layout, not a
 // private measurement tree; its children appear in focus/accessibility traversal.
 struct FieldBody {
     parts: Parts,
-    help: bool,
     error: bool,
     gap: f32,
 }
 impl FieldBody {
-    fn set_copy(&mut self, text: &str, error: bool) {
-        let index = if error {
-            1_usize.saturating_add(usize::from(self.help))
-        } else {
-            1
-        };
-        let copy = Text::new(text).with_role(TextRole::Caption);
-        let copy: Element = Box::new(if error {
-            // Validation is status: the message in danger ink, and the
-            // control itself edged in it, so the error reads at a glance.
-            copy.with_live(crate::a11y::Politeness::Polite).danger()
-        } else {
-            copy.dimmed()
-        });
-        if error && let Some(control) = self.parts.children.first_mut() {
+    fn set_error(&mut self, text: &str) {
+        // Validation is status: the message in danger ink, and the control
+        // itself edged in it, so the error reads at a glance.
+        let copy: Element = Box::new(
+            Text::new(text)
+                .with_role(TextRole::Caption)
+                .with_live(crate::a11y::Politeness::Polite)
+                .danger(),
+        );
+        if let Some(control) = self.parts.children.first_mut() {
             control.set_invalid(true);
         }
-        if (error && self.error) || (!error && self.help) {
-            if let Some(slot) = self.parts.children.get_mut(index) {
+        if self.error {
+            if let Some(slot) = self.parts.children.get_mut(1) {
                 *slot = copy;
             }
         } else {
-            self.parts
-                .children
-                .insert(index.min(self.parts.children.len()), copy);
-        }
-        if error {
+            self.parts.children.push(copy);
             self.error = true;
-        } else {
-            self.help = true;
         }
     }
 }
@@ -446,6 +599,7 @@ impl Widget for Form {
             {
                 section.inherited = Some(effective);
                 section.inherited_field_spacing = self.field_spacing;
+                section.form_needs = None;
             }
         }
         let node = self.parts.build(
@@ -456,6 +610,37 @@ impl Widget for Form {
         );
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+    /// One label column for the whole form: every section lines its
+    /// controls up on the widest label of any of them.
+    fn adjust_layout_with_measure(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        _node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let mut needs = (0.0_f32, 0.0_f32);
+        for child in &mut self.parts.children {
+            if let Some(section) = child
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<FormSection>())
+            {
+                let own = section.own_needs(tree, text);
+                needs.0 = needs.0.max(own.0);
+                needs.1 = needs.1.max(own.1);
+            }
+        }
+        let mut changed = false;
+        for child in &mut self.parts.children {
+            if let Some(section) = child
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<FormSection>())
+            {
+                changed |= section.form_needs != Some(needs);
+                section.form_needs = Some(needs);
+            }
+        }
+        changed
     }
     fn draw(
         &mut self,
@@ -522,29 +707,29 @@ impl Widget for FormSection {
             ),
         };
         self.effective = Some(effective);
-        for child in &mut self.parts.children {
-            if let Some(field) = child
-                .as_any_mut()
-                .and_then(|any| any.downcast_mut::<Field>())
-            {
-                field.inherited = Some(effective);
-                field.group_needs = None;
-                if self.grouped {
-                    field.trailing_control = true;
-                }
+        let grouped = self.grouped;
+        for field in self.fields_mut() {
+            field.inherited = Some(effective);
+            field.group_needs = None;
+            field.grouped = grouped;
+            if grouped {
+                field.trailing_control = true;
             }
         }
+        self.stacked_gap = effective.field_spacing.value;
         let gap = if self.grouped && self.field_spacing.is_none() {
             0.0
         } else {
             effective.field_spacing.value
         };
+        self.beside = true;
         let node = self.parts.build(column_style(gap), tree, theme, map);
         if self.grouped {
             // Each field row is at least a grouped row high, its content on
             // the row's centre line; the title keeps its own height and sits
             // a related step above the first row.
             let row = theme.tokens.metrics.panel_row_height + theme.tokens.spacing.s2;
+            let has_title = self.has_title;
             for (index, (child, &child_node)) in self
                 .parts
                 .children
@@ -560,7 +745,7 @@ impl Widget for FormSection {
                     if is_field {
                         style.min_size.height = length(row);
                         style.align_content = Some(taffy::AlignContent::Center);
-                    } else if index == 0 {
+                    } else if index == 0 && has_title {
                         style.margin.bottom = length(theme.tokens.spacing.rhythm.related);
                     }
                     let _ = tree.set_style(child_node, style);
@@ -573,34 +758,35 @@ impl Widget for FormSection {
     fn adjust_layout_with_measure(
         &mut self,
         tree: &mut TaffyTree<()>,
-        _node: NodeId,
+        node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
-        let mut needs = (0.0_f32, 0.0_f32);
-        for child in &mut self.parts.children {
-            if let Some(field) = child
-                .as_any_mut()
-                .and_then(|any| any.downcast_mut::<Field>())
-            {
-                if field
-                    .effective
-                    .is_some_and(|layout| layout.label_placement.value == LabelPlacement::Above)
-                {
-                    continue;
-                }
-                let measured = field.needs(tree, text);
-                needs.0 = needs.0.max(measured.0);
-                needs.1 = needs.1.max(measured.1);
-            }
-        }
+        let own = self.own_needs(tree, text);
+        let needs = self
+            .form_needs
+            .map_or(own, |form| (form.0.max(own.0), form.1.max(own.1)));
         let mut changed = false;
-        for child in &mut self.parts.children {
-            if let Some(field) = child
-                .as_any_mut()
-                .and_then(|any| any.downcast_mut::<Field>())
-            {
-                changed |= field.group_needs != Some(needs);
-                field.group_needs = Some(needs);
+        for field in self.fields_mut() {
+            changed |= field.group_needs != Some(needs);
+            field.group_needs = Some(needs);
+        }
+        // Stacked grouped rows are spaced like plain fields: a row height
+        // and no gap would run each label into the control above it.
+        if self.grouped && self.field_spacing.is_none() {
+            let width = tree.layout(node).map_or(0.0, |layout| layout.size.width);
+            let pair = self.fields_mut().next().map_or(0.0, |field| field.pair_gap);
+            let beside = match self.effective.map(|e| e.label_placement.value) {
+                Some(LabelPlacement::Above) => false,
+                Some(LabelPlacement::Beside) => true,
+                _ => width >= needs.0 + pair + needs.1,
+            };
+            if beside != self.beside {
+                self.beside = beside;
+                if let Ok(current) = tree.style(node) {
+                    let mut style = current.clone();
+                    style.gap.height = length(if beside { 0.0 } else { self.stacked_gap });
+                    changed |= tree.set_style(node, style).is_ok();
+                }
             }
         }
         changed
@@ -613,7 +799,7 @@ impl Widget for FormSection {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.grouped {
+        if self.grouped && self.beside {
             // A separator between consecutive field rows, never above the
             // first or below the last.
             let ground = theme.tokens.colors.surfaces.content;
@@ -661,10 +847,16 @@ impl Widget for Field {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.pair_gap = theme.tokens.spacing.s3;
+        self.stacked_gap = theme.tokens.spacing.s2;
+        self.help_gap = theme.tokens.spacing.rhythm.tight;
+        // A beside label sits on the control's first line: a one-line
+        // control is at most a large control high, so a taller one (a
+        // multi-line entry, a list) keeps its label on its first line.
+        self.first_line = crate::num::f32_of_f64(super::ControlSize::Large.height(theme));
         // Single-line entry widgets intentionally return zero intrinsic width.
-        // Reserve a readable entry measure at the active type size in that case.
-        self.comfortable_control =
-            theme.tokens.typography.size(crate::tokens::TextRole::Body) * 16.0;
+        // Reserve the chooser measure, grown with the text, in that case.
+        self.comfortable_control = theme.tokens.metrics.chooser_width
+            * crate::tokens::Metrics::text_growth(theme.text_scale);
         let placement = self.label_placement.map_or_else(
             || {
                 self.inherited.map_or_else(
@@ -683,7 +875,7 @@ impl Widget for Field {
         });
         let node = self
             .parts
-            .build(column_style(theme.tokens.spacing.s2), tree, theme, map);
+            .build(column_style(self.stacked_gap), tree, theme, map);
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -702,38 +894,13 @@ impl Widget for Field {
         let Some(effective) = self.effective else {
             return false;
         };
-        let beside = match effective.label_placement.value {
-            LabelPlacement::Automatic => width >= required,
-            LabelPlacement::Above => false,
-            LabelPlacement::Beside => true,
-        };
-        // A trailing control keeps the measured control need as its column
-        // (the section's shared need, so sibling choosers line up) and sits
-        // at the trailing edge beside its label, or leading once stacked.
-        let mut body_changed = false;
-        if self.trailing_control
-            && let Some(&body) = self.parts.nodes.get(1)
-            && let Ok(current) = tree.style(body)
-        {
-            let mut style = current.clone();
-            style.size.width = length(control);
-            style.justify_self = Some(if beside {
-                taffy::AlignItems::End
-            } else {
-                taffy::AlignItems::Start
-            });
-            // A control narrower than the shared column (a dropdown sized to
-            // its own options) keeps to the column's trailing edge beside its
-            // label, and to its leading edge once stacked.
-            style.justify_items = Some(if beside {
-                taffy::AlignItems::End
-            } else {
-                taffy::AlignItems::Start
-            });
-            if *current != style {
-                body_changed = tree.set_style(body, style).is_ok();
-            }
-        }
+        let beside = self.kind != FieldKind::Row
+            && match effective.label_placement.value {
+                LabelPlacement::Automatic => width >= required,
+                LabelPlacement::Above => false,
+                LabelPlacement::Beside => true,
+            };
+        let mut changed = self.place_parts(tree, node, beside, label, control);
         let control_height = self
             .parts
             .nodes
@@ -742,11 +909,11 @@ impl Widget for Field {
             .and_then(|children| children.first().copied())
             .and_then(|control| tree.layout(control).ok())
             .map_or(0.0, |layout| layout.size.height);
-        let mut inset_changed = false;
+        let first_line = control_height.min(self.first_line.max(1.0));
         if let Some(label) = self.parts.children.first_mut() {
             let height = measure_owned(label.as_mut(), AvailableSpace::MaxContent, text).height;
             let top = if beside {
-                ((control_height - height) / 2.0).max(0.0)
+                ((first_line - height) / 2.0).max(0.0)
             } else {
                 0.0
             };
@@ -754,35 +921,21 @@ impl Widget for Field {
                 .as_any_mut()
                 .and_then(|any| any.downcast_mut::<FieldLabel>())
             {
-                inset_changed = (label.top_inset - top).abs() > f32::EPSILON;
+                changed |= (label.top_inset - top).abs() > f32::EPSILON;
                 label.top_inset = top;
             }
         }
-        let Some(effective) = self.effective.as_mut() else {
-            return inset_changed;
-        };
-        effective.resolved_placement = if beside {
-            LabelPlacement::Beside
-        } else {
-            LabelPlacement::Above
-        };
-        effective.available_width = width;
-        effective.beside_required_width = required;
-        effective.label_width = label;
-        let Ok(current) = tree.style(node) else {
-            return false;
-        };
-        let mut style = current.clone();
-        style.grid_template_columns = if beside {
-            vec![length(label), minmax(length(0.0_f32), fr(1.0_f32))]
-        } else {
-            vec![minmax(length(0.0_f32), fr(1.0_f32))]
-        };
-        style.gap.width = length(self.pair_gap);
-        if *current == style {
-            return inset_changed || body_changed;
+        if let Some(effective) = self.effective.as_mut() {
+            effective.resolved_placement = if beside {
+                LabelPlacement::Beside
+            } else {
+                LabelPlacement::Above
+            };
+            effective.available_width = width;
+            effective.beside_required_width = required;
+            effective.label_width = label;
         }
-        tree.set_style(node, style).is_ok() || inset_changed || body_changed
+        changed
     }
     fn draw(
         &mut self,
@@ -793,6 +946,95 @@ impl Widget for Field {
         presence: &PresenceCtx,
     ) {
         self.parts.draw(scene, transform, text, theme, presence);
+    }
+}
+impl Field {
+    /// Place the label, body and help copy in the field's grid for the
+    /// resolved arrangement. Beside: the label and its help stack in the
+    /// label column and the body spans both rows. Stacked: label, body and
+    /// help follow each other. Returns whether any style changed.
+    fn place_parts(
+        &self,
+        tree: &mut TaffyTree<()>,
+        node: NodeId,
+        beside: bool,
+        label: f32,
+        control: f32,
+    ) -> bool {
+        fn restyle(tree: &mut TaffyTree<()>, part: NodeId, edit: impl FnOnce(&mut Style)) -> bool {
+            let Ok(current) = tree.style(part) else {
+                return false;
+            };
+            let mut style = current.clone();
+            edit(&mut style);
+            *current != style && tree.set_style(part, style).is_ok()
+        }
+        let help = self.has_help;
+        let mut changed = false;
+        if let Some(&part) = self.parts.nodes.first() {
+            let display = if self.kind == FieldKind::Row {
+                taffy::Display::None
+            } else {
+                taffy::Display::Grid
+            };
+            changed |= restyle(tree, part, |style| {
+                (style.grid_row, style.grid_column) = place(1, 1, 1);
+                style.display = display;
+            });
+        }
+        if let Some(&part) = self.parts.nodes.get(1) {
+            let trailing = self.trailing_control;
+            let stacked_row = if self.kind == FieldKind::Row { 1 } else { 2 };
+            changed |= restyle(tree, part, |style| {
+                (style.grid_row, style.grid_column) = if beside {
+                    place(1, if help { 2 } else { 1 }, 2)
+                } else {
+                    place(stacked_row, 1, 1)
+                };
+                // A trailing control keeps the shared control need as its
+                // column (so sibling choosers line up) and ends on the
+                // trailing edge beside its label; stacked, it takes the
+                // full width under the label.
+                if trailing && beside {
+                    style.size.width = length(control);
+                    style.justify_self = Some(taffy::AlignItems::End);
+                    style.justify_items = Some(taffy::AlignItems::End);
+                } else {
+                    style.size.width = auto();
+                    style.justify_self = None;
+                    style.justify_items = None;
+                }
+            });
+        }
+        if let Some(&part) = self.parts.nodes.get(2) {
+            changed |= restyle(tree, part, |style| {
+                (style.grid_row, style.grid_column) = place(if beside { 2 } else { 3 }, 1, 1);
+            });
+        }
+        let pair_gap = self.pair_gap;
+        let row_gap = if beside {
+            self.help_gap
+        } else {
+            self.stacked_gap
+        };
+        // A grouped row with help copy keeps a tight step under it before
+        // the separator.
+        let bottom = if self.grouped && help {
+            self.help_gap
+        } else {
+            0.0
+        };
+        changed |= restyle(tree, node, |style| {
+            style.grid_template_columns = if beside {
+                vec![length(label), minmax(length(0.0_f32), fr(1.0_f32))]
+            } else {
+                vec![minmax(length(0.0_f32), fr(1.0_f32))]
+            };
+            style.gap.width = length(pair_gap);
+            style.gap.height = length(row_gap);
+            style.padding.bottom = length(bottom);
+        });
+        changed
     }
 }
 impl Widget for FieldBody {

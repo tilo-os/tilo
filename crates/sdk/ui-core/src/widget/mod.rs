@@ -2203,7 +2203,7 @@ mod form;
 mod form_composition;
 mod layout_info;
 pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
-pub use form_composition::{Field, Form, FormPage, FormSection};
+pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
     ManualConflict, ManualLayout, PageLayout, SectionLayout,
@@ -2258,6 +2258,12 @@ mod text;
 pub use text::Text;
 mod spacer;
 pub use spacer::Spacer;
+mod when;
+pub use when::{Absent, When, optional};
+mod slot;
+pub use slot::{Slot, SlotHandle, Switch};
+mod columns;
+pub use columns::Columns;
 mod image;
 pub use image::{Image, ImageDecodeError, ImageFit};
 mod image_crop;
@@ -2302,7 +2308,7 @@ pub use tabs::{TabBar, TabDescriptor, TabMark, draw_app_mark};
 pub mod scrollbar;
 pub use scrollbar::{
     PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,
-    Scrollbar,
+    Scrollbar, TrackMark,
 };
 pub mod date_indexed_scrollbar;
 pub use date_indexed_scrollbar::{
@@ -2313,6 +2319,9 @@ pub mod drag;
 pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
 mod scrollable;
 pub use scrollable::{ScrollAxis, Scrollable};
+mod scroll_region;
+pub use scroll_region::ScrollRegion;
+pub use scrollbar::BarFade;
 pub mod panic_scope;
 mod tile_host;
 pub use tile_host::{AppKind, TileContent, TileHost};
@@ -2470,7 +2479,7 @@ pub use gauge::{
 pub mod function_plane;
 pub use function_plane::FunctionPlane;
 pub mod resizable_split;
-pub use resizable_split::ResizableSplit;
+pub use resizable_split::{ResizableSplit, SplitHandle, SplitOrientation, SplitRatio};
 pub mod video_player;
 pub use video_player::VideoPlayer;
 pub mod webview;
@@ -2488,7 +2497,7 @@ pub use virtual_list::{
     DuplicateListKey, ListModel, ListRowState, RowSelection, VecListModel, VirtualList,
 };
 mod activation;
-pub use activation::{Interaction, paint_focus_ring};
+pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
 pub mod media_card;
 pub use media_card::{
     ArtPainter, MediaArt, MediaAspect, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize,

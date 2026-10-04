@@ -41,7 +41,7 @@ use crate::model::{
 use crate::request::{self, BlankRows, METHOD_PATH};
 use crate::response;
 use crate::sidebar::{self, SidebarView};
-use crate::swap::{Following, Swap, SwapHandle};
+use crate::swap::{Swap, SwapHandle};
 use crate::vars;
 
 /// What the picker reads when no environment is chosen.
@@ -384,14 +384,14 @@ impl ApiTesterApp {
         env_vars: &Rc<RefCell<HashMap<String, String>>>,
         sink: &Sink,
     ) -> Element {
-        let split = Following::new(
-            ResizableSplit::new(
-                pane(request, false),
-                pane(response, true),
-                SplitOrientation::Vertical,
-            )
-            .with_split_position(0.5),
-        );
+        // The split relays out its panes as its divider moves.
+        let split = ResizableSplit::new(
+            pane(request, false),
+            pane(response, true),
+            SplitOrientation::Vertical,
+        )
+        .with_split_position(0.5)
+        .with_divider_label("Resize the request and the response");
         Box::new(
             Stack::new()
                 .push(Box::new(

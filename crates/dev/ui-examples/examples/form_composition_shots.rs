@@ -6,8 +6,9 @@ use tilo_ui::theme::Theme;
 use tilo_ui::tokens::TextRole;
 use tilo_ui::widget::ButtonRole;
 use tilo_ui::widget::{
-    Actions, Button, Checkbox, Column, Container, Density, Element, Field, Form, FormPage,
-    FormSection, LabelPlacement, Row, Scrollable, Text, TextInput,
+    Actions, Button, Checkbox, Column, Container, Density, Dropdown, Element, Field, Form,
+    FormPage, FormSection, LabelPlacement, Page, Property, PropertyList, Row, Scrollable, Section,
+    Text, TextInput, Toggle,
 };
 
 const NAME: &str = "Full name";
@@ -196,12 +197,70 @@ fn primitive(width: u32, scale: f32) -> Element {
             .with_child(scroll),
     )
 }
+/// A page of sections: a summary at its head, facts and a settings group,
+/// with its commit pinned under it.
+fn page() -> Element {
+    Box::new(
+        Page::new()
+            .head(Box::new(
+                Text::new("Your account is synced on 3 devices.").with_role(TextRole::Body),
+            ))
+            .section(Box::new(Section::titled(
+                "Details",
+                vec![Box::new(PropertyList::new(vec![
+                    Property::new("Name", "Alex Morgan"),
+                    Property::new("Email", "alex@example.org"),
+                    Property::new("Member since", "March 2024"),
+                ]))],
+            )))
+            .section(Box::new(settings_form()))
+            .with_pinned_actions(actions()),
+    )
+}
+
+/// Settings rows: switches and a chooser on the trailing edge, help under
+/// the label, a read-only value and a row of buttons.
+fn settings_form() -> Form {
+    Form::new()
+        .section(
+            FormSection::new("Sync")
+                .grouped()
+                .field(
+                    Field::new("Sync over mobile data", Toggle::new("mobile", "mobile"))
+                        .with_help("Large files wait for Wi-Fi."),
+                )
+                .field(Field::new(
+                    "Keep history",
+                    Dropdown::new(vec!["30 days".into(), "A year".into()], "history"),
+                ))
+                .field(Field::custom(
+                    "Storage used",
+                    Box::new(Text::new("2.4 GB of 15 GB").numeric()),
+                ))
+                .control_row(Box::new(
+                    Row::new()
+                        .push(Box::new(Button::new("export", "Export data", None)))
+                        .push(Box::new(
+                            Button::new("delete", "Delete account", None)
+                                .role(ButtonRole::Destructive),
+                        )),
+                )),
+        )
+        .section(FormSection::untitled().field(Field::new(
+            "Device name shown to collaborators",
+            TextInput::local().with_id("device"),
+        )))
+}
+
 /// `TILO_SHOTS_THEME=<preset>` (`light`, `high-contrast`, any `Theme::named`)
 /// renders every capture on that preset; PNGs are composited on the theme's
 /// own `bg_app`.
+/// A second argument names the preset too, for runners that do not forward
+/// the environment.
 fn shot_theme() -> Theme {
-    std::env::var("TILO_SHOTS_THEME")
-        .ok()
+    std::env::args()
+        .nth(2)
+        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok())
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark)
 }
@@ -217,10 +276,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("large-text", (1080, 1100), 2.0),
         ("narrow-large-text", (340, 900), 2.0),
     ] {
-        for mode in ["automatic", "guided", "primitive"] {
+        for mode in ["automatic", "guided", "primitive", "page", "settings"] {
             let root = match mode {
                 "guided" => guided(),
                 "primitive" => primitive(viewport.0, scale),
+                "page" => page(),
+                "settings" => {
+                    Box::new(FormPage::untitled(settings_form()).with_pinned_actions(actions()))
+                }
                 _ => automatic(),
             };
             let mut harness = FrameHarness::new_with_theme(

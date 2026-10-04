@@ -145,7 +145,12 @@ impl ResourceApp for TotpShell {
         // The header's actions are for a vault with accounts in it: with none,
         // the empty state asks for the first one and the header stays quiet.
         let has_accounts = cx.local(true);
-        let content = cx.surface(AuthenticatorApp::new().with_account_signal(has_accounts.clone()));
+        let count = cx.local(0usize);
+        let content = cx.surface(
+            AuthenticatorApp::new()
+                .with_account_signal(has_accounts.clone())
+                .with_count_signal(count.clone()),
+        );
         let search = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
             if *has_accounts {
                 Box::new(cx.search_button(SearchRequest::this_app()))
@@ -167,11 +172,12 @@ impl ResourceApp for TotpShell {
                 Box::new(Spacer::token(SpacingStep::S0))
             }
         });
-        Box::new(
-            NavShell::new()
+        Box::new(CountedShell {
+            shell: NavShell::new()
                 .content(content)
                 .content_header("Accounts", vec![search, add]),
-        )
+            count,
+        })
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -205,6 +211,30 @@ impl ResourceApp for TotpShell {
             .iter()
             .filter_map(|account| Invoke::apply(&add_account_action(account, account.order)).ok())
             .collect()
+    }
+}
+
+/// The navigation shell whose header says how many accounts the vault holds.
+struct CountedShell {
+    shell: NavShell,
+    count: ui::LocalState<usize>,
+}
+
+impl ui::widget::Decorator for CountedShell {
+    type Inner = NavShell;
+
+    fn inner(&self) -> &NavShell {
+        &self.shell
+    }
+
+    fn inner_mut(&mut self) -> &mut NavShell {
+        &mut self.shell
+    }
+
+    fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        let count = self.count.get();
+        self.shell.set_content_count((count > 0).then_some(count));
+        ui::widget::Widget::update(&mut self.shell, state, path)
     }
 }
 
@@ -614,25 +644,30 @@ mod tests {
         app.harness().set_modifiers(&[]);
         settle(&mut app);
         app.harness()
-            .click_named("totp-advanced")
-            .expect("the sheet shows its advanced options");
-        settle(&mut app);
+            .click_named("totp-issuer")
+            .expect("the sheet shows the issuer");
         app.harness()
-            .perform_named("totp-period", &ui::a11y::Action::SetValue("60".into()))
-            .expect("the period is a field");
+            .perform_named(
+                "totp-issuer",
+                &ui::a11y::Action::SetValue("GitHub Work".into()),
+            )
+            .expect("the issuer is a field");
         save(&mut app);
         app.merge_peer(&mut peer).unwrap();
         app.settle();
 
         let account = &app.state()[0];
-        assert_eq!(account.period, 60, "the edit reached the document");
+        assert_eq!(
+            account.issuer, "GitHub Work",
+            "the edit reached the document"
+        );
         assert_eq!(
             account.label, "ada@corp.example",
             "the collaborator's label stands"
         );
         assert_eq!(account.color, 5, "the edit keeps the account's colour");
         assert!(app.undo(), "the edit is one undo step");
-        assert_eq!(app.state()[0].period, 30);
+        assert_eq!(app.state()[0].issuer, "GitHub");
     }
 
     #[test]

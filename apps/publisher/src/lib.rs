@@ -29,7 +29,9 @@ use ui::tilo_actions::{
     OperationKind, PermissionRequirement, ResultSpec, RiskLevel,
 };
 use ui::widget::resource_actions::OPERATION_TYPE;
-use ui::widget::{Actions as ButtonGroup, BannerKind, ButtonRole, Field, Form, FormSection};
+use ui::widget::{
+    Actions as ButtonGroup, BannerKind, ButtonRole, Field, Form, FormPage, FormSection,
+};
 
 /// What to apply for, and where. Stored, synced and undoable; the key is not
 /// part of it.
@@ -484,15 +486,6 @@ fn footer(pane: &Pane, bindings: &Bindings) -> Element {
     Box::new(column.push(Box::new(ButtonGroup::new(apply).secondary(check))))
 }
 
-/// The readable measure the form and its pinned actions share.
-fn readable(child: Element) -> Element {
-    Box::new(
-        Container::new()
-            .with_centered_max_width(720.0)
-            .with_child(child),
-    )
-}
-
 /// The app: the key on this machine, and an application for namespaces.
 pub struct App;
 
@@ -556,24 +549,9 @@ impl ResourceApp for App {
         let form = Form::new()
             .section(FormSection::new("publisher-key-heading").content(Box::new(key)))
             .section(namespaces_section(cx));
-        let root = Box::new(
-            Column::new()
-                .with_no_padding()
-                .push(Box::new(
-                    Scrollable::new_vertical()
-                        .fill_parent_height()
-                        .with_child(readable(Box::new(form))),
-                ))
-                // The pinned outcome and actions sit in a viewport of their own
-                // so they keep the form's scrollbar gutter and line up with it;
-                // they scroll only in a window too short to show them.
-                .push(Box::new(
-                    Scrollable::new_vertical()
-                        .without_sequential_focus()
-                        .fit_content_height()
-                        .with_child(readable(Box::new(footer))),
-                )),
-        );
+        // The outcome and the actions are pinned under the scrolling form, on
+        // its measure, so they stay in view however long the form grows.
+        let root = Box::new(FormPage::untitled(form).with_pinned(Box::new(footer)));
         let live = cx.live().clone();
         ui::widget::resource_actions::background(root, resource, move |payload| {
             let (sender, receiver) = std::sync::mpsc::channel();

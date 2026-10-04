@@ -2743,7 +2743,10 @@ impl BrowserWidget {
             );
         }
         if let Some(message) = &self.private_window_notice {
-            notices.push(crate::notice::Notice::info(message));
+            notices.push(
+                crate::notice::Notice::warning("Couldn’t open a private window")
+                    .with_message(message.clone()),
+            );
         }
         if self.close_blocked {
             notices.push(
@@ -3452,7 +3455,6 @@ impl BrowserWidget {
     /// compact window moves some into the overflow menu), the next stands in.
     fn anchored_panel_parts(
         &self,
-        theme: &Theme,
         width: f32,
         max_height: f32,
     ) -> Option<(PanelKind, Box<dyn Widget>, Vec<&'static str>)> {
@@ -3489,7 +3491,6 @@ impl BrowserWidget {
             return Some((PanelKind::Prompt, prompt, anchors));
         }
         let feedback = self.pip_feedback.as_ref()?;
-        let spacing = &theme.tokens.spacing;
         let note = |text: &str| -> Box<dyn Widget> {
             Box::new(ui::widget::Text::new(text).with_role(ui::tokens::TextRole::Body))
         };
@@ -3506,7 +3507,7 @@ impl BrowserWidget {
                     Column::new()
                         .with_no_padding()
                         .with_intrinsic_height()
-                        .with_gap(spacing.s3)
+                        .with_rhythm(ui::tokens::Rhythm::Sibling)
                         .push(note("No visible video on this page"))
                         .push(Box::new(
                             ui::widget::Actions::new(choose(
@@ -3546,7 +3547,7 @@ impl BrowserWidget {
             .map_or(0.0, |toolbar| toolbar.y1);
         let max_height =
             (window.height() as f32 - toolbar_bottom as f32 - spacing.s3 - pad).max(160.0);
-        let (kind, content, anchors) = self.anchored_panel_parts(theme, width, max_height)?;
+        let (kind, content, anchors) = self.anchored_panel_parts(width, max_height)?;
         // A control of the toolbar row opens its panel below the whole row,
         // so the row stays uncovered.
         let anchor = anchors.into_iter().find_map(|id| self.find_rect(id));
@@ -3622,8 +3623,7 @@ impl BrowserWidget {
         }
         if !self.back_entries.is_empty() {
             self.menu_direction = Some(direction);
-            let x = anchor.x0.min((self.rect.x1 - 220.0).max(self.rect.x0));
-            self.back_menu.open_at([x as f32, (anchor.y1 + 4.0) as f32]);
+            self.back_menu.open_anchored(anchor, self.rect);
         }
     }
 
@@ -7564,13 +7564,16 @@ mod tests {
                 ))
                 .unwrap();
             let history_tab = wide.find_rect("browser.library.sections").unwrap();
+            let theme = ui::Theme::dark();
+            let gutter = f64::from(theme.tokens.spacing.rhythm.group);
+            let readable = f64::from(theme.tokens.metrics.readable_width);
             assert!(
-                (150.0..=200.0).contains(&history_tab.x0),
-                "desktop title, tabs, and rows share the centered measure Settings uses"
+                (history_tab.x0 - gutter).abs() < 1.0,
+                "desktop title, tabs, and rows share the page's leading edge: {history_tab:?}"
             );
             assert!(
-                first.x1 < 1_080.0,
-                "desktop row actions stay at the trailing edge of the centered Library measure"
+                first.x1 <= gutter + readable + 1.0,
+                "desktop row actions stay inside the readable Library measure: {first:?}"
             );
             assert!(first.height() <= 60.0);
             assert!(
@@ -7625,13 +7628,16 @@ mod tests {
                     history_resource_id("https://www.rust-lang.org/learn")
                 ))
                 .unwrap();
+            let theme = Theme::dark();
+            let gutter = f64::from(theme.tokens.spacing.rhythm.group);
+            let readable = f64::from(theme.tokens.metrics.readable_width);
             assert!(
-                (150.0..=200.0).contains(&history_tab.x0),
-                "large text retains the desktop Library measure instead of becoming edge-to-edge"
+                (history_tab.x0 - gutter).abs() < 1.0,
+                "large text keeps the Library on the page's leading edge: {history_tab:?}"
             );
             assert!(
-                open.x1 < 1_080.0,
-                "large-text row actions stay inside the centered Library measure"
+                open.x1 <= gutter + readable + 1.0,
+                "large-text row actions stay inside the readable Library measure: {open:?}"
             );
         }
     }

@@ -101,8 +101,9 @@ struct Slot {
     actions: Vec<Rect>,
 }
 
-/// How the rows sit in the list: inset from the column's edges (and clear
-/// of the scroll bar while the list scrolls), the first a step below the
+/// How the rows sit in the list: their text on the column's content edge,
+/// where the column's title starts, and their lifts bleeding past it (clear
+/// of the scroll bar while the list scrolls); the first a step below the
 /// header, edge to edge so a run of selected rows is one lift.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RowFrame {
@@ -120,7 +121,7 @@ impl RowFrame {
     /// The frame of rows `row_h` tall in `list`.
     pub(crate) fn new(list: Rect, row_h: f64, scrolls: bool, theme: &Theme) -> Self {
         let spacing = &theme.tokens.spacing;
-        let edge = f64::from(spacing.s2);
+        let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
         let x1 = if scrolls {
             list.x1 - f64::from(theme.tokens.metrics.scrollbar_gutter) - f64::from(spacing.s1)
         } else {
@@ -129,7 +130,7 @@ impl RowFrame {
         Self {
             x0: list.x0 + edge,
             x1,
-            top: list.y0 + edge,
+            top: list.y0 + f64::from(spacing.s2),
             pitch: row_h,
             gap: 0.0,
         }

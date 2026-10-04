@@ -170,7 +170,10 @@ impl Core {
         let max = (self.list.content - area.height()).max(0.0);
         self.list.scroll = self.list.scroll.clamp(0.0, max);
 
-        let x1 = area.x1 - inset.max(if overflows { gutter.width } else { 0.0 });
+        // The rows' text starts on the column's content edge, where the
+        // column's title starts; a row's lift bleeds past it.
+        let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
+        let x1 = area.x1 - edge.max(if overflows { gutter.width } else { 0.0 });
         let mut y = area.y0 + inset - self.list.scroll;
         let pointer = self.pointer;
         // A new item is not in the list yet: nothing there is the open item.
@@ -181,7 +184,7 @@ impl Core {
         };
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &area);
         for (i, (item, secondary)) in visible.iter().zip(&summaries).enumerate() {
-            let rect = Rect::new(area.x0 + inset, y, x1, y + height);
+            let rect = Rect::new(area.x0 + edge, y, x1, y + height);
             y += height;
             if rect.y1 < area.y0 || rect.y0 > area.y1 {
                 continue;

@@ -835,19 +835,22 @@ impl MergeView {
         active: bool,
         theme: &Theme,
     ) -> (Option<Color>, Option<Color>) {
-        let c = &theme.tokens.colors;
-        let washed = |tone| pane::washed(c.surfaces.content, tone, active);
+        let washed = |tone| pane::washed(theme, tone, active);
         match resolution {
             Resolution::Unchanged => (None, None),
             Resolution::Conflict => (
-                Some(washed(c.semantic.danger)),
-                Some(washed(c.semantic.danger)),
+                Some(washed(ui::widget::Tone::Danger)),
+                Some(washed(ui::widget::Tone::Danger)),
             ),
-            Resolution::Ours | Resolution::TookOurs => (Some(washed(c.semantic.success)), None),
-            Resolution::Theirs | Resolution::TookTheirs => (None, Some(washed(c.semantic.info))),
+            Resolution::Ours | Resolution::TookOurs => {
+                (Some(washed(ui::widget::Tone::Success)), None)
+            }
+            Resolution::Theirs | Resolution::TookTheirs => {
+                (None, Some(washed(ui::widget::Tone::Info)))
+            }
             Resolution::TookBoth => (
-                Some(washed(c.semantic.success)),
-                Some(washed(c.semantic.info)),
+                Some(washed(ui::widget::Tone::Success)),
+                Some(washed(ui::widget::Tone::Info)),
             ),
         }
     }

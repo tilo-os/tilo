@@ -16,7 +16,7 @@ use super::{ContactsApp, DuplicateReview};
 use crate::actions::MergeField;
 use crate::model::{Contact, ContactId};
 use crate::vcard::VCardVersion;
-use crate::view::{Compact, DialogChoice, Request, Shared, queue};
+use crate::view::{DialogChoice, Request, Shared, queue};
 
 /// Which decision a dialog asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -270,6 +270,7 @@ impl ContactsApp {
         let mut content = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
+            .with_rhythm(ui::tokens::Rhythm::Section)
             .push(Box::new(body(&format!(
                 "These cards share {}. This card stays, with every phone number, email, address and group of both.",
                 shared_facts(&review.reasons)
@@ -286,24 +287,27 @@ impl ContactsApp {
                 .with_id(&format!("contacts.duplicate.{field:?}"))
                 .with_accessible_name(format!("{label} to keep"));
             menu.set_value_options(vec![
-                ("current".to_owned(), keep.clone()),
-                ("other".to_owned(), take.clone()),
+                ("current".to_owned(), keep),
+                ("other".to_owned(), take),
             ]);
             let heading = Row::new()
                 .no_wrap()
                 .with_justify(taffy::JustifyContent::SpaceBetween)
                 .push(Box::new(Text::new(label).with_role(TextRole::Subheading)))
-                .push(Box::new(Compact::new(
-                    menu,
-                    vec![keep, take],
-                    ControlSize::Small,
-                )));
-            content = content
-                .push(Box::new(heading))
-                .push(Box::new(PropertyList::new(vec![
-                    Property::new("This card", current),
-                    Property::new("Other card", other),
-                ])));
+                .push(Box::new(menu.control_size(ControlSize::Small)));
+            // A field's name, choice and values hold together; the next
+            // field stands a section apart.
+            content = content.push(Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .push(Box::new(heading))
+                    .push(Box::new(PropertyList::new(vec![
+                        Property::new("This card", current),
+                        Property::new("Other card", other),
+                    ]))),
+            ));
         }
         let (source, survivor) = (review.source.display_name(), review.survivor.display_name());
         let title = if source == survivor {

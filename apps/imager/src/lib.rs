@@ -122,23 +122,6 @@ pub mod setup;
 pub mod write;
 pub mod write_setup;
 
-/// The pages' spacing rhythm (HIG §7b). Their retained compositions are
-/// declared before a `Theme` is in hand and `Column` / `Row` gaps take
-/// logical pixels, so the steps come from the unscaled `Spacing::BASE`
-/// rhythm, named once here by relationship.
-pub(crate) mod rhythm {
-    pub mod px {
-        use ui::tokens::Spacing;
-        const R: ui::tokens::Rhythm = Spacing::BASE.rhythm;
-        /// A title and its explanation.
-        pub const RELATED: f32 = R.related;
-        /// Before the next group of the page.
-        pub const GROUP: f32 = R.group;
-        /// The page gutter, all four sides.
-        pub const PAGE_GUTTER: f32 = R.group;
-    }
-}
-
 pub use app::ImagerApp;
 pub use model::{
     Action, Filesystem, InstallMode, InstallProfile, Source, SourceKind, Step, TargetDrive,

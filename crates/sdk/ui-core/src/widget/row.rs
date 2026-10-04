@@ -2,6 +2,7 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::Rhythm;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
@@ -66,6 +67,10 @@ pub struct Row {
     /// See [`Row::with_gap`]. `None` is the theme's `gap_standard` on both
     /// axes (between children, and between wrapped lines).
     gap_override: Option<f32>,
+    /// See [`Row::with_rhythm`].
+    rhythm: Option<Rhythm>,
+    /// See [`Row::with_padding_rhythm`]: horizontal, vertical.
+    padding_rhythm: Option<(Option<Rhythm>, Option<Rhythm>)>,
     /// See [`Row::with_justify`]. `None` leaves taffy's start packing.
     justify: Option<taffy::JustifyContent>,
     /// See [`Row::with_align_items`]. `None` keeps the fill-height /
@@ -106,6 +111,8 @@ impl Row {
             horizontal_padding: 0.0,
             vertical_padding: 0.0,
             gap_override: None,
+            rhythm: None,
+            padding_rhythm: None,
             justify: None,
             align_items_override: None,
             align_start: false,
@@ -167,6 +174,7 @@ impl Row {
     /// Inset row contents without introducing a second layout wrapper.
     #[must_use]
     pub fn with_padding(mut self, horizontal: f32, vertical: f32) -> Self {
+        self.padding_rhythm = None;
         self.horizontal_padding = horizontal.max(0.0);
         self.vertical_padding = vertical.max(0.0);
         self
@@ -180,6 +188,31 @@ impl Row {
     #[must_use]
     pub fn with_gap(mut self, px: f32) -> Self {
         self.gap_override = Some(px.max(0.0));
+        self.rhythm = None;
+        self
+    }
+
+    /// Space the children (and wrapped lines) by how they relate (HIG §7b):
+    /// `Rhythm::Related` for one cluster of controls, `Sibling` for
+    /// clusters of equal weight. Resolved from the theme at layout time,
+    /// so it follows density, `ui_scale` and a custom spacing scale.
+    #[must_use]
+    pub fn with_rhythm(mut self, rhythm: Rhythm) -> Self {
+        self.rhythm = Some(rhythm);
+        self.gap_override = None;
+        self
+    }
+
+    /// Inset the children by a rhythm step on each axis (`None` is no
+    /// inset on that axis), resolved from the theme like
+    /// [`Row::with_rhythm`]. Replaces [`Row::with_padding`] with pixels.
+    #[must_use]
+    pub fn with_padding_rhythm(
+        mut self,
+        horizontal: impl Into<Option<Rhythm>>,
+        vertical: impl Into<Option<Rhythm>>,
+    ) -> Self {
+        self.padding_rhythm = Some((horizontal.into(), vertical.into()));
         self
     }
 
@@ -269,7 +302,18 @@ impl Widget for Row {
             .collect();
         yield_full_width_children(taffy, &self.child_nodes);
 
-        let gap = self.gap_override.unwrap_or(theme.gap_standard);
+        let rhythm = theme.tokens.spacing.rhythm;
+        let gap = self
+            .gap_override
+            .or_else(|| self.rhythm.map(|step| rhythm.get(step)))
+            .unwrap_or(theme.gap_standard);
+        let (pad_x, pad_y) = match self.padding_rhythm {
+            Some((x, y)) => {
+                let at = |step: Option<Rhythm>| step.map_or(0.0, |s| rhythm.get(s));
+                (at(x), at(y))
+            }
+            None => (self.horizontal_padding, self.vertical_padding),
+        };
 
         let node = taffy.parent_node(
             Style {
@@ -304,7 +348,7 @@ impl Widget for Row {
                 // Keep optional toolbar padding inside the row's percentage
                 // width instead of growing the parent's content bounds.
                 box_sizing: taffy::BoxSizing::BorderBox,
-                padding: super::layout::insets_xy(self.horizontal_padding, self.vertical_padding),
+                padding: super::layout::insets_xy(pad_x, pad_y),
                 ..Default::default()
             },
             &self.child_nodes,

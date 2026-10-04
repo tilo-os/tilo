@@ -4,19 +4,12 @@
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
-use ui::tokens::{TextRole, colors::over};
+use ui::tokens::{TextRole, WashStrength};
+use ui::widget::Tone;
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
 use crate::highlight;
-
-/// How strongly a change colours the row it sits on.
-pub const WASH: f32 = 0.16;
-
-/// How strongly the change under review is washed: the same hue as the
-/// others, in a stronger measure, so the active change reads as chosen
-/// without a grey lift muddying its colour.
-pub const ACTIVE_WASH: f32 = 0.30;
 
 /// The style line numbers and counters are set in: `Caption`, with tabular
 /// figures so columns of digits line up.
@@ -145,10 +138,16 @@ pub fn paint_header(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, rule: Optio
     }
 }
 
-/// The opaque colour `tone` leaves washed over `ground`; the change under
-/// review (`active`) takes the stronger wash.
-pub fn washed(ground: Color, tone: Color, active: bool) -> Color {
-    over(ground, tone, if active { ACTIVE_WASH } else { WASH })
+/// The opaque status wash of `tone` on the content ground; the change under
+/// review (`active`) takes the selected wash, which keeps the hue.
+pub fn washed(theme: &Theme, tone: Tone, active: bool) -> Color {
+    let strength = if active {
+        WashStrength::Selected
+    } else {
+        WashStrength::Rest
+    };
+    let colors = &theme.tokens.colors;
+    colors.wash_on(colors.surfaces.content, tone, strength).fill
 }
 
 /// A line's top-left, centred in a row of `m` that starts at `y`.

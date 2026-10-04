@@ -41,20 +41,11 @@ impl TopStrip {
     }
 }
 
-/// The theme for what is drawn on the picture area. The letterbox is
-/// near-black in every theme, so what stands on it (ink and the primary
-/// action alike) is the dark material at the person's own scale.
+/// The theme for what is drawn on the picture area: the person's theme on
+/// the letterbox, which is near-black in every theme, so its ink and its
+/// primary action are re-derived to read there.
 fn media_theme(theme: &Theme) -> Theme {
-    let dark = Theme::dark()
-        .with_ui_scale(theme.ui_scale)
-        .with_text_scale(theme.text_scale)
-        .with_reduce_motion(theme.reduce_motion)
-        .with_reduce_transparency(theme.reduce_transparency);
-    if theme.colors_are_forced() {
-        dark.with_high_contrast()
-    } else {
-        dark
-    }
+    theme.on_ground(theme.tokens.colors.media.letterbox)
 }
 
 /// What the picture area says while there is nothing to show.

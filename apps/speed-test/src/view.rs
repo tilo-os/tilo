@@ -100,7 +100,7 @@ fn test_column(
 
     let mut column = Column::new()
         .with_intrinsic_height()
-        .with_gap(theme.tokens.spacing.rhythm.section)
+        .with_rhythm(ui::tokens::Rhythm::Section)
         .push(centred(Box::new(Dial::new(shared, &model.dial()))))
         .push(centred(Box::new(
             Text::new(status).with_role(TextRole::Subheading),

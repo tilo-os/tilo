@@ -120,6 +120,10 @@ pub(super) struct Chrome {
     /// host to open it for this app through `search_opener`.
     pub search: Button,
     pub search_opener: ui::search::SearchOpener,
+    /// The window's History control, in the header row's trailing corner:
+    /// the header row is the window's, so the window draws no History bar
+    /// above it.
+    pub history: ui::widget::HistoryOpener,
     pub header: Rect,
     pub toggle: Rect,
     pub toggle_hovered: bool,
@@ -158,6 +162,7 @@ impl Chrome {
             search: Button::icon_only("search-open", Icon::Search, &search_name)
                 .on_view(move || search_slot.set(Some(Hit::Search))),
             search_opener: ui::search::SearchOpener::new(),
+            history: ui::widget::HistoryOpener::new(),
             header: Rect::ZERO,
             toggle: Rect::ZERO,
             toggle_hovered: false,
@@ -172,12 +177,9 @@ impl Chrome {
     }
 }
 
-/// The header row's height under `theme`: a pointer target in an `s3`
-/// inset, the same row a `NavShell` draws.
+/// The header row's height under `theme`: the same row a `NavShell` draws.
 pub(super) fn header_height(theme: &Theme) -> f64 {
-    let chip = chip_size(theme);
-    f64::from(theme.tokens.metrics.header_height)
-        .max(chip + 2.0 * f64::from(theme.tokens.spacing.s3))
+    ui::chrome::HeaderRowFace::height(theme)
 }
 
 /// The inspector's parts: its panel, its header row, its body and the
@@ -188,9 +190,9 @@ pub(super) struct InspectorFrame {
     pub footer: Rect,
 }
 
-/// The side of the square chrome buttons (toggle, back, search).
+/// The side of the square chrome buttons (toggle, back, search, History).
 fn chip_size(theme: &Theme) -> f64 {
-    ui::widget::text_control_height(f64::from(theme.tokens.metrics.min_pointer_target), theme)
+    ui::chrome::HeaderRowMetrics::resolve(theme).chip
 }
 
 impl PhotosApp {
@@ -688,8 +690,17 @@ impl PhotosApp {
                 x0 = header.x0 + f64::from(theme.tokens.spacing.rhythm.group);
             }
         }
-        let search = Rect::new(header.x1 - inset - chip, y, header.x1 - inset, y + chip);
+        // The window's History control holds the trailing corner; search
+        // stands just before it.
+        let row = ui::chrome::HeaderRowFace::new(header, theme)
+            .with_history_if(self.chrome.history.is_shown())
+            .with_trailing();
+        let search = row.trailing;
         self.chrome.search.apply_layout_external(search);
+        let history = row.history_rect();
+        if let Some(button) = self.chrome.history.button_mut() {
+            button.apply_layout_external(history);
+        }
 
         let style = theme.text(ui::TextRole::Heading);
         let title_w = if self.chrome.title.is_empty() {
@@ -787,6 +798,9 @@ impl PhotosApp {
         self.chrome
             .search
             .draw(scene, transform, text, theme, presence);
+        if let Some(history) = self.chrome.history.button_mut() {
+            history.draw(scene, transform, text, theme, presence);
+        }
         if !self.chrome.drawer.is_open() {
             self.chrome.drawer.draw_toggle(
                 scene,
@@ -1098,6 +1112,11 @@ impl PhotosApp {
             self.chrome.back.handle_event(event, ctx);
         }
         self.chrome.search.handle_event(event, ctx);
+        if !*ctx.handled
+            && let Some(history) = self.chrome.history.button_mut()
+        {
+            history.handle_event(event, ctx);
+        }
         if !*ctx.handled {
             self.chrome.toolbar.handle_event(event, ctx);
         }

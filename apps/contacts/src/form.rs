@@ -6,15 +6,15 @@
 //! focus order, Tab, the caret and the semantics are the toolkit's. Nothing
 //! reaches the shared document until Save.
 
+use ui::LocalState;
 use ui::icons::Icon;
 use ui::widget::{
-    Button, ButtonRole, Column, ControlSize, DatePicker, Dropdown, Element, Field, Form,
-    FormSection, LabelPlacement, Row, Scrollable, Text, TextInput, TextInputKind,
+    Button, ButtonRole, ControlSize, DatePicker, Dropdown, Element, Field, Form, FormPage,
+    FormSection, LabelPlacement, Row, TextInput, TextInputKind,
 };
-use ui::{LocalState, TextRole};
 
 use crate::model::{Address, Birthday, Contact, GroupEntry, Labeled, group_names_equal};
-use crate::view::{Compact, Readable, Request, Shared, queue};
+use crate::view::{Request, Shared, queue};
 
 /// The kinds of a phone number, an email or an address, in menu order:
 /// the stored vCard type and the label the menu shows.
@@ -554,7 +554,7 @@ impl EditForm {
         input
     }
 
-    fn type_menu(&self, target: TypeTarget) -> Option<Compact> {
+    fn type_menu(&self, target: TypeTarget) -> Option<Dropdown> {
         let (_, state) = self
             .types
             .iter()
@@ -562,12 +562,12 @@ impl EditForm {
         let current = read(state);
         let options = type_options(&current);
         let labels: Vec<String> = options.iter().map(|(_, label)| label.clone()).collect();
-        let mut menu = Dropdown::from_state(labels.clone(), state)
+        let mut menu = Dropdown::from_state(labels, state)
             .with_id(&format!("contacts.form.type.{}", target.key()))
             .with_accessible_name(format!("{} type", target.spoken()));
         menu.set_value_options(options);
         // The kind stands at the field's height beside the value.
-        Some(Compact::new(menu, labels, ControlSize::Large))
+        Some(menu.control_size(ControlSize::Large))
     }
 
     /// `[kind][value][remove]`: one phone, email or the first line of an
@@ -691,25 +691,15 @@ impl EditForm {
             .section(emails)
             .section(addresses)
             .section(details);
+        let title = if self.is_new {
+            "New contact"
+        } else {
+            "Edit contact"
+        };
         Box::new(
-            Scrollable::new_vertical()
+            FormPage::new(title, form)
                 .with_semantic_key("contacts.form")
-                .with_persisted_offset(std::rc::Rc::clone(&self.scroll))
-                .with_child(Box::new(Readable::of_groups(
-                    Column::new()
-                        .with_intrinsic_height()
-                        .with_id("contacts.form")
-                        .push(Box::new(
-                            Text::new(if self.is_new {
-                                "New contact"
-                            } else {
-                                "Edit contact"
-                            })
-                            .with_role(TextRole::Title)
-                            .with_heading_level(1),
-                        ))
-                        .push(Box::new(form)),
-                ))),
+                .with_persisted_offset(std::rc::Rc::clone(&self.scroll)),
         )
     }
 }

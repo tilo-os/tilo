@@ -2409,7 +2409,6 @@ mod tests {
                             binding: bindings::show_details(item),
                         },
                         None,
-                        &Theme::dark(),
                     );
                     let mut grid = CardGrid::new(vec![card]);
                     let (tree, node) = layout_card_grid(&mut grid, width);
@@ -2544,12 +2543,12 @@ mod tests {
                 widget.children().into_iter().find_map(banner)
             }
             let mut app = seeded_app();
-            assert!(app.operation_notice(&Theme::dark()).is_none());
+            assert!(app.operation_notice().is_none());
 
             app.set_status_line("Installing Notes…");
             app.set_worker_busy(true);
             let busy_notice = app
-                .operation_notice(&Theme::dark())
+                .operation_notice()
                 .expect("busy work has a semantic notice");
             let busy = banner(&*busy_notice)
                 .expect("busy banner remains a live child of the progress notice");
@@ -2559,7 +2558,7 @@ mod tests {
             app.set_worker_busy(false);
             app.set_operation_error(Some("signature mismatch".into()));
             let error = app
-                .operation_notice(&Theme::dark())
+                .operation_notice()
                 .and_then(|notice| notice.accessibility())
                 .expect("failure has a semantic notice");
             assert_eq!(error.name.as_deref(), Some("The last operation failed"));

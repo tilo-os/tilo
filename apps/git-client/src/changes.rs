@@ -373,8 +373,17 @@ impl ListPass<'_, '_> {
         if !dir.is_empty() {
             face = face.secondary(dir);
         }
-        if let Some(counts) = counts.as_deref() {
-            face = face.meta(counts);
+        let adds = format!("+{}", file.additions);
+        let dels = format!("\u{2212}{}", file.deletions);
+        let spans: Vec<(&str, ui::widget::Tone)> = [
+            (file.additions > 0).then_some((adds.as_str(), ui::widget::Tone::Success)),
+            (file.deletions > 0).then_some((dels.as_str(), ui::widget::Tone::Danger)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if counts.is_some() {
+            face = face.meta_spans(&spans);
         }
         let h = self.row_h.max(face.height(ctx.text, ctx.theme));
         let rect = Rect::new(

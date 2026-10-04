@@ -24,7 +24,7 @@ use ui::tokens::TextRole;
 use ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, SMALL_TEXT_MIN_CONTRAST};
 use ui::widget::code_editor::{Span, SyntaxHighlighter};
 use ui::widget::{
-    Button, ButtonFace, ButtonRole, ChipStyle, ControlSize, EmptyState, EmptyStateContent, Tone,
+    Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent, Tone,
 };
 
 use crate::i18n::{t, t_args};
@@ -704,8 +704,10 @@ impl RowPass<'_, '_> {
             DiffLineKind::Deletion => Tone::Danger,
             _ => return ground,
         };
-        let washed = ChipStyle::Tinted(tone)
-            .colors(theme, ground, false, false)
+        let washed = theme
+            .tokens
+            .colors
+            .wash_on(ground, tone, ui::tokens::WashStrength::Rest)
             .fill;
         ctx.fill_rect(row, washed);
         washed

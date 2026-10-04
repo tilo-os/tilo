@@ -295,7 +295,12 @@ impl Theme {
     /// the window ground" or "the selected row" is right on whatever ground
     /// its container handed it. `surfaces.raised` stays off the ground
     /// ([`crate::tokens::Colors::raised_on`]), so a control's face never
-    /// sinks into a lighter panel. Every other token is unchanged.
+    /// sinks into a lighter panel. When `ground` has the other polarity
+    /// from the palette (the near-black `media.letterbox` under a light
+    /// theme), the inverted fill is re-derived too: primary ink on that
+    /// ground as the fill and the ground as its label, so a `Primary`
+    /// button over media still reads as the inverted control. Every other
+    /// token is unchanged.
     #[must_use]
     pub fn on_ground(&self, ground: Color) -> Self {
         let mut theme = self.clone();
@@ -311,6 +316,16 @@ impl Theme {
         c.text_tertiary = on.ink_tertiary;
         c.intent.selection = c.lift_on(ground, 1.0);
         c.intent.selection_hover = c.lift_on(ground, 0.5);
+        let ground_dark = crate::color::relative_luminance(ground) < Self::POLARITY_LUMINANCE;
+        if ground_dark != c.palette.dark && matches!(c.emphasis, crate::tokens::Emphasis::Inverted)
+        {
+            // The same construction the palette uses on its own ground:
+            // primary ink as the fill, hover 12 % of the way back toward
+            // the ground, the ground as the label.
+            c.intent.inverted = on.ink;
+            c.intent.inverted_hover = crate::tokens::colors::over(on.ink, ground, 0.12);
+            c.intent.on_inverted = ground;
+        }
         theme
             .tokens
             .typography
@@ -318,6 +333,10 @@ impl Theme {
         theme.refresh_colour_shortcuts();
         theme
     }
+
+    /// Relative luminance below which a ground counts as dark: the point
+    /// where black and white ink contrast equally with it.
+    const POLARITY_LUMINANCE: f64 = 0.179;
 
     /// [`Self::on_ground`] for one of the window's regions.
     #[must_use]
@@ -706,6 +725,33 @@ pub fn workspace_hue(wallpaper_rgba: &[u8]) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_primary_control_on_a_flipped_ground_stays_inverted_and_legible() {
+        use crate::a11y::contrast_ratio;
+        for theme in [Theme::light(), Theme::dark()] {
+            let letterbox = theme.tokens.colors.media.letterbox;
+            let on = theme.on_ground(letterbox);
+            let i = &on.tokens.colors.intent;
+            assert!(
+                contrast_ratio(i.on_inverted, i.inverted) >= 4.5,
+                "the label on the inverted fill must read over media",
+            );
+            assert!(
+                contrast_ratio(i.inverted, letterbox) >= 3.0,
+                "the inverted fill must stand off the media ground",
+            );
+            assert_ne!(i.inverted, i.inverted_hover);
+        }
+        // A ground of the palette's own polarity keeps the authored fill.
+        let dark = Theme::dark();
+        let sidebar = dark.tokens.colors.surfaces.sidebar;
+        assert_eq!(
+            dark.on_ground(sidebar).tokens.colors.intent.inverted,
+            dark.tokens.colors.intent.inverted
+        );
+    }
+
     use crate::a11y::contrast_ratio;
     use crate::color::Oklch;
     use crate::color_compat::ColorCompat;

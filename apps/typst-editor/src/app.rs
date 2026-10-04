@@ -89,7 +89,7 @@ fn pdf_export_request(suggested: &str) -> PickRequest {
         .thread_name("typst-portal-pdf")
         .filter(FileFilter::new("PDF document").glob("*.pdf"))
 }
-use ui::widget::{ResizeHandle, Widget};
+use ui::widget::{SplitHandle, SplitOrientation, SplitRatio, Widget};
 
 use crate::chrome::{Chrome, Command};
 use crate::compile::{self, CompileOutput, WorldParts};
@@ -197,8 +197,6 @@ pub struct TypstApp {
     native_edit_pending: bool,
 
     // --- view state ---
-    /// Editor↔preview horizontal split, 0..1 of the content width.
-    split_ratio: f64,
     show_diagnostics: bool,
     err_count: usize,
     warn_count: usize,
@@ -258,8 +256,9 @@ pub struct TypstApp {
     /// A preview interaction (text-selection drag or scrollbar drag) is live, so
     /// subsequent moves route back to the preview.
     dragging_preview: bool,
-    /// The library's pane splitter between the editor and the preview.
-    splitter: ResizeHandle,
+    /// The divider between the editor and the preview, and the share of
+    /// the width the editor takes.
+    splitter: SplitHandle,
     /// Set when a pointer *move* changed something visible (hover, live drag)
     /// so `needs_redraw` asks the host to repaint — moves are otherwise gated.
     dirty: bool,
@@ -341,7 +340,6 @@ impl TypstApp {
             last_source: String::new(),
             source_cache: String::new(),
             native_edit_pending: false,
-            split_ratio: 0.46,
             show_diagnostics: false,
             err_count: 0,
             warn_count: 0,
@@ -374,7 +372,11 @@ impl TypstApp {
             mouse: Point::ZERO,
             dragging_editor: false,
             dragging_preview: false,
-            splitter: ResizeHandle::new(),
+            splitter: SplitHandle::new(
+                SplitOrientation::Horizontal,
+                SplitRatio::new(0.46).with_bounds(0.18, 0.82),
+            )
+            .with_label("Resize the source and the preview"),
             dirty: true,
             pointer_seen: false,
             framework_hosted: false,
@@ -1113,7 +1115,8 @@ impl TypstApp {
         self.compact = content_w / self.text_k.max(f64::from(f32::EPSILON)) < frame.compact_w;
 
         if self.compact {
-            self.splitter.set_neighbour_rects(Rect::ZERO, Rect::ZERO);
+            // One pane at a time: no divider to hit.
+            self.splitter.set_bounds(Rect::ZERO);
             let (main, diag) = self.split_off_diagnostics(body);
             self.diag_rect = diag;
             match self.compact_view {
@@ -1127,12 +1130,10 @@ impl TypstApp {
                 }
             }
         } else {
-            let split_x = (r.x0 + content_w * self.split_ratio).round();
-            let editor_col = Rect::new(r.x0, body.y0, split_x, body.y1);
-            self.preview_rect = Rect::new(split_x, body.y0, r.x1, body.y1);
-            self.splitter.set_strip_usable_px(content_w);
             self.splitter
-                .set_neighbour_rects(editor_col, self.preview_rect);
+                .set_bounds(Rect::new(r.x0, body.y0, r.x1, body.y1));
+            let (editor_col, preview) = self.splitter.pane_rects();
+            self.preview_rect = preview;
             let (main, diag) = self.split_off_diagnostics(editor_col);
             self.editor_rect = main;
             self.diag_rect = diag;
@@ -1575,7 +1576,8 @@ impl Widget for TypstApp {
                 .draw(scene, t, tr, &theme.in_region(Region::Inspector));
         }
         if !self.compact {
-            self.splitter.draw(scene, t, tr, theme, presence);
+            self.splitter
+                .paint(scene, t, theme.tokens.colors.surfaces.content, theme);
         }
         if self.show_diagnostics && self.diag_rect.height() > 1.0 {
             self.diagnostics.draw(scene, t, tr, theme);
@@ -2181,10 +2183,7 @@ impl TypstApp {
     /// Give the pane splitter the event and apply the split it asks for.
     fn route_to_splitter(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let (hovered, dragging) = (self.splitter.is_hovered(), self.splitter.is_dragging());
-        self.splitter.handle_event(event, ctx);
-        if let Some((editor_w, _)) = self.splitter.take_pending() {
-            let width = self.rect.width().max(1.0);
-            self.split_ratio = (editor_w / width).clamp(0.18, 0.82);
+        if self.splitter.handle_event(event, ctx) {
             self.layout_in(self.rect);
         }
         if (hovered, dragging) != (self.splitter.is_hovered(), self.splitter.is_dragging()) {

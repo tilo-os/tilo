@@ -15,7 +15,7 @@ use ui::LocalState;
 use ui::a11y::AccessNode;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
-use ui::tokens::{SpacingStep, TextRole};
+use ui::tokens::{Rhythm, TextRole};
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -211,18 +211,16 @@ pub(crate) fn header_actions(
 ) -> Vec<Element> {
     let apply = intents.clone();
     vec![
-        Box::new(Text::new("Firewall").with_role(TextRole::Label)),
-        Box::new(
-            Toggle::from_state(enabled)
-                .with_id("firewall-enabled")
-                .with_accessible_name("Firewall"),
-        ),
-        Box::new(Text::new("Panic mode").with_role(TextRole::Label)),
-        Box::new(
-            Toggle::from_state(panic)
-                .with_id("firewall-panic")
-                .with_accessible_name("Panic mode"),
-        ),
+        Box::new(LabelledSwitch::new(
+            "Firewall",
+            "firewall-enabled",
+            enabled.clone(),
+        )),
+        Box::new(LabelledSwitch::new(
+            "Panic mode",
+            "firewall-panic",
+            panic.clone(),
+        )),
         Box::new(
             Button::new("firewall-apply", "Apply", None)
                 .role(ButtonRole::Primary)
@@ -230,6 +228,75 @@ pub(crate) fn header_actions(
                 .on_effect(move || apply.push(Intent::Apply)),
         ),
     ]
+}
+
+/// A switch with its name beside it, as one header action: the row keeps
+/// the name and the switch together, and the overflow menu lists it by that
+/// name with its state.
+struct LabelledSwitch {
+    row: Row,
+    name: &'static str,
+    id: String,
+    state: LocalState<bool>,
+}
+
+impl LabelledSwitch {
+    fn new(name: &'static str, id: &str, state: LocalState<bool>) -> Self {
+        let row = Row::new()
+            .no_wrap()
+            .push(Box::new(Text::new(name).with_role(TextRole::Label)))
+            .push(Box::new(
+                Toggle::from_state(&state)
+                    .with_id(id)
+                    .with_accessible_name(name),
+            ));
+        Self {
+            row,
+            name,
+            id: id.to_string(),
+            state,
+        }
+    }
+}
+
+impl Decorator for LabelledSwitch {
+    type Inner = Row;
+
+    fn inner(&self) -> &Row {
+        &self.row
+    }
+
+    fn inner_mut(&mut self) -> &mut Row {
+        &mut self.row
+    }
+
+    fn accessibility(&self) -> Option<AccessNode> {
+        Some(
+            ui::widget::toggle_accessibility(
+                self.state.with(|on| *on),
+                false,
+                true,
+                Some(self.name),
+            )
+            .with_semantic_key(&self.id)
+            .with_action_target(&self.id),
+        )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::AppModel,
+        path: &ui::widget::ModelPath,
+    ) -> bool {
+        match action {
+            ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck => {
+                self.state.update(|on| *on = !*on);
+                true
+            }
+            _ => self.row.perform_action(action, state, path),
+        }
+    }
 }
 
 /// Nothing to show: firewalld cannot be read. One sentence, one action.
@@ -321,26 +388,32 @@ pub(crate) fn zone_page(
     switches: &Switches,
     offset: &Rc<Cell<(f32, f32)>>,
 ) -> Element {
-    let mut page = Column::new().with_intrinsic_height();
+    // The banners, the zone's state, its numbers, its details and the
+    // tabbed rules are groups of the page, a group apart; a tab sits a
+    // sibling step over its content.
+    let mut page = Column::new()
+        .with_intrinsic_height()
+        .with_rhythm(Rhythm::Group);
     let banners = banners(model.config);
-    let warned = !banners.is_empty();
-    for banner in banners {
-        page = page.push(banner);
+    if !banners.is_empty() {
+        page = page.push(Box::new(banners.into_iter().fold(
+            Column::new().with_no_padding().with_intrinsic_height(),
+            Column::push,
+        )));
     }
-    if warned {
-        page = page.push(group_gap());
-    }
-    page = page.push(Box::new(zone_status(model, intents)));
-    page = page.push(group_gap());
-    page = page.push(Box::new(stats(model.zone)));
-    page = page.push(group_gap());
-    page = page.push(Box::new(details(model.zone)));
-    page = page.push(group_gap());
-    page = page.push(Box::new(tab_bar(model.tab, intents)));
-    page = match model.tab {
-        Tab::Rules => page.push(rules(model, intents, switches)),
-        Tab::Services => page.push(Box::new(services(model.zone, model.wide, switches))),
+    let tab = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(Box::new(tab_bar(model.tab, intents)));
+    let tab = match model.tab {
+        Tab::Rules => tab.push(rules(model, intents, switches)),
+        Tab::Services => tab.push(Box::new(services(model.zone, model.wide, switches))),
     };
+    page = page
+        .push(Box::new(zone_status(model, intents)))
+        .push(Box::new(stats(model.zone)))
+        .push(Box::new(details(model.zone)))
+        .push(Box::new(tab));
     if model.adding {
         page = page.push(Box::new(add_rule_dialog(
             model.zone.kind,
@@ -357,11 +430,6 @@ pub(crate) fn zone_page(
             .with_persisted_offset(Rc::clone(offset))
             .with_child(Box::new(page)),
     )
-}
-
-/// Two sibling gaps either side of nothing: the space between page groups.
-fn group_gap() -> Element {
-    Box::new(Spacer::token(SpacingStep::S0))
 }
 
 /// The firewall-wide states that change what every rule means.
@@ -501,8 +569,10 @@ fn rules(model: &PageModel<'_>, intents: &Intents, switches: &Switches) -> Eleme
                 .dimmed(),
         );
     }
-    let mut groups = Column::new().with_intrinsic_height().with_no_padding();
-    let mut shown = false;
+    let mut groups = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_rhythm(Rhythm::Group);
     for action in [Action::Allow, Action::Deny] {
         let rows: Vec<RuleRow> = model
             .zone
@@ -514,13 +584,9 @@ fn rules(model: &PageModel<'_>, intents: &Intents, switches: &Switches) -> Eleme
         if rows.is_empty() {
             continue;
         }
-        if shown {
-            groups = groups.push(group_gap());
-        }
-        shown = true;
         let title = match action {
-            Action::Allow => "Allow rules",
-            Action::Deny => "Deny rules",
+            Action::Allow => "Rules that allow",
+            Action::Deny => "Rules that deny",
         };
         groups = groups.push(Box::new(
             Section::new(vec![Box::new(rule_table(
@@ -583,8 +649,8 @@ fn rule_table(
         Action::Deny => "firewall-deny-rules",
     })
     .with_accessible_name(match action {
-        Action::Allow => "Allow rules",
-        Action::Deny => "Deny rules",
+        Action::Allow => "Rules that allow",
+        Action::Deny => "Rules that deny",
     })
     .selectable(true);
     let ids: Vec<RuleId> = rows.iter().map(|row| row.id).collect();
@@ -744,13 +810,13 @@ fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDia
         Some(error) => source.with_error(error),
         None => source.with_help("An IPv4 address or network, such as 192.168.1.0/24"),
     });
-    let mut body = Column::new().with_no_padding().with_intrinsic_height();
-    for (index, field) in fields.into_iter().enumerate() {
-        if index > 0 {
-            body = body.push(group_gap());
-        }
-        body = body.push(Box::new(field));
-    }
+    let body = fields.into_iter().fold(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(Rhythm::Group),
+        |body, field| body.push(Box::new(field)),
+    );
     let add = intents.clone();
     let cancel = intents.clone();
     let dismiss = intents.clone();
