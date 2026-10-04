@@ -228,7 +228,10 @@ fn parse_scenario_arg(args: &[String]) -> Option<AuthScenario> {
 fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static str)> {
     match scenario {
         // The first frame anyone ever sees: both fields empty.
-        AuthScenario::Form | AuthScenario::Personal | AuthScenario::PersonalNoFingerprint => None,
+        AuthScenario::Form
+        | AuthScenario::Personal
+        | AuthScenario::PersonalNoFingerprint
+        | AuthScenario::PersonalSessions => None,
         // Hint/error states deliberately show the missing passcode. Busy
         // states do too, for a more important reason: the live submit path
         // moves the passcode into a zeroizing worker value before entering
@@ -251,7 +254,6 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
         // Long enough to overrun the field, so the snapshot proves how it
         // degrades rather than leaving it to chance.
         AuthScenario::LongName => Some(("bartholomew.featherstonehaugh-worthington", "hunter2")),
-        AuthScenario::PersonalSessions => None,
         _ => Some(("ada", "hunter2")),
     }
 }

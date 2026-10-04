@@ -1255,7 +1255,7 @@ impl GreeterApp {
     /// [`UserEvent::External`]). Without an event-loop proxy (tests /
     /// headless), it falls back to a synchronous exchange so the path is
     /// still exercised.
-    fn attempt_login(&mut self, state: &mut AutoCommit, root: &ObjId, method: AuthMethod) {
+    fn attempt_login(&mut self, state: &AutoCommit, root: &ObjId, method: AuthMethod) {
         // Guard: never start a second attempt while one is in flight.
         if self.phase != AuthPhase::Idle {
             return;
@@ -1881,7 +1881,7 @@ mod tests {
 
     fn accessible_name_for(w: &dyn Widget, id: &str) -> Option<String> {
         find(w, id)
-            .and_then(|w| w.accessibility())
+            .and_then(Widget::accessibility)
             .and_then(|n| n.name)
     }
 
@@ -2186,7 +2186,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             seed_password(&app, "pw");
-            app.attempt_login(&mut doc, &automerge::ROOT, AuthMethod::Password);
+            app.attempt_login(&doc, &automerge::ROOT, AuthMethod::Password);
             assert_eq!(app.notice, Notice::Error("greeter-error-no-session"));
             assert_eq!(app.phase, AuthPhase::Idle);
         }
@@ -2234,7 +2234,7 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
-            app.attempt_login(&mut doc, &automerge::ROOT, AuthMethod::Fingerprint);
+            app.attempt_login(&doc, &automerge::ROOT, AuthMethod::Fingerprint);
             assert_eq!(app.notice, Notice::Hint("greeter-hint-no-fingerprint"));
             assert_eq!(app.phase, AuthPhase::Idle);
         }
@@ -2330,7 +2330,7 @@ mod tests {
             seed_password(&app, "pw");
             // The test runner is not greetd.
             assert!(std::env::var_os("GREETD_SOCK").is_none());
-            app.attempt_login(&mut doc, &automerge::ROOT, AuthMethod::Password);
+            app.attempt_login(&doc, &automerge::ROOT, AuthMethod::Password);
             assert_eq!(app.notice, Notice::Error("greeter-error-service"));
             assert!(!app.status_text().contains("GREETD_SOCK"));
         }
@@ -2667,6 +2667,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table row per failure, then the same ready-form checks for each"
+    )]
     fn every_failure_reads_as_a_clear_sentence_and_returns_to_a_ready_form() {
         let cases = [
             (Failure::Credentials, true, "Incorrect passcode. Try again."),
@@ -2906,7 +2910,7 @@ mod tests {
                 let mut damage = Vec::new();
                 app.collect_damage(&mut damage);
                 assert!(!damage.is_empty(), "the typed character must be painted");
-                let area: f64 = damage.iter().map(|r| r.area()).sum();
+                let area: f64 = damage.iter().map(Rect::area).sum();
                 let screen = f64::from(viewport.0) * f64::from(viewport.1);
                 // On a laptop panel the field is a sliver of the screen; on a
                 // tiny large-text display it is the field, and nothing more.
