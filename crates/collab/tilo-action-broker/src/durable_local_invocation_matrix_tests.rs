@@ -532,14 +532,18 @@ mod durable_local_matrix {
                     .state
                     .verify_action_caller(&room, &presentation(&room, &env.cert, &env.key))
                     .unwrap();
-                let certified =
-                    crate::collab_broker_capnp::ContinuingCaller::Certified(Box::new(certified));
+                let certified = crate::collab_broker_capnp::ContinuingCaller::Certified {
+                    caller: Box::new(certified),
+                    foreign_restriction: false,
+                    direct: None,
+                };
                 assert_eq!(
                     certified.current(&rig.state),
                     Some(
-                        tilo_actions::remote::Caller::local_person(principal_id_for_root(
-                            env.cert.user_public_key
-                        ))
+                        tilo_actions::remote::Caller::authenticated(
+                            env.cert.user_public_key,
+                            env.cert.device_public_key
+                        )
                         .in_room(room.clone())
                     )
                 );
