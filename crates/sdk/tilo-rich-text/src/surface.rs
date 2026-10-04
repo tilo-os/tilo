@@ -266,6 +266,41 @@ impl<S: RichTextSource> RichTextSurface<S> {
         &mut self.editor
     }
 
+    /// Author a validated image replacement for the host to wrap together with
+    /// asset storage. No text or history changes until that one action applies.
+    ///
+    /// # Errors
+    /// Refuses read-only, composing, missing or changed selection targets.
+    pub fn image_paste_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        target: &ui::widget::block_editor::ImagePasteTarget,
+        text: String,
+    ) -> Result<RichTextAction, ActionError> {
+        if self.source.read_only() || self.is_composing() {
+            return Err(ActionError::Refused("image paste is not editable".into()));
+        }
+        let placeholder = self.presented.is_empty()
+            && self.editor.blocks().len() == 1
+            && self.editor.blocks().first().is_some_and(|block| {
+                block.text().is_empty()
+                    && matches!(target, ui::widget::block_editor::ImagePasteTarget::After(id) if *id == block.id)
+            });
+        self.source.sync(doc);
+        self.source
+            .with_state(|state| {
+                if placeholder && state.body().is_empty() {
+                    Some(RichTextAction::AppendParagraph { text })
+                } else {
+                    crate::image_paste::plan(state, target, text)
+                }
+            })
+            .flatten()
+            .ok_or_else(|| {
+                ActionError::Refused("this selection cannot be replaced with an image".into())
+            })
+    }
+
     /// Where the text comes from.
     pub fn source(&self) -> &S {
         &self.source
