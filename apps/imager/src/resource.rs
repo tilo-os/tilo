@@ -155,6 +155,7 @@ impl ResourceSurface<Imager> for ImagerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::tilo_actions::Action as _;
 
     #[test]
     fn resource_publish_owns_profile_door_and_hosted_keeps_no_duplicate_root() {
@@ -202,5 +203,156 @@ mod tests {
                 .any(|action| action.id == "hostname"),
             "hostname must be on the customization child"
         );
+    }
+
+    /// The wizard over the sample drives and releases, hosted as the live
+    /// app hosts it.
+    struct SampleImager;
+
+    impl ResourceApp for SampleImager {
+        type Resource = Imager;
+        const ID: &'static str = "so.tilo.imager";
+        const TITLE: &'static str = "Disk Imager";
+
+        // In a column, so a harness lookup by type meets the hosted
+        // surface among the column's children.
+        fn view(cx: &mut ViewCx<Imager>) -> Element {
+            Box::new(
+                ui::widget::Column::new()
+                    .with_no_padding()
+                    .push(cx.surface(ImagerApp::sample())),
+            )
+        }
+    }
+
+    /// A hosted wizard on the Customize step of the sample Tilo image.
+    fn customizing() -> ui::framework::testing::TestApp<SampleImager> {
+        let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&ImagerAction::SelectSource {
+                source: Box::new(crate::model::sample_source()),
+                previous: None,
+                recent_rank: 0,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        app.harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| wizard.show_customize_for_test())
+            .expect("the hosted wizard");
+        app
+    }
+
+    #[test]
+    fn assistive_profile_edits_reach_the_document() {
+        use ui::a11y::Action as AccessAction;
+        use ui::widget::Widget as _;
+
+        let mut app = customizing();
+        let perform =
+            |app: &mut ui::framework::testing::TestApp<SampleImager>, target: &str, value: &str| {
+                app.harness()
+                    .with_widget_mut(|wizard: &mut ImagerApp| {
+                        wizard.perform_semantic_action(
+                            target,
+                            &AccessAction::SetValue(value.into()),
+                            &mut automerge::AutoCommit::new(),
+                            &automerge::ROOT,
+                        )
+                    })
+                    .expect("the hosted wizard")
+            };
+        assert!(perform(
+            &mut app,
+            "imager:profile:hostname",
+            "accessible-host"
+        ));
+        assert_eq!(app.state().profile.hostname, "accessible-host");
+        for (target, chosen, expected) in [
+            ("imager:profile:locale", "de_DE.UTF-8", "de_DE.UTF-8"),
+            ("imager:profile:timezone", "Europe/Berlin", "Europe/Berlin"),
+            ("imager:profile:keyboard", "German (QWERTZ)", "de"),
+        ] {
+            assert!(perform(&mut app, target, chosen));
+            let profile = app.state().profile;
+            let actual = match target {
+                "imager:profile:locale" => profile.locale,
+                "imager:profile:timezone" => profile.timezone,
+                _ => profile.keyboard,
+            };
+            assert_eq!(actual, expected);
+        }
+        assert!(perform(
+            &mut app,
+            "imager:profile:timezone",
+            "Europe/Not_A_Real_Zone"
+        ));
+        assert_eq!(app.state().profile.timezone, "Europe/Berlin");
+    }
+
+    #[test]
+    fn typing_a_hostname_is_one_undo_step_through_the_panel() {
+        let mut app = customizing();
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&ImagerAction::SetHostname {
+                value: String::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        app.harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| {
+                wizard.focus_profile_field_for_test(crate::customize::CzField::Hostname);
+            })
+            .expect("the hosted wizard");
+        app.harness().type_text("lab01");
+        assert_eq!(app.state().profile.hostname, "lab01");
+        assert!(app.undo());
+        assert_eq!(
+            app.state().profile.hostname,
+            "",
+            "the keystrokes of one field are one step"
+        );
+    }
+
+    #[test]
+    fn the_keyboard_chooser_commits_through_the_real_event_path() {
+        let mut app = customizing();
+        app.harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| {
+                wizard.focus_profile_field_for_test(crate::customize::CzField::Keyboard);
+            })
+            .expect("the hosted wizard");
+        app.harness().key("Enter");
+        app.harness().type_text("german");
+        app.harness().key("Enter");
+        assert_eq!(app.state().profile.keyboard, "de");
+    }
+
+    #[test]
+    fn a_collaborator_clearing_the_source_or_editing_any_field_is_shown() {
+        let mut app = customizing();
+        app.merge_peer_edit(|doc| {
+            ImagerAction::ClearSource.apply(doc).unwrap();
+            ImagerAction::SetWifiSsid {
+                value: "lab".into(),
+            }
+            .apply(doc)
+            .unwrap();
+            ImagerAction::SetEnrollLocalIdentity { on: true }
+                .apply(doc)
+                .unwrap();
+        });
+        let shown = app
+            .harness()
+            .with_widget_mut(|wizard: &mut ImagerApp| {
+                (
+                    wizard.resource_source().cloned(),
+                    wizard.profile_for_test().wifi_ssid.clone(),
+                    wizard.profile_for_test().enroll_local_identity,
+                )
+            })
+            .expect("the hosted wizard");
+        assert_eq!(shown, (None, "lab".to_owned(), true));
     }
 }
