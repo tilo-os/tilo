@@ -31,11 +31,29 @@ pub(crate) fn apply(
     dependencies: Dependencies,
 ) -> Result<Applied, Rejected> {
     if is_blank(doc) {
-        let loaded = AutoCommit::load_with_options(
+        let loaded = match AutoCommit::load_with_options(
             incoming,
             strict().text_encoding(doc.document().text_encoding()),
-        )
-        .map_err(|e| Rejected::Invalid(e.to_string()))?;
+        ) {
+            Ok(loaded) => loaded,
+            // Strict loading reports this only after every chunk parsed and
+            // every decoded change was applied or queued. Repeating that
+            // validated input with Ignore retains the queue; no malformed
+            // tail can reach this branch. Both passes run inside the worker.
+            Err(automerge::AutomergeError::MissingDeps) => {
+                if dependencies == Dependencies::RequireComplete {
+                    return Ok(Applied::MissingDependencies);
+                }
+                AutoCommit::load_with_options(
+                    incoming,
+                    strict()
+                        .text_encoding(doc.document().text_encoding())
+                        .on_partial_load(OnPartialLoad::Ignore),
+                )
+                .map_err(|e| Rejected::Invalid(e.to_string()))?
+            }
+            Err(error) => return Err(Rejected::Invalid(error.to_string())),
+        };
         let actor = doc.get_actor().clone();
         *doc = loaded.with_actor(actor);
         if dependencies == Dependencies::RequireComplete && !doc.get_missing_deps(&[]).is_empty() {
@@ -96,8 +114,9 @@ fn strict() -> LoadOptions<'static> {
 }
 
 /// Identifies a document's state: its heads, and the dependencies its queued
-/// changes still wait for. Two documents with the same key hold the same
-/// changes, so the worker's copy can stand in for the caller's.
+/// changes still wait for. Only complete states are cache identities: two
+/// different orphan queues can share the same heads and missing dependencies.
+/// Incomplete states must be rebuilt from the caller's exact saved document.
 // Only the Linux worker pool compares document states.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
