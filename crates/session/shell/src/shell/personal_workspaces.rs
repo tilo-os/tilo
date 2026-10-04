@@ -18,8 +18,10 @@
 //! Reconciliation is a three-way merge against `agreed`, the list as both
 //! sides last had it: a workspace that appeared or was renamed here since
 //! then is written to the directory, and one that appeared or was renamed in
-//! the directory is brought into this device's tree. Nothing deletes a
-//! workspace yet, so the list only grows.
+//! the directory is brought into this device's tree. The same holds for a
+//! workspace deleted on one device, for the order of the list, and for the
+//! devices a workspace shows on (every device, unless the person keeps it
+//! off some).
 //!
 //! Membership belongs to the person, not to a device, so the list holds
 //! every room the person is in: the rooms they own, which any of their
@@ -32,7 +34,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::{
-    DeviceCert, DirectoryError, DirectoryUpdate, RevocationList, WorkspaceDirectory,
+    DeviceCert, DirectoryError, DirectoryUpdate, RevocationList, WorkspaceDirectory, WorkspaceMeta,
 };
 
 use crate::shell::state::{PeerOrigin, RoomAuthority, RoomId, UserId, WorkspaceTree};
@@ -49,8 +51,14 @@ pub struct Listed {
 /// The person's workspace list as this device holds and last agreed it.
 pub struct PersonalWorkspaces {
     directory: WorkspaceDirectory,
-    /// The list as of the last reconciliation.
+    /// This device, as the directory's member lists name it.
+    device: [u8; 32],
+    /// This device's name for the person's other devices.
+    label: Option<String>,
+    /// The workspaces this device held at the last reconciliation.
     agreed: BTreeMap<RoomId, Listed>,
+    /// Their order at the last reconciliation.
+    agreed_order: Vec<RoomId>,
     /// Where the directory and `agreed` survive a restart; `None` keeps
     /// them in memory only.
     store: Option<PathBuf>,
@@ -60,6 +68,19 @@ pub struct PersonalWorkspaces {
 struct Stored {
     directory: Vec<u8>,
     agreed: BTreeMap<String, Listed>,
+    #[serde(default)]
+    agreed_order: Vec<String>,
+}
+
+/// One of the person's devices as the workspace's menu offers it: whether
+/// the workspace shows there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceChoice {
+    pub device: [u8; 32],
+    pub label: String,
+    pub shown: bool,
+    /// This device.
+    pub here: bool,
 }
 
 /// The rooms of `tree` that `person` is in, with their names and who
@@ -114,12 +135,40 @@ fn entry_id(room: RoomId) -> u64 {
     crate::shell::network::room_topic_id(room)
 }
 
+/// The directory's entries that carry a valid room, in the person's order.
+fn entries_of(directory: &WorkspaceDirectory) -> Vec<(RoomId, WorkspaceMeta)> {
+    let mut out: Vec<(RoomId, WorkspaceMeta)> = directory
+        .list_workspaces()
+        .into_iter()
+        .filter_map(|entry| {
+            let room = RoomId::parse(entry.room.as_deref()?)?;
+            (!room.is_nil() && entry_id(room) == entry.id).then_some((room, entry))
+        })
+        .collect();
+    out.sort_by(|(left_room, left), (right_room, right)| {
+        let key = |entry: &WorkspaceMeta| entry.order.unwrap_or(f64::INFINITY);
+        key(left)
+            .total_cmp(&key(right))
+            .then_with(|| left_room.cmp(right_room))
+    });
+    out
+}
+
+/// Whether `entry` shows on `device`: an empty member list means every
+/// device of the person.
+fn shows_on(entry: &WorkspaceMeta, device: &[u8; 32]) -> bool {
+    entry.member_devices.is_empty() || entry.member_devices.contains(device)
+}
+
 impl PersonalWorkspaces {
     /// An empty list for `user`'s device `device`, kept in memory only.
     pub fn new(user: [u8; 32], device: [u8; 32]) -> Self {
         Self {
             directory: WorkspaceDirectory::new(user, device),
+            device,
+            label: None,
             agreed: BTreeMap::new(),
+            agreed_order: Vec::new(),
             store: None,
         }
     }
@@ -129,43 +178,76 @@ impl PersonalWorkspaces {
     /// first reconciliation lists this device's workspaces again and the
     /// other devices' snapshots bring back the rest.
     pub fn open(user: [u8; 32], device: [u8; 32], store: PathBuf) -> Self {
-        let loaded = std::fs::read(&store)
+        let mut list = Self::new(user, device);
+        if let Some(stored) = std::fs::read(&store)
             .ok()
             .and_then(|bytes| postcard::from_bytes::<Stored>(&bytes).ok())
-            .and_then(|stored| {
-                let directory = WorkspaceDirectory::load(user, device, &stored.directory).ok()?;
-                let agreed = stored
-                    .agreed
-                    .into_iter()
-                    .filter_map(|(room, listed)| Some((RoomId::parse(&room)?, listed)))
-                    .collect();
-                Some((directory, agreed))
-            });
-        let (directory, agreed) =
-            loaded.unwrap_or_else(|| (WorkspaceDirectory::new(user, device), BTreeMap::new()));
-        Self {
-            directory,
-            agreed,
-            store: Some(store),
+            && let Ok(directory) = WorkspaceDirectory::load(user, device, &stored.directory)
+        {
+            list.directory = directory;
+            list.agreed = stored
+                .agreed
+                .into_iter()
+                .filter_map(|(room, listed)| Some((RoomId::parse(&room)?, listed)))
+                .collect();
+            list.agreed_order = stored
+                .agreed_order
+                .iter()
+                .filter_map(|room| RoomId::parse(room))
+                .collect();
         }
+        list.store = Some(store);
+        list
+    }
+
+    /// Name this device for the person's other devices.
+    #[must_use]
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
     }
 
     /// Write what changed in `tree` since the last agreement into the
-    /// directory. Returns whether the directory changed, which is when the
+    /// directory: new and renamed workspaces, ones deleted here, and a new
+    /// order. Returns whether the directory changed, which is when the
     /// other devices need a new snapshot.
     pub fn publish_local(&mut self, tree: &WorkspaceTree, person: &str) -> bool {
         let listed = member_workspaces(tree, person);
         let mut changed = false;
+        if let Some(label) = self.label.clone() {
+            let registered = self
+                .directory
+                .devices()
+                .iter()
+                .any(|(device, known)| *device == self.device && *known == label);
+            if !registered && self.directory.register_device(self.device, &label).is_ok() {
+                changed = true;
+            }
+        }
+        let next_order = entries_of(&self.directory)
+            .iter()
+            .filter_map(|(_, entry)| entry.order)
+            .fold(0.0_f64, f64::max);
+        let mut appended = 0.0;
         for (room, entry) in &listed {
             if self.agreed.get(room) == Some(entry) {
                 continue;
             }
             let id = entry_id(*room);
-            match self
+            let fresh = !self.agreed.contains_key(room);
+            let written = self
                 .directory
                 .add_room_workspace(id, &room.to_string(), &entry.name)
                 .and_then(|()| self.directory.set_governor(id, entry.governor.as_deref()))
-            {
+                .and_then(|()| {
+                    if fresh {
+                        appended += 1.0;
+                        self.directory.set_order(id, next_order + appended)
+                    } else {
+                        Ok(())
+                    }
+                });
+            match written {
                 Ok(()) => {
                     self.agreed.insert(*room, entry.clone());
                     changed = true;
@@ -175,34 +257,105 @@ impl PersonalWorkspaces {
                 }
             }
         }
+        // A workspace held at the last agreement and gone from this tree was
+        // deleted (or left) here.
+        let present: std::collections::BTreeSet<RoomId> =
+            tree.desktop.workspaces.iter().map(|w| w.room).collect();
+        let deleted: Vec<RoomId> = self
+            .agreed
+            .keys()
+            .filter(|room| !present.contains(room))
+            .copied()
+            .collect();
+        for room in deleted {
+            let _ = self.directory.remove_workspace(entry_id(room));
+            self.agreed.remove(&room);
+            changed = true;
+        }
+        changed |= self.publish_order(tree);
         if changed {
             self.persist();
         }
         changed
     }
 
-    /// Bring what changed in the directory since the last agreement into
-    /// `tree`: join each new workspace's room as `person`'s own, and take a
-    /// new name. Returns whether `tree` changed.
-    pub fn adopt_into(&mut self, tree: &mut WorkspaceTree, person: &UserId) -> bool {
-        let listed: BTreeMap<RoomId, Listed> = self
-            .directory
-            .list_workspaces()
+    /// Give the workspaces this tree holds positions in the directory that
+    /// match their order here, when that order moved since the last
+    /// agreement. Only entries out of place get a new position, so a
+    /// concurrent move of another workspace on another device still lands.
+    fn publish_order(&mut self, tree: &WorkspaceTree) -> bool {
+        let here: Vec<RoomId> = tree
+            .desktop
+            .workspaces
+            .iter()
+            .map(|w| w.room)
+            .filter(|room| self.agreed.contains_key(room))
+            .collect();
+        let agreed: Vec<RoomId> = self
+            .agreed_order
+            .iter()
+            .filter(|room| self.agreed.contains_key(room))
+            .copied()
+            .collect();
+        if here == agreed {
+            self.agreed_order = here;
+            return false;
+        }
+        let positions: BTreeMap<RoomId, f64> = entries_of(&self.directory)
             .into_iter()
-            .filter_map(|entry| {
-                let room = RoomId::parse(entry.room.as_deref()?)?;
-                (!room.is_nil() && entry_id(room) == entry.id).then_some((
-                    room,
-                    Listed {
-                        name: entry.name,
-                        governor: entry.governor,
-                    },
-                ))
-            })
+            .filter_map(|(room, entry)| Some((room, entry.order?)))
             .collect();
         let mut changed = false;
-        for (room, entry) in listed {
-            if self.agreed.get(&room) == Some(&entry) {
+        let mut previous = f64::NEG_INFINITY;
+        for (index, room) in here.iter().enumerate() {
+            if let Some(current) = positions.get(room).copied()
+                && current > previous
+            {
+                previous = current;
+                continue;
+            }
+            let next = here
+                .get(index.saturating_add(1)..)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|later| positions.get(later).copied())
+                .find(|later| *later > previous);
+            let placed = match (previous.is_finite(), next) {
+                (true, Some(next)) => f64::midpoint(previous, next),
+                (true, None) => previous + 1.0,
+                (false, Some(next)) => next - 1.0,
+                (false, None) => 0.0,
+            };
+            if self.directory.set_order(entry_id(*room), placed).is_ok() {
+                changed = true;
+            }
+            previous = placed;
+        }
+        self.agreed_order = here;
+        changed
+    }
+
+    /// Bring what changed in the directory since the last agreement into
+    /// `tree`: join each new workspace's room as `person`'s, take new names
+    /// and the person's order, and drop workspaces deleted on another device
+    /// or no longer shown on this one. Returns whether `tree` changed.
+    pub fn adopt_into(&mut self, tree: &mut WorkspaceTree, person: &UserId) -> bool {
+        let entries = entries_of(&self.directory);
+        let mut changed = false;
+        let mut shown_here: Vec<RoomId> = Vec::new();
+        for (room, meta) in &entries {
+            if !shows_on(meta, &self.device) {
+                if self.agreed.remove(room).is_some() {
+                    changed |= tree.forget_personal_room(*room).is_some();
+                }
+                continue;
+            }
+            shown_here.push(*room);
+            let entry = Listed {
+                name: meta.name.clone(),
+                governor: meta.governor.clone(),
+            };
+            if self.agreed.get(room) == Some(&entry) {
                 continue;
             }
             let governor = match entry.governor.as_deref() {
@@ -214,11 +367,92 @@ impl PersonalWorkspaces {
                     None => continue,
                 },
             };
-            changed |= tree.adopt_personal_room(room, &entry.name, person, governor.as_ref());
-            self.agreed.insert(room, entry);
+            changed |= tree.adopt_personal_room(*room, &entry.name, person, governor.as_ref());
+            self.agreed.insert(*room, entry);
         }
+        let listed_rooms: std::collections::BTreeSet<RoomId> =
+            entries.iter().map(|(room, _)| *room).collect();
+        let gone: Vec<RoomId> = self
+            .agreed
+            .keys()
+            .filter(|room| !listed_rooms.contains(room))
+            .copied()
+            .collect();
+        for room in gone {
+            self.agreed.remove(&room);
+            changed |= tree.forget_personal_room(room).is_some();
+        }
+        changed |= tree.arrange_rooms(&shown_here);
+        self.agreed_order = tree
+            .desktop
+            .workspaces
+            .iter()
+            .map(|w| w.room)
+            .filter(|room| self.agreed.contains_key(room))
+            .collect();
         self.persist();
         changed
+    }
+
+    /// The person's devices as the menu of `room`'s workspace offers them,
+    /// this device always among them.
+    pub fn device_choices(&self, room: RoomId) -> Vec<DeviceChoice> {
+        let entry = entries_of(&self.directory)
+            .into_iter()
+            .find(|(candidate, _)| *candidate == room)
+            .map(|(_, entry)| entry);
+        let mut devices = self.directory.devices();
+        if !devices.iter().any(|(device, _)| *device == self.device) {
+            devices.push((self.device, self.label.clone().unwrap_or_default()));
+        }
+        devices
+            .into_iter()
+            .map(|(device, label)| DeviceChoice {
+                device,
+                label,
+                shown: entry.as_ref().is_none_or(|entry| shows_on(entry, &device)),
+                here: device == self.device,
+            })
+            .collect()
+    }
+
+    /// Show or keep `room`'s workspace off `device`. An empty member list
+    /// stands for every device, so hiding names all the others explicitly,
+    /// and showing it on all of them again empties the list. Returns
+    /// whether the directory changed.
+    pub fn set_shown(&mut self, room: RoomId, device: [u8; 32], shown: bool) -> bool {
+        let Some(current) = entries_of(&self.directory)
+            .into_iter()
+            .find(|(candidate, _)| *candidate == room)
+            .map(|(_, entry)| entry.member_devices)
+        else {
+            return false;
+        };
+        let choices = self.device_choices(room);
+        let mut members: Vec<[u8; 32]> = choices
+            .iter()
+            .filter(|choice| {
+                if choice.device == device {
+                    shown
+                } else {
+                    choice.shown
+                }
+            })
+            .map(|choice| choice.device)
+            .collect();
+        if members.len() == choices.len() {
+            members.clear();
+        }
+        if current == members
+            || self
+                .directory
+                .set_member_devices(entry_id(room), &members)
+                .is_err()
+        {
+            return false;
+        }
+        self.persist();
+        true
     }
 
     /// Merge another device's signed snapshot. `author` is that device's
@@ -266,6 +500,7 @@ impl PersonalWorkspaces {
                 .iter()
                 .map(|(room, listed)| (room.to_string(), listed.clone()))
                 .collect(),
+            agreed_order: self.agreed_order.iter().map(ToString::to_string).collect(),
         };
         let Ok(bytes) = postcard::to_allocvec(&stored) else {
             return;

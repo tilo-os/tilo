@@ -51,7 +51,7 @@ pub const DIR_DELTA_PREIMAGE_TAG: &[u8] = b"tilo-dir-delta-v1\0";
 pub type WorkspaceId = u64;
 
 /// Public shape of one workspace as it appears in the directory.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceMeta {
     /// Stable workspace id (mirrors the collaboration topic id).
     pub id: WorkspaceId,
@@ -66,9 +66,14 @@ pub struct WorkspaceMeta {
     /// invitation pinned it. `None` for the person's own rooms, which any
     /// of their devices governs.
     pub governor: Option<String>,
-    /// Device public keys that hold a full replica of this
-    /// workspace. Every device in this set will project + hydrate;
-    /// devices outside it see nothing.
+    /// Where the workspace sits in the person's list: entries sort by
+    /// `(order, id)`, an entry without one last. Each entry's position is
+    /// its own register, so concurrent moves of different workspaces both
+    /// land.
+    pub order: Option<f64>,
+    /// Device public keys that hold this workspace. Empty means every
+    /// device of the person does; otherwise devices outside the set keep
+    /// the workspace off their desktop (they still carry the directory).
     pub member_devices: Vec<[u8; 32]>,
     /// Device public keys marked as always-on hosts for this
     /// workspace. Plural, per the design; empty for a strictly-P2P
@@ -325,6 +330,88 @@ impl WorkspaceDirectory {
             .map_err(|e| DirectoryError::Automerge(e.to_string()))
     }
 
+    /// Place workspace `id` at `order` in the person's list (see
+    /// [`WorkspaceMeta::order`]). An unchanged value writes nothing; a
+    /// non-finite one is refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::Automerge`] if the underlying
+    /// Automerge document operation fails.
+    pub fn set_order(&mut self, id: WorkspaceId, order: f64) -> Result<(), DirectoryError> {
+        if !order.is_finite() {
+            return Ok(());
+        }
+        let obj = self.ensure_workspace_obj(id)?;
+        let current = match self.doc.get(&obj, "order") {
+            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                ScalarValue::F64(v) => Some(*v),
+                _ => None,
+            },
+            _ => None,
+        };
+        if current == Some(order) {
+            return Ok(());
+        }
+        self.doc
+            .put(&obj, "order", ScalarValue::F64(order))
+            .map_err(|e| DirectoryError::Automerge(e.to_string()))
+    }
+
+    /// Record that device `device` belongs to this person and is called
+    /// `label`, so the person's other devices can name it, for instance
+    /// when choosing which devices show a workspace. Idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::Automerge`] if the underlying
+    /// Automerge document operation fails.
+    pub fn register_device(&mut self, device: [u8; 32], label: &str) -> Result<(), DirectoryError> {
+        let key = Self::device_key(&device);
+        let obj = match self.doc.get(ROOT, key.as_str()) {
+            Ok(Some((Value::Object(ObjType::Map), obj))) => obj,
+            _ => self
+                .doc
+                .put_object(ROOT, key, ObjType::Map)
+                .map_err(|e| DirectoryError::Automerge(e.to_string()))?,
+        };
+        self.put_text_if_changed(&obj, "label", label)
+    }
+
+    /// Every device of this person that registered itself, with its label,
+    /// sorted by key.
+    pub fn devices(&self) -> Vec<([u8; 32], String)> {
+        let mut out: Vec<([u8; 32], String)> = self
+            .doc
+            .keys(ROOT)
+            .filter_map(|key| {
+                let hex = key.strip_prefix("d:")?;
+                if hex.len() != 64 {
+                    return None;
+                }
+                let mut device = [0u8; 32];
+                for (byte, pair) in device.iter_mut().zip(hex.as_bytes().chunks(2)) {
+                    *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+                }
+                let Ok(Some((Value::Object(ObjType::Map), obj))) = self.doc.get(ROOT, key.as_str())
+                else {
+                    return None;
+                };
+                Some((device, self.read_text(&obj, "label").unwrap_or_default()))
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    fn device_key(device: &[u8; 32]) -> String {
+        use std::fmt::Write as _;
+        device.iter().fold(String::from("d:"), |mut key, byte| {
+            let _ = write!(key, "{byte:02x}");
+            key
+        })
+    }
+
     fn read_text(&self, obj: &ObjId, key: &str) -> Option<String> {
         match self.doc.get(obj, key) {
             Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -451,11 +538,19 @@ impl WorkspaceDirectory {
             let name = self.read_text(&obj, "name").unwrap_or_default();
             let room = self.read_text(&obj, "room");
             let governor = self.read_text(&obj, "governor");
+            let order = match self.doc.get(&obj, "order") {
+                Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                    ScalarValue::F64(v) if v.is_finite() => Some(*v),
+                    _ => None,
+                },
+                _ => None,
+            };
             out.push(WorkspaceMeta {
                 id,
                 name,
                 room,
                 governor,
+                order,
                 member_devices: self.read_pubkey_list(&obj, "members"),
                 host_devices: self.read_pubkey_list(&obj, "hosts"),
                 pinned_devices: self.read_pubkey_list(&obj, "pinned"),
@@ -1081,5 +1176,42 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(other.list_workspaces()[0].name, "Two");
+    }
+
+    /// Positions and the device roster travel like the rest of the list.
+    #[test]
+    fn order_and_devices_reach_another_device() {
+        let f = fresh_user();
+        let (a_sk, a_pk, a_cert) = enrol_device(
+            &f.user_sk,
+            f.user_pk,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
+        let (_b_sk, b_pk, _) =
+            enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
+        let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
+        laptop.add_room_workspace(1, "r1", "One").unwrap();
+        laptop.set_order(1, 2.5).unwrap();
+        laptop.register_device(a_pk, "Laptop").unwrap();
+        let heads = laptop.doc.get_heads();
+        laptop.set_order(1, 2.5).unwrap();
+        laptop.register_device(a_pk, "Laptop").unwrap();
+        assert_eq!(
+            laptop.doc.get_heads(),
+            heads,
+            "unchanged values write nothing"
+        );
+        let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
+        board
+            .apply_incremental(
+                &laptop.signed_snapshot(&a_sk, 1_000).unwrap(),
+                &a_cert,
+                &RevocationList::new(),
+                1_100,
+            )
+            .unwrap();
+        assert_eq!(board.list_workspaces()[0].order, Some(2.5));
+        assert_eq!(board.devices(), vec![(a_pk, "Laptop".to_string())]);
     }
 }
