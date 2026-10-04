@@ -5,15 +5,19 @@
 
 use std::rc::Rc;
 
-use ui::framework::{LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{Command, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{ActionParam, ActionSpec, ParamType};
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry, declaration_spec};
+use ui::tilo_resource::{
+    ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry, declaration_spec,
+};
 use ui::widget::Element;
 
+use crate::BrowserTabs;
 use crate::actions::{
     BROWSER_ACTION_TYPE, BrowserAction, bookmark_resource_id, bookmarks_from_doc, register,
 };
 use crate::browser_widget::{BrowserWidget, window_navigation_operations};
+use crate::browsing_mode::BrowsingMode;
 use crate::library::{Bookmark, Bookmarks};
 use crate::settings::Settings;
 
@@ -212,6 +216,43 @@ fn settings_child() -> tilo_actions::Resource {
         ))
 }
 
+/// The screenshot scenarios: the page, the chrome's states, the library's
+/// sections and the tab strip.
+const SCENARIOS: &[&str] = &[
+    "pip-active",
+    "pip-empty",
+    "settings",
+    "history-paused",
+    "loading",
+    "error",
+    "suggestions",
+    "library-history",
+    "library-bookmarks",
+    "library-extensions",
+    "library-filtered",
+    "downloads-progress",
+    "downloads-completed",
+    "downloads-error",
+    "downloads-empty",
+    "tabs",
+];
+
+/// The page a launch names: one absolute http(s) URL, the only schemes the
+/// browser claims. Anything else (a file, `javascript:`, `data:`) is not
+/// handed to the engine.
+fn launch_target(arguments: &[String]) -> Option<String> {
+    arguments
+        .iter()
+        .find(|arg| {
+            arg.split_once(':').is_some_and(|(scheme, rest)| {
+                (scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http"))
+                    && rest.starts_with("//")
+            }) && arg.len() <= 8 * 1024
+                && !arg.chars().any(char::is_control)
+        })
+        .cloned()
+}
+
 /// Framework app: the browser chrome is the surface over [`Browser`].
 pub struct BrowserShell;
 
@@ -220,47 +261,141 @@ impl ResourceApp for BrowserShell {
     const ID: &'static str = "so.tilo.browser";
     const TITLE: &'static str = "Browser";
     const ICON: Option<&'static str> = Some("browser");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1200, 720)
-    }
+    const ARGUMENTS: usize = 1;
+    const PRIVATE_WINDOWS: bool = true;
 
     fn local_operations() -> Vec<ActionSpec> {
         crate::browser_widget::window_presentation_operations()
     }
 
+    fn commands() -> &'static [Command] {
+        &[
+            Command {
+                option: "--shots-live",
+                run: crate::live_capture::shots_live,
+            },
+            Command {
+                option: "--shots-live-pip",
+                run: crate::live_capture::shots_live_pip,
+            },
+        ]
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
+    }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        match scenario {
+            Some("pip-empty" | "suggestions") => (1000, 650),
+            Some("settings" | "history-paused") => (900, 700),
+            Some("loading" | "error") => (900, 620),
+            Some("tabs") => (800, 620),
+            Some(name) if name.starts_with("library-") || name.starts_with("downloads-") => {
+                (1000, 700)
+            }
+            _ => (1200, 720),
+        }
+    }
+
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Browser>> {
+        if name != Some("library-bookmarks") {
+            return Vec::new();
+        }
+        [
+            ("https://www.rust-lang.org/learn", "Learn Rust", "rust"),
+            ("https://developer.mozilla.org/", "MDN Web Docs", "mdn"),
+        ]
+        .into_iter()
+        .filter_map(|(url, title, tag)| {
+            Invoke::apply(&BrowserAction::AddBookmark {
+                url: url.into(),
+                title: title.into(),
+                tag: format!("bookmark:{tag}"),
+            })
+            .ok()
+        })
+        .collect()
+    }
+
     fn view(cx: &mut ViewCx<Browser>) -> Element {
         // Only a window someone uses reaches the web: a past version and a
         // screenshot show the deterministic page of the test engine.
-        let widget = if cx.mode().is_live() {
-            BrowserWidget::new()
+        let live = cx.mode().is_live();
+        let mode = if cx.is_private() {
+            BrowsingMode::Private
+        } else {
+            BrowsingMode::Normal
+        };
+        let widget = if live {
+            if let Err(error) = crate::storage::prepare_window(mode.is_private()) {
+                tracing::error!(%error, "Cannot prepare browser storage");
+            }
+            BrowserWidget::new_with_mode(mode)
         } else {
             BrowserWidget::new_headless()
         };
-        cx.surface(widget)
+        let widget = match launch_target(cx.launch_arguments()) {
+            Some(uri) => widget.with_initial_uri(uri),
+            None => widget,
+        };
+        let mut tabs = BrowserTabs::new(widget);
+        if live && mode.allows_session_recovery() {
+            let restored = crate::storage::data_dir()
+                .ok_or_else(|| "Cannot locate the browser's data".to_owned())
+                .and_then(|root| {
+                    crate::session::SessionStore::open(&root, crate::session::SessionMode::Normal)
+                })
+                // A normal window always has a store; only private ones lack it.
+                .and_then(|store| store.map_or(Ok(()), |store| tabs.attach_session(store)));
+            if let Err(error) = restored {
+                tracing::error!(%error, "Cannot restore the browser session");
+            }
+        }
+        cx.surface(tabs)
     }
 }
 
-impl ResourceSurface<Browser> for BrowserWidget {
+impl ResourceSurface<Browser> for BrowserTabs {
     fn present(&mut self, state: &Rc<BrowserState>) {
         self.present_state(state);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Browser>) {
-        self.attach_dispatcher(cx.dispatcher());
+        self.attach_dispatcher(&cx.dispatcher());
+        if cx.mode().is_live() {
+            // The engine publishes frames and navigation from its own
+            // threads; each wakes the window so pages paint and finish
+            // loading without waiting for input.
+            let waker = cx.waker();
+            self.engine_handle()
+                .set_waker(Box::new(move || waker.wake()));
+            // Zero-copy GPU compositing: when the engine exports dmabuf frames
+            // (TILO_WEBVIEW_DMABUF=1), a render-thread hook blits the imported
+            // texture over the content rect.
+            #[cfg(feature = "wpe")]
+            if std::env::var_os("TILO_WEBVIEW_DMABUF").is_some() {
+                ui::render_thread::set_frame_post_processor(Box::new(
+                    crate::compositor::WebViewCompositor::new(
+                        self.engine_handle(),
+                        self.content_rect_handle(),
+                    ),
+                ));
+            }
+        }
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 
     fn bound_declarations(&self) -> Vec<ActionDecl<Browser>> {
-        self.page_declarations()
+        self.active_page().page_declarations()
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {
-        self.live_rows()
+        self.active_page().live_rows()
     }
-}
-
-/// Live launch on the framework host.
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<BrowserShell>()
 }
 
 #[cfg(test)]
@@ -353,6 +488,32 @@ mod tests {
         assert!(!preferences.adblock_enabled);
         assert!(app.undo(), "a preference is an undo step");
         assert!(app.state().preferences.adblock_enabled);
+    }
+
+    #[test]
+    fn a_launch_opens_only_the_web_pages_the_browser_claims() {
+        let uri = "HTTPS://example.test/a --still-data";
+        assert_eq!(launch_target(&[uri.into()]).as_deref(), Some(uri));
+        for value in [
+            "javascript:alert(1)",
+            "data:text/plain,x",
+            "mailto:a@b",
+            "file:///tmp/portal-bypass.html",
+            "/tmp/portal-bypass.html",
+        ] {
+            assert_eq!(launch_target(&[value.into()]), None);
+        }
+    }
+
+    #[test]
+    fn every_scenario_stages_and_bookmarks_come_from_the_document() {
+        for scenario in SCENARIOS {
+            let mut app = TestApp::<BrowserShell>::capture(Some(scenario)).unwrap();
+            app.settle();
+            if *scenario == "library-bookmarks" {
+                assert_eq!(app.state().bookmarks.entries().len(), 2);
+            }
+        }
     }
 
     #[test]
