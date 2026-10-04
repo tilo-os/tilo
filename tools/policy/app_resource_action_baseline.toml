@@ -122,6 +122,7 @@
 "apps/settings/src/panes/power.rs" = 2
 "apps/settings/src/panes/printers.rs" = 1
 "apps/settings/src/panes/storage.rs" = 1
+"apps/settings/src/panes/updates.rs" = 2
 "apps/settings/src/panes/users.rs" = 1
 "apps/settings/src/resource.rs" = 1
 "apps/slides/src/framework_history.rs" = 2

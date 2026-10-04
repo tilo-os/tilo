@@ -34,6 +34,15 @@ class AppResourceActionContractTests(unittest.TestCase):
         (app / "src" / "lib.rs").write_text(source, encoding="utf-8")
         return root
 
+    def test_char_literals_do_not_hide_the_code_after_them(self):
+        code = contract.rust_code_only(
+            "fn f<'a>(s: &'a str) -> String { s.replace('\"', \"\").trim_matches('\\'') }\n"
+            "fn handler() { start_operation(); }\n"
+        )
+        self.assertIn("fn handler() { start_operation(); }", code)
+        self.assertIn("fn f<'a>(s: &'a str)", code)
+        self.assertNotIn('"', code)
+
     def test_resource_surface_requires_a_real_nonempty_resource_provider(self):
         with self.subTest(phase='resource action app passes'):
             root = self.fixture(

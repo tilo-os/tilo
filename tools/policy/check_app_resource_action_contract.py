@@ -313,6 +313,9 @@ def line_number(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
+CHAR_LITERAL = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
+
+
 def rust_code_only(text: str) -> str:
     """Remove comments and literals so prose cannot satisfy the protocol gate."""
     out: list[str] = []
@@ -340,6 +343,10 @@ def rust_code_only(text: str) -> str:
             block_depth = 1
             out.extend("  ")
             i += 2
+        elif text[i] == "'" and (char_literal := CHAR_LITERAL.match(text, i)):
+            # A char literal ('"', '\\'); a lifetime has no closing quote.
+            out.extend(" " * (char_literal.end() - i))
+            i = char_literal.end()
         elif text[i] == '"':
             quote = text[i]
             out.append(" ")
