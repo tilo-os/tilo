@@ -1209,7 +1209,10 @@ impl Mark {
     /// others to its shape.
     pub fn inked(&self) -> bool {
         let style = &self.style;
-        style.fill.is_some() || style.stroke.is_some() || style.gradient.is_some()
+        style.fill.is_some()
+            || style.stroke.is_some()
+            || style.gradient.is_some()
+            || matches!(self.shape, Shape::Image { .. })
     }
 
     /// Whether the mark is an eraser: it takes paint off its layer and has
