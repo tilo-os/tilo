@@ -409,9 +409,16 @@ pub struct CalendarApp {
     selection: Option<Sel>,
     detail_open: bool,
 
-    /// `CalDAV` accounts + their calendars, as configured by OS Settings (the
-    /// shared [`AccountStore`]). Read-only here; Settings owns the lifecycle.
+    /// `CalDAV` accounts + their calendars as this person shows them: the
+    /// accounts Settings configured on this device ([`Self::configured`])
+    /// with the person's display choices applied.
     accounts: AccountStore,
+    /// The accounts as Settings configured them on this device.
+    configured: AccountStore,
+    /// The person's display choices for their calendars.
+    display: crate::display::CalendarDisplay,
+    /// Where those choices are kept, following the person across devices.
+    display_setting: Option<ui::framework::Setting<crate::display::CalendarDisplay>>,
 
     notes_editor: NotesEditor,
     bound: Option<Sel>,
@@ -571,8 +578,9 @@ impl CalendarApp {
     pub(crate) fn new_demo() -> Self {
         let mut app = Self::new_detached();
         app.model = crate::model::seed_demo(app.today);
-        app.accounts = AccountStore::sample();
+        app.configured = AccountStore::sample();
         app.sample_accounts = true;
+        app.show_accounts();
         app.open_sample_event();
         app.narrow_screen = NarrowScreen::Detail;
         app
@@ -602,7 +610,10 @@ impl CalendarApp {
             list_sel: ListSel::Today,
             selection,
             detail_open,
-            accounts,
+            accounts: accounts.clone(),
+            configured: accounts,
+            display: crate::display::CalendarDisplay::default(),
+            display_setting: None,
             notes_editor: Self::new_notes_editor(None, None),
             bound: None,
             seeded: false,
@@ -685,9 +696,10 @@ impl CalendarApp {
         self.notes_editor = Self::new_notes_editor(self.bound, Some(&dispatcher));
         self.dispatcher = Some(dispatcher);
         if let Some(accounts) = accounts {
-            self.accounts = accounts;
+            self.configured = accounts;
             self.sample_accounts = sample;
         }
+        self.show_accounts();
         self.dirty = true;
     }
 
@@ -2132,57 +2144,104 @@ impl CalendarApp {
 
     // --- event form model edits -----------------------------------------
 
-    /// Commit an *absolute* collection visibility state to the Settings-owned
-    /// account store. Absolute intent means the screen-reader row, Ctrl+K
-    /// resource action, and an agent retry cannot accidentally invert a newer
-    /// user choice by replaying a toggle.
-    fn set_calendar_visibility(&mut self, id: &str, visible: bool) -> Result<(), String> {
-        let mut updated = self.accounts.clone();
-        let Some(calendar) = updated
-            .accounts
-            .iter_mut()
-            .flat_map(|account| account.calendars.iter_mut())
-            .find(|calendar| calendar.id == id)
-        else {
-            return Err("That calendar is no longer configured".into());
-        };
-        if calendar.visible == visible {
-            return Ok(());
-        }
-        calendar.visible = visible;
+    /// Attach where the person's display choices are kept, and show the
+    /// accounts as they choose.
+    pub(crate) fn follow_display(
+        &mut self,
+        setting: ui::framework::Setting<crate::display::CalendarDisplay>,
+    ) {
+        self.display = setting.get();
+        self.display_setting = Some(setting);
+        self.show_accounts();
+    }
 
-        if !self.sample_accounts
-            && let Err(error) = updated.persist()
-        {
-            return Err(format!("Couldn't save calendar visibility: {error}"));
-        }
-
-        self.accounts = updated;
+    /// The configured accounts with the person's display choices applied.
+    fn show_accounts(&mut self) {
+        self.accounts = self.display.applied_to(&self.configured);
         self.dirty = true;
+    }
+
+    /// Pick up display choices made in another window or on another device.
+    fn refresh_display(&mut self) {
+        if let Some(setting) = &self.display_setting {
+            let current = setting.get();
+            if current != self.display {
+                self.display = current;
+                self.show_accounts();
+            }
+        }
+    }
+
+    /// Change the person's display choices and keep them.
+    fn change_display(
+        &mut self,
+        change: impl FnOnce(&mut crate::display::CalendarDisplay),
+    ) -> Result<(), String> {
+        let mut display = self.display.clone();
+        change(&mut display);
+        if let Some(setting) = &self.display_setting {
+            setting
+                .set(display.clone())
+                .map_err(|error| format!("Couldn't save the calendar display: {error}"))?;
+        }
+        self.display = display;
+        self.show_accounts();
         Ok(())
     }
 
-    /// Persist a sidebar disclosure preference through the same shared account
-    /// store that owns visibility. This keeps a collapse/expand choice stable
-    /// across restarts, while never claiming success if Settings' store cannot
-    /// be written.
+    /// Show or hide a calendar — an *absolute* state, so the sidebar row, a
+    /// screen reader, the palette and an agent retry cannot invert a newer
+    /// choice by replaying a toggle.
+    pub(crate) fn set_calendar_visibility(
+        &mut self,
+        id: &str,
+        visible: bool,
+    ) -> Result<(), String> {
+        if !self
+            .configured
+            .all_calendars()
+            .any(|(_, calendar)| calendar.id == id)
+        {
+            return Err("That calendar is no longer configured".into());
+        }
+        self.change_display(|display| {
+            display.visible.insert(id.to_owned(), visible);
+        })
+    }
+
+    /// Draw a calendar in palette slot `color`.
+    fn set_calendar_color(&mut self, id: &str, color: Palette) -> Result<(), String> {
+        if !self
+            .configured
+            .all_calendars()
+            .any(|(_, calendar)| calendar.id == id)
+        {
+            return Err("That calendar is no longer configured".into());
+        }
+        let slot = u8::try_from(color.index()).unwrap_or_default();
+        self.change_display(|display| {
+            display.colors.insert(id.to_owned(), slot);
+        })
+    }
+
+    /// Fold or unfold an account's calendars in the sidebar.
     fn toggle_account_collapsed(&mut self, id: &str) {
-        let mut updated = self.accounts.clone();
-        let Some(account) = updated.accounts.iter_mut().find(|account| account.id == id) else {
+        let Some(collapsed) = self
+            .accounts
+            .accounts
+            .iter()
+            .find(|account| account.id == id)
+            .map(|account| account.collapsed)
+        else {
             self.status = Some("That calendar account is no longer configured".into());
             return;
         };
-        account.collapsed = !account.collapsed;
-
-        if !self.sample_accounts
-            && let Err(error) = updated.persist()
-        {
-            self.status = Some(format!("Couldn't save account sidebar state: {error}"));
-            return;
+        let result = self.change_display(|display| {
+            display.collapsed.insert(id.to_owned(), !collapsed);
+        });
+        if let Err(error) = result {
+            self.status = Some(error);
         }
-
-        self.accounts = updated;
-        self.dirty = true;
     }
 
     /// Every calendar an event can be filed under: the local on-device
@@ -5973,6 +6032,7 @@ impl Widget for CalendarApp {
             self.status = None;
         }
         self.poll_sync(state);
+        self.refresh_display();
         // Reconcile the in-memory model with the document when it moved out of
         // band — a Ctrl+K palette action mutated the CRDT, or a peer's change
         // merged in — so those events/tasks show up in the views just like an
@@ -6742,6 +6802,12 @@ impl CalendarApp {
             } => self
                 .prepare_in_mail(&event_id, &attendee_id)
                 .map(Effected::value),
+            CalendarEffect::SetColor { id, color } => {
+                let color = crate::model::Palette::from_name(&color)
+                    .ok_or_else(|| format!("no colour is called {color}"))?;
+                self.set_calendar_color(&id, color)?;
+                Ok(Effected::done())
+            }
             CalendarEffect::SetVisibility { id, visible } => {
                 self.set_calendar_visibility(&id, visible)?;
                 self.status = Some(Self::visibility_status(visible).into());

@@ -215,16 +215,7 @@ fn recurrence_from_choice(value: &str) -> Option<Recurrence> {
 }
 
 fn palette_from_choice(value: &str) -> Option<Palette> {
-    match value {
-        "indigo" => Some(Palette::Indigo),
-        "emerald" => Some(Palette::Emerald),
-        "amber" => Some(Palette::Amber),
-        "red" => Some(Palette::Red),
-        "blue" => Some(Palette::Blue),
-        "violet" => Some(Palette::Violet),
-        "slate" => Some(Palette::Slate),
-        _ => None,
-    }
+    Palette::from_name(value)
 }
 
 fn parse_local_datetime(value: &str, field: &str) -> Result<chrono::NaiveDateTime, String> {
