@@ -49,6 +49,7 @@ use tilo_actions::{
 };
 
 use crate::doc::{GitClientState, SharedRepo};
+use crate::i18n::t;
 use crate::model::{ChangeArea, FileChange, RepoModel};
 use crate::settings::{self, DiffLayout, Settings};
 
@@ -260,34 +261,39 @@ fn change_resource(change: &FileChange) -> Resource {
         "git_client.diff",
         format!("{} — {area}", change.path),
     );
-    if let Some(spec) = operation("open", "Open diff", OperationKind::View, &open) {
+    if let Some(spec) = operation(
+        "open",
+        &t("git-action-open-diff"),
+        OperationKind::View,
+        &open,
+    ) {
         resource = resource.with_action(spec);
     }
     let mutation = match change.area {
         ChangeArea::Staged => Some((
             "unstage",
-            "Unstage file",
+            t("git-unstage-file"),
             GitClientOperation::UnstageFile {
                 path: change.path.clone(),
             },
         )),
         ChangeArea::Unstaged | ChangeArea::Untracked => Some((
             "stage",
-            "Stage file",
+            t("git-stage-file"),
             GitClientOperation::StageFile {
                 path: change.path.clone(),
             },
         )),
     };
     if let Some((id, label, value)) = mutation
-        && let Some(spec) = operation(id, label, OperationKind::Effect, &value)
+        && let Some(spec) = operation(id, &label, OperationKind::Effect, &value)
     {
         resource = resource.with_action(spec);
     }
     if change.area != ChangeArea::Staged
         && let Some(spec) = operation(
             "discard",
-            "Discard file changes",
+            &t("git-discard-file-name"),
             OperationKind::Effect,
             &GitClientOperation::DiscardFile {
                 path: change.path.clone(),
@@ -307,7 +313,7 @@ fn commit_resource(commit: &crate::model::Commit) -> Resource {
     );
     if let Some(spec) = operation(
         "open",
-        "Open commit",
+        &t("git-action-open-commit"),
         OperationKind::View,
         &GitClientOperation::OpenCommit {
             id: commit.id.clone(),
@@ -337,7 +343,7 @@ fn branch_resource(branch: &crate::model::Branch) -> Resource {
     if !branch.is_head
         && let Some(spec) = operation(
             "checkout",
-            "Check out branch",
+            &t("git-action-check-out-branch"),
             OperationKind::Effect,
             &GitClientOperation::CheckoutBranch {
                 name: branch.name.clone(),
@@ -350,7 +356,7 @@ fn branch_resource(branch: &crate::model::Branch) -> Resource {
         && !branch.is_remote
         && let Some(spec) = operation(
             "delete",
-            "Delete branch",
+            &t("git-delete-branch"),
             OperationKind::Effect,
             &GitClientOperation::DeleteBranch {
                 name: branch.name.clone(),
@@ -371,27 +377,27 @@ fn remote_resource(remote: &crate::model::Remote) -> Resource {
     for (id, label, value) in [
         (
             "fetch",
-            "Fetch remote",
+            t("git-action-fetch-remote"),
             GitClientOperation::Fetch {
                 remote: remote.name.clone(),
             },
         ),
         (
             "pull",
-            "Pull from remote",
+            t("git-pull-name"),
             GitClientOperation::Pull {
                 remote: remote.name.clone(),
             },
         ),
         (
             "push",
-            "Push to remote",
+            t("git-push-name"),
             GitClientOperation::Push {
                 remote: remote.name.clone(),
             },
         ),
     ] {
-        if let Some(spec) = operation(id, label, OperationKind::Effect, &value) {
+        if let Some(spec) = operation(id, &label, OperationKind::Effect, &value) {
             resource = resource.with_action(spec);
         }
     }
@@ -405,10 +411,10 @@ pub(crate) fn document_bound_actions(settings: Settings) -> Vec<ActionSpec> {
         DiffLayout::Unified => DiffLayout::SideBySide,
         DiffLayout::SideBySide => DiffLayout::Unified,
     };
-    let layout_label = match next_layout {
-        DiffLayout::SideBySide => "Diff layout: side-by-side",
-        DiffLayout::Unified => "Diff layout: unified",
-    };
+    let layout_label = t(match next_layout {
+        DiffLayout::SideBySide => "git-action-layout-split",
+        DiffLayout::Unified => "git-action-layout-unified",
+    });
     if let Ok(spec) = ActionSpec::immediate(
         "diff-layout",
         layout_label,
@@ -419,11 +425,11 @@ pub(crate) fn document_bound_actions(settings: Settings) -> Vec<ActionSpec> {
     }
     if let Ok(spec) = ActionSpec::immediate(
         "syntax-highlight",
-        if settings.syntax_highlight {
-            "Turn off syntax highlighting"
+        t(if settings.syntax_highlight {
+            "git-action-syntax-off"
         } else {
-            "Turn on syntax highlighting"
-        },
+            "git-action-syntax-on"
+        }),
         GIT_CLIENT_ACTION_TYPE,
         &GitClientAction::SetSyntaxHighlight {
             on: !settings.syntax_highlight,
@@ -433,11 +439,11 @@ pub(crate) fn document_bound_actions(settings: Settings) -> Vec<ActionSpec> {
     }
     if let Ok(spec) = ActionSpec::immediate(
         "show-whitespace",
-        if settings.show_whitespace {
-            "Hide whitespace"
+        t(if settings.show_whitespace {
+            "git-action-whitespace-hide"
         } else {
-            "Show whitespace"
-        },
+            "git-action-whitespace-show"
+        }),
         GIT_CLIENT_ACTION_TYPE,
         &GitClientAction::SetShowWhitespace {
             on: !settings.show_whitespace,
@@ -447,11 +453,11 @@ pub(crate) fn document_bound_actions(settings: Settings) -> Vec<ActionSpec> {
     }
     if let Ok(spec) = ActionSpec::immediate(
         "wrap-lines",
-        if settings.wrap_lines {
-            "Stop wrapping long lines"
+        t(if settings.wrap_lines {
+            "git-action-wrap-off"
         } else {
-            "Wrap long lines"
-        },
+            "git-action-wrap-on"
+        }),
         GIT_CLIENT_ACTION_TYPE,
         &GitClientAction::SetWrapLines {
             on: !settings.wrap_lines,
@@ -472,45 +478,45 @@ pub(crate) fn root_local_operations() -> Vec<ActionSpec> {
     for (id, label, value) in [
         (
             "show-changes",
-            "Show changes",
+            t("git-action-show-changes"),
             GitClientOperation::ShowChanges,
         ),
         (
             "show-history",
-            "Show history",
+            t("git-action-show-history"),
             GitClientOperation::ShowHistory,
         ),
         (
             "show-branches",
-            "Show branches and remotes",
+            t("git-action-show-branches"),
             GitClientOperation::ShowBranches,
         ),
     ] {
-        if let Some(spec) = operation(id, label, OperationKind::View, &value) {
+        if let Some(spec) = operation(id, &label, OperationKind::View, &value) {
             actions.push(spec);
         }
     }
     for (id, label, value) in [
         (
             "stage-all",
-            "Stage all changes",
+            t("git-stage-all-name"),
             GitClientOperation::StageAll,
         ),
         (
             "unstage-all",
-            "Unstage all changes",
+            t("git-unstage-all-name"),
             GitClientOperation::UnstageAll,
         ),
     ] {
-        if let Some(spec) = operation(id, label, OperationKind::Effect, &value) {
+        if let Some(spec) = operation(id, &label, OperationKind::Effect, &value) {
             actions.push(spec);
         }
     }
     actions.push(
         ActionSpec::prompted_operation(
             "commit",
-            "Commit staged changes",
-            "Commit message",
+            t("git-action-commit"),
+            t("git-commit-message"),
             "summary",
             OperationKind::Effect,
             GIT_CLIENT_OPERATION_TYPE,
@@ -528,12 +534,12 @@ pub(crate) fn root_local_operations() -> Vec<ActionSpec> {
                 })
             },
         )
-        .with_description("Create a commit from the currently staged changes"),
+        .with_description(t("git-action-commit-description")),
     );
     actions.push(ActionSpec::prompted_operation(
         "create-branch",
-        "Create branch",
-        "Branch name",
+        t("git-create-branch"),
+        t("git-branch-name"),
         "feature/name",
         OperationKind::Effect,
         GIT_CLIENT_OPERATION_TYPE,
@@ -553,8 +559,8 @@ pub(crate) fn root_local_operations() -> Vec<ActionSpec> {
     ));
     actions.push(ActionSpec::prompted_operation(
         "save-stash",
-        "Stash working changes",
-        "Stash message",
+        t("git-action-stash"),
+        t("git-action-stash-message"),
         "work in progress",
         OperationKind::Effect,
         GIT_CLIENT_OPERATION_TYPE,
@@ -578,7 +584,12 @@ pub(crate) fn root_local_operations() -> Vec<ActionSpec> {
 /// Working-tree status collection — live when hosted, included in standalone
 /// publish when the model carries staged/unstaged/untracked rows.
 pub(crate) fn changes_collection(model: &RepoModel) -> Resource {
-    Resource::new("git_client.changes", "git_client.collection", "Changes").with_children(
+    Resource::new(
+        "git_client.changes",
+        "git_client.collection",
+        t("git-screen-changes"),
+    )
+    .with_children(
         model
             .staged
             .iter()
@@ -594,7 +605,12 @@ pub(crate) fn changes_collection(model: &RepoModel) -> Resource {
 pub(crate) fn document_children(model: &RepoModel) -> Vec<Resource> {
     let mut children = Vec::new();
     children.push(
-        Resource::new("git_client.history", "git_client.collection", "History").with_children(
+        Resource::new(
+            "git_client.history",
+            "git_client.collection",
+            t("git-screen-history"),
+        )
+        .with_children(
             model
                 .commits
                 .iter()
@@ -603,7 +619,12 @@ pub(crate) fn document_children(model: &RepoModel) -> Vec<Resource> {
         ),
     );
     children.push(
-        Resource::new("git_client.branches", "git_client.collection", "Branches").with_children(
+        Resource::new(
+            "git_client.branches",
+            "git_client.collection",
+            t("git-section-branches"),
+        )
+        .with_children(
             model
                 .branches
                 .iter()
@@ -612,38 +633,49 @@ pub(crate) fn document_children(model: &RepoModel) -> Vec<Resource> {
         ),
     );
     children.push(
-        Resource::new("git_client.tags", "git_client.collection", "Tags").with_children(
-            model.tags.iter().take(MAX_CONTEXT_REFS).map(|tag| {
-                Resource::new(
-                    tag_resource_id(&tag.name),
-                    "git_client.tag",
-                    tag.name.clone(),
-                )
-            }),
-        ),
+        Resource::new(
+            "git_client.tags",
+            "git_client.collection",
+            t("git-section-tags"),
+        )
+        .with_children(model.tags.iter().take(MAX_CONTEXT_REFS).map(|tag| {
+            Resource::new(
+                tag_resource_id(&tag.name),
+                "git_client.tag",
+                tag.name.clone(),
+            )
+        })),
     );
     children.push(
-        Resource::new("git_client.stashes", "git_client.collection", "Stashes").with_children(
-            model.stashes.iter().take(MAX_CONTEXT_STASHES).map(|stash| {
-                let mut resource = Resource::new(
-                    format!("git_client.stash:{}", stash.index),
-                    "git_client.stash",
-                    stash.message.clone(),
-                );
-                if let Some(spec) = operation(
-                    "apply",
-                    "Apply stash",
-                    OperationKind::Effect,
-                    &GitClientOperation::ApplyStash { index: stash.index },
-                ) {
-                    resource = resource.with_action(spec);
-                }
-                resource
-            }),
-        ),
+        Resource::new(
+            "git_client.stashes",
+            "git_client.collection",
+            t("git-section-stashes"),
+        )
+        .with_children(model.stashes.iter().take(MAX_CONTEXT_STASHES).map(|stash| {
+            let mut resource = Resource::new(
+                format!("git_client.stash:{}", stash.index),
+                "git_client.stash",
+                stash.message.clone(),
+            );
+            if let Some(spec) = operation(
+                "apply",
+                &t("git-apply-stash"),
+                OperationKind::Effect,
+                &GitClientOperation::ApplyStash { index: stash.index },
+            ) {
+                resource = resource.with_action(spec);
+            }
+            resource
+        })),
     );
     children.push(
-        Resource::new("git_client.remotes", "git_client.collection", "Remotes").with_children(
+        Resource::new(
+            "git_client.remotes",
+            "git_client.collection",
+            t("git-section-remotes"),
+        )
+        .with_children(
             model
                 .remotes
                 .iter()
@@ -668,7 +700,7 @@ pub(crate) fn publish_children(state: &GitClientState) -> Vec<Resource> {
 pub(crate) fn repo_label(model: &RepoModel) -> String {
     let repo_name = model.name.as_str();
     if repo_name.trim().is_empty() {
-        "Repository".to_string()
+        t("git-collection-repository")
     } else {
         repo_name.to_string()
     }
@@ -779,7 +811,7 @@ pub fn resolve_resource(model: &RepoModel, doc: &AutoCommit, id: &str) -> Option
         let mut resource = Resource::new(id, "git_client.stash", stash.message.clone());
         if let Some(spec) = operation(
             "apply",
-            "Apply stash",
+            &t("git-apply-stash"),
             OperationKind::Effect,
             &GitClientOperation::ApplyStash { index: stash.index },
         ) {
@@ -865,13 +897,13 @@ mod tests {
         dispatch(&mut doc, &set_diff_layout_action(DiffLayout::SideBySide));
         dispatch(&mut doc, &GitClientAction::SetSyntaxHighlight { on: false });
         dispatch(&mut doc, &GitClientAction::SetShowWhitespace { on: true });
-        dispatch(&mut doc, &GitClientAction::SetWrapLines { on: true });
+        dispatch(&mut doc, &GitClientAction::SetWrapLines { on: false });
 
         let s = Settings::read_only(&doc);
         assert_eq!(s.diff_layout, DiffLayout::SideBySide);
         assert!(!s.syntax_highlight);
         assert!(s.show_whitespace);
-        assert!(s.wrap_lines);
+        assert!(!s.wrap_lines);
     }
 
     /// A malformed diff-layout payload normalises to the canonical form rather
@@ -979,7 +1011,7 @@ mod tests {
         ],
         undo: [
             diff_layout => |_| encode(&set_diff_layout_action(DiffLayout::SideBySide)).unwrap(),
-            wrap_lines => |_| encode(&GitClientAction::SetWrapLines { on: true }).unwrap(),
+            wrap_lines => |_| encode(&GitClientAction::SetWrapLines { on: false }).unwrap(),
         ],
         encodes: [
             diff_layout => ("git_client.repo", "diff-layout", |_, _| {

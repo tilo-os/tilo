@@ -65,7 +65,9 @@ impl Default for Settings {
             diff_layout: DiffLayout::Unified,
             show_whitespace: false,
             syntax_highlight: true,
-            wrap_lines: false,
+            // Code wraps inside its pane by default, so no line is cut at
+            // the pane edge; turning it off scrolls long lines sideways.
+            wrap_lines: true,
         }
     }
 }
