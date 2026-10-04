@@ -769,6 +769,15 @@ pub fn inspect_live_window<A: ResourceApp, T>(
     Ok(seen)
 }
 
+/// A dispatcher of `R` for testing a surface's own methods without a host:
+/// the edits it applies now ([`Dispatcher::apply_now`]) go through the same
+/// replayable executor a hosted surface's do, attributed to a test author,
+/// onto the document the test hands the surface. Invocations it queues are
+/// resolved by a host only; test those through [`TestApp`].
+pub fn dispatcher<R: Resource>(app_id: &'static str) -> super::Dispatcher<R> {
+    super::Dispatcher::new(app_id, R::KIND, false, Some(AUTHOR))
+}
+
 impl<A: ResourceApp> Drop for HeadlessApp<A> {
     fn drop(&mut self) {
         let _ = self.close();
