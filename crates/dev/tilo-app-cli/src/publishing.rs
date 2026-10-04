@@ -163,6 +163,7 @@ pub fn run_publish(args: PublishArgs) -> Result<Value> {
         &bytes,
         args.arch.as_deref(),
         metadata.as_ref(),
+        &registry_types::retention::RetentionPolicy::default(),
     )?;
     let mut published = Vec::new();
     for (package, outcome) in packages.iter().zip(outcomes) {

@@ -195,6 +195,9 @@ pub struct FileLayer {
     /// Clipped to the layer below.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub clip: bool,
+    /// A mask that stays put when its layer's marks move.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unlinked: bool,
     /// Colour and tone adjustments of everything on the layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adjust: Option<crate::model::Adjust>,
@@ -279,6 +282,7 @@ impl ArtworkFile {
                     base: layer.base,
                     invert: layer.invert,
                     clip: layer.clip,
+                    unlinked: layer.unlinked,
                     adjust: layer.adjust.clone(),
                 })
                 .collect(),

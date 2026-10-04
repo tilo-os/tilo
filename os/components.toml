@@ -269,12 +269,18 @@ files = [
 name = "ush"
 kind = "userspace"
 scope = "session"
-packages = ["ush"]
-bins = ["tilo-ush"]
+packages = ["ush", "tilo-relay", "legacy-vm"]
+bins = ["tilo-ush", "tilo-relay-environment", "tilo-relay-offers", "tilo-legacy"]
 user_units = ["tilo-ush.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-ush", to = "/usr/libexec/tilo-ush", mode = "0755" },
+  # A Terminal environment on a relay: the pty's far end, and what tells
+  # the relay picker which relays run environments.
+  { from = "tilo-relay-environment", to = "/usr/libexec/tilo-relay-environment", mode = "0755" },
+  { from = "tilo-relay-offers", to = "/usr/libexec/tilo-relay-offers", mode = "0755" },
+  # The legacy VM service a guest's app shims reach through the broker.
+  { from = "tilo-legacy", to = "/usr/bin/tilo-legacy", mode = "0755" },
 ]
 
 [[component]]

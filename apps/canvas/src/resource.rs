@@ -627,9 +627,10 @@ impl Resource for ArtworkResource {
             decl::<Paint>(
                 "paint",
                 "Paint strokes",
-                "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
+                "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (pressure sets darkness; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). Answers the new ids. One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass; hatch shades the area its points enclose. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
                 CanvasAction::Paint,
-            ),
+            )
+            .answering(),
             ActionDecl::new("draw", "Draw shapes", params_of::<Draw>(), |args, _now| {
                 let mut draw: Draw = read_args(args)?;
                 for mark in &mut draw.marks {
@@ -637,7 +638,8 @@ impl Resource for ArtworkResource {
                 }
                 Ok(CanvasAction::Draw(draw))
             })
-            .describe("Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes."),
+            .describe("Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Answers the new ids; or give your own. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.")
+            .answering(),
             ActionDecl::new("edit-marks", "Edit marks", params_of::<EditMarks>(), |args, _now| {
                 let mut edit: EditMarks = read_args(args)?;
                 if let Some(shape) = &mut edit.shape {
@@ -793,6 +795,10 @@ impl Resource for ArtworkResource {
         vec![look, inspect, media, export, diff, compare, svg, save]
     }
 
+    fn answer(doc: &Doc, action: &str, changes: &[ui::automerge::Patch]) -> Option<Value> {
+        crate::answer::answer(doc, action, changes)
+    }
+
     fn search(art: &Artwork) -> Vec<SearchEntry> {
         let mut entries = vec![SearchEntry {
             anchor: None,
@@ -862,13 +868,15 @@ fn area_declarations() -> Vec<ActionDecl<ArtworkResource>> {
             crate::author::resolve(&mut select)?;
             Ok(CanvasAction::Select(Box::new(select)))
         })
-        .describe("Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. look outlines it"),
+        .describe("Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. look outlines it")
+        .answering(),
         decl::<crate::selection::UseSelection>(
             "use-selection",
             "Use selection",
             "Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).",
             CanvasAction::UseSelection,
-        ),
+        )
+        .answering(),
         decl::<crate::selection::Combine>(
             "combine",
             "Combine shapes",

@@ -184,6 +184,20 @@ pub enum FloatingSurfaceClientMessage {
     SetCaptureProtection {
         protected: bool,
     },
+    /// One frame of the page this app's window shows, as a paint stream
+    /// (`tilo_paint_stream::wire::Payload`, base64): the session shares it
+    /// with web members as a display list they draw, instead of as video.
+    /// `page` is where the page sits in the window, in logical pixels, and
+    /// `scale` the window's buffer scale, so the session can place input.
+    /// Sent only while the shell has asked for it ([`FloatingSurfaceHostMessage::PaintKeyframe`]).
+    PaintStream {
+        payload: String,
+        page: [f64; 4],
+        scale: f64,
+    },
+    /// This app can stream its window's page (sent once): the shell may ask
+    /// it to with [`FloatingSurfaceHostMessage::PaintKeyframe`].
+    PaintCapable,
     /// Open another instance of this app as a desktop tab right after this
     /// app's own tab (see [`crate::shell_tabs`]). `target` is a URI the app's
     /// manifest declares, or `None` for an empty instance. `instance` is the
@@ -216,6 +230,11 @@ pub enum FloatingSurfaceHostMessage {
     DesktopBounds {
         bounds: [f64; 4],
     },
+    /// Someone started watching this app's window: send its page as a paint
+    /// stream, starting from a whole frame.
+    PaintKeyframe,
+    /// Nobody watches the window any more: stop capturing the page.
+    PaintStop,
     /// Authorises creation of one secondary toplevel. `token` is random and
     /// scoped to this authenticated connection; merely copying an app id can
     /// never gain overlay authority.

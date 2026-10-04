@@ -200,6 +200,7 @@ pub mod offscreen;
 pub mod overlay;
 pub mod paint;
 pub mod paragraph;
+pub mod passcode_keyboard;
 pub mod pen;
 pub mod permissions;
 pub mod persist;

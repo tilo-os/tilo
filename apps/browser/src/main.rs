@@ -50,7 +50,7 @@ extern crate runtime_dylib;
 use std::collections::HashMap;
 
 use browser::browsing_mode::BrowsingMode;
-use browser::{BrowserTabStrip, BrowserTabs, BrowserWidget};
+use browser::{BrowserWidget, BrowserWindow};
 use taffy::prelude::*;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame, ShotLayout};
 use ui::offscreen::OffscreenRenderer;
@@ -91,7 +91,6 @@ fn launch_spec() -> LaunchSpec {
             "--shots-loading",
             "--shots-error",
             "--shots-library",
-            "--shots-tabs",
             "--library-section",
             "--library-filter",
             "--download-state",
@@ -112,12 +111,8 @@ fn launch_spec() -> LaunchSpec {
     reason = "signature is fixed by LaunchSpec's argument-aware root factory"
 )]
 fn browser_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(Box::new(browser_workspace(args)?))
+    Ok(Box::new(browser_window(args)?))
 }
-
-static LAUNCH_SESSION: std::sync::OnceLock<
-    std::sync::Mutex<Result<Option<browser::session::SessionStore>, String>>,
-> = std::sync::OnceLock::new();
 
 #[derive(Clone, Debug)]
 struct LaunchPolicy {
@@ -177,45 +172,20 @@ fn prepare_launch(args: &LaunchArgs) -> Result<&'static LaunchPolicy, String> {
         .map_err(Clone::clone)
 }
 
-fn prepare_session(args: &LaunchArgs) -> Result<(), String> {
-    let policy = prepare_launch(args)?;
-    if !policy.mode.allows_session_recovery() {
-        return Ok(());
-    }
-    let session = LAUNCH_SESSION.get_or_init(|| {
-        std::sync::Mutex::new((|| {
-            let root = browser::storage::data_dir().ok_or("Cannot locate browser app root")?;
-            browser::session::SessionStore::open(&root, browser::session::SessionMode::Normal)
-        })())
-    });
-    match &*session.lock().map_err(|e| e.to_string())? {
-        Ok(_) => Ok(()),
-        Err(error) => Err(error.clone()),
-    }
-}
-
-fn browser_workspace(args: &LaunchArgs) -> Result<BrowserTabs, LaunchError> {
+/// One window, one page. A launch without a page to show starts in the
+/// address field.
+fn browser_window(args: &LaunchArgs) -> Result<BrowserWindow, LaunchError> {
     let policy = prepare_launch(args).map_err(LaunchError::Operation)?;
     if let Some(root) = policy.root.as_deref()
         && policy.mode.is_private()
     {
         tracing::info!(private_root = %root.display(), "Private browser root allocated");
     }
-    prepare_session(args).map_err(LaunchError::Operation)?;
-    let tabs = BrowserTabs::new(browser_widget(args, policy.mode));
-    if policy.mode.is_private() {
-        return Ok(tabs);
-    }
-    let store = LAUNCH_SESSION
-        .get()
-        .and_then(|session| {
-            session
-                .lock()
-                .ok()
-                .and_then(|mut slot| slot.as_mut().ok().and_then(Option::take))
-        })
-        .ok_or_else(|| LaunchError::Operation("Browser recovery store already attached".into()))?;
-    tabs.with_session(store).map_err(LaunchError::Operation)
+    let focus_address = launch_target(args.positionals()).is_none();
+    Ok(BrowserWindow::new(
+        browser_widget(args, policy.mode),
+        focus_address,
+    ))
 }
 
 fn open_browser_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::DocWriter) {
@@ -228,9 +198,6 @@ fn open_browser_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::pe
             ui::State::new(),
             ui::persist::DocWriter::disabled("Private window state is memory-only"),
         );
-    }
-    if let Err(error) = prepare_session(args) {
-        return (ui::State::new(), ui::persist::DocWriter::disabled(error));
     }
     if let Some(root) = browser::storage::explicit_root() {
         let opened = ui::persist::DocStore::open_canonical_at(id, &root.join("document"));
@@ -282,7 +249,7 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
     let mode = prepare_launch(args).map_err(LaunchError::Operation)?.mode;
     let mut engine = None;
     let mut make_root = || -> Result<Box<dyn Widget>, LaunchError> {
-        let widget = browser_workspace(args)?;
+        let widget = browser_window(args)?;
         engine = Some(widget.engine_handle());
         Ok(Box::new(widget))
     };
@@ -310,6 +277,10 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
             let _ = proxy.send_event(ui::app::UserEvent::External("webview-wake".into()));
         }));
     });
+    // Every Browser tab of this profile browses through one Chromium host.
+    // When it is this process's, the window closing must not take the
+    // other tabs' pages down with it.
+    ui::webview::chromium::serve_shared_until_idle();
     Ok(())
 }
 
@@ -332,42 +303,6 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             args,
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
-        return Ok(true);
-    }
-    if let Some(out) = args.value("--shots-tabs") {
-        let size = args
-            .value("--size")
-            .and_then(parse_size)
-            .unwrap_or((800, 620));
-        let descriptors = (1..=32)
-            .map(|id| {
-                ui::widget::TabDescriptor::new(
-                    id,
-                    format!("Fixture tab {id} with a deliberately long title"),
-                )
-            })
-            .collect();
-        let mut tabs = BrowserTabStrip::new(descriptors, 32);
-        tabs.set_pinned(1, true);
-        tabs.set_pinned(2, true);
-        tabs.set_active(32);
-        tabs.set_viewport_width(f64::from(size.0));
-        tabs.set_motion_reduced(true);
-        let favicon = vello::peniko::ImageData {
-            data: vello::peniko::Blob::new(std::sync::Arc::new(vec![
-                20, 110, 230, 255, 255, 190, 20, 255, 255, 80, 80, 255, 30, 190, 100, 255,
-            ])),
-            format: vello::peniko::ImageFormat::Rgba8,
-            alpha_type: vello::peniko::ImageAlphaType::Alpha,
-            width: 2,
-            height: 2,
-        };
-        tabs.set_fixture_visual(1, Some(favicon), false, false, false);
-        tabs.set_fixture_visual(2, None, true, false, false);
-        tabs.set_fixture_visual(30, None, false, true, false);
-        tabs.set_fixture_visual(32, None, false, true, true);
-        render_shot_to_png(Box::new(tabs), size, std::path::Path::new(out), args)
-            .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
     }
     if let Some(out) = args.value("--shots-suggestions") {

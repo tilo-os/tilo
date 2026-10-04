@@ -85,4 +85,7 @@ interface AppHost {
     launchDesktop @9 (desktopId :Text) -> (status :Text);
     flatpak    @10 (action :FlatpakAction, appId :Text, reference :Data) -> (status :Text);
     remote     @11 (action :RemoteAction, name :Text, url :Text) -> (status :Text);
+    # The app repositories this person configured, as `app repo list --json`
+    # reports them: the one list `app`, `tilo update` and the Store share.
+    repositories @12 () -> (json :Text);
 }

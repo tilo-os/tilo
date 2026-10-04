@@ -829,10 +829,13 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         address: &tilo_actions::ActionAddress,
         changes: &[ui_core::automerge::Patch],
     ) -> Option<serde_json::Value> {
-        if address.resource == self.dispatch.resource_id()
-            && super::history::is_edit(&address.action)
-        {
-            return super::history::result(&address.action, doc, changes);
+        if address.resource == self.dispatch.resource_id() {
+            if super::history::is_edit(&address.action) {
+                return super::history::result(&address.action, doc, changes);
+            }
+            if let Some(answer) = R::answer(doc, &address.action, changes) {
+                return Some(answer);
+            }
         }
         ui_core::resources::document_action_result(self.content.as_ref(), doc, address, changes)
     }

@@ -49,6 +49,9 @@ impl WebViewEngine for LiveProbe {
     fn paint_blob(&self, hash: &[u8; 32]) -> Option<std::sync::Arc<Vec<u8>>> {
         self.inner.paint_blob(hash)
     }
+    fn take_paint_stream(&self, keyframe: bool) -> Vec<ui::webview::paint::stream::wire::Payload> {
+        self.inner.take_paint_stream(keyframe)
+    }
     fn drain_events(&self) -> Vec<WebViewEvent> {
         let events = self.inner.drain_events();
         let mut state = self
