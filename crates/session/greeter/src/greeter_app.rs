@@ -1356,8 +1356,10 @@ impl GreeterApp {
 
     fn build_power_footer() -> Box<dyn Widget> {
         Box::new(
+            // Trailing-aligned, not pushed by a spacer: a spacer would cost
+            // the row a gap and wrap the footer a pixel early at large text.
             Row::new()
-                .push(Box::new(Spacer::new()))
+                .with_justify(taffy::JustifyContent::FlexEnd)
                 .push(Box::new(
                     Button::new("greeter.reboot", "Restart", Some(REBOOT_PATH))
                         .role(ButtonRole::Plain)
@@ -3711,9 +3713,11 @@ mod tests {
                     let rect = rect_for(&app, id).expect("power action");
                     let label = accessible_name_for(&app, id).expect("power label");
                     // The shared Button paints its label in its control size's
-                    // role and its 44px target uses a 22px icon with a 6px label gap. Check
-                    // actual font measurement plus at least 8px breathing room on
-                    // each side, independently of Button's intrinsic-width result.
+                    // role after the theme's icon (grown with the text, never past
+                    // the face's inner band) and the icon-label gap. A labelled
+                    // plain button is flush: its ink runs to its layout edge. Check
+                    // actual font measurement, independently of Button's
+                    // intrinsic-width result.
                     #[allow(
                         clippy::cast_possible_truncation,
                         reason = "bounded logical test viewport"
@@ -3725,8 +3729,14 @@ mod tests {
                         &ui::widget::ControlSize::default().label_style(&theme),
                     );
                     assert!(label_width > 0.0 && label_height > 0.0);
+                    let control_height = ui::widget::ControlSize::Regular.height(&theme);
+                    let metrics = &theme.tokens.metrics;
+                    let icon = (f64::from(metrics.icon_md) * f64::from(scale))
+                        .min(control_height - 2.0 * f64::from(theme.tokens.spacing.s1))
+                        .round();
                     assert!(
-                        rect.width() >= f64::from(label_width) + 22.0 + 6.0 + 16.0,
+                        rect.width() + 0.5
+                            >= f64::from(label_width) + icon + f64::from(metrics.icon_label_gap),
                         "{id} at {scale}× cannot contain its painted label and icon: {rect:?}, label={label_width}"
                     );
                     assert!(
