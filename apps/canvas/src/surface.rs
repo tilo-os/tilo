@@ -465,8 +465,20 @@ impl CanvasSurface {
             }
         };
         *self.tools.picking.borrow_mut() = None;
-        let Some(ui::portal::ContentsOutcome::Picked(files)) = answer else {
-            return;
+        // A chooser that could not answer, or a file that is no picture,
+        // is said beside the title, as Files' answers are: never silence.
+        let notice = self.tools.notice.clone();
+        let said = move |why: String| {
+            notice.set(Some(ui::i18n::I18nManager::format(
+                "canvas-picture-failed",
+                &[("why", why.into())],
+            )));
+        };
+        let files = match answer {
+            Some(ui::portal::ContentsOutcome::Picked(files)) => files,
+            Some(ui::portal::ContentsOutcome::Cancelled) => return,
+            Some(ui::portal::ContentsOutcome::Failed(why)) => return said(why),
+            None => return said(ui::i18n::I18nManager::lookup_plain("canvas-chooser-gone")),
         };
         let Some(file) = files.into_iter().next() else {
             return;
@@ -478,15 +490,13 @@ impl CanvasSurface {
                     self.select_made(vec!["picture".into()]);
                     self.tools.tool.set(Tool::Select);
                 }
-                Err(error) => {
-                    tracing::warn!(target: "canvas", %error, "the picture was not opened");
-                }
+                Err(error) => said(error),
             }
             return;
         }
         match crate::resource::keep_picture_bytes(&file.name, &file.bytes) {
             Ok((src, size)) => self.place_picture(src, size),
-            Err(error) => tracing::warn!(target: "canvas", %error, "the picture was not placed"),
+            Err(error) => said(error),
         }
     }
 
