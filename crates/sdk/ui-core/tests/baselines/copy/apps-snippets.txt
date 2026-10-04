@@ -1,8 +1,0 @@
-# The copy ratchet for apps-snippets: counts may only fall (HIG §9.13).
-# Format: <path relative to the repository root> <pattern> <count>
-# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/snippets/src/actions.rs middle_dot_join 1
-apps/snippets/src/app.rs all_caps_label 2
-apps/snippets/src/app.rs middle_dot_join 1
-apps/snippets/src/framework_history.rs middle_dot_join 3
-apps/snippets/src/search_provider.rs middle_dot_join 1
