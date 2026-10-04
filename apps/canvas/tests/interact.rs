@@ -453,6 +453,136 @@ fn a_brush_stroke_is_one_paint() {
     assert!(points[0][2] < 0.5, "it lands lightly");
 }
 
+/// The eraser takes paint off as a mark of its own; switched to whole
+/// strokes, it takes every stroke it crosses in one step.
+#[test]
+fn the_eraser_rubs_out_paint_or_whole_strokes() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    desk.drag((100.0, 450.0), (450.0, 450.0));
+    let painted = desk.art().marks.last().unwrap().id.clone();
+    desk.key("x");
+    desk.drag((275.0, 400.0), (275.0, 500.0));
+    let rub = desk.art().marks.last().cloned().unwrap();
+    assert_eq!(rub.style.brush.as_deref(), Some("eraser"));
+    assert!(rub.style.stroke.is_none(), "an eraser has no colour");
+    desk.shot("eraser-paint");
+
+    let modes = desk.app.harness().targets()["canvas-erasing"];
+    desk.app
+        .harness()
+        .click_at(modes.x1 - modes.width() / 4.0, modes.center().y);
+    let before = desk.art().marks.len();
+    desk.drag((200.0, 400.0), (210.0, 500.0));
+    let art = desk.art();
+    assert!(art.mark(&painted).is_none(), "the crossed stroke is gone");
+    assert_eq!(art.marks.len(), before - 1);
+    assert!(desk.app.undo());
+    assert!(
+        desk.art().mark(&painted).is_some(),
+        "one undo brings it back"
+    );
+}
+
+/// A pen paints with its own pressure, whatever the hand's speed; its
+/// eraser end erases.
+#[test]
+fn a_pen_paints_with_its_pressure_and_erases_with_its_other_end() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    let pen = |desk: &mut Desk, pressure: f64, eraser: bool| {
+        desk.app.harness().send(&WindowEvent::PenSample {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            pressure,
+            tilt: (0.0, 0.0),
+            eraser,
+        });
+    };
+    pen(&mut desk, 0.1, false);
+    desk.pointer(100.0, 450.0);
+    pen(&mut desk, 0.1, false);
+    desk.button(ElementState::Pressed);
+    for (step, x) in [150.0, 200.0, 250.0, 300.0, 350.0, 400.0]
+        .into_iter()
+        .enumerate()
+    {
+        pen(
+            &mut desk,
+            0.25 + 0.14 * f64::from(u32::try_from(step).unwrap()),
+            false,
+        );
+        desk.pointer(x, 450.0);
+    }
+    pen(&mut desk, 0.95, false);
+    desk.button(ElementState::Released);
+    let stroke = desk.art().marks.last().cloned().unwrap();
+    let Shape::Stroke { points, .. } = &stroke.shape else {
+        panic!("a stroke")
+    };
+    assert!(
+        points[0][2] < 0.15,
+        "it lands as lightly as the pen: {points:?}"
+    );
+    assert!(
+        points.last().unwrap()[2] > 0.8,
+        "it lifts as hard as the pen pressed: {points:?}"
+    );
+
+    for (pressure, at) in [(0.8, (200.0, 400.0)), (0.8, (200.0, 500.0))] {
+        pen(&mut desk, pressure, true);
+        desk.pointer(at.0, at.1);
+        if at.1 < 450.0 {
+            pen(&mut desk, pressure, true);
+            desk.button(ElementState::Pressed);
+        }
+    }
+    pen(&mut desk, 0.8, true);
+    desk.button(ElementState::Released);
+    let rub = desk.art().marks.last().cloned().unwrap();
+    assert_eq!(rub.style.brush.as_deref(), Some("eraser"), "{rub:?}");
+}
+
+/// With a stroke selected, the brush landing on its end carries it on; a
+/// double click edits its path, the stretch near a dragged point bending.
+#[test]
+fn a_selected_stroke_is_carried_on_and_bent() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    desk.drag((100.0, 450.0), (300.0, 450.0));
+    let id = desk.art().marks.last().unwrap().id.clone();
+    let count = desk.art().marks.len();
+    desk.key("v");
+    desk.click(200.0, 450.0);
+    desk.key("b");
+    desk.drag((300.0, 450.0), (420.0, 420.0));
+    assert_eq!(
+        desk.art().marks.len(),
+        count,
+        "carried on, not a new stroke"
+    );
+    let Shape::Stroke { points, .. } = desk.mark(&id).shape else {
+        panic!("a stroke")
+    };
+    let end = points.last().unwrap();
+    assert!(
+        near(end[0], 420.0, 0.5) && near(end[1], 420.0, 0.5),
+        "{end:?}"
+    );
+
+    desk.key("v");
+    desk.click(200.0, 450.0);
+    desk.click(200.0, 450.0);
+    desk.drag((420.0, 420.0), (420.0, 380.0));
+    let Shape::Stroke { points, .. } = desk.mark(&id).shape else {
+        panic!("a stroke")
+    };
+    assert!(near(points.last().unwrap()[1], 380.0, 0.5), "{points:?}");
+    assert!(
+        near(points[0][1], 450.0, 0.5),
+        "the far end stays: {points:?}"
+    );
+}
+
 /// Zooming in makes a drag move things less far; Shift+2 and Shift+1
 /// zoom to the selection and back to the whole artwork.
 #[test]
@@ -490,8 +620,7 @@ fn shots() -> std::path::PathBuf {
 #[ignore = "writes screenshots to look at"]
 fn screenshots_of_gestures_in_progress() {
     for scenario in ["selection", "turned", "points", "close-up", "landscape"] {
-        let mut app = TestApp::<App>::new().unwrap();
-        app.stage(Some(scenario)).unwrap();
+        let mut app = TestApp::<App>::capture(Some(scenario)).unwrap();
         let mut desk = Desk {
             canvas: app.harness().targets().get("canvas").copied().unwrap(),
             app,
@@ -549,8 +678,7 @@ fn screenshots_of_gestures_in_progress() {
 
     // A stroke on the oil layer, shown as the oil will paint it before the
     // brush lifts.
-    let mut app = TestApp::<App>::new().unwrap();
-    app.stage(Some("landscape")).unwrap();
+    let mut app = TestApp::<App>::capture(Some("landscape")).unwrap();
     app.harness()
         .perform_named("canvas-layer", &ui::a11y::Action::SetValue("land".into()))
         .unwrap();
@@ -584,4 +712,61 @@ fn screenshots_of_gestures_in_progress() {
     desk.shot("wet-oil-preview");
     desk.button(ElementState::Released);
     desk.shot("wet-oil-painted");
+}
+
+/// A mask rides in its layer's row: its picture beside the layer's, each
+/// choosing what the brush paints, and the strip over the canvas saying
+/// while it is the mask.
+#[test]
+fn a_mask_is_painted_from_its_picture_in_the_layers_row() {
+    let mut desk = Desk::open();
+    let layer = desk.art().top_layer().unwrap().id.clone();
+    desk.app
+        .invoke(canvas::ArtworkResource::SET_LAYER_MASK.with((layer.clone(), "reveal".into())))
+        .expect("a mask is added");
+    let mask = desk.art().mask_of(&layer).unwrap().id.clone();
+    let targets = desk.app.harness().targets();
+    assert!(
+        !targets.contains_key(&format!("canvas-layer-name-{mask}")),
+        "the mask has no row of its own"
+    );
+    // The layer the next brush stroke lands on.
+    let stroke = |desk: &mut Desk| {
+        let before: Vec<String> = desk
+            .art()
+            .marks
+            .iter()
+            .map(|mark| mark.id.clone())
+            .collect();
+        desk.key("b");
+        desk.drag((100.0, 450.0), (300.0, 470.0));
+        let art = desk.art();
+        let new = art.marks.iter().find(|mark| !before.contains(&mark.id));
+        new.expect("a stroke is laid").layer.clone()
+    };
+    // A mask just added is what is painted next.
+    assert_eq!(stroke(&mut desk), mask);
+    assert!(
+        desk.app
+            .harness()
+            .targets()
+            .contains_key("canvas-paint-layer"),
+        "the strip offers the way back to the layer"
+    );
+    desk.shot("mask-painting");
+    desk.app
+        .harness()
+        .click_named(&format!("canvas-paint-{layer}"))
+        .expect("the layer's picture");
+    assert_eq!(stroke(&mut desk), layer);
+    desk.app
+        .harness()
+        .click_named(&format!("canvas-paint-{mask}"))
+        .expect("the mask's picture");
+    assert_eq!(stroke(&mut desk), mask);
+    desk.app
+        .harness()
+        .click_named("canvas-paint-layer")
+        .expect("back to the layer from the strip");
+    assert_eq!(stroke(&mut desk), layer);
 }

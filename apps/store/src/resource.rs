@@ -114,6 +114,7 @@ impl Resource for Store {
                 anchor: Some(format!("store.report:{}", report.app_id)),
                 title: format!("Report · {}", report.app_id),
                 text: report.status.clone(),
+                action: None,
             })
             .collect()
     }
@@ -134,7 +135,9 @@ impl ResourceApp for StoreShell {
     const ID: &'static str = "so.tilo.store";
     const TITLE: &'static str = "App Store";
     const ICON: Option<&'static str> = Some("store");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Store>) -> Element {
         cx.surface(crate::live::LiveStore::surface())

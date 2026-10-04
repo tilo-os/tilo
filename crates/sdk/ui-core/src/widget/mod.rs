@@ -709,6 +709,16 @@ impl EventCtx<'_> {
             taffy: self.taffy,
         }
     }
+
+    /// The stylus that made the `CursorMoved` or `MouseInput` being
+    /// handled: its pressure, tilt and whether the eraser end is in use.
+    /// `None` for a mouse, a touch, or any other event. A pen's tip is the
+    /// left button and its barrel buttons the right and middle ones, so a
+    /// widget needs this only for what a mouse cannot say.
+    #[must_use]
+    pub fn pen(&self) -> Option<PenSample> {
+        crate::pen::current()
+    }
 }
 
 /// One remote participant's live presence (caret/selection), published by a
@@ -2164,6 +2174,7 @@ pub mod binding;
 pub mod capability;
 pub mod controls;
 pub mod decorator;
+pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 
 pub(crate) mod layout;
@@ -2307,7 +2318,7 @@ mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{
     AppCommand, AppHostIntent, AppWidget, DocumentOpenCapability, DocumentOpenOutcome,
-    DocumentOpenReply, IconDescriptor,
+    DocumentOpenReply, HostShellAllow, IconDescriptor,
 };
 pub mod command_palette;
 pub mod input_hint;

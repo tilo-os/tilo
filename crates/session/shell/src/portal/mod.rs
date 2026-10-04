@@ -634,6 +634,8 @@ fn capability_kind_and_scope(capability: &Capability) -> Option<(CapabilityKind,
         Capability::RemoteDesktop { scope } => (CapabilityKind::RemoteDesktop, *scope),
         Capability::Print { scope } => (CapabilityKind::Print, *scope),
         Capability::Network { scope, .. } => (CapabilityKind::Network, *scope),
+        // The shell runtime keeps this decision; no portal asks for it.
+        Capability::HostShell { .. } => return None,
     })
 }
 
@@ -1096,6 +1098,7 @@ pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
         Capability::RemoteDesktop { .. } => Capability::RemoteDesktop { scope },
         Capability::Print { .. } => Capability::Print { scope },
         Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
+        Capability::HostShell { .. } => Capability::HostShell { scope },
     }
 }
 

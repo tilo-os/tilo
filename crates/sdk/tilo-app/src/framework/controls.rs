@@ -11,7 +11,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use tilo_actions::ActionBinding;
-use tilo_resource::{Binds, Invoke, Resource};
+use tilo_resource::{Binds, Effect, Invoke, Resource};
 use ui_core::widget::{
     Button, Checkbox, Dropdown, EditableLabel, NumberInput, Slider, TextInput, Toggle,
 };
@@ -118,6 +118,69 @@ impl<R: Resource> Actions<R> {
     /// `control` (a button), bound to one fully specified invocation.
     pub fn bind_invocation<C: ActionControl<()>>(&self, control: C, invoke: Invoke<R>) -> C {
         match self.invocation(invoke) {
+            Some(binding) => control.bind_action(binding),
+            None => control.unavailable(),
+        }
+    }
+
+    /// The resource as a binding names it, exporting effect `id` of `E`: an
+    /// effect is published beside the resource's actions by the handler a
+    /// view or surface registers, not by the resource type.
+    fn exporting<E: Effect>(&self, id: &str) -> Option<tilo_actions::Resource> {
+        let spec = E::specs().into_iter().find(|spec| spec.id == id)?;
+        Some(tilo_actions::Resource {
+            id: self.published.id.clone(),
+            kind: self.published.kind.clone(),
+            label: self.published.label.clone(),
+            presentation: None,
+            children: Vec::new(),
+            actions: vec![spec],
+            views: Vec::new(),
+        })
+    }
+
+    /// The binding of effect `effect` for a control with input `I`
+    /// (`Backups::RESTORE` for a dropdown of snapshots).
+    pub fn effect_binding<E: Effect, I: 'static>(
+        &self,
+        effect: impl Binds<E, I>,
+    ) -> Option<ActionBinding<I>> {
+        let id = effect.action_id();
+        let resource = self.exporting::<E>(id)?;
+        let spec = resource.actions.first()?.clone();
+        ActionBinding::new(&resource, &spec, move |input| effect.arguments(input))
+            .map_err(|error| tracing::warn!(%error, effect = id, "control not bound"))
+            .ok()
+    }
+
+    /// The binding of one fully specified effect, for a button.
+    pub fn effect<E: Effect>(&self, effect: &E) -> Option<ActionBinding<()>> {
+        let resource = self.exporting::<E>(effect.id())?;
+        let spec = resource.actions.first()?.clone();
+        ActionBinding::static_json(&resource, &spec, effect.arguments())
+            .map_err(|error| tracing::warn!(%error, effect = effect.id(), "control not bound"))
+            .ok()
+    }
+
+    /// `control`, bound to effect `effect`.
+    pub fn bind_effect<E: Effect, I: 'static, C: ActionControl<I>>(
+        &self,
+        control: C,
+        effect: impl Binds<E, I>,
+    ) -> C {
+        match self.effect_binding(effect) {
+            Some(binding) => control.bind_action(binding),
+            None => control.unavailable(),
+        }
+    }
+
+    /// `control` (a button), bound to one fully specified effect.
+    pub fn bind_effect_invocation<E: Effect, C: ActionControl<()>>(
+        &self,
+        control: C,
+        effect: &E,
+    ) -> C {
+        match self.effect(effect) {
             Some(binding) => control.bind_action(binding),
             None => control.unavailable(),
         }

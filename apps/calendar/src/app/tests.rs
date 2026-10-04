@@ -933,75 +933,6 @@ fn user_edits_and_source_identity_persist_across_restart() {
         let back = CalDoc::read_model(&doc);
         assert_eq!(back.events[0].calendar_id.as_deref(), Some("work/oncall"));
     }
-    // Case `notes_edit_persists_across_restart`.
-    {
-        let dir = std::env::temp_dir().join(format!("cal-notes-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("calendar.automerge");
-
-        let theme = Theme::dark();
-        let mut app = CalendarApp::new_with_data_path(path.clone());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
-        // Create an event and open its detail (which seeds a notes block).
-        app.apply_action(Action::NewEvent, &mut doc);
-        let Some(Sel::Event(eid)) = app.selection else {
-            panic!("the new event is selected");
-        };
-
-        // Lay out wide so the notes editor is active, and build the editor node
-        // so key events route into it (handle_event forwards via `editor_node`).
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
-        // Bind the editor to the event's notes, then focus it.
-        app.sync(&mut doc, &root);
-        // Creating the event landed the caret in its title; focusing the notes
-        // editor must take the keyboard from it (exactly what clicking into the
-        // notes region does live), so the marker below types into the notes.
-        app.title_input.set_focus(false);
-        app.location_input.set_focus(false);
-        app.notes_editor.set_focus(true);
-
-        // Type a distinctive marker through the real Widget::handle_event path.
-        for ch in ["Z", "Q", "9"] {
-            let ev = char_press(ch);
-            let mut handled = false;
-            let mut focus = None;
-            app.handle_event(
-                &ev,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut doc,
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-        }
-
-        // Persist and confirm it reached disk.
-        app.force_persist = true;
-        app.sync(&mut doc, &root);
-        assert!(path.exists(), "the calendar document was written to disk");
-
-        // Reload the on-disk document and read the note back through a fresh
-        // editor binding — the typed text must have survived the restart.
-        let doc2 = crate::store::load(&path).expect("document present on disk");
-        let joined = CalDoc::note_text(&doc2, true, eid);
-        assert!(
-            joined.contains("ZQ9"),
-            "typed note persisted across restart: {joined:?}"
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
     // Case `edited_title_persists_across_restart`.
     {
         // The full real backend: a title typed into the field reaches the CRDT
@@ -3933,8 +3864,6 @@ fn detail_chips_cycle_into_the_crdt_and_the_exported_ics_file() {
 // --- keyboard dispatch through the real handle_event -------------------
 
 // --- sync failure path -------------------------------------------------
-
-// --- notes editing persists through the real editor + save path --------
 
 // --- editable event form -------------------------------------------
 

@@ -187,7 +187,9 @@ impl State {
     }
 
     /// Announce every attached pad to each tablet seat that has not seen it
-    /// yet: seats created before the pad appeared, and after.
+    /// yet: seats created before the pad appeared, and after. A seat sees a
+    /// pad once: a client that destroys it declines the pad, and where that
+    /// client has keyboard focus the pad's own mapping applies.
     pub(crate) fn announce_tablet_pads(&mut self) {
         if self.tablet_clients.pads.pads.is_empty() {
             return;
@@ -195,7 +197,8 @@ impl State {
         let dh = self.display_handle.clone();
         let seats = tablet_seats(&dh, self.tablet_clients.client_ids());
         for pad in self.tablet_clients.pads.pads.values_mut() {
-            pad.instances.retain(|instance| instance.pad.is_alive());
+            pad.instances
+                .retain(|instance| seats.iter().any(|seat| seat.id() == instance.seat));
             for seat in &seats {
                 if pad
                     .instances

@@ -1,6 +1,6 @@
 //! Anti-aliased coverage of mark outlines over the few cells they touch.
 
-use crate::grid::{Area, at, float};
+use crate::grid::{Area, at, box_blur, cell, float};
 
 /// Coverage `0..=1` over `area` of a layer grid.
 #[derive(Clone, Debug, PartialEq)]
@@ -174,6 +174,45 @@ pub(crate) fn brush_footprint(
             .iter()
             .map(|value| f32::from(*value) / 255.0)
             .collect(),
+    }
+}
+
+/// How much of the paint an eraser takes off each cell, `0..=1`: its
+/// footprint, softened by its hardness, cut to its clip and scaled by its
+/// strength.
+pub(crate) fn erase_coverage(erase: &crate::engine::Erase, grid: (usize, usize)) -> Coverage {
+    let samples = crate::brush::smooth(&erase.points, 0.5);
+    let size = erase.size.max(0.5);
+    let softness = 1.0 - erase.hardness.clamp(0.0, 1.0);
+    // A soft eraser fades over the outer half of its radius: the footprint
+    // shrinks by a quarter of that span and a box blur of the same reach
+    // ramps from the half radius out to the full one.
+    let reach = softness * size * 0.125;
+    let radius = cell(reach, 256);
+    let mut coverage = brush_footprint(&samples, size - reach * 2.0, 1.0, grid, reach + 2.0);
+    let area = coverage.area;
+    if radius > 0 {
+        coverage.values = box_blur(&coverage.values, area.width(), area.height(), radius);
+    }
+    let clip = (!erase.clip.is_empty()).then(|| fill(&erase.clip, grid.0, grid.1, 1.0, false));
+    let strength = erase.strength.clamp(0.0, 1.0);
+    for (local, value) in coverage.values.iter_mut().enumerate() {
+        let (x, y) = area.position(local);
+        let inside = clip.as_ref().map_or(1.0, |clip| clip.get(x, y));
+        *value = (*value * inside * strength).clamp(0.0, 1.0);
+    }
+    coverage
+}
+
+/// Scale a `width`-wide layer field by `1 - coverage` where the coverage
+/// lies: what an eraser leaves of it.
+pub(crate) fn lift(field: &mut [f32], width: usize, coverage: &Coverage) {
+    let area = coverage.area;
+    for (local, taken) in coverage.values.iter().enumerate() {
+        let (x, y) = area.position(local);
+        if let Some(value) = field.get_mut(at(width, x, y)) {
+            *value *= 1.0 - taken;
+        }
     }
 }
 

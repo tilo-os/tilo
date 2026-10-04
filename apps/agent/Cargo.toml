@@ -33,7 +33,7 @@ word-processor = { path = "../word-processor" }
 # Chat conversation types and actions. Live media features remain disabled for
 # this headless participant.
 chat = { path = "../chat", default-features = false }
-# Image editor types and actions, including cross-app image references.
+# Photos types and actions, including cross-app image references.
 photos = { path = "../photos" }
 tilo-actions = { path = "../../crates/collab/actions" }
 # The transform action names shortcuts lower their `Ai` steps to.

@@ -346,51 +346,107 @@ def touchpad(ctx, res):
                    "the opposite 4-finger swipe switched back")
 
 
-# OVERVIEW_TRANSITION_MS in the shell's overlay host; workspace switches use the same span.
-ANIMATION_MS = 400
+# A transition is over once the compositor has asked for no frame for this long. In a
+# VM the display may take frames slowly; a held transition then paints its steps more
+# slowly, never fewer of them, so the wait is generous.
+TRANSITION_QUIET_MS = 500
+TRANSITION_TIMEOUT_S = 20
 
 
-def _animation_window(ctx, res, name, act, undo):
-    t0 = core.trace_now_us(ctx)
+def _transition(ctx, res, name, act, reached):
+    mark = core.trace_mark(ctx)
     act()
-    time.sleep(1.2)
-    undo()
-    time.sleep(1.2)
-    rows = core.trace_since(core.read_trace(ctx), t0 + 1)
-    ctx.write(f"W16-{name}-frames.csv", "\n".join(",".join(str(v) for v in r.values()) for r in rows))
-    stats = core.burst_stats(rows, ANIMATION_MS)
-    res.metrics[name] = stats
-    return stats
+    rows, quiet = core.trace_until_quiet(ctx, mark, TRANSITION_QUIET_MS, TRANSITION_TIMEOUT_S)
+    ctx.write(f"W16-{name}-frames.csv", core.trace_csv(rows))
+    st = core.transition_stats(rows)
+    st["settled"] = quiet
+    st["cpu_recorded"] = core.has_cpu(rows)
+    res.metrics[name] = st
+    if not reached(ctx.state()):
+        raise CheckFailed(f"{name}: the transition did not reach its end state")
 
 
-@check("W16", AREA, "Animations are paced: overview and workspace transitions paint many frames with no stalls")
+def _judge(name, st, b, hardware) -> tuple[list[str], list[str]]:
+    """(problems, unobservable) for one transition."""
+    problems, unseen = [], []
+    if not st["settled"] or (st["frames"] == 0 and st["blocked_ticks"]):
+        held = (f"{name}: the display took {st['frames']} frames in {TRANSITION_TIMEOUT_S} s while "
+                f"the compositor waited {st['display_wait_ms']} ms on it with a frame ready")
+        if hardware:
+            problems.append(held)
+        else:
+            unseen.append(held + " (the virtual display stalled; QEMU presents on its own timer)")
+        return problems, unseen
+    if st["frames"] < b["animation_min_frames"]:
+        problems.append(f"{name}: {st['frames']} frames painted (a jump, not an animation; "
+                        f"want >= {b['animation_min_frames']})")
+    if st["late_ms_p95"] is not None and st["late_ms_p95"] > b["frame_late_ms_p95"]:
+        cpu = st.get("longest_tick_cpu_ms")
+        split = ("" if cpu is None else
+                 f"; its longest loop tick ran {st['longest_tick_ms']} ms, {cpu} ms of it on the CPU, "
+                 f"blocked or descheduled for the rest")
+        problems.append(f"{name}: frames submitted p95 {st['late_ms_p95']} ms after the compositor's "
+                        f"own deadline > {b['frame_late_ms_p95']} ms{split}")
+    if not st["cpu_recorded"]:
+        unseen.append(f"{name}: the frame trace carries no per-tick CPU time (cpu_us); the "
+                      "installed compositor predates it")
+    elif st["cpu_ms_max"] > b["frame_cpu_ms_max"]:
+        problems.append(f"{name}: a {st['cpu_ms_max']} ms CPU stall in the compositor loop "
+                        f"> {b['frame_cpu_ms_max']} ms")
+    if st["input_to_first_frame_compositor_ms"] is None:
+        unseen.append(f"{name}: no painted frame carried the input's latency")
+    elif st["input_to_first_frame_compositor_ms"] > b["input_first_frame_ms"]:
+        problems.append(f"{name}: first frame {st['input_to_first_frame_compositor_ms']} ms after the "
+                        f"input (display waits taken out) > {b['input_first_frame_ms']} ms")
+    if hardware:
+        if (st["span_ms"] or 0) > b["transition_ms_max"]:
+            problems.append(f"{name}: the transition took {st['span_ms']} ms first to last frame "
+                            f"> {b['transition_ms_max']} ms")
+        if (st["present_interval_ms_p95"] or 0) > b["paint_period_ms_p95"]:
+            problems.append(f"{name}: frame interval p95 {st['present_interval_ms_p95']} ms "
+                            f"> {b['paint_period_ms_p95']} ms")
+        if (st["present_interval_ms_max"] or 0) > b["paint_gap_ms_max"]:
+            problems.append(f"{name}: a {st['present_interval_ms_max']} ms stall between frames "
+                            f"> {b['paint_gap_ms_max']} ms")
+    return problems, unseen
+
+
+@check("W16", AREA, "Animations are paced: overview and workspace transitions paint many frames "
+                    "with no stalls", needs=("workspaces",))
 def animations(ctx, res):
+    # The compositor's side is judged everywhere: frames painted per transition, their
+    # lateness against its own deadlines, CPU per tick, input to first frame. On a
+    # virtual display, presentation intervals are the host's and are only recorded.
     ctx.reset()
     ctx.new_terminal_window()
     ctx.settle(1.5)
-    budgets = ctx.config["budgets"]
-    stats = _animation_window(ctx, res, "overview",
-                              lambda: ctx.vm.key("super+Tab"), lambda: ctx.vm.key("Escape"))
-    if ctx.facts.get("workspaces"):
-        _animation_window(ctx, res, "workspace_switch",
-                          lambda: ctx.vm.key("super+pagedown"), lambda: ctx.vm.key("super+pageup"))
-    res.metrics["renderer"] = ctx.facts.get("renderer")
-    problems = []
-    for name, st in ((k, v) for k, v in res.metrics.items() if isinstance(v, dict)):
-        # One burst for the open, one for the close; each should be an animation, not a jump.
-        few = [n for n in st["frames_per_burst"][:2] if n < budgets["animation_min_frames"]]
-        if len(st["frames_per_burst"]) < 2 or few:
-            problems.append(f"{name}: frames per transition {st['frames_per_burst']} "
-                            f"(a jump, not an animation; want >= {budgets['animation_min_frames']} "
-                            f"in each of open and close)")
-        if st["interval_ms_p95"] and st["interval_ms_p95"] > budgets["paint_period_ms_p95"]:
-            problems.append(f"{name}: frame interval p95 {st['interval_ms_p95']} ms inside the "
-                            f"transition > {budgets['paint_period_ms_p95']} ms")
-        if st["interval_ms_max"] and st["interval_ms_max"] > budgets["paint_gap_ms_max"]:
-            problems.append(f"{name}: a {st['interval_ms_max']} ms stall inside the transition "
-                            f"> {budgets['paint_gap_ms_max']} ms")
-    expect(not problems, "; ".join(problems) + f" [renderer: {ctx.facts.get('renderer')}]")
-    del stats
+    display = ctx.facts.get("display") or {}
+    hardware = bool(display.get("hardware"))
+    res.metrics.update(renderer=ctx.facts.get("renderer"), display=display)
+    overview = lambda s: core.overlays(s)["overview"]  # noqa: E731
+    _transition(ctx, res, "overview_open", lambda: ctx.vm.key("super+Tab"), overview)
+    _transition(ctx, res, "overview_close", lambda: ctx.vm.key("Escape"), lambda s: not overview(s))
+    st = ctx.state()
+    first = st["workspace_tree"]["active"]
+    ids = [w["id"] for w in st["workspace_tree"]["workspaces"]]
+    # Page Down walks towards the end of the list; from the last workspace walk back first.
+    there, back = ("super+pagedown", "super+pageup")
+    if ids.index(first) == len(ids) - 1:
+        there, back = back, there
+    _transition(ctx, res, "workspace_switch", lambda: ctx.vm.key(there),
+                lambda s: s["workspace_tree"]["active"] != first)
+    _transition(ctx, res, "workspace_back", lambda: ctx.vm.key(back),
+                lambda s: s["workspace_tree"]["active"] == first)
+    b = ctx.config["budgets"]
+    problems, unseen = [], []
+    for name in ("overview_open", "overview_close", "workspace_switch", "workspace_back"):
+        p, u = _judge(name, res.metrics[name], b, hardware)
+        problems += p
+        unseen += u
+    where = f" [renderer: {ctx.facts.get('renderer')}]"
+    expect(not problems, "; ".join(problems + unseen) + where)
+    if unseen:
+        raise Unobservable("; ".join(unseen) + where)
 
 
 def _find_probe(ctx, name):

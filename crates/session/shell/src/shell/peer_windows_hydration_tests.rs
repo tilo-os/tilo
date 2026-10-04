@@ -97,6 +97,7 @@ fn a_continued_window_waits_for_its_record_then_reopens_on_it() {
                 app_id: APP.into(),
                 label: "Available on another device".into(),
                 note: String::new(),
+                missing: None,
             },
         }],
         width: WindowWidth::Normal,

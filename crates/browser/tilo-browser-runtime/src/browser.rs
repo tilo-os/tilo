@@ -1725,11 +1725,8 @@ pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
         m.desktop
             .as_ref()
             .map(|d| {
-                serde_json::to_string(
-                    &d.handle
-                        .snapshot(&d.generation, crate::desktop::catalogue()),
-                )
-                .map_err(error)
+                serde_json::to_string(&d.handle.snapshot(&d.generation, d.shared.catalogue()))
+                    .map_err(error)
             })
             .transpose()
     })
@@ -1798,6 +1795,68 @@ pub fn desktop_peer_windows(id: u64) -> Result<Option<String>, JsValue> {
                 serde_json::to_string(&windows).map_err(error)
             })
             .transpose()
+    })
+}
+
+/// List the legacy applications the node beside the host runs (`[{id,
+/// title}]` JSON, `id` what the node opens): desktop search and the
+/// navigation catalogue offer them, and opening one is handed to the page
+/// ([`desktop_take_node_app_requests`]).
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount or malformed JSON.
+#[wasm_bindgen]
+pub fn desktop_set_node_apps(id: u64, apps: &str) -> Result<(), JsValue> {
+    let apps: Vec<crate::desktop::NodeApp> = serde_json::from_str(apps).map_err(error)?;
+    with_mount(id, |m| {
+        m.desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?
+            .shared
+            .set_node_apps(apps);
+        Ok(())
+    })
+}
+
+/// The node applications the person asked to open since the last call (a
+/// JSON array of their ids): the page asks the node to open each, and its
+/// window arrives as a legacy window.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_take_node_app_requests(id: u64) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        let requests = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?
+            .shared
+            .take_node_app_requests();
+        serde_json::to_string(&requests).map_err(error)
+    })
+}
+
+/// The legacy windows the person closed since the last call (a JSON array
+/// of their keys): the page asks their sources to close them, and the
+/// desktop does not open them again while they still stream.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_dismissed_peer_windows(id: u64) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let keys = desktop
+            .handle
+            .read(|tree| desktop.shared.take_dismissed_peer_windows(tree));
+        serde_json::to_string(&keys).map_err(error)
     })
 }
 

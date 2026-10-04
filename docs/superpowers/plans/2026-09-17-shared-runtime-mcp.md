@@ -16,7 +16,7 @@
 - One MCP endpoint, instance-qualified identities, bounded lazy discovery, fresh invocation resolution, unchanged canonical results/content references.
 - Accepted is not Succeeded; no automatic mutation replay; confirmations are never fabricated.
 - Runtime adapter contains no Photos/Writer-specific behavior.
-- Preserve concurrent work; stage only owned files/hunks. No push, merge, GUI activity or broad formatting without controller coordination.
+- No GUI activity or broad formatting without controller coordination.
 - Existing Unix host is the native validation target; no unsupported Windows claims or speculative remote federation.
 
 ### Task 1: Shared broker-backed MCP adapter
@@ -67,7 +67,7 @@
 **Evidence:** native6 transcript invocation2 Accepted then Failed invalid_arguments for valid region `0.16666666666666666,0,0.6666666666666666,1`. The published Rust string at line620 doubles the regex escape for decimal points. Existing crop tests invoke Prompted build directly, bypassing typed schema validation.
 - [ ] Add failing regression through the actual published crop declaration and canonical ActionArgs/schema validator, not just parse_crop_arg or Prompted build. Accept decimal center-crop coordinates, integer boundaries and supported whitespace; reject numeric JSON values, malformed coordinates and out-of-range numeric tokens. Preserve current geometric crop parser behavior; no new semantics for fits/empty-region validation in this repair.
 - [ ] Fix only escaping of decimal point syntax in the existing schema, using a readable literal. No MCP-specific routes, schema bypass, new dependency or general validation redesign.
-- [ ] Run focused regression RED/GREEN and relevant Photos action tests; self-review and commit only this owned file. No GUI launch, no subagents or broad formatting. Report full commands/results/logs and exact commit at `.superpowers/sdd/2026-09-17-shared-runtime-mcp/task-5-report.md`. Independent task review precedes Task3 rebuild/retry.
+- [ ] Run focused regression RED/GREEN and relevant Photos action tests; self-review and commit only this owned file. No GUI launch or broad formatting. Report full commands/results/logs and exact commit. Independent task review precedes Task3 rebuild/retry.
 
 **Task5 diagnosis correction:** The declared Photos schema is valid. A regression using the actual declaration and canonical validator passes the exact native coordinates. No Photos production change is justified. Retain the validator regression; remove the unsupported textual escape assertion captured by an unrelated external WIP checkpoint. Native failure comes from MCP argument encoding (Task6).
 
@@ -77,4 +77,4 @@
 - [ ] Add failing transport regression through real broker fixture: capture the delivered invocation argument, require the existing canonical typed prefix, decode it and assert exact original map preservation (text including JSON-looking text, numeric/bool values, content hash and empty map). Use an existing fixture seam or narrow cfg(test) extension, not a production test hook.
 - [ ] Encode MCP tool argument maps using the existing typed-argument prefix before `try_start_resolved`. No new protocol or registry; preserve host actor, atomic current-revision resolution, confirmation refusal and no-replay behavior.
 - [ ] Demonstrate decoded valid crop region binds as typed text and numeric region fails canonical type validation, rather than being coerced into legacy prompt text. Test the meaningful boundary, not only a string literal.
-- [ ] Run RED/GREEN and relevant adapter/broker tests, self-review, commit only owned hunks, report `.superpowers/sdd/2026-09-17-shared-runtime-mcp/task-6-report.md`. No GUI, subagents, unrelated formatting or additional app fixes. Independent review precedes native Task3 rebuild/retry.
+- [ ] Run RED/GREEN and relevant adapter/broker tests, self-review, commit only owned hunks, report. No GUI, unrelated formatting or additional app fixes. Independent review precedes native Task3 rebuild/retry.

@@ -491,7 +491,7 @@ mod document_lifecycle_tests {
                 .write()
                 .native_document_tabs
                 .insert(tabs[1], reference);
-            session.tree.read().flush_to_disk();
+            session.tree.read().queue_save();
             drop(driver);
             drop(session.chrome);
             drop(session.records);

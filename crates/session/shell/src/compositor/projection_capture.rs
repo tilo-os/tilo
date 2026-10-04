@@ -10,7 +10,7 @@
 
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
 use tilo_projector::{CaptureProfile, DisplayStreamPolicy, VideoPacket};
@@ -31,12 +31,10 @@ struct RawFrame {
     rgba: Vec<u8>,
     fps: u32,
     bitrate_kbps: u32,
-    reset_encoder: bool,
 }
 
 struct EncoderWorker {
     tx: SyncSender<RawFrame>,
-    packets: Receiver<VideoPacket>,
 }
 
 impl EncoderWorker {
@@ -44,7 +42,6 @@ impl EncoderWorker {
     /// it, in which case capture stays unavailable rather than panicking the compositor.
     fn spawn(socket_path: Option<PathBuf>) -> Option<Self> {
         let (tx, rx) = mpsc::sync_channel::<RawFrame>(1);
-        let (packet_tx, packets) = mpsc::sync_channel::<VideoPacket>(1);
         let spawned = std::thread::Builder::new()
             .name("tilo-projection-encoder".to_owned())
             .spawn(move || {
@@ -53,10 +50,6 @@ impl EncoderWorker {
                 let mut reported_unavailable = false;
                 let mut encoder_profile = None;
                 while let Ok(frame) = rx.recv() {
-                    if frame.reset_encoder {
-                        encoder = None;
-                        encoder_profile = None;
-                    }
                     if stream.is_none()
                         && let Some(socket_path) = socket_path.as_ref()
                         && let Ok(connected) = UnixStream::connect(socket_path)
@@ -64,7 +57,11 @@ impl EncoderWorker {
                         stream = Some(connected);
                         // A new broker connection must begin with fresh SPS/PPS.
                         encoder = None;
+                        encoder_profile = None;
                     }
+                    let Some(active_stream) = stream.as_mut() else {
+                        continue;
+                    };
                     let profile = (frame.width, frame.height, frame.fps, frame.bitrate_kbps);
                     if encoder_profile != Some(profile) {
                         encoder = match build(
@@ -111,13 +108,7 @@ impl EncoderWorker {
                         keyframe: stats.keyframe,
                         annex_b,
                     };
-                    let _ = packet_tx.try_send(packet.clone());
-                    // The branch above either just set `stream` to `Some` or `continue`d, so
-                    // this is always populated; handled rather than asserted regardless.
-                    if stream
-                        .as_mut()
-                        .is_some_and(|active_stream| packet.write_to(active_stream).is_err())
-                    {
+                    if packet.write_to(active_stream).is_err() {
                         stream = None;
                         encoder = None;
                         encoder_profile = None;
@@ -125,7 +116,7 @@ impl EncoderWorker {
                 }
             });
         match spawned {
-            Ok(_handle) => Some(Self { tx, packets }),
+            Ok(_handle) => Some(Self { tx }),
             Err(e) => {
                 tracing::warn!(
                     target: "shell::compositor::projection",
@@ -135,10 +126,6 @@ impl EncoderWorker {
                 None
             }
         }
-    }
-
-    fn take_packet(&self) -> Option<VideoPacket> {
-        self.packets.try_recv().ok()
     }
 
     fn submit(&self, frame: RawFrame) -> bool {
@@ -161,8 +148,6 @@ pub struct ProjectionCapture {
     hardware_profile: CaptureProfile,
     accepted_since_pressure: u32,
     last_profile_check: Option<Instant>,
-    personal_profile: Option<CaptureProfile>,
-    reset_encoder: bool,
 }
 
 impl Default for ProjectionCapture {
@@ -185,21 +170,7 @@ impl ProjectionCapture {
             hardware_profile: profile,
             accepted_since_pressure: 0,
             last_profile_check: None,
-            personal_profile: None,
-            reset_encoder: false,
         }
-    }
-
-    pub fn set_personal_profile(&mut self, profile: Option<CaptureProfile>) {
-        self.personal_profile = profile;
-    }
-
-    pub fn request_keyframe(&mut self) {
-        self.reset_encoder = true;
-    }
-
-    pub fn take_packet(&self) -> Option<VideoPacket> {
-        self.worker.as_ref().and_then(EncoderWorker::take_packet)
     }
 
     /// Render and queue a desktop scene. Returns `true` when a frame was
@@ -222,10 +193,7 @@ impl ProjectionCapture {
             }
             self.last_profile_check = Some(now);
         }
-        let ceiling = self.personal_profile.map_or(self.profile, |personal| {
-            clamp_profile(self.profile, personal)
-        });
-        let effective_profile = clamp_profile(self.hardware_profile, ceiling);
+        let effective_profile = clamp_profile(self.hardware_profile, self.profile);
         let frame_interval = Duration::from_secs_f64(1.0 / f64::from(effective_profile.fps.max(1)));
         if self
             .last_frame
@@ -256,7 +224,6 @@ impl ProjectionCapture {
             rgba,
             fps: effective_profile.fps,
             bitrate_kbps: effective_profile.bitrate_kbps,
-            reset_encoder: std::mem::take(&mut self.reset_encoder),
         });
         self.last_frame = Some(now);
         if accepted {
@@ -395,7 +362,6 @@ mod tests {
             rgba: vec![0x44; 320 * 240 * 4],
             fps: 30,
             bitrate_kbps: 2_000,
-            reset_encoder: false,
         }));
         let (mut stream, _) = listener.accept().expect("encoder connection");
         stream

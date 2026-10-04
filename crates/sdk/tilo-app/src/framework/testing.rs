@@ -10,19 +10,23 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use tilo_resource::{Invoke, Resource};
-use ui_core::application::{ApplicationHost, ComponentRunnerInputs};
+use tilo_resource::{Effect, Invoke, Resource};
+use ui_core::application::{
+    ApplicationHost, Capture, ComponentRunnerInputs, OpenFile, PreparedComponentInputs,
+};
 use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{Actor, PermissionContext, Role, UserId};
 
 const AUTHOR: &str = "test-author";
-use ui_core::record::{RecordCheckout, RecordStore};
+use ui_core::record::{RecordCheckout, RecordId, RecordStore};
 
 use super::app::{
-    DATA_DIR_INSTANCE, ResourceApp, data_dir_host, default_record, definition, role_permissions,
+    DATA_DIR_INSTANCE, ResourceApp, data_dir_host, definition, hand_launch, prepare_on,
+    role_permissions, settle_launch,
 };
+use super::launch::LaunchInput;
 
 const INSTANCE: u64 = 7;
 
@@ -31,6 +35,36 @@ enum Profile {
     Temporary(Rc<tempfile::TempDir>),
     /// An explicit `--data-dir` profile the app itself would open.
     DataDir(PathBuf),
+}
+
+/// A component prepared on a private or explicit profile keeps its settings
+/// in that profile too, never in the person's session document.
+pub(crate) fn with_settings_file(
+    mut prepared: PreparedComponentInputs,
+    file: std::path::PathBuf,
+) -> PreparedComponentInputs {
+    prepared
+        .context
+        .provide_settings(ui_core::storage::SettingsDocument::File(file));
+    prepared
+}
+
+/// The settings document of a `--data-dir` profile.
+pub(crate) fn data_dir_settings(directory: &std::path::Path) -> std::path::PathBuf {
+    std::path::absolute(directory)
+        .unwrap_or_else(|_| directory.to_path_buf())
+        .join("settings.json")
+}
+
+impl Profile {
+    /// The profile's settings document, which the app's typed settings use
+    /// instead of the person's.
+    fn settings(&self) -> PathBuf {
+        match self {
+            Self::Temporary(directory) => directory.path().join("settings.json"),
+            Self::DataDir(directory) => data_dir_settings(directory),
+        }
+    }
 }
 
 /// One framework app mounted headlessly: a test, a fixture seeder or an
@@ -42,6 +76,8 @@ pub struct HeadlessApp<A: ResourceApp> {
     instance: u64,
     profile: Profile,
     role: Role,
+    /// The last effect [`Self::effect`] invoked.
+    last_effect: Option<tilo_actions::InvocationId>,
     /// Shared with the host: changing it is a role change the running app
     /// sees, as when the record's owner changes someone's access.
     permissions: Rc<RefCell<PermissionContext>>,
@@ -70,7 +106,71 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Returns any launch, storage or construction failure.
     pub fn with_role(role: Role) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
-        Self::open(Profile::Temporary(profile), role)
+        Self::open(Profile::Temporary(profile), role, &[], None, None)
+    }
+
+    /// The frame `--shots --scenario` writes for `scenario` (`None` for a
+    /// plain `--shots`): the app built for a capture on a fresh profile,
+    /// from the scenario's fixture, with its actions applied and its view
+    /// state staged, at the scenario's viewport.
+    ///
+    /// # Errors
+    /// Returns any launch failure, or the host's refusal of a scenario
+    /// action.
+    pub fn capture(scenario: Option<&str>) -> Result<Self, LaunchError> {
+        Self::capture_at(scenario, A::shot_viewport(scenario))
+    }
+
+    /// [`Self::capture`] at `viewport`, as `--shots --viewport` draws it.
+    ///
+    /// # Errors
+    /// As [`Self::capture`].
+    pub fn capture_at(scenario: Option<&str>, viewport: (u32, u32)) -> Result<Self, LaunchError> {
+        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let mut app = Self::open(
+            Profile::Temporary(profile),
+            Role::Owner,
+            &[],
+            None,
+            Some((Capture::new(scenario.map(str::to_owned)), viewport)),
+        )?;
+        super::stage::stage::<A>(app.harness(), scenario)?;
+        Ok(app)
+    }
+
+    /// The app launched by its owner with `arguments`, as `app ARGUMENTS`
+    /// on the command line: on the record [`ResourceApp::launch_record`]
+    /// names, after its [`ResourceApp::launch`] actions.
+    ///
+    /// # Errors
+    /// Returns any launch, storage or construction failure.
+    pub fn launched(arguments: &[&str]) -> Result<Self, LaunchError> {
+        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
+        Self::open(
+            Profile::Temporary(profile),
+            Role::Owner,
+            &arguments,
+            None,
+            None,
+        )
+    }
+
+    /// The app handed `file` to open by a host that already chose its
+    /// record (the default one here), as the shell's "open with" does.
+    ///
+    /// # Errors
+    /// Returns any launch, storage or construction failure, and the refusal
+    /// of a file of a type the app does not [open](ResourceApp::OPENS).
+    pub fn handed(file: OpenFile) -> Result<Self, LaunchError> {
+        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        Self::open(
+            Profile::Temporary(profile),
+            Role::Owner,
+            &[],
+            Some(file),
+            None,
+        )
     }
 
     /// The app on the profile `--data-dir directory` opens, as its owner.
@@ -80,10 +180,22 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// Returns any launch, storage or construction failure.
     pub fn open_data_dir(directory: &std::path::Path) -> Result<Self, LaunchError> {
-        Self::open(Profile::DataDir(directory.to_path_buf()), Role::Owner)
+        Self::open(
+            Profile::DataDir(directory.to_path_buf()),
+            Role::Owner,
+            &[],
+            None,
+            None,
+        )
     }
 
-    fn open(profile: Profile, role: Role) -> Result<Self, LaunchError> {
+    fn open(
+        profile: Profile,
+        role: Role,
+        arguments: &[String],
+        file: Option<OpenFile>,
+        capture: Option<(Capture, (u32, u32))>,
+    ) -> Result<Self, LaunchError> {
         let author = UserId(AUTHOR.into());
         let permissions = role_permissions(AUTHOR, role);
         let (mut host, instance) = match &profile {
@@ -106,18 +218,32 @@ impl<A: ResourceApp> HeadlessApp<A> {
         };
         let definition = definition::<A>();
         let records = host.records_for(definition)?;
-        let checkout = default_record::<A>();
-        let prepared = host.prepare_default(
+        let named = A::launch_record(&LaunchInput::new(arguments, None));
+        let mut prepared = prepare_on(
+            &mut host,
             definition,
             instance,
-            checkout.clone(),
-            None,
+            named,
             ComponentRunnerInputs::from_native_process(),
         )?;
+        let checkout = prepared.context.record().clone();
+        hand_launch(definition, arguments, &mut prepared)?;
+        if let Some(file) = file {
+            prepared.context.provide_open_file(file);
+        }
+        let viewport = match capture {
+            Some((capture, viewport)) => {
+                prepared.context.provide_capture(capture);
+                viewport
+            }
+            None => A::shot_viewport(None),
+        };
+        let prepared = with_settings_file(prepared, profile.settings());
         let component =
             definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
-        let harness =
-            FrameHarness::from_component(component, A::SHOT_VIEWPORT, prepared.runner_inputs)?;
+        let mut harness =
+            FrameHarness::from_component(component, viewport, prepared.runner_inputs)?;
+        settle_launch(&mut harness);
         Ok(Self {
             harness: Some(harness),
             records,
@@ -125,9 +251,17 @@ impl<A: ResourceApp> HeadlessApp<A> {
             instance,
             profile,
             role,
+            last_effect: None,
             permissions,
             marker: std::marker::PhantomData,
         })
+    }
+
+    /// The app's typed settings in this profile's settings document, which
+    /// the running app follows: a write here is what another window, the
+    /// Settings app or another of the person's devices writing them does.
+    pub fn settings<T: ui_core::storage::SettingsSchema>(&self) -> ui_core::storage::Settings<T> {
+        ui_core::storage::Settings::for_app(A::ID).in_file(self.profile.settings())
     }
 
     /// Change the participant's role while the app runs, as the record's
@@ -145,7 +279,16 @@ impl<A: ResourceApp> HeadlessApp<A> {
     ///
     /// # Errors
     /// Returns the flush or relaunch failure.
-    pub fn reopen(mut self) -> Result<Self, LaunchError> {
+    pub fn reopen(self) -> Result<Self, LaunchError> {
+        self.relaunch(&[])
+    }
+
+    /// Close the app and launch it again on the same profile with
+    /// `arguments`, as `app ARGUMENTS` run again would.
+    ///
+    /// # Errors
+    /// Returns the flush or relaunch failure.
+    pub fn relaunch(mut self, arguments: &[&str]) -> Result<Self, LaunchError> {
         self.close()?;
         let profile = match &self.profile {
             Profile::Temporary(directory) => Profile::Temporary(Rc::clone(directory)),
@@ -154,7 +297,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let role = self.role;
         // Release this instance's record writer before the next one opens it.
         drop(self);
-        Self::open(profile, role)
+        let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
+        Self::open(profile, role, &arguments, None, None)
+    }
+
+    /// The record the app shows.
+    pub fn record(&self) -> &RecordId {
+        &self.checkout.id
     }
 
     /// Make every edit so far durable, as closing the app does.
@@ -191,6 +340,29 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// permission or the action's own refusal.
     pub fn invoke(&mut self, invoke: Invoke<A::Resource>) -> Result<(), tilo_actions::DoorError> {
         self.invoke_as(invoke, false)
+    }
+
+    /// Invoke an action of the resource nested in this one at `resource` —
+    /// a child resource a view edits through [`Dispatcher::child`](super::Dispatcher::child)
+    /// — through the host door, as the palette, an agent or a script
+    /// addresses it.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn invoke_child<C: Resource>(
+        &mut self,
+        resource: &str,
+        invoke: Invoke<C>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        let Invoke { id, arguments, .. } = invoke;
+        let address = BoundActionAddress {
+            instance_id: self.instance,
+            address: tilo_actions::ActionAddress::new(resource, id),
+        };
+        let harness = self.harness();
+        harness.invoke_bound_action(&address, &arguments)?;
+        harness.relayout();
+        Ok(())
     }
 
     /// [`Self::invoke`] after the caller confirmed it, as the host's
@@ -251,6 +423,89 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(started.completed())
     }
 
+    /// Invoke one of the app's effects through the host door, as a button,
+    /// the palette or an agent does, and wait for its answer: what it
+    /// reported at once, or the result of the job it started. Progress the
+    /// job reported is in [`FrameHarness::job_updates`].
+    ///
+    /// # Errors
+    /// Returns the host's refusal or the effect's failure.
+    pub fn effect<E: Effect>(
+        &mut self,
+        effect: &E,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        self.effect_as(effect, false)
+    }
+
+    /// [`Self::effect`] after the caller confirmed it, as the host's
+    /// confirmation prompt does for a destructive effect.
+    ///
+    /// # Errors
+    /// As [`Self::effect`].
+    pub fn effect_confirmed<E: Effect>(
+        &mut self,
+        effect: &E,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        self.effect_as(effect, true)
+    }
+
+    /// What the job of the last [`Self::effect`] reported, in order: its
+    /// progress, then its result.
+    pub fn effect_progress(&mut self) -> Vec<tilo_actions::InvocationUpdate> {
+        let Some(invocation) = self.last_effect else {
+            return Vec::new();
+        };
+        self.harness().job_updates(invocation).to_vec()
+    }
+
+    fn effect_as<E: Effect>(
+        &mut self,
+        effect: &E,
+        confirmed: bool,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        let address = BoundActionAddress {
+            instance_id: self.instance,
+            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, effect.id()),
+        };
+        let (invocation, started) =
+            self.harness()
+                .start_bound_job(&address, &effect.arguments(), confirmed)?;
+        self.last_effect = Some(invocation);
+        let harness = self.harness();
+        if let Some(output) = started.completed() {
+            harness.relayout();
+            return Ok(output);
+        }
+        let finished = |harness: &FrameHarness| {
+            harness
+                .job_updates(invocation)
+                .iter()
+                .find(|update| update.is_terminal())
+                .cloned()
+        };
+        harness.wait_until(ui_core::time::Duration::from_secs(30), |harness| {
+            finished(harness).is_some()
+        });
+        match finished(harness) {
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+                Err(tilo_actions::DoorError::Failed(error.message))
+            }
+            Some(_) => Err(tilo_actions::DoorError::Failed("cancelled".into())),
+            None => Err(tilo_actions::DoorError::Failed(format!(
+                "`{}` did not finish",
+                effect.id()
+            ))),
+        }
+    }
+
+    /// Run the frame the app runs after an event: edits the views and
+    /// effects submitted are applied, and what they change is drawn.
+    pub fn settle(&mut self) {
+        self.harness()
+            .wait_until(ui_core::time::Duration::ZERO, |_| true);
+    }
+
     /// Invoke any published action of the resource by id with JSON
     /// arguments, as an agent's `tilo_invoke` does — the framework's own
     /// (`undo`, `history`, `render`) as well as the app's — and answer with
@@ -285,9 +540,34 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.call_within(Some(&ambient), id, arguments)
     }
 
+    /// [`Self::call`] on another published resource than the app's own: a
+    /// child, an item, or a live row a surface shows (`"job:7"`), addressed
+    /// by its id.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn call_on(
+        &mut self,
+        resource: &str,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+        self.call_at(None, resource, id, arguments)
+    }
+
     fn call_within(
         &mut self,
         ambient: Option<&tilo_actions::ActionContext>,
+        id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
+        self.call_at(ambient, <A::Resource as Resource>::KIND, id, arguments)
+    }
+
+    fn call_at(
+        &mut self,
+        ambient: Option<&tilo_actions::ActionContext>,
+        resource: &str,
         id: &str,
         arguments: serde_json::Value,
     ) -> Result<Option<serde_json::Value>, tilo_actions::DoorError> {
@@ -298,7 +578,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         };
         let address = BoundActionAddress {
             instance_id: self.instance,
-            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, id),
+            address: tilo_actions::ActionAddress::new(resource, id),
         };
         let harness = self.harness();
         let started = match ambient {
@@ -394,16 +674,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .unwrap_or_default()
     }
 
-    /// Stage a screenshot scenario (`None` for a plain `--shots`) exactly as
-    /// the launcher does before a capture: its actions, then its view state.
-    /// The harness then holds the frame `--shots --scenario` would write.
-    ///
-    /// # Errors
-    /// Returns the host's refusal of a scenario action.
-    pub fn stage(&mut self, scenario: Option<&str>) -> Result<(), LaunchError> {
-        super::stage::stage::<A>(self.harness(), scenario)
-    }
-
     /// The version at `heads` as History mode previews it: the app's own
     /// view, read-only, over the document as it was then.
     ///
@@ -418,7 +688,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .read(&self.checkout.id, |doc| doc.clone().fork_at(heads))
             .ok_or("the record is not open")?
             .map_err(|error| error.to_string())?;
-        super::preview::render_past::<A>(past, A::SHOT_VIEWPORT)
+        super::preview::render_past::<A>(past, A::shot_viewport(None))
     }
 
     /// A collaborator's edit arriving: `edit` writes on their own replica of
@@ -463,6 +733,40 @@ impl<A: ResourceApp> HeadlessApp<A> {
         harness.relayout();
         redone
     }
+}
+
+/// Inspect the window `A`'s live launch opens: the same definition and
+/// component, mounted in a native [`ui_core::App`] on a fresh private
+/// profile, without running its event loop. For what the window itself
+/// declares, such as capture protection.
+///
+/// # Errors
+/// Returns any launch, storage or construction failure.
+pub fn inspect_live_window<A: ResourceApp, T>(
+    inspect: impl FnOnce(&ui_core::App) -> T,
+) -> Result<T, LaunchError> {
+    let profile = tempfile::tempdir().map_err(operation)?;
+    let mut host = ApplicationHost::new(
+        profile.path().join("state"),
+        "test-device".into(),
+        "test-workspace",
+        UserId(AUTHOR.into()),
+        role_permissions(AUTHOR, Role::Owner),
+        tilo_actions::ActionContext::default(),
+    )?;
+    let definition = definition::<A>();
+    let prepared = prepare_on(
+        &mut host,
+        definition,
+        INSTANCE,
+        None,
+        ComponentRunnerInputs::from_native_process(),
+    )?;
+    let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
+    let mut app = ui_core::App::from_component(component, prepared.runner_inputs)?;
+    let seen = inspect(&app);
+    app.close_components();
+    Ok(seen)
 }
 
 impl<A: ResourceApp> Drop for HeadlessApp<A> {

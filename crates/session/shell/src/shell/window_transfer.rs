@@ -970,7 +970,7 @@ fn follow(
     // Its launch opens this instance, which reopens on the record brought.
     let mut tree = st.tree_mut();
     tree.remember_local_app_record(tab, instance);
-    tree.flush_to_disk();
+    tree.queue_save();
     drop(tree);
     None
 }
@@ -1341,7 +1341,7 @@ fn place_in(st: &mut ChromeState, workspace: WorkspaceId, strip: StripId, tab: T
             .unwrap_or_default();
         tilo_desktop_model::desktop_doc::rewrite_strip_groups(&mut tree.doc, strip, &groups);
         tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
-        tree.flush_to_disk();
+        tree.queue_save();
         id
     };
     st.bump();
@@ -1644,7 +1644,7 @@ fn roll_back(
             let mut tree = st.tree_mut();
             let removed = crate::shell::tab_binding::remove_tab(&mut tree, tab);
             if removed {
-                tree.flush_to_disk();
+                tree.queue_save();
             }
             removed
         };
@@ -1767,7 +1767,7 @@ fn close_source(
         _ => {
             let mut tree = st.tree_mut();
             if crate::shell::tab_binding::remove_tab(&mut tree, plan.tab) {
-                tree.flush_to_disk();
+                tree.queue_save();
             }
         }
     }

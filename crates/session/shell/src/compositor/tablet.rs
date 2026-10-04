@@ -42,6 +42,9 @@ pub const BTN_STYLUS3: u32 = 0x149;
 pub struct TabletClients {
     clients: HashSet<ClientId>,
     pub(crate) pads: crate::compositor::tablet_pad::TabletPads,
+    /// The tablet-aware surface (and its global origin) a pen stroke
+    /// started in, while the tip is down.
+    pub(crate) stroke: Option<(u64, (f64, f64))>,
 }
 
 impl TabletClients {

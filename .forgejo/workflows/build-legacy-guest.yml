@@ -1,0 +1,238 @@
+name: Build / legacy VM guest
+
+# The Linux legacy VM guest disk: Fedora bootc with Flatpak and Flathub, the
+# waypipe Wayland forwarder, Xwayland, Mesa and Tilo's vsock guest agent. The
+# agent is built from this revision, the image from the mirrored Fedora base,
+# installed to a qcow2 and booted once until the agent serves. The disk is
+# published as a single-layer OCI image, signed with the release key, and its
+# digest proposed for os/legacy-guest-snapshot.env through a protected-main
+# pull request. `tilo-legacy` fetches only that digest.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - os/Containerfile.legacy-guest
+      - os/legacy-guest/**
+      - os/base-snapshot.env
+      - os/dev/legacy-guest-snapshot.sh
+      - os/dev/legacy-guest-smoke.sh
+      - os/dev/open-snapshot-pr.py
+      - crates/runtime/legacy-agent/**
+      - crates/runtime/legacy-agent-protocol/**
+      - .forgejo/workflows/build-legacy-guest.yml
+
+concurrency:
+  group: build-legacy-guest
+  cancel-in-progress: true
+
+jobs:
+  builder:
+    uses: ./.forgejo/workflows/resolve-builder.yml
+    secrets: inherit
+
+  agent:
+    needs: builder
+    runs-on: runner
+    timeout-minutes: 60
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 1
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+      - name: Build the guest agent
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p legacy-agent --bin tilo-legacy-agent
+          install -D -m 0755 target/release/tilo-legacy-agent out/tilo-legacy-agent
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: legacy-agent-x86_64
+          path: out/tilo-legacy-agent
+          if-no-files-found: error
+
+  # Fail in seconds, before the disk build, when the signing authority is
+  # missing or no longer matches the committed trust root. Only main signs:
+  # a branch run builds and boots the guest but publishes nothing.
+  signing-preflight:
+    if: github.ref == 'refs/heads/main'
+    runs-on: runner
+    timeout-minutes: 5
+    enable-openid-connect: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install checksum-pinned Cosign
+        uses: ./.forgejo/actions/install-cosign
+        with:
+          cache-architecture: x86_64
+      - name: Require non-exportable signing authority
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+        run: os/dev/require-cosign-authority.sh
+
+  build:
+    needs: [agent, signing-preflight]
+    if: ${{ !cancelled() && needs.agent.result == 'success' && needs.signing-preflight.result != 'failure' }}
+    runs-on: runner-disk-100g
+    timeout-minutes: 150
+    enable-openid-connect: true
+    env:
+      GUEST_IMAGE: localhost/tilo-legacy-guest:ci
+      OUT: /var/tmp/legacy-guest-disk
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require a native x86-64 runner
+        run: ./os/dev/assert-native-arch.sh x86_64
+      - name: Install image and disk tooling
+        run: |
+          set -euo pipefail
+          sudo -n true || {
+            echo "::error::disk installation requires the runner's passwordless, Kata-confined sudo"
+            exit 1
+          }
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends \
+              btrfs-progs dosfstools e2fsprogs fuse-overlayfs jq ovmf podman qemu-system-x86 \
+              qemu-utils skopeo slirp4netns systemd uidmap util-linux
+          elif command -v dnf >/dev/null; then
+            sudo -n dnf install -y btrfs-progs dosfstools e2fsprogs edk2-ovmf fuse-overlayfs jq \
+              podman qemu-img qemu-system-x86-core skopeo slirp4netns systemd util-linux
+          else
+            echo '::error::the disk runner must provide apt-get or dnf'
+            exit 1
+          fi
+          command -v jq podman qemu-img qemu-system-x86_64 skopeo systemd-repart >/dev/null
+      # Kata's job container has a static /dev; its guest kernel provides FUSE
+      # and loop nodes once devtmpfs is mounted.
+      - name: Expose guest FUSE and loop devices
+        run: |
+          set -euo pipefail
+          sudo -n modprobe fuse 2>/dev/null || true
+          sudo -n modprobe loop 2>/dev/null || true
+          if [[ ! -c /dev/fuse || ! -c /dev/loop-control ]]; then
+            sudo -n mount -t devtmpfs devtmpfs /dev
+            sudo -n mkdir -p /dev/pts /dev/shm
+            [ "$(stat -f -c %T /dev/pts)" = devpts ] || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+            mountpoint -q /dev/shm || sudo -n mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+          fi
+          test -c /dev/fuse && test -c /dev/loop-control
+          sudo -n chmod 0666 /dev/fuse
+          sudo -n losetup --find >/dev/null
+      - name: Use native Podman overlay storage
+        run: ./os/dev/ci-native-podman-store.sh
+      - name: Install checksum-pinned Cosign
+        uses: ./.forgejo/actions/install-cosign
+        with:
+          cache-architecture: x86_64
+      - name: Load the mirrored Fedora base
+        run: grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: legacy-agent-x86_64
+          path: os/legacy-guest/agent
+      - name: Build the guest image
+        run: |
+          set -euo pipefail
+          chmod 0755 os/legacy-guest/agent/tilo-legacy-agent
+          podman build --pull=always -f os/Containerfile.legacy-guest \
+            --build-arg "BASE_REF=$BASE_REF" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -t "$GUEST_IMAGE" .
+      - name: Install the guest to a disk
+        timeout-minutes: 45
+        env:
+          TILO_QCOW2_COMPRESS: "1"
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT"
+          ./os/dev/disk-image.sh "$GUEST_IMAGE" "$OUT" --bootloader grub --rootfs ext4 --size 16G
+          test -s "$OUT/disk.qcow2"
+      - name: Boot the disk until the agent serves
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          if ! python3 os/dev/probe-kvm.py x86_64; then
+            echo "::error::this runner has no KVM; an unbooted guest is never published"
+            exit 1
+          fi
+          sudo -n chmod 0666 /dev/kvm
+          [[ ! -e /dev/vhost-vsock ]] || sudo -n chmod 0666 /dev/vhost-vsock
+          ./os/dev/legacy-guest-smoke.sh "$OUT/disk.qcow2"
+      # Only main publishes: the release signing identity trusts main alone.
+      - name: Log in to registry.tilo.so
+        if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the disk as a single-layer image
+        if: github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          wrap=$(mktemp -d /var/tmp/legacy-guest-wrap.XXXXXX)
+          sudo -n install -m 0644 -o "$(id -u)" -g "$(id -g)" "$OUT/disk.qcow2" "$wrap/disk.qcow2"
+          printf 'FROM scratch\nCOPY disk.qcow2 /disk.qcow2\n' > "$wrap/Containerfile"
+          tag="registry.tilo.so/tilo/legacy-guest:x86_64-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          podman build -f "$wrap/Containerfile" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$tag" "$wrap"
+          digest_file=$(mktemp /var/tmp/legacy-guest-digest.XXXXXX)
+          podman push --digestfile "$digest_file" "$tag"
+          digest=$(tr -d '[:space:]' < "$digest_file")
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "LEGACY_GUEST_REF=registry.tilo.so/tilo/legacy-guest@$digest" >> "$GITHUB_ENV"
+      - name: Sign with the non-exportable release key
+        if: github.ref == 'refs/heads/main'
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+        run: |
+          . os/dev/configure-cosign-kms.sh
+          cosign sign --yes --key "$COSIGN_KEY_REF" "$LEGACY_GUEST_REF"
+      - name: Verify the signature and record the immutable reference
+        if: github.ref == 'refs/heads/main'
+        run: os/dev/legacy-guest-snapshot.sh record "$LEGACY_GUEST_REF"
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: github.ref == 'refs/heads/main'
+        with:
+          name: legacy-guest-x86_64
+          path: refs/x86_64.env
+          if-no-files-found: error
+      - name: Revoke local registry credentials
+        if: always()
+        run: |
+          podman logout registry.tilo.so 2>/dev/null || true
+          docker logout registry.tilo.so 2>/dev/null || true
+
+  promote:
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' && github.ref == 'refs/heads/main' }}
+    runs-on: runner
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ github.token }}
+          fetch-depth: 0
+          filter: blob:none
+      - name: Install checksum-pinned Cosign
+        uses: ./.forgejo/actions/install-cosign
+        with:
+          cache-architecture: x86_64
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: legacy-guest-x86_64
+          path: refs/x86_64
+      # Protected main accepts no direct pushes: the pin lands through a PR so
+      # the required checks and merge policy apply.
+      - name: Verify the signature and propose the pin through protected main
+        env:
+          FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: os/dev/legacy-guest-snapshot.sh promote

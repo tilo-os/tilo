@@ -219,3 +219,41 @@ fn a_group_exports_alone_cropped_to_it() {
     let refused = app.operate(op.with(vec!["nothing".into()])).unwrap_err();
     assert!(refused.to_string().contains("nothing"), "{refused}");
 }
+
+/// A pencil stroke exports as its picture, an outline preset as a path,
+/// and an eraser as a mask over what came before it on its layer.
+#[test]
+fn brush_presets_and_erasers_export_as_they_are_drawn() {
+    let mut app = TestApp::<App>::new().expect("the app opens");
+    let stroke = |id: &str, y: f64, brush: &str| canvas::actions::NewStroke {
+        id: Some(id.into()),
+        points: vec![vec![20.0, y, 0.6], vec![200.0, y, 1.0]],
+        size: 8.0,
+        colour: "#202020".into(),
+        brush: Some(brush.into()),
+        ..canvas::actions::NewStroke::default()
+    };
+    app.invoke(ArtworkResource::PAINT.with((
+        None,
+        vec![
+            stroke("graphite", 40.0, "pencil"),
+            stroke("ink", 80.0, "pen"),
+            canvas::actions::NewStroke {
+                id: Some("rub".into()),
+                points: vec![vec![100.0, 10.0], vec![100.0, 120.0]],
+                size: 20.0,
+                brush: Some("eraser".into()),
+                ..canvas::actions::NewStroke::default()
+            },
+        ],
+    )))
+    .expect("painted");
+    let exported = operate(&mut app, "export-svg");
+    let svg = exported["svg"]
+        .as_str()
+        .expect("small enough to answer inline");
+    assert!(svg.contains(r#"<image id="graphite""#), "{svg}");
+    assert!(svg.contains(r#"<path id="ink""#), "{svg}");
+    assert!(svg.contains(r#"<mask id="e-rub""#), "{svg}");
+    assert!(svg.contains(r#"<g mask="url(#e-rub)">"#), "{svg}");
+}

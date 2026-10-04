@@ -1,0 +1,28 @@
+[package]
+autotests = false
+name = "tilo-egress"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "DNS-allowlisted egress for a sandbox's own network namespace: a DNS stub that answers only granted names, and nftables that admit only the addresses it answered."
+
+[lib]
+name = "tilo_egress"
+path = "src/lib.rs"
+
+[dependencies]
+libc.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

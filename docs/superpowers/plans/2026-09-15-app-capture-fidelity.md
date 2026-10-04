@@ -14,8 +14,7 @@
 
 - Preserve primary actions, keyboard access, state and explicit manual dimensions.
 - Keep legacy renderer-relative font APIs compatible; theme-resolved fonts must scale once.
-- Preserve unrelated working changes and untracked Scratchpad ownership.
-- No pushes, merges, publishing or dependency upgrades.
+- No dependency upgrades.
 - Do not fix application composition in this capture-only subproject.
 
 ### Task 1: Unify custom screenshot theme and measurement setup

@@ -195,6 +195,9 @@ pub struct WindowGroup {
     /// `(press-time cursor x, press-time resolved width in px)`.
     resize_origin: Option<(f32, f64)>,
     pub hover_resize: bool,
+    /// The pointer entered or left the resize band since the last frame,
+    /// which shows or hides the grip.
+    grip_dirty: bool,
     pub maximized: bool,
     pub search_active: bool,
     /// The active group of the active strip, set by the shell each frame.
@@ -380,6 +383,7 @@ impl WindowGroup {
             external_navigation: false,
             resize_origin: None,
             hover_resize: false,
+            grip_dirty: false,
             maximized: false,
             search_active: false,
             focused: false,
@@ -1000,6 +1004,7 @@ impl WindowGroup {
             external_navigation: false,
             resize_origin: None,
             hover_resize: false,
+            grip_dirty: false,
             maximized: false,
             search_active: false,
             focused: false,
@@ -1328,7 +1333,9 @@ impl WindowGroup {
                 self.last_cursor = pt;
                 // A maximized group owns the output; its former tiled-width
                 // grip must neither paint nor remain an active resize target.
-                self.hover_resize = !self.maximized && handle_rect.contains(pt);
+                let hover = !self.maximized && handle_rect.contains(pt);
+                self.grip_dirty |= hover != self.hover_resize;
+                self.hover_resize = hover;
                 self.restore_hover = self.maximized && self.restore_rect.contains(pt);
                 self.close_hover = self.maximized && self.close_rect.contains(pt);
                 if self.resize_origin.is_some() {
@@ -1606,7 +1613,8 @@ impl WindowGroup {
         }
     }
 
-    /// The two-bar resize grip on the group's trailing edge. The hit zone
+    /// The two-bar resize grip on the group's trailing edge, shown while
+    /// the pointer is in its band or a resize is under way. The hit zone
     /// (`RESIZE_HANDLE_PX = 6`) is wider than the painted grip so the
     /// cursor catches it early.
     #[allow(
@@ -2386,7 +2394,14 @@ impl Widget for WindowGroup {
             }
         }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
-        if !self.maximized && !self.external_navigation {
+        // Only under the pointer or while dragging: at rest the grip sits on
+        // the window's own trailing edge, over its content, where it reads
+        // as that app's scrollbar (and stays put when the app's panels go).
+        // The east-west cursor already marks the band before it shows.
+        if !self.maximized
+            && !self.external_navigation
+            && (self.hover_resize || self.resize_origin.is_some())
+        {
             self.draw_resize_grip(scene, transform, theme);
         }
 
@@ -2516,7 +2531,13 @@ impl Widget for WindowGroup {
         // Redraw follows the presentation tree. Retained inactive hosts still
         // participate in resources, lifecycle, components and ownership, but
         // they are not drawn or marked drawn until selected.
-        self.children().into_iter().any(Widget::needs_redraw)
+        self.grip_dirty || self.children().into_iter().any(Widget::needs_redraw)
+    }
+    fn mark_drawn(&mut self) {
+        self.grip_dirty = false;
+        for child in self.children_mut() {
+            child.mark_drawn();
+        }
     }
     /// Layout follows the built tree: the tab bar (whenever it was built) and
     /// the active host. Inactive hosts have no taffy nodes until they are
@@ -2712,6 +2733,84 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The trailing-edge grip lies over the window's own content, so at
+    /// rest it is not painted: an app's panels came and went under a pair
+    /// of bars that looked like their scrollbar. Hovering the band or
+    /// dragging shows it.
+    #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "sample points are small positive pixel coordinates"
+    )]
+    fn the_resize_grip_shows_only_under_the_pointer_or_while_resizing() {
+        use crate::offscreen::OffscreenRenderer;
+        use taffy::prelude::TaffyMaxContent;
+        let theme = Theme::dark();
+        let mut renderer = OffscreenRenderer::new(400, 300);
+        let mut render = |group: &mut WindowGroup| {
+            let mut tree = TaffyTree::new();
+            let node = group.build_layout(&mut tree, &theme, &mut Default::default());
+            let mut style = tree.style(node).unwrap().clone();
+            style.size.width = Dimension::length(200.0);
+            tree.set_style(node, style).unwrap();
+            let root = tree.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::length(200.0),
+                        height: Dimension::length(240.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            );
+            tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
+            group.apply_layout(&tree, node, Point::new(100.0, 30.0));
+            let mut scene = Scene::new();
+            group.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 255))
+        };
+        let mut group = make_group();
+        let idle = render(&mut group);
+        let rect = group.rect;
+        let (x, y) = (rect.x1 - RESIZE_HANDLE_PX / 2.0 - 2.0, rect.center().y);
+        let at = |rgba: &[u8], x: f64, y: f64| {
+            let (r, g, b, _) = OffscreenRenderer::sample(rgba, 400, x as u32, y as u32);
+            (r, g, b)
+        };
+        // Nothing on the edge at the grip's height that is not also there
+        // well below it.
+        let below = rect.y1 - 40.0;
+        assert_eq!(
+            at(&idle, x, y),
+            at(&idle, x, below),
+            "an idle group paints a grip over its window's edge"
+        );
+
+        group.hover_resize = true;
+        let hovered = render(&mut group);
+        assert_ne!(
+            at(&hovered, x, y),
+            at(&idle, x, y),
+            "the grip shows under the pointer"
+        );
+
+        group.hover_resize = false;
+        group.begin_resize(px_f32(rect.x1));
+        let dragging = render(&mut group);
+        assert_ne!(
+            at(&dragging, x, y),
+            at(&idle, x, y),
+            "the grip shows while resizing"
+        );
     }
 
     fn make_group() -> WindowGroup {

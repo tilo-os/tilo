@@ -196,6 +196,7 @@ pub mod offscreen;
 pub mod overlay;
 pub mod paint;
 pub mod paragraph;
+pub mod pen;
 pub mod permissions;
 pub mod persist;
 pub mod platform;

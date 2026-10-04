@@ -333,6 +333,7 @@ impl PowerService {
     }
 
     fn apply_active_profile(&mut self, profile: &str) {
+        self.bridge.note_active_profile(profile);
         let policy = crate::config::load_policy_for_profile(Some(profile));
         if policy == self.policy {
             return;

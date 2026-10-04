@@ -32,7 +32,11 @@ for almost every component; `apps+runtime` uses `thin-app`) with the
 manifest's features plus each package's `dev-overrides` feature. So the
 binary runs at realistic speed and still honours the harness variables
 (`TILO_TEST_CONTROL` and friends) that release builds without the feature
-ignore. `--profile dev` compiles much faster and runs slower; use it while
+ignore. A `release` layer links as a dev image links its own binaries: without
+LTO and with sixteen codegen units, so a warm rebuild recompiles the changed
+crates and links them without re-optimising the whole program (published
+images use thin LTO).
+`--profile dev` compiles much faster and runs slower; use it while
 iterating on logic, not for performance or timing work. The layer's
 provenance records the profile. `--profile` applies only to
 `--from worktree` components, not to apps or CI builds.

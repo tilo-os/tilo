@@ -943,6 +943,7 @@ impl App {
         let mut app = retirement_assembly::assemble(root_custody);
         app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
         app.appearance_reconcile = behaviour.appearance_reconcile;
+        app.set_capture_protected(behaviour.capture_protected);
         if let Some(registration) = history
             && let Err(error) = app.install_history(registration)
         {

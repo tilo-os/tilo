@@ -152,6 +152,28 @@ pub struct Action {
     /// Act in this app's window alone (an app id from `tilo_list_apps`).
     #[serde(default)]
     pub app_id: Option<String>,
+    /// Make a `left_click_drag` a pen stroke with this tip pressure.
+    #[serde(default)]
+    pub pressure: Option<Pressure>,
+}
+
+/// A pen's tip pressure along a stroke, each value `0.0..=1.0`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum Pressure {
+    /// The same pressure all along.
+    Constant(f64),
+    /// Pressures spread evenly from the stroke's start to its end.
+    Along(Vec<f64>),
+}
+
+impl Pressure {
+    fn values(&self) -> Vec<f64> {
+        match self {
+            Self::Constant(pressure) => vec![*pressure],
+            Self::Along(pressures) => pressures.clone(),
+        }
+    }
 }
 
 /// A step's outcome: text for the model and, unless suppressed, a frame.
@@ -344,9 +366,17 @@ impl Turn<'_> {
                     None => self.cursor().0,
                 };
                 let to = self.point(action.coordinate)?;
-                self.with_modifier(action.modifier.as_deref(), || {
-                    self.send(&json!({"op":"drag","x_from":from.0,"y_from":from.1,"x_to":to.0,"y_to":to.1,"steps":12}))
-                })?;
+                let drag = match &action.pressure {
+                    // A pen samples a stroke far more densely than a mouse
+                    // drag needs to.
+                    Some(pressure) => {
+                        json!({"op":"drag","x_from":from.0,"y_from":from.1,"x_to":to.0,"y_to":to.1,"steps":48,"pressure":pressure.values()})
+                    }
+                    None => {
+                        json!({"op":"drag","x_from":from.0,"y_from":from.1,"x_to":to.0,"y_to":to.1,"steps":12})
+                    }
+                };
+                self.with_modifier(action.modifier.as_deref(), || self.send(&drag))?;
                 self.set_cursor(to);
             }
             "scroll" => self.scroll(action)?,
@@ -911,6 +941,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "no_screenshot":{"type":"boolean"},
             "format":{"type":"string","enum":["jpeg","png"]},
             "quality":{"type":"integer","minimum":1,"maximum":95},
+            "pressure":{"description":"left_click_drag as a pen stroke: tip pressure 0-1, or a list spread along the drag","anyOf":[{"type":"number","minimum":0,"maximum":1},{"type":"array","items":{"type":"number","minimum":0,"maximum":1},"minItems":1}]},
             "app_id":{"type":"string","description":"Act in this app's window alone: it takes focus, screenshots show just it and coordinates are its pixels from its top-left (a point of the app's render plus the render's window_origin)"}
         },
         "required":["action"],
