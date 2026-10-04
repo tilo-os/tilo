@@ -3180,12 +3180,12 @@ dependencies = [
 name = "disk-usage"
 version = "0.1.0"
 dependencies = [
- "fnv",
  "runtime-dylib",
  "serde",
  "serde_json",
  "tilo-app",
  "tilo-paths",
+ "tracing",
  "workspace-hack",
 ]
 
