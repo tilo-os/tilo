@@ -2346,38 +2346,42 @@ impl State {
     /// One frame of an app's page stream: kept for viewers that start later
     /// and sent to every paint share of the app's windows.
     pub fn receive_paint_frame(&mut self, app_id: &str, frame: PaintFrame) {
+        let PaintFrame {
+            payload,
+            page,
+            scale,
+        } = frame;
         let Some(app) = self.paint_apps.get_mut(app_id) else {
             return;
         };
-        app.page = frame.page;
-        app.scale = frame.scale;
-        if ui::webview::paint::stream::wire::Payload::is_key(&frame.payload) {
+        app.page = page;
+        app.scale = scale;
+        if ui::webview::paint::stream::wire::Payload::is_key(&payload) {
             app.group.clear();
             app.group_bytes = 0;
         }
-        app.group_bytes = app.group_bytes.saturating_add(frame.payload.len());
-        if app.group_bytes > MAX_PAINT_GROUP_BYTES {
+        app.group_bytes = app.group_bytes.saturating_add(payload.len());
+        let keep = app.group_bytes <= MAX_PAINT_GROUP_BYTES;
+        if !keep {
             // Too long to replay: start the next viewer from a new frame.
             app.group.clear();
             app.group_bytes = 0;
             app.keyframe_wanted = true;
-        } else {
-            app.group.push(frame.payload.clone());
         }
-        if self.legacy_stream_publisher.is_none() {
-            return;
+        if self.legacy_stream_publisher.is_some() {
+            let sessions = self
+                .active_sessions
+                .values()
+                .filter(|session| session.is_paint() && session.app_id == app_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            for session in sessions {
+                let _ =
+                    self.publish_legacy(session.surface_id, session.paint_message(payload.clone()));
+            }
         }
-        let sessions = self
-            .active_sessions
-            .values()
-            .filter(|session| session.is_paint() && session.app_id == app_id)
-            .cloned()
-            .collect::<Vec<_>>();
-        for session in sessions {
-            let _ = self.publish_legacy(
-                session.surface_id,
-                session.paint_message(frame.payload.clone()),
-            );
+        if keep && let Some(app) = self.paint_apps.get_mut(app_id) {
+            app.group.push(payload);
         }
     }
 
