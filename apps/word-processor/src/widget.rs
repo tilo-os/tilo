@@ -95,8 +95,8 @@ use image_layout::{
     wrap as image_wrap,
 };
 use layout_cache::{ShapeKeyInput, shape_key};
-pub use proofing::PersonalDictionary;
 use proofing::misspelled_spans;
+pub use proofing::{PersonalDictionary, WriterLayout};
 #[cfg(test)]
 use text_runs::block_runs;
 use text_runs::{
@@ -1230,6 +1230,12 @@ struct ProofingPreferences {
     personal: Option<ui::framework::Setting<proofing::PersonalDictionary>>,
     /// The personal words the dictionary was last built with.
     personal_words: proofing::PersonalDictionary,
+    /// The person's spelling preferences every app follows, which name the
+    /// language words are checked in; `None` until attached.
+    shared: Option<ui::framework::Setting<ui::text_assistance::TextAssistancePrefs>>,
+    /// The shared spelling language last applied, so a change made in
+    /// Settings (or on another device) reaches an open editor once.
+    applied_language: Option<String>,
 }
 
 impl ProofingPreferences {
@@ -1247,6 +1253,8 @@ impl ProofingPreferences {
             },
             personal: None,
             personal_words: proofing::PersonalDictionary::default(),
+            shared: None,
+            applied_language: None,
         }
     }
 }
@@ -1471,6 +1479,12 @@ pub struct WordProcessorWidget {
     /// A screenshot scenario to stage in the next sync, which has the
     /// document its actions wrote.
     staged_scenario: Option<String>,
+    /// The person's layout setting, and the layout last applied from or
+    /// written to it; `None` until attached in a window someone uses.
+    layout: Option<(
+        ui::framework::Setting<proofing::WriterLayout>,
+        Option<proofing::WriterLayout>,
+    )>,
     /// The file whose record this is, when the window was launched on one:
     /// writing it records what it now holds, so a later open can tell a
     /// change made elsewhere.
@@ -1675,6 +1689,7 @@ impl WordProcessorWidget {
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),
             staged_scenario: None,
+            layout: None,
             record_file: None,
             bound: BoundEdits::default(),
             #[cfg(test)]
@@ -1827,6 +1842,65 @@ impl WordProcessorWidget {
     /// the person's own words.
     pub fn is_spelled_right(&mut self, word: &str) -> bool {
         self.dictionary().contains(word)
+    }
+
+    /// Check spelling in the language the person's shared spelling
+    /// preferences name, and lay the editor out as they last left it.
+    pub(crate) fn follow_preferences(
+        &mut self,
+        shared: ui::framework::Setting<ui::text_assistance::TextAssistancePrefs>,
+        layout: ui::framework::Setting<proofing::WriterLayout>,
+    ) {
+        self.proofing.shared = Some(shared);
+        self.layout = Some((layout, None));
+        self.follow_settings();
+    }
+
+    /// Bring the spelling language and the panels up to date with the
+    /// person's settings, and keep a panel they opened or closed here in
+    /// their layout.
+    fn follow_settings(&mut self) {
+        if let Some(shared) = &self.proofing.shared {
+            let language = shared.get().spelling_language;
+            if self.proofing.applied_language.as_ref() != Some(&language) {
+                self.proofing.language = if language.is_empty() {
+                    spellcheck::default_language()
+                } else {
+                    language.clone()
+                };
+                self.proofing.applied_language = Some(language);
+                self.spell_cache.clear();
+            }
+        }
+        let shown = proofing::WriterLayout {
+            show_ruler: self.view.ruler_visible,
+            show_styles_panel: self.view.styles_panel_visible,
+            show_outline: self.outline.is_open(),
+        };
+        let Some((setting, applied)) = &mut self.layout else {
+            return;
+        };
+        let stored = setting.get();
+        match applied {
+            // Changed here since: keep it.
+            Some(applied) if *applied != shown && *applied == stored => {
+                if let Err(error) = setting.set(shown.clone()) {
+                    eprintln!("word-processor: could not keep the layout: {error}");
+                }
+                *applied = shown;
+            }
+            // Changed in another window or on another device: show it.
+            Some(applied) if *applied == stored => {}
+            _ => {
+                self.view.ruler_visible = stored.show_ruler;
+                self.view.styles_panel_visible = stored.show_styles_panel;
+                if self.outline.is_open() != stored.show_outline {
+                    self.outline.toggle();
+                }
+                *applied = Some(stored);
+                self.lifecycle.dirty = true;
+            }
+        }
     }
 
     /// Build the spelling dictionary with the person's own words, and keep
@@ -3063,6 +3137,20 @@ impl WordProcessorWidget {
     /// Whether the spell-check squiggles are currently enabled.
     pub fn spellcheck_enabled(&self) -> bool {
         self.proofing.enabled && ui::text_assistance::preferences().check_spelling
+    }
+
+    /// The language words are checked in.
+    pub fn spell_language(&self) -> &str {
+        &self.proofing.language
+    }
+
+    /// Whether the ruler, the styles panel and the outline are shown.
+    pub fn panels_shown(&self) -> (bool, bool, bool) {
+        (
+            self.view.ruler_visible,
+            self.view.styles_panel_visible,
+            self.outline.is_open(),
+        )
     }
 
     pub fn set_spell_language(&mut self, language: &str) {
@@ -10217,6 +10305,7 @@ impl Widget for WordProcessorWidget {
         self.participants.rebase(state);
         self.participants.expire(now);
         self.resolve_bound_edits(state);
+        self.follow_settings();
         // Reload the stylesheet from the doc unless a live, not-yet-persisted
         // local edit is in progress (a guide drag, a numeric scrub, or typing
         // into a panel field) — reloading would discard the live preview.

@@ -17,6 +17,36 @@ impl SettingsSchema for PersonalDictionary {
     const SCOPE: Scope = Scope::Personal;
 }
 
+/// How this person likes the editor laid out: which panels are open. It
+/// follows them to each of their devices; it is never part of a document.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriterLayout {
+    #[serde(default = "shown")]
+    pub show_ruler: bool,
+    #[serde(default)]
+    pub show_styles_panel: bool,
+    #[serde(default)]
+    pub show_outline: bool,
+}
+
+fn shown() -> bool {
+    true
+}
+
+impl Default for WriterLayout {
+    fn default() -> Self {
+        Self {
+            show_ruler: true,
+            show_styles_panel: false,
+            show_outline: false,
+        }
+    }
+}
+
+impl SettingsSchema for WriterLayout {
+    const SCOPE: Scope = Scope::Personal;
+}
+
 impl PersonalDictionary {
     /// The dictionary `built_in` with these words added.
     pub(super) fn over(&self, built_in: &spellcheck::Dictionary) -> spellcheck::Dictionary {
