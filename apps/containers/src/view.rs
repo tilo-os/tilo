@@ -15,9 +15,9 @@ use ui::tokens::{SpacingStep, TextRole};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Actions, Badge, Button, ButtonRole, ChipStyle, Column, Container as Well, Element, EmptyState,
-    ListRow, ModelView, NavItem, NavList, NavSection, ProgressBar, Property, PropertyList, Row,
-    Scrollable, Section, SegmentedStyle, Spacer, Spinner, StatGroup, StatTile, StatusLine, Text,
-    ToggleGroup, Tone, Widget,
+    ListRow, ModelView, NavItem, NavList, NavSection, ProgressBar, Property, PropertyColumn,
+    PropertyList, Row, Scrollable, Section, SegmentedStyle, Spacer, Spinner, StatGroup, StatTile,
+    StatusLine, Text, ToggleGroup, Tone, Widget,
 };
 
 use crate::doc::{DetailTab, Section as Place};
@@ -707,20 +707,30 @@ fn stack(sections: Vec<Section>) -> Element {
     Box::new(column)
 }
 
+/// A list of facts whose values start where the other lists' do.
+fn facts(column: &PropertyColumn, rows: Vec<Property>) -> Element {
+    Box::new(PropertyList::new(rows).shared_column(column))
+}
+
 fn inspect(c: &Container) -> Element {
+    let column = PropertyColumn::new();
     let mut page = vec![Section::titled(
         "Details",
-        vec![Box::new(PropertyList::new(vec![
-            Property::new("ID", c.short_id()).with_kind(TextKind::Identifier),
-            Property::new("Command", c.command.clone()).with_kind(TextKind::Code),
-            Property::new("Created", c.created.clone()),
-            Property::new("State", c.status_detail.clone()),
-        ]))],
+        vec![facts(
+            &column,
+            vec![
+                Property::new("ID", c.short_id()).with_kind(TextKind::Identifier),
+                Property::new("Command", c.command.clone()).with_kind(TextKind::Code),
+                Property::new("Created", c.created.clone()),
+                Property::new("State", c.status_detail.clone()),
+            ],
+        )],
     )];
     if !c.ports.is_empty() {
         page.push(Section::titled(
             "Ports",
-            vec![Box::new(PropertyList::new(
+            vec![facts(
+                &column,
                 c.ports
                     .iter()
                     .map(|p| {
@@ -731,13 +741,14 @@ fn inspect(c: &Container) -> Element {
                         .with_kind(TextKind::Numeric)
                     })
                     .collect(),
-            ))],
+            )],
         ));
     }
     if !c.mounts.is_empty() {
         page.push(Section::titled(
             "Mounts",
-            vec![Box::new(PropertyList::new(
+            vec![facts(
+                &column,
                 c.mounts
                     .iter()
                     .map(|m| {
@@ -749,31 +760,33 @@ fn inspect(c: &Container) -> Element {
                         Property::new(m.destination.clone(), source).with_kind(TextKind::Identifier)
                     })
                     .collect(),
-            ))],
+            )],
         ));
     }
     if !c.env.is_empty() {
         page.push(Section::titled(
             "Environment",
-            vec![Box::new(PropertyList::new(
+            vec![facts(
+                &column,
                 c.env
                     .iter()
                     .map(|(k, v)| Property::new(k.clone(), v.clone()).with_kind(TextKind::Code))
                     .collect(),
-            ))],
+            )],
         ));
     }
     if !c.labels.is_empty() {
         page.push(Section::titled(
             "Labels",
-            vec![Box::new(PropertyList::new(
+            vec![facts(
+                &column,
                 c.labels
                     .iter()
                     .map(|(k, v)| {
                         Property::new(k.clone(), v.clone()).with_kind(TextKind::Identifier)
                     })
                     .collect(),
-            ))],
+            )],
         ));
     }
     stack(page)
