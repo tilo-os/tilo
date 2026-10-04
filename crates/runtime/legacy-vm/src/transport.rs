@@ -91,7 +91,7 @@ pub fn hybrid_commandline_xml(vhost_user: &Path) -> String {
     format!(
         "<qemu:commandline>\
 <qemu:arg value='-chardev'/><qemu:arg value='{chardev}'/>\
-<qemu:arg value='-device'/><qemu:arg value='vhost-user-vsock-pci,chardev=tilovsock'/>\
+<qemu:arg value='-device'/><qemu:arg value='vhost-user-vsock-pci,chardev=tilovsock,bus=pcie.0,addr=0x10'/>\
 </qemu:commandline>"
     )
 }

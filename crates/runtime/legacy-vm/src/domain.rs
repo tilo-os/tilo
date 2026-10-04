@@ -19,6 +19,9 @@ use crate::transport::{QEMU_NAMESPACE, VsockBackend, hybrid_commandline_xml};
 /// Marks a domain as Tilo's; a same-named domain without it is not touched.
 pub const METADATA_ELEMENT: &str = "<tilo:legacy-vm";
 
+/// Empty PCIe root ports for live-attached shares.
+const HOTPLUG_PORTS: usize = 8;
+
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum DomainError {
     #[error("a path in the VM configuration is not UTF-8")]
@@ -39,6 +42,9 @@ pub fn render_domain_xml(config: &VmConfig, backend: VsockBackend) -> Result<Str
         ),
     };
     let memory = &config.memory;
+    // q35 hot-plugs only into empty root ports, and libvirt adds ports just
+    // for the devices it knows at definition time: shares need spares.
+    let hotplug_ports = "<controller type='pci' model='pcie-root-port'/>".repeat(HOTPLUG_PORTS);
     Ok(format!(
         "<domain type='kvm'{namespace}>\
 <name>{name}</name>\
@@ -53,6 +59,7 @@ pub fn render_domain_xml(config: &VmConfig, backend: VsockBackend) -> Result<Str
 <on_poweroff>destroy</on_poweroff><on_reboot>restart</on_reboot><on_crash>destroy</on_crash>\
 <pm><suspend-to-mem enabled='no'/><suspend-to-disk enabled='no'/></pm>\
 <devices>\
+{hotplug_ports}\
 <disk type='file' device='disk'><driver name='qemu' type='qcow2' discard='unmap'/>\
 <source file='{disk}'/><target dev='vda' bus='virtio'/></disk>\
 <interface type='user'><backend type='passt'/><model type='virtio'/></interface>\
