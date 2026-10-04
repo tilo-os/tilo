@@ -110,6 +110,7 @@ pub mod action;
 pub mod batch;
 pub mod child;
 pub mod collection;
+pub mod content;
 pub mod delta;
 pub mod diff;
 pub mod effect;

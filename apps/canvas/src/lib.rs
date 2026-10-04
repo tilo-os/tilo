@@ -62,14 +62,17 @@ impl ResourceApp for App {
 
     fn view(cx: &mut ViewCx<ArtworkResource>) -> Element {
         locales::install();
-        content::adopt(cx.content().as_ref());
         let recents = cx.settings::<document::RecentArtworks>();
         let tools = tools::Tools {
             recents: recents.state(),
             ..tools::Tools::default()
         };
         let canvas = cx.surface(surface::CanvasSurface::new(tools.clone()));
-        let canvas: Element = Box::new(preview::VersionPreview::new(canvas, tools.preview.clone()));
+        let canvas: Element = Box::new(preview::VersionPreview::new(
+            canvas,
+            tools.preview.clone(),
+            cx.content(),
+        ));
         let dock = LocalState::new(Dock::Layers);
         let staged = dock.clone();
         cx.on_stage(move |scenario| {
@@ -161,7 +164,6 @@ impl ResourceApp for App {
     /// was left. A file handed to the window's artwork (no path) replaces
     /// it as one step, Undo away from what was there.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<ArtworkResource>> {
-        content::adopt(input.content());
         let Some(file) = input.file() else {
             return Vec::new();
         };
@@ -169,7 +171,13 @@ impl ResourceApp for App {
             return Vec::new();
         }
         let open = if file.media_type() == document::MEDIA_TYPE {
-            let Ok(artwork) = document::unpack(file.bytes(), &crate::content::store()) else {
+            let Ok(artwork) = document::unpack(
+                file.bytes(),
+                &input
+                    .content()
+                    .cloned()
+                    .unwrap_or_else(crate::content::store),
+            ) else {
                 return Vec::new();
             };
             CanvasAction::OpenArtwork(actions::OpenArtwork {

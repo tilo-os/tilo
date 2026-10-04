@@ -44,5 +44,24 @@ class AppContentStoreTests(unittest.TestCase):
         self.assertEqual(found, [("apps/paint/src/lib.rs", 1), ("crates/sdk/ui-core/src/lib.rs", 2)])
 
 
+    def test_no_app_keeps_a_store_for_the_whole_process(self):
+        root = self.fixture(
+            {
+                "apps/paint/src/content.rs": (
+                    "use std::sync::OnceLock;\n"
+                    "static STORE: OnceLock<tilo_content::ContentStore> = OnceLock::new();\n"
+                ),
+                "apps/paint/src/notes.rs": (
+                    "thread_local! {\n"
+                    "    static SLOT: RefCell<Option<ContentStore>> = RefCell::new(None);\n"
+                    "}\n"
+                ),
+                "apps/paint/src/ok.rs": "fn f(store: &ContentStore) { let _ = store; }\n",
+            }
+        )
+        found = sorted((Path(v.path).as_posix(), v.line) for v in contract.audit(root))
+        self.assertEqual(found, [("apps/paint/src/content.rs", 2), ("apps/paint/src/notes.rs", 2)])
+
+
 if __name__ == "__main__":
     unittest.main()

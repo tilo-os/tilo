@@ -12,6 +12,14 @@ production code outside the hosts that lend the store may not call it:
 * the framework's native process host, which lends it to the window;
 * the filesystem daemon, which serves it.
 
+Nor may app code keep a content store in a ``static`` (a ``OnceLock``, a
+``thread_local!``): every window has its own store, and two windows of one app
+in one process (the shell mounts apps in its own) would share it. Code no view
+reaches reads the window's store from the framework —
+``ActionCx::content()`` while an action applies,
+``tilo_resource::content::current()`` while the window's code runs — and work
+leaving the window's thread captures it when it starts.
+
 Test modules and test files are exempt.
 """
 
@@ -31,19 +39,28 @@ ALLOWED = (
     Path("crates/system/fs/src/main.rs"),
 )
 CALL = re.compile(r"\bContentStore\s*::\s*for_app\b")
+# A `static` (or a `thread_local!` item) whose type names a content store.
+HELD = re.compile(
+    r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?static\s+(?:mut\s+)?\w+\s*:(?!:)[^=;]*\bContentStore\b"
+)
 TEST_MODULE_MARKERS = ("\n#[cfg(test)]", "\n#[cfg(all(test")
+
+
+OPENS = "opens its own content store; keep content in cx.content(), which travels on the record's route"
+HOLDS = (
+    "keeps a content store for the whole process; read the window's from the framework "
+    "(ActionCx::content, tilo_resource::content::current)"
+)
 
 
 @dataclass(frozen=True)
 class Violation:
     path: str
     line: int
+    reason: str = OPENS
 
     def __str__(self) -> str:
-        return (
-            f"{self.path}:{self.line}: opens its own content store; "
-            "keep content in cx.content(), which travels on the record's route"
-        )
+        return f"{self.path}:{self.line}: {self.reason}"
 
 
 def is_test_file(relative: Path) -> bool:
@@ -80,6 +97,11 @@ def audit(root: Path = ROOT) -> list[Violation]:
                 violations.append(
                     Violation(str(relative), text.count("\n", 0, match.start()) + 1)
                 )
+            if top == Path("apps"):
+                for match in HELD.finditer(text):
+                    violations.append(
+                        Violation(str(relative), text.count("\n", 0, match.start()) + 1, HOLDS)
+                    )
     return violations
 
 

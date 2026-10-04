@@ -409,40 +409,13 @@ pub fn put_asset(doc: &mut AutoCommit, digest: &str, bytes: &[u8]) -> Result<(),
     put_asset_in(&content(), doc, digest, bytes)
 }
 
-/// The content store this process keeps notebook images in: the one the
-/// host lends the window (`cx.content()`), joined to the notebook's route,
-/// so an image reaches every device that opens the notebook. Notebook
-/// actions write images while they apply, where no view reaches them, so
-/// the window's store is adopted here ([`adopt_content`]); before a host
-/// lent one (a test, a browser page without a store), images are kept in
-/// memory, and inline in the notebook.
+/// The content store of the window whose code is running, which the
+/// framework hands every window: the one its host lent, joined to the
+/// notebook's route, so an image reaches every device that opens the
+/// notebook. Outside a window (a test, a browser page without a store),
+/// an empty one in memory, which keeps images inline in the notebook.
 pub fn content() -> tilo_content::ContentStore {
-    static MEMORY: std::sync::OnceLock<tilo_content::ContentStore> = std::sync::OnceLock::new();
-    content_slot()
-        .read()
-        .ok()
-        .and_then(|slot| slot.clone())
-        .unwrap_or_else(|| {
-            MEMORY
-                .get_or_init(tilo_content::ContentStore::memory)
-                .clone()
-        })
-}
-
-/// Keep notebook images in `store` from now on; `None` leaves the current
-/// one.
-pub fn adopt_content(store: Option<&tilo_content::ContentStore>) {
-    if let Some(store) = store
-        && let Ok(mut slot) = content_slot().write()
-    {
-        *slot = Some(store.clone());
-    }
-}
-
-fn content_slot() -> &'static std::sync::RwLock<Option<tilo_content::ContentStore>> {
-    static SLOT: std::sync::OnceLock<std::sync::RwLock<Option<tilo_content::ContentStore>>> =
-        std::sync::OnceLock::new();
-    SLOT.get_or_init(std::sync::RwLock::default)
+    ui::tilo_resource::content::current().unwrap_or_else(tilo_content::ContentStore::memory)
 }
 
 /// [`put_asset`] against an explicit store.

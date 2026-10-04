@@ -392,7 +392,7 @@ pub fn keep_picture(src: &str) -> Result<(String, (u32, u32)), String> {
             .decode(encoded)
             .map_err(|error| format!("the inline picture is not base64: {error}"))?
     } else if ui::tilo_actions::content_hash(src).is_some() {
-        let bytes = crate::picture::bytes_of(src)
+        let bytes = crate::picture::bytes_of(&crate::content::store(), src)
             .ok_or_else(|| format!("{src} is not in this app's content store"))?;
         let size = picture_size(src, &bytes)?;
         return Ok((src.to_owned(), size));
