@@ -79,7 +79,9 @@ try {
     const snapshot = await send("DOMSnapshot.captureSnapshot", {
       computedStyles, includePaintOrder: true, includeDOMRects: true,
     });
-    writeFileSync(join(fixtures, `layers.${name}.json`), JSON.stringify(snapshot));
+    // The page's own URL names this checkout; fixtures carry a placeholder.
+    const json = JSON.stringify(snapshot).replaceAll(pathToFileURL(fixtures).href, "file:///fixtures");
+    writeFileSync(join(fixtures, `layers.${name}.json`), json);
     // The renderer's fidelity test compares against the first state only.
     if (name === "top") {
       const shot = await send("Page.captureScreenshot", { format: "png" });
