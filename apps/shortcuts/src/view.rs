@@ -50,7 +50,7 @@ impl EditorInput {
         let Some((id, draft)) = &self.draft else {
             return format!("none|{:?}|{}", self.catalogue, self.catalog.rows().len());
         };
-        let program = &draft.program.0;
+        let program = &draft.program();
         let mut shape = String::new();
         shape_of(&program.steps, &mut shape);
         format!(
@@ -242,7 +242,7 @@ fn follow(live: Live<Workbench>, ui: &Ui) -> Box<dyn FnMut()> {
         let steps = |draft: &Option<(Id, Draft)>| {
             draft
                 .as_ref()
-                .map(|(id, draft)| (id.clone(), step_count(&draft.program.0.steps)))
+                .map(|(id, draft)| (id.clone(), step_count(&draft.program().steps)))
         };
         if let (Some((before_id, before)), Some((now_id, now))) = (
             seen.as_ref().and_then(|(draft, ..)| steps(draft)),
@@ -719,7 +719,7 @@ fn editor_pane(ui: &Ui, follow: Rc<RefCell<Box<dyn FnMut()>>>) -> Element {
                 input.draft.as_ref().map(|(id, draft)| {
                     (
                         id.clone(),
-                        grant::least_privilege(&draft.program.0.steps, &input.catalog),
+                        grant::least_privilege(&draft.program().steps, &input.catalog),
                     )
                 }),
                 input.problems.clone(),
@@ -896,7 +896,7 @@ fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
         .with_no_padding()
         .with_gap(8.0)
         .push(Box::new(heading("shortcuts-inputs")));
-    for input in &draft.program.0.inputs {
+    for input in &draft.program().inputs {
         let remove = ui.bind(
             Button::new(
                 &format!("remove-input-{}", input.name),
@@ -954,7 +954,7 @@ fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
 }
 
 fn output_section(ui: &Ui, input: &EditorInput, draft_id: &Id, draft: &Draft) -> Element {
-    let program = &draft.program.0;
+    let program = &draft.program();
     let values = values_at(
         &editor::candidate(draft, &input.catalog),
         &input.catalog,
@@ -1044,7 +1044,8 @@ fn block(
     address: &str,
     depth: usize,
 ) -> Element {
-    let steps = block_at(&draft.program.0.steps, address).unwrap_or_default();
+    let program = draft.program();
+    let steps = block_at(&program.steps, address).unwrap_or_default();
     let mut column = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
@@ -1629,7 +1630,7 @@ fn grant_body(ui: &Ui, input: &EditorInput) -> Element {
         return Box::new(Spacer::fixed(0.0));
     };
     let permissions: Vec<Permission> =
-        grant::least_privilege(&draft.program.0.steps, &input.catalog);
+        grant::least_privilege(&draft.program().steps, &input.catalog);
     let mut body = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
