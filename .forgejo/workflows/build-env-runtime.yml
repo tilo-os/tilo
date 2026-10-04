@@ -112,7 +112,7 @@ jobs:
   signing-preflight:
     needs: fingerprint
     if: needs.fingerprint.outputs.publish == 'true'
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:

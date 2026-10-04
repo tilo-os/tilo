@@ -3200,6 +3200,32 @@ mod identity_resolution_tests {
             };
             assert_eq!(resolve_identity_host_path(&opts), None);
         }
+        // Phase `a_joined_devices_public_record_brokers_without_a_secret`.
+        // A device joined from a nearby device holds only the identity's
+        // public record; its apps sign through the workspace identity service
+        // with the certified device key.
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let store = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(store.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            let path = store.path().join("identity-joined.json");
+            let original =
+                runtime_identity::public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
+            std::fs::write(&path, &original).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+            for _ in 0..2 {
+                let (app, control, thread) =
+                    start_identity_broker(&path, Some(store.path())).unwrap();
+                drop(app);
+                drop(control);
+                thread.join().unwrap();
+            }
+
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+            assert!(!store.path().join("secrets").exists());
+        }
         // Phase `explicit_identity_outside_the_managed_store_is_never_rewritten`.
         {
             use std::os::unix::fs::PermissionsExt;
