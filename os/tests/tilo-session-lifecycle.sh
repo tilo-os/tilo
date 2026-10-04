@@ -110,8 +110,10 @@ if [ -e "$repo/os/dev-image/usr/lib/systemd/user" ]; then
 fi
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   "$repo/os/usr/share/wayland-sessions/shell.desktop"
-grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync' \
-  "$repo/os/usr/share/wayland-sessions/shell-peer-sync.desktop"
+[ "$(ls "$repo/os/usr/share/wayland-sessions")" = shell.desktop ] || {
+  echo 'the image must ship exactly one login session: shell.desktop' >&2
+  exit 1
+}
 grep -Fq 'missing="$(ldd /usr/bin/shell | awk '\''/not found/ { print $1 }'\'')"' \
   "$repo/os/Containerfile"
 grep -Fq 'if [ -n "$missing" ]; then' "$repo/os/Containerfile"

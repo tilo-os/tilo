@@ -1353,9 +1353,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # PAM stack unlocks Secret Service at password login, so an existing Tilo
 # identity is available before the compositor probes it.
 #
-# `polkit` is required so the greeter's Reboot / Shut down buttons can drive
-# logind: `systemctl reboot` / `poweroff` issue the
-# `org.freedesktop.login1.{reboot,power-off}` actions, which polkit authorises
+# `polkit` is required so the greeter's power menu can drive
+# logind: `systemctl suspend` / `reboot` / `poweroff` issue the
+# `org.freedesktop.login1.{suspend,reboot,power-off}` actions, which polkit authorises
 # for the `greetd` user via etc/polkit-1/rules.d/49-tilo-greeter-power.rules.
 # It also ships `polkit-agent-helper-1` (and its activation socket), which the
 # compositor's authentication agent drives to run PAM for administrator
@@ -1513,9 +1513,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     power-profiles-daemon \
     && dnf clean all && ${FINALIZE_RPMDB}
 
-# Offline spelling dictionaries used by the shared text toolkit. Hunspell is
-# the affix-aware multilingual baseline; English also has an embedded fallback
-# so recovery/minimal environments retain checking. Keep this explicit rather
+# Offline spelling dictionaries used by the shared text toolkit, which reads
+# /usr/share/hunspell in-process (also inside app sandboxes); English also has
+# an embedded word list so recovery/minimal environments retain checking. The
+# `hunspell` CLI is for people at a terminal. Keep this explicit rather
 # than pulling every Fedora language pack into the immutable image.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     hunspell \
@@ -2035,31 +2036,20 @@ COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
 COPY os/usr/share/tilo/git/synced-worktree.gitconfig /usr/share/tilo/git/synced-worktree.gitconfig
 COPY os/etc/gitconfig /etc/gitconfig
 
-# Wayland session desktop entries. Two files land here:
-#   - shell.desktop          — default session (no peer-sync)
-#   - shell-peer-sync.desktop — opt-in session (Iroh enabled)
-# The custom graphical greeter lists both at the login prompt; see
-# docs/peer-sync.md. The separate text-mode tuigreet package is intentionally
+# The one Wayland session. tilo-greeter starts it directly and shows a session
+# picker only when the directory offers a real choice, so nothing else may land
+# in /usr/share/wayland-sessions or /usr/share/xsessions; the image contract
+# below enforces that. The separate text-mode tuigreet package is intentionally
 # absent from this image.
-COPY \
-    os/usr/share/wayland-sessions/shell.desktop \
-    os/usr/share/wayland-sessions/shell-peer-sync.desktop \
-    /usr/share/wayland-sessions/
+COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/
 COPY --chmod=0755 \
     os/usr/libexec/tilo-session \
     os/usr/libexec/tilo-security-audit \
     /usr/libexec/
-# User units: the graphical-session target and the opt-in peer-sync user
-# service. (`systemctl --global enable` further down resolves each unit file at
-# build time, so a unit that was never copied in fails the build outright with
-# "does not exist".) Peer sync is NOT enabled by
-# default — users opt in via `systemctl --user enable shell-peer-sync` or by
-# picking the "Tilo (peer-sync)" session entry at the greetd prompt. See
-# /usr/share/doc/tilo/peer-sync.md for the privacy / discovery trade-off.
-COPY \
-    os/usr/lib/systemd/user/tilo-graphical-session.target \
-    os/usr/lib/systemd/user/shell-peer-sync.service \
-    /usr/lib/systemd/user/
+# The graphical-session user target. (`systemctl --global enable` further down
+# resolves each unit file at build time, so a unit that was never copied in
+# fails the build outright with "does not exist".)
+COPY os/usr/lib/systemd/user/tilo-graphical-session.target /usr/lib/systemd/user/
 
 # The echo-cancelled microphone for calls: a PipeWire client config the
 # desktop session runs (`pipewire -c tilo-echo-cancel.conf`) while Settings →
@@ -2164,8 +2154,7 @@ COPY os/etc/chrony.conf /etc/chrony.conf
 COPY os/usr/share/tilo/installer-locales.txt /usr/share/tilo/installer-locales.txt
 
 # Bundled documentation (the README in the OS submodule, plus the
-# peer-sync trade-off doc users are pointed at from the .desktop
-# Comment field and the systemd unit Documentation= line).
+# peer-sync transport and diagnostics doc).
 # The Secure Boot + disk-encryption procedure. On-image because the enrolment
 # sequence has to be readable from the machine being enrolled, which is the one
 # place a wrong step stops it from booting.
@@ -2393,9 +2382,6 @@ RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-pr
 # ---------------------------------------------------------------------------
 # The portal backend needs no unit: the compositor serves it in-process,
 # so it starts and stops with the session it answers for.
-# `shell-peer-sync.service` is pointedly **NOT** enabled — that's the
-# user-opt-in part.
-#
 # `tilo-ush.socket` is globally enabled: every app declaring
 # `ush = "required@<v>"` is refused without that endpoint, while socket
 # activation keeps the supervisor itself off the login path until first use.

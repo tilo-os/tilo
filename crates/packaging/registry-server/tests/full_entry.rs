@@ -21,6 +21,7 @@ use std::process::Command;
 
 use ed25519_dalek::SigningKey;
 use registry_client::RegistryClient;
+use registry_server::storage::SNAPSHOT_HISTORY_RETAINED;
 use registry_server::{
     AppState, PublisherAllowlist, PublisherRow, ServerIdentity, Storage, bind_and_run,
 };
@@ -204,15 +205,45 @@ async fn a_release_into_a_full_entry_replaces_its_oldest_version_in_storage() {
         assert!(versions.contains(format!("1.{}.0", MAX_ENTRY_VERSIONS + 1).as_str()));
         assert!(!versions.contains("1.1.0"));
 
-        // The dropped version leaves storage: its staged package, its thin
-        // form and the blob only it used.
-        assert_eq!(promoted["pruned"]["staged_artifacts"], 1, "{promoted}");
-        assert_eq!(promoted["pruned"]["thin_packages"], 1, "{promoted}");
-        assert_eq!(promoted["pruned"]["payload_blobs"], 1, "{promoted}");
+        // The retained history and the previous version index still list the
+        // dropped version, so its bytes stay until both have moved on.
+        assert_eq!(promoted["pruned"]["payload_blobs"], 0, "{promoted}");
         let oldest = releases.first().unwrap();
         let oldest_digest = blake3::hash(oldest).to_hex().to_string();
-        assert_eq!(storage.find_staged_artifact(&oldest_digest).unwrap(), None);
         let oldest_binary = tilo_app_package::BlobHash::of(b"agent build 1").to_hex();
+        assert!(
+            storage
+                .find_staged_artifact(&oldest_digest)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            status(&format!("{base}/blobs/{oldest_binary}")),
+            reqwest::StatusCode::OK
+        );
+        for _ in 0..SNAPSHOT_HISTORY_RETAINED {
+            let output = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+                .arg("--data-dir")
+                .arg(&data_dir)
+                .args(["sign-delegated-snapshot", "--channel-key-file"])
+                .arg(&channel_key)
+                .args(["--valid-for-seconds", "3600"])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        // Then the dropped version leaves storage: its staged package, its
+        // thin form and the blob only it used.
+        let pruned = run(&data_dir, &["prune-storage"]);
+        assert_eq!(pruned["pruned"]["staged_artifacts"], 1, "{pruned}");
+        assert_eq!(pruned["pruned"]["thin_packages"], 1, "{pruned}");
+        assert_eq!(pruned["pruned"]["payload_blobs"], 1, "{pruned}");
+        assert_eq!(storage.find_staged_artifact(&oldest_digest).unwrap(), None);
         assert_eq!(
             status(&format!("{base}/thin/{}.tapp", root_of(oldest))),
             reqwest::StatusCode::NOT_FOUND

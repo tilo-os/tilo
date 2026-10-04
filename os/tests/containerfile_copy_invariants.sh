@@ -90,12 +90,13 @@ containerfile="$repo/os/Containerfile"
 # The extension-manifest public key ships beside the helper.
 # The release gate's greetd session-context check ships beside the other
 # booted-guest checks in /usr/libexec/tilo.
+# The image ships one login session and no peer-sync marker unit.
 # The release gate's input hotplug check ships beside them.
 # The boot units gate ships with the rollback units whose confirmation it gates.
 # The WPE engine overlay and /usr/bin/browser are deliberate removals: the
 # Browser is a tapp in the app store and its Chromium engine a signed runtime
 # bundle under /usr/lib/tilo-runtime, both already copied.
-expected_contract=e7b91909c30fabf89164e2ad1c653bd56bab857090ab855890daa3f73cc6522f
+expected_contract=c5151b0043f4717e970ea0e3b2ba0eeff44fdfecd5b962d21a0713ad6ae7a9c1
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

@@ -474,6 +474,10 @@ pub trait Decorator {
         self.inner_mut().take_focus_reset()
     }
 
+    fn take_accessibility_request(&mut self) -> Option<crate::a11y::AccessibilityRequest> {
+        self.inner_mut().take_accessibility_request()
+    }
+
     fn dev_route(&self) -> Option<super::router::RouteSnapshot> {
         self.inner().dev_route()
     }
@@ -1033,6 +1037,10 @@ impl<T: Decorator> Widget for T {
 
     fn take_focus_reset(&mut self) -> bool {
         Decorator::take_focus_reset(self)
+    }
+
+    fn take_accessibility_request(&mut self) -> Option<crate::a11y::AccessibilityRequest> {
+        Decorator::take_accessibility_request(self)
     }
 
     fn dev_route(&self) -> Option<super::router::RouteSnapshot> {
