@@ -14,6 +14,8 @@ use ui::tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionSpec, ChangeKind,
     OperationKind, ParamType,
 };
+// `#[derive(Effect)]` names the crate as `tilo_resource`.
+use ui::tilo_resource;
 use ui::tilo_resource::{ActionDecl, Doc, Effect};
 
 use crate::model::BufferEdit;
