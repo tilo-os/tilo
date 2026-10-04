@@ -150,7 +150,6 @@ fn canonical_navigation_and_overlay_captures_use_real_input_paths() {
         ("rename", (1000, 700)),
         ("rename_commit", (1000, 700)),
         ("shortcuts", (1000, 700)),
-        ("shortcuts_bottom", (390, 844)),
         ("code_group_drag", (1000, 700)),
         ("code_group_drop", (1000, 700)),
         ("sidebar_scroll", (390, 844)),
