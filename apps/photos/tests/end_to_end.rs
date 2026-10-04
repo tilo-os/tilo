@@ -362,11 +362,10 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].id.0, "photos.library");
         assert!(
-            resources[0]
-                .actions
+            <photos::actions::PhotosEffect as ui::tilo_resource::Effect>::specs()
                 .iter()
-                .any(|action| action.id == "open"),
-            "the empty app must remain driveable through its published open action"
+                .any(|action| action.id == "view-library"),
+            "the empty app must remain driveable through its library effect"
         );
         assert!(
             scene.encoding().n_paths > 0,

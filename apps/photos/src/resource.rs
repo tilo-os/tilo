@@ -6,12 +6,17 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use tilo_content::ContentStore;
-use ui::framework::{Fixture, LaunchInput, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::ActionSpec;
-use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::framework::{
+    EffectAnswer, EffectCx, Effected, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface,
+    SurfaceCx, ViewCx,
+};
+use ui::tilo_actions::ActionAddress;
+use ui::tilo_resource::Effect as _;
+use ui::tilo_resource::effect::Answers;
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{PHOTOS_ACTION_TYPE, PhotosAction, register};
+use crate::actions::{PHOTOS_ACTION_TYPE, PhotosAction, PhotosEffect, register};
 use crate::app::PhotosApp;
 use crate::doc::PhotosDoc;
 use crate::model::{LibraryPhoto, OpenImage, PhotoLibrary};
@@ -44,37 +49,82 @@ impl Resource for Photos {
         })
     }
 
-    fn bound_actions(_state: &PhotosState) -> Vec<ActionSpec> {
-        crate::actions::library_document_actions()
+    fn declarations() -> Vec<ActionDecl<Self>> {
+        crate::actions::library_declarations()
     }
 
     fn children(state: &PhotosState) -> Vec<tilo_actions::Resource> {
         crate::actions::library_children(&state.library)
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        crate::actions::library_local_operations()
+    fn child(state: &PhotosState, id: &str) -> Option<tilo_actions::Resource> {
+        crate::actions::library_child(&state.library, id)
     }
 
+    /// Every photograph by its name and everything shared about it — the
+    /// people, tags, folder, place, capture date and analysed text — and
+    /// every album, label and place by its name. Choosing a hit opens it.
     fn search(state: &PhotosState) -> Vec<SearchEntry> {
-        state
-            .library
+        let library = &state.library;
+        let open = |id: &str| ActionAddress::new(id, "open");
+        let mut entries: Vec<SearchEntry> = library
             .photos
             .iter()
-            .map(|photo| SearchEntry {
-                anchor: Some(photo.id.clone()),
-                title: photo.image.name.clone(),
-                text: photo
+            .map(|photo| {
+                let mut text: Vec<String> = photo
                     .people
                     .iter()
-                    .chain(photo.tags.iter())
+                    .chain(&photo.tags)
+                    .chain(&photo.folder)
+                    .chain(&photo.captured_at)
                     .cloned()
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                action: None,
-                ..Default::default()
+                    .collect();
+                if let Some(location) = photo.location.as_ref().filter(|place| place.is_valid()) {
+                    text.push(location.display_name());
+                }
+                if let Some(analysis) = &photo.analysis {
+                    text.push(analysis.searchable_text());
+                }
+                SearchEntry::new(photo.image.name.clone(), text.join(" "))
+                    .anchored(photo.id.clone())
+                    .invoking(open(&photo.id))
             })
-            .collect()
+            .collect();
+        entries.extend(library.albums.iter().map(|album| {
+            SearchEntry::new(album.name.clone(), "album")
+                .anchored(album.id.clone())
+                .invoking(open(&album.id))
+        }));
+        let (folders, people, tags, objects, pets) = crate::actions::metadata_label_counts(library);
+        for (labels, kind, address) in [
+            (
+                folders,
+                "folder",
+                crate::actions::folder_resource_id as fn(&str) -> String,
+            ),
+            (people, "person", crate::actions::person_resource_id),
+            (tags, "tag", crate::actions::tag_resource_id),
+            (objects, "object", crate::actions::object_resource_id),
+            (pets, "pet", crate::actions::pet_resource_id),
+        ] {
+            entries.extend(labels.into_iter().map(|(label, _)| {
+                let id = address(&label);
+                SearchEntry::new(label, kind)
+                    .anchored(id.clone())
+                    .invoking(open(&id))
+            }));
+        }
+        entries.extend(
+            crate::actions::place_counts(library)
+                .into_iter()
+                .map(|(key, label, _)| {
+                    let id = crate::actions::place_resource_id(&key);
+                    SearchEntry::new(label, "place")
+                        .anchored(id.clone())
+                        .invoking(open(&id))
+                }),
+        );
+        entries
     }
 }
 
@@ -154,7 +204,7 @@ impl ResourceApp for PhotosShell {
     }
 }
 
-impl ResourceSurface<Photos> for PhotosApp {
+impl ResourceSurface<Photos, PhotosEffect> for PhotosApp {
     fn present(&mut self, state: &Rc<PhotosState>) {
         self.adopt_resource_state(state);
     }
@@ -165,6 +215,41 @@ impl ResourceSurface<Photos> for PhotosApp {
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario.unwrap_or("opened"));
+    }
+
+    fn effect(&mut self, effect: PhotosEffect, cx: &mut EffectCx<Photos, Self>) -> EffectAnswer {
+        let job = PhotosEffect::declarations()
+            .iter()
+            .any(|decl| decl.id == effect.id() && matches!(decl.answers, Answers::Later { .. }));
+        let invocation = cx.invocation().unwrap_or_default();
+        // A job's work reports under its invocation from the moment it
+        // starts, so its answer is kept before the work begins.
+        if job {
+            let reply = cx.reply();
+            self.register_reply(invocation, reply);
+        }
+        let state = cx.live().get();
+        match self.answer_effect(effect, invocation, &state.library) {
+            Ok(Some(output)) if job => {
+                self.settle_now(invocation, Ok(output));
+                Ok(Effected::Pending)
+            }
+            Ok(Some(output)) => Ok(Effected::Done(output)),
+            Ok(None) if job => Ok(Effected::Pending),
+            Ok(None) => Ok(Effected::done()),
+            Err(error) => {
+                self.forget_reply(invocation);
+                Err(error)
+            }
+        }
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.search_status_row().into_iter().collect()
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.search_status_row().filter(|row| row.id() == id)
     }
 }
 
@@ -238,5 +323,63 @@ mod tests {
         let opened = surface(&mut app, |photos| photos.open_photo_id().map(str::to_owned));
         assert_eq!(opened.as_deref(), Some(state.library.photos[0].id.as_str()));
         assert!(surface(&mut app, |photos| photos.has_image()));
+    }
+
+    #[test]
+    fn effects_reach_the_window_from_the_library_and_from_its_photographs() {
+        use ui::tilo_actions::ActionAddress;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lake.png");
+        let png = crate::pixels::encode_png(&crate::shots_pattern(30, 20)).unwrap();
+        std::fs::write(&path, &png).unwrap();
+        let mut app = TestApp::<PhotosShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.harness().relayout();
+        let photo = app.state().library.photos[0].clone();
+
+        app.effect(&PhotosEffect::ViewLibrary)
+            .expect("the library opens");
+        assert!(surface(&mut app, |photos| photos.shows_library()));
+
+        // A photograph's own row opens it, as the palette or an agent does.
+        let row = |id: &str, action: &str| ui::bound_dispatch::BoundActionAddress {
+            instance_id: 0,
+            address: ActionAddress::new(id, action),
+        };
+        let instance = app.harness().component_instance_id().unwrap();
+        let open = ui::bound_dispatch::BoundActionAddress {
+            instance_id: instance,
+            ..row(&photo.id, "open")
+        };
+        app.harness()
+            .invoke_bound_action(&open, &serde_json::Map::new())
+            .expect("the photograph opens from its row");
+        app.harness().relayout();
+        assert!(!surface(&mut app, |photos| photos.shows_library()));
+        assert_eq!(
+            surface(&mut app, |photos| photos.open_photo_id().map(str::to_owned)).as_deref(),
+            Some(photo.id.as_str())
+        );
+
+        // The edited pixels come out as content of their own.
+        app.invoke(
+            Invoke::apply(&PhotosAction::set(
+                &photo.id,
+                &crate::model::Edits::default().rotated_right(),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let export = ui::bound_dispatch::BoundActionAddress {
+            instance_id: instance,
+            ..row(&photo.id, crate::actions::EXPORT_EDITED_CONTENT_ACTION_ID)
+        };
+        let started = app
+            .harness()
+            .invoke_bound_action(&export, &serde_json::Map::new())
+            .expect("the photograph exports its edits");
+        let output = started.completed().expect("the export answers at once");
+        let produced = tilo_actions::content_hash(&output.resources[0]).expect("content");
+        assert_ne!(Some(produced), photo.image.content.as_deref());
     }
 }
