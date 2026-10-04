@@ -40,6 +40,7 @@ mod agenda;
 pub mod app;
 pub mod caldav;
 pub mod date;
+pub mod display;
 pub mod doc;
 mod draw_util;
 mod event_popovers;

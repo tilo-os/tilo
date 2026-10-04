@@ -31,7 +31,7 @@ use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, PermissionRequirement, ResultSpec, RetryPolicy,
+    ExecutionLocus, OperationKind, RetryPolicy,
 };
 
 use crate::doc::CalDoc;
@@ -135,25 +135,6 @@ pub enum CalendarOperation {
     ShowWeek,
     ShowDay,
     ShowAgenda,
-    /// Device-private visibility policy for one configured remote collection.
-    /// This deliberately lives outside the shared event CRDT: hiding a work
-    /// calendar is a per-person display choice, never a collaborative edit.
-    SetCalendarVisible {
-        id: String,
-        visible: bool,
-    },
-    Sync,
-    ExportIcs,
-    /// Import the newest `.ics` file from the transfer directory. The effect
-    /// captures parsed records into one [`CalendarAction`] before it reports
-    /// success; its retry contract is therefore at-most-once.
-    ImportIcs,
-    /// Produce the exact typed invocation accepted by Mail's invitation-draft
-    /// action. This prepares a reviewable draft; it never claims SMTP delivery.
-    PrepareInvitationInMail {
-        event_id: String,
-        attendee_id: String,
-    },
 }
 
 pub(crate) fn calendar_operation(
@@ -171,42 +152,7 @@ pub(crate) fn calendar_operation(
                 encode_operation(operation),
             )
         });
-    match operation {
-        CalendarOperation::OpenEvent { .. }
-        | CalendarOperation::OpenOccurrence { .. }
-        | CalendarOperation::OpenTask { .. }
-        | CalendarOperation::OpenProject { .. }
-        | CalendarOperation::OpenCalendar { .. }
-        | CalendarOperation::ShowAllCalendars
-        | CalendarOperation::ShowMonth
-        | CalendarOperation::ShowWeek
-        | CalendarOperation::ShowDay
-        | CalendarOperation::ShowAgenda
-        | CalendarOperation::SetCalendarVisible { .. } => {
-            spec.retry_policy(RetryPolicy::Idempotent)
-        }
-        CalendarOperation::Sync => spec
-            .retry_policy(RetryPolicy::Idempotent)
-            .execution(tilo_actions::ExecutionMode::Background { cancellable: false })
-            .returns(ResultSpec::Job),
-        CalendarOperation::ExportIcs | CalendarOperation::ImportIcs => {
-            spec.retry_policy(RetryPolicy::AtMostOnce)
-        }
-        CalendarOperation::PrepareInvitationInMail { .. } => spec
-            .retry_policy(RetryPolicy::Idempotent)
-            .requiring(PermissionRequirement::Invite)
-            .returns(ResultSpec::Json {
-                schema: serde_json::json!({
-                    "type": "object",
-                    "required": ["delivery", "target", "arguments"],
-                    "properties": {
-                        "delivery": {"const": "not_sent"},
-                        "target": {"type": "object"},
-                        "arguments": {"type": "object"}
-                    }
-                }),
-            }),
-    }
+    spec.retry_policy(RetryPolicy::Idempotent)
 }
 
 /// A calendar collection as a live row: open it, show or hide it.
@@ -227,19 +173,10 @@ pub(crate) fn calendar_collection_row(
         calendar.label.clone(),
     )
     .operation(open)
-    .operation(calendar_operation(
-        "set-visibility",
-        if calendar.visible {
-            "Hide calendar"
-        } else {
-            "Show calendar"
-        },
-        OperationKind::Effect,
-        &CalendarOperation::SetCalendarVisible {
-            id: calendar.id.clone(),
-            visible: !calendar.visible,
-        },
-    ))
+    .effect(&crate::resource::CalendarEffect::SetVisibility {
+        id: calendar.id.clone(),
+        visible: !calendar.visible,
+    })
 }
 
 /// Encode an app-local operation without allowing a serialization fault to
@@ -1591,6 +1528,23 @@ impl Action for CalendarAction {
 
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
+    }
+
+    /// What a server sent and the bookkeeping of a sync are content from
+    /// outside: they sync to everyone, but no undo takes them back.
+    fn change_kind(&self) -> tilo_actions::context::ChangeKind {
+        match self {
+            CalendarAction::AdoptRemoteEvent(_)
+            | CalendarAction::AdoptRemoteTask(_)
+            | CalendarAction::DropRemoteItem { .. } => tilo_actions::context::ChangeKind::External,
+            CalendarAction::SetRemoteBinding { .. }
+            | CalendarAction::AcknowledgeRemotePush { .. }
+            | CalendarAction::AcknowledgeRemoteDelete { .. }
+            | CalendarAction::SetSyncToken { .. } => {
+                tilo_actions::context::ChangeKind::Housekeeping
+            }
+            _ => tilo_actions::context::ChangeKind::Content,
+        }
     }
 
     /// Outside-consequence undo: creating a remote event is undone by a
