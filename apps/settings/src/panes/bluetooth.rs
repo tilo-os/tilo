@@ -11,7 +11,7 @@
 use ui::i18n::ArgValue;
 
 use crate::i18n::{t, t_args};
-use crate::widgets::{El, caption, card_with_action, rows, setting_row, value_row};
+use crate::widgets::{El, caption, card_with_action, item_row, rows, setting_row, value_row};
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use tilo_bluez::{DeviceInfo, PairOutcome};
 use ui::doc::{read_bool, read_str_or_text};
 use ui::theme::Theme;
 use ui::widget::{AppModel, ModelPath};
-use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, Toggle, Widget};
+use ui::widget::{Button, Row, Spacer, TextInput, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -365,32 +365,25 @@ impl BluetoothPane {
             None => status,
         }
     }
-    fn device_top_row(&self, d: &DeviceInfo) -> Row {
+    fn device_actions(&self, d: &DeviceInfo) -> Vec<Button> {
         let (primary, action) = self.device_primary_action(d);
         let details = t(if self.expanded.as_deref() == Some(&d.path) {
             "settings-bluetooth-less"
         } else {
             "settings-bluetooth-details"
         });
-        Row::new()
-            .push(Box::new(Text::new(&d.name).with_size(13.0)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(
-                Button::new(
-                    &format!("settings.bluetooth.{action}.{}", token(&d.path)),
-                    &primary,
-                    Some(&key(&d.path, action)),
-                )
-                .content_sized(),
-            ))
-            .push(Box::new(
-                Button::new(
-                    &format!("settings.bluetooth.details.{}", token(&d.path)),
-                    &details,
-                    Some(&key(&d.path, "details")),
-                )
-                .content_sized(),
-            ))
+        vec![
+            Button::new(
+                &format!("settings.bluetooth.{action}.{}", token(&d.path)),
+                &primary,
+                Some(&key(&d.path, action)),
+            ),
+            Button::new(
+                &format!("settings.bluetooth.details.{}", token(&d.path)),
+                &details,
+                Some(&key(&d.path, "details")),
+            ),
+        ]
     }
     fn device_detail_rows(&self, d: &DeviceInfo) -> Vec<El> {
         let mut block: Vec<El> = Vec::new();
@@ -418,7 +411,6 @@ impl BluetoothPane {
                     &key(&d.path, "trusted"),
                 )),
             ));
-            block.push(caption(&t("settings-bluetooth-trust-caption")));
             block.push(Box::new(
                 TextInput::new(Vec::new())
                     .with_id(&format!("bluetooth.alias.{}", token(&d.path)))
@@ -427,43 +419,35 @@ impl BluetoothPane {
             ));
             block.push(Box::new(
                 Row::new()
-                    .push(Box::new(
-                        Button::new(
-                            &format!("settings.bluetooth.rename.{}", token(&d.path)),
-                            &rename,
-                            Some(&key(&d.path, "rename")),
-                        )
-                        .content_sized(),
-                    ))
-                    .push(Box::new(
-                        Button::new(
-                            &format!("settings.bluetooth.forget.{}", token(&d.path)),
-                            &forget,
-                            Some(&key(&d.path, "forget")),
-                        )
-                        .content_sized(),
-                    ))
+                    .push(Box::new(Button::new(
+                        &format!("settings.bluetooth.rename.{}", token(&d.path)),
+                        &rename,
+                        Some(&key(&d.path, "rename")),
+                    )))
+                    .push(Box::new(Button::new(
+                        &format!("settings.bluetooth.forget.{}", token(&d.path)),
+                        &forget,
+                        Some(&key(&d.path, "forget")),
+                    )))
                     .push(Box::new(Spacer::new())),
             ));
-        }
-        if d.icon.starts_with("audio-") {
-            block.push(caption(&t("settings-bluetooth-audio-caption")));
         }
         block
     }
     fn device_row(&self, d: &DeviceInfo) -> El {
-        let top = self.device_top_row(d);
-        let status = Self::device_status_line(d);
-        let mut block: Vec<El> = vec![Box::new(top), caption(&status)];
+        let summary = item_row(
+            &d.name,
+            Vec::new(),
+            &[Self::device_status_line(d)],
+            self.device_actions(d),
+        );
         if self.expanded.as_deref() == Some(&d.path) {
+            let mut block: Vec<El> = vec![summary];
             block.extend(self.device_detail_rows(d));
+            rows(block)
+        } else {
+            summary
         }
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(rows(block)),
-        )
     }
     fn device_rows(&self) -> Vec<El> {
         let mut out: Vec<El> = self.devices.iter().map(|d| self.device_row(d)).collect();
@@ -485,13 +469,16 @@ impl BluetoothPane {
         let refresh = t("settings-bluetooth-refresh");
         let mut body: Vec<El> = vec![Box::new(
             Row::new()
-                .push(Box::new(
-                    Button::new("settings.bluetooth.scan", &scan, Some(SCAN_KEY)).content_sized(),
-                ))
-                .push(Box::new(
-                    Button::new("settings.bluetooth.refresh", &refresh, Some(REFRESH_KEY))
-                        .content_sized(),
-                ))
+                .push(Box::new(Button::new(
+                    "settings.bluetooth.scan",
+                    &scan,
+                    Some(SCAN_KEY),
+                )))
+                .push(Box::new(Button::new(
+                    "settings.bluetooth.refresh",
+                    &refresh,
+                    Some(REFRESH_KEY),
+                )))
                 .push(Box::new(Spacer::new())),
         )];
         if let Some(n) = &self.notice {
@@ -1007,6 +994,110 @@ impl Widget for BluetoothPane {
                 .composed
                 .as_mut()
                 .is_some_and(|c| c.take_structure_dirty())
+    }
+}
+/// Fixture data for captures: a controller with a few devices around it.
+#[cfg(not(feature = "thin"))]
+mod fixture {
+    use super::{Arc, BluetoothControl, BluetoothPane, DeviceInfo, PairOutcome};
+
+    struct Bench;
+
+    impl BluetoothControl for Bench {
+        fn devices(&self) -> Result<Vec<DeviceInfo>, String> {
+            Ok(devices())
+        }
+        fn powered(&self) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn scanning(&self) -> Result<bool, String> {
+            Ok(false)
+        }
+        fn set_powered(&self, _on: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn start_scan(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop_scan(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn pair(&self, _path: &str) -> Result<PairOutcome, String> {
+            Ok(PairOutcome::PairedAndConnected)
+        }
+        fn cancel_pairing(&self, _path: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn connect(&self, _path: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn disconnect(&self, _path: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_trusted(&self, _path: &str, _trusted: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_alias(&self, _path: &str, _alias: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn forget(&self, _path: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn device(
+        index: u8,
+        name: &str,
+        icon: &str,
+        paired: bool,
+        connected: bool,
+        battery: Option<u8>,
+        rssi: Option<i16>,
+    ) -> DeviceInfo {
+        DeviceInfo {
+            path: format!("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_{index:02X}"),
+            address: format!("AA:BB:CC:DD:EE:{index:02X}"),
+            name: name.to_string(),
+            icon: icon.to_string(),
+            paired,
+            trusted: paired,
+            connected,
+            battery,
+            rssi,
+        }
+    }
+
+    fn devices() -> Vec<DeviceInfo> {
+        vec![
+            device(1, "WH-1000XM5", "audio-headset", true, true, Some(82), None),
+            device(2, "MX Keys", "input-keyboard", true, true, Some(64), None),
+            device(
+                3,
+                "Pixel Buds Pro",
+                "audio-headphones",
+                true,
+                false,
+                None,
+                None,
+            ),
+            device(
+                4,
+                "JBL Flip 6",
+                "audio-speakers",
+                false,
+                false,
+                None,
+                Some(-58),
+            ),
+        ]
+    }
+
+    impl BluetoothPane {
+        /// The pane over a fixed controller and device list: what a capture
+        /// shows, the same on every machine.
+        pub(crate) fn for_shot() -> Self {
+            Self::with_control(Arc::new(Bench), devices(), true, false)
+        }
     }
 }
 
