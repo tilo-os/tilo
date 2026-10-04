@@ -69,6 +69,11 @@ impl ToolAction {
             ToolAction::InsertImage => Icon::Image,
             ToolAction::InsertTable => Icon::Table,
             ToolAction::InsertToc => Icon::ListTree,
+            ToolAction::NewMenu => Icon::FilePlus,
+            ToolAction::FontSizeDec => Icon::AArrowDown,
+            ToolAction::FontSizeInc => Icon::AArrowUp,
+            ToolAction::ToggleRuler => Icon::Ruler,
+            ToolAction::ToggleHistory => Icon::History,
             _ => return None,
         })
     }

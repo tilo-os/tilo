@@ -58,7 +58,7 @@ impl Default for FindBar {
     fn default() -> Self {
         Self {
             open: false,
-            bar: ui::widget::FindBar::new().with_replace(),
+            bar: ui::widget::FindBar::new().with_replace().with_regex(),
             matches: Vec::new(),
             index: 0,
         }
@@ -248,6 +248,9 @@ impl FindBar {
 
 /// Every match of `query` in `blocks` under `options`, as character spans.
 fn find_in(blocks: &[BlockView], query: &str, options: FindOptions) -> Vec<FindMatch> {
+    if options.mode == ui::widget::FindMode::Regex {
+        return find_pattern(blocks, query, options);
+    }
     let mut found = Vec::new();
     let needle: Vec<char> = if options.match_case {
         query.chars().collect()
@@ -277,6 +280,38 @@ fn find_in(blocks: &[BlockView], query: &str, options: FindOptions) -> Vec<FindM
                 start = end;
             } else {
                 start += 1;
+            }
+        }
+    }
+    found
+}
+
+/// Every match of the regular expression `query` in the paragraphs, in
+/// characters. A pattern that does not compile, or matches only empty
+/// spans, finds nothing.
+fn find_pattern(blocks: &[BlockView], query: &str, options: FindOptions) -> Vec<FindMatch> {
+    let Ok(pattern) = regex::RegexBuilder::new(query)
+        .case_insensitive(!options.match_case)
+        .build()
+    else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for block in blocks {
+        let chars: Vec<char> = block.text.chars().collect();
+        let char_at = |byte: usize| {
+            block
+                .text
+                .get(..byte)
+                .map_or(0, |head| head.chars().count())
+        };
+        for hit in pattern.find_iter(&block.text) {
+            if hit.is_empty() {
+                continue;
+            }
+            let (start, end) = (char_at(hit.start()), char_at(hit.end()));
+            if !options.whole_word || is_word_match(&chars, start, end) {
+                found.push((block.id.clone(), start, end));
             }
         }
     }
@@ -326,6 +361,19 @@ mod tests {
         };
         assert_eq!(find_in(&blocks, "cat", word), vec![("p2".into(), 2, 5)]);
         assert_eq!(find_in(&blocks, "cat", any).len(), 2);
+        let pattern = FindOptions {
+            mode: ui::widget::FindMode::Regex,
+            ..FindOptions::default()
+        };
+        assert_eq!(
+            find_in(&blocks, r"c\w+", pattern),
+            vec![("p1".into(), 18, 26), ("p2".into(), 2, 5)],
+            "a pattern matches in characters"
+        );
+        assert!(
+            find_in(&blocks, "(", pattern).is_empty(),
+            "a pattern that does not compile finds nothing"
+        );
     }
 
     /// Opening with a seed finds and selects the first match; closing drops

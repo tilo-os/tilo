@@ -1199,9 +1199,16 @@ pub struct WordProcessorWidget {
     /// over a scrim in a narrow one.
     outline_drawer: ui::widget::SidebarDrawer,
     inspector_drawer: ui::widget::SidebarDrawer,
-    /// Their show/hide buttons at the ends of the toolbar band.
+    /// Their show/hide buttons at the ends of the toolbar band, the
+    /// window's header row.
     outline_toggle: Rect,
     inspector_toggle: Rect,
+    /// The window's History control in the header row's trailing corner,
+    /// when the host offers it.
+    window_history: ui::widget::HistoryOpener,
+    window_history_rect: Rect,
+    /// The History button was replaced since the tree was last built.
+    history_tree_stale: bool,
     /// Crash-recovery persistence and its Restore/Discard surface.
     recovery: RecoveryBanner,
     /// The "New" picker owns its shared menu, lifecycle, and typed outcomes.
@@ -1441,6 +1448,9 @@ impl WordProcessorWidget {
                 .breakpoint(INSPECTOR_DOCKS_FROM),
             outline_toggle: Rect::ZERO,
             inspector_toggle: Rect::ZERO,
+            window_history: ui::widget::HistoryOpener::new(),
+            window_history_rect: Rect::ZERO,
+            history_tree_stale: false,
             recovery: RecoveryBanner::default(),
             template_picker: TemplatePicker::default(),
             unsaved_changes: UnsavedChanges::default(),
@@ -4841,18 +4851,18 @@ impl WordProcessorWidget {
         ctx.section(&t("panel-this-paragraph"), true);
         ctx.field_label(&t("panel-align"));
         let values = ["left", "center", "right", "justify"];
-        let labels = [
-            t("panel-align-left"),
-            t("panel-align-center"),
-            t("panel-align-right"),
-            t("panel-align-justify"),
+        let segments = [
+            ui::widget::Segment::icon(ui::icons::Icon::AlignLeft, t("panel-align-left")),
+            ui::widget::Segment::icon(ui::icons::Icon::AlignCenter, t("panel-align-center")),
+            ui::widget::Segment::icon(ui::icons::Icon::AlignRight, t("panel-align-right")),
+            ui::widget::Segment::icon(ui::icons::Icon::AlignJustify, t("panel-align-justify")),
         ];
         let current = self.current_align();
         let selected = values
             .iter()
             .position(|v| *v == current)
             .unwrap_or(usize::MAX);
-        let rects = ctx.segmented(&labels, selected, self.pointer);
+        let rects = ctx.segmented_items(&segments, selected, self.pointer);
         for (rect, value) in rects.into_iter().zip(values) {
             self.panel_hits.push((rect, PanelHit::ParaAlign(value)));
         }
@@ -5378,9 +5388,22 @@ impl PanelCtx<'_> {
     /// A segmented control the width of the column on its own line;
     /// returns each segment's rect (none while scrolled out of view).
     fn segmented(&mut self, labels: &[String], selected: usize, pointer: Point) -> Vec<Rect> {
+        let segments: Vec<ui::widget::Segment> =
+            labels.iter().map(ui::widget::Segment::new).collect();
+        self.segmented_items(&segments, selected, pointer)
+    }
+
+    /// [`Self::segmented`] of segments that may show icons (each named by
+    /// its label).
+    fn segmented_items(
+        &mut self,
+        segments: &[ui::widget::Segment],
+        selected: usize,
+        pointer: Point,
+    ) -> Vec<Rect> {
         let h = SegmentedFace::height(ControlSize::Small, self.theme);
         let row = Rect::new(self.x0, self.y, self.right, self.y + h);
-        let rects = self.segmented_in(row, labels, selected, pointer);
+        let rects = self.segmented_in(row, segments, selected, pointer);
         self.y += h + f64::from(self.theme.tokens.spacing.rhythm.related);
         rects
     }
@@ -5389,17 +5412,16 @@ impl PanelCtx<'_> {
     fn segmented_in(
         &mut self,
         row: Rect,
-        labels: &[String],
+        segments: &[ui::widget::Segment],
         selected: usize,
         pointer: Point,
     ) -> Vec<Rect> {
-        if !self.visible(row) || labels.is_empty() {
+        if !self.visible(row) || segments.is_empty() {
             return Vec::new();
         }
-        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-        let n = num::f64_of_usize(labels.len());
+        let n = num::f64_of_usize(segments.len());
         let seg = row.width() / n;
-        let rects: Vec<Rect> = (0..labels.len())
+        let rects: Vec<Rect> = (0..segments.len())
             .map(|i| {
                 let i = num::f64_of_usize(i);
                 Rect::new(row.x0 + i * seg, row.y0, row.x0 + (i + 1.0) * seg, row.y1)
@@ -5411,7 +5433,7 @@ impl PanelCtx<'_> {
             self.transform,
             self.tr,
             self.theme,
-            &SegmentedFace::new(&rects, &refs, selected)
+            &SegmentedFace::of_segments(&rects, segments, selected)
                 .control_size(ControlSize::Small)
                 .hovered(hovered),
         );
@@ -9657,7 +9679,8 @@ impl Widget for WordProcessorWidget {
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::record::capability::RecordScoped,
         dyn ui::component_lifecycle::ComponentLifecycle,
-        dyn ui::undo::UndoPoints
+        dyn ui::undo::UndoPoints,
+        dyn ui::widget::WindowHeader
     );
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
@@ -9947,6 +9970,7 @@ impl Widget for WordProcessorWidget {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.window_history.tree_rebuilt();
         // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
         // cannot actually return `Err` for a fresh leaf (see the
         // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
@@ -9967,6 +9991,29 @@ impl Widget for WordProcessorWidget {
             .unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    /// The window's History button is the one retained child: the host
+    /// finds, focuses and announces it like the same control in a
+    /// `NavShell` header. The editor places, paints and routes it itself.
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.window_history
+            .button()
+            .map(|button| button as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.window_history
+            .button_mut()
+            .map(|button| button as &mut (dyn Widget + '_))
+            .into_iter()
+            .collect()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.history_tree_stale)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -11038,6 +11085,18 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
     }
 }
 
+/// The toolbar band is the window's header row: it holds the History control
+/// the host offers, so the window draws no History bar above the editor.
+impl ui::widget::WindowHeader for WordProcessorWidget {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        if self.window_history.control() != control {
+            self.window_history.set_control(control);
+            self.lifecycle.dirty = true;
+        }
+        self.history_tree_stale |= self.window_history.take_rebuilt();
+    }
+}
+
 impl ui::widget::controls::ActionControls for WordProcessorWidget {
     fn install_control_custody(
         &mut self,
@@ -11056,6 +11115,7 @@ impl ui::widget::controls::ActionControls for WordProcessorWidget {
         if let Some(offer) = &mut self.file_choice {
             return offer.take();
         }
+
         self.children_mut()
             .into_iter()
             .find_map(ui::widget::controls::take_control_invocation)
@@ -13443,11 +13503,9 @@ impl WordProcessorWidget {
         self.inspector_drawer.resolve(column)
     }
 
-    /// The toolbar band's height: one pointer-target control with the
-    /// band's padding (`s1`, as `toolbar::band_padding`) above and below.
+    /// The toolbar band's height: the window's header row.
     fn toolbar_band_height(theme: &Theme) -> f64 {
-        f64::from(theme.tokens.metrics.min_pointer_target)
-            + 2.0 * f64::from(theme.tokens.spacing.s1)
+        ui::chrome::HeaderRowFace::height(theme)
     }
 
     /// Lay out and paint the toolbar in its band `tb` (the band has no fill
@@ -13463,44 +13521,33 @@ impl WordProcessorWidget {
     ) {
         self.sync_toolbar();
         ui::widget::toolbar::paint_band(scene, transform, theme, tb);
-        let across = f64::from(theme.tokens.spacing.s3);
-        let target = f64::from(theme.tokens.metrics.min_pointer_target);
-        let along = (tb.height() - target) / 2.0;
-        // The outline's toggle at the leading corner, the inspector's at the
-        // trailing one, the commands between them.
-        self.outline_toggle = Rect::new(
-            tb.x0 + across,
-            tb.y0 + along,
-            tb.x0 + across + target,
-            tb.y1 - along,
-        );
-        self.inspector_toggle = Rect::new(
-            tb.x1 - across - target,
-            tb.y0 + along,
-            tb.x1 - across,
-            tb.y1 - along,
-        );
-        self.outline_drawer.draw_toggle(
-            scene,
-            transform,
-            tr,
-            theme,
-            self.outline_toggle,
-            self.outline_toggle.contains(self.pointer),
-        );
-        self.inspector_drawer.draw_toggle(
-            scene,
-            transform,
-            tr,
-            theme,
-            self.inspector_toggle,
-            self.inspector_toggle.contains(self.pointer),
-        );
+        // The band is the window's header row: the outline's toggle at the
+        // leading corner, the window's History control (when offered) at the
+        // trailing one with the inspector's toggle before it, the commands
+        // between them.
+        let leading = self.outline_drawer.header(tb, theme);
+        let trailing =
+            self.inspector_drawer
+                .header_with_history(tb, theme, self.window_history.is_shown());
+        self.outline_toggle = self.outline_drawer.toggle_rect();
+        self.inspector_toggle = self.inspector_drawer.toggle_rect();
+        self.window_history_rect = trailing.history_rect();
+        self.outline_drawer
+            .paint_toggle(scene, transform, tr, theme);
+        self.inspector_drawer
+            .paint_toggle(scene, transform, tr, theme);
+        if let Some(button) = self.window_history.button_mut() {
+            button.apply_layout_external(self.window_history_rect);
+            let presence = PresenceCtx::empty();
+            Widget::draw(button, scene, transform, tr, theme, &presence);
+        }
+        let chip = leading.metrics().chip;
+        let y0 = tb.center().y - chip / 2.0;
         let inner = Rect::new(
-            self.outline_toggle.x1 + across,
-            tb.y0 + along,
-            self.inspector_toggle.x0 - across,
-            tb.y1 - along,
+            leading.actions.x0,
+            y0,
+            trailing.actions.x1.max(leading.actions.x0),
+            y0 + chip,
         );
         self.tool_bar.lay_out_in(inner, tr, theme);
         let presence = PresenceCtx::empty();
@@ -13538,6 +13585,32 @@ impl WordProcessorWidget {
             )),
             _ => None,
         };
+        // The window's History control and the drawers' toggles answer for
+        // their own places in the row.
+        if let Some(button) = self.window_history.button_mut() {
+            let mut handled = false;
+            button.handle_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    handled: &mut handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
+            );
+            if button.needs_redraw() {
+                self.lifecycle.dirty = true;
+            }
+            if handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
+                *ctx.handled = true;
+                return true;
+            }
+        }
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. }
+        ) {
+            self.outline_drawer.handle_event(event, ctx);
+            self.inspector_drawer.handle_event(event, ctx);
+        }
         let menu_open = self.tool_bar.is_overflow_open();
         let in_band = pointer.unwrap_or(self.pointer);
         let claims = menu_open
