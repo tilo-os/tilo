@@ -865,7 +865,7 @@ impl BooksApp {
             return Err("the passage ends before it starts".into());
         }
         // The position is explicit: `persist_progress` records it, where a
-        // cleared `last_persisted` would re-adopt the stored chapter instead.
+        // pending `adopt_position` would take up the stored chapter instead.
         if self.book_idx != index || self.chapter != chapter {
             self.book_idx = index;
             self.chapter = chapter;
@@ -929,6 +929,8 @@ pub struct BooksApp {
     resource_invocation: Option<tilo_actions::InvocationId>,
     resource_lifecycle: Option<ResourceLifecycle>,
     completed_resource_invocation: Option<tilo_actions::InvocationUpdate>,
+    /// Callers waiting for a share or fetch to settle.
+    effect_replies: Vec<(tilo_actions::InvocationId, ui::framework::EffectReply)>,
     /// The sole background parser. It owns no document state; completed books
     /// are committed only by [`Self::drain_import_worker`] on the UI thread.
     import_worker: Option<ImportWorker>,
@@ -1156,6 +1158,9 @@ pub struct BooksApp {
     /// Last-opened timestamp per book (for the "recently opened" shelf sort).
     shelf_opened: HashMap<String, u64>,
     last_persisted: Option<(usize, usize, u16)>,
+    /// The open book's stored position is still to be taken up: set when a
+    /// book opens, cleared once the reader shows it there.
+    adopt_position: bool,
     reading_progress: f32,
     progress_slider_track: Rect,
     progress_dragging: bool,
@@ -1256,6 +1261,7 @@ impl BooksApp {
             resource_invocation: None,
             resource_lifecycle: None,
             completed_resource_invocation: None,
+            effect_replies: Vec::new(),
             import_worker,
             import_worker_error,
             import_generation: 0,
@@ -1356,6 +1362,7 @@ impl BooksApp {
             shelf_annos: HashMap::new(),
             shelf_opened: HashMap::new(),
             last_persisted: None,
+            adopt_position: true,
             reading_progress: 0.0,
             progress_slider_track: Rect::ZERO,
             progress_dragging: false,
@@ -1610,8 +1617,24 @@ impl BooksApp {
     /// Persist the live reading position for the open book (deduped so we don't
     /// churn the document when nothing moved).
     fn persist_progress(&mut self, doc: &mut AutoCommit) {
+        if let Some(action) = self.progress_to_record() {
+            self.edit(doc, &action);
+        }
+    }
+
+    /// Record where the reader is, from an effect that moved it: through the
+    /// dispatcher, which the host applies like any invocation.
+    fn record_progress(&mut self) {
+        if let Some(action) = self.progress_to_record() {
+            self.dispatch.apply(&action);
+        }
+    }
+
+    /// The progress action for where the reader is now, when it moved since
+    /// it was last recorded.
+    fn progress_to_record(&mut self) -> Option<crate::actions::EbookAction> {
         if self.view != View::Reader {
-            return;
+            return None;
         }
         let fraction = self.current_progress_fraction();
         let key = (
@@ -1620,26 +1643,20 @@ impl BooksApp {
             (fraction * 10_000.0).round() as u16,
         );
         if self.last_persisted == Some(key) {
-            return;
+            return None;
         }
-        let Some(book) = self.library.get(self.book_idx) else {
-            return;
-        };
-        let id = book.id.clone();
-        self.edit(
-            doc,
-            &crate::actions::set_progress_action(
-                &id,
-                Progress {
-                    chapter: self.chapter,
-                    page: self.page,
-                    fraction,
-                    // 0 ⇒ the action preserves the recorded open time.
-                    opened: 0,
-                },
-            ),
-        );
+        let id = self.library.get(self.book_idx)?.id.clone();
         self.last_persisted = Some(key);
+        Some(crate::actions::set_progress_action(
+            &id,
+            Progress {
+                chapter: self.chapter,
+                page: self.page,
+                fraction,
+                // 0 ⇒ the action preserves the recorded open time.
+                opened: 0,
+            },
+        ))
     }
 
     fn current_progress_fraction(&self) -> f32 {
@@ -1768,26 +1785,13 @@ impl BooksApp {
     /// Hydrate the reader's persisted library from the document on first
     /// sync, shelving any new book in a watched folder first. The shelf is
     /// home; a bundled library opens on the book last read.
-    fn ensure_library_loaded(&mut self, doc: &mut AutoCommit) {
+    fn ensure_library_loaded(&mut self, doc: &AutoCommit) {
         if self.library_loaded {
             return;
         }
         self.library_loaded = true;
 
-        let mut found_paths = HashMap::new();
-        if self.live {
-            let shelved: std::collections::HashSet<String> = BooksDoc::read_library_entries(doc)
-                .into_iter()
-                .map(|entry| entry.id)
-                .collect();
-            for found in content::find_watched_books(&self.watched_folders) {
-                if !shelved.contains(&found.entry.id) {
-                    self.edit(doc, &crate::actions::shelve_found_book_action(&found.entry));
-                }
-                found_paths.insert(found.entry.id, found.path);
-            }
-        }
-
+        let found_paths = HashMap::new();
         Arc::make_mut(&mut self.library).clear();
         self.library_paths.clear();
         self.hydrated.clear();
@@ -1873,6 +1877,7 @@ impl BooksApp {
         self.comment_overlay.close();
         self.layout = None;
         self.last_persisted = None;
+        self.adopt_position = true;
         self.toc_scroll_to_active = true;
         self.notes_scroll_to_annotation = None;
     }
@@ -2596,16 +2601,18 @@ impl BooksApp {
     /// Queue a capability-safe hydrate of a remotely advertised book. The
     /// replicated id determines the sole workspace path; the importer verifies
     /// the parsed content id before it can become a local shelf entry.
-    fn begin_hydrate_shared_book(&mut self, id: &str, doc: &AutoCommit) -> Result<(), String> {
+    fn begin_hydrate_shared_book(
+        &mut self,
+        id: &str,
+        entries: &[crate::model::LibraryEntry],
+    ) -> Result<(), String> {
         if self.pending_share.is_some()
             || self.resource_invocation.is_some()
             || self.import_loading.is_some()
         {
             return Err("another book lifecycle operation is in progress".into());
         }
-        let advertised = BooksDoc::read_library_entries(doc)
-            .iter()
-            .any(|entry| entry.id == id && entry.shared);
+        let advertised = entries.iter().any(|entry| entry.id == id && entry.shared);
         if !advertised {
             return Err("this shared book is no longer available in the workspace".into());
         }
@@ -3431,7 +3438,51 @@ impl BooksApp {
             self.reader_keys = crate::reader_keys::ReaderKeys::following(cx.settings());
             self.watched_folders
                 .clone_from(&self.local_library.watched_folders);
+            self.scan_watched_folders(&cx.jobs());
         }
+    }
+
+    /// Look through the watched folders off the UI thread, and put the books
+    /// found there that the shelf does not hold yet on it, through the
+    /// library's actions like an import. Their files are this device's
+    /// grants, which open them.
+    fn scan_watched_folders(&self, jobs: &ui::framework::Jobs<crate::resource::Ebook>) {
+        if self.watched_folders.is_empty() {
+            return;
+        }
+        let folders = self.watched_folders.clone();
+        jobs.start(
+            "watched-folders",
+            move |cx: &mut ui::framework::EffectCx<crate::resource::Ebook, Self>| {
+                Ok(cx.thread(
+                    move |_| content::find_watched_books(&folders),
+                    |app: &mut Self, found: Vec<content::FoundBook>, cx| {
+                        app.shelve_found(found, cx);
+                        Ok(ui::framework::Effected::done())
+                    },
+                ))
+            },
+        );
+    }
+
+    /// Put `found` books the shelf does not hold yet on it, remembering
+    /// where each one's file is.
+    fn shelve_found<H: 'static>(
+        &mut self,
+        found: Vec<content::FoundBook>,
+        cx: &ui::framework::EffectCx<crate::resource::Ebook, H>,
+    ) {
+        let shelved: std::collections::HashSet<String> = cx
+            .live()
+            .with(|state| state.entries.iter().map(|entry| entry.id.clone()).collect());
+        for book in found {
+            self.local_library.remember_book(&book.entry.id, &book.path);
+            if !shelved.contains(&book.entry.id) {
+                cx.apply(&crate::actions::shelve_found_book_action(&book.entry));
+            }
+        }
+        self.local_library.save();
+        self.dirty = true;
     }
 
     /// Test-only: plant a non-empty text selection so hosted reading extras
@@ -4385,81 +4436,7 @@ impl Continuable for BooksApp {
 }
 
 impl Widget for BooksApp {
-    ui::provides!(
-        dyn ui::widget::Continuable,
-        dyn ui::resources::PublishesResources
-    );
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::EBOOK_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested && self.resource_invocation == Some(invocation) {
-            self.resource_invocation = None;
-            self.pending_share = None;
-            let message = match self.resource_lifecycle.take() {
-                Some(ResourceLifecycle::Share) => "book sharing cancelled",
-                Some(ResourceLifecycle::Hydrate) => "shared book download cancelled",
-                None => "book open cancelled",
-            };
-            // Parsing cannot be safely interrupted mid-ZIP member, but its
-            // eventual result is no longer authoritative and will be rejected
-            // by the missing loading generation.
-            self.import_loading = None;
-            self.dirty = true;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some(message.into()),
-            });
-        }
-        if self
-            .completed_resource_invocation
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            self.resource_lifecycle = None;
-            return self.completed_resource_invocation.take();
-        }
-        None
-    }
+    ui::provides!(dyn ui::widget::Continuable);
 
     #[allow(
         clippy::too_many_lines,
@@ -4476,8 +4453,10 @@ impl Widget for BooksApp {
         self.drain_import_worker(doc);
         self.commit_pending_share(doc);
         self.open_pending_book(doc);
-        // On the very first sync, adopt any persisted position for the open book.
-        if self.last_persisted.is_none() && self.view == View::Reader {
+        self.deliver_effect_replies();
+        // Once a book opens, take up its stored position.
+        if self.adopt_position && self.view == View::Reader {
+            self.adopt_position = false;
             let id = self.book_id();
             let p = BooksDoc::read_progress(doc, &id);
             let nchap = self.num_chapters().saturating_sub(1);
@@ -4485,7 +4464,6 @@ impl Widget for BooksApp {
             self.page = p.page;
         }
         self.refresh_from_doc(doc);
-        self.persist_progress(doc);
         let registry = BooksDoc::read_library_entries(doc);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for book in self.library.iter() {
@@ -5154,194 +5132,241 @@ impl BooksApp {
     }
 }
 
-impl ui::resources::PublishesResources for BooksApp {
-    /// [`tilo_resource::publish`] owns the library's door; the reader adds
-    /// only where it is in the open book.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.current_book_resource_context()
-            .map(|ctx| vec![crate::actions::reading_resource(&ctx)])
-            .unwrap_or_default()
-    }
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let offset = match cursor {
-            [] => 0,
-            [offset] => usize::from(*offset),
-            _ => return None,
-        };
-        let resources = self.resources(doc);
-        let total = resources.len();
-        if offset > total {
-            return None;
-        }
-        let take = max_results.min(total.saturating_sub(offset));
-        let next_offset = offset.saturating_add(take);
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources: resources.into_iter().skip(offset).take(take).collect(),
-            next_cursor: if next_offset < total {
-                vec![next_offset as u8]
-            } else {
-                Vec::new()
-            },
-            exhausted: next_offset >= total,
-        })
-    }
-    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
-        Some(format!("ebook-search:{}", self.search_revision))
-    }
-    /// The reading position, or the exact book, chapter, annotation or
-    /// reading location a search hit names.
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        self.current_book_resource_context()
-            .map(|ctx| crate::actions::reading_resource(&ctx))
-            .filter(|resource| resource.id.as_str() == id)
-            .or_else(|| {
-                self.book_search
-                    .resolve(&tilo_actions::ActionAddress::new(id, "open"))
-            })
-    }
-}
-
 impl BooksApp {
-    fn answer_resource_operation(
+    /// Start `effect`, invoked as `invocation`, against the library's
+    /// `entries`. Showing something answers at once; sharing or fetching a
+    /// book answers once its bytes are in place, through
+    /// [`Self::take_effect_result`].
+    ///
+    /// # Errors
+    /// Why the effect does not apply to what this reader holds now: a book,
+    /// chapter or block that is gone, another share or fetch in progress.
+    pub(crate) fn begin_effect(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        use crate::actions::EbookOperation;
-
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected = crate::actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match ebook operation kind {expected:?}"
-            ));
-        }
-        match operation {
-            EbookOperation::PreviousPage => self.on_prev_page(),
-            EbookOperation::NextPage => self.on_next_page(),
-            EbookOperation::ToggleContents => self.on_toggle_toc(),
-            EbookOperation::ToggleNotes => self.on_toggle_notes(),
-            EbookOperation::OpenSettings => self.on_open_settings(),
-            EbookOperation::Reveal {
-                book_id,
+        invocation: tilo_actions::InvocationId,
+        effect: crate::resource::BooksEffect,
+        entries: &[crate::model::LibraryEntry],
+    ) -> Result<ui::framework::Effected, String> {
+        use crate::resource::BooksEffect;
+        match effect {
+            BooksEffect::Share { book } => {
+                self.begin_share_book(&book)?;
+                self.resource_invocation = Some(invocation);
+                self.resource_lifecycle = Some(ResourceLifecycle::Share);
+                return Ok(ui::framework::Effected::Pending);
+            }
+            BooksEffect::Download { book } => {
+                self.begin_hydrate_shared_book(&book, entries)?;
+                self.resource_invocation = Some(invocation);
+                self.resource_lifecycle = Some(ResourceLifecycle::Hydrate);
+                return Ok(ui::framework::Effected::Pending);
+            }
+            BooksEffect::PreviousPage => self.on_prev_page(),
+            BooksEffect::NextPage => self.on_next_page(),
+            BooksEffect::Contents => self.on_toggle_toc(),
+            BooksEffect::Notes => self.on_toggle_notes(),
+            BooksEffect::Settings => self.on_open_settings(),
+            BooksEffect::Open {
+                book,
                 chapter,
                 page,
                 block,
+            } => self.reveal(&book, chapter, page, block)?,
+            BooksEffect::GoTo {
+                book,
+                chapter,
+                block,
             } => {
-                let Some(index) = self.library.iter().position(|book| book.id == book_id) else {
-                    return Err("book is no longer in the library".into());
-                };
-                let Some(book) = self.library.get(index) else {
-                    return Err("book is no longer in the library".into());
-                };
-                // A resource address is an authority-bearing snapshot. Do not
-                // silently clamp a chapter or annotation target from an old
-                // search/resource row: a peer may have replaced the EPUB, and
-                // opening a nearby passage would be materially misleading.
-                if book.chapters.is_empty() {
-                    if chapter != 0 || block.is_some() {
-                        return Err("book no longer contains the requested reading target".into());
-                    }
-                } else {
-                    let Some(chapter_item) = book.chapters.get(chapter) else {
-                        return Err("chapter is no longer available in this book".into());
-                    };
-                    if let Some(block) = block
-                        && block >= chapter_item.blocks.len()
-                    {
-                        return Err(
-                            "annotation target is no longer available in this chapter".into()
-                        );
-                    }
-                }
-                self.book_idx = index;
-                self.view = View::Reader;
-                self.chapter = chapter;
-                self.page = page;
-                self.pending_jump_block = block;
-                self.clear_selection();
-                self.composing = None;
-                self.note_composer.close();
-                self.comment_overlay.close();
-                // Explicit, like `select_passage`: persisted, never re-adopted.
-                self.layout = None;
-                self.dirty = true;
+                let chapter = chapter.unwrap_or_else(|| self.open_chapter_of(&book));
+                self.reveal(&book, chapter, 0, Some(block.unwrap_or(0)))?;
             }
-            EbookOperation::SelectPassage {
-                book_id,
+            BooksEffect::SelectPassage {
+                book,
                 chapter,
                 start_block,
                 start_char,
                 end_block,
                 end_char,
-            } => self.select_passage(
-                &book_id,
-                chapter,
-                (start_block, start_char),
-                (end_block, end_char),
-            )?,
-            EbookOperation::ShareBook { .. } | EbookOperation::HydrateSharedBook { .. } => {
-                return Err("book sharing requires the lifecycle-capable operation host".into());
+            } => {
+                let chapter = chapter.unwrap_or_else(|| self.open_chapter_of(&book));
+                self.select_passage(
+                    &book,
+                    chapter,
+                    (start_block, start_char.unwrap_or(0)),
+                    (end_block.unwrap_or(start_block), end_char),
+                )?;
+            }
+            BooksEffect::OpenBook | BooksEffect::OpenStored { .. } => {
+                return Err("opening a book is the surface's".into());
             }
         }
-        Ok(true)
+        self.record_progress();
+        Ok(ui::framework::Effected::done())
     }
 
-    fn admit_resource_operation(
+    /// Start the effect a published operation's `payload` names against
+    /// `doc`'s library, as the host does when it is invoked.
+    #[cfg(test)]
+    pub(crate) fn start_effect(
         &mut self,
         invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+    ) -> Result<ui::framework::Effected, String> {
+        let effect =
+            <crate::resource::BooksEffect as ui::tilo_resource::Effect>::from_payload(payload)?;
+        self.begin_effect(invocation, effect, &BooksDoc::read_library_entries(doc))
+    }
+
+    /// The chapter this reader has open in `book`, else its first.
+    fn open_chapter_of(&self, book: &str) -> usize {
+        let open = self.view == View::Reader
+            && self
+                .library
+                .get(self.book_idx)
+                .is_some_and(|open| open.id == book);
+        if open { self.chapter } else { 0 }
+    }
+
+    /// Show `book` at `chapter`, `page` and `block`. A place from an old
+    /// search hit or row is not clamped to something nearby: a peer may have
+    /// replaced the book, and opening a neighbouring passage would mislead.
+    fn reveal(
+        &mut self,
+        book: &str,
+        chapter: usize,
+        page: usize,
+        block: Option<usize>,
+    ) -> Result<(), String> {
+        let Some(index) = self.library.iter().position(|open| open.id == book) else {
+            return Err("book is no longer in the library".into());
         };
-        let expected = crate::actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match ebook operation kind {expected:?}"
-            ));
+        let Some(open) = self.library.get(index) else {
+            return Err("book is no longer in the library".into());
+        };
+        if open.chapters.is_empty() {
+            if chapter != 0 || block.is_some() {
+                return Err("book no longer contains the requested reading target".into());
+            }
+        } else {
+            let Some(chapter_item) = open.chapters.get(chapter) else {
+                return Err("chapter is no longer available in this book".into());
+            };
+            if let Some(block) = block
+                && block >= chapter_item.blocks.len()
+            {
+                return Err("annotation target is no longer available in this chapter".into());
+            }
         }
-        match operation {
-            crate::actions::EbookOperation::ShareBook { book_id } => {
-                self.begin_share_book(&book_id)?;
-                self.resource_invocation = Some(invocation);
-                self.resource_lifecycle = Some(ResourceLifecycle::Share);
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        self.book_idx = index;
+        self.view = View::Reader;
+        self.chapter = chapter;
+        self.page = page;
+        self.pending_jump_block = block;
+        self.clear_selection();
+        self.composing = None;
+        self.note_composer.close();
+        self.comment_overlay.close();
+        // Explicit, like `select_passage`: persisted, never re-adopted.
+        self.layout = None;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// The outcome of the share or fetch invoked as `invocation`, once it
+    /// settled; taken once.
+    pub(crate) fn take_effect_result(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if !self
+            .completed_resource_invocation
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return None;
+        }
+        self.resource_lifecycle = None;
+        self.completed_resource_invocation.take()
+    }
+
+    /// Stop the share or fetch invoked as `invocation`, as its caller asked.
+    /// Parsing cannot be interrupted mid-archive, but its result is no
+    /// longer taken: the loading generation it belongs to is gone.
+    pub(crate) fn cancel_effect(&mut self, invocation: tilo_actions::InvocationId) -> bool {
+        if self.resource_invocation != Some(invocation) {
+            return false;
+        }
+        self.resource_invocation = None;
+        self.pending_share = None;
+        self.resource_lifecycle = None;
+        self.import_loading = None;
+        self.dirty = true;
+        true
+    }
+
+    /// Answer `invocation`'s caller through `reply` once its work settles.
+    pub(crate) fn await_effect(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        reply: ui::framework::EffectReply,
+    ) {
+        self.effect_replies.push((invocation, reply));
+    }
+
+    /// Answer every waiting caller whose share or fetch settled, and stop the
+    /// ones their caller cancelled.
+    fn deliver_effect_replies(&mut self) {
+        for (invocation, reply) in std::mem::take(&mut self.effect_replies) {
+            if reply.is_cancelled() {
+                self.cancel_effect(invocation);
+                continue;
             }
-            crate::actions::EbookOperation::HydrateSharedBook { book_id } => {
-                self.begin_hydrate_shared_book(&book_id, doc)?;
-                self.resource_invocation = Some(invocation);
-                self.resource_lifecycle = Some(ResourceLifecycle::Hydrate);
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            match self.take_effect_result(invocation) {
+                Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+                    reply.answer(Ok(output));
+                }
+                Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+                    reply.answer(Err(error));
+                }
+                Some(_) => reply.answer(Ok(tilo_actions::ActionOutput::default())),
+                None => self.effect_replies.push((invocation, reply)),
             }
-            _ => self
-                .answer_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
         }
     }
+
+    /// Where the reader is in the open book, as the row it publishes.
+    pub(crate) fn reading_row(&self) -> Option<ui::framework::LiveRow> {
+        self.current_book_resource_context()
+            .map(|ctx| live_row(crate::actions::reading_resource(&ctx)))
+    }
+
+    /// The book, chapter, annotation or location a search hit names, with
+    /// what opens it. Its edits are the library's own, on the published row.
+    pub(crate) fn search_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        self.book_search
+            .resolve(&tilo_actions::ActionAddress::new(id, "open"))
+            .or_else(|| {
+                self.book_search
+                    .resolve(&tilo_actions::ActionAddress::new(id, "download"))
+            })
+            .map(live_row)
+    }
+}
+
+/// `resource`, something the reader shows, as a row: its view and effect
+/// operations, nested as it nests.
+fn live_row(resource: tilo_actions::Resource) -> ui::framework::LiveRow {
+    let mut row = ui::framework::LiveRow::new(resource.id.as_str(), resource.kind, resource.label);
+    for action in resource.actions {
+        if action.kind != tilo_actions::OperationKind::Document {
+            row = row.operation(action);
+        }
+    }
+    for child in resource.children {
+        row = row.row(live_row(child));
+    }
+    row
 }
 
 impl BooksApp {

@@ -208,7 +208,7 @@ impl FileDesk {
         let request = PickRequest::save(
             &lookup("canvas-export-title"),
             &lookup("canvas-export"),
-            &document::file_name(&art.title, extension),
+            &document::file_name(&export_stem(art), extension),
         )
         .filter(
             FileFilter::new(settings.format.label())
@@ -357,8 +357,43 @@ impl FileDesk {
     }
 }
 
-/// Carry out a key of the whole window: a tool's letter, `?`, and opening,
-/// saving and exporting. Whether it was one.
+/// What an export is named: the artwork's title, or for an artwork made
+/// from a picture (titled by the picture's file) the title marked as
+/// edited, so the photo it came from is not the name offered to write over.
+fn export_stem(art: &Artwork) -> String {
+    let from_picture = !art.title.is_empty()
+        && art.marks.iter().any(|mark| {
+            matches!(mark.shape, crate::model::Shape::Image { .. }) && mark.name == art.title
+        });
+    if from_picture {
+        ui::i18n::I18nManager::format(
+            "canvas-export-edited",
+            &[("title", art.title.clone().into())],
+        )
+    } else {
+        art.title.clone()
+    }
+}
+
+/// The named keys that act on the canvas's selection wherever the focus
+/// is, unless what has the focus takes them itself.
+fn canvas_key(named: ui::winit::keyboard::NamedKey) -> bool {
+    use ui::winit::keyboard::NamedKey;
+    matches!(
+        named,
+        NamedKey::Escape
+            | NamedKey::Delete
+            | NamedKey::Backspace
+            | NamedKey::Enter
+            | NamedKey::ArrowLeft
+            | NamedKey::ArrowRight
+            | NamedKey::ArrowUp
+            | NamedKey::ArrowDown
+    )
+}
+
+/// Carry out a key of the whole window: a tool's letter, the brush's size,
+/// `?`, and opening, saving and exporting. Whether it was one.
 pub fn window_key(
     tools: &Tools,
     key: &str,
@@ -380,6 +415,7 @@ pub fn window_key(
             tools.sheet.set(Some(Sheet::Export));
             return true;
         }
+        (size @ ("[" | "]"), false, _) => return tools.size_key(size),
         (letter, false, false) if !modifiers.alt_key() => {
             let Some(tool) = Tool::for_key(letter) else {
                 return false;
@@ -482,11 +518,24 @@ impl ui::widget::Decorator for FileDesk {
         if key.state != ui::winit::event::ElementState::Pressed {
             return;
         }
-        let ui::winit::keyboard::Key::Character(typed) = &key.logical_key else {
-            return;
-        };
         let modifiers = ctx.modifiers.state();
-        if window_key(&self.tools, &typed.to_lowercase(), modifiers) {
+        let typed = match &key.logical_key {
+            ui::winit::keyboard::Key::Character(typed) => typed.to_lowercase(),
+            ui::winit::keyboard::Key::Named(named) if canvas_key(*named) => {
+                // A button or a swatch just clicked keeps the focus; the
+                // keys it leaves alone are still the canvas's.
+                self.tools.keys.update(|keys| {
+                    keys.push(crate::tools::CanvasKey {
+                        key: key.logical_key.clone(),
+                        text: None,
+                        modifiers,
+                    });
+                });
+                return;
+            }
+            _ => return,
+        };
+        if window_key(&self.tools, &typed, modifiers) {
             *ctx.handled = true;
         }
     }
@@ -499,5 +548,35 @@ impl ui::widget::Decorator for FileDesk {
 
     fn needs_animation_frame(&self) -> bool {
         self.content.needs_animation_frame() || self.chooser.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test fixtures")]
+
+    use super::*;
+
+    /// A photo opened as an artwork is titled by its file: exporting it
+    /// does not offer that file's name to write over.
+    #[test]
+    fn an_artwork_made_from_a_picture_is_exported_under_a_name_of_its_own() {
+        crate::locales::install();
+        let mut doc = ui::tilo_resource::Doc::new();
+        let open = CanvasAction::OpenPicture(crate::actions::Open {
+            src: "tilo.content:abc".into(),
+            pixels: [10, 10],
+            title: "labrador".into(),
+        });
+        ui::tilo_actions::Action::apply(&open, &mut doc).unwrap();
+        let art = crate::doc::read(&doc);
+        assert_eq!(art.title, "labrador");
+        let stem = export_stem(&art);
+        assert_eq!(stem, "labrador edited");
+        let retitled = Artwork {
+            title: "Bruno".into(),
+            ..art
+        };
+        assert_eq!(export_stem(&retitled), "Bruno");
     }
 }

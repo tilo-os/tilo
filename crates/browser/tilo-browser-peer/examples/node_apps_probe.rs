@@ -350,6 +350,7 @@ async fn main() {
         acme.workspace_id,
         session,
         RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target,
             argument: tilo_actions::remote::InvokeArgument::None,

@@ -1304,7 +1304,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         let membership = album
             .actions
             .into_iter()
-            .find(|action| action.id == "set-membership")
+            .find(|action| action.id == "set-album-membership")
             .expect("album membership is published");
         let expected_membership = membership
             .build_args([(

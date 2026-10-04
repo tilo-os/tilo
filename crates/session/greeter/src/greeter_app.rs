@@ -19,8 +19,9 @@
 //! therefore repaints the passcode field, not the screen; the clock rebuilds
 //! the screen once a minute.
 //!
-//! Non-secret presentation state lives in the CRDT (the toolkit convention):
-//!   * `greeter.username` — `Text`
+//! The typed username is view state: the username field edits a
+//! [`ui::LocalState`] the greeter reads when an attempt starts. The remaining
+//! non-secret presentation state lives in the CRDT (the toolkit convention):
 //!   * `greeter.submit`   — `bool` flag (Sign in / Enter rising edge)
 //!   * `greeter.fingerprint` — `bool` flag (explicit passwordless PAM attempt)
 //!   * `greeter.session`  — `Text` (the chosen session's label)
@@ -69,7 +70,6 @@ use crate::i18n::{t, t_args};
 use crate::local_users::{LoginUser, discover_login_users, remember_user, remembered_user};
 use crate::sessions::{DEFAULT_SESSIONS_DIR, Session, read_sessions};
 
-const USERNAME_PATH: &str = "greeter.username";
 const SUBMIT_PATH: &str = "greeter.submit";
 const FINGERPRINT_PATH: &str = "greeter.fingerprint";
 /// The session picker's chosen label, as a CRDT `Text`. The picker writes
@@ -404,11 +404,6 @@ impl Widget for Stack {
 }
 
 impl ui::undo::UndoPoints for Stack {
-    fn needs_commit(&self) -> bool {
-        self.children
-            .iter()
-            .any(|c| ui::undo::needs_commit(c.as_ref()))
-    }
     fn on_commit(&mut self) {
         for child in &mut self.children {
             ui::undo::on_commit(child.as_mut());
@@ -617,6 +612,9 @@ pub struct GreeterApp {
     /// The account signing in, when known: the sole account, the chosen or
     /// remembered one of several. `None` asks for a typed username.
     login_user: Option<LoginUser>,
+    /// The username field's value. Seeded with the known account, replaced
+    /// when another account is chosen, and read when an attempt starts.
+    username: ui::LocalState<String>,
     /// Whether fingerprint login is unavailable, already confirmed for the
     /// fixed local account, or must be resolved from the typed username.
     fingerprint: FingerprintAvailability,
@@ -775,6 +773,12 @@ impl GreeterApp {
             sessions,
             selected_session: 0,
             users: login_user.iter().cloned().collect(),
+            username: ui::LocalState::new(
+                login_user
+                    .as_ref()
+                    .map(|user| user.username.clone())
+                    .unwrap_or_default(),
+            ),
             login_user,
             fingerprint,
             fingerprint_probe: enrolled_fingerprint,
@@ -815,8 +819,7 @@ impl GreeterApp {
     /// Build a greeter pre-seeded for a headless `--shots` render of
     /// `scenario`. Live runs never use this; it just stages enough state
     /// that each distinct screen renders something representative. The
-    /// caller is expected to seed the username CRDT object separately
-    /// (see `main.rs`), mirroring how the live App syncs fields.
+    /// caller seeds representative credentials separately (see `main.rs`).
     pub fn for_shot(scenario: AuthScenario) -> Self {
         // A snapshot may point at a fixture directory via
         // `TILO_GREETER_SESSIONS_DIR`, so the session picker can be captured
@@ -934,6 +937,11 @@ impl GreeterApp {
     /// Arrange a shot in `direction`.
     pub fn set_direction(&mut self, direction: Direction) {
         self.direction = direction;
+    }
+
+    /// Seed representative username text for a headless snapshot.
+    pub fn seed_shot_username(&mut self, username: &str) {
+        self.username.set(username.to_owned());
     }
 
     /// Seed representative local-only passcode text for a headless snapshot.
@@ -1173,9 +1181,8 @@ impl GreeterApp {
         let mut form: Vec<Box<dyn Widget>> = Vec::new();
         if self.login_user.is_none() {
             form.push(Box::new(
-                TextInput::new(Vec::new())
+                TextInput::from_state(&self.username)
                     .with_id("greeter.username")
-                    .with_on_change_path(USERNAME_PATH)
                     .with_accessible_name(t("greeter-username"))
                     .with_placeholder(&t("greeter-username-placeholder"))
                     .disabled(busy),
@@ -1567,12 +1574,6 @@ impl GreeterApp {
     }
 
     fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
-        if state.get(root, USERNAME_PATH).ok().flatten().is_none() {
-            let username = state.put_object(root, USERNAME_PATH, ObjType::Text).ok();
-            if let (Some(username), Some(user)) = (username, self.login_user.as_ref()) {
-                let _ = state.splice_text(&username, 0, 0, &user.username);
-            }
-        }
         if state.get(root, SUBMIT_PATH).ok().flatten().is_none() {
             let _ = state.put(root, SUBMIT_PATH, false);
         }
@@ -1674,18 +1675,14 @@ impl GreeterApp {
     }
 
     /// The username this attempt is for.
-    fn attempt_username(&self, state: &AutoCommit, root: &ObjId) -> String {
+    fn attempt_username(&self) -> String {
         // A known account's identity comes from conservative host discovery,
-        // not mutable document state. Otherwise the visible field counts,
-        // with incidental surrounding whitespace removed.
-        self.login_user
-            .as_ref()
-            .map_or_else(
-                || read_text(state, root, USERNAME_PATH).unwrap_or_default(),
-                |user| user.username.clone(),
-            )
-            .trim()
-            .to_owned()
+        // not the editable field. Otherwise the visible field counts, with
+        // incidental surrounding whitespace removed.
+        self.login_user.as_ref().map_or_else(
+            || self.username.with(|name| name.trim().to_owned()),
+            |user| user.username.trim().to_owned(),
+        )
     }
 
     /// Read credentials and kick off authentication.
@@ -1696,7 +1693,7 @@ impl GreeterApp {
     /// [`UserEvent::External`]). Without an event-loop proxy (tests /
     /// headless), it falls back to a synchronous exchange so the path is
     /// still exercised.
-    fn attempt_login(&mut self, state: &AutoCommit, root: &ObjId, method: AuthMethod) {
+    fn attempt_login(&mut self, method: AuthMethod) {
         // Guard: never start a second attempt while one is in flight.
         if self.phase != AuthPhase::Idle {
             return;
@@ -1707,7 +1704,7 @@ impl GreeterApp {
             self.set_hint("greeter-hint-no-fingerprint");
             return;
         }
-        let username = self.attempt_username(state, root);
+        let username = self.attempt_username();
         if username.is_empty() {
             self.set_hint("greeter-hint-username");
             return;
@@ -1862,7 +1859,7 @@ impl GreeterApp {
     }
 
     /// Switch to another of the listed accounts.
-    fn choose_account(&mut self, index: usize, state: &mut AutoCommit, root: &ObjId) {
+    fn choose_account(&mut self, index: usize) {
         let Some(user) = self.users.get(index).cloned() else {
             return;
         };
@@ -1874,10 +1871,7 @@ impl GreeterApp {
         {
             return;
         }
-        if let Ok(Some((_, obj))) = state.get(root, USERNAME_PATH) {
-            let old = state.text(&obj).unwrap_or_default().chars().count();
-            let _ = state.splice_text(&obj, 0, isize::try_from(old).unwrap_or(0), &user.username);
-        }
+        self.username.set(user.username.clone());
         self.login_user = Some(user);
         self.clear_password();
         self.notice = Notice::None;
@@ -1935,7 +1929,7 @@ impl Widget for GreeterApp {
         }
 
         if let Some(index) = self.requests.account.take() {
-            self.choose_account(index, state, root);
+            self.choose_account(index);
         }
 
         // Pull local-only passcode edits into the zeroized buffer before
@@ -1949,12 +1943,12 @@ impl Widget for GreeterApp {
         // single click fires exactly one attempt.
         if read_bool(state, root, SUBMIT_PATH).unwrap_or(false) {
             let _ = state.put(root, SUBMIT_PATH, false);
-            self.attempt_login(state, root, AuthMethod::Password);
+            self.attempt_login(AuthMethod::Password);
         }
 
         if read_bool(state, root, FINGERPRINT_PATH).unwrap_or(false) {
             let _ = state.put(root, FINGERPRINT_PATH, false);
-            self.attempt_login(state, root, AuthMethod::Fingerprint);
+            self.attempt_login(AuthMethod::Fingerprint);
         }
 
         if let Some(action) = self.requests.power.take() {
@@ -2238,11 +2232,6 @@ impl Widget for GreeterApp {
 }
 
 impl ui::undo::UndoPoints for GreeterApp {
-    fn needs_commit(&self) -> bool {
-        self.composed
-            .as_ref()
-            .is_some_and(|c| ui::undo::needs_commit(c.as_ref()))
-    }
     fn on_commit(&mut self) {
         if let Some(c) = &mut self.composed {
             ui::undo::on_commit(c.as_mut());
@@ -2333,6 +2322,18 @@ mod tests {
 
     fn char_event(c: &str) -> WindowEvent {
         key_event(Key::Character(c.into()), Some(c))
+    }
+
+    /// Type `text` into the username field, one keystroke at a time.
+    fn type_username(app: &mut GreeterApp, state: &mut AutoCommit, text: &str) {
+        for c in text.chars() {
+            dispatch(app, state, "greeter.username", &char_event(&c.to_string()));
+        }
+        app.sync(state, &automerge::ROOT);
+    }
+
+    fn typed_username(app: &GreeterApp) -> String {
+        app.username.with(Clone::clone)
     }
 
     fn dispatch_enter(app: &mut GreeterApp, state: &mut AutoCommit, focused: &str) -> bool {
@@ -2716,7 +2717,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             seed_password(&app, "pw");
-            app.attempt_login(&doc, &automerge::ROOT, AuthMethod::Password);
+            app.attempt_login(AuthMethod::Password);
             assert_eq!(app.notice, Notice::Error("greeter-error-no-session"));
             assert_eq!(app.phase, AuthPhase::Idle);
         }
@@ -2764,7 +2765,7 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
-            app.attempt_login(&doc, &automerge::ROOT, AuthMethod::Fingerprint);
+            app.attempt_login(AuthMethod::Fingerprint);
             assert_eq!(app.notice, Notice::Hint("greeter-hint-no-fingerprint"));
             assert_eq!(app.phase, AuthPhase::Idle);
         }
@@ -2844,8 +2845,12 @@ mod tests {
             let root = automerge::ROOT;
             app.sync(&mut doc, &root);
 
-            let (_, uobj) = doc.get(&root, USERNAME_PATH).unwrap().unwrap();
-            let _ = doc.splice_text(&uobj, 0, 0, "alice");
+            type_username(&mut app, &mut doc, "alice");
+            assert_eq!(typed_username(&app), "alice");
+            assert!(
+                doc.get(&root, "greeter.username").unwrap().is_none(),
+                "the typed username stays out of the document"
+            );
             let _ = doc.put(&root, SUBMIT_PATH, true);
             app.sync(&mut doc, &root);
             assert_eq!(app.notice, Notice::Hint("greeter-hint-passcode"));
@@ -2860,7 +2865,7 @@ mod tests {
             seed_password(&app, "pw");
             // The test runner is not greetd.
             assert!(std::env::var_os("GREETD_SOCK").is_none());
-            app.attempt_login(&doc, &automerge::ROOT, AuthMethod::Password);
+            app.attempt_login(AuthMethod::Password);
             assert_eq!(app.notice, Notice::Error("greeter-error-service"));
             assert!(!app.status_text().contains("GREETD_SOCK"));
         }
@@ -2919,8 +2924,7 @@ mod tests {
             let root = automerge::ROOT;
             app.sync(&mut doc, &root);
             app.phase = phase;
-            let (_, uobj) = doc.get(&root, USERNAME_PATH).unwrap().unwrap();
-            let _ = doc.splice_text(&uobj, 0, 0, "alice");
+            app.username.set("alice".to_owned());
             seed_password(&app, "pw");
 
             let _ = doc.put(&root, SUBMIT_PATH, true);
@@ -3016,8 +3020,8 @@ mod tests {
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             assert_eq!(
-                read_text(&doc, &automerge::ROOT, USERNAME_PATH).as_deref(),
-                Some("tester"),
+                typed_username(&app),
+                "tester",
                 "the username is seeded without asking the user to type it"
             );
             assert_eq!(
@@ -3260,8 +3264,7 @@ mod tests {
             let root = automerge::ROOT;
             app.sync(&mut doc, &root);
             if !personal {
-                let (_, uobj) = doc.get(&root, USERNAME_PATH).unwrap().unwrap();
-                let _ = doc.splice_text(&uobj, 0, 0, "alice");
+                app.username.set("alice".to_owned());
             }
             seed_password(&app, "wrongpw");
             app.begin_authenticating();
@@ -3282,8 +3285,8 @@ mod tests {
             );
             if !personal {
                 assert_eq!(
-                    read_text(&doc, &root, USERNAME_PATH).as_deref(),
-                    Some("alice"),
+                    typed_username(&app),
+                    "alice",
                     "the username survives a failure"
                 );
             }
@@ -3646,10 +3649,7 @@ mod tests {
             app.password_buffer.lock().unwrap().is_empty(),
             "a passcode never follows to another account"
         );
-        assert_eq!(
-            read_text(&doc, &root, USERNAME_PATH).as_deref(),
-            Some("ada")
-        );
+        assert_eq!(typed_username(&app), "ada");
         assert!(
             Widget::take_focus_reset(&mut app),
             "the keyboard returns to the passcode"

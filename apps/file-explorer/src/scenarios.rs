@@ -18,11 +18,8 @@ use ui::framework::Fixture;
 
 use crate::resource::FileExplorer;
 
-/// Every screenshot scenario. The ones about the Tilo filesystem's projection
-/// (sync badges, host previews, file history) need extended attributes, which
-/// only a Unix host has.
-#[cfg(unix)]
-pub const SCENARIOS: &[&str] = &[
+/// Every screenshot scenario.
+const ALL_SCENARIOS: &[&str] = &[
     "archive",
     "archive-menu",
     "context-menu",
@@ -45,9 +42,10 @@ pub const SCENARIOS: &[&str] = &[
     "undo-trash",
 ];
 
-/// Every screenshot scenario this host can show truthfully.
-#[cfg(not(unix))]
-pub const SCENARIOS: &[&str] = &[
+/// The scenarios a host without extended attributes can show truthfully:
+/// all but the ones about the Tilo filesystem's projection (sync badges,
+/// host previews, file history).
+const PORTABLE_SCENARIOS: &[&str] = &[
     "archive",
     "archive-menu",
     "context-menu",
@@ -66,6 +64,15 @@ pub const SCENARIOS: &[&str] = &[
     "thumbnails",
     "undo-trash",
 ];
+
+/// The screenshot scenarios this host can show.
+pub fn scenarios() -> &'static [&'static str] {
+    if xattr::SUPPORTED {
+        ALL_SCENARIOS
+    } else {
+        PORTABLE_SCENARIOS
+    }
+}
 
 /// The folders a capture shows, written before its window is built.
 #[derive(Clone, Debug)]
@@ -498,7 +505,7 @@ fn minimal_epub(title: &str, cover_png: &[u8]) -> std::io::Result<Vec<u8>> {
     Ok(buffer)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -994,7 +994,6 @@ pub struct ClocksApp {
     live: bool,
     /// Whether the section was chosen from the first state presented.
     opened: bool,
-    generation: u64,
     pub(crate) last_notification: Option<(String, String, String)>,
     pub(crate) notice: ui::LocalState<Option<(String, String)>>,
     next_clock_tick: ui::time::Instant,
@@ -1040,7 +1039,6 @@ impl ClocksApp {
             device,
             live,
             opened: false,
-            generation: 0,
             last_notification: None,
             notice,
             next_clock_tick: ui::time::now(),
@@ -1261,10 +1259,8 @@ impl ClocksApp {
         let activity = self
             .state
             .with(|shown| shell_activity(&shown.clocks, &shown.device, now));
-        let producer_pid = tilo_process::id().unwrap_or(0);
         let mut snapshot = activity.map_or_else(
             || ShellSnapshot {
-                version: 1,
                 active: false,
                 activity_id: None,
                 label: String::new(),
@@ -1272,14 +1268,11 @@ impl ClocksApp {
                 stopwatch: false,
                 paused: false,
                 overlay: false,
-                generation: self.generation,
-                producer_pid,
                 notification_id: None,
                 notification_title: String::new(),
                 notification_body: String::new(),
             },
             |a| ShellSnapshot {
-                version: 1,
                 active: true,
                 activity_id: a.activity_id,
                 label: a.label,
@@ -1287,8 +1280,6 @@ impl ClocksApp {
                 stopwatch: a.stopwatch,
                 paused: a.paused,
                 overlay: a.overlay,
-                generation: self.generation,
-                producer_pid,
                 notification_id: None,
                 notification_title: String::new(),
                 notification_body: String::new(),
@@ -1344,16 +1335,13 @@ impl Widget for ClocksApp {
         self.apply_activations();
         if self.live {
             let now = Utc::now();
-            if let Some(command) = crate::transport::take_command() {
+            for command in crate::transport::take_commands() {
                 self.apply_shell_command(command);
             }
             self.schedule_native_timers(now);
             self.ring_due(now);
             self.deliver_native_notifications();
-            self.generation = self.generation.saturating_add(1);
-            if let Err(error) = crate::transport::publish(&self.shell_snapshot(now)) {
-                tracing::debug!(%error, "Clocks could not update the shell's floating clock");
-            }
+            crate::transport::publish(&self.shell_snapshot(now));
         }
         // Countdowns move every second without any change to the clocks.
         self.state.update(|_| {});

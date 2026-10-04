@@ -338,6 +338,10 @@ pub trait Decorator {
         self.inner_mut().take_action_palette_request()
     }
 
+    fn take_search_request(&mut self) -> bool {
+        self.inner_mut().take_search_request()
+    }
+
     fn take_action_revert(
         &mut self,
     ) -> Option<(tilo_actions::EncodedAction, tilo_actions::EncodedAction)> {
@@ -913,6 +917,10 @@ impl<T: Decorator + 'static> Widget for T {
 
     fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
         Decorator::take_action_palette_request(self)
+    }
+
+    fn take_search_request(&mut self) -> bool {
+        Decorator::take_search_request(self)
     }
 
     fn take_action_revert(

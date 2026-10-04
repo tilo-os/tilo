@@ -127,31 +127,6 @@ const ACTION_DIRECTORY_MAX_DEPTH: u16 = 16;
 const ACTION_DIRECTORY_MAX_CURSORS: usize = 256;
 const MAX_PENDING_APPLICATION_LAUNCHES: usize = 256;
 
-/// Portable, declared launcher payload used by any app that hands verified
-/// qdoc media to another installed app. The broker stages the bytes and owns
-/// the target process; the source app never supplies a local path.
-#[derive(serde::Deserialize)]
-struct ApplicationLaunchPayload {
-    app_id: String,
-    content_hash: String,
-}
-
-impl ApplicationLaunchPayload {
-    fn valid(&self) -> bool {
-        !self.app_id.is_empty()
-            && self.app_id.len() <= 128
-            && self
-                .app_id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
-            && self.content_hash.len() == 64
-            && self
-                .content_hash
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    }
-}
-
 /// Synthetic input for `EventLoopProxy`: each variant becomes the real
 /// `WindowEvent`(s) and routes through the same handler, so injected and
 /// real-hardware events take the identical code path.

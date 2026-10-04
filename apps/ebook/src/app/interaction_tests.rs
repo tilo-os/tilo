@@ -301,45 +301,26 @@ fn reader_controls_are_accessible_and_live() {
     }
 }
 
-/// Resource operations refuse wrong kinds, missing chapters or annotations, and missing local capabilities without changing state.
+/// Resource operations refuse unknown effects, missing chapters or annotations, and missing local capabilities without changing state.
 #[test]
 fn resource_operations_refuse_wrong_or_stale_targets() {
-    // --- phase: resource_operations_reject_wrong_kinds_without_changing_state ---
+    // --- phase: resource_operations_reject_unknown_or_incomplete_effects_without_changing_state ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let view_before = std::mem::discriminant(&app.view);
-        let settings = serde_json::to_vec(&crate::actions::EbookOperation::OpenSettings).unwrap();
+        let settings =
+            serde_json::to_vec(&serde_json::json!({"effect": "no-such", "args": {}})).unwrap();
         assert!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::EBOOK_OPERATION_TYPE,
-                    &settings
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err()
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &settings, &doc)
+                .is_err()
         );
         assert_eq!(std::mem::discriminant(&app.view), view_before);
 
-        let open = serde_json::to_vec(&serde_json::json!({"ShareBook": {"book_id": ""}})).unwrap();
+        let open = serde_json::to_vec(&serde_json::json!({"effect": "share", "args": {}})).unwrap();
         assert!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::EBOOK_OPERATION_TYPE,
-                    &open
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err()
+            app.start_effect(tilo_actions::InvocationId::new(), &open, &doc)
+                .is_err()
         );
         assert!(app.resource_invocation.is_none());
     }
@@ -347,37 +328,27 @@ fn resource_operations_refuse_wrong_or_stale_targets() {
     // --- phase: stale_resource_reveal_refuses_missing_chapter_or_annotation_target ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let book_id = app.open_book().expect("sample book").id.clone();
         let before = (app.book_idx, app.chapter, app.page, app.pending_jump_block);
         for operation in [
-            crate::actions::EbookOperation::Reveal {
-                book_id: book_id.clone(),
+            crate::resource::BooksEffect::Open {
+                book: book_id.clone(),
                 chapter: usize::MAX,
                 page: 0,
                 block: None,
             },
-            crate::actions::EbookOperation::Reveal {
-                book_id,
+            crate::resource::BooksEffect::Open {
+                book: book_id,
                 chapter: 0,
                 page: 0,
                 block: Some(usize::MAX),
             },
         ] {
-            let payload = serde_json::to_vec(&operation).expect("operation serializes");
+            let payload = crate::actions::effect_payload(&operation);
             assert!(
-                Widget::start_operation(
-                    &mut app,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        crate::actions::EBOOK_OPERATION_TYPE,
-                        &payload
-                    ),
-                    &mut doc,
-                    &automerge::ROOT
-                )
-                .is_err()
+                app.start_effect(ui::tilo_actions::InvocationId::new(), &payload, &doc)
+                    .is_err()
             );
             assert_eq!(
                 (app.book_idx, app.chapter, app.page, app.pending_jump_block),
@@ -390,23 +361,14 @@ fn resource_operations_refuse_wrong_or_stale_targets() {
     // --- phase: canonical_share_operation_refuses_a_missing_local_capability ---
     {
         let mut app = app_with_sample();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let id = app.library[0].id.clone();
         app.library_paths.remove(&id);
         let payload =
-            serde_json::to_vec(&crate::actions::EbookOperation::ShareBook { book_id: id }).unwrap();
-        let error = Widget::start_operation(
-            &mut app,
-            &ui::widget::ResourceOperation::local(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                crate::actions::EBOOK_OPERATION_TYPE,
-                &payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )
-        .unwrap_err();
+            crate::actions::effect_payload(&crate::resource::BooksEffect::Share { book: id });
+        let error = app
+            .start_effect(tilo_actions::InvocationId::new(), &payload, &doc)
+            .unwrap_err();
         assert!(error.contains("unavailable on this device"));
     }
 }
@@ -3605,23 +3567,12 @@ fn workspace_sharing_materialises_and_verifies_books() {
         app.import_and_open_for_test(&mut doc, &source);
         let id = app.library[0].id.clone();
         let payload =
-            serde_json::to_vec(&crate::actions::EbookOperation::ShareBook { book_id: id }).unwrap();
+            crate::actions::effect_payload(&crate::resource::BooksEffect::Share { book: id });
         let invocation = tilo_actions::InvocationId::new();
 
         assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::EBOOK_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Accepted)
+            app.start_effect(invocation, &payload, &doc).unwrap(),
+            ui::framework::Effected::Pending
         ));
         assert!(
             !BooksDoc::read_library_entries(&doc)[0].shared,
@@ -3631,7 +3582,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
         assert!(app.book_is_shared(0));
         assert!(BooksDoc::read_library_entries(&doc)[0].shared);
         assert!(matches!(
-            Widget::poll_resource_operation(&mut app, invocation, false, &doc, &automerge::ROOT,),
+            app.take_effect_result(invocation),
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
@@ -3654,31 +3605,19 @@ fn workspace_sharing_materialises_and_verifies_books() {
         let (_, entry) = crate::content::prepare_imported_book(&shared_path, remote);
         BooksDoc::upsert_library_entry(&mut doc, &entry);
         let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&crate::actions::EbookOperation::HydrateSharedBook {
-            book_id: id.clone(),
-        })
-        .unwrap();
+        let payload = crate::actions::effect_payload(&crate::resource::BooksEffect::Download {
+            book: id.clone(),
+        });
 
         assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::EBOOK_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Accepted)
+            app.start_effect(invocation, &payload, &doc).unwrap(),
+            ui::framework::Effected::Pending
         ));
         wait_for_import(&mut app, &mut doc);
         assert_eq!(app.open_book().map(|book| &book.id), Some(&id));
         assert_eq!(app.library_paths.get(&id), Some(&shared_path));
         assert!(matches!(
-            Widget::poll_resource_operation(&mut app, invocation, false, &doc, &automerge::ROOT),
+            app.take_effect_result(invocation),
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
@@ -3707,25 +3646,13 @@ fn workspace_sharing_materialises_and_verifies_books() {
             },
         );
         let payload =
-            serde_json::to_vec(&crate::actions::EbookOperation::HydrateSharedBook { book_id: id })
-                .unwrap();
+            crate::actions::effect_payload(&crate::resource::BooksEffect::Download { book: id });
         let invocation = tilo_actions::InvocationId::new();
-        Widget::start_operation(
-            &mut app,
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::EBOOK_OPERATION_TYPE,
-                &payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )
-        .unwrap();
+        app.start_effect(invocation, &payload, &doc).unwrap();
         wait_for_import(&mut app, &mut doc);
         assert!(app.library.is_empty());
         assert!(matches!(
-            Widget::poll_resource_operation(&mut app, invocation, false, &doc, &automerge::ROOT),
+            app.take_effect_result(invocation),
             Some(tilo_actions::InvocationUpdate::Failed { .. })
         ));
     }
@@ -3741,37 +3668,18 @@ fn workspace_sharing_materialises_and_verifies_books() {
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         app.import_and_open_for_test(&mut doc, &source);
-        let payload = serde_json::to_vec(&crate::actions::EbookOperation::ShareBook {
-            book_id: app.library[0].id.clone(),
-        })
-        .unwrap();
+        let payload = crate::actions::effect_payload(&crate::resource::BooksEffect::Share {
+            book: app.library[0].id.clone(),
+        });
         let invocation = tilo_actions::InvocationId::new();
-        Widget::start_operation(
-            &mut app,
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::EBOOK_OPERATION_TYPE,
-                &payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )
-        .unwrap();
+        app.start_effect(invocation, &payload, &doc).unwrap();
 
-        assert!(matches!(
-            Widget::poll_resource_operation(
-                &mut app,
-                invocation,
-                true,
-                &doc,
-                &automerge::ROOT,
-            ),
-            Some(tilo_actions::InvocationUpdate::Cancelled {
-                message: Some(ref message),
-                ..
-            }) if message == "book sharing cancelled"
-        ));
+        assert!(
+            app.cancel_effect(invocation),
+            "the share stops as its caller asked"
+        );
+        assert!(app.take_effect_result(invocation).is_none());
+        app.sync(&mut doc, &automerge::ROOT);
         assert!(
             !BooksDoc::read_library_entries(&doc)[0].shared,
             "cancelling before the UI commit never advertises a shared copy"

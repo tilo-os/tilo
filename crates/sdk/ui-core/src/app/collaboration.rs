@@ -998,7 +998,9 @@ impl App {
         request_id: u64,
         result: Result<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate), String>,
     ) {
-        if self.close_broker_result(request_id, &result) {
+        if self.settle_follow_up(request_id, &result)
+            || self.close_broker_result(request_id, &result)
+        {
             return;
         }
         let Some(invocation) = self

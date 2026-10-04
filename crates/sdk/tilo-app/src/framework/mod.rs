@@ -248,7 +248,9 @@
 //!   [`ResourceSurface::live_rows`], merged by id into the resource's
 //!   published children. A row carries only view and effect operations
 //!   (an effect bound to the row with `LiveRow::effect`) and may say how
-//!   its entity stands right now (`LiveRow::presentation`).
+//!   its entity stands right now (`LiveRow::presentation`). An edit of the
+//!   resource bound to a row (rename *this* file) is one of
+//!   [`ResourceSurface::row_declarations`], published on the row.
 //!   Neither rows nor children need to be published whole: a bounded page is
 //!   published and the rest resolve by id (`ResourceSurface::live_row`,
 //!   `Resource::child`).

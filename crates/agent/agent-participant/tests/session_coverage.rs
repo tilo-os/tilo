@@ -479,6 +479,7 @@ async fn every_web_app_over_the_session() {
     let mut text = serde_json::Map::new();
     text.insert("text".into(), "Invoked over actionsV1".into());
     let request = InvokeRequest {
+        on_behalf_of: None,
         invocation: InvocationId::new(),
         target: edit.clone(),
         argument: InvokeArgument::Json(text),
@@ -553,6 +554,7 @@ async fn every_web_app_over_the_session() {
         &mut agent,
         agent_key,
         RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
             argument: InvokeArgument::None,
             ..request
         }),
@@ -575,6 +577,7 @@ async fn every_web_app_over_the_session() {
         &mut agent,
         agent_key,
         RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
             invocation: InvocationId::new(),
             target: application_open_target(ROOM, "so.tilo.notes"),
             argument: InvokeArgument::None,
@@ -603,6 +606,7 @@ async fn every_web_app_over_the_session() {
         &mut agent,
         agent_key,
         RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: "record:so.tilo.notes:nope".into(),

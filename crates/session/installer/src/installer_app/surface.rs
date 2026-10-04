@@ -17,11 +17,10 @@ use tilo_actions::{
 use zeroize::Zeroizing;
 
 use super::{
-    ERASE_CONFIRM_PATH, FILESYSTEMS, FULL_NAME_PATH, HOSTNAME_PATH, InstallMethod, InstallState,
-    InstallerApp, KEYMAP_PATH, LOCALE_PATH, STEP_LABELS, Step, TIMEZONE_PATH, USERNAME_PATH,
-    VerifiedBootState, clear_secret_buffer, prev_step, secret_copy, step_index, valid_full_name,
-    valid_hostname, valid_locale, valid_timezone_name, valid_username, validate_passwords,
-    validate_startup_secret_for,
+    FILESYSTEMS, InstallMethod, InstallState, InstallerApp, KEYMAP_PATH, LOCALE_PATH, STEP_LABELS,
+    Step, TIMEZONE_PATH, VerifiedBootState, clear_secret_buffer, local_text, prev_step,
+    secret_copy, step_index, valid_full_name, valid_hostname, valid_locale, valid_timezone_name,
+    valid_username, validate_passwords, validate_startup_secret_for,
 };
 use crate::install::PowerAction;
 use crate::layouts;
@@ -499,7 +498,9 @@ impl InstallerApp {
         };
         Resource::new(ACCOUNT, "installer.account", "Account")
             .with_presentation(ResourcePresentation {
-                detail: (!self.username.trim().is_empty()).then(|| bounded(self.username.trim(), 160)),
+                detail: self.username.with(|name| {
+                    (!name.trim().is_empty()).then(|| bounded(name.trim(), 160))
+                }),
                 ..ResourcePresentation::default()
             })
             .with_action(gate(
@@ -579,7 +580,7 @@ impl InstallerApp {
                     &format!(
                         "{} · {} · {} · {}",
                         self.filesystem(),
-                        self.hostname.trim(),
+                        local_text(&self.hostname).trim(),
                         self.locale.trim(),
                         self.timezone.trim()
                     ),
@@ -987,8 +988,7 @@ impl InstallerApp {
                     );
                 }
                 if self.install_method != method {
-                    Self::clear_text(state, root, ERASE_CONFIRM_PATH);
-                    self.erase_confirmation.clear();
+                    self.clear_erase_confirmation();
                     self.selected_guided_extent = None;
                     self.storage_preflight_request = None;
                     self.storage_preflight_passed = false;
@@ -1000,7 +1000,6 @@ impl InstallerApp {
             }
             Operation::RefreshDisks => {
                 self.require_step(Step::Disk)?;
-                Self::clear_text(state, root, ERASE_CONFIRM_PATH);
                 let disks = self.backend.read_disks();
                 self.refresh_disks_with(disks);
                 self.ensure_disk_paths(state, root);
@@ -1021,8 +1020,7 @@ impl InstallerApp {
                     return Err(format!("{device} cannot be an installation target"));
                 }
                 if self.selected_disk != Some(index) {
-                    Self::clear_text(state, root, ERASE_CONFIRM_PATH);
-                    self.erase_confirmation.clear();
+                    self.clear_erase_confirmation();
                     self.selected_guided_extent = None;
                     self.storage_preflight_request = None;
                     self.storage_preflight_passed = false;
@@ -1042,8 +1040,7 @@ impl InstallerApp {
                     return Err("That unallocated region is not offered; refresh disks".into());
                 }
                 if self.selected_guided_extent != Some(index) {
-                    Self::clear_text(state, root, ERASE_CONFIRM_PATH);
-                    self.erase_confirmation.clear();
+                    self.clear_erase_confirmation();
                     self.selected_guided_extent = Some(index);
                     self.status.clear();
                     self.dirty_structure = true;
@@ -1072,12 +1069,10 @@ impl InstallerApp {
                     );
                 }
                 if let Some(username) = username {
-                    ui::put_text_diffed(state, root, USERNAME_PATH, &username);
-                    self.username = username;
+                    self.username.set(username);
                 }
                 if let Some(full_name) = full_name {
-                    ui::put_text_diffed(state, root, FULL_NAME_PATH, &full_name);
-                    self.full_name = full_name;
+                    self.full_name.set(full_name);
                 }
                 self.status.clear();
                 self.dirty_structure = true;
@@ -1170,8 +1165,7 @@ impl InstallerApp {
                 if !valid_hostname(&hostname) {
                     return Err("Enter a valid hostname (letters, digits, hyphens)".into());
                 }
-                ui::put_text_diffed(state, root, HOSTNAME_PATH, hostname.trim());
-                hostname.trim().clone_into(&mut self.hostname);
+                self.hostname.set(hostname.trim().to_owned());
                 self.dirty_structure = true;
                 done()
             }
@@ -1213,9 +1207,8 @@ impl InstallerApp {
                 }
                 // The door verified the typed phrase. Reflect it into the
                 // Review field so the screen and the launch agree.
-                ui::put_text_diffed(state, root, ERASE_CONFIRM_PATH, &target);
-                self.erase_confirmation = target;
-                self.begin_install(state, root);
+                self.set_erase_confirmation(target);
+                self.begin_install();
                 if self.install_launched {
                     done()
                 } else {

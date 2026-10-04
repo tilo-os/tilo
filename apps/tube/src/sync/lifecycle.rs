@@ -1,17 +1,18 @@
 //! Product lifecycle around the Grayjay wire transport.
 //!
 //! The Noise key is deterministically derived from the app-scoped secret
-//! returned by the desktop secret portal. Only public peer routes and durable
-//! revocation tombstones are written to disk. All network work is serialized on
+//! kept in the app's secret store. Only public peer routes and durable
+//! revocation tombstones are kept beside it, as [`PairedDevices`]: a setting of
+//! this device that never leaves it. All network work is serialized on
 //! one bounded worker thread so redraws never dial a phone and shutdown is
 //! bounded by the transport's socket deadlines.
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use ui::time::{Duration, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use ui::storage::{Scope, Settings, SettingsSchema};
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
 
@@ -19,8 +20,6 @@ use super::transport::{DeviceKey, GrayjaySyncTransport};
 use super::{PeerDescriptor, PeerId, SyncError, SyncResult, SyncState, SyncTransport};
 use crate::model::TubeModel;
 
-const STORE_VERSION: u32 = 1;
-const MAX_STORE_BYTES: u64 = 1024 * 1024;
 const MAX_PEERS: usize = 64;
 const AUTO_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
@@ -79,46 +78,35 @@ pub struct SyncView {
     pub peers: Vec<PeerRecord>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct PeerFile {
-    version: u32,
-    peers: Vec<PeerRecord>,
+/// The Grayjay devices paired with Tube on this device, approved, pending or
+/// revoked. Pairing is between this device and the person's phone, so it is a
+/// setting of this device that never leaves it. Every field is public: the
+/// key the routes authenticate stays in the secret store.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairedDevices {
+    #[serde(default)]
+    pub grayjay_peers: Vec<PeerRecord>,
 }
 
+impl SettingsSchema for PairedDevices {
+    const SCOPE: Scope = Scope::DeviceLocal;
+}
+
+/// Where the sync worker keeps [`PairedDevices`].
 #[derive(Clone, Debug)]
 struct PeerStore {
-    path: PathBuf,
+    settings: Settings<PairedDevices>,
 }
 
 impl PeerStore {
-    fn new(path: PathBuf) -> Self {
-        Self { path }
+    fn new(settings: Settings<PairedDevices>) -> Self {
+        Self { settings }
     }
 
     fn load(&self) -> SyncResult<Vec<PeerRecord>> {
-        let persistence = |error: tilo_files::FsError| SyncError::Persistence(error.to_string());
-        let (dir, name) = tilo_files::file_at(&self.path).map_err(persistence)?;
-        let metadata = match tilo_files::blocking::metadata(&dir, &name) {
-            Ok(metadata) => metadata,
-            Err(tilo_files::FsError::NotFound) => return Ok(Vec::new()),
-            Err(error) => return Err(persistence(error)),
-        };
-        if metadata.kind != tilo_files::Kind::File || metadata.len > MAX_STORE_BYTES {
-            return Err(SyncError::Persistence("invalid peer store".into()));
-        }
-        let bytes = tilo_files::blocking::read(&dir, &name).map_err(persistence)?;
-        if bytes.len() as u64 > MAX_STORE_BYTES {
-            return Err(SyncError::Persistence("invalid peer store".into()));
-        }
-        let file: PeerFile = serde_json::from_slice(&bytes)
-            .map_err(|error| SyncError::Persistence(error.to_string()))?;
-        if file.version != STORE_VERSION {
-            return Err(SyncError::Persistence(
-                "unsupported peer store version".into(),
-            ));
-        }
-        if file.peers.len() > MAX_PEERS
-            || file.peers.iter().any(|peer| {
+        let peers = self.settings.get().grayjay_peers;
+        if peers.len() > MAX_PEERS
+            || peers.iter().any(|peer| {
                 peer.id.len() > 256
                     || peer.name.len() > 256
                     || peer.descriptor.public_key.len() > 256
@@ -131,20 +119,17 @@ impl PeerStore {
             })
         {
             return Err(SyncError::Persistence(
-                "peer store exceeds its structural bounds".into(),
+                "the paired devices exceed their structural bounds".into(),
             ));
         }
-        Ok(file.peers)
+        Ok(peers)
     }
 
     fn save(&self, peers: &[PeerRecord]) -> SyncResult<()> {
-        let bytes = serde_json::to_vec_pretty(&PeerFile {
-            version: STORE_VERSION,
-            peers: peers.to_vec(),
-        })
-        .map_err(|error| SyncError::Persistence(error.to_string()))?;
-        tilo_files::file_at(&self.path)
-            .and_then(|(dir, name)| tilo_files::blocking::write_private(&dir, &name, &bytes))
+        self.settings
+            .set(&PairedDevices {
+                grayjay_peers: peers.to_vec(),
+            })
             .map_err(|error| SyncError::Persistence(error.to_string()))
     }
 }
@@ -195,10 +180,15 @@ impl Default for DeviceSync {
 }
 
 impl DeviceSync {
-    /// Initialize the shipped backend. Failure to reach the host secret portal
-    /// is visible and fail-closed: no random replacement identity is generated.
-    pub fn production(device_name: &str) -> Self {
-        match production_parts(device_name) {
+    /// Initialize the shipped backend over the app's secret store and this
+    /// device's [`PairedDevices`]. Failure to reach the secret store is
+    /// visible and fail-closed: no random replacement identity is generated.
+    pub fn production(
+        device_name: &str,
+        secrets: &tilo_secrets::SecretStore,
+        paired: Settings<PairedDevices>,
+    ) -> Self {
+        match production_parts(device_name, secrets, paired) {
             Ok((transport, store, public_key)) => {
                 Self::spawn(Box::new(transport), store, public_key)
             }
@@ -364,16 +354,14 @@ impl Drop for DeviceSync {
     }
 }
 
-/// Tube's namespace in the system secret store, and the random seed its
-/// Grayjay device key derives from.
-const SECRETS_APP: &str = "so.tilo.tube";
+/// The random seed Tube's Grayjay device key derives from, in the app's
+/// secret store.
 const DEVICE_SEED: &str = "grayjay-device-seed";
 
-/// This device's seed from the system secret store, created on first use.
-fn device_seed() -> SyncResult<Zeroizing<Vec<u8>>> {
+/// This device's seed from the app's secret store, created on first use.
+fn device_seed(store: &tilo_secrets::SecretStore) -> SyncResult<Zeroizing<Vec<u8>>> {
     let unavailable =
         |error: tilo_secrets::SecretError| SyncError::KeyUnavailable(error.to_string());
-    let store = tilo_secrets::SecretStore::for_app(SECRETS_APP);
     if store
         .get_blocking(DEVICE_SEED)
         .map_err(unavailable)?
@@ -401,8 +389,12 @@ fn device_seed() -> SyncResult<Zeroizing<Vec<u8>>> {
     Ok(Zeroizing::new(seed.expose().to_vec()))
 }
 
-fn production_parts(device_name: &str) -> SyncResult<(GrayjaySyncTransport, PeerStore, String)> {
-    let seed = device_seed()?;
+fn production_parts(
+    device_name: &str,
+    secrets: &tilo_secrets::SecretStore,
+    paired: Settings<PairedDevices>,
+) -> SyncResult<(GrayjaySyncTransport, PeerStore, String)> {
+    let seed = device_seed(secrets)?;
     let mut digest = Sha256::new();
     digest.update(b"tilo.tube.grayjay-noise-static-v1\0");
     digest.update(seed.as_slice());
@@ -410,14 +402,7 @@ fn production_parts(device_name: &str) -> SyncResult<(GrayjaySyncTransport, Peer
     let key = DeviceKey::from_private(private.as_slice())?;
     let public_key = key.public_base64();
     let transport = GrayjaySyncTransport::with_device(key, device_name);
-    let base = tilo_paths::env_dir("XDG_STATE_HOME")
-        .or_else(tilo_paths::state_dir)
-        .ok_or_else(|| SyncError::Persistence("no private state directory is available".into()))?;
-    Ok((
-        transport,
-        PeerStore::new(base.join("tilo-tube").join("grayjay-peers.json")),
-        public_key,
-    ))
+    Ok((transport, PeerStore::new(paired), public_key))
 }
 
 fn publish(
@@ -752,7 +737,6 @@ pub fn state_from_model(model: &TubeModel) -> SyncState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
 
     fn descriptor(id: &str) -> PeerDescriptor {
         PeerDescriptor {
@@ -767,7 +751,8 @@ mod tests {
         // Case `peer_store_survives_restart_and_keeps_revocation_tombstone`.
         {
             let dir = tempfile::tempdir().unwrap();
-            let store = PeerStore::new(dir.path().join("peers.json"));
+            let document = dir.path().join("settings.json");
+            let store = PeerStore::new(Settings::for_app("so.tilo.tube").in_file(&document));
             let record = PeerRecord {
                 id: "public-key".into(),
                 name: "Phone".into(),
@@ -780,9 +765,14 @@ mod tests {
             };
             store.save(std::slice::from_ref(&record)).unwrap();
             assert_eq!(store.load().unwrap(), vec![record]);
-            let text = fs::read_to_string(dir.path().join("peers.json")).unwrap();
+            let text = std::fs::read_to_string(&document).unwrap();
             assert!(!text.contains("private"));
             assert!(!text.contains("pairingCode"));
+            assert_eq!(
+                ui::storage::Scope::DeviceLocal.section(),
+                PairedDevices::SCOPE.section(),
+                "the paired devices never leave this device"
+            );
         }
         // Case `independently_derived_device_keys_are_stable_and_distinct`.
         {

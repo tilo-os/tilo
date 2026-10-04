@@ -119,7 +119,7 @@ impl CodeApp {
         Ok(Effected::done())
     }
 
-    /// Run a command of the palette. Those that need the document run on the
+    /// Run one of the editor's commands. Those that need the document run on the
     /// next sync; those that ask the user for a file answer once they did.
     fn answer_command(
         &mut self,
@@ -153,7 +153,7 @@ impl CodeApp {
                 cx,
             ),
             Command::GoToLine => {
-                self.palette.open_goto();
+                Self::ask_for_line();
                 Ok(Effected::done())
             }
             command => {
@@ -359,7 +359,6 @@ impl CodeApp {
             Some("search") => self.shots_project_search("fn main"),
             Some("conflict") => self.shots_conflict(),
             Some("indexing") => self.shots_indexing(),
-            Some("goto") => self.shots_open_goto("42"),
             Some("close-prompt") => self.shots_close_prompt(),
             Some("status") => self.shots_status(),
             Some("narrow-sidebar") => self.shots_snap_sidebar(true),

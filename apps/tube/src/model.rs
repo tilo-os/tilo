@@ -138,6 +138,21 @@ impl SkipMode {
         }
     }
 
+    /// The stable name an effect names this mode by.
+    pub fn key(self) -> &'static str {
+        match self {
+            SkipMode::Skip => "skip",
+            SkipMode::Show => "show",
+            SkipMode::Disabled => "disabled",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        [SkipMode::Skip, SkipMode::Show, SkipMode::Disabled]
+            .into_iter()
+            .find(|mode| mode.key() == key)
+    }
+
     /// Cycle order for the settings selector: Auto-skip → Show → Off → …
     #[must_use]
     pub fn next(self) -> Self {
@@ -377,7 +392,10 @@ impl Video {
     }
 }
 
-/// User-controlled settings. Lives in the CRDT.
+/// How this person likes Tube to play: `SponsorBlock`, `DeArrow`, dislike
+/// counts, autoplay, comments and the preferred quality. A personal setting
+/// that follows them to every device and that collaborators on a shared
+/// library never see.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, user-facing setting toggle, not a state machine"
@@ -409,6 +427,10 @@ pub struct Settings {
 /// of our flags want to default *on* when absent from older persisted state).
 fn default_true() -> bool {
     true
+}
+
+impl ui::storage::SettingsSchema for Settings {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
 }
 
 impl Default for Settings {
@@ -594,14 +616,6 @@ pub struct TubeModel {
     /// page. Newest first, capped.
     #[serde(default)]
     pub notices: Vec<String>,
-    /// Whether the Ctrl+K global command palette overlay is open.
-    #[serde(default)]
-    pub palette_open: bool,
-    /// Device-local palette query mirrored from the toolkit's local text
-    /// binding for rendering; opening the palette never clobbers top-bar text
-    /// and neither query enters the collaborative document.
-    #[serde(default)]
-    pub palette_query: String,
     /// Provenance of the on-screen catalogue (sample vs live).
     #[serde(default)]
     pub data_source: DataSource,
@@ -679,8 +693,6 @@ impl Default for TubeModel {
             liked: Vec::new(),
             comment_likes: BTreeMap::new(),
             notices: Vec::new(),
-            palette_open: false,
-            palette_query: String::new(),
             data_source: DataSource::default(),
             search_hits_query: String::new(),
             search_hits: Vec::new(),

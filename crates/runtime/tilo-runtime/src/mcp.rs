@@ -1703,6 +1703,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     ) -> Result<Value, String> {
         let (revision, current) = self.revision_for(&target.provider, revision).await?;
         let mut request = InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target,
             argument: InvokeArgument::Json(arguments),

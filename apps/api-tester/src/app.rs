@@ -773,7 +773,7 @@ impl ApiTesterApp {
             .with_size(SEND_W as f32, 36.0)
             .on_action(Self::send_binding());
         let save_sink = sink.clone();
-        let save_button = Button::new("api.save-request", "Save", None)
+        let save_button = Button::new("api.save", "Save", None)
             .with_icon(Icon::Check)
             .with_accessible_name("Save request")
             .tooltip("Save current request")

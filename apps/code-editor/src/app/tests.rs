@@ -253,6 +253,7 @@ fn a_window_shows_one_file_and_asks_before_dropping_unsaved_work() {
     opening_another_file_over_unsaved_edits_asks_first();
     the_header_names_the_shown_file_and_marks_unsaved_edits();
     the_editor_has_no_tab_strip_and_leaves_ctrl_w_to_the_desktop();
+    quick_open_and_go_to_line_open_the_host_palette();
 }
 
 fn sample_node(app: &CodeApp, name: &str) -> crate::model::NodeId {
@@ -369,10 +370,37 @@ fn the_editor_has_no_tab_strip_and_leaves_ctrl_w_to_the_desktop() {
         "documents are desktop tabs; the editor draws no tab strip"
     );
     assert!(
-        crate::command_palette::Command::all()
+        crate::commands::Command::all()
             .iter()
             .all(|(command, label)| command.id() != "close-tab" && !label.contains("Tab")),
         "closing is the desktop's tab lifecycle, not an editor command"
+    );
+}
+
+fn quick_open_and_go_to_line_open_the_host_palette() {
+    let mut sample = synced_sample();
+    let _ = ui::host_palette::take();
+    sample.app.harness().set_modifiers(&["ctrl".to_owned()]);
+    sample.app.harness().key("p");
+    assert_eq!(
+        ui::host_palette::take(),
+        Some(ui::host_palette::PaletteRequest::Search(String::new())),
+        "quick open is the host palette over the project's search entries"
+    );
+    sample.app.harness().key("g");
+    sample.app.harness().set_modifiers(&[]);
+    assert_eq!(
+        ui::host_palette::take(),
+        Some(ui::host_palette::PaletteRequest::Action(
+            ui::tilo_actions::ActionAddress::new(crate::resource::PROJECT_KIND, "go-to-line")
+        )),
+        "go to line asks for its line on the published effect"
+    );
+    let entries =
+        <crate::resource::CodeEditor as ui::tilo_resource::Resource>::search(&sample.app.state());
+    assert!(
+        entries.iter().any(|entry| entry.title == "main.rs"),
+        "the project's files are its search entries"
     );
 }
 

@@ -51,7 +51,7 @@ pub fn surface_entries(ctx: &PdfResourceCtx, source_pages: &[Page]) -> Vec<Searc
             format!("Page {page}"),
             format!("pdf page open {text}"),
             subtitle,
-            ActionAddress::new(&resource, "open"),
+            ActionAddress::new(&resource, "go-to"),
         ));
     }
     // Imported PDF bookmarks / outline entries are first-class navigation
@@ -69,7 +69,7 @@ pub fn surface_entries(ctx: &PdfResourceCtx, source_pages: &[Page]) -> Vec<Searc
                 usize::from(*level) + 1
             ),
             format!("Contents · page {page}"),
-            ActionAddress::new(&resource, "open"),
+            ActionAddress::new(&resource, "go-to"),
         ));
     }
     // The current find query is local view state, but its results are
@@ -96,7 +96,7 @@ pub fn surface_entries(ctx: &PdfResourceCtx, source_pages: &[Page]) -> Vec<Searc
                     index + 1
                 ),
                 format!("Find result for “{}”", ctx.search_query),
-                ActionAddress::new(&resource, "open"),
+                ActionAddress::new(&resource, "go-to-match"),
             ));
         }
     }

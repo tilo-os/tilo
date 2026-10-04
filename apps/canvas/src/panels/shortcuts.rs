@@ -53,6 +53,8 @@ pub const GROUPS: [Group; 4] = [
             key("Shift+2", "canvas-keys-zoom-selection"),
             key("Ctrl+scroll", "canvas-keys-zoom-pointer"),
             key("Space+drag", "canvas-keys-pan"),
+            key("[", "canvas-keys-brush-smaller"),
+            key("]", "canvas-keys-brush-larger"),
         ],
     },
     Group {

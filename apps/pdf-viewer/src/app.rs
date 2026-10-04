@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ChangeHash, ObjId};
+use automerge::{AutoCommit, ChangeHash};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -21,7 +21,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use std::time::Duration;
 
-use crate::actions::PdfOperation;
+use crate::actions::PdfEffect;
 use ui::Widget;
 use ui::gesture::{DragSelect, Granularity};
 use ui::paint::PaintCtx;
@@ -29,11 +29,6 @@ use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
 };
 
-#[derive(Clone, Copy)]
-enum PortalActionKind {
-    Open,
-    Save,
-}
 use ui::chrome::SelectionState;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -688,8 +683,9 @@ pub struct PdfApp {
     status_note: Option<String>,
     /// An in-flight XDG-portal *save* request (mirrors `portal_rx`).
     portal_save_rx: Option<PortalChannel>,
-    portal_action: Option<(tilo_actions::InvocationId, PortalActionKind)>,
-    completed_portal_action: Option<tilo_actions::InvocationUpdate>,
+    /// The open or save effect waiting on a picker, the PDF owner or the
+    /// host, answered when it finishes.
+    portal_action: Option<ui::framework::EffectReply>,
 
     // Interaction transients.
     last_mouse: Point,
@@ -825,6 +821,9 @@ pub struct PdfApp {
     /// The source hash whose existing markup was asked for, so it is
     /// asked for once.
     existing_request: Option<String>,
+    /// The loaded document's record still needs what opening it adds: a
+    /// page plan, the pinned source, the markup taken over from the PDF.
+    seed_pending: bool,
     /// Whether page images currently leave the document's own markup out.
     reader_markup_hidden: bool,
 }
@@ -1185,7 +1184,6 @@ impl PdfApp {
             status_note: None,
             portal_save_rx: None,
             portal_action: None,
-            completed_portal_action: None,
             last_mouse: Point::ZERO,
             drag: None,
             pan: None,
@@ -1241,6 +1239,7 @@ impl PdfApp {
             stored_annotations: Vec::new(),
             adopted: Vec::new(),
             existing_request: None,
+            seed_pending: true,
             reader_markup_hidden: false,
             markup_style: model::MarkupStyle::Highlight,
         }
@@ -1368,6 +1367,8 @@ impl PdfApp {
     pub(crate) fn set_read_only(&mut self, read_only: bool) {
         if self.read_only != read_only {
             self.read_only = read_only;
+            // Allowed to write now, the record gets what opening it adds.
+            self.seed_pending |= !read_only;
             self.dirty = true;
         }
     }
@@ -1551,7 +1552,7 @@ impl PdfApp {
 
     /// Take over the markup already in the PDF the first time the record
     /// meets these bytes (see [`crate::adopt`]): ask the PDF owner for it,
-    /// once per source.
+    /// once per source. Whether it was asked or is not needed.
     #[cfg_attr(
         not(test),
         allow(
@@ -1559,16 +1560,16 @@ impl PdfApp {
             reason = "the synchronous test backend records the import at once"
         )
     )]
-    fn adopt_existing(&mut self, state: &mut AutoCommit) {
+    fn adopt_existing(&mut self, state: &mut AutoCommit) -> bool {
         let Some((hash, _)) = self.source_blob.clone() else {
-            return;
+            return true;
         };
         if self.read_only
             || PdfDoc::source(state).is_none_or(|(pinned, _, _)| pinned != hash)
             || PdfDoc::imported_source(state).as_deref() == Some(hash.as_str())
             || self.existing_request.as_deref() == Some(hash.as_str())
         {
-            return;
+            return true;
         }
         self.existing_request = Some(hash);
         #[cfg(test)]
@@ -1580,17 +1581,18 @@ impl PdfApp {
                     self.status_note = Some(format!("Could not read the PDF's markup: {error}"));
                 }
             }
-            return;
+            return true;
         }
         let requested = match (self.raster_handle.as_ref(), self.raster_document.as_ref()) {
             (Some(handle), Some(document)) => handle.read_existing(document.id),
             _ => Err(crate::source::RasterSubmitError::Stopped),
         };
         if let Err(error) = requested {
-            // Try again on a later frame.
             self.existing_request = None;
             tracing::debug!(%error, "asking for the PDF's own markup failed");
+            return false;
         }
+        true
     }
 
     /// Record the markup `existing` (read from the bytes hashed `hash`).
@@ -2021,6 +2023,27 @@ impl PdfApp {
         self.dirty = true;
     }
 
+    /// Add what opening the loaded document adds to its record, once per
+    /// document: its page plan, the source it pins, the markup taken over
+    /// from the PDF. A reader that may not write adds it once it may.
+    fn seed_record(&mut self, state: &mut AutoCommit) {
+        if self.read_only {
+            self.seed_pending = true;
+            return;
+        }
+        if !PdfDoc::has_page_plan(state) {
+            self.perform_action(
+                state,
+                &crate::actions::PdfViewerAction::EnsurePagePlan {
+                    source_page_count: self.source_pages.len().max(1),
+                },
+            );
+        }
+        self.pin_source(state);
+        // Asked again on the next frame while the PDF owner cannot be asked.
+        self.seed_pending = !self.adopt_existing(state);
+    }
+
     /// Adopt the durable, collaboration-replayed page plan into whichever
     /// local renderer is available. A peer without source bytes still keeps
     /// the shared intent in its record; a renderer with the original source
@@ -2029,16 +2052,7 @@ impl PdfApp {
         clippy::too_many_lines,
         reason = "one pass per renderer keeps the plan adoption auditable"
     )]
-    fn reconcile_shared_page_plan(&mut self, state: &mut AutoCommit) {
-        let source_count = self.source_pages.len().max(1);
-        if !PdfDoc::has_page_plan(state) && !self.read_only {
-            self.perform_action(
-                state,
-                &crate::actions::PdfViewerAction::EnsurePagePlan {
-                    source_page_count: source_count,
-                },
-            );
-        }
+    fn reconcile_shared_page_plan(&mut self, state: &AutoCommit) {
         let plan = PdfDoc::list_page_plan(state);
         if plan.is_empty() {
             return;
@@ -2935,30 +2949,42 @@ impl PdfApp {
     }
 
     fn finish_portal_action(&mut self, success: bool, error: Option<String>) {
-        let Some((invocation, _)) = self.portal_action.take() else {
+        let Some(reply) = self.portal_action.take() else {
             return;
         };
-        self.completed_portal_action = Some(if success {
-            tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            }
-        } else if let Some(message) = error {
-            tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "pdf.portal_failed".into(),
-                    message,
-                    details: None,
-                    retryable: false,
-                },
-            }
+        reply.finish(if success {
+            Ok(tilo_actions::ActionOutput::default())
         } else {
-            tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("file selection cancelled".into()),
-            }
+            Err(error.unwrap_or_else(|| "file selection cancelled".into()))
         });
+    }
+
+    /// The open or save effect waiting here was cancelled by its caller:
+    /// stop the picker, the PDF owner's work and the host's open.
+    fn follow_cancellation(&mut self) {
+        if !self
+            .portal_action
+            .as_ref()
+            .is_some_and(ui::framework::EffectReply::is_cancelled)
+        {
+            return;
+        }
+        self.portal_action = None;
+        self.portal_rx = None;
+        self.portal_contents_rx = None;
+        self.portal_save_rx = None;
+        // A document asked to open in this window's place is not opened.
+        if let Some((_, outcome)) = self.pending_reopen.take() {
+            outcome.withdraw();
+        }
+        self.cancel_pending_open();
+        if let Some(request) = self.pending_save.take() {
+            let _ = self
+                .raster_handle
+                .as_ref()
+                .and_then(|handle| handle.cancel_save(request).ok());
+        }
+        self.dirty = true;
     }
 
     /// Drain a completed portal *save* request, if any, and flatten the current
@@ -4335,20 +4361,27 @@ impl PdfApp {
     /// the file opens, so its markup is the same however it was opened.
     /// Outside a host (the reader on its own, in a test) it opens here.
     fn open_chosen(&mut self, path: &std::path::Path, state: &AutoCommit) {
-        let Some(open_here) = self.open_here.clone() else {
-            self.load_path(path, state);
-            return;
-        };
         if self.source_path.as_deref() == Some(path) {
             self.finish_portal_action(true, None);
             return;
         }
-        // The operation that asked is answered with the host's answer
-        // ([`Self::follow_reopen`]).
+        if !self.ask_to_open_here(path) {
+            self.load_path(path, state);
+        }
+    }
+
+    /// Ask the host to show the PDF at `path` on its own markup record in
+    /// this window; the effect that asked is answered with the host's
+    /// answer ([`Self::follow_reopen`]). Whether a host can.
+    fn ask_to_open_here(&mut self, path: &std::path::Path) -> bool {
+        let Some(open_here) = self.open_here.clone() else {
+            return false;
+        };
         let outcome = open_here.open(&[path.display().to_string()]);
         self.pending_reopen = Some((path.to_path_buf(), outcome));
         self.status_note = Some("Opening PDF…".to_string());
         self.dirty = true;
+        true
     }
 
     /// Answer the open this window asked of its host: shown (this reader
@@ -4365,20 +4398,10 @@ impl PdfApp {
         let Some((path, _)) = self.pending_reopen.take() else {
             return;
         };
-        match answer {
+        match self.opened_here(&path, answer) {
             Ok(()) => self.finish_portal_action(true, None),
-            Err(reason) => {
-                let error = format!("Could not open {}: {reason}", path.display());
-                if self.has_document {
-                    self.status_note = Some(error.clone());
-                } else {
-                    self.status_note = None;
-                    self.load_error = Some(error.clone());
-                }
-                self.finish_portal_action(false, Some(error));
-            }
+            Err(error) => self.finish_portal_action(false, Some(error)),
         }
-        self.dirty = true;
     }
 
     /// Reopen the document the record's markup is made against from the
@@ -4480,6 +4503,7 @@ impl PdfApp {
                 self.reader_markup_hidden = false;
                 self.raster = Some(loaded.raster);
                 self.has_document = true;
+                self.seed_pending = true;
                 self.doc_name = loaded.name;
                 self.source_path = Some(path.to_path_buf());
                 self.load_error = None;
@@ -4579,6 +4603,7 @@ impl PdfApp {
                     self.applied_worker_plan = None;
                     self.worker_plan_blobs.clear();
                     self.has_document = true;
+                    self.seed_pending = true;
                     self.doc_name = name;
                     self.source_path = Some(request.path.clone());
                     self.load_error = None;
@@ -4980,91 +5005,13 @@ include!("app_draw.rs");
 include!("app_events.rs");
 
 impl Widget for PdfApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::PDF_VIEWER_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested
-            && self
-                .portal_action
-                .is_some_and(|(pending, _)| pending == invocation)
-        {
-            self.portal_action = None;
-            self.portal_rx = None;
-            self.portal_save_rx = None;
-            // A document asked to open in this window's place is not opened.
-            if let Some((_, outcome)) = self.pending_reopen.take() {
-                outcome.withdraw();
-            }
-            self.cancel_pending_open();
-            if let Some(request) = self.pending_save.take() {
-                let _ = self
-                    .raster_handle
-                    .as_ref()
-                    .and_then(|handle| handle.cancel_save(request).ok());
-            }
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("file operation cancelled".into()),
-            });
-        }
-        self.follow_reopen();
-        if self
-            .completed_portal_action
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            return self.completed_portal_action.take();
-        }
-        None
-    }
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
         // Drain the dedicated PDF owner before any portal/action work.  This
         // is non-blocking and is the sole route by which production PDFium
         // results enter widget state.
         self.drain_raster_events(state);
+        self.follow_cancellation();
         self.follow_reopen();
         self.follow_signature();
         self.reopen_pinned_source();
@@ -5078,9 +5025,10 @@ impl Widget for PdfApp {
         self.drain_portal_import(state);
 
         if self.has_document {
+            if std::mem::take(&mut self.seed_pending) {
+                self.seed_record(state);
+            }
             self.reconcile_shared_page_plan(state);
-            self.pin_source(state);
-            self.adopt_existing(state);
         }
         if std::mem::take(&mut self.staged_import) {
             self.demo_import_image(state);
@@ -5210,7 +5158,7 @@ impl Widget for PdfApp {
 
     /// The reader paints its document chrome and pages directly, so expose the
     /// otherwise invisible structure explicitly.  The navigation controls use
-    /// the same `PdfOperation` reducer as the toolbar and Ctrl+K resources;
+    /// the same `PdfEffect` handler as the toolbar and Ctrl+K resources;
     /// assistive technology never takes a separate, untested shortcut.
     #[allow(
         clippy::too_many_lines,
@@ -5568,7 +5516,6 @@ impl Widget for PdfApp {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        use crate::actions::PdfOperation;
         use ui::a11y::Action as A11yAction;
         let (state, path) = ui::doc::document(state, path);
         if target.starts_with("context-menu:item:") {
@@ -5811,25 +5758,15 @@ impl Widget for PdfApp {
             }
             _ => {}
         }
-        let operation = match target {
-            "pdf.previous-page" => PdfOperation::PreviousPage,
-            "pdf.next-page" => PdfOperation::NextPage,
-            "pdf.zoom-in" => PdfOperation::ZoomIn,
-            "pdf.zoom-out" => PdfOperation::ZoomOut,
-            "pdf.toggle-sidebar" => PdfOperation::ToggleSidebar,
+        let effect = match target {
+            "pdf.previous-page" => PdfEffect::PreviousPage,
+            "pdf.next-page" => PdfEffect::NextPage,
+            "pdf.zoom-in" => PdfEffect::ZoomIn,
+            "pdf.zoom-out" => PdfEffect::ZoomOut,
+            "pdf.toggle-sidebar" => PdfEffect::ToggleSidebar,
             _ => return false,
         };
-        let Ok(payload) = serde_json::to_vec(&operation) else {
-            return false;
-        };
-        self.answer_resource_operation(
-            tilo_actions::OperationKind::View,
-            crate::actions::PDF_VIEWER_OPERATION_TYPE,
-            &payload,
-            state,
-            path,
-        )
-        .unwrap_or(false)
+        self.show(&effect)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -5929,184 +5866,179 @@ impl PdfApp {
     }
 }
 
-impl ui::resources::PublishesResources for PdfApp {
-    /// The open document's live rows beside the resource's publication: its
-    /// outline and the current find hits, read from the PDF and the find bar
-    /// rather than the record, carrying only view operations.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+impl PdfApp {
+    /// The open document's live rows: its outline and the current find
+    /// hits, read from the PDF and the find bar rather than the record.
+    pub(crate) fn document_rows(&self) -> Vec<ui::framework::LiveRow> {
         self.pdf_resource_ctx()
-            .map(|ctx| crate::actions::live_resources(&ctx))
+            .map(|ctx| crate::actions::live_rows(&ctx))
             .unwrap_or_default()
     }
 
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = if cursor.is_empty() && max_results > 0 {
-            self.resources(doc)
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+    /// The live row `id`, beyond the bounded page listed.
+    pub(crate) fn document_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
         self.pdf_resource_ctx()
-            .and_then(|ctx| crate::actions::resolve_live_resource(&ctx, id))
+            .and_then(|ctx| crate::actions::live_row(&ctx, id))
     }
-}
 
-impl PdfApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        use crate::actions::PdfOperation;
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            PdfOperation::PreviousPage => self.prev_page(),
-            PdfOperation::NextPage => self.next_page(),
-            PdfOperation::ZoomIn => self.zoom_by(1.15),
-            PdfOperation::ZoomOut => self.zoom_by(1.0 / 1.15),
-            PdfOperation::FitPage => self.fit_page(),
-            PdfOperation::FitWidth => self.fit_width(),
-            PdfOperation::ToggleSidebar => self.toggle_sidebar(),
-            PdfOperation::ToggleRail => self.toggle_rail(),
-            PdfOperation::OpenSearch => self.open_search(),
-            PdfOperation::GoToPage { page } => self.go_to_page(page),
-            PdfOperation::MarkupStyle { style } => {
-                if let Some(style) = model::MarkupStyle::parse(&style) {
-                    self.markup_style = style;
-                    self.tool = Tool::Highlight;
-                    self.dirty = true;
-                }
+    /// Answer a view effect: move through the document or change how it is
+    /// shown. Whether `effect` is one.
+    pub(crate) fn show(&mut self, effect: &PdfEffect) -> bool {
+        match effect {
+            PdfEffect::PreviousPage => self.prev_page(),
+            PdfEffect::NextPage => self.next_page(),
+            PdfEffect::ZoomIn => self.zoom_by(1.15),
+            PdfEffect::ZoomOut => self.zoom_by(1.0 / 1.15),
+            PdfEffect::FitPage => self.fit_page(),
+            PdfEffect::FitWidth => self.fit_width(),
+            PdfEffect::ToggleSidebar => self.toggle_sidebar(),
+            PdfEffect::TogglePages => self.toggle_rail(),
+            PdfEffect::Find => self.open_search(),
+            PdfEffect::GoTo { page } => self.go_to_page(*page),
+            PdfEffect::MarkHighlight | PdfEffect::MarkUnderline | PdfEffect::MarkStrikeout => {
+                self.markup_style = match effect {
+                    PdfEffect::MarkUnderline => model::MarkupStyle::Underline,
+                    PdfEffect::MarkStrikeout => model::MarkupStyle::StrikeOut,
+                    _ => model::MarkupStyle::Highlight,
+                };
+                self.tool = Tool::Highlight;
+                self.dirty = true;
             }
-            PdfOperation::GoToSearchResult {
+            PdfEffect::GoToMatch {
                 query,
                 whole_word,
                 case_sensitive,
                 index,
                 page,
-            } => self.go_to_search_result(&query, whole_word, case_sensitive, index, page),
-            PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => {
-                return Err("file operations require the lifecycle-capable operation host".into());
-            }
+            } => self.go_to_search_result(query, *whole_word, *case_sensitive, *index, *page),
+            PdfEffect::Open { .. } | PdfEffect::SaveAs { .. } => return false,
         }
-        Ok(true)
+        true
     }
 
-    fn admit_resource_operation(
+    /// Answer `effect`, invoked by a button, the palette or an agent. Opening
+    /// and saving wait on a picker, the PDF owner or the host and answer
+    /// through `reply` when they finish.
+    ///
+    /// # Errors
+    /// Returns why the effect cannot run now.
+    /// Open the PDF at `path`, or the one the person chooses, in this
+    /// window: on its own markup record, which the host shows in place of
+    /// this one, answered once it does or why it could not. Where files
+    /// have no paths the chosen bytes open here, in a window that marks up
+    /// nothing yet.
+    pub(crate) fn open_effect(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        path: Option<String>,
+        cx: &mut ui::framework::EffectCx<crate::PdfViewer, Self>,
+    ) -> ui::framework::EffectAnswer {
+        if self.portal_action.is_some()
+            || self.pending_open.is_some()
+            || self.pending_reopen.is_some()
+        {
+            return Err("another PDF open is already in progress".into());
+        }
+        if let Some(path) = path {
+            return self.open_here_effect(path.into(), cx);
+        }
+        if tilo_paths::availability(tilo_paths::Feature::NativePaths)
+            == tilo_paths::Availability::Available
+        {
+            return Ok(
+                cx.choose_path(pdf_open_request(), |app, chosen, cx| match chosen {
+                    Some(path) => app.open_here_effect(path, cx),
+                    None => Err("file selection cancelled".into()),
+                }),
+            );
+        }
+        self.answer_effect(&PdfEffect::Open { path: None }, || cx.reply())
+    }
+
+    /// Ask the host to show the PDF at `path` on its own markup record in
+    /// this window, and answer with whether it does.
+    fn open_here_effect(
+        &mut self,
+        path: std::path::PathBuf,
+        cx: &mut ui::framework::EffectCx<crate::PdfViewer, Self>,
+    ) -> ui::framework::EffectAnswer {
+        use ui::framework::Effected;
+        if self.source_path.as_deref() == Some(path.as_path()) {
+            return Ok(Effected::done());
+        }
+        let Some(open_here) = self.open_here.clone() else {
+            return Err("this window shows the document it was opened on".into());
         };
-        match operation {
-            PdfOperation::Open { path: Some(file) } => {
-                if self.portal_action.is_some() || self.pending_open.is_some() {
-                    return Err("another PDF open is already in progress".into());
-                }
-                self.portal_action = Some((invocation, PortalActionKind::Open));
-                self.open_chosen(std::path::Path::new(&file), doc);
-                if self.pending_reopen.is_some() {
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-                }
-                if self.portal_action.is_none() {
-                    // Handed to a window of its own: answered here.
-                    self.completed_portal_action = None;
-                    return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                        tilo_actions::ActionOutput::default(),
-                    )));
-                }
-                if self.pending_open.is_some() {
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-                }
-                if !self.has_document {
-                    self.portal_action = None;
-                    return Err(self
-                        .load_error
-                        .clone()
-                        .unwrap_or_else(|| "PDF could not be opened".into()));
-                }
-                self.portal_action = None;
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )))
-            }
-            PdfOperation::SaveAs { path: Some(file) } => {
-                if self.portal_action.is_some() || self.pending_save.is_some() {
-                    return Err("another PDF save is already in progress".into());
-                }
+        self.status_note = Some("Opening PDF…".to_string());
+        self.dirty = true;
+        let arguments = [path.display().to_string()];
+        Ok(cx.open_here(&open_here, &arguments, move |app, answer, _| {
+            app.opened_here(&path, answer).map(|()| Effected::done())
+        }))
+    }
+
+    /// Take up the host's answer to showing the PDF at `path` here: the
+    /// person is told why it could not, and the open fails with it.
+    fn opened_here(
+        &mut self,
+        path: &std::path::Path,
+        answer: Result<(), String>,
+    ) -> Result<(), String> {
+        self.dirty = true;
+        let Err(reason) = answer else {
+            return Ok(());
+        };
+        let error = format!("Could not open {}: {reason}", path.display());
+        if self.has_document {
+            self.status_note = Some(error.clone());
+        } else {
+            self.status_note = None;
+            self.load_error = Some(error.clone());
+        }
+        Err(error)
+    }
+
+    pub(crate) fn answer_effect(
+        &mut self,
+        effect: &PdfEffect,
+        reply: impl FnOnce() -> ui::framework::EffectReply,
+    ) -> ui::framework::EffectAnswer {
+        use ui::framework::Effected;
+        if self.show(effect) {
+            return Ok(Effected::done());
+        }
+        let opening = matches!(effect, PdfEffect::Open { .. });
+        if opening && (self.portal_action.is_some() || self.pending_open.is_some()) {
+            return Err("another PDF open is already in progress".into());
+        }
+        if !opening && (self.portal_action.is_some() || self.pending_save.is_some()) {
+            return Err("another PDF save is already in progress".into());
+        }
+        match effect {
+            PdfEffect::SaveAs { path: Some(file) } => {
                 let file = ensure_pdf_extension(file.into());
-                self.portal_action = Some((invocation, PortalActionKind::Save));
                 if !self.save_annotated_to(&file) {
-                    self.portal_action = None;
                     return Err("PDF could not be saved".into());
                 }
-                if self.pending_save.is_some() {
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+                if self.pending_save.is_none() {
+                    return Ok(Effected::done());
                 }
-                self.portal_action = None;
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )))
             }
-            PdfOperation::Open { path: None } => {
-                if self.portal_action.is_some() || self.pending_open.is_some() {
-                    return Err("another PDF open is already in progress".into());
-                }
-                self.portal_action = Some((invocation, PortalActionKind::Open));
+            PdfEffect::Open { path: None } => {
                 self.request_open_via_portal();
-                if self.portal_rx.is_none() {
-                    self.portal_action = None;
+                if self.portal_contents_rx.is_none() {
                     return Err("PDF picker could not be started".into());
                 }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
-            PdfOperation::SaveAs { path: None } => {
-                if self.portal_action.is_some() || self.pending_save.is_some() {
-                    return Err("another PDF save is already in progress".into());
-                }
-                self.portal_action = Some((invocation, PortalActionKind::Save));
+            PdfEffect::SaveAs { path: None } => {
                 self.request_save_via_portal();
                 if self.portal_save_rx.is_none() {
-                    self.portal_action = None;
                     return Err("PDF save picker could not be started".into());
                 }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
-            _ => self
-                .answer_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
+            _ => return Ok(Effected::done()),
         }
+        self.portal_action = Some(reply());
+        Ok(Effected::Pending)
     }
 }
 
@@ -6226,15 +6158,16 @@ mod tests {
 
         eprintln!("phase the_apps_open_shows_the_chosen_document_on_its_own_record");
         {
-            const OPEN: ui::tilo_resource::ActionRef<crate::PdfViewer, Option<String>> =
-                ui::tilo_resource::ActionRef::new("open", &["path"]);
+            let open = |path: &std::path::Path| PdfEffect::Open {
+                path: Some(path.display().to_string()),
+            };
             let (_dir, a, b) = two_documents();
             let mut app = launched(&a);
             app.invoke(highlight_on_first_page())
                 .expect("the owner annotates");
             let a_record = app.record().clone();
 
-            app.invoke_confirmed(OPEN.with(Some(b.display().to_string())))
+            app.effect_confirmed(&open(&b))
                 .expect("the app opens another document");
             app.harness().relayout();
             assert_ne!(
@@ -6249,8 +6182,7 @@ mod tests {
             );
             let b_record = app.record().clone();
 
-            app.invoke_confirmed(OPEN.with(Some(a.display().to_string())))
-                .expect("and back");
+            app.effect_confirmed(&open(&a)).expect("and back");
             app.harness().relayout();
             assert_eq!(app.record(), &a_record);
             assert_eq!(app.state().annotations.len(), 1, "a.pdf kept its markup");
@@ -6258,9 +6190,13 @@ mod tests {
             // A document that cannot be opened leaves the window as it is:
             // the person is told why, and the operation fails with it.
             let missing = a.with_file_name("gone.pdf");
-            app.invoke_confirmed(OPEN.with(Some(missing.display().to_string())))
-                .expect("the open is accepted");
-            app.harness().relayout();
+            let failure = app
+                .effect_confirmed(&open(&missing))
+                .expect_err("a missing document fails the open");
+            assert!(
+                failure.to_string().contains("gone.pdf"),
+                "the operation fails with the reason: {failure}"
+            );
             app.harness().relayout();
             assert_eq!(app.record(), &a_record, "the window keeps its record");
             let note = app
@@ -6268,19 +6204,11 @@ mod tests {
                 .flatten()
                 .expect("the person is told");
             assert!(note.contains("gone.pdf"), "{note}");
-            assert!(
-                app.harness()
-                    .control_failures()
-                    .iter()
-                    .any(|failure| failure.contains("gone.pdf")),
-                "the operation fails with the reason: {:?}",
-                app.harness().control_failures()
-            );
 
             // A bare window opening a file marks it up on the file's own
             // record, the one a launch on the file opens.
             let mut bare = app.relaunch(&[]).expect("a bare window");
-            bare.invoke_confirmed(OPEN.with(Some(b.display().to_string())))
+            bare.effect_confirmed(&open(&b))
                 .expect("the bare window opens b.pdf");
             bare.harness().relayout();
             assert_eq!(bare.record(), &b_record);
@@ -6411,7 +6339,10 @@ mod tests {
             ui::tilo_resource::publish::<crate::PdfViewer>("pdf.document", "PDF", &state);
         find(&published, id)
             .or_else(|| <crate::PdfViewer as ui::tilo_resource::Resource>::child(&state, id))
-            .or_else(|| ui::resources::PublishesResources::resource(app, doc, id))
+            .or_else(|| {
+                app.document_row(id)
+                    .map(ui::framework::LiveRow::into_resource)
+            })
     }
 
     /// The empty reader staged as screenshot `scenario` shows it.
@@ -6430,6 +6361,30 @@ mod tests {
         app.recompute_regions();
         app.sync_viewport_frame();
         (app, st)
+    }
+
+    /// Opening a document adds its page plan once; later frames leave the
+    /// record alone.
+    #[test]
+    fn opening_seeds_the_record_once_not_every_frame() {
+        let mut app = crate::scenarios::sample_reader();
+        let mut st = ui::State::new();
+        sync_fixture(&mut app, &mut st);
+        assert!(PdfDoc::has_page_plan(&st.doc), "opening adds the page plan");
+        let seeded = st.doc.get_heads();
+        for _ in 0..3 {
+            sync_fixture(&mut app, &mut st);
+        }
+        assert_eq!(st.doc.get_heads(), seeded, "frames write nothing");
+
+        app.set_read_only(true);
+        app.set_read_only(false);
+        sync_fixture(&mut app, &mut st);
+        assert_eq!(
+            st.doc.get_heads(),
+            seeded,
+            "a record that has its plan gets nothing more when writing is allowed again"
+        );
     }
 
     fn any_access_node(
@@ -6579,7 +6534,7 @@ mod tests {
                 find_resource
                     .actions
                     .iter()
-                    .any(|action| action.id == "open")
+                    .any(|action| action.id == "go-to-match")
             );
             app.search_input.set_text("filesystem");
             app.recompute_matches();

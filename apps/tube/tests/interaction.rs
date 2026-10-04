@@ -176,44 +176,26 @@ fn navigation_tabs_and_queue_are_real_destinations() {
     clippy::too_many_lines,
     reason = "merged scenario: each former test is a labelled case block with its own fixture"
 )]
-fn palette_and_search_inputs_are_present_and_navigate() {
-    // Case `palette_result_click_navigates_to_video`.
+fn search_inputs_are_present_and_navigate() {
+    // Case `compact_search_button_opens_the_host_search`.
     {
-        // Open the palette pre-seeded with a query (headless can't press Ctrl+K —
-        // see harness note), then click the first result and assert it opened a
-        // watch page. This drives the real palette overlay + ActivateHit path.
-        let app = TubeApp::new().with_palette_open_for_test("rust");
-        let mut h = Harness::new(app, VIEWPORT);
-        assert!(h.app.palette_open_for_test(), "palette starts open");
-        assert!(h.has_id("palette_card"), "palette overlay is laid out");
-        assert!(
-            h.has_id("palette_row_0"),
-            "query 'rust' should surface at least one result row"
+        // A narrow window at large text trades the field for a button, which
+        // asks the host for its search palette instead of an app overlay.
+        let app = TubeApp::new().with_viewport(420.0, 800.0);
+        let mut h = Harness::with_theme(
+            app,
+            (420.0, 800.0),
+            ui::theme::Theme::dark().with_text_scale(1.5),
         );
-
-        // Click the first result row at its computed rect — the real ActivateHit
-        // path — and assert it opened a watch page.
-        h.click_id("palette_row_0");
+        assert!(!ui::widget::Widget::take_search_request(&mut h.app));
+        h.click_id("compact_search");
         assert!(
-            matches!(h.app.route_for_test(), Route::Watch(_)),
-            "clicking a video result opens its watch page"
+            ui::widget::Widget::take_search_request(&mut h.app),
+            "the compact search button requests the host search"
         );
         assert!(
-            !h.app.palette_open_for_test(),
-            "activating a result closes the palette"
-        );
-    }
-    // Case `clicking_scrim_closes_palette`.
-    {
-        let app = TubeApp::new().with_palette_open_for_test("");
-        let mut h = Harness::new(app, VIEWPORT);
-        assert!(h.app.palette_open_for_test());
-        // Click near the top-left corner — inside the scrim, outside the centred
-        // card — which must dismiss the palette.
-        h.click_at(vello::kurbo::Point::new(20.0, 20.0));
-        assert!(
-            !h.app.palette_open_for_test(),
-            "scrim click closes the palette"
+            !ui::widget::Widget::take_search_request(&mut h.app),
+            "the request drains once"
         );
     }
     // Case `top_bar_search_input_is_present_even_when_query_is_empty`.
@@ -230,17 +212,6 @@ fn palette_and_search_inputs_are_present_and_navigate() {
         assert!(
             h.has_id("search_input"),
             "the search TextInput must be present (and focusable) even with an empty query"
-        );
-    }
-    // Case `command_palette_input_is_present_even_when_query_is_empty`.
-    {
-        let app = TubeApp::new().with_palette_open_for_test("");
-        let h = Harness::new(app, VIEWPORT);
-        assert!(h.app.palette_open_for_test(), "palette starts open");
-        assert!(h.has_id("palette_card"), "palette overlay is laid out");
-        assert!(
-            h.has_id("palette_input"),
-            "the palette TextInput must be present even when the palette query is empty"
         );
     }
     // Case `clicking_the_search_field_focuses_the_input`:

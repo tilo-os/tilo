@@ -37,7 +37,7 @@ image = { workspace = true, features = ["png", "jpeg", "webp"] }
 usvg = { version = "0.47", default-features = false }
 # SVG export embeds a painted layer's picture.
 base64.workspace = true
-# A picture the chooser could not add is reported in the log.
+# Recent artworks that cannot be remembered are reported in the log.
 tracing.workspace = true
 # Selections and shapes are combined (union, subtract, intersect, exclude)
 # exactly, as polygons.

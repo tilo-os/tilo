@@ -29,10 +29,13 @@
 use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
-    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
-    Resource, ResultSpec, RetryPolicy,
+    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ParamType, PermissionRequirement, Resource,
 };
+use ui::framework::LiveRow;
+// `#[derive(Effect)]` names the crate as `tilo_resource`.
+use ui::tilo_resource;
+use ui::tilo_resource::Effect;
 
 use crate::doc::{ImportedPage, PagePlanEntry, PdfDoc};
 use crate::model::{
@@ -42,7 +45,6 @@ use crate::model::{
 
 /// Registry `type_id` for every PDF-reader action.
 pub const PDF_VIEWER_ACTION_TYPE: &str = "pdf_viewer.action";
-pub const PDF_VIEWER_OPERATION_TYPE: &str = "pdf_viewer.operation";
 
 /// The action palette is refreshed frequently. Keep that contextual snapshot
 /// small even for a scanned book with thousands of pages or a heavily-reviewed
@@ -98,145 +100,89 @@ pub fn outline_resource_id(ctx: &PdfResourceCtx, index: usize) -> Option<String>
     Some(format!("pdf.outline:{}:{hash:016x}", ctx.doc_id))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PdfOperation {
+/// What the reader does that changes no markup: moving through the
+/// document and its view, the highlight tool's style, and opening and saving
+/// files. Every caller — a toolbar button, the palette, an agent — reaches
+/// the reader's handler as one of these.
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "pdf_viewer.effects")]
+pub enum PdfEffect {
+    /// Previous page
+    #[effect(view)]
     PreviousPage,
+    /// Next page
+    #[effect(view)]
     NextPage,
+    /// Zoom in
+    #[effect(view)]
     ZoomIn,
+    /// Zoom out
+    #[effect(view)]
     ZoomOut,
+    /// Fit page
+    #[effect(view, idempotent)]
     FitPage,
+    /// Fit width
+    #[effect(view, idempotent)]
     FitWidth,
+    /// Toggle sidebar
+    #[effect(view)]
     ToggleSidebar,
-    ToggleRail,
-    OpenSearch,
-    GoToPage {
+    /// Toggle page thumbnails
+    #[effect(view)]
+    TogglePages,
+    /// Find in document
+    #[effect(view, idempotent)]
+    Find,
+    /// Mark text as highlight
+    #[effect(view, idempotent)]
+    MarkHighlight,
+    /// Mark text as underline
+    #[effect(view, idempotent)]
+    MarkUnderline,
+    /// Mark text as strike-through
+    #[effect(view, idempotent)]
+    MarkStrikeout,
+    /// Go to
+    ///
+    /// Shows the page the item (a page, an annotation, a comment, a
+    /// bookmark) is on.
+    #[effect(view, row, idempotent)]
+    GoTo {
+        #[param("1-based page")]
         page: usize,
     },
-    /// A materialised, bounded find result.  Carry the complete local query
-    /// state so invocation restores the exact result before navigating.
-    GoToSearchResult {
+    /// Go to match
+    ///
+    /// A bounded find result, carrying the complete query so the exact
+    /// result is restored before navigating.
+    #[effect(view, row, idempotent)]
+    GoToMatch {
+        #[param("the find query")]
         query: String,
+        #[param("match whole words only")]
         whole_word: bool,
+        #[param("match case")]
         case_sensitive: bool,
+        #[param("the result's position")]
         index: usize,
+        #[param("1-based page")]
         page: usize,
     },
+    /// Open PDF
+    ///
+    /// Opens a PDF on its own markup record, in this window.
+    #[effect(job, cancellable, destructive, device_only)]
     Open {
+        #[param("Filesystem path; omit to use the system picker")]
         path: Option<String>,
     },
+    /// Save annotated PDF
+    #[effect(job, cancellable, destructive, device_only)]
     SaveAs {
+        #[param("Filesystem path; omit to use the system picker")]
         path: Option<String>,
     },
-    /// Choose how the highlight tool marks text: `highlight`, `underline`
-    /// or `strikeout`.
-    MarkupStyle {
-        style: String,
-    },
-}
-
-#[cfg(test)]
-mod file_action_tests {
-    use super::*;
-    #[test]
-    fn path_argument_binds_into_background_open() {
-        let spec = file_operation("open", "Open PDF", false);
-        let encoded = spec
-            .build_json(
-                serde_json::json!({"path":"/tmp/a.pdf"})
-                    .as_object()
-                    .unwrap(),
-            )
-            .unwrap();
-        assert_eq!(
-            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(PdfOperation::Open {
-                path: Some("/tmp/a.pdf".into())
-            })
-        );
-        assert!(matches!(
-            spec.contract.execution,
-            ExecutionMode::Background { .. }
-        ));
-        assert_eq!(spec.contract.result, ResultSpec::Job);
-    }
-}
-
-/// Decode a PDF Viewer operation envelope.
-///
-/// # Errors
-///
-/// Returns a JSON decoding error when `type_id` identifies this operation
-/// family but `payload` is malformed.
-pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<PdfOperation>, String> {
-    if type_id != PDF_VIEWER_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
-#[allow(
-    clippy::expect_used,
-    clippy::needless_pass_by_value,
-    reason = "the owned enum is inspected after serialization and contains no fallible serde fields"
-)]
-fn operation(id: &str, label: &str, kind: OperationKind, value: PdfOperation) -> ActionSpec {
-    let spec = ActionSpec::operation(id, label, kind, PDF_VIEWER_OPERATION_TYPE, &value)
-        .expect("PdfOperation is always serializable");
-    match value {
-        PdfOperation::FitPage | PdfOperation::FitWidth => spec
-            .with_contract(ActionContract::view())
-            .retry_policy(RetryPolicy::Idempotent),
-        PdfOperation::PreviousPage
-        | PdfOperation::NextPage
-        | PdfOperation::ZoomIn
-        | PdfOperation::ZoomOut
-        | PdfOperation::ToggleSidebar
-        | PdfOperation::ToggleRail
-        | PdfOperation::OpenSearch
-        | PdfOperation::GoToPage { .. }
-        | PdfOperation::GoToSearchResult { .. }
-        | PdfOperation::MarkupStyle { .. } => spec.with_contract(ActionContract::view()),
-        PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => spec.destructive(),
-    }
-}
-
-fn file_operation(id: &str, label: &str, save: bool) -> ActionSpec {
-    ActionSpec::typed_operation(
-        id,
-        label,
-        "optional absolute path",
-        OperationKind::Effect,
-        PDF_VIEWER_OPERATION_TYPE,
-        vec![ActionParam::optional(
-            "path",
-            ParamType::Text,
-            "Filesystem path; omit to use the system picker",
-        )],
-        move |args: &ActionArgs| {
-            let path = args
-                .text("path")
-                .filter(|path| !path.trim().is_empty())
-                .map(str::to_string);
-            let operation = if save {
-                PdfOperation::SaveAs { path }
-            } else {
-                PdfOperation::Open { path }
-            };
-            EncodedAction {
-                type_id: PDF_VIEWER_OPERATION_TYPE.into(),
-                payload: serde_json::to_vec(&operation).unwrap_or_default(),
-            }
-        },
-    )
-    .with_contract(ActionContract {
-        risk: tilo_actions::RiskLevel::Destructive,
-        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-        execution: ExecutionMode::Background { cancellable: true },
-        result: ResultSpec::Job,
-        ..ActionContract::default()
-    })
 }
 
 /// Serializable mirror of an annotation's geometry. [`model::AnnoKind`] carries
@@ -1476,12 +1422,7 @@ fn reply_resource(comment: &Comment, reply: &Reply) -> Resource {
         "pdf.reply",
         reply_label(reply),
     )
-    .with_action(operation(
-        "open",
-        "Go to reply",
-        OperationKind::View,
-        PdfOperation::GoToPage { page: comment.page },
-    ))
+    .with_action(PdfEffect::GoTo { page: comment.page }.bound())
 }
 
 /// Build a comment resource: edit / reply / resolve / delete, all one source of
@@ -1492,12 +1433,7 @@ fn comment_resource(c: &Comment) -> Resource {
         "pdf.comment",
         comment_label(c),
     );
-    res = res.with_action(operation(
-        "open",
-        "Go to comment",
-        OperationKind::View,
-        PdfOperation::GoToPage { page: c.page },
-    ));
+    res = res.with_action(PdfEffect::GoTo { page: c.page }.bound());
 
     let edit_id = c.id.clone();
     res = res.with_action(
@@ -1558,12 +1494,7 @@ fn published_page_resource(
         "pdf.page",
         format!("Page {page_number}"),
     )
-    .with_action(operation(
-        "open",
-        "Go to page",
-        OperationKind::View,
-        PdfOperation::GoToPage { page: page_number },
-    ));
+    .with_action(PdfEffect::GoTo { page: page_number }.bound());
     if let Some(spec) = encode_spec(
         "duplicate",
         "Duplicate page",
@@ -1616,21 +1547,17 @@ fn published_page_resource(
     resource
 }
 
-fn outline_resource(ctx: &PdfResourceCtx, index: usize) -> Option<Resource> {
+fn outline_row(ctx: &PdfResourceCtx, index: usize) -> Option<LiveRow> {
     let (title, page, _) = ctx.outline.get(index)?;
     let id = outline_resource_id(ctx, index)?;
     Some(
-        Resource::new(id, "pdf.outline-item", title.as_str()).with_action(operation(
-            "open",
-            &format!("Go to page {page}"),
-            OperationKind::View,
-            PdfOperation::GoToPage { page: *page },
-        )),
+        LiveRow::new(id, "pdf.outline-item", title.as_str())
+            .effect(&PdfEffect::GoTo { page: *page }),
     )
 }
 
-fn search_result_resource(ctx: &PdfResourceCtx, index: usize, page: usize) -> Resource {
-    Resource::new(
+fn search_result_row(ctx: &PdfResourceCtx, index: usize, page: usize) -> LiveRow {
+    LiveRow::new(
         format!(
             "pdf.search-result:{}:{}:{index}:{page}",
             ctx.doc_id, ctx.search_token
@@ -1638,30 +1565,22 @@ fn search_result_resource(ctx: &PdfResourceCtx, index: usize, page: usize) -> Re
         "pdf.search-result",
         format!("Match {} · page {page}", index + 1),
     )
-    .with_action(operation(
-        "open",
-        "Go to match",
-        OperationKind::View,
-        PdfOperation::GoToSearchResult {
-            query: ctx.search_query.clone(),
-            whole_word: ctx.search_whole_word,
-            case_sensitive: ctx.search_case_sensitive,
-            index,
-            page,
-        },
-    ))
+    .effect(&PdfEffect::GoToMatch {
+        query: ctx.search_query.clone(),
+        whole_word: ctx.search_whole_word,
+        case_sensitive: ctx.search_case_sensitive,
+        index,
+        page,
+    })
 }
 
-/// Live find projection for the palette — presentation cache, not CRDT.
-///
-/// Standalone [`provide_resources`] nests this under `pdf.document`. Hosted
-/// [`PublishesResources`] returns the same slice alone so agents keep match
-/// rows without a second document root beside [`crate::resource::PdfViewer`].
-pub fn find_result_resources(ctx: &PdfResourceCtx) -> Vec<Resource> {
+/// The current find results — presentation, not markup — as one live row
+/// whose children are the bounded first matches.
+fn find_result_row(ctx: &PdfResourceCtx) -> Option<LiveRow> {
     if ctx.search_query.trim().is_empty() {
-        return Vec::new();
+        return None;
     }
-    let mut search = Resource::new(
+    let mut search = LiveRow::new(
         format!("pdf.search:{}", ctx.doc_id),
         "pdf.search",
         format!("Find results for “{}”", ctx.search_query),
@@ -1673,9 +1592,9 @@ pub fn find_result_resources(ctx: &PdfResourceCtx) -> Vec<Resource> {
         .take(SEARCH_RESULT_RESOURCE_LIMIT)
         .enumerate()
     {
-        search = search.with_child(search_result_resource(ctx, index, page));
+        search = search.row(search_result_row(ctx, index, page));
     }
-    vec![search]
+    Some(search)
 }
 
 /// The published children of a document's markup: its pages, its
@@ -1748,12 +1667,7 @@ fn annotation_resource(anno: &Annotation, comments: &[Comment]) -> Resource {
         "pdf.annotation",
         anno_label(anno),
     );
-    res = res.with_action(operation(
-        "open",
-        "Go to annotation",
-        OperationKind::View,
-        PdfOperation::GoToPage { page: anno.page },
-    ));
+    res = res.with_action(PdfEffect::GoTo { page: anno.page }.bound());
     let aid = anno.id.clone();
     res = res.with_action(ActionSpec::prompted(
         "change-color",
@@ -1797,14 +1711,12 @@ fn signature_resource(signature: &Signature) -> Resource {
     ) {
         resource = resource.with_action(spec);
     }
-    resource.with_action(operation(
-        "open",
-        "Go to signature",
-        OperationKind::View,
-        PdfOperation::GoToPage {
+    resource.with_action(
+        PdfEffect::GoTo {
             page: signature.page,
-        },
-    ))
+        }
+        .bound(),
+    )
 }
 
 /// Add a sticky note with this text (`value`) at the top of `page`.
@@ -1896,81 +1808,31 @@ pub(crate) fn declarations() -> Vec<ui::tilo_resource::ActionDecl<crate::resourc
     ]
 }
 
-/// Root View/Effect operations for [`crate::resource::PdfViewer::local_operations`].
-pub(crate) fn document_local_operations() -> Vec<ActionSpec> {
-    let mut operations: Vec<ActionSpec> = [
-        ("previous-page", "Previous page", PdfOperation::PreviousPage),
-        ("next-page", "Next page", PdfOperation::NextPage),
-        ("zoom-in", "Zoom in", PdfOperation::ZoomIn),
-        ("zoom-out", "Zoom out", PdfOperation::ZoomOut),
-        ("fit-page", "Fit page", PdfOperation::FitPage),
-        ("fit-width", "Fit width", PdfOperation::FitWidth),
-        (
-            "toggle-sidebar",
-            "Toggle sidebar",
-            PdfOperation::ToggleSidebar,
-        ),
-        (
-            "toggle-pages",
-            "Toggle page thumbnails",
-            PdfOperation::ToggleRail,
-        ),
-        ("find", "Find in document", PdfOperation::OpenSearch),
-        (
-            "mark-highlight",
-            "Mark text as highlight",
-            PdfOperation::MarkupStyle {
-                style: "highlight".into(),
-            },
-        ),
-        (
-            "mark-underline",
-            "Mark text as underline",
-            PdfOperation::MarkupStyle {
-                style: "underline".into(),
-            },
-        ),
-        (
-            "mark-strikeout",
-            "Mark text as strike-through",
-            PdfOperation::MarkupStyle {
-                style: "strikeout".into(),
-            },
-        ),
-    ]
-    .into_iter()
-    .map(|(id, label, value)| operation(id, label, OperationKind::View, value))
-    .collect();
-    operations.push(file_operation("open", "Open PDF", false));
-    operations.push(file_operation("save-as", "Save annotated PDF", true));
-    operations
-}
-
 /// The open document's live rows: its outline (a bounded first page) and
 /// the current find hits. Both come from the PDF and the find bar rather
 /// than the record and carry only view operations.
-pub fn live_resources(ctx: &PdfResourceCtx) -> Vec<Resource> {
-    let mut resources: Vec<Resource> = (0..ctx.outline.len().min(CONTEXTUAL_CHILD_LIMIT))
-        .filter_map(|index| outline_resource(ctx, index))
+pub fn live_rows(ctx: &PdfResourceCtx) -> Vec<LiveRow> {
+    let mut rows: Vec<LiveRow> = (0..ctx.outline.len().min(CONTEXTUAL_CHILD_LIMIT))
+        .filter_map(|index| outline_row(ctx, index))
         .collect();
-    resources.extend(find_result_resources(ctx));
-    resources
+    rows.extend(find_result_row(ctx));
+    rows
 }
 
-/// The live row `id`, beyond the bounded page [`live_resources`] lists.
-/// Every id is checked against the live model, so a changed outline entry or
-/// a stale find hit fails closed instead of being rebound by position.
-pub fn resolve_live_resource(ctx: &PdfResourceCtx, id: &str) -> Option<Resource> {
+/// The live row `id`, beyond the bounded page [`live_rows`] lists. Every id
+/// is checked against the live model, so a changed outline entry or a stale
+/// find hit fails closed instead of being rebound by position.
+pub fn live_row(ctx: &PdfResourceCtx, id: &str) -> Option<LiveRow> {
     let outline_prefix = format!("pdf.outline:{}:", ctx.doc_id);
     if id.starts_with(&outline_prefix) {
         return ctx.outline.iter().enumerate().find_map(|(index, _)| {
             (outline_resource_id(ctx, index).as_deref() == Some(id))
-                .then(|| outline_resource(ctx, index))
+                .then(|| outline_row(ctx, index))
                 .flatten()
         });
     }
     if id == format!("pdf.search:{}", ctx.doc_id) {
-        return find_result_resources(ctx).into_iter().next();
+        return find_result_row(ctx);
     }
     let search_prefix = format!("pdf.search-result:{}:", ctx.doc_id);
     let raw = id.strip_prefix(&search_prefix)?;
@@ -1986,7 +1848,7 @@ pub fn resolve_live_resource(ctx: &PdfResourceCtx, id: &str) -> Option<Resource>
     ctx.search_pages
         .get(index)
         .filter(|current| **current == page)
-        .map(|_| search_result_resource(ctx, index, page))
+        .map(|_| search_result_row(ctx, index, page))
 }
 
 #[cfg(test)]
@@ -1997,7 +1859,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::io::Read;
     use std::sync::Mutex;
-    use tilo_actions::{ActionRegistry, LocalTransport};
+    use tilo_actions::{ActionRegistry, LocalTransport, OperationKind};
     use tilo_content::{
         ContentBackend, ContentError, ContentReader, ContentState, ContentStore, MemoryBackend,
         Stored,
@@ -2107,7 +1969,7 @@ mod tests {
         SEEDED.with_borrow(|app| {
             let app = app.as_ref().expect("the contract seed ran first");
             let mut resources = vec![published(doc)];
-            resources.extend(ui::resources::resources(app, doc));
+            resources.extend(app.document_rows().into_iter().map(LiveRow::into_resource));
             resources
         })
     }
@@ -2242,7 +2104,11 @@ mod tests {
                 .is_ok(),
             "page-plan actions use the same registry as all other shared PDF mutations"
         );
-        let live = ui::resources::resources(&app, &state.doc);
+        let live: Vec<Resource> = app
+            .document_rows()
+            .into_iter()
+            .map(LiveRow::into_resource)
+            .collect();
         let outline = live
             .iter()
             .find(|r| r.kind == "pdf.outline-item")
@@ -2254,9 +2120,10 @@ mod tests {
                 .all(|action| action.kind == OperationKind::View),
             "the outline is a live row with view operations only"
         );
-        let resolved =
-            ui::resources::PublishesResources::resource(&app, &state.doc, outline.id.as_str())
-                .expect("an eager outline item resolves");
+        let resolved = app
+            .document_row(outline.id.as_str())
+            .map(LiveRow::into_resource)
+            .expect("an eager outline item resolves");
         assert_eq!(
             resolved.id, outline.id,
             "an eager outline item is the published row"
@@ -2290,7 +2157,7 @@ mod tests {
             .first()
             .expect("durable reply is nested under its canonical comment");
         assert_eq!(reply.kind, "pdf.reply");
-        assert!(reply.actions.iter().any(|action| action.id == "open"));
+        assert!(reply.actions.iter().any(|action| action.id == "go-to"));
         let markup = <crate::resource::PdfViewer as ui::tilo_resource::Resource>::read(&state.doc)
             .expect("the record reads");
         assert!(
@@ -2333,8 +2200,9 @@ mod tests {
         find.search_query = "fixture".into();
         find.search_token = search_result_token("fixture", false, false);
         find.search_pages = (1..=SEARCH_RESULT_RESOURCE_LIMIT + 9).collect();
-        let find_resource = live_resources(&find)
+        let find_resource = live_rows(&find)
             .into_iter()
+            .map(LiveRow::into_resource)
             .find(|resource| resource.kind == "pdf.search")
             .expect("non-empty find query has a result resource");
         assert_eq!(find_resource.children.len(), SEARCH_RESULT_RESOURCE_LIMIT);
@@ -2346,12 +2214,12 @@ mod tests {
             SEARCH_RESULT_RESOURCE_LIMIT + 1
         );
         assert!(
-            resolve_live_resource(&find, &omitted_find).is_some(),
+            live_row(&find, &omitted_find).is_some(),
             "an omitted find hit remains addressable by its stable query/result id"
         );
         let mut stale = find;
         stale.search_token = search_result_token("other", false, false);
-        assert!(resolve_live_resource(&stale, &omitted_find).is_none());
+        assert!(live_row(&stale, &omitted_find).is_none());
 
         // Outline resource ids survive reordering but fail closed when changed.
         let mut ctx = resource_ctx(
@@ -2371,18 +2239,18 @@ mod tests {
             "duplicates retain identities"
         );
         for id in [&introduction, &first_security, &duplicate_security] {
-            assert!(resolve_live_resource(&ctx, id).is_some(), "outline id {id}");
+            assert!(live_row(&ctx, id).is_some(), "outline id {id}");
         }
         ctx.outline.insert(0, ("Preface".into(), 1, 0));
         assert!(
-            resolve_live_resource(&ctx, &first_security).is_some(),
+            live_row(&ctx, &first_security).is_some(),
             "inserting another bookmark does not rebind the saved action"
         );
-        assert!(resolve_live_resource(&ctx, &introduction).is_some());
-        assert!(resolve_live_resource(&ctx, &duplicate_security).is_some());
+        assert!(live_row(&ctx, &introduction).is_some());
+        assert!(live_row(&ctx, &duplicate_security).is_some());
         ctx.outline[1].1 = 3;
         assert!(
-            resolve_live_resource(&ctx, &introduction).is_none(),
+            live_row(&ctx, &introduction).is_none(),
             "a changed bookmark fails closed rather than opening another section"
         );
     }

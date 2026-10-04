@@ -1,40 +1,41 @@
 //! Disk Usage as a [`tilo_resource::Resource`]: scans and navigation are the
-//! surface's [`DiskUsageEffect`]s; recent directories are the shared
-//! document. A finished scan remembers its folder with
-//! [`DiskUsageAction::Remember`] through the framework dispatcher.
+//! surface's [`DiskUsageEffect`]s. The folders analyzed lately are paths on
+//! this device, so they are a device-local setting ([`RecentFolders`]),
+//! published as live rows beside the resource.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use ui::framework::{
-    Effect, EffectAnswer, EffectCx, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    RunMode, SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface, RunMode,
+    SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{Action, ActionError, ActionRegistry, ChangeKind};
-use ui::tilo_resource::{self, Doc, Invoke, ModelError, Resource};
+use ui::storage::{Scope, SettingsSchema};
+use ui::tilo_resource::{self, Doc, ModelError, NoAction, Resource};
 use ui::widget::Element;
 
 use crate::app::DiskUsageApp;
-use crate::doc::DiskUsageDoc;
 use crate::scan::ScanResult;
 
-/// Remember a directory the local scan just finished.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DiskUsageAction {
-    Remember { path: String },
+/// How many analyzed folders are remembered.
+const RECENT_KEPT: usize = 5;
+
+/// The folders analyzed on this device lately, newest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentFolders {
+    pub folders: Vec<PathBuf>,
 }
 
-impl Action for DiskUsageAction {
-    fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
-        let Self::Remember { path } = self;
-        DiskUsageDoc::remember(doc, std::path::Path::new(path));
-        Ok(())
-    }
+impl SettingsSchema for RecentFolders {
+    const SCOPE: Scope = Scope::DeviceLocal;
+}
 
-    /// A folder is remembered because a scan of it finished, not because
-    /// anyone edited the list: no undo step forgets it.
-    fn change_kind(&self) -> ChangeKind {
-        ChangeKind::Housekeeping
+impl RecentFolders {
+    /// `folder` first, then the others it was not, at most five.
+    pub fn remember(&mut self, folder: PathBuf) {
+        self.folders.retain(|kept| *kept != folder);
+        self.folders.insert(0, folder);
+        self.folders.truncate(RECENT_KEPT);
     }
 }
 
@@ -66,13 +67,8 @@ pub enum DiskUsageEffect {
     Home,
 }
 
-/// Recent directories remembered in the shared document.
-#[derive(Clone, Debug, Default)]
-pub struct DiskUsageState {
-    pub recent: Vec<PathBuf>,
-}
-
-/// The disk-usage analyzer resource.
+/// The disk-usage analyzer: the door its effects and live rows are
+/// published on. It keeps no document state.
 pub struct DiskUsage;
 
 impl Resource for DiskUsage {
@@ -80,35 +76,22 @@ impl Resource for DiskUsage {
     const LABEL: &'static str = "Disk Usage Analyzer";
     const ACTION_TYPE: &'static str = "disk_usage.action";
 
-    type State = DiskUsageState;
-    type Action = DiskUsageAction;
+    type State = ();
+    type Action = NoAction;
 
-    fn register(registry: &mut ActionRegistry) {
-        registry.register::<DiskUsageAction>(Self::ACTION_TYPE);
+    fn read(_doc: &Doc) -> Result<(), ModelError> {
+        Ok(())
     }
+}
 
-    fn read(doc: &Doc) -> Result<DiskUsageState, ModelError> {
-        Ok(DiskUsageState {
-            recent: DiskUsageDoc::recent(doc),
-        })
-    }
-
-    fn children(state: &Self::State) -> Vec<ui::tilo_actions::Resource> {
-        state
-            .recent
-            .iter()
-            .map(|path| {
-                let name = folder_name(path);
-                let mut resource = ui::tilo_actions::Resource::new(
-                    format!("disk-usage.recent:{}", path.display()),
-                    "disk-usage.recent",
-                    &name,
-                );
-                resource.actions.push(analyze(path).bound());
-                resource
-            })
-            .collect()
-    }
+/// One remembered folder, offered to analyze again.
+pub(crate) fn recent_row(path: &std::path::Path) -> LiveRow {
+    LiveRow::new(
+        format!("disk-usage.recent:{}", path.display()),
+        "disk-usage.recent",
+        folder_name(path),
+    )
+    .effect(&analyze(path))
 }
 
 /// The analyze effect for `path`.
@@ -169,45 +152,39 @@ impl ResourceApp for DiskUsageShell {
     }
 
     /// An analysis shows a made-up home folder instead of scanning the
-    /// machine the screenshot is taken on.
+    /// machine the screenshot is taken on; the home view lists two folders
+    /// scanned before.
     fn fixture(fixture: &mut Fixture<DiskUsage>) {
-        if fixture
-            .scenario()
-            .is_none_or(|name| name.starts_with("analysis"))
-        {
-            fixture.provide(ScanResult::sample());
+        match fixture.scenario() {
+            Some(name) if name.starts_with("home") => fixture.provide(RecentFolders {
+                folders: vec![
+                    PathBuf::from("/home/you/Projects/tilo"),
+                    PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
+                ],
+            }),
+            Some(name) if !name.starts_with("analysis") => {}
+            _ => fixture.provide(ScanResult::sample()),
         }
-    }
-
-    /// The home view lists two folders scanned before.
-    fn scenario(name: Option<&str>) -> Vec<Invoke<DiskUsage>> {
-        if !name.is_some_and(|name| name.starts_with("home")) {
-            return Vec::new();
-        }
-        [
-            PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
-            PathBuf::from("/home/you/Projects/tilo"),
-        ]
-        .iter()
-        .filter_map(|path| {
-            Invoke::apply(&DiskUsageAction::Remember {
-                path: path.to_string_lossy().into_owned(),
-            })
-            .ok()
-        })
-        .collect()
     }
 }
 
 impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
-    /// The remembered folders. A scan on screen is this machine's and stays.
-    fn present(&mut self, state: &std::rc::Rc<DiskUsageState>) {
-        self.recent.clone_from(&state.recent);
-    }
+    fn present(&mut self, _state: &std::rc::Rc<()>) {}
 
+    /// A capture shows its scenario's folders; a live window this device's,
+    /// remembering what it analyzes; a past version has none.
     fn attach(&mut self, cx: SurfaceCx<DiskUsage>) {
         self.immediate = cx.mode() == RunMode::Capture;
         self.dispatcher = Some(cx.dispatcher());
+        match cx.mode() {
+            RunMode::Capture => {
+                if let Some(recent) = cx.fixture::<RecentFolders>() {
+                    self.recent.clone_from(&recent.folders);
+                }
+            }
+            RunMode::Live => self.recents = Some(cx.settings::<RecentFolders>()),
+            RunMode::Past => {}
+        }
         if let Some(scan) = cx.fixture::<ScanResult>() {
             self.set_result((*scan).clone());
         }
@@ -238,7 +215,8 @@ impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
         }
     }
 
-    /// The common places, and the folders of the scan on screen.
+    /// The common places, the folders analyzed lately, and the folders of
+    /// the scan on screen.
     fn live_rows(&self) -> Vec<LiveRow> {
         self.folder_rows()
     }
@@ -263,12 +241,17 @@ mod tests {
         folder
     }
 
+    /// The folders this device remembers.
+    fn recent(app: &TestApp<DiskUsageShell>) -> Vec<PathBuf> {
+        app.settings::<RecentFolders>().get().folders
+    }
+
     /// Run frames until the scan a row started has shown and remembered
     /// `folder`.
     fn settle_until_recent(app: &mut TestApp<DiskUsageShell>, folder: &std::path::Path) {
         for _ in 0..600 {
             app.settle();
-            if app.state().recent.first().map(PathBuf::as_path) == Some(folder) {
+            if recent(app).first().map(PathBuf::as_path) == Some(folder) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -277,10 +260,10 @@ mod tests {
     }
 
     /// Navigation, the folders on screen and the remembered folders are one
-    /// published tree: the effects on the resource, the places as live rows,
-    /// the recents as its children, each analyzing through the same handler.
+    /// published tree: the effects on the resource, the places and recents
+    /// as live rows, each analyzing through the same handler.
     #[test]
-    fn analyzing_a_folder_shows_it_and_remembers_it_without_an_undo_step() {
+    fn analyzing_a_folder_shows_it_and_remembers_it_on_this_device() {
         let folder = scratch_folder("analyze");
         let mut app = TestApp::<DiskUsageShell>::new().unwrap();
         let surface = serde_json::to_string(&app.agent_surface()).unwrap();
@@ -299,13 +282,13 @@ mod tests {
         assert_eq!(answer["path"], folder.to_string_lossy().as_ref());
         assert!(answer["bytes"].as_u64().unwrap() >= 4096, "{answer}");
         app.settle();
-        assert_eq!(app.state().recent, std::slice::from_ref(&folder));
-        assert!(!app.undo(), "a remembered folder is no undo step");
+        assert_eq!(recent(&app), std::slice::from_ref(&folder));
+        assert!(app.versions().len() <= 1, "a remembered folder is no edit");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains("photos"), "{frame}");
 
-        // The scanned folder's entries are live rows; the recent folder is a
-        // child of the resource. Both analyze through the same handler.
+        // The scanned folder's entries and the recent folder are live rows.
+        // Both analyze through the same handler.
         let photos = folder.join("photos");
         let row = format!("disk-usage.folder:{}", photos.display());
         assert!(app.call_on(&row, "analyze", serde_json::json!({})).is_ok());
@@ -346,26 +329,20 @@ mod tests {
             folder.to_string_lossy().as_ref()
         );
         app.settle();
-        assert_eq!(app.state().recent, std::slice::from_ref(&folder));
+        assert_eq!(recent(&app), std::slice::from_ref(&folder));
         let _ = std::fs::remove_dir_all(&folder);
     }
 
     /// Every screenshot is the framework's capture: the home view lists the
-    /// scenario's remembered folders, an analysis shows the made-up scan
+    /// scenario's folders, an analysis shows the made-up scan
     /// instead of this machine's, and a narrow one gets a phone-sized window.
     #[test]
-    fn captures_stage_through_actions_and_fixtures() {
+    fn captures_stage_through_fixtures() {
         use ui::prelude::TestApp;
 
         let mut home = TestApp::<DiskUsageShell>::capture(Some("home-narrow")).unwrap();
         assert_eq!(home.harness().inspection().viewport, [560, 720]);
-        assert_eq!(
-            home.state().recent,
-            [
-                PathBuf::from("/home/you/Projects/tilo"),
-                PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
-            ]
-        );
+        assert!(recent(&home).is_empty(), "a capture remembers nothing");
         let frame = home.harness().inspection_json().unwrap();
         assert!(frame.contains("\"tilo\""), "{frame}");
 
@@ -374,7 +351,7 @@ mod tests {
         let frame = analysis.harness().inspection_json().unwrap();
         assert!(frame.contains("Projects"), "{frame}");
         assert!(
-            analysis.state().recent.is_empty(),
+            recent(&analysis).is_empty(),
             "a staged scan is not one this person made"
         );
 

@@ -1,7 +1,8 @@
 //! What Tube shows that the document does not hold, published beneath the
 //! resource as live rows: the open watch page with its comments, the fetched
 //! catalogue (videos, creators, playlists, the completed search), the
-//! person's watch history and the paired Grayjay devices.
+//! person's watch history and playback preferences, and the paired Grayjay
+//! devices.
 //!
 //! A row offers the effects bound to its entity (open *this* video). The
 //! edits on it — liking a video, queueing it, subscribing to its creator,
@@ -10,8 +11,9 @@
 
 use ui::framework::{EffectStatus, LiveRow};
 
-use crate::actions::{TubeEffect, comment_key, resource_label};
-use crate::model::{Route, TubeModel};
+use crate::action::SettingFlag;
+use crate::actions::{TubeEffect, comment_key, next_quality, resource_label};
+use crate::model::{Category, Route, Settings, SkipMode, TubeModel};
 use crate::sync::{PeerRecord, SyncStatus, SyncView};
 
 const MAX_ROWS: usize = 100;
@@ -161,6 +163,65 @@ fn search_results(model: &TubeModel) -> LiveRow {
     )
 }
 
+/// The person's playback preferences, `tube.settings`: flip each switch, and
+/// cycle the preferred quality and each segment category's handling.
+fn preferences(settings: &Settings) -> LiveRow {
+    let switches = SettingFlag::ALL
+        .into_iter()
+        .map(|flag| switch_row(settings, flag));
+    let segments = Category::ALL
+        .into_iter()
+        .map(|category| segment_row(settings, category));
+    switches
+        .chain([quality_row(settings)])
+        .chain(segments)
+        .fold(
+            LiveRow::new("tube.settings", "tube.settings", "Playback settings"),
+            LiveRow::row,
+        )
+}
+
+fn switch_row(settings: &Settings, flag: SettingFlag) -> LiveRow {
+    let enabled = flag.get(settings);
+    LiveRow::new(
+        format!("tube.setting:{}", flag.id()),
+        "tube.setting",
+        format!("{}: {}", flag.name(), if enabled { "on" } else { "off" }),
+    )
+    .effect(&TubeEffect::SetPreference {
+        preference: flag.id().to_owned(),
+        enabled: !enabled,
+    })
+}
+
+fn quality_row(settings: &Settings) -> LiveRow {
+    LiveRow::new(
+        "tube.setting:preferred-quality",
+        "tube.setting",
+        format!("Preferred quality: {}", settings.preferred_quality),
+    )
+    .effect(&TubeEffect::SetPreferredQuality {
+        quality: next_quality(&settings.preferred_quality),
+    })
+}
+
+fn segment_row(settings: &Settings, category: Category) -> LiveRow {
+    let stored = settings
+        .categories
+        .get(category.api_key())
+        .copied()
+        .unwrap_or(SkipMode::Skip);
+    LiveRow::new(
+        format!("tube.setting:sponsor-category:{}", category.api_key()),
+        "tube.setting",
+        format!("SponsorBlock {}: {}", category.label(), stored.label()),
+    )
+    .effect(&TubeEffect::SetSegmentHandling {
+        category: category.api_key().to_owned(),
+        mode: stored.next().key().to_owned(),
+    })
+}
+
 /// Grayjay device sync: sync now, and approve or revoke each device.
 fn devices(view: &SyncView) -> LiveRow {
     let unavailable = matches!(view.status, SyncStatus::Unavailable);
@@ -235,6 +296,7 @@ pub(crate) fn live_rows(model: &TubeModel, view: &SyncView) -> Vec<LiveRow> {
             ),
             history(model),
             search_results(model),
+            preferences(&model.settings),
             devices(view),
         ])
         .collect()
@@ -285,6 +347,19 @@ pub(crate) fn live_row(model: &TubeModel, view: &SyncView, id: &str) -> Option<L
             "playlist" => playlist_row(model, id.to_owned(), entity),
             _ => creator_row(model, id.to_owned(), entity),
         };
+    }
+    if id == "tube.setting:preferred-quality" {
+        return Some(quality_row(&model.settings));
+    }
+    if let Some(category) = id.strip_prefix("tube.setting:sponsor-category:") {
+        return Category::from_api_key(category)
+            .map(|category| segment_row(&model.settings, category));
+    }
+    if let Some(flag) = id
+        .strip_prefix("tube.setting:")
+        .and_then(SettingFlag::from_id)
+    {
+        return Some(switch_row(&model.settings, flag));
     }
     if let Some(device) = id.strip_prefix("tube.device:") {
         if matches!(view.status, SyncStatus::Unavailable) {

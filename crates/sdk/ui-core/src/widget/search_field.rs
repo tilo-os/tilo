@@ -8,8 +8,9 @@
 //! Built with [`SearchField::opens_palette`], the field becomes a
 //! non-editable affordance that raises the shared command-search shortcut
 //! `CommandPalette` instead: a click
-//! latches a request the host polls with [`SearchField::take_palette_request`]
-//! and opens its own `CommandPalette`. Search UI and ranking thus live in
+//! latches a request the host drains through [`Widget::take_search_request`]
+//! (or directly with [`SearchField::take_palette_request`]) and opens its own
+//! `CommandPalette`. Search UI and ranking thus live in
 //! one shared toolkit widget, not in every app's bespoke search bar.
 
 use crate::widget::{AppModel, ModelPath};
@@ -299,6 +300,12 @@ impl Widget for SearchField {
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         self.input.set_platform_conventions(conventions);
+    }
+
+    /// A launcher pill's activation reaches whichever host mounts the field,
+    /// without the app relaying it.
+    fn take_search_request(&mut self) -> bool {
+        self.take_palette_request()
     }
 
     #[allow(

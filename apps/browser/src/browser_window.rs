@@ -103,6 +103,14 @@ impl BrowserWindow {
         self.page.attach_dispatcher(dispatcher);
     }
 
+    /// Keep the page's downloads in this device's settings.
+    pub(crate) fn attach_downloads(
+        &mut self,
+        store: ui::storage::Settings<crate::downloads::Stored>,
+    ) {
+        self.page.attach_downloads(store);
+    }
+
     /// Keep the page's visits in the person's browsing history.
     pub(crate) fn attach_history(
         &mut self,
@@ -265,6 +273,7 @@ impl Widget for BrowserWindow {
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::widget::Continuable,
+        dyn ui::application_view::ApplicationViewState,
         dyn ui::widget::controls::ActionControls,
         dyn ui::component_lifecycle::ComponentLifecycle
     );
@@ -338,7 +347,7 @@ impl Widget for BrowserWindow {
                 style.inset = taffy::Rect {
                     left: length(0.0_f32),
                     right: length(0.0_f32),
-                    top: length(24.0_f32),
+                    top: length(theme.tokens.spacing.s6),
                     bottom: auto(),
                 };
                 let _ = taffy.set_style(hint, style);
@@ -663,6 +672,42 @@ impl Continuable for BrowserWindow {
     ) -> bool {
         self.page
             .restore_continuation_metadata(metadata, state, root)
+    }
+}
+
+/// Version of the page a window saves to show again when it reopens.
+const SAVED_PAGE_VERSION: u32 = 1;
+
+/// A reopened window shows the page it showed; the page is the window's own,
+/// kept with the window rather than in a file beside the app.
+impl ui::application_view::ApplicationViewState for BrowserWindow {
+    fn capture_application_view(
+        &self,
+    ) -> Result<Option<ui::application_view::ApplicationLocalView>, ui::view::ThawError> {
+        Ok(self
+            .page
+            .restorable_page()
+            .map(|payload| ui::application_view::ApplicationLocalView {
+                app_id: <crate::resource::BrowserShell as ui::framework::ResourceApp>::ID.into(),
+                version: SAVED_PAGE_VERSION,
+                payload,
+            }))
+    }
+
+    fn restore_application_view(
+        &mut self,
+        local: &ui::application_view::ApplicationLocalView,
+        _doc: &AutoCommit,
+    ) -> Result<ui::application_view::ApplicationFocusRestore, ui::view::ThawError> {
+        if local.version != SAVED_PAGE_VERSION || !self.page.restore_page(&local.payload) {
+            return Err(ui::view::ThawError::State(
+                "the saved page cannot be shown".into(),
+            ));
+        }
+        // The window shows a page again; the caret has no address to wait in.
+        self.focus_address = false;
+        self.dirty = true;
+        Ok(ui::application_view::ApplicationFocusRestore::Generic)
     }
 }
 
@@ -1061,6 +1106,42 @@ mod tests {
     }
 
     /// Window close and the download-exit choice.
+    #[test]
+    fn a_reopened_window_shows_its_page_and_a_private_one_keeps_none() {
+        use ui::application_view::ApplicationViewState as View;
+        let page = br#"{"url":"https://example.test/read?token=1"}"#;
+        let (mut first, _engine) = window();
+        assert!(first.page_mut().restore_page(page));
+        let saved = View::capture_application_view(&first)
+            .unwrap()
+            .expect("the window saves its page");
+        assert!(
+            !String::from_utf8_lossy(&saved.payload).contains("token"),
+            "a one-shot token in the query is not kept"
+        );
+
+        let (mut reopened, _engine) = window();
+        reopened.focus_address = true;
+        View::restore_application_view(&mut reopened, &saved, &AutoCommit::new()).unwrap();
+        assert!(!reopened.focus_address, "the window shows its page again");
+        assert_eq!(
+            reopened.page().restorable_page(),
+            first.page().restorable_page()
+        );
+
+        let mut private = BrowserWindow::new(
+            BrowserWidget::with_engine_mode(
+                PageEngine::new(),
+                true,
+                crate::browsing_mode::BrowsingMode::Private,
+            ),
+            false,
+        );
+        assert!(!private.page_mut().restore_page(page));
+        assert!(View::capture_application_view(&private).unwrap().is_none());
+        assert!(View::restore_application_view(&mut private, &saved, &AutoCommit::new()).is_err());
+    }
+
     #[test]
     fn window_close_waits_for_an_explicit_download_choice() {
         let running = WebViewEvent::DownloadUpdated {

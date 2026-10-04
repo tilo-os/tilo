@@ -6,14 +6,15 @@
 use std::rc::Rc;
 
 use ui::framework::{
-    Fixture, LaunchInput, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface, RunMode,
+    SurfaceCx, ViewCx,
 };
 use ui::record::RecordId;
-use ui::tilo_actions::{ActionAddress, ActionSpec, PermissionRequirement};
+use ui::tilo_actions::{ActionAddress, PermissionRequirement};
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{PDF_VIEWER_ACTION_TYPE, PdfViewerAction, register};
+use crate::actions::{PDF_VIEWER_ACTION_TYPE, PdfEffect, PdfViewerAction, register};
 use crate::app::PdfApp;
 use crate::doc::{PagePlanEntry, PdfDoc};
 use crate::model::{Annotation, Comment, Signature};
@@ -95,17 +96,13 @@ impl Resource for PdfViewer {
         crate::actions::markup_child(state, id)
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        crate::actions::document_local_operations()
-    }
-
     /// The markup people made, each entry opening the child it names.
     fn search(state: &PdfMarkup) -> Vec<SearchEntry> {
         let entry = |resource: String, title: String, text: String| SearchEntry {
             anchor: Some(resource.clone()),
             title,
             text,
-            action: Some(ActionAddress::new(&resource, "open")),
+            action: Some(ActionAddress::new(&resource, "go-to")),
             ..Default::default()
         };
         let mut entries: Vec<SearchEntry> = state
@@ -229,7 +226,7 @@ impl ResourceApp for PdfViewerShell {
 /// The role of a document's markup record beside the document's own.
 const MARKUP_ROLE: &str = "annotations";
 
-impl ResourceSurface<PdfViewer> for PdfApp {
+impl ResourceSurface<PdfViewer, PdfEffect> for PdfApp {
     fn present(&mut self, state: &Rc<PdfMarkup>) {
         self.adopt_resource_state(state);
     }
@@ -259,13 +256,28 @@ impl ResourceSurface<PdfViewer> for PdfApp {
     fn stage(&mut self, scenario: Option<&str>) {
         PdfApp::stage(self, scenario);
     }
+
+    fn effect(&mut self, effect: PdfEffect, cx: &mut EffectCx<PdfViewer, Self>) -> EffectAnswer {
+        match effect {
+            PdfEffect::Open { path } => self.open_effect(path, cx),
+            effect => self.answer_effect(&effect, || cx.reply()),
+        }
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.document_rows()
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.document_row(id)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::resources::PublishesResources;
     use ui::tilo_actions::OperationKind;
+    use ui::tilo_resource::Effect;
     use ui::widget::Widget;
 
     #[test]
@@ -299,20 +311,15 @@ mod tests {
             .iter()
             .map(|action| action.id.as_str())
             .collect();
-        for id in ["open", "duplicate", "delete", "move-down", "rotate-cw"] {
+        for id in ["go-to", "duplicate", "delete", "move-down", "rotate-cw"] {
             assert!(ids.contains(&id), "{ids:?}");
         }
     }
 
     #[test]
     fn the_surface_publishes_find_hits_beside_the_resource_never_a_document_root() {
-        let published = ui::tilo_resource::publish::<PdfViewer>(
-            "pdf.document:sample",
-            "PDF",
-            &PdfMarkup::default(),
-        );
-        assert_eq!(published.kind, "pdf.document");
-        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+        let specs = PdfEffect::specs();
+        let ids: Vec<&str> = specs.iter().map(|a| a.id.as_str()).collect();
         for expected in [
             "previous-page",
             "next-page",
@@ -325,15 +332,21 @@ mod tests {
         ] {
             assert!(
                 ids.contains(&expected),
-                "palette `{expected}` must ride local_operations via publish: {ids:?}"
+                "palette `{expected}` is a typed effect of the reader: {ids:?}"
             );
         }
-        let find = published
-            .actions
-            .iter()
-            .find(|action| action.id == "find")
-            .expect("find");
-        assert_eq!(find.kind, OperationKind::View);
+        let kind = |id: &str| {
+            specs
+                .iter()
+                .find(|action| action.id == id)
+                .map(|action| action.kind)
+        };
+        assert_eq!(kind("find"), Some(OperationKind::View));
+        assert_eq!(kind("open"), Some(OperationKind::Effect));
+        assert!(
+            !ids.contains(&"go-to") && !ids.contains(&"go-to-match"),
+            "navigation to a place is offered only bound to its row: {ids:?}"
+        );
 
         let mut app = crate::scenarios::sample_reader();
         let mut state = crate::scenarios::sample_state();
@@ -343,14 +356,16 @@ mod tests {
             app.find_match_count_for_test() > 0,
             "sample must yield find hits"
         );
-        let extras = app.resources(&state.doc);
+        let rows: Vec<tilo_actions::Resource> = app
+            .document_rows()
+            .into_iter()
+            .map(LiveRow::into_resource)
+            .collect();
         assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "pdf.document"),
+            rows.iter().all(|resource| resource.kind != "pdf.document"),
             "the surface never republishes pdf.document beside the resource"
         );
-        let hits = extras
+        let hits = rows
             .iter()
             .find(|resource| resource.kind == "pdf.search")
             .expect("the find slice");
@@ -363,36 +378,23 @@ mod tests {
                         && hit
                             .actions
                             .iter()
-                            .all(|action| action.kind == OperationKind::View)),
+                            .all(|action| action.kind == OperationKind::View
+                                && action.id == "go-to-match")),
             "find hits are navigable rows with view operations only"
         );
         let hit = &hits.children[0];
         assert_eq!(
-            app.resource(&state.doc, hit.id.as_str())
-                .map(|resolved| resolved.id),
-            Some(hit.id.clone()),
+            app.document_row(hit.id.as_str())
+                .map(|resolved| resolved.id().to_owned()),
+            Some(hit.id.as_str().to_owned()),
             "a hit beyond the listed page resolves by id"
-        );
-        let directory = app
-            .action_directory_resource_page(&state.doc, &[], 32)
-            .expect("directory page");
-        assert_eq!(
-            directory
-                .resources
-                .iter()
-                .map(|resource| resource.id.clone())
-                .collect::<Vec<_>>(),
-            extras
-                .iter()
-                .map(|resource| resource.id.clone())
-                .collect::<Vec<_>>()
         );
 
         app.stage_find_for_test("");
         assert!(
-            app.resources(&state.doc)
+            app.document_rows()
                 .iter()
-                .all(|resource| resource.kind != "pdf.search"),
+                .all(|row| !row.id().starts_with("pdf.search")),
             "no find slice without a query"
         );
     }

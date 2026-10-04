@@ -384,6 +384,12 @@ impl<R: Resource> Widget for Each<R> {
         })
     }
 
+    fn take_search_request(&mut self) -> bool {
+        self.rows
+            .iter_mut()
+            .any(|row| row.widget.take_search_request())
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         let mut dirty = std::mem::take(&mut self.structure_dirty);
         for row in &mut self.rows {

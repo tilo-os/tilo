@@ -5305,6 +5305,8 @@ impl FrameHarness {
                 invoker,
                 context: Some(context),
                 refused: None,
+                outstanding: std::collections::HashSet::new(),
+                deferred: None,
             }
         });
         let started = match &delivered {
@@ -5385,6 +5387,46 @@ impl FrameHarness {
         invocation: tilo_actions::InvocationId,
     ) -> &[tilo_actions::InvocationUpdate] {
         self.job_updates.get(&invocation).map_or(&[], Vec::as_slice)
+    }
+
+    /// Cancel the running job `invocation`, as its caller does from the
+    /// host: the operation is asked to stop and answers with what it ended
+    /// as, recorded in [`Self::job_updates`] like any other update. `None`
+    /// when no job of this harness runs under `invocation` or it has not
+    /// answered yet.
+    pub fn cancel_job(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        self.pump_component_wakes();
+        let target = self.bound_invocations.get(&invocation).cloned()?;
+        let update = crate::bound_dispatch::poll_resource_operation(
+            self.root.as_mut(),
+            &self.state.doc,
+            &target,
+            invocation,
+            true,
+        );
+        let update = match update {
+            Ok(Some(update)) => update,
+            Ok(None) => return None,
+            Err(error) => {
+                self.control_failures.push(format!("{error:?}"));
+                self.bound_invocations.remove(&invocation);
+                self.acting_for.remove(&invocation);
+                return None;
+            }
+        };
+        self.record_control_failure(&update);
+        if let Some(updates) = self.job_updates.get_mut(&invocation) {
+            updates.push(update.clone());
+        }
+        if update.is_terminal() {
+            self.bound_invocations.remove(&invocation);
+            self.acting_for.remove(&invocation);
+        }
+        self.relayout();
+        Some(update)
     }
 
     /// The resources the hosted component publishes, as its permissions let
