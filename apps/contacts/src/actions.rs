@@ -12,8 +12,8 @@
 //! replay path.
 //!
 //! This is the **mutation** side of Contacts. The **navigation** side is a
-//! typed view operation addressed by [`SearchProvider`](crate::search_provider)
-//! results; opening a search row is agent-capable without mutating the document.
+//! typed view operation addressed by the resource's search entries; opening a
+//! search row is agent-capable without mutating the document.
 //!
 //! The resource tree mirrors the data model: the book owns its contacts, and
 //! each contact exports the [`ActionSpec`]s Ctrl+K offers (rename, add-to-group,
@@ -1720,7 +1720,6 @@ pub(crate) fn import_conflict_row(token: &str, incoming_name: &str) -> ui::frame
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::ContactsApp;
     use crate::resource::{Contacts, sample_book};
     use automerge::AutoCommit;
     use tilo_actions::{ActionInput, LocalTransport};
@@ -1743,16 +1742,14 @@ mod tests {
     }
 
     /// The sample address book created in a fresh document through its
-    /// actions, plus the surface presenting it.
-    fn seeded() -> (ContactsApp, AutoCommit) {
+    /// actions.
+    fn seeded_doc() -> AutoCommit {
         let mut doc = AutoCommit::new();
         for contact in sample_book() {
             create_contact_action(&contact).apply(&mut doc).unwrap();
         }
         doc.commit();
-        let mut app = ContactsApp::new();
-        app.present_book(&Contacts::read(&doc).unwrap());
-        (app, doc)
+        doc
     }
 
     fn first_contact(doc: &AutoCommit) -> Contact {
@@ -1760,11 +1757,6 @@ mod tests {
             .into_iter()
             .next()
             .expect("the sample book is non-empty")
-    }
-
-    /// The sample address book as a document.
-    fn seeded_doc() -> AutoCommit {
-        seeded().1
     }
 
     /// The book `doc` holds as the framework publishes it.
@@ -1940,27 +1932,29 @@ mod tests {
         // Search addresses the exact view action in the live resource tree; it
         // does not mint a parallel navigation namespace.
         {
-            let (app, doc) = seeded();
-
-            // The search side finds the contact and names its exported action.
-            let providers = ui::search::capability::search_providers(&app);
-            assert_eq!(providers.len(), 1, "one contacts search provider");
-            let hits = providers[0].search("hopper");
-            let hit = hits
+            let doc = seeded_doc();
+            let entries = Contacts::search(&Contacts::read(&doc).unwrap());
+            let hit = entries
                 .iter()
-                .find(|r| r.title == "Grace Hopper")
-                .expect("the provider surfaces the real matching contact");
+                .find(|entry| entry.title == "Grace Hopper")
+                .expect("search surfaces the real contact");
+            assert!(hit.text.contains("US Navy"), "{:?}", hit.text);
             let id = ContactsDoc::list_contacts(&doc)
                 .into_iter()
                 .find(|contact| contact.display_name() == hit.title)
                 .expect("the result names a stored contact")
                 .id;
-            let address = hit.action_address().expect("search hit is canonical");
+            let address = hit.action.clone().expect("search hit is canonical");
             assert_eq!(address, open_contact_address(id));
             assert!(
                 tilo_actions::door::resolve(&resources_for(&doc), &address).is_some(),
                 "the address is exported to the palette, accessibility and agents"
             );
+            let group = entries
+                .iter()
+                .find(|entry| entry.title == "Group: Work")
+                .expect("groups are found too");
+            assert_eq!(group.action, Some(open_group_address("Work")));
         }
 
         // --- phase: export_contact_is_a_typed_sensitive_operation ---

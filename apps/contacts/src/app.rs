@@ -1196,9 +1196,6 @@ pub struct ContactsApp {
     /// this window submitted since, which the next presentation confirms or
     /// takes back.
     store: ContactStore,
-    /// Retained complete Ctrl+K catalogue. A provider clone is O(1), so opening
-    /// search never reindexes or clones the address book.
-    search_provider: crate::search_provider::ContactSearchProvider,
     selected: Option<ContactId>,
     mode: Mode,
     form: Option<EditForm>,
@@ -1333,10 +1330,8 @@ impl ContactsApp {
     /// The contacts surface. It shows the address book the resource
     /// presents and never fabricates content of its own.
     pub fn new() -> Self {
-        let store = ContactStore::new();
         Self {
-            search_provider: crate::search_provider::ContactSearchProvider::new(&store),
-            store,
+            store: ContactStore::new(),
             selected: None,
             mode: Mode::View,
             form: None,
@@ -1752,7 +1747,6 @@ impl ContactsApp {
             self.unconfirmed_save = None;
         }
         self.store.contacts.clone_from(&state.contacts);
-        self.refresh_search_provider();
         self.duplicate_candidate = crate::actions::duplicate_candidates(&self.store.contacts, 1)
             .into_iter()
             .next();
@@ -1838,12 +1832,6 @@ impl ContactsApp {
         self.relayout = true;
         self.dirty = true;
         Ok(())
-    }
-
-    fn refresh_search_provider(&mut self) {
-        if let Err(error) = self.search_provider.refresh(&self.store) {
-            self.show_toast(format!("Contacts search update failed: {error}"));
-        }
     }
 
     fn has_duplicate_candidate(&self) -> bool {
@@ -6302,10 +6290,7 @@ impl ContactsApp {
 }
 
 impl Widget for ContactsApp {
-    ui::provides!(
-        dyn ui::search::capability::SearchSource,
-        dyn ui::undo::UndoPoints
-    );
+    ui::provides!(dyn ui::undo::UndoPoints);
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CONTACTS_OPERATION_TYPE]
@@ -7623,16 +7608,6 @@ impl ui::undo::UndoPoints for ContactsApp {
                 f.ti.on_commit();
             }
         }
-    }
-}
-
-impl ui::search::capability::SearchSource for ContactsApp {
-    /// Fold the address book into the unified Ctrl+K palette: a snapshot
-    /// [`ContactSearchProvider`](crate::search_provider::ContactSearchProvider)
-    /// makes every contact findable there, alongside any actions the app
-    /// exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 }
 
