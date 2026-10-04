@@ -1879,10 +1879,10 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
         let image = OpenImage::from_path("/pictures/München-夏.png", 800, 400);
         app.show_photo(&PhotosDoc::put_image(&mut doc, &image));
         app.sync(&mut doc, &ROOT);
-        let before = app.search_provider.stats();
+        let before = app.library_index.stats();
         app.sync(&mut doc, &ROOT);
         assert_eq!(
-            app.search_provider.stats(),
+            app.library_index.stats(),
             before,
             "unchanged sync rebuilt search"
         );
@@ -1923,7 +1923,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
             },
         );
         let mut app = test_app();
-        app.search_provider.sync(&doc).unwrap();
+        app.library_index.sync(&doc).unwrap();
         app.library_query = "needle".into();
 
         app.advance_library_query();
@@ -1954,7 +1954,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
             },
         );
         app.sync(&mut doc, &ROOT);
-        assert!(app.search_provider.resource(&first_id).is_some());
+        assert!(app.library_index.resource(&first_id).is_some());
 
         let mut library = PhotosDoc::library(&doc);
         let second = LibraryPhoto::from_image(OpenImage::from_path("/photos/second.png", 20, 10));
@@ -1964,8 +1964,8 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
         app.force_search_refresh_error = true;
         app.sync(&mut doc, &ROOT);
 
-        assert!(app.search_provider.resource(&first_id).is_some());
-        assert!(app.search_provider.resource(&second_id).is_none());
+        assert!(app.library_index.resource(&first_id).is_some());
+        assert!(app.library_index.resource(&second_id).is_none());
         assert!(app.status.contains("kept its previous index"));
         let diagnostic = app
             .search_status_row()

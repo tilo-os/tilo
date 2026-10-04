@@ -1264,7 +1264,7 @@ pub struct PhotosApp {
     people_control_signature: String,
     people_pending: Rc<RefCell<Option<PeopleIntent>>>,
     canvas_state: CanvasState,
-    search_provider: crate::search::PhotosSearchProvider,
+    library_index: crate::search::LibraryIndex,
     /// Heads that produced the cached immutable/Arc-backed search catalogue.
     /// An unchanged `sync` must not rebuild a full-library index.
     search_heads: Vec<automerge::ChangeHash>,
@@ -2093,7 +2093,7 @@ impl PhotosApp {
             people_control_signature: String::new(),
             people_pending,
             canvas_state: CanvasState::Empty,
-            search_provider: crate::search::PhotosSearchProvider::empty(),
+            library_index: crate::search::LibraryIndex::empty(),
             search_heads: Vec::new(),
             search_refresh_error: None,
             #[cfg(test)]
@@ -7867,7 +7867,7 @@ impl PhotosApp {
         }
     }
 
-    fn refresh_search_provider(
+    fn refresh_library_index(
         &self,
         doc: &AutoCommit,
     ) -> Result<(), ui::search::SearchCatalogError> {
@@ -7875,12 +7875,12 @@ impl PhotosApp {
         if self.force_search_refresh_error {
             return Err(ui::search::SearchCatalogError::NonCanonicalResult);
         }
-        self.search_provider.sync(doc)
+        self.library_index.sync(doc)
     }
 
     fn advance_library_query(&mut self) {
         let query = self.library_query.trim().to_owned();
-        let generation = self.search_provider.generation();
+        let generation = self.library_index.generation();
         if query.is_empty() {
             self.library_query_indexed.clear();
             self.library_query_generation = generation;
@@ -7900,7 +7900,7 @@ impl PhotosApp {
             return;
         }
         let (ids, next, _inspected) = self
-            .search_provider
+            .library_index
             .photo_matches_page(&query, self.library_query_cursor.as_ref());
         self.library_query_matches.extend(ids);
         self.library_query_cursor = next;
@@ -14632,7 +14632,7 @@ impl Widget for PhotosApp {
         let heads = doc.get_heads();
         let document_changed = heads != self.search_heads;
         if document_changed {
-            self.search_refresh_error = match self.refresh_search_provider(doc) {
+            self.search_refresh_error = match self.refresh_library_index(doc) {
                 Ok(()) => None,
                 Err(error) => Some(format!("Photo search kept its previous index: {error}")),
             };
