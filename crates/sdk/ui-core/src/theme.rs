@@ -79,6 +79,7 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
         .set_ground(crate::text_render::TextGround::of(
             tokens.colors.surfaces.content,
         ));
+    tokens.typography.distinct_letters = document.type_.distinguishes_letters();
     let size = clamp_to(document.type_.base_size, &ThemeType::USABLE) / ThemeType::BASE_SIZE;
     tokens.typography.scale = tokens.typography.scale.scaled(size);
     let character = clamp_to(document.motion.character, &ThemeMotion::ADMITTED);
@@ -452,6 +453,7 @@ impl Theme {
             thick_caret: admitted && file.thick_caret,
             reduce_transparency: admitted && file.reduce_transparency,
             hyperlegible: admitted && file.hyperlegible,
+            distinct_letters: file.distinct_letters.filter(|_| admitted),
             text_scale: 1.0,
             ui_scale: 1.0,
             reduce_motion: reduce_motion_override,
