@@ -49,8 +49,8 @@ use ui::widget::{
     AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ColorSwatch, ColorSwatchFace,
     ColorSwatchPicker, ContextMenu as SharedContextMenu, ControlSize, DEFAULT_PADDING,
     DEFAULT_PAN_STEP as KEY_SCROLL_STEP, EmptyState, EmptyStateContent, ListRowFace, MenuItem,
-    PAN_SLOP, RowAction, RowLeading, SegmentedFace, SegmentedStyle, SmallContentAlign, TextInput,
-    ToggleGroup, ViewportState,
+    PAN_SLOP, RowAction, RowLeading, Segment, SegmentedFace, SegmentedStyle, SmallContentAlign,
+    TextInput, ToggleGroup, ViewportState,
 };
 
 use crate::doc::{PagePlanEntry, PdfDoc};
@@ -791,6 +791,9 @@ pub struct PdfApp {
     tool_strip_w: f64,
     fit_w: f64,
     zoom_w: f64,
+    /// The review panel's tab widths as their labels need them, full and
+    /// short, measured with the toolbar (`None` until then).
+    tab_widths: Option<[[f64; 3]; 2]>,
     /// The toolbar's zoom stepper, and whether it was built enabled.
     zoom_input: ui::widget::NumberInput,
     zoom_input_enabled: bool,
@@ -1284,6 +1287,7 @@ impl PdfApp {
             tool_strip_w: 0.0,
             fit_w: 0.0,
             zoom_w: 0.0,
+            tab_widths: None,
             zoom_input: zoom_stepper(100.0, false),
             zoom_input_enabled: false,
             empty_open_button: std::cell::Cell::new(Rect::ZERO),
@@ -5428,8 +5432,8 @@ impl Widget for PdfApp {
             })
     }
 
-    /// The marker-colour popover floats in the top layer, above the pages
-    /// and the panels.
+    /// The marker-colour popover and the context menu float in the top
+    /// layer, above the pages and the panels.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -5440,6 +5444,10 @@ impl Widget for PdfApp {
     ) {
         if let Some(popover) = self.marker_colours.as_mut() {
             popover.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        if let Some(menu) = self.context_menu.as_mut() {
+            menu.widget
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
     }
 

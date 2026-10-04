@@ -579,6 +579,21 @@ impl PdfApp {
     ) {
         self.shift_down = modifiers.state().shift_key();
         match event {
+            // A file dragged in from outside imports as pages: the page rail
+            // shows it will land while the file hovers the window.
+            WindowEvent::HoveredFile(_) if self.has_document && self.show_rail => {
+                self.page_sidebar.set_drop_target_armed(true);
+                self.dirty = true;
+            }
+            WindowEvent::HoveredFileCancelled => {
+                self.page_sidebar.set_drop_target_armed(false);
+                self.dirty = true;
+            }
+            WindowEvent::DroppedFile(path) if self.page_sidebar.is_drop_target_armed() => {
+                self.page_sidebar.set_drop_target_armed(false);
+                self.import_file(path, state);
+                *handled = true;
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.on_cursor_moved(event, p, scale_factor, modifiers, state);
@@ -2577,6 +2592,20 @@ mod event_tests {
             app.portal_rx.is_none(),
             "the portal channel clears after a cancel"
         );
+    }
+
+    /// A file dragged over the window rings the page rail as a drop target;
+    /// leaving the window without dropping clears it.
+    #[test]
+    fn a_file_dragged_in_arms_the_page_rail() {
+        let mut rig = Rig::new();
+        rig.app.has_document = true;
+        rig.app.show_rail = true;
+        let path = std::path::PathBuf::from("/tmp/pages.pdf");
+        rig.feed(Modifiers::default(), &WindowEvent::HoveredFile(path));
+        assert!(rig.app.page_sidebar.is_drop_target_armed());
+        rig.feed(Modifiers::default(), &WindowEvent::HoveredFileCancelled);
+        assert!(!rig.app.page_sidebar.is_drop_target_armed());
     }
 
     /// The sidebar / context-menu Delete on an annotation dispatches the

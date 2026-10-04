@@ -239,6 +239,20 @@ impl PdfApp {
             })
             .fold(0.0, f64::max);
         let zoom = self.zoom_input.preferred_width(theme, tr);
+        // Tabs pack from the leading edge, each as wide as its label.
+        let tab_widths = [false, true].map(|short| {
+            let segments = tab_labels(short).map(Segment::new);
+            let rects = SegmentedFace::partition_segments(
+                Rect::new(0.0, 0.0, f64::MAX / 4.0, 1.0),
+                &segments,
+                SegmentedStyle::Tabs,
+                ControlSize::Regular,
+                tr,
+                theme,
+            );
+            [0, 1, 2].map(|i| rects.get(i).map_or(0.0, Rect::width))
+        });
+        self.tab_widths = Some(tab_widths);
         let changed = (strip - self.tool_strip_w).abs() > 0.5
             || (fit - self.fit_w).abs() > 0.5
             || (zoom - self.zoom_w).abs() > 0.5;
@@ -321,32 +335,57 @@ impl PdfApp {
         self.tooltip_pending = hovering && !self.tooltip.is_visible();
     }
 
-    /// The review panel's tab strip: three equal tabs across the top of the
-    /// panel, one control tall.
+    /// The review panel's tab strip: across the top of the panel, one
+    /// control tall, its first label on the panel content's edge.
     fn sidebar_tab_strip(&self) -> Rect {
         let theme = &self.layout_theme;
         let sb = self.sidebar_panel();
         let h = SegmentedFace::height(ControlSize::Regular, theme);
         let top = sb.y0 + f64::from(theme.tokens.spacing.s2);
-        Rect::new(sb.x0, top, sb.x1, top + h)
+        let inset = self.panel_inset();
+        Rect::new(sb.x0 + inset, top, sb.x1 - inset, top + h)
     }
 
+    /// Whether the tabs use their short labels: the full ones do not fit.
+    fn sidebar_tabs_short(&self) -> bool {
+        self.tab_widths
+            .is_some_and(|[full, _]| full.iter().sum::<f64>() > self.sidebar_tab_strip().width())
+    }
+
+    /// The tabs packed from the strip's leading edge, each as wide as its
+    /// label (equal thirds until the labels are measured).
     fn sidebar_tab_rects(&self) -> [(SidebarTab, Rect); 3] {
         let strip = self.sidebar_tab_strip();
-        let w = strip.width() / 3.0;
-        let seg = |i: f64| {
-            Rect::new(
-                strip.x0 + w * i,
-                strip.y0,
-                strip.x0 + w * (i + 1.0),
-                strip.y1,
-            )
+        let widths = match self.tab_widths {
+            Some([full, short]) => {
+                if self.sidebar_tabs_short() {
+                    short
+                } else {
+                    full
+                }
+            }
+            None => [strip.width() / 3.0; 3],
         };
+        let mut x = strip.x0;
         [
-            (SidebarTab::Comments, seg(0.0)),
-            (SidebarTab::Outline, seg(1.0)),
-            (SidebarTab::Signatures, seg(2.0)),
+            SidebarTab::Comments,
+            SidebarTab::Outline,
+            SidebarTab::Signatures,
         ]
+        .into_iter()
+        .zip(widths)
+        .map(|(tab, w)| {
+            let rect = Rect::new(x, strip.y0, (x + w).min(strip.x1), strip.y1);
+            x = rect.x1;
+            (tab, rect)
+        })
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap_or([
+            (SidebarTab::Comments, Rect::ZERO),
+            (SidebarTab::Outline, Rect::ZERO),
+            (SidebarTab::Signatures, Rect::ZERO),
+        ])
     }
 
     /// The panel the review sidebar's contents stand on: the whole column
@@ -495,13 +534,9 @@ impl PdfApp {
         }
         self.draw_toolbar(scene, base, tr, theme);
         self.stage_shots_context_menu();
-        // Context menu + tooltip composite above everything else. File
+        // The context menu paints in the top layer (`draw_overlay`). File
         // open/save is the host desktop's portal picker (HIG §5), so there is
         // no in-app dialog to draw here.
-        if let Some(menu) = self.context_menu.as_mut() {
-            menu.widget
-                .draw(scene, base, tr, theme, &PresenceCtx::empty());
-        }
         self.draw_tooltip(scene, base, tr, theme);
         // A transient toast (save confirmation, copy confirmation) on top.
         self.draw_toast(scene, base, tr, theme);
@@ -1825,10 +1860,7 @@ impl PdfApp {
         // Tabs.
         let tab_rects = self.sidebar_tab_rects();
         let rects: Vec<Rect> = tab_rects.iter().map(|(_, r)| *r).collect();
-        let full = tab_labels(false);
-        let short = SegmentedFace::intrinsic_width(&full, ControlSize::Regular, tr, theme)
-            > self.sidebar_tab_strip().width();
-        let labels = tab_labels(short);
+        let labels = tab_labels(self.sidebar_tabs_short());
         let selected = tab_rects
             .iter()
             .position(|(tab, _)| *tab == self.sidebar_tab)
@@ -2271,19 +2303,14 @@ impl PdfApp {
             }
 
             // A comment is an object (it opens its markup on the page): a
-            // card. The thread of the markup you have selected carries the
-            // ring in your colour, the colour of that markup's frame on the
-            // page; its surface stays the card's. While one of its fields is
-            // being written, that field carries the ring instead.
-            let writing = self.is_editing(&EditTarget::CommentBody(cm.id.clone()))
-                || self.is_editing(&EditTarget::Reply(cm.id.clone()));
-            let face = CardFace::new()
-                .pressable()
-                .interaction(ui::widget::Interaction {
+            // card. The thread of the markup you have selected is the selected
+            // card.
+            let face = CardFace::new().pressable().selected(selected).interaction(
+                ui::widget::Interaction {
                     hovered: card.contains(self.last_mouse),
-                    focused: selected && !writing,
                     ..Default::default()
-                });
+                },
+            );
             let ctx = &mut PaintCtx::new(scene, base, tr, theme);
             face.paint(ctx, card);
             let card_body = face.body_rect(ctx.text, ctx.theme, card);
@@ -2678,12 +2705,9 @@ impl PdfApp {
         );
 
         // Type / Draw: a segmented control.
-        let half = geo.mode.width() / 2.0;
-        let seg_rects = [
-            Rect::new(geo.mode.x0, geo.mode.y0, geo.mode.x0 + half, geo.mode.y1),
-            Rect::new(geo.mode.x0 + half, geo.mode.y0, geo.mode.x1, geo.mode.y1),
-        ];
         let seg_labels = ["Type", "Draw"];
+        let seg_rects =
+            SegmentedFace::partition(geo.mode, &seg_labels, ControlSize::Regular, tr, theme);
         let sel = usize::from(self.sig_mode == SigMode::Draw);
         ToggleGroup::paint(
             scene,
@@ -2693,10 +2717,9 @@ impl PdfApp {
             &SegmentedFace::new(&seg_rects, &seg_labels, sel)
                 .hovered(seg_rects.iter().position(|r| r.contains(self.last_mouse))),
         );
-        out.hits
-            .push((SidebarHit::SigMode(SigMode::Type), seg_rects[0]));
-        out.hits
-            .push((SidebarHit::SigMode(SigMode::Draw), seg_rects[1]));
+        for (mode, rect) in [SigMode::Type, SigMode::Draw].into_iter().zip(&seg_rects) {
+            out.hits.push((SidebarHit::SigMode(mode), *rect));
+        }
 
         // The compose well: a name field (Type) or a draw pad (Draw).
         self.sig_pad_rect = Rect::ZERO;
