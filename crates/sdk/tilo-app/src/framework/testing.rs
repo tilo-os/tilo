@@ -979,6 +979,57 @@ pub fn dispatcher<R: Resource>(app_id: &'static str) -> super::Dispatcher<R> {
     super::Dispatcher::new(app_id, R::KIND, false, Some(AUTHOR))
 }
 
+/// Resolve what `dispatcher` ([`dispatcher`]) queued since the last call —
+/// its actions, typed values and groups — onto `doc` as a host does after an
+/// event, as confirmed: each invocation one step, attributed to the test
+/// author. An action its resource refuses (its clip is gone) changes
+/// nothing and is reported through [`Dispatcher::refused`], as the host
+/// reports it. Returns what each applied invocation applied, in order: one
+/// entry per undo step (a group's entry holds all of its actions).
+///
+/// # Errors
+/// Returns the first invocation that does not build, and an invocation of
+/// something other than the resource's own actions (an effect), which only
+/// a host runs.
+pub fn resolve<R: Resource>(
+    dispatcher: &super::Dispatcher<R>,
+    doc: &mut tilo_resource::Doc,
+) -> Result<Vec<Vec<R::Action>>, String> {
+    let mut applied = Vec::new();
+    while let Some(invocation) = dispatcher.take() {
+        if invocation.address.resource != dispatcher.resource_id() {
+            return Err(format!(
+                "`{}` on `{}` is not an action of {}",
+                invocation.address.action,
+                invocation.address.resource,
+                R::LABEL
+            ));
+        }
+        let now_ms = tilo_resource::origin_now_ms();
+        let actions = if invocation.address.action == tilo_resource::GROUP {
+            tilo_resource::group::build_group::<R>(&invocation.arguments, now_ms)?.actions
+        } else {
+            vec![tilo_resource::build_action::<R>(
+                &invocation.address.action,
+                &invocation.arguments,
+                now_ms,
+            )?]
+        };
+        let mut refused = None;
+        for action in &actions {
+            if let Err(error) = dispatcher.apply_now(doc, action) {
+                refused = Some(error.to_string());
+                break;
+            }
+        }
+        match refused {
+            Some(reason) => dispatcher.refuse(&invocation.address.action, reason),
+            None => applied.push(actions),
+        }
+    }
+    Ok(applied)
+}
+
 impl<A: ResourceApp> Drop for HeadlessApp<A> {
     fn drop(&mut self) {
         let _ = self.close();
