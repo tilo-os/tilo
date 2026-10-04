@@ -49,7 +49,6 @@ jobs:
           - arch: aarch64
             runner: runner-arm64
     env:
-      CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '4'
       CARGO_TERM_COLOR: never

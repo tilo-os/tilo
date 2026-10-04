@@ -118,6 +118,12 @@ class TypedTextTests(unittest.TestCase):
         self.assertEqual(CLIENT.text_reply("('it\\'s, twice!',)"), "it's, twice!")
         self.assertIsNone(CLIENT.text_reply("Error: GDBus.Error"))
 
+    def test_property_replies_read_back_exactly(self):
+        self.assertEqual(CLIENT.property_text("(<'Level 2'>,)\n"), "Level 2")
+        self.assertEqual(CLIENT.property_text("(< 'Level 2' >,)"), "Level 2")
+        self.assertEqual(CLIENT.property_text("(<''>,)"), "")
+        self.assertIsNone(CLIENT.property_text("Error: GDBus.Error"))
+
 
 class LaunchpadCardTests(unittest.TestCase):
     def run_card(self, opened_root: str) -> tuple[str, int]:
@@ -144,6 +150,23 @@ class LaunchpadCardTests(unittest.TestCase):
         with self.subTest(phase="another app is not the card's"):
             with self.assertRaisesRegex(CLIENT.GateError, "not Notes"):
                 self.run_card("calendar")
+
+
+class AppDrivingTests(unittest.TestCase):
+    def test_names_are_read_from_gdbus_variants(self):
+        tree = {
+            "/root": "(<'App Store'>,)",
+            "/a": "(<'Update all'>,)",
+            "/b": "(<''>,)",
+            "/c": "(<'Settings, offered by a test registry'>,)",
+        }
+        original = CLIENT.AtspiClient.tree
+        CLIENT.AtspiClient.tree = lambda self, limit=0: tree
+        try:
+            names = CLIENT.app_names("unix:path=/x", ":1.2")
+        finally:
+            CLIENT.AtspiClient.tree = original
+        self.assertEqual(names, ["App Store", "Update all", "Settings, offered by a test registry"])
 
 
 if __name__ == "__main__":

@@ -1846,6 +1846,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     xwayland-satellite \
     waypipe \
     virtiofsd \
+    vhost-device-vsock \
     skopeo \
     virt-viewer \
     xorriso \
