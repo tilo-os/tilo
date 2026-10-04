@@ -35,9 +35,15 @@
 //! Variant options: `label = "…"` (else the first doc line), `job` (runs in
 //! the background and reports progress, then its result), `cancellable`
 //! (a job the caller may cancel), `returns` (answers with a JSON value),
-//! `destructive` (asks for confirmation) and `permission = "read"` (any
-//! participant may invoke it; the default needs write access). Field
+//! `destructive` (asks for confirmation), `view` (changes only what this
+//! window shows: a page, a panel; published as a view operation that any
+//! participant may invoke) and `permission = "read"` (any participant may
+//! invoke it; the default needs write access, a view's read access). Field
 //! `#[param("…")]` describes a parameter.
+//!
+//! An effect bound to one thing a view shows — analyze *this* folder, cancel
+//! *that* print job — is [`Effect::operation`]: the effect with its
+//! arguments fixed, offered on that thing's published row.
 
 use tilo_actions::{
     ActionContract, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, ExecutionMode,
@@ -77,6 +83,44 @@ pub trait Effect: Sized + 'static {
             .collect()
     }
 
+    /// This effect with its arguments fixed, labelled `label`: the operation
+    /// a published row offers for the one thing it names (a folder, a print
+    /// job). Invoking it takes no arguments and reaches the same handler as
+    /// the effect's declared action.
+    fn operation(&self, label: impl Into<String>) -> ActionSpec {
+        let id = self.id();
+        let declared = Self::declarations().into_iter().find(|decl| decl.id == id);
+        let kind = declared
+            .as_ref()
+            .map_or(OperationKind::Effect, |decl| decl.kind);
+        let fixed = EncodedAction::encode_operation(
+            Self::OPERATION,
+            &Payload {
+                effect: id.to_owned(),
+                args: self.arguments(),
+            },
+        )
+        .unwrap_or_else(|_| EncodedAction {
+            type_id: Self::OPERATION.to_owned(),
+            payload: Vec::new(),
+        });
+        let mut spec = ActionSpec::typed_operation(
+            id,
+            label,
+            "",
+            kind,
+            Self::OPERATION,
+            Vec::new(),
+            move |_| fixed.clone(),
+        );
+        if let Some(declared) = declared {
+            let full = declared.spec(Self::OPERATION);
+            spec.description = full.description;
+            spec.contract = full.contract;
+        }
+        spec
+    }
+
     /// Decode one invocation's payload, as the operation's specs encode it.
     ///
     /// # Errors
@@ -107,6 +151,9 @@ pub struct EffectDecl {
     /// Asks for confirmation: deletes, overwrites, sends.
     pub destructive: bool,
     pub permission: PermissionRequirement,
+    /// [`OperationKind::View`] for an effect that changes only what the
+    /// window shows, else [`OperationKind::Effect`].
+    pub kind: OperationKind,
 }
 
 /// How an effect answers its caller.
@@ -128,7 +175,7 @@ impl EffectDecl {
             id,
             self.label,
             self.label,
-            OperationKind::Effect,
+            self.kind,
             operation,
             self.params.clone(),
             move |args| {
@@ -152,6 +199,8 @@ impl EffectDecl {
             permission: self.permission,
             risk: if self.destructive {
                 RiskLevel::Destructive
+            } else if self.kind == OperationKind::View {
+                RiskLevel::None
             } else {
                 RiskLevel::Low
             },
@@ -264,13 +313,16 @@ mod tests {
         },
         #[effect(label = "Wipe", job, cancellable, destructive)]
         Wipe { passes: u32 },
+        /// Show the archive.
+        #[effect(view)]
+        ShowArchive,
     }
 
     #[test]
     fn a_derived_vocabulary_publishes_each_variant_and_round_trips_through_its_spec() {
         let specs = Sample::specs();
         let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(ids, ["reload", "rename-thing", "wipe"]);
+        assert_eq!(ids, ["reload", "rename-thing", "wipe", "show-archive"]);
 
         let rename = &specs[1];
         assert_eq!(rename.label, "Rename a thing");
@@ -313,6 +365,37 @@ mod tests {
         );
         assert!(Sample::decode("wipe", &serde_json::Map::new()).is_err());
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
+    }
+
+    #[test]
+    fn a_view_effect_is_a_view_operation_any_participant_may_invoke() {
+        let specs = Sample::specs();
+        let show = &specs[3];
+        assert_eq!(show.kind, OperationKind::View);
+        assert_eq!(show.contract.permission, PermissionRequirement::Read);
+        assert_eq!(show.contract.risk, RiskLevel::None);
+        assert_eq!(specs[0].kind, OperationKind::Effect);
+        assert_eq!(specs[0].contract.permission, PermissionRequirement::Write);
+    }
+
+    #[test]
+    fn an_effect_with_fixed_arguments_is_an_operation_without_parameters() {
+        let wipe = Sample::Wipe { passes: 3 };
+        let spec = wipe.operation("Wipe three times");
+        assert_eq!(spec.id, "wipe");
+        assert_eq!(spec.label, "Wipe three times");
+        assert!(spec.params().is_empty());
+        assert_eq!(spec.contract.risk, RiskLevel::Destructive);
+        assert_eq!(
+            spec.contract.execution,
+            ExecutionMode::Background { cancellable: true }
+        );
+        let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(encoded.type_id, "test.effects");
+        assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), wipe);
+
+        let show = Sample::ShowArchive.operation("Archive");
+        assert_eq!(show.kind, OperationKind::View);
     }
 
     #[test]

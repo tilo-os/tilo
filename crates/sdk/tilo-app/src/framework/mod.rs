@@ -138,7 +138,11 @@
 //!   [`EffectCx`] ([`thread`](EffectCx::thread), [`spawn`](EffectCx::spawn),
 //!   [`reply`](EffectCx::reply)): it reports progress, may be cancelled, and
 //!   finishes on the UI thread, changing the document with ordinary actions
-//!   and answering its caller. Effects never run in History mode.
+//!   and answering its caller. Effects never run in History mode. An effect
+//!   that changes only what the window shows (open a page) is declared
+//!   `#[effect(view)]`, a view operation any participant may invoke; one
+//!   bound to a single thing a live row names (analyze this folder) is
+//!   offered on the row as [`Effect::operation`](tilo_resource::Effect::operation).
 //! * **Projections** — an outside consequence an action recorded in the
 //!   document (an outbox, a filesystem operation, a device's configuration)
 //!   — are drained with [`ViewCx::drain`]: the framework runs the drain in
