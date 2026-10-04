@@ -89,7 +89,7 @@ use tilo_desktop_model::{DesktopTree, WorkspaceTaskStatus};
 struct AuthorizedDocumentRoute {
     artifact: ArtifactId,
     channel: collab_types::ChannelId,
-    payload: collab_types::WholeDocumentPayload,
+    payload: collab_types::RoutedDocumentPayload,
 }
 
 const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
@@ -661,15 +661,21 @@ fn admit_verified_join_at(
     let principal_id = principal_id_for_root(verified.user_public_key);
     // The person room has no roster to consult: its members are, by the
     // room id's derivation, exactly the devices this root certified, each
-    // acting as the room's owner. Any other room id is a workspace.
+    // acting as the room's owner — a foreign device with the foreign-device
+    // cap's role, there as in any room. Any other room id is a workspace.
     if verified.owns_person_room(&route.cluster_id) {
+        let role = if verified.capped {
+            foreign_device_role(CapRole::Owner, &[], now)
+        } else {
+            CapRole::Owner
+        };
         return Ok(AdmittedJoinIdentity {
             host_scope: None,
             worker_registration: None,
             certificate: None,
             verified,
             principal_id,
-            role: CapRole::Owner,
+            role,
             display_handle: None,
             agent_id: None,
         });
@@ -5268,7 +5274,7 @@ impl CapnpBrokerState {
                 "certified document operation does not match its joined route".into(),
             ));
         }
-        let payload = collab_types::validate_whole_document_payload_route(
+        let payload = collab_types::validate_document_payload_route(
             &route.app_id,
             &route.cluster_id,
             &route.record_id,
@@ -5280,12 +5286,15 @@ impl CapnpBrokerState {
             ))
         })?;
         let channel = match &payload {
-            collab_types::WholeDocumentPayload::Cleartext(_) => collab_types::document_channel_id(
-                &route.app_id,
-                &route.cluster_id,
-                &route.record_id,
-            ),
-            collab_types::WholeDocumentPayload::Encrypted { channel, .. } => *channel,
+            collab_types::RoutedDocumentPayload::Cleartext(_)
+            | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
+                collab_types::document_channel_id(
+                    &route.app_id,
+                    &route.cluster_id,
+                    &route.record_id,
+                )
+            }
+            collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
         };
         let broker_channels = self.broker_channels.lock().map_err(|_| {
             capnp::Error::failed("collaboration governance state is unavailable".into())
@@ -5297,11 +5306,12 @@ impl CapnpBrokerState {
         }
         drop(broker_channels);
         if admitted.agent_id.is_none() && admitted.verified.owns_person_room(&route.cluster_id) {
-            // The owner of the person room holds every verb on its records;
-            // there is no workspace policy to narrow it.
-            if !role_permits(CapRole::Owner, ArtifactKind::Note, envelope.op_class) {
+            // The person room's devices hold the role their admission gave
+            // them (owner, or a foreign device's cap); there is no workspace
+            // policy to narrow it further.
+            if !role_permits(admitted.role, ArtifactKind::Note, envelope.op_class) {
                 return Err(capnp::Error::failed(
-                    "the person room's owner may not perform this document action".into(),
+                    "this device may not perform this document action in the person room".into(),
                 ));
             }
             return Ok(AuthorizedDocumentRoute {
@@ -8930,14 +8940,15 @@ fn handle_authorized_signed_op_send(
     debug_assert_eq!(
         authorized.channel,
         match &authorized.payload {
-            collab_types::WholeDocumentPayload::Cleartext(_) => {
+            collab_types::RoutedDocumentPayload::Cleartext(_)
+            | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
                 collab_types::document_channel_id(
                     &route.app_id,
                     &route.cluster_id,
                     &route.record_id,
                 )
             }
-            collab_types::WholeDocumentPayload::Encrypted { channel, .. } => *channel,
+            collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
         }
     );
     handle_signed_op_send_for_artifact(
@@ -12793,7 +12804,7 @@ pub mod tests {
             .expect("broker authorizes signed clear metadata without decrypting");
         assert!(matches!(
             authorized.payload,
-            collab_types::WholeDocumentPayload::Encrypted { channel, epoch: 7 }
+            collab_types::RoutedDocumentPayload::Encrypted { channel, epoch: 7 }
                 if channel == expected_channel
         ));
         handle_signed_op_send(&state, 1, &route, &admitted, encrypted.clone());
@@ -12866,6 +12877,20 @@ pub mod tests {
         assert!(
             admit_verified_join(&membership.read(), &route, verified_device(&stranger)).is_err(),
             "another root's device never joins this person's room"
+        );
+        let foreign = admit_verified_join(
+            &membership.read(),
+            &route,
+            VerifiedJoinIdentity {
+                capped: true,
+                ..own_device
+            },
+        )
+        .expect("the root's foreign device joins its person room");
+        assert_eq!(
+            foreign.role,
+            CapRole::Editor,
+            "a foreign device keeps the foreign-device cap in the person room too"
         );
         let strangers_room = CrdtRoute::record(
             "so.tilo.tube",

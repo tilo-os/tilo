@@ -3745,9 +3745,9 @@ impl Drop for SettingsLink {
 
 fn settings_view(
     view: &runtime_collab::SettingsView,
-) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+) -> Result<(u64, serde_json::Map<String, serde_json::Value>), String> {
     match serde_json::from_slice(&view.document_json) {
-        Ok(serde_json::Value::Object(view)) => Ok(view),
+        Ok(serde_json::Value::Object(document)) => Ok((view.revision, document)),
         _ => Err("the shell's settings view is not a JSON object".into()),
     }
 }
@@ -3796,6 +3796,7 @@ async fn link_settings(
             return None;
         }
     };
+    settings.linked();
     let follower = {
         let handle = handle.clone();
         let settings = Arc::clone(&settings);
@@ -3812,8 +3813,8 @@ async fn link_settings(
                 };
                 after = view.revision;
                 match settings_view(&view) {
-                    Ok(view) => {
-                        if settings.received(view) {
+                    Ok((revision, view)) => {
+                        if settings.received(revision, view) {
                             wake.wake();
                         }
                     }

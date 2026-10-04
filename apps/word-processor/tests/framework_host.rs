@@ -683,3 +683,58 @@ fn an_edit_bound_to_the_caret_is_invoked_on_the_document() {
     app.harness().relayout();
     assert_eq!(paragraphs(&app), ["Hello world"]);
 }
+
+/// Two devices that each open the same file before they have synced create
+/// its record each, and converge on one document: the file's content once,
+/// and what each of them wrote.
+#[test]
+fn two_sessions_creating_one_files_record_converge_on_one_document() {
+    ui::i18n::I18nManager::init("en-US");
+    let directory = tempfile::tempdir().unwrap();
+    let report = directory.path().join("report.md");
+    std::fs::write(&report, "# Report\n\nOur committee met.\n").unwrap();
+    let report = report.to_string_lossy().into_owned();
+
+    let mut here = TestApp::<WordProcessorApp>::launched(&[&report]).unwrap();
+    let mut there = TestApp::<WordProcessorApp>::launched(&[&report]).unwrap();
+    assert_eq!(here.record(), there.record());
+    here.harness().type_text("Here: ");
+    there.harness().key("End");
+    there.harness().type_text(" There.");
+    let mut theirs = there.peer_document();
+    here.merge_peer(&mut theirs).unwrap();
+    let merged = paragraphs(&here);
+    assert_eq!(merged.len(), 2, "the file's paragraphs once: {merged:?}");
+    assert!(merged[0].starts_with("Here: "), "{merged:?}");
+    assert!(merged[0].contains("Report"), "{merged:?}");
+    assert!(merged[0].ends_with(" There."), "{merged:?}");
+}
+
+/// A file changed elsewhere since its record last read or wrote it is read
+/// again when it is opened; one saved from here, or untouched, is not.
+#[test]
+fn reopening_a_file_changed_elsewhere_reads_it_again() {
+    ui::i18n::I18nManager::init("en-US");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("notes.md");
+    std::fs::write(&path, "First draft\n").unwrap();
+    let file = path.to_string_lossy().into_owned();
+
+    let mut app = TestApp::<WordProcessorApp>::launched(&[&file]).unwrap();
+    app.harness().type_text("Edited: ");
+    let app = app.relaunch(&[&file]).unwrap();
+    assert_eq!(
+        paragraphs(&app),
+        ["Edited: First draft"],
+        "an unchanged file leaves the record as it is"
+    );
+
+    std::fs::write(&path, "Rewritten elsewhere\n").unwrap();
+    let mut app = app.relaunch(&[&file]).unwrap();
+    assert_eq!(paragraphs(&app), ["Rewritten elsewhere"]);
+    assert!(
+        app.undo(),
+        "reading the file again is an edit Undo takes back"
+    );
+    assert_eq!(paragraphs(&app), ["Edited: First draft"]);
+}
