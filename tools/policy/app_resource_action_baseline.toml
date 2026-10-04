@@ -20,9 +20,7 @@
 
 [ratchets.app_action_host]
 "apps/api-tester/src/resource.rs" = 2
-"apps/backups/src/resource.rs" = 2
 "apps/browser/src/resource.rs" = 2
-"apps/calculator/src/resource.rs" = 1
 "apps/calendar/src/resource.rs" = 1
 "apps/camera/src/resource.rs" = 2
 "apps/chat/src/resource.rs" = 2
@@ -30,28 +28,22 @@
 "apps/code-editor/src/resource.rs" = 2
 "apps/contacts/src/resource.rs" = 2
 "apps/diffmerge/src/resource.rs" = 2
-"apps/disk-usage/src/resource.rs" = 1
 "apps/ebook/src/resource.rs" = 2
 "apps/feeds/src/resource.rs" = 2
 "apps/file-explorer/src/resource.rs" = 2
 "apps/git-client/src/resource.rs" = 2
-"apps/hex-editor/src/resource.rs" = 1
 "apps/imager/src/resource.rs" = 2
 "apps/logs/src/resource.rs" = 2
 "apps/mail/src/resource.rs" = 2
-"apps/maps/src/resource.rs" = 2
 "apps/music/src/resource.rs" = 2
 "apps/notes/src/resource.rs" = 1
 "apps/osk/src/resource.rs" = 2
 "apps/pdf-viewer/src/resource.rs" = 2
 "apps/photos/src/resource.rs" = 2
-"apps/print-centre/src/resource.rs" = 1
-"apps/remote/src/resource.rs" = 2
 "apps/settings/src/resource.rs" = 2
 "apps/sheets/src/resource.rs" = 1
 "apps/slides/src/app.rs" = 1
 "apps/speed-test/src/resource.rs" = 1
-"apps/store/src/resource.rs" = 2
 "apps/terminal/src/main_body.rs" = 2
 "apps/themes/src/resource.rs" = 2
 "apps/tube/src/app.rs" = 2
@@ -59,14 +51,11 @@
 "apps/typst-editor/src/app.rs" = 2
 "apps/video-editor/src/resource.rs" = 1
 "apps/video-player/src/resource.rs" = 2
-"apps/vpn/src/resource.rs" = 2
 "apps/weather/src/resource.rs" = 2
 
 [ratchets.standalone_launch]
 "apps/api-tester/src/lib.rs" = 2
 "apps/api-tester/src/main.rs" = 2
-"apps/backups/src/main.rs" = 2
-"apps/calculator/src/main.rs" = 1
 "apps/calendar/src/main.rs" = 1
 "apps/camera/src/lib.rs" = 2
 "apps/camera/src/main.rs" = 1
@@ -82,22 +71,15 @@
 "apps/feeds/src/lib.rs" = 2
 "apps/feeds/src/main.rs" = 2
 "apps/git-client/src/main.rs" = 2
-"apps/hex-editor/src/lib.rs" = 2
-"apps/hex-editor/src/main.rs" = 2
 "apps/imager/src/main.rs" = 1
 "apps/logs/src/main.rs" = 2
 "apps/mail/src/main.rs" = 2
-"apps/maps/src/lib.rs" = 2
-"apps/maps/src/main.rs" = 2
 "apps/music/src/lib.rs" = 2
 "apps/osk/src/main.rs" = 1
 "apps/pdf-viewer/src/lib.rs" = 2
 "apps/pdf-viewer/src/main.rs" = 3
 "apps/photos/src/lib.rs" = 2
-"apps/print-centre/src/main.rs" = 2
-"apps/remote/src/main.rs" = 2
 "apps/settings/src/main.rs" = 1
-"apps/sheets/src/main.rs" = 1
 "apps/slides/src/lib.rs" = 2
 "apps/slides/src/main.rs" = 1
 "apps/speed-test/src/lib.rs" = 2
@@ -108,7 +90,6 @@
 "apps/tube/src/main.rs" = 2
 "apps/typst-editor/src/lib.rs" = 2
 "apps/typst-editor/src/main.rs" = 1
-"apps/vpn/src/main.rs" = 2
 "apps/weather/src/main.rs" = 2
 "apps/word-processor/src/main.rs" = 3
 
@@ -118,24 +99,18 @@
 "apps/word-processor/src/word_processor.rs" = 2
 
 [ratchets.empty_action_vocabulary]
-"apps/agent/src/resource.rs" = 1
 "apps/clocks/src/resource.rs" = 1
 "apps/imager/src/setup/actions.rs" = 1
 "apps/imager/src/setup/import_actions.rs" = 1
-"apps/print-centre/src/resource.rs" = 1
 "apps/speed-test/src/resource.rs" = 1
 
 [ratchets.widget_owned_document]
-"apps/agent/src/apply.rs" = 9
-"apps/agent/src/session/chat.rs" = 2
+"apps/agent/src/apply.rs" = 2
 "apps/browser/src/browser_widget.rs" = 1
-"apps/calculator/src/framework_history.rs" = 1
 "apps/calendar/src/store.rs" = 1
 "apps/camera/src/search.rs" = 2
 "apps/contacts/src/framework_history.rs" = 1
 "apps/diffmerge/src/framework_history.rs" = 1
-"apps/maps/src/app/interaction.rs" = 1
-"apps/maps/src/offline_panel.rs" = 1
 "apps/music/src/doc.rs" = 1
 "apps/notes/src/actions.rs" = 1
 "apps/notes/src/framework_history.rs" = 1
@@ -145,7 +120,6 @@
 "apps/osk/src/framework_history.rs" = 1
 "apps/pdf-viewer/src/main.rs" = 1
 "apps/photos/src/framework_history.rs" = 2
-"apps/remote/src/app.rs" = 1
 "apps/settings/src/actions/mod.rs" = 17
 "apps/settings/src/panes/agent_models.rs" = 1
 "apps/settings/src/panes/audio.rs" = 2

@@ -39,7 +39,7 @@ use crate::common::{TestDevice, TestUser, client_endpoint};
 const WORKSPACE: u64 = 77;
 
 /// A guest that prints a prompt, then echoes.
-struct EchoLauncher;
+pub(crate) struct EchoLauncher;
 
 struct EchoControl(Mutex<Option<oneshot::Sender<()>>>);
 
@@ -175,9 +175,9 @@ async fn expect_output(stream: &mut tilo_relay_client::PtyStream, expected: &[u8
     .await
 }
 
-struct Worker {
-    client: ComputeClient,
-    serving: tokio::task::JoinHandle<()>,
+pub(crate) struct Worker {
+    pub(crate) client: ComputeClient,
+    pub(crate) serving: tokio::task::JoinHandle<()>,
 }
 
 /// Attach the provider's worker, advertise environments and KVM, and serve
@@ -187,6 +187,17 @@ async fn start_worker(
     provider: &TestUser,
     worker: &TestDevice,
     root: &std::path::Path,
+) -> Worker {
+    start_worker_in(relay, provider, worker, root, WORKSPACE).await
+}
+
+/// [`start_worker`] for the workspace `workspace`.
+pub(crate) async fn start_worker_in(
+    relay: &Relay,
+    provider: &TestUser,
+    worker: &TestDevice,
+    root: &std::path::Path,
+    workspace: u64,
 ) -> Worker {
     let mut client = ComputeClient::connect(
         client_endpoint().await,
@@ -199,7 +210,7 @@ async fn start_worker(
     )
     .await
     .unwrap();
-    client.attach(WORKSPACE).await.unwrap();
+    client.attach(workspace).await.unwrap();
     assert!(matches!(
         client.receive().await.unwrap().envelope,
         ComputeEnvelope::Ready { .. }
@@ -207,11 +218,11 @@ async fn start_worker(
     let issued_at_ms = unix_now_ms();
     client
         .send(&ComputeEnvelope::Advertise {
-            workspace_id: WORKSPACE,
+            workspace_id: workspace,
             advertisement: ComputeWorkerAdvertisement {
                 version: 1,
                 worker: worker.device_pubkey(),
-                workspace_id: WORKSPACE,
+                workspace_id: workspace,
                 apps: BTreeSet::new(),
                 accelerators: BTreeSet::from([ComputeAccelerator::Kvm]),
                 assignment_capacity: 1,
