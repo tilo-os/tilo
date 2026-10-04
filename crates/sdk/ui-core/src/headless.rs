@@ -3942,6 +3942,12 @@ impl FrameHarness {
 
     /// Perform one semantic action against a stable widget id or fallback
     /// path, through the same routing contract as live assistive technology.
+    /// A control a widget paints itself and publishes as a semantic child
+    /// (a custom surface's button) is named by its `action_target`, as in
+    /// inspection output, without naming the widget that owns it. A node
+    /// with no target is reached by its accessible name through
+    /// [`a11y_node_named`](Self::a11y_node_named) and
+    /// [`perform_a11y_action`](Self::perform_a11y_action).
     ///
     /// # Errors
     ///
@@ -3999,6 +4005,14 @@ impl FrameHarness {
             };
         }
         self.try_presentation(|_, _| ())?;
+        if semantic_target.is_none() && !self.named_target_nodes().contains_key(name) {
+            // A control a widget paints and publishes as a semantic child
+            // (a custom surface's button) is named by its own target, as
+            // search and agents name it; it routes through its owner.
+            if let Some(owner) = self.semantic_target_owner(name)? {
+                return self.perform_semantic_named(&owner, Some(name), action);
+            }
+        }
         if let Some(target) = semantic_target {
             // The generic Focus fallback must never resurrect a removed or
             // forged synthetic child, nor bypass its published edit guards.
@@ -4301,6 +4315,50 @@ impl FrameHarness {
             }
         }
         targets
+    }
+
+    /// The inspection path of the one widget whose semantics publish
+    /// `target` as an action target; `None` when none does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when unrelated widgets publish the same target, so
+    /// naming it alone would be ambiguous.
+    fn semantic_target_owner(&self, target: &str) -> Result<Option<String>, String> {
+        fn owners(node: &InspectionNode, target: &str, out: &mut Vec<String>) {
+            if node
+                .semantics
+                .as_ref()
+                .and_then(|semantics| find_semantic_target(semantics, target))
+                .is_some()
+            {
+                out.push(node.path.clone());
+            }
+            for child in &node.children {
+                owners(child, target, out);
+            }
+        }
+        let mut found = Vec::new();
+        owners(&self.inspection().root, target, &mut found);
+        // A container that represents a child's semantics as its own
+        // publishes the same target as that child: the innermost widget is
+        // the one that performs it.
+        let innermost: Vec<&String> = found
+            .iter()
+            .filter(|path| {
+                !found
+                    .iter()
+                    .any(|other| other.len() > path.len() && other.starts_with(&format!("{path}/")))
+            })
+            .collect();
+        match innermost.as_slice() {
+            [] => Ok(None),
+            [owner] => Ok(Some((*owner).clone())),
+            several => Err(format!(
+                "semantic target {target:?} is published by several widgets ({several:?}); \
+                 name its owner with `perform_semantic_named(owner, Some(target), ..)`"
+            )),
+        }
     }
 
     /// App instance bound to a live semantic owner path or stable widget id.
