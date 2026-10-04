@@ -508,7 +508,7 @@ impl Core {
         self.list_revision = self.list_revision.wrapping_add(1);
     }
 
-    fn touch_page(&mut self) {
+    pub(crate) fn touch_page(&mut self) {
         self.page_revision = self.page_revision.wrapping_add(1);
     }
 
@@ -1269,6 +1269,17 @@ impl Core {
         if self.model.is_some() && self.restore_portal.is_none() {
             self.restore_portal = Some(crate::transfer::restore_request().send_open_file());
         }
+    }
+
+    /// What the backup form's confirmation field says while it is typed:
+    /// a mismatch as soon as the confirmation stops matching the start of
+    /// the password, nothing while it is empty or still on its way there.
+    pub(crate) fn backup_confirmation_problem(&self) -> Option<&'static str> {
+        (!self.backup_confirmation.is_empty()
+            && !self
+                .backup_password
+                .starts_with(self.backup_confirmation.as_str()))
+        .then_some("The passwords do not match")
     }
 
     pub(crate) fn backup_form_error(&self, confirmation: bool) -> Option<&'static str> {

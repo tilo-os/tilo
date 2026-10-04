@@ -1381,9 +1381,12 @@ impl<C: Widget> ModalDialog<C> {
         self
     }
 
-    /// Enable the primary action only while `gate` holds for the content,
-    /// read every time it is painted or fired: a confirmation that waits
-    /// for a typed phrase, a form that waits for a valid value.
+    /// Enable the primary action only while `gate` holds, read every time
+    /// the sheet is painted, announced or fired: a confirmation that waits
+    /// for a typed phrase, a form that waits for a valid value. The gate gets
+    /// the content, and may as well read the state the content's fields
+    /// write elsewhere (an app's shared core it captures), so a form whose
+    /// values live outside its widgets is gated the same way.
     #[must_use]
     pub fn primary_enabled_if(mut self, gate: impl Fn(&C) -> bool + 'static) -> Self {
         self.primary_gate = Some(Box::new(gate));
@@ -2122,6 +2125,12 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         let Some(layout) = self.layout.clone() else {
             return;
         };
+        // A gate can change with any keystroke: the footer's buttons are
+        // announced with the state the sheet is painted with.
+        let primary_enabled = self.primary_enabled();
+        for key in &mut self.keys {
+            key.enabled = key.slot != Slot::Primary || primary_enabled;
+        }
         let focused = self.focused_slot();
         let (mut actions, slots) = self.actions();
         for ((action, rect), slot) in actions.iter_mut().zip(&layout.actions).zip(&slots) {
