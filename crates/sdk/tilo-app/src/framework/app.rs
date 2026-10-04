@@ -416,7 +416,9 @@ fn create<A: ResourceApp>(
     if let Some(catalog) = A::catalog() {
         catalog.ensure();
     }
-    let created = matches!(target, LaunchTarget::New);
+    // A record of its own, or the room's record an app keeps one of
+    // (`ApplicationDefinition::keeps_room_record`), opened for the first time.
+    let created = matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew);
     if created {
         let seed = A::seed(&SeedCx { context: &context });
         let author = context.author().0.clone();
