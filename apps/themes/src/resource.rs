@@ -69,6 +69,7 @@ impl Resource for Themes {
                 title: theme.name.clone(),
                 text: theme.id.clone(),
                 action: None,
+                ..Default::default()
             })
             .collect()
     }

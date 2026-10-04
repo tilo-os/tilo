@@ -266,6 +266,7 @@ impl Resource for PlainText {
             title: title.to_owned(),
             text: state.clone(),
             action: None,
+            ..Default::default()
         }]
     }
 }

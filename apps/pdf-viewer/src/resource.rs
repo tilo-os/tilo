@@ -102,6 +102,7 @@ impl Resource for PdfViewer {
             title,
             text,
             action: Some(ActionAddress::new(&resource, "open")),
+            ..Default::default()
         };
         let mut entries: Vec<SearchEntry> = state
             .annotations

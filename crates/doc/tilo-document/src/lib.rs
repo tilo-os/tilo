@@ -770,6 +770,7 @@ impl Resource for RichText {
             title: heading.text.clone(),
             text: heading.text,
             action: None,
+            ..Default::default()
         });
         let mut on_screen: Vec<(usize, &Rc<BlockView>)> = state
             .loaded
@@ -784,6 +785,7 @@ impl Resource for RichText {
                 title: view.text.chars().take(60).collect(),
                 text: view.text.clone(),
                 action: None,
+                ..Default::default()
             }))
             .collect()
     }

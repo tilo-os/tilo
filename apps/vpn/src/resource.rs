@@ -76,6 +76,7 @@ impl Resource for Vpn {
                 title: connection.name.clone(),
                 text: connection.kind.as_str().to_owned(),
                 action: None,
+                ..Default::default()
             })
             .collect()
     }
