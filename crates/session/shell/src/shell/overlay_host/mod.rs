@@ -1544,6 +1544,7 @@ impl ShellOverlayHost {
             .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
         if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(&mut backdrop, transform, text_renderer, theme, presence);
+            self.draw_portal_dialog_sheet(&mut backdrop, transform, text_renderer, theme);
             return ShellSceneSections {
                 backdrop,
                 topbar,
@@ -1657,6 +1658,12 @@ impl ShellOverlayHost {
                 text_renderer,
                 theme,
                 presence,
+            );
+            self.draw_portal_dialog_sheet(
+                &mut above_quick_settings,
+                transform,
+                text_renderer,
+                theme,
             );
         }
         self.pairing.draw(
@@ -16069,8 +16076,18 @@ impl Widget for ShellOverlayHost {
     )]
     fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
         let (doc, path) = ui::doc::document(doc, path);
-        if let Some(onboarding) = self.onboarding.as_mut() {
-            return onboarding.update(doc, path);
+        if self.onboarding.is_some() {
+            // Compositor-owned sheets (polkit administrator prompts, network
+            // secrets) are raised by the system on behalf of the person in
+            // front of the screen, including while first-use setup is still
+            // running. Their requesters block until the sheet is answered,
+            // so the queue must keep moving under onboarding too.
+            let dialog_dirty = self.pump_portal_dialogs();
+            let onboarding_dirty = self
+                .onboarding
+                .as_mut()
+                .is_some_and(|onboarding| onboarding.update(doc, path));
+            return onboarding_dirty || dialog_dirty;
         }
         let pairing_dirty = self.pairing.pump(doc, path);
         // Runs first so an invite token / prompt is in chrome before draw.
@@ -16652,6 +16669,7 @@ impl Widget for ShellOverlayHost {
             .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
         if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
+            self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
             self.capture_studio
                 .draw(scene, transform, text_renderer, theme, presence);
             return;
@@ -16708,6 +16726,7 @@ impl Widget for ShellOverlayHost {
         self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
+            self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
         }
         self.capture_studio
             .draw(scene, transform, text_renderer, theme, presence);
@@ -16801,6 +16820,17 @@ impl Widget for ShellOverlayHost {
                 taffy: ctx.taffy,
             },
         ) {
+            return;
+        }
+        // A compositor-owned sheet raised during first-use setup (an
+        // administrator prompt, a network secret) is drawn above onboarding
+        // and is modal over it: its keys and clicks must reach the sheet,
+        // not the setup control that still holds focus underneath. Focus is
+        // left untouched, so onboarding resumes where it was once the sheet
+        // is answered or dismissed.
+        if self.onboarding.is_some()
+            && self.route_portal_dialog_event(event, *ctx.modifiers, ctx.handled)
+        {
             return;
         }
         if let Some(onboarding) = self.onboarding.as_mut() {
@@ -21016,7 +21046,11 @@ impl ShellOverlayHost {
         self.file_picker_overlay
             .draw(self.rect, scene, transform, text_renderer, theme, presence);
 
-        self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
+        // The contextual tour paints after this pass; it draws the sheet
+        // itself, above the tour, so the sheet is never covered.
+        if self.onboarding.is_none() {
+            self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
+        }
 
         // A held pad button works over modals too, like the keys below.
         self.draw_pad_map(scene, transform, text_renderer, theme);

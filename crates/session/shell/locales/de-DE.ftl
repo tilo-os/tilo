@@ -1685,6 +1685,7 @@ onboarding-nearby-connected = Verbunden. Deine Arbeitsbereiche erscheinen automa
 onboarding-nearby-invalid-identity = Das vertrauenswürdige Gerät hat eine ungültige Identität geliefert. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
 onboarding-nearby-failed = Die Einrichtung über ein Gerät in der Nähe wurde nicht abgeschlossen: Das Kopplungsfenster wurde geschlossen oder die Freigabe abgebrochen. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
 onboarding-nearby-failed-detail = Die Einrichtung über ein Gerät in der Nähe wurde nicht abgeschlossen: { $detail }. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
+onboarding-nearby-timed-out = Die Einrichtung über ein Gerät in der Nähe wurde nicht abgeschlossen: Kein vertrauenswürdiges Gerät hat sie rechtzeitig freigegeben. Wähle „Mit einem Gerät in der Nähe verbinden“, um es erneut zu versuchen.
 
 # Identitätseinrichtung: verschlüsselte Sicherung
 onboarding-backup-title = Deine Tilo-Identität sichern
