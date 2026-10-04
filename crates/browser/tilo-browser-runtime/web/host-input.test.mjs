@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import {createPanorama} from './panorama.mjs';
 
 // Exercise the mount's real event bindings; only WASM/GPU/storage are replaced.
 class DomEvent {
@@ -63,6 +64,33 @@ test('outside pointer press dismisses only the current system search and preserv
  assert.deepEqual(keys,['Escape','Escape']);assert.equal(event.defaultPrevented,false);assert.equal(event.stopped,undefined);
  keys.length=0;f.state={...f.state,sequence:'3',owner:'writer'};
  outside.dispatchEvent(new DomEvent('pointerdown'));assert.deepEqual(keys,[]);
+});
+
+test('capture source belongs to its mount and never takes input focus',async()=>{
+ const f=await fixture({standalone:true});
+ assert.ok(f.host.captureSource,'the shared host exposes a source, not a desktop screenshot');
+ const calls=[];const ctx=new Proxy({}, {get:(_o,k)=>(...args)=>calls.push([k,...args])});
+ const output={getContext:()=>ctx};
+ const observer=createPanorama({canvas:output,sources:[{source:f.host.captureSource,rect:[0,0,100,50]}],width:100,height:50});
+ const before=f.document.activeElement;
+ assert.throws(()=>observer.render({cx:50,cy:25,scale:1}),/presented/);
+ // A missing real backing size cannot silently yield a successful frame.
+ f.update({phase:'presented',frames:2,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
+ await tick();
+ assert.throws(()=>observer.render({cx:50,cy:25,scale:1}),/dimensions/);
+ assert.equal(f.document.activeElement,before);
+ const originalCreate=f.document.createElement;
+ f.document.createElement=tag=>{const n=originalCreate(tag);n.getContext=()=>ctx;return n;};
+ f.host.canvas.width=100;f.host.canvas.height=50;
+ f.update({phase:'presented',frames:3,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
+ await tick();
+ const receipt=observer.render({cx:50,cy:25,scale:1});
+ assert.equal(receipt.panes[0].record,'one');assert.equal(receipt.panes[0].frame,3);
+ assert.equal(receipt.panes[0].presenceAvailable,false);
+ f.update({phase:'presented',frames:4,record:'one',gpuGeneration:1,logicalSize:[100,50],surfaceSize:[100,50]});
+ assert.equal(observer.render({cx:50,cy:25,scale:1}).panes[0].frame,4,'pixels and generation are captured before queued page callbacks');
+ f.update({clipboard:'copied'});assert.equal(observer.render({cx:50,cy:25,scale:1}).panes[0].frame,4);
+ assert.equal(f.document.activeElement,before);observer.close();
 });
 test('mounted dead key composes one caret and retains the following numeric input',async()=>{
  const f=await fixture();f.host.editor.focus();f.delivered.length=0;const old=f.host.editor,canvasKeys=[];

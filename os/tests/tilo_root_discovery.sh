@@ -137,6 +137,57 @@ TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_INITRD_RELEASE="$work/no-initrd
 [ -z "$(ls -A "$work/generator-booted")" ]
 echo 'ok: no root discovery units outside the initrd'
 
+# Exercise the encrypted production path with an attach implementation that
+# checks the actual options received by systemd-cryptsetup, not a source grep.
+cat >"$work/bin/encrypted" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+cat >"$work/bin/attach" <<'EOF'
+#!/bin/bash
+[ "$1" = attach ] && [ "$2" = root ] && [ "$4" = - ]
+case ",$5," in *,tries=0,*) ;; *) exit 1 ;; esac
+case ",$5," in *,timeout=0,*) ;; *) exit 1 ;; esac
+case ",$5," in *,password-cache=no,*) ;; *) exit 1 ;; esac
+case ",$5," in *,tpm2-device=auto,*) ;; *) exit 1 ;; esac
+case ",$5," in *,fido2-device=auto,*) ;; *) exit 1 ;; esac
+[ "$LC_ALL" = C ] && [ "$SYSTEMD_LOG_TARGET" = console ]
+if [ "${TILO_TEST_ATTACH_FAILURE:-0}" = 1 ]; then
+  echo 'Fatal device failure' >&2
+  exit 2
+fi
+printf '%s\n' 'Failed to activate with specified passphrase. (Passphrase incorrect?)' >&2
+printf '%s\n' 'A normal informational message' >&2
+EOF
+cat >"$work/bin/plymouth" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >>"$TILO_TEST_PLYMOUTH_LOG"
+EOF
+chmod +x "$work/bin/encrypted" "$work/bin/attach" "$work/bin/plymouth"
+encrypted_discover() {
+TILO_ROOT_LOADER_PARTUUID=11111111-2222-3333-4444-555555555555 \
+TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_TEST_DISK=disk0 \
+TILO_ROOT_TEST_PARTS="$esp tilo-root:$tilo_type" \
+TILO_ROOT_DEVROOT="$work/dev" TILO_ROOT_RUNTIME="$work/run" \
+TILO_ROOT_LSBLK="$work/bin/lsblk" TILO_ROOT_CRYPTSETUP_PROBE="$work/bin/encrypted" \
+TILO_ROOT_CRYPTSETUP="$work/bin/attach" TILO_ROOT_UNLOCK=true \
+TILO_ROOT_PLYMOUTH="$work/bin/plymouth" TILO_TEST_PLYMOUTH_LOG="$work/plymouth-events" \
+TILO_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/tilo-root-discover"
+}
+encrypted_discover
+test "$(cat "$work/plymouth-events")" = 'display-message --text=tilo-unlock-retry'
+test "$(readlink "$work/run/tilo-root/device")" = "$work/dev/mapper/root"
+echo 'ok: encrypted root retains token unlock, retries without password caching and forwards only confirmed rejection'
+rm -rf "$work/run/tilo-root"
+if TILO_TEST_ATTACH_FAILURE=1 encrypted_discover 2>"$work/attach-failure"; then
+  echo 'fatal encrypted device failure was swallowed by the log relay' >&2
+  exit 1
+fi
+grep -q 'encrypted Tilo root did not unlock' "$work/attach-failure"
+test ! -e "$work/run/tilo-root/source"
+echo 'ok: fatal attach errors still fail root discovery'
+
+
 # The install preflight binds both the PCR policy and the exact target UKI to
 # the offline authority. A signed policy beside a substituted UKI is refused.
 mkdir -p "$work/preflight/predictions"

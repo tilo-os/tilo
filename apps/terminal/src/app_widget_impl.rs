@@ -22,4 +22,8 @@ impl AppWidget for TerminalWidget {
     fn permission_hint(&self) -> Option<AppKind> {
         Some(AppKind::Terminal)
     }
+
+    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+        self.take_session_intent()
+    }
 }

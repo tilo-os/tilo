@@ -15,6 +15,34 @@ progress.fill = Sprite();
 progress.background.SetZ(20);
 progress.fill.SetZ(21);
 
+status.boot_image = Image("starting-tilo.png");
+status.shutdown_image = Image("shutting-down.png");
+status.help_image = Image("startup-help.png");
+status.heading = Sprite();
+status.help = Sprite(status.help_image);
+status.heading.SetZ(30);
+status.help.SetZ(30);
+
+fun show_normal_status()
+  {
+    local.center_x = Window.GetX() + Window.GetWidth() / 2;
+    local.shutdown = Plymouth.GetMode() == "shutdown";
+    if (shutdown)
+      global.status.image = status.shutdown_image;
+    else
+      global.status.image = status.boot_image;
+    status.heading.SetImage(status.image);
+    status.heading.SetPosition(center_x - status.image.GetWidth() / 2,
+                               Window.GetY() + Window.GetHeight() * 0.58, 30);
+    status.help.SetPosition(center_x - status.help_image.GetWidth() / 2,
+                            Window.GetY() + Window.GetHeight() * 0.78, 30);
+    status.heading.SetOpacity(1);
+    if (shutdown)
+      status.help.SetOpacity(0);
+    else
+      status.help.SetOpacity(1);
+  }
+
 fun place_brand(unlock_mode)
   {
     local.center_x = Window.GetX() + Window.GetWidth() / 2;
@@ -62,6 +90,12 @@ fun setup_dialog()
     dialog.help.SetPosition(center_x - dialog.help_image.GetWidth() / 2,
                             Window.GetY() + Window.GetHeight() * 0.535, 100);
 
+    global.dialog.retry_image = Image("unlock-retry.png");
+    global.dialog.retry = Sprite(dialog.retry_image);
+    dialog.retry.SetPosition(center_x - dialog.retry_image.GetWidth() / 2,
+                            Window.GetY() + Window.GetHeight() * 0.67, 100);
+    dialog.retry.SetOpacity(0);
+
     global.dialog.entry_x = center_x - entry_image.GetWidth() / 2;
     global.dialog.entry_y = Window.GetY() + Window.GetHeight() * 0.59;
     global.dialog.entry = Sprite(entry_image);
@@ -81,6 +115,8 @@ fun display_password(prompt, bullets)
     place_brand(1);
     progress.background.SetOpacity(0);
     progress.fill.SetOpacity(0);
+    status.heading.SetOpacity(0);
+    status.help.SetOpacity(0);
     if (!global.dialog)
       setup_dialog();
     set_dialog_opacity(1);
@@ -107,10 +143,13 @@ fun display_password(prompt, bullets)
 fun display_normal()
   {
     global.mode = "normal";
+    if (dialog.ready)
+      dialog.retry.SetOpacity(0);
     place_brand(0);
     set_dialog_opacity(0);
     progress.background.SetOpacity(1);
     progress.fill.SetOpacity(1);
+    show_normal_status();
   }
 
 fun refresh()
@@ -132,12 +171,15 @@ fun boot_progress(duration, percent)
 
 fun display_message(text)
   {
-    # Plymouth sends low-level status strings here. The Tilo boot is deliberately
-    # quiet; recovery details remain available on the console with Escape.
+    # Root discovery forwards a confirmed passphrase rejection. Password
+    # prompt redraws alone cannot distinguish submission from backspacing.
+    if (text == "tilo-unlock-retry" && dialog.ready)
+      dialog.retry.SetOpacity(1);
   }
 
 mode = "normal";
 place_brand(0);
+show_normal_status();
 Plymouth.SetRefreshFunction(refresh);
 Plymouth.SetBootProgressFunction(boot_progress);
 Plymouth.SetDisplayNormalFunction(display_normal);

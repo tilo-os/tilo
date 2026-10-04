@@ -1,6 +1,7 @@
 .env
 os/output/
 os/external-assets/cache/
+os/legacy-guest/agent/
 os/external-assets/cosign-cache/
 os/external-assets/kernel-cache/
 # OEM firmware is staged locally for an explicit hardware image, never committed.
