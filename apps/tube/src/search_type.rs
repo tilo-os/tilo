@@ -1,19 +1,25 @@
-//! Tube search sources.
+//! Tube in the platform search.
 //!
-//! [`TubeSearchProvider`] is the real [`ui::search::SearchProvider`] used by
-//! the host-wide action palette. Its rows name the exact resource/action that
-//! opens a video, creator, playlist, or local watch-history entry. The older
-//! [`VideoSearchProvider`] remains the small, backend-facing projection used
-//! by Tube's visual Ctrl+K overlay while it is open.
+//! [`TubeSearchProvider`] answers the palette (Ctrl+K, `/`, the header's
+//! magnifier) from two sources: the catalogue Tube already holds, at once,
+//! and — in the live app — `YouTube` itself, as a slow page that arrives when
+//! the background worker's search lands ([`LiveSearch`]). Each hit names the
+//! exact resource action that opens it, and says what it is with a search
+//! row, so the platform draws videos as media rows.
 
-use crate::backend::{BackendResult, YtBackend};
-use tilo_actions::ActionAddress;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
+use ui::search::{
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, PagePoll, PendingToken,
+    SearchCatalog, SearchCursor, SearchPage, SearchProvider, SearchQuery, SearchResult, SearchRow,
+};
 
-/// Hard projection budget for one provider query. The UI may render fewer;
-/// global search must never materialise a backend-sized catalogue in one turn.
-pub const MAX_SEARCH_HITS: usize = 50;
+use crate::model::{TubeModel, Video};
+use crate::util::{clock, fnv1a};
 
 /// A unique, stable id for a searchable result type so the framework can
 /// deduplicate providers and persist per-type preferences.
@@ -30,6 +36,8 @@ pub const HISTORY_TYPE_ID: &str = "tube.history";
 
 const TUBE_SEARCH_KIND: &str = "Tube";
 const MAX_INDEXED_ENTITIES: usize = 100;
+/// Live answers kept for queries the palette may still ask about.
+const MAX_LIVE_ANSWERS: usize = 16;
 
 /// A static descriptor of a result type an app contributes to global search.
 #[derive(Clone, Debug, PartialEq)]
@@ -75,29 +83,191 @@ pub fn history_searchable_type() -> SearchableType {
     }
 }
 
-/// Bounded snapshot of the resources Tube currently publishes. Keeping the
-/// catalogue and resource tree on the same 100-item ceiling means every
-/// canonical hit remains activatable; no search result gains authority merely
-/// because it was indexed.
+/// A video hit: a media row with its creator and length.
+fn video_result(group: &str, video: &Video, title: &str, address: ActionAddress) -> SearchResult {
+    let mut row = SearchRow::media(title).byline(&video.channel_name);
+    if video.duration > 0 && !video.live {
+        row = row.duration(clock(f64::from(video.duration)));
+    }
+    SearchResult::for_action(group, title, address)
+        .with_subtitle(&video.channel_name)
+        .with_icon(Icon::Play)
+        .with_row(row)
+}
+
+/// The live answer for one query: its hits and the resources they open, for
+/// hits beyond the bounded resource tree Tube publishes.
+#[derive(Clone, Default)]
+struct LiveAnswer {
+    results: Vec<SearchResult>,
+    resources: Vec<Resource>,
+}
+
+#[derive(Default)]
+struct LiveSearchState {
+    /// The newest query the palette is waiting on, for the root to fetch.
+    wanted: Option<String>,
+    /// Queries asked for and not yet answered, by token.
+    waiting: HashMap<u64, String>,
+    answers: HashMap<String, LiveAnswer>,
+    /// Answer order, oldest first, to bound `answers`.
+    order: Vec<String>,
+}
+
+/// The bridge between the platform search and Tube's background worker: the
+/// provider records what the palette asks for, the root fetches it and
+/// answers here, and the palette's next poll picks the answer up.
+#[derive(Clone, Default)]
+pub struct LiveSearch(Rc<RefCell<LiveSearchState>>);
+
+impl LiveSearch {
+    fn token(query: &str) -> PendingToken {
+        PendingToken::new(u64::from(fnv1a(query)))
+    }
+
+    /// The query to fetch, once.
+    pub fn take_wanted(&self) -> Option<String> {
+        self.0.borrow_mut().wanted.take()
+    }
+
+    /// Record the hits for `query` (empty when the search failed).
+    pub fn answer(&self, query: &str, answer: (Vec<SearchResult>, Vec<Resource>)) {
+        let mut state = self.0.borrow_mut();
+        let key = query.trim().to_string();
+        state.waiting.retain(|_, waiting| *waiting != key);
+        state.order.retain(|q| *q != key);
+        state.order.push(key.clone());
+        state.answers.insert(
+            key,
+            LiveAnswer {
+                results: answer.0,
+                resources: answer.1,
+            },
+        );
+        while state.order.len() > MAX_LIVE_ANSWERS {
+            let oldest = state.order.remove(0);
+            state.answers.remove(&oldest);
+        }
+    }
+
+    /// Settle every query still waiting with no hits (the network is gone).
+    pub fn answer_all_waiting(&self) {
+        let waiting: Vec<String> = self.0.borrow().waiting.values().cloned().collect();
+        for query in waiting {
+            self.answer(&query, (Vec::new(), Vec::new()));
+        }
+    }
+
+    fn answered(&self, query: &str) -> Option<LiveAnswer> {
+        self.0.borrow().answers.get(query.trim()).cloned()
+    }
+
+    /// Ask for `query`, returning the token its answer will come under.
+    fn ask(&self, query: &str) -> PendingToken {
+        let key = query.trim().to_string();
+        let token = Self::token(&key);
+        let mut state = self.0.borrow_mut();
+        if !state.waiting.values().any(|q| *q == key) {
+            state.waiting.insert(token.id(), key.clone());
+            state.wanted = Some(key);
+        }
+        token
+    }
+
+    fn query_for(&self, token: &PendingToken) -> Option<String> {
+        self.0
+            .borrow()
+            .waiting
+            .get(&token.id())
+            .cloned()
+            .or_else(|| {
+                let state = self.0.borrow();
+                state
+                    .answers
+                    .keys()
+                    .find(|q| &Self::token(q) == token)
+                    .cloned()
+            })
+    }
+
+    fn resource(&self, address: &ActionAddress) -> Option<Resource> {
+        self.0.borrow().answers.values().find_map(|answer| {
+            answer
+                .resources
+                .iter()
+                .find(|resource| resource.id.0 == address.resource)
+                .cloned()
+        })
+    }
+}
+
+/// The hits the live backend returned for `query` (in its order), with the
+/// resources that open them.
+pub fn live_results(model: &TubeModel, query: &str) -> (Vec<SearchResult>, Vec<Resource>) {
+    let mut results = Vec::new();
+    let mut resources = Vec::new();
+    if model.search_hits_query != query {
+        return (results, resources);
+    }
+    let dearrow = model.settings.dearrow_titles_on();
+    for video in model
+        .search_display(query)
+        .into_iter()
+        .take(MAX_INDEXED_ENTITIES)
+    {
+        let address = ActionAddress::new(format!("tube.video:{}", video.id), "open");
+        results.push(video_result(
+            "Videos",
+            video,
+            video.display_title(dearrow),
+            address,
+        ));
+        resources.extend(crate::actions::video_resource(model, &video.id, false));
+    }
+    for channel in model.search_creators_display(query) {
+        let address = ActionAddress::new(format!("tube.channel:{}", channel.id), "open");
+        results.push(
+            SearchResult::for_action("Creators", &channel.name, address)
+                .with_subtitle(&channel.handle)
+                .with_icon(Icon::Users),
+        );
+        resources.extend(crate::actions::channel_resource(model, &channel.id));
+    }
+    for playlist in model.search_playlists_display(query) {
+        let address = ActionAddress::new(format!("tube.playlist:{}", playlist.id), "open");
+        results.push(
+            SearchResult::for_action("Playlists", &playlist.title, address)
+                .with_subtitle(&playlist.channel_name)
+                .with_icon(Icon::ListVideo),
+        );
+        resources.extend(crate::actions::playlist_resource(model, &playlist.id));
+    }
+    (results, resources)
+}
+
+/// Tube's search provider. The catalogue Tube holds answers at once; with a
+/// [`LiveSearch`] attached, `YouTube` answers the rest as a slow page.
 #[derive(Clone)]
 pub struct TubeSearchProvider {
     catalog: SearchCatalog,
+    live: Option<LiveSearch>,
 }
 
 impl TubeSearchProvider {
-    pub fn new(model: &crate::model::TubeModel) -> Self {
+    pub fn new(model: &TubeModel) -> Self {
         let provider = Self {
             catalog: SearchCatalog::new(TUBE_SEARCH_KIND),
+            live: None,
         };
+        let dearrow = model.settings.dearrow_titles_on();
         for video in model.videos.iter().take(MAX_INDEXED_ENTITIES) {
             let address = ActionAddress::new(format!("tube.video:{}", video.id), "open");
-            let result = SearchResult::for_action(
+            let result = video_result(
                 "Videos",
-                video.display_title(model.settings.dearrow_titles_on()),
+                video,
+                video.display_title(dearrow),
                 address.clone(),
-            )
-            .with_subtitle(&video.channel_name)
-            .with_icon(Icon::Play);
+            );
             let searchable = format!("{}\0{}\0{}", video.title, video.channel_name, video.id);
             let _ = provider
                 .catalog
@@ -131,12 +301,12 @@ impl TubeSearchProvider {
                 continue;
             };
             let address = ActionAddress::new(format!("tube.history:{video_id}"), "open");
-            let result = SearchResult::for_action(
+            let result = video_result(
                 "Watch history",
-                video.display_title(model.settings.dearrow_titles_on()),
+                video,
+                video.display_title(dearrow),
                 address.clone(),
             )
-            .with_subtitle(&video.channel_name)
             .with_icon(Icon::History);
             let searchable = format!("{}\0{}\0{}", video.title, video.channel_name, video_id);
             let _ = provider
@@ -145,248 +315,186 @@ impl TubeSearchProvider {
         }
         provider
     }
-}
 
-impl CatalogSearchProvider for TubeSearchProvider {
-    fn provider_name(&self) -> &str {
-        TUBE_SEARCH_KIND
+    /// Also ask `YouTube`, through `live`.
+    #[must_use]
+    pub fn with_live(mut self, live: LiveSearch) -> Self {
+        self.live = Some(live);
+        self
     }
 
-    fn catalog(&self) -> Option<SearchCatalog> {
-        Some(self.catalog.clone())
-    }
-}
-
-/// A single global-search result row contributed by Tube.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SearchHit {
-    /// [`VIDEO_TYPE_ID`] or [`CHANNEL_TYPE_ID`].
-    pub type_id: &'static str,
-    /// Video title (DeArrow-corrected at registration time if enabled), or
-    /// channel name.
-    pub title: String,
-    /// Uploader / creator name, or the channel's own handle for a channel hit.
-    pub creator: String,
-    /// Duration in seconds (for the length pill the palette renders); 0 for
-    /// a channel hit.
-    pub length_secs: u32,
-    /// Seed for Tube's deterministic thumbnail gradient — the palette can ask
-    /// Tube to render it, so no image bytes cross the boundary.
-    pub thumbnail_seed: String,
-    /// Opaque deep link the framework round-trips back to Tube to open the
-    /// result: `tube://watch/<video_id>` or `tube://channel/<channel_id>`.
-    pub deep_link: String,
-}
-
-impl SearchHit {
-    pub fn watch_link(video_id: &str) -> String {
-        format!("tube://watch/{video_id}")
-    }
-
-    pub fn channel_link(channel_id: &str) -> String {
-        format!("tube://channel/{channel_id}")
-    }
-
-    /// The app's router calls this when the framework activates a hit.
-    pub fn parse_watch_link(link: &str) -> Option<String> {
-        link.strip_prefix("tube://watch/")
-            .map(std::string::ToString::to_string)
-    }
-
-    pub fn parse_channel_link(link: &str) -> Option<String> {
-        link.strip_prefix("tube://channel/")
-            .map(std::string::ToString::to_string)
-    }
-}
-
-/// Turns a query into [`SearchHit`]s by delegating to whatever
-/// [`crate::backend::YtBackend`] the build selected (offline sample by default,
-/// rustypipe under `--features live`). The global-search framework owns ranking
-/// across types; this provider only contributes Tube's rows.
-pub struct VideoSearchProvider<'a> {
-    backend: &'a dyn YtBackend,
-    /// Whether `DeArrow` title correction is applied to contributed hits.
-    dearrow: bool,
-}
-
-impl<'a> VideoSearchProvider<'a> {
-    pub fn new(backend: &'a dyn YtBackend, dearrow: bool) -> Self {
-        Self { backend, dearrow }
-    }
-
-    pub fn searchable_type(&self) -> SearchableType {
-        video_searchable_type()
-    }
-
-    /// Contribute hits for `query`. Errors collapse to an empty contribution —
-    /// a failing video search must not break OS-wide search.
-    pub fn query(&self, query: &str) -> Vec<SearchHit> {
-        if query.trim().is_empty() {
-            return Vec::new();
-        }
-        let Ok(BackendResult::Videos(vids)) = self.backend.search(query) else {
-            return Vec::new();
-        };
-        vids.into_iter()
-            .take(MAX_SEARCH_HITS)
-            .map(|v| SearchHit {
-                type_id: VIDEO_TYPE_ID,
-                title: v.display_title(self.dearrow).to_string(),
-                creator: v.channel_name.clone(),
-                length_secs: v.duration,
-                thumbnail_seed: v.seed.clone(),
-                deep_link: SearchHit::watch_link(&v.id),
-            })
+    /// The live hits not already among `local`.
+    fn fresh(local: &[SearchResult], live: Vec<SearchResult>, limit: usize) -> Vec<SearchResult> {
+        let known: Vec<String> = local.iter().map(SearchResult::anchor).collect();
+        live.into_iter()
+            .filter(|hit| !known.contains(&hit.anchor()))
+            .take(limit)
             .collect()
     }
 }
 
-/// Combined video + channel hits for the in-app Ctrl+K palette, ranked
-/// videos-first. Channels are matched by name against the query over the given
-/// model (the palette runs against Tube's in-memory model, which the offline
-/// backend also sources from). Empty query yields nothing.
-pub fn palette_hits(
-    provider: &VideoSearchProvider<'_>,
-    model: &crate::model::TubeModel,
-    query: &str,
-) -> Vec<SearchHit> {
-    let q = query.trim();
-    if q.is_empty() {
-        return Vec::new();
+impl SearchProvider for TubeSearchProvider {
+    fn name(&self) -> &str {
+        TUBE_SEARCH_KIND
     }
-    let mut hits = provider.query(q);
-    let ql = q.to_lowercase();
-    for ch in model
-        .channels
-        .iter()
-        .take(MAX_SEARCH_HITS.saturating_sub(hits.len()))
-    {
-        if ch.name.to_lowercase().contains(&ql) || ch.handle.to_lowercase().contains(&ql) {
-            hits.push(SearchHit {
-                type_id: CHANNEL_TYPE_ID,
-                title: ch.name.clone(),
-                creator: ch.handle.clone(),
-                length_secs: 0,
-                thumbnail_seed: ch.seed.clone(),
-                deep_link: SearchHit::channel_link(&ch.id),
-            });
+
+    fn action_directory_generation(&self) -> Option<u64> {
+        Some(self.catalog.stats().generation)
+    }
+
+    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
+        self.catalog.cursor_is_current(cursor)
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.catalog
+            .query_page(query, None, DEFAULT_SEARCH_CANDIDATE_LIMIT, limit)
+            .results
+    }
+
+    fn search_page(
+        &self,
+        query: &SearchQuery,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        let mut page = self
+            .catalog
+            .query_page(query.text(), cursor, work_budget, result_limit);
+        page.results.retain(|hit| query.in_scope(&hit.anchor()));
+        let text = query.text().trim();
+        let Some(live) = &self.live else {
+            return page;
+        };
+        if cursor.is_some() || page.next.is_some() || text.is_empty() {
+            return page;
+        }
+        match live.answered(text) {
+            Some(answer) => {
+                let room = result_limit.saturating_sub(page.results.len());
+                let mut more = Self::fresh(&page.results, answer.results, room);
+                more.retain(|hit| query.in_scope(&hit.anchor()));
+                page.results.append(&mut more);
+                SearchPage::of(page.results, None)
+            }
+            None => SearchPage::pending(page.results, live.ask(text)),
         }
     }
-    hits.truncate(MAX_SEARCH_HITS);
-    hits
+
+    fn poll_page(&self, token: &PendingToken) -> PagePoll {
+        let Some(live) = &self.live else {
+            return PagePoll::Ready(SearchPage::empty());
+        };
+        let Some(query) = live.query_for(token) else {
+            return PagePoll::Ready(SearchPage::empty());
+        };
+        match live.answered(&query) {
+            Some(answer) => {
+                let local = self.search_limited(&query, DEFAULT_SEARCH_RESULT_LIMIT);
+                PagePoll::Ready(SearchPage::of(
+                    Self::fresh(&local, answer.results, DEFAULT_SEARCH_RESULT_LIMIT),
+                    None,
+                ))
+            }
+            None => PagePoll::Pending,
+        }
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        self.live.as_ref()?.resource(address)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::offline::OfflineBackend;
-    use ui::search::SearchProvider;
 
     #[test]
-    fn search_type_descriptor_and_deep_links_are_stable() {
-        // Case `descriptor_is_stable`.
-        {
-            let t = video_searchable_type();
-            assert_eq!(t.id, "tube.video");
-            assert!(t.has_thumbnail);
-        }
-        // Case `deep_link_round_trips`.
-        {
-            let link = SearchHit::watch_link("vid_rust_async");
-            assert_eq!(link, "tube://watch/vid_rust_async");
-            assert_eq!(
-                SearchHit::parse_watch_link(&link).as_deref(),
-                Some("vid_rust_async")
-            );
-            assert!(SearchHit::parse_watch_link("https://evil").is_none());
-        }
+    fn search_type_descriptors_are_stable() {
+        let t = video_searchable_type();
+        assert_eq!(t.id, "tube.video");
+        assert!(t.has_thumbnail);
     }
 
     #[test]
-    fn search_providers_contribute_canonical_video_and_channel_hits() {
-        // Case `provider_contributes_video_hits`.
-        {
-            let backend = OfflineBackend::new();
-            let provider = VideoSearchProvider::new(&backend, false);
-            let hits = provider.query("rust");
-            assert!(!hits.is_empty());
-            assert!(hits.iter().all(|h| h.type_id == VIDEO_TYPE_ID));
+    fn the_catalogue_answers_with_canonical_actions_and_media_rows() {
+        let mut model = crate::sample::model();
+        let video_id = model.videos[0].id.clone();
+        model.history.push(video_id.clone());
+        model.playlists.push(crate::model::Playlist {
+            id: "playlist-rust".into(),
+            title: "Rust watchlist".into(),
+            channel_id: model.videos[0].channel_id.clone(),
+            channel_name: model.videos[0].channel_name.clone(),
+            thumbnail_url: String::new(),
+            seed: "playlist-rust".into(),
+            video_count: 1,
+            video_ids: vec![video_id],
+        });
+        let provider = TubeSearchProvider::new(&model);
+        for (query, resource) in [
+            ("compositor", "tube.video:"),
+            ("watchlist", "tube.playlist:"),
+            ("compositor", "tube.history:"),
+            ("Low Level", "tube.channel:"),
+        ] {
             assert!(
-                hits.iter()
-                    .all(|h| h.deep_link.starts_with("tube://watch/"))
-            );
-            assert!(hits.iter().all(|h| !h.thumbnail_seed.is_empty()));
-        }
-        // Case `palette_hits_combine_videos_and_channels`.
-        {
-            let model = crate::sample::model();
-            let backend = OfflineBackend::with_model(model.clone());
-            let provider = VideoSearchProvider::new(&backend, false);
-            // "Low Level" matches the channel "Low Level Learning".
-            let hits = palette_hits(&provider, &model, "Low Level");
-            assert!(
-                hits.iter()
-                    .any(|h| h.type_id == CHANNEL_TYPE_ID
-                        && h.deep_link.starts_with("tube://channel/")),
-                "channel results appear in the palette"
+                provider.search(query).iter().any(|hit| {
+                    hit.action_address().is_some_and(|address| {
+                        address.resource.starts_with(resource) && address.action == "open"
+                    })
+                }),
+                "{query:?} exposes a canonical {resource} open action"
             );
         }
-        // Case `palette_hits_empty_query_is_empty`.
-        {
-            let model = crate::sample::model();
-            let backend = OfflineBackend::with_model(model.clone());
-            let provider = VideoSearchProvider::new(&backend, false);
-            assert!(palette_hits(&provider, &model, "   ").is_empty());
-        }
-        // Case `host_provider_uses_canonical_actions_for_video_playlist_and_history`.
-        {
-            let mut model = crate::sample::model();
-            let video_id = model.videos[0].id.clone();
-            model.history.push(video_id.clone());
-            model.playlists.push(crate::model::Playlist {
-                id: "playlist-rust".into(),
-                title: "Rust watchlist".into(),
-                channel_id: model.videos[0].channel_id.clone(),
-                channel_name: model.videos[0].channel_name.clone(),
-                thumbnail_url: String::new(),
-                seed: "playlist-rust".into(),
-                video_count: 1,
-                video_ids: vec![video_id],
-            });
-            let provider = TubeSearchProvider::new(&model);
-            for (query, resource) in [
-                ("compositor", "tube.video:"),
-                ("watchlist", "tube.playlist:"),
-                ("compositor", "tube.history:"),
-            ] {
-                assert!(
-                    provider.search(query).iter().any(|hit| {
-                        hit.action_address().is_some_and(|address| {
-                            address.resource.starts_with(resource) && address.action == "open"
-                        })
-                    }),
-                    "{query:?} exposes a canonical {resource} open action"
-                );
-            }
-        }
-        // Case `provider_applies_dearrow_when_enabled`.
-        {
-            let backend = OfflineBackend::new();
-            // vid_rust_async has a DeArrow title in the sample.
-            let plain = VideoSearchProvider::new(&backend, false).query("compositor");
-            let dearrowed = VideoSearchProvider::new(&backend, true).query("compositor");
-            let p = plain
+        assert!(
+            provider
+                .search("compositor")
                 .iter()
-                .find(|h| h.deep_link.contains("vid_rust_async"));
-            let d = dearrowed
-                .iter()
-                .find(|h| h.deep_link.contains("vid_rust_async"));
-            if let (Some(p), Some(d)) = (p, d) {
-                assert_ne!(
-                    p.title, d.title,
-                    "DeArrow should change the contributed title"
-                );
-            }
-        }
+                .filter(|hit| hit.anchor().starts_with("tube.video:"))
+                .all(|hit| matches!(hit.row, Some(SearchRow::Media { .. }))),
+            "videos are media rows"
+        );
+    }
+
+    #[test]
+    fn youtube_answers_as_a_slow_page() {
+        let mut model = crate::sample::model();
+        let live = LiveSearch::default();
+        let provider = TubeSearchProvider::new(&model).with_live(live.clone());
+
+        let page = provider.search_page(&SearchQuery::new("donut"), None, 64, 64);
+        let token = page.pending.expect("the YouTube page is on its way");
+        assert_eq!(live.take_wanted().as_deref(), Some("donut"));
+        assert_eq!(live.take_wanted(), None, "asked for once");
+        assert!(matches!(provider.poll_page(&token), PagePoll::Pending));
+
+        // The worker lands a result that the catalogue did not hold.
+        let mut found = model.videos[0].clone();
+        found.id = "found-on-youtube".into();
+        found.title = "A donut from the network".into();
+        model.videos.push(found);
+        model.search_hits_query = "donut".into();
+        model.search_hits = vec!["found-on-youtube".into()];
+        live.answer("donut", live_results(&model, "donut"));
+
+        let PagePoll::Ready(page) = provider.poll_page(&token) else {
+            panic!("the answer is ready");
+        };
+        let hit = page
+            .results
+            .iter()
+            .find(|hit| hit.anchor() == "tube.video:found-on-youtube")
+            .expect("the network hit is in the page");
+        let address = hit.action_address().expect("an action hit");
+        assert!(
+            provider.resolve_action_resource(&address).is_some(),
+            "the hit opens even outside the bounded resource tree"
+        );
     }
 }
