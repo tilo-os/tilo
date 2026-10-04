@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx};
 use ui::tilo_actions::{ActionSpec, EncodedAction};
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{TUBE_ACTION_TYPE, TubeAction, document_children, register};
@@ -199,6 +199,26 @@ fn bool_map(doc: &Doc, parent: &automerge::ObjId, key: &str) -> BTreeMap<String,
     out
 }
 
+/// The screenshot scenarios, each over the bundled sample catalogue: Home,
+/// its empty and loading states, device sync, the palette, a playing watch
+/// page, the narrow window with its rail summoned, and every screen.
+pub(crate) const SCENARIOS: &[&str] = &[
+    "home",
+    "empty",
+    "loading",
+    "device-sync",
+    "palette",
+    "play-demo",
+    "narrow",
+    "trending",
+    "subscriptions",
+    "queue",
+    "history",
+    "settings",
+    "search",
+    "watch",
+];
+
 /// Framework app: the Tube widget is the surface over [`Tube`].
 pub struct TubeShell;
 
@@ -207,21 +227,50 @@ impl ResourceApp for TubeShell {
     const ID: &'static str = "so.tilo.tube";
     const TITLE: &'static str = "Tube";
     const ICON: Option<&'static str> = Some("tube");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
+
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
+    }
+
+    /// The narrow scenario draws a phone-sized window, below the width at
+    /// which the navigation rail docks.
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        if scenario == Some("narrow") {
+            (560, 800)
+        } else {
+            (1280, 800)
+        }
+    }
+
+    /// The sample library: the creators the sample catalogue subscribes to.
+    fn scenario(_name: Option<&str>) -> Vec<Invoke<Tube>> {
+        crate::sample::model()
+            .subscriptions
+            .into_iter()
+            .map(|channel_id| TubeAction::SetSubscription {
+                channel_id,
+                subscribed: true,
+            })
+            .filter_map(|action| Invoke::apply(&action).ok())
+            .collect()
     }
 
     fn view(cx: &mut ViewCx<Tube>) -> Element {
-        cx.surface(Self::surface())
+        cx.surface(Self::surface(cx.mode()))
     }
 }
 
 impl TubeShell {
-    /// The widget the framework mounts: the live app, which fetches the real
-    /// catalogue and runs device sync. Hermetic `--shots` renders take the
-    /// standalone launch path and never mount this.
-    pub(crate) fn surface() -> TubeApp {
-        TubeApp::new().online()
+    /// The widget the framework mounts: in a live window the online app,
+    /// which fetches the real catalogue and runs device sync; in a capture
+    /// the bundled sample catalogue, offline; for a past version the
+    /// library alone.
+    pub(crate) fn surface(mode: RunMode) -> TubeApp {
+        match mode {
+            RunMode::Live => TubeApp::new().online(),
+            RunMode::Capture => TubeApp::new(),
+            RunMode::Past => TubeApp::empty(),
+        }
     }
 }
 
@@ -232,6 +281,12 @@ impl ResourceSurface<Tube> for TubeApp {
 
     fn attach(&mut self, cx: SurfaceCx<Tube>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        if let Some(scenario) = scenario {
+            self.stage_scenario(scenario);
+        }
     }
 
     // Edits bound to where the user is publish as hand-built rows of the
@@ -314,39 +369,26 @@ impl ActionSink {
     }
 }
 
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<TubeShell>()
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::framework::testing::TestApp;
 
-pub fn standalone_launch() -> bool {
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--data-dir" => {
-                let _ = args.next();
-            }
-            "--shots"
-            | "--responsive-matrix"
-            | "--native-audit"
-            | "--headless"
-            | "--narrow"
-            | "--probe"
-            | "--probe-trending"
-            | "--probe-engine"
-            | "--probe-play"
-            | "--probe-stream"
-            | "--probe-gst"
-            | "--probe-ytdlp"
-            | "--probe-avatars"
-            | "--live-shots" => return true,
-            "--viewport" => {
-                let _ = args.next();
-                return true;
-            }
-            flag if flag.starts_with("--probe") || flag.starts_with("--shots=") => return true,
-            file if !file.starts_with('-') => return true,
-            _ => {}
+    #[test]
+    fn every_scenario_captures_over_the_sample_library() {
+        let sample = crate::sample::model().subscriptions;
+        for scenario in SCENARIOS {
+            let app = TestApp::<TubeShell>::capture(Some(scenario))
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            let subscribed: Vec<String> = app
+                .state()
+                .subscriptions
+                .into_iter()
+                .filter_map(|(id, on)| on.then_some(id))
+                .collect();
+            let mut expected = sample.clone();
+            expected.sort();
+            assert_eq!(subscribed, expected, "{scenario} stages the sample library");
         }
     }
-    false
 }

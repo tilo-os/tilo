@@ -112,8 +112,6 @@
 "apps/themes/src/lib.rs" = 2
 "apps/themes/src/main.rs" = 2
 "apps/totp/src/main.rs" = 2
-"apps/tube/src/lib.rs" = 2
-"apps/tube/src/main.rs" = 2
 "apps/typst-editor/src/lib.rs" = 2
 "apps/typst-editor/src/main.rs" = 1
 "apps/vpn/src/main.rs" = 2
