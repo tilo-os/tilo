@@ -109,10 +109,12 @@ fn collection_section(
             collection: Some(collection.id),
             request: Some(request.id),
         };
+        // The method is the row's badge: the section gives every badge one
+        // column, so the names start on one edge.
         let row = ListRow::new(format!("api.nav.request.{ci}.{ri}"), &request.name)
-            .meta(request.method.as_str())
+            .badge(request.method.as_str())
             .selected(view.selected == Some((ci, ri)))
-            .on_activate(pusher(sink, Cmd::LoadRequest(ci, ri)))
+            .on_view(pusher(sink, Cmd::LoadRequest(ci, ri)))
             .action(
                 Icon::Pencil,
                 "Rename request",
@@ -134,10 +136,10 @@ fn history(view: &SidebarView<'_>, sink: &Sink) -> Section {
         rows.push(quiet("No requests sent yet."));
     }
     for (hi, entry) in view.history.iter().enumerate() {
-        let line = format!("{} {}", entry.method.as_str(), short_path(&entry.url));
-        let row = ListRow::new(format!("api.nav.history.{hi}"), line)
+        let row = ListRow::new(format!("api.nav.history.{hi}"), short_path(&entry.url))
+            .badge(entry.method.as_str())
             .meta(entry.status.to_string())
-            .on_activate(pusher(sink, Cmd::ReplayHistory(hi)));
+            .on_effect(pusher(sink, Cmd::ReplayHistory(hi)));
         let row = match status_class(entry.status) {
             StatusClass::Success | StatusClass::Redirect => row.active(),
             StatusClass::ClientError => row.warning(),

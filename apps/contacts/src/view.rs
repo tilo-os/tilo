@@ -265,13 +265,16 @@ impl ContactList {
 
         let overflows = self.overflows();
         let bridge = self.shared.borrow();
-        // Rows run edge to edge, so their content lines up with the
-        // column's title above them; the scroll bar keeps its gutter.
-        let row_x0 = self.rect.x0;
+        // The rows' text starts on the column's content edge (the shell's
+        // `s3` column inset, where the column's title and the controls
+        // start); a row's lift bleeds past it. The scroll bar keeps its
+        // gutter.
+        let edge = f64::from(theme.tokens.spacing.s3) - ui::chrome::row_bleed(theme);
+        let row_x0 = self.rect.x0 + edge;
         let width_end = if overflows {
             self.rect.x1 - self.gutter
         } else {
-            self.rect.x1
+            self.rect.x1 - edge
         };
         let mut painted = Vec::new();
         if self.row_h > 0.0 && !bridge.rows.is_empty() {
@@ -761,7 +764,8 @@ impl ui::widget::Decorator for Overview {
             && let Ok(style) = taffy.style(controls)
         {
             let mut style = style.clone();
-            // The shell's column inset (`s3`), the rows' leading pad.
+            // The shell's column inset (`s3`): the column's content edge, where
+            // the rows' text starts too.
             let inset = length(theme.tokens.spacing.s3);
             let step = length(theme.tokens.spacing.s2);
             style.padding.left = inset;
