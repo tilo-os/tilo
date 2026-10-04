@@ -89,7 +89,7 @@ fn remove_card(st: &mut ChromeState, tab: TabId) {
         let mut tree = st.tree_mut();
         let removed = crate::shell::tab_binding::remove_tab(&mut tree, tab);
         if removed {
-            tree.flush_to_disk();
+            tree.queue_save();
         }
         removed
     };

@@ -68,6 +68,15 @@ pub const COMPAT_SERVICE: &str = "compat";
 /// Settings credential operation by merely connecting to the socket.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
 pub const APP_HOST_SERVICE: &str = "app-host";
+/// The shell runtime's supervisor. Its connection is stamped with the app id
+/// before the app holds it, so the supervisor knows which app is asking —
+/// the device's own shell is answered for Terminal and nobody else.
+pub const USH_SERVICE: &str = "ush";
+/// Prefix of the `ush` handoff; the supervisor reads it before any request.
+pub const USH_LAUNCH_MAGIC: [u8; 4] = *b"QUS1";
+/// After [`USH_LAUNCH_MAGIC`]: a little-endian `u32` length, then
+/// `{"protocol":1,"app_id":"…"}`.
+const USH_HANDOFF_FRAMING: Framing = Framing::little_endian(1024).reject_empty();
 /// Document media. Not declared by manifests: every app is handed a
 /// capability scoped to itself and its room, so a document's images live in
 /// the device content store rather than in the app's sandbox.
@@ -610,6 +619,27 @@ fn authenticate_service(
         };
     }
 
+    if name == USH_SERVICE {
+        let Some(launch) = context else {
+            let error = ServiceError::OpenFailed {
+                path: path.to_path_buf(),
+                source: std::io::Error::other("the ush service requires launcher context"),
+            };
+            return handoff_failure(required, error, "optional ush service skipped");
+        };
+        return match write_ush_handoff(stream, launch.app_id) {
+            Ok(()) => Ok(HandoffOutcome::Ready),
+            Err(source) => handoff_failure(
+                required,
+                ServiceError::OpenFailed {
+                    path: path.to_path_buf(),
+                    source,
+                },
+                "optional ush service rejected launch handoff",
+            ),
+        };
+    }
+
     if name == APP_HOST_SERVICE {
         let launch = context.ok_or(ServiceError::AppHostUnauthorized)?;
         write_app_host_handoff(stream, launch.app_id).map_err(|source| {
@@ -620,6 +650,18 @@ fn authenticate_service(
         })?;
     }
     Ok(HandoffOutcome::Ready)
+}
+
+fn write_ush_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "protocol": 1,
+        "app_id": app_id,
+    }))
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let frame = USH_HANDOFF_FRAMING.encode(&bytes)?;
+    stream.write_all(&USH_LAUNCH_MAGIC)?;
+    stream.write_all(&frame)?;
+    stream.flush()
 }
 
 fn write_app_host_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
@@ -875,6 +917,13 @@ mod tests {
             assert_eq!(bytes[..4], [39, 0, 0, 0]);
             assert_eq!(
                 serde_json::from_slice::<serde_json::Value>(&bytes[4..]).unwrap(),
+                app_only
+            );
+
+            let bytes = written(|stream| write_ush_handoff(stream, "so.tilo.notes"));
+            assert_eq!(bytes[..8], *b"QUS1\x27\0\0\0");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
                 app_only
             );
 
