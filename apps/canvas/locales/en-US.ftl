@@ -337,3 +337,4 @@ canvas-duplicated = Saved a copy as { $name }
 canvas-save-failed = Could not save: { $why }
 canvas-chooser-gone = the file chooser went away
 canvas-files-failed = Files could not answer: { $why }
+canvas-picture-failed = The picture was not added: { $why }
