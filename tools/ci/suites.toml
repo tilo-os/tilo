@@ -525,8 +525,13 @@ readers = ["crates/dev/tilo-vm-protocol/src/manifest.rs"]
 
 [[cargo]]
 package = "tilo-vmd"
-inputs = ["os/components.toml", "os/scripts/install-components.py"]
-readers = ["crates/dev/tilo-vmd/tests/jobs.rs"]
+# The device session's names are checked against the board layer that installs it.
+inputs = [
+  "os/components.toml", "os/scripts/install-components.py",
+  "os/dev/install-board-layer.sh", "os/usr/lib/systemd/system/tilo-board-headless-session@.service",
+  "os/usr/libexec/tilo-seat-session",
+]
+readers = ["crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs"]
 
 [[cargo]]
 package = "tilo-app-cli"
