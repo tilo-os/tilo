@@ -290,7 +290,6 @@ pub const KEY_EXISTING: &str = "onboarding.existing";
 pub const KEY_CHOOSE_NEARBY: &str = "onboarding.existing.nearby";
 pub const KEY_CHOOSE_RESTORE: &str = "onboarding.existing.restore";
 pub const KEY_BACK: &str = "onboarding.back";
-pub const KEY_CONNECT_PATH: &str = "onboarding.connect.path";
 pub const KEY_CONNECT_BROWSE: &str = "onboarding.connect.browse";
 pub const KEY_IMPORT: &str = "onboarding.import";
 pub const KEY_CONNECT_NEARBY: &str = "onboarding.connect.nearby";
@@ -593,6 +592,8 @@ pub struct OnboardingView {
     picker: Option<(PickerPurpose, FilePicker)>,
     connect_source_selected: bool,
     connect_passphrase: Arc<Mutex<String>>,
+    /// The backup file to restore from, as typed or chosen.
+    connect_path: ui::LocalState<String>,
     backup_passphrase: Arc<Mutex<String>>,
     backup_confirmation: Arc<Mutex<String>>,
     identity_dir: Option<PathBuf>,
@@ -833,6 +834,7 @@ impl OnboardingView {
             picker: None,
             connect_source_selected: false,
             connect_passphrase: Arc::new(Mutex::new(String::new())),
+            connect_path: ui::LocalState::new(String::new()),
             backup_passphrase: Arc::new(Mutex::new(String::new())),
             backup_confirmation: Arc::new(Mutex::new(String::new())),
             identity_dir: None,
@@ -2261,9 +2263,8 @@ impl OnboardingView {
     fn restore(&self, theme: &Theme) -> Box<dyn Widget> {
         let compact = self.rect.height() <= 540.0;
         let spacing = &theme.tokens.spacing;
-        let path = TextInput::new(Vec::new())
+        let path = TextInput::from_state(&self.connect_path)
             .with_id("onboarding.connect.path.field")
-            .with_on_change_path(KEY_CONNECT_PATH)
             .with_accessible_name(t("onboarding-connect-file"))
             .with_placeholder(&t("onboarding-connect-file-placeholder"))
             .with_font_size(theme.tokens.typography.scale.base);
@@ -2713,16 +2714,6 @@ fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
     )
 }
 
-fn read_string(state: &AutoCommit, root: &ObjId, key: &str) -> String {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-            ScalarValue::Str(text) => text.to_string(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    }
-}
-
 fn secret_input(
     id: &str,
     buffer: &Arc<Mutex<String>>,
@@ -2961,7 +2952,7 @@ impl Widget for OnboardingView {
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
         }
-        let connect_source_selected = !read_string(state, root, KEY_CONNECT_PATH).trim().is_empty();
+        let connect_source_selected = !self.connect_path.with(|path| path.trim().is_empty());
         if connect_source_selected != self.connect_source_selected {
             self.connect_source_selected = connect_source_selected;
             self.invalidation.structure();
@@ -2977,11 +2968,7 @@ impl Widget for OnboardingView {
             {
                 match purpose {
                     PickerPurpose::ImportIdentity => {
-                        let _ = state.put(
-                            root,
-                            KEY_CONNECT_PATH,
-                            ScalarValue::Str(path.to_string_lossy().into_owned().into()),
-                        );
+                        self.connect_path.set(path.to_string_lossy().into_owned());
                         self.connect_source_selected = true;
                         self.error = None;
                     }
@@ -3259,7 +3246,7 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_IMPORT) {
             let _ = state.put(root, KEY_IMPORT, ScalarValue::Boolean(false));
-            let source = PathBuf::from(read_string(state, root, KEY_CONNECT_PATH));
+            let source = PathBuf::from(self.connect_path.get());
             if self.flow.screen() == Screen::Restore && source.as_os_str().is_empty() {
                 self.error = Some(t("onboarding-connect-choose-file-first"));
                 self.invalidation.structure();
@@ -4871,11 +4858,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             press(&mut doc, KEY_EXISTING);
             press(&mut doc, KEY_CHOOSE_RESTORE);
-            let _ = doc.put(
-                &automerge::ROOT,
-                KEY_CONNECT_PATH,
-                ScalarValue::Str("/media/backup/primary.json".into()),
-            );
+            view.connect_path.set("/media/backup/primary.json".into());
             view.sync(&mut doc, &automerge::ROOT);
             assert_eq!(view.flow().screen(), Screen::Restore);
             press(&mut doc, KEY_IMPORT);
@@ -4912,11 +4895,7 @@ mod tests {
 
             press(&mut document, KEY_EXISTING);
             press(&mut document, KEY_CHOOSE_RESTORE);
-            let _ = document.put(
-                &automerge::ROOT,
-                KEY_CONNECT_PATH,
-                ScalarValue::Str("/media/backup/primary.json".into()),
-            );
+            view.connect_path.set("/media/backup/primary.json".into());
             view.sync(&mut document, &automerge::ROOT);
             press(&mut document, KEY_IMPORT);
             view.sync(&mut document, &automerge::ROOT);
@@ -4941,11 +4920,8 @@ mod tests {
             press(&mut doc, KEY_EXISTING);
             press(&mut doc, KEY_CHOOSE_RESTORE);
             view.sync(&mut doc, &automerge::ROOT);
-            let _ = doc.put(
-                &automerge::ROOT,
-                KEY_CONNECT_PATH,
-                ScalarValue::Str("/media/identity.tilo-identity".into()),
-            );
+            view.connect_path
+                .set("/media/identity.tilo-identity".into());
             press(&mut doc, KEY_IMPORT);
             view.sync(&mut doc, &automerge::ROOT);
             assert_eq!(view.flow().screen(), Screen::Restore);
@@ -4979,11 +4955,8 @@ mod tests {
                 Some("Choose an encrypted backup or legacy identity file first.")
             );
 
-            let _ = doc.put(
-                &automerge::ROOT,
-                KEY_CONNECT_PATH,
-                ScalarValue::Str("/media/identity.tilo-identity".into()),
-            );
+            view.connect_path
+                .set("/media/identity.tilo-identity".into());
             view.sync(&mut doc, &automerge::ROOT);
             let enabled = accessibility_for_id(
                 &*view.build_composition(&theme, PANEL_MAX_HEIGHT),
