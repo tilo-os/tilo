@@ -1094,6 +1094,8 @@ fi
 if [ "$KEEP_RAW" = 1 ]; then
   msg "4/4 leaving the raw image in place"
   sudo -n chown "$(id -u):$(id -g)" "$RAW"
+  # As for the qcow2 below: a VM that boots it must not wait on its writeback.
+  inenv "sync -- '$RAW'"
   msg "DONE: $RAW"
 else
   msg "4/4 qemu-img convert -> $QCOW"
@@ -1107,6 +1109,11 @@ else
   inenv "\$(test -x /usr/bin/qemu-img && echo /usr/bin/qemu-img || echo qemu-img) \
     convert -f raw -O qcow2 $qcow_opts '$RAW' '$QCOW'"
   rm -f "$RAW"
+  # Write the image out now. Otherwise gigabytes of it are still dirty in the
+  # host's page cache when a VM boots it, and the guest's first flush (the
+  # sync() at switch-root) waits for that writeback: the release gate's boot
+  # budget then measured the host's disk, not the OS (run 60770, 47 s).
+  inenv "sync -- '$QCOW'"
   msg "DONE: $QCOW"
   ls -lh "$QCOW" >&2
 fi
