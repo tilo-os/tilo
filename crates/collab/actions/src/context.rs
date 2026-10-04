@@ -520,6 +520,13 @@ impl ParticipantId {
         Self::new(format!("{AGENT_TASK_PARTICIPANT_PREFIX}{task_id}"))
     }
 
+    /// One host-minted execution's private view. This key is subordinate to the
+    /// admitted principal and confers no authority. Hosts derive it from their
+    /// execution lease, never a client-supplied run label or context.
+    pub fn for_execution(execution: uuid::Uuid) -> Self {
+        Self(format!("execution:{execution}"))
+    }
+
     /// The task id of a host-derived agent task participant.
     pub fn agent_task(&self) -> Option<&str> {
         self.0.strip_prefix(AGENT_TASK_PARTICIPANT_PREFIX)
