@@ -3320,7 +3320,6 @@ impl BrowserWidget {
                 event => event,
             };
             match event {
-                WebViewEvent::PaintSnapshot { .. } | WebViewEvent::PaintResource { .. } => {}
                 WebViewEvent::CredentialResult(reply) => {
                     let requests = self.credentials.apply(reply);
                     crate::credentials::Credentials::send(&self.engine, requests);
@@ -3498,7 +3497,9 @@ impl BrowserWidget {
                 WebViewEvent::LoadFinishedAt { .. }
                 | WebViewEvent::FaviconChanged { .. }
                 | WebViewEvent::TitleChanged(_)
-                | WebViewEvent::LoadProgress(_) => {}
+                | WebViewEvent::LoadProgress(_)
+                | WebViewEvent::PaintSnapshot { .. }
+                | WebViewEvent::PaintResource { .. } => {}
                 WebViewEvent::LoadFinished => {
                     if !self.forced_load_error && !self.address_error_active {
                         self.load_error = None;
