@@ -1076,6 +1076,7 @@ launch-failed-launcher-unavailable = Der App-Starter ist nicht verfügbar. Öffn
 launch-failed-stopped = Die App wurde beendet, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-failed-missing-library = Der App fehlt eine Bibliothek auf diesem System, daher wurde sie beendet, bevor sie sich öffnete.
 launch-failed-sandbox = Die Sandbox der App konnte nicht eingerichtet werden, daher wurde sie beendet, bevor sie sich öffnete.
+launch-failed-collaboration = Die App konnte dem Zusammenarbeitsdienst dieses Arbeitsbereichs nicht beitreten und wurde daher beendet, bevor sie sich öffnete. Das Desktop-Protokoll nennt den Grund.
 launch-failed-crashed = Die App ist abgestürzt, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-unnamed-app = Anwendung
 launch-failure-title = { $app } konnte nicht geöffnet werden
