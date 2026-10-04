@@ -13,7 +13,9 @@ use ui_core::widget::{Decorator, ResourceOperation, ResourceOperationStart, Widg
 use ui_core::{PresencePayload, WakeHandle};
 
 use super::dispatch::Dispatcher;
-use super::effect::{EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects, Projection};
+use super::effect::{
+    EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects, Jobs, OwnedJobs, Projection,
+};
 use super::live::Live;
 use super::rows::{LiveRow, outside_document, resolved_outside_document};
 use super::scenario::{Run, RunMode};
@@ -227,6 +229,7 @@ impl<R: Resource, S: ResourceSurface<R, E>, E: Effect> SurfaceHost<R, S, E> {
 
 /// What a surface receives when attached.
 pub struct SurfaceCx<R: Resource> {
+    pub(crate) jobs: Jobs<R>,
     pub(crate) dispatch: Dispatcher<R>,
     pub(crate) live: Live<R>,
     pub(crate) run: Run,
@@ -238,6 +241,13 @@ pub struct SurfaceCx<R: Resource> {
 impl<R: Resource> SurfaceCx<R> {
     pub fn dispatcher(&self) -> Dispatcher<R> {
         self.dispatch.clone()
+    }
+
+    /// Jobs the surface starts on its own, with nobody invoking an effect;
+    /// their completions get `&mut` the surface (`jobs.start::<Self>(…)`).
+    /// Keep the handle. See [`Jobs`].
+    pub fn jobs(&self) -> Jobs<R> {
+        self.jobs.clone()
     }
 
     /// The dispatcher of the resource nested in this one at `id`, whose
@@ -429,6 +439,8 @@ pub(crate) struct SurfaceHost<R: Resource, S, E> {
     effects: Option<EffectRunner<R, S, E>>,
     /// What the surface last said of its effects, which the root publishes.
     statuses: Rc<RefCell<Vec<EffectStatus>>>,
+    /// The jobs the surface started on its own.
+    jobs: OwnedJobs<R, S>,
 }
 
 /// The scenario a surface stages on its next sync: outer `None` is nothing
@@ -440,6 +452,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
         live: Live<R>,
         dispatch: Dispatcher<R>,
         effects: &Effects<R>,
+        jobs: Jobs<R>,
         alive: Weak<()>,
         surface: S,
     ) -> Self {
@@ -459,6 +472,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
             staging: Staging::default(),
             effects: runner,
             statuses,
+            jobs: OwnedJobs::new(jobs),
             surface,
         }
     }
@@ -521,6 +535,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         if let Some(scenario) = staged {
             self.surface.stage(scenario.as_deref());
         }
+        self.jobs.poll(&mut self.surface);
         self.surface.sync(state, path);
         if self.effects.is_some() {
             let now = self.surface.effects();
