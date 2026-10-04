@@ -39,7 +39,7 @@ use crate::palette::{method_color, method_short, status_class, status_color};
 pub const ROW_H: f64 = 30.0;
 
 /// Which of the three sidebar row shapes this row paints.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum NavKind {
     Disclosure {
         expanded: bool,
