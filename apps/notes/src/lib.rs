@@ -42,6 +42,7 @@ pub mod actions;
 pub mod app;
 mod continuation;
 pub mod doc;
+pub mod effect;
 mod files;
 pub mod main_panel;
 pub mod markdown;
@@ -57,6 +58,7 @@ pub mod sidebar;
 pub mod status_bar;
 
 pub use app::NotesApp;
+pub use effect::NotesEffect;
 pub use main_panel::MainPanel;
 pub use model::{PageId, PageMeta, Workspace, WorkspaceData};
 pub use resource::{Notebook, NotesShell};
