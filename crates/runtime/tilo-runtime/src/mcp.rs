@@ -12,6 +12,11 @@ use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
 
+/// Host-configured per-session construction. It receives no client identity,
+/// label, requested room or execution UUID.
+pub type SessionFactory<H> =
+    std::sync::Arc<dyn Fn() -> std::io::Result<McpServer<H>> + Send + Sync>;
+
 pub struct McpServer<H> {
     host: H,
     retire_execution: fn(&H, &Caller),
@@ -298,6 +303,36 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         let caller = Caller::local_person(actor.clone())
             .in_room(room.clone())
             .in_new_execution();
+        Self::from_caller(host, room, actor, caller)
+    }
+
+    /// The host has already bound this exact authenticated run to its action
+    /// door. This constructor does not mint or replace the execution identity.
+    pub(crate) fn admitted(host: H, caller: Caller) -> std::io::Result<Self> {
+        let tilo_actions::remote::CallerPrincipal::Person(actor) = caller.principal() else {
+            return Err(std::io::Error::other(
+                "MCP requires an admitted person execution",
+            ));
+        };
+        let room = caller
+            .room()
+            .ok_or_else(|| std::io::Error::other("MCP room unavailable"))?
+            .to_owned();
+        if caller.user_public_key().is_none()
+            || caller.device_public_key().is_none()
+            || !caller.execution_is_live()
+        {
+            return Err(std::io::Error::other("MCP certified execution unavailable"));
+        }
+        let actor = actor.clone();
+        Ok(Self::from_caller(host, room, actor, caller))
+    }
+
+    pub(crate) fn audience_matches(&self, room: &str, actor: &str) -> bool {
+        self.room == room && self.actor == actor
+    }
+
+    fn from_caller(host: H, room: String, actor: String, caller: Caller) -> Self {
         Self {
             host,
             retire_execution: H::retire_execution,
