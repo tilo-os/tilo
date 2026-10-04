@@ -435,6 +435,34 @@ impl std::fmt::Display for ClientSteps {
     }
 }
 
+/// A key event's handling, step by step; reported as `SLOW-KEY` when the
+/// whole of it took long enough to delay the frame that answers it.
+struct KeySteps {
+    started: Instant,
+    steps: ClientSteps,
+}
+
+const SLOW_KEY: Duration = Duration::from_millis(8);
+
+impl KeySteps {
+    fn start() -> Self {
+        Self {
+            started: Instant::now(),
+            steps: ClientSteps::start(),
+        }
+    }
+}
+
+impl Drop for KeySteps {
+    fn drop(&mut self) {
+        let total = self.started.elapsed();
+        if total >= SLOW_KEY {
+            self.steps.mark("rest");
+            eprintln!("SLOW-KEY total={total:?} ({})", self.steps);
+        }
+    }
+}
+
 fn dispatch_wayland_clients_fairly(
     display: &mut Display<State>,
     state: &mut State,
@@ -8535,6 +8563,8 @@ pub fn run() {
                         .translate(&wev, Instant::now())
                         .map(|(action, pressed)| switch_action_event(action, pressed));
                     let wev = translated_switch.as_ref().unwrap_or(&wev);
+                    let mut key_steps =
+                        matches!(wev, WindowEvent::KeyboardInput { .. }).then(KeySteps::start);
                     // Pointer motion changes the compositor-owned cursor even
                     // when the focused Wayland client consumes the event.  It
                     // therefore needs a frame independently of whether chrome
@@ -8553,6 +8583,9 @@ pub fn run() {
                             local_session_lifecycle.as_ref(),
                             &mut screen_dimmer,
                         );
+                    }
+                    if let Some(steps) = key_steps.as_mut() {
+                        steps.steps.mark("activity");
                     }
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
@@ -8573,6 +8606,9 @@ pub fn run() {
                         locked,
                         frame_builder.host().shortcut_config(),
                     );
+                    if let Some(steps) = key_steps.as_mut() {
+                        steps.steps.mark("route");
+                    }
                     if locked {
                         if let Some(network) = peer_sync.as_ref() {
                             end_spatial_control(network, &mut spatial_control);
@@ -8799,6 +8835,9 @@ pub fn run() {
                                 wev,
                                 &test_control_ctx.modifiers,
                             );
+                        if let Some(steps) = key_steps.as_mut() {
+                            steps.steps.mark("client");
+                        }
                         if !to_client {
                             session_changed |= client_input::finish_chrome_drag_into_shell(
                                 &mut state,
@@ -8813,6 +8852,9 @@ pub fn run() {
                                 &test_control_ctx.root_obj,
                                 &mut test_control_ctx.focus,
                             );
+                            if let Some(steps) = key_steps.as_mut() {
+                                steps.steps.mark("chrome");
+                            }
                             // Chrome input can change the active tab/group/workspace. The
                             // backend may have already queued the next physical key in this
                             // same batch, so move the Wayland seat now rather than only after
