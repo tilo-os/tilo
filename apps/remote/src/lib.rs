@@ -74,38 +74,4 @@ pub mod tilo_route;
 pub mod vnc;
 pub mod vt;
 
-use ui::widget::Widget;
-
-/// Build the live app: it starts empty and shows only the user's real saved
-/// connections. It never fabricates a machine list.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(app::RemoteApp::new())
-}
-
-/// Build the live app staged with a named `--shots` scenario. Empty on a
-/// fresh machine — the responsive-layout scenarios still apply.
-///
-/// Recognised scenarios:
-/// * `"narrow"` — collapse the navigation rail into its closed overlay flap,
-///   for the responsive small-viewport capture.
-/// * `"confirm-connect"` / `"confirm-delete"` / `"confirm-ssh-trust"` — stage the local,
-///   revalidation-aware confirmation surfaces without starting a transport or
-///   mutating the shared document.
-pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
-    let mut app = app::RemoteApp::new();
-    app.dev_shot_scenario(scenario);
-    Box::new(app)
-}
-
-/// Build the sample-seeded demo app staged with a `--shots` scenario. This
-/// is the ONLY entry point that fabricates a connection list — used by the
-/// screenshot gallery so a populated frame is captured.
-pub fn app_root_for_shot_demo(scenario: &str) -> Box<dyn Widget> {
-    let mut app = app::RemoteApp::new_demo();
-    // Responsive-rail scenarios and screen scenarios are both dispatched by
-    // name; each ignores a name it doesn't recognise.
-    app.dev_shot_scenario(scenario);
-    app.dev_set_screen(scenario);
-    Box::new(app)
-}
-pub use resource::{Remote, RemoteShell, launch_spec};
+pub use resource::{Remote, RemoteShell};
