@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
@@ -1344,13 +1344,13 @@ pub struct VideoEditorApp {
     /// sources this device cannot read says which. Carries its own severity —
     /// see [`NoticeLevel`].
     project_notice: Option<Notice>,
-    resource_invocation: Option<tilo_actions::InvocationId>,
-    resource_operation: Option<crate::actions::VideoEditorOperation>,
-    resource_result: Option<tilo_actions::InvocationUpdate>,
-    resource_pending_operation: Option<(
-        tilo_actions::InvocationId,
-        crate::actions::VideoEditorOperation,
-    )>,
+    /// The project file or render job an effect started, answered through
+    /// `resource_reply` once it settles.
+    resource_operation: Option<crate::actions::VideoEditorEffect>,
+    resource_reply: Option<ui::framework::EffectReply>,
+    /// A project open or save at a named path, run on the next sync, where
+    /// the document is at hand.
+    resource_pending_operation: Option<crate::actions::VideoEditorEffect>,
     /// The project menu (Open / Save / Save As / recents), on the shared
     /// [`ContextMenu`] every other menu in the app uses.
     project_menu: ContextMenu,
@@ -1561,9 +1561,8 @@ impl VideoEditorApp {
             saved_heads: None,
             project_rx: None,
             project_notice: None,
-            resource_invocation: None,
             resource_operation: None,
-            resource_result: None,
+            resource_reply: None,
             resource_pending_operation: None,
             project_menu: ContextMenu::new(),
             project_menu_items: Vec::new(),
@@ -4981,11 +4980,11 @@ impl VideoEditorApp {
     )]
     fn perform_resource_operation(
         &mut self,
-        operation: crate::actions::VideoEditorOperation,
+        operation: crate::actions::VideoEditorEffect,
     ) -> Result<(), String> {
-        use crate::actions::VideoEditorOperation;
+        use crate::actions::VideoEditorEffect;
         match operation {
-            VideoEditorOperation::RevealClip { clip } => {
+            VideoEditorEffect::RevealClip { clip } => {
                 let id = clip
                     .parse::<Uuid>()
                     .map_err(|_| format!("invalid clip id: {clip}"))?;
@@ -4999,7 +4998,7 @@ impl VideoEditorApp {
                 self.seek_to(clip.start);
                 self.reveal_inspector();
             }
-            VideoEditorOperation::RevealEffect { clip, effect } => {
+            VideoEditorEffect::RevealEffect { clip, effect } => {
                 let clip_id = clip
                     .parse::<Uuid>()
                     .map_err(|_| format!("invalid clip id: {clip}"))?;
@@ -5018,7 +5017,7 @@ impl VideoEditorApp {
                 self.seek_to(clip.start);
                 self.reveal_inspector();
             }
-            VideoEditorOperation::RevealTrack { track } => {
+            VideoEditorEffect::RevealTrack { track } => {
                 let id = track
                     .parse::<Uuid>()
                     .map_err(|_| format!("invalid track id: {track}"))?;
@@ -5041,7 +5040,7 @@ impl VideoEditorApp {
                     self.reveal_inspector();
                 }
             }
-            VideoEditorOperation::RevealMarker { marker, clip } => {
+            VideoEditorEffect::RevealMarker { marker, clip } => {
                 let marker_id = marker
                     .parse::<Uuid>()
                     .map_err(|_| format!("invalid marker id: {marker}"))?;
@@ -5076,7 +5075,7 @@ impl VideoEditorApp {
                 }
                 self.seek_to(at);
             }
-            VideoEditorOperation::RevealMedia { media } => {
+            VideoEditorEffect::RevealMedia { media } => {
                 let id = media
                     .parse::<Uuid>()
                     .map_err(|_| format!("invalid media id: {media}"))?;
@@ -5087,23 +5086,23 @@ impl VideoEditorApp {
                 self.selection.clear();
                 self.bin_flap.open();
             }
-            VideoEditorOperation::ImportMedia { path: None } => self.trigger_import(),
-            VideoEditorOperation::OpenProject { path: None } => self.request_open_project(),
-            VideoEditorOperation::SaveProject { path: None } => self.queue_save_project(),
-            VideoEditorOperation::SaveProjectAs { path: None } => self.request_save_as(),
-            VideoEditorOperation::Export { path: None } => self.request_export(),
-            VideoEditorOperation::ImportMedia { path: Some(path) } => {
+            VideoEditorEffect::Import { path: None } => self.trigger_import(),
+            VideoEditorEffect::Open { path: None } => self.request_open_project(),
+            VideoEditorEffect::Save { path: None } => self.queue_save_project(),
+            VideoEditorEffect::SaveAs { path: None } => self.request_save_as(),
+            VideoEditorEffect::Export { path: None } => self.request_export(),
+            VideoEditorEffect::Import { path: Some(path) } => {
                 self.pending_imports.push(PathBuf::from(path));
             }
-            VideoEditorOperation::Export { path: Some(path) } => {
+            VideoEditorEffect::Export { path: Some(path) } => {
                 self.begin_export_to(PathBuf::from(path));
             }
-            VideoEditorOperation::OpenProject { path: Some(_) }
-            | VideoEditorOperation::SaveProject { path: Some(_) }
-            | VideoEditorOperation::SaveProjectAs { path: Some(_) } => {
+            VideoEditorEffect::Open { path: Some(_) }
+            | VideoEditorEffect::Save { path: Some(_) }
+            | VideoEditorEffect::SaveAs { path: Some(_) } => {
                 return Err("direct project I/O requires lifecycle dispatch".into());
             }
-            VideoEditorOperation::CancelExport => {
+            VideoEditorEffect::CancelExport => {
                 let Some(job) = self.export_job.as_ref() else {
                     return Err("no export is running".into());
                 };
@@ -5114,12 +5113,21 @@ impl VideoEditorApp {
     }
 
     fn finish_resource_file_operation_if_ready(&mut self) {
-        use crate::actions::VideoEditorOperation;
+        use crate::actions::VideoEditorEffect;
         let Some(operation) = self.resource_operation.as_ref() else {
             return;
         };
+        if matches!(operation, VideoEditorEffect::Export { .. })
+            && self
+                .resource_reply
+                .as_ref()
+                .is_some_and(ui::framework::EffectReply::is_cancelled)
+            && let Some(job) = self.export_job.as_ref()
+        {
+            job.cancel();
+        }
         let outcome: Option<Result<(), String>> = match operation {
-            VideoEditorOperation::ImportMedia { .. }
+            VideoEditorEffect::Import { .. }
                 if self.import_rx.is_none() && self.pending_imports.is_empty() =>
             {
                 self.import_notice.as_ref().map(|notice| {
@@ -5130,9 +5138,9 @@ impl VideoEditorApp {
                     }
                 })
             }
-            VideoEditorOperation::OpenProject { .. }
-            | VideoEditorOperation::SaveProject { .. }
-            | VideoEditorOperation::SaveProjectAs { .. }
+            VideoEditorEffect::Open { .. }
+            | VideoEditorEffect::Save { .. }
+            | VideoEditorEffect::SaveAs { .. }
                 if self.project_rx.is_none()
                     && self.resource_pending_operation.is_none()
                     && self.pending_open.is_none() =>
@@ -5145,32 +5153,25 @@ impl VideoEditorApp {
                     }
                 })
             }
-            VideoEditorOperation::Export { .. } => match &self.export_status {
+            VideoEditorEffect::Export { .. } => match &self.export_status {
                 ExportStatus::Done { .. } => Some(Ok(())),
                 ExportStatus::Failed { reason } => Some(Err(reason.clone())),
                 _ => None,
             },
             _ => None,
         };
-        let (Some(invocation), Some(outcome)) = (self.resource_invocation.take(), outcome) else {
-            return;
-        };
+        if let Some(outcome) = outcome {
+            self.settle_resource_job(outcome);
+        }
+    }
+
+    /// Answer the effect that started the running project file or render
+    /// job with `outcome`.
+    fn settle_resource_job(&mut self, outcome: Result<(), String>) {
         self.resource_operation = None;
-        self.resource_result = Some(match outcome {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-            Err(message) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "video_editor.operation_failed".into(),
-                    message,
-                    details: None,
-                    retryable: false,
-                },
-            },
-        });
+        if let Some(reply) = self.resource_reply.take() {
+            reply.finish(outcome.map(|()| ui::tilo_actions::ActionOutput::default()));
+        }
     }
 
     /// Drain any pending imports (queued deterministic files first, then a
@@ -5209,12 +5210,8 @@ impl VideoEditorApp {
             }
             Some(ImportOutcome::Cancelled) => {
                 self.import_notice = None;
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_operation = None;
-                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
-                        invocation,
-                        message: Some("media selection was cancelled".into()),
-                    });
+                if self.resource_reply.is_some() {
+                    self.settle_resource_job(Err("media selection was cancelled".into()));
                 }
             }
             // The picker itself refused. Its wording ("the file picker needs
@@ -6016,10 +6013,6 @@ impl Widget for VideoEditorApp {
         dyn ui::presence::capability::PublishesPresence
     );
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::VIDEO_EDITOR_OPERATION_TYPE]
-    }
-
     #[expect(
         clippy::too_many_lines,
         reason = "the per-frame sync reads as the ordered list of things a frame reconciles"
@@ -6029,19 +6022,18 @@ impl Widget for VideoEditorApp {
         if std::mem::take(&mut self.project_sync.save_requested) {
             self.save_project(state);
         }
-        if let Some((invocation, operation)) = self.resource_pending_operation.take() {
-            use crate::actions::VideoEditorOperation;
+        if let Some(operation) = self.resource_pending_operation.take() {
+            use crate::actions::VideoEditorEffect;
             match &operation {
-                VideoEditorOperation::OpenProject { path: Some(path) } => {
+                VideoEditorEffect::Open { path: Some(path) } => {
                     self.begin_open(PathBuf::from(path));
                 }
-                VideoEditorOperation::SaveProject { path: Some(path) }
-                | VideoEditorOperation::SaveProjectAs { path: Some(path) } => {
+                VideoEditorEffect::Save { path: Some(path) }
+                | VideoEditorEffect::SaveAs { path: Some(path) } => {
                     self.write_project_to(state, PathBuf::from(path));
                 }
                 _ => {}
             }
-            self.resource_invocation = Some(invocation);
         }
         // The project arrives through `present`; the document's heads say
         // whether it has changed since it was saved.
@@ -6959,57 +6951,6 @@ impl Widget for VideoEditorApp {
         Some("video_editor_root")
     }
 
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        self.poll_export();
-        self.finish_resource_file_operation_if_ready();
-        if self
-            .resource_result
-            .as_ref()
-            .is_some_and(|u| u.invocation() == invocation)
-        {
-            self.resource_result.take()
-        } else {
-            None
-        }
-    }
-
     fn is_focusable(&self) -> bool {
         true
     }
@@ -7312,71 +7253,38 @@ impl ui::undo::UndoControl for VideoEditorApp {
 }
 
 impl VideoEditorApp {
-    fn answer_resource_operation(
+    /// Answer `effect`. A reveal or a cancel answers at once; an import,
+    /// project open or save and an export answer once their job settles
+    /// ([`Self::finish_resource_file_operation_if_ready`]).
+    fn answer_effect(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
+        effect: crate::actions::VideoEditorEffect,
+        cx: &mut ui::framework::EffectCx<crate::resource::VideoProject, Self>,
+    ) -> ui::framework::EffectAnswer {
+        use crate::actions::VideoEditorEffect;
+        match &effect {
+            VideoEditorEffect::RevealTrack { .. }
+            | VideoEditorEffect::RevealClip { .. }
+            | VideoEditorEffect::RevealEffect { .. }
+            | VideoEditorEffect::RevealMarker { .. }
+            | VideoEditorEffect::RevealMedia { .. }
+            | VideoEditorEffect::CancelExport => {
+                self.perform_resource_operation(effect)?;
+                return Ok(ui::framework::Effected::done());
+            }
+            VideoEditorEffect::Open { path: Some(_) }
+            | VideoEditorEffect::Save { path: Some(_) }
+            | VideoEditorEffect::SaveAs { path: Some(_) } => {
+                self.resource_pending_operation = Some(effect.clone());
+            }
+            _ => self.perform_resource_operation(effect.clone())?,
         }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected = crate::actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match video editor operation kind {expected:?}"
-            ));
+        if self.resource_reply.is_some() {
+            self.settle_resource_job(Err("a newer project or render job replaced this one".into()));
         }
-        self.perform_resource_operation(operation)?;
-        Ok(true)
-    }
-
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
-        };
-        let expected = crate::actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match video editor operation kind {expected:?}"
-            ));
-        }
-        if matches!(
-            operation,
-            crate::actions::VideoEditorOperation::CancelExport
-        ) {
-            self.answer_resource_operation(kind, type_id, payload, doc, path)?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
-        }
-        if matches!(
-            operation,
-            crate::actions::VideoEditorOperation::OpenProject { path: Some(_) }
-                | crate::actions::VideoEditorOperation::SaveProject { path: Some(_) }
-                | crate::actions::VideoEditorOperation::SaveProjectAs { path: Some(_) }
-        ) {
-            self.resource_operation = Some(operation.clone());
-            self.resource_pending_operation = Some((invocation, operation));
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        self.perform_resource_operation(operation)?;
-        self.resource_operation = crate::actions::decode_operation(type_id, payload)?;
-        self.resource_invocation = Some(invocation);
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        self.resource_operation = Some(effect);
+        self.resource_reply = Some(cx.reply());
+        Ok(ui::framework::Effected::Pending)
     }
 }
 
@@ -9142,7 +9050,40 @@ impl VideoEditorApp {
     }
 }
 
-impl ui::framework::ResourceSurface<crate::resource::VideoProject> for VideoEditorApp {
+impl
+    ui::framework::ResourceSurface<crate::resource::VideoProject, crate::actions::VideoEditorEffect>
+    for VideoEditorApp
+{
+    fn effect(
+        &mut self,
+        effect: crate::actions::VideoEditorEffect,
+        cx: &mut ui::framework::EffectCx<crate::resource::VideoProject, Self>,
+    ) -> ui::framework::EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
+    /// Export needs an encoder in this build; cancelling needs a render
+    /// running.
+    fn effects(&self) -> Vec<ui::framework::EffectStatus> {
+        use crate::actions::VideoEditorEffect;
+        let mut statuses = Vec::new();
+        if let Some(reason) = crate::export::unavailable_reason() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                VideoEditorEffect::EXPORT,
+                "export_unavailable",
+                reason,
+            ));
+        }
+        if self.export_job.is_none() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                VideoEditorEffect::CANCEL_EXPORT,
+                "no_export_running",
+                "No export is running",
+            ));
+        }
+        statuses
+    }
+
     /// The stored project changed: a local edit the host applied, a
     /// collaborator's, an undo — or, in History mode, a past version. A drag
     /// in flight keeps its live preview; the new project is loaded when it
