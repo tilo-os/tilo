@@ -19,11 +19,10 @@
 //! the movable [`ComposeWindow`], the row context menu, the account-setup
 //! sheet, and a status toast.
 //!
-//! The live app loads a real [`AccountStore`] and drives the account
-//! [`crate::engine`] worker (IMAP fetch / SMTP submit; a network-free stub by
-//! default). It does **not** fabricate a sample mailbox — an unconfigured
-//! account shows an empty state. The bundled sample corpus is used only by the
-//! hermetic `--shots` / test constructors.
+//! A live window loads the [`AccountStore`] of its host's profile and drives
+//! the account [`crate::engine`] worker (IMAP fetch / SMTP submit). It does
+//! **not** fabricate a sample mailbox — an unconfigured account shows an empty
+//! state. The bundled sample corpus is a screenshot's fixture.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -161,31 +160,25 @@ struct PendingAttachmentSave {
 
 /// Where account add / edit / remove is persisted.
 ///
-/// Only the **live** app may write the user's real account store
-/// (`$XDG_CONFIG_HOME/tilo/accounts/`). The sample / `--shots` / test
-/// constructors target a throwaway sandbox directory instead, so exercising the
-/// save flow (or a test that adds an account) can never leak fabricated demo
-/// accounts into the real store. The historic leak — `you@example.test`,
-/// `you@hooli.example`, `new@host.example` appearing pre-configured in the live
-/// app — was exactly this: a test that drove the save path wrote the bundled
-/// sample store to the real config root.
+/// Only a live window writes an account store, and only the one of the
+/// profile its host gave it: the person's own (`$XDG_CONFIG_HOME/tilo/accounts/`)
+/// in a session, a test or `--data-dir` profile's own otherwise. A screenshot
+/// or a past version writes nothing.
 #[derive(Clone)]
 enum AccountsPersist {
-    /// The real per-user config root — live app only.
-    Real,
-    /// A throwaway directory, removed when the app is dropped. The `TempDir`
-    /// guard owns the directory's lifetime.
+    /// The configuration directory of the host's profile.
+    Profile(std::path::PathBuf),
+    /// A throwaway directory, removed when the app is dropped.
+    #[cfg(test)]
     Sandbox(Arc<tempfile::TempDir>),
-    /// No writable sandbox could be created — persistence is a silent no-op.
-    /// A safe fallback that still never touches the real store.
+    /// Nothing is written: a capture, a past version, or a profile without a
+    /// configuration directory.
     Disabled,
 }
 
 impl AccountsPersist {
-    /// A fresh throwaway sandbox for the sample / shots / test constructors.
-    /// Falls back to [`AccountsPersist::Disabled`] (never [`AccountsPersist::Real`])
-    /// if a temp dir cannot be created, so sample mode can never reach the real
-    /// store.
+    /// A fresh throwaway sandbox for tests.
+    #[cfg(test)]
     fn sandbox() -> Self {
         match tempfile::Builder::new()
             .prefix("tilo-mail-sample-")
@@ -196,12 +189,27 @@ impl AccountsPersist {
         }
     }
 
+    /// The configuration directory this persists into.
+    fn root(&self) -> Option<std::path::PathBuf> {
+        match self {
+            AccountsPersist::Profile(root) => Some(root.clone()),
+            #[cfg(test)]
+            AccountsPersist::Sandbox(dir) => Some(dir.path().to_path_buf()),
+            AccountsPersist::Disabled => None,
+        }
+    }
+
+    /// The accounts stored there; none when nothing is.
+    fn load(&self) -> AccountStore {
+        self.root()
+            .map_or_else(AccountStore::new, |root| AccountStore::load_in(&root))
+    }
+
     /// Persist `accounts` to the target this variant names.
     fn persist(&self, accounts: &AccountStore) -> std::io::Result<()> {
-        match self {
-            AccountsPersist::Real => accounts.persist(),
-            AccountsPersist::Sandbox(dir) => accounts.persist_in(dir.path()),
-            AccountsPersist::Disabled => Ok(()),
+        match self.root() {
+            Some(root) => accounts.persist_in(&root),
+            None => Ok(()),
         }
     }
 
@@ -234,12 +242,20 @@ impl AccountsPersist {
     }
 
     fn local_preferences_path(&self) -> Option<std::path::PathBuf> {
-        let root = match self {
-            AccountsPersist::Real => accounts::config_root(),
-            AccountsPersist::Sandbox(dir) => Some(dir.path().to_path_buf()),
-            AccountsPersist::Disabled => None,
-        }?;
-        Some(root.join("mail-local.json"))
+        Some(self.root()?.join("mail-local.json"))
+    }
+}
+
+/// The configuration directory of the profile `storage` belongs to: the
+/// person's own in a session, else the directory of the settings document a
+/// test, capture or `--data-dir` host gave the app, so such a profile never
+/// reads or writes the person's accounts.
+fn profile_config_root(storage: &ui::storage::AppStorage) -> Option<std::path::PathBuf> {
+    match storage.settings_document() {
+        ui::storage::SettingsDocument::Session => accounts::config_root(),
+        ui::storage::SettingsDocument::File(path) => {
+            path.parent().map(std::path::Path::to_path_buf)
+        }
     }
 }
 
@@ -406,10 +422,19 @@ pub struct MailApp {
     /// first real layout snaps it to the resting state for the current width so
     /// a narrow launch doesn't flash the drawer open before easing it closed.
     first_layout: bool,
+    /// The screenshot scenario the framework asked to stage, until the next
+    /// sync stages it with the document.
+    pending_stage: Option<String>,
     dirty: bool,
 }
 
 impl MailApp {
+    /// Stage screenshot `scenario` on the next sync, which has the document.
+    pub(crate) fn request_stage(&mut self, scenario: &str) {
+        self.pending_stage = Some(scenario.to_owned());
+        self.dirty = true;
+    }
+
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
     pub(crate) fn attach_framework(
         &mut self,
@@ -437,8 +462,50 @@ impl MailApp {
         self.shared.borrow().mailbox.messages.len()
     }
 
-    /// The hermetic constructor used by `--shots` and tests: the bundled
-    /// sample corpus, no engine, deterministic "now".
+    /// A window someone uses: the accounts of the host's profile, and the
+    /// engine worker that keeps them current. No fabricated messages.
+    pub(crate) fn for_window(
+        storage: &ui::storage::AppStorage,
+        content: Option<ContentStore>,
+    ) -> Self {
+        let persist = profile_config_root(storage)
+            .map_or(AccountsPersist::Disabled, AccountsPersist::Profile);
+        let accounts = persist.load();
+        let shared = MailState::shared(MailState::new_live(accounts, avatar_store()));
+        let content = content.unwrap_or_else(ContentStore::for_app);
+        let (tx, rx) = crate::engine::spawn(content.clone());
+        Self::assemble(shared, content, Some(EngineHandle { tx, rx }), persist)
+    }
+
+    /// A past version in History: what the document holds, and nothing that
+    /// reaches a mail server or the account store.
+    pub(crate) fn for_past_version() -> Self {
+        let shared = MailState::shared(MailState::new_live(
+            AccountStore::new(),
+            avatar_store_offline(),
+        ));
+        Self::assemble(
+            shared,
+            ContentStore::memory(),
+            None,
+            AccountsPersist::Disabled,
+        )
+    }
+
+    /// A screenshot: the scenario's fixture mailbox and accounts, no engine,
+    /// a pinned clock and nothing written outside the document.
+    pub(crate) fn for_capture(fixture: &crate::sample::MailFixture) -> Self {
+        let shared = MailState::shared(MailState::from_fixture(fixture, avatar_store_offline()));
+        Self::assemble(
+            shared,
+            ContentStore::memory(),
+            None,
+            AccountsPersist::Disabled,
+        )
+    }
+
+    /// The sample mailbox, persisting account changes into a sandbox.
+    #[cfg(test)]
     pub fn new_sample() -> Self {
         let shared = MailState::shared(MailState::new_sample(avatar_store_offline()));
         Self::assemble(
@@ -449,26 +516,8 @@ impl MailApp {
         )
     }
 
-    /// The live constructor: a real account list loaded from disk and the
-    /// engine worker spawned. No fabricated messages.
-    pub fn new_live() -> Self {
-        let accounts = load_account_store();
-        let shared = MailState::shared(MailState::new_live(accounts, avatar_store()));
-        let content = ContentStore::for_app();
-        let (tx, rx) = crate::engine::spawn(content.clone());
-        // Only the live app writes the user's real account store.
-        Self::assemble(
-            shared,
-            content,
-            Some(EngineHandle { tx, rx }),
-            AccountsPersist::Real,
-        )
-    }
-
-    /// A first-run constructor with no configured account and no engine —
-    /// renders the onboarding / welcome screen. Used by the `firstrun` shot.
-    /// Persists to a throwaway sandbox (never the real store) so a driven
-    /// add-account in this mode stays hermetic.
+    /// No account configured yet, persisting into a sandbox.
+    #[cfg(test)]
     pub fn new_first_run() -> Self {
         let shared = MailState::shared(MailState::new_live(
             AccountStore::new(),
@@ -567,29 +616,113 @@ impl MailApp {
             rect: Rect::ZERO,
             layout_theme: Theme::dark(),
             first_layout: true,
+            pending_stage: None,
             dirty: true,
         }
     }
 
-    // ---- `--shots` priming ------------------------------------------------
+    // ---- screenshot staging ----------------------------------------------
 
-    /// Open the composer with a representative HTML draft (compose shot).
-    pub fn prime_compose_shot(&mut self) {
-        self.compose.open_demo();
+    /// Stage the view state screenshot `scenario` shows over the fixture
+    /// mailbox. Runs in the sync after the framework asked for it, with the
+    /// document, so a scenario that changes mail (moving messages to Trash
+    /// before confirming a purge) does it through the resource's actions.
+    fn stage_scenario(&mut self, doc: &mut AutoCommit, scenario: &str) {
+        match scenario {
+            "compose" | "compose_narrow" => self.compose.open_demo(),
+            "narrow_detail" => {
+                self.nav.show_detail();
+                self.nav.snap();
+            }
+            "narrow_drawer" => {
+                self.nav.open_sidebar();
+                self.nav.snap_sidebar(true);
+            }
+            "setup" | "setup_narrow" => {
+                let active = self.shared.borrow().accounts.active;
+                self.open_setup_edit(Some(active));
+            }
+            "setup_add" => self.stage_setup_add(),
+            "setup_oauth" => {
+                self.open_setup_edit(None);
+                self.set_setup_input(0, "Grace Hopper");
+                self.set_setup_input(1, "grace.hopper@gmail.com");
+                // The built-in provider table only: a capture opens no socket.
+                self.maybe_autofill_live_typing();
+                self.focus_setup(Some(1));
+            }
+            "html_mail" => self.stage_html_mail(doc),
+            "search" => {
+                let mut st = self.shared.borrow_mut();
+                st.search = "spatial".into();
+                st.search_focused = true;
+                st.selected = st.list_rows().first().map(|(id, _)| *id);
+                st.dirty = true;
+            }
+            "preview" => self.stage_preview(),
+            "bulk" => self.stage_bulk(),
+            "bulk_purge_confirmation" => self.stage_bulk_purge_confirmation(doc),
+            "reply" => self.stage_reply(),
+            "context_menu" => {
+                let selected = self.shared.borrow().selected;
+                if let Some(id) = selected {
+                    self.shared
+                        .borrow_mut()
+                        .push_intent(Intent::ContextMenu(id, Point::new(790.0, 206.0)));
+                    self.process_intents();
+                }
+            }
+            "loading" => {
+                self.awaiting_engine = true;
+                self.shared.borrow_mut().status = Some("Syncing Inbox…".into());
+            }
+            "offline" => {
+                self.shared.borrow_mut().status =
+                    Some("You’re offline · Showing downloaded mail".into());
+            }
+            "error" => {
+                self.stage_setup_add();
+                self.setup_error = Some(
+                    "Couldn’t connect to IMAP. Check the server, port, and TLS settings, then try again."
+                        .into(),
+                );
+            }
+            _ => {}
+        }
         self.dirty = true;
     }
 
-    /// Push the detail pane in and snap it (narrow "reading a message" shot).
-    pub fn prime_detail_shot(&mut self) {
-        self.nav.show_detail();
-        self.nav.snap();
-        self.dirty = true;
+    /// A blank "Add account" sheet with an email typed and its servers
+    /// filled in, focus on a server field so its focus ring shows.
+    fn stage_setup_add(&mut self) {
+        self.open_setup_edit(None);
+        self.set_setup_input(0, "Grace Hopper");
+        self.set_setup_input(1, "grace@fastmail.com");
+        // The built-in provider table only: a capture opens no socket.
+        self.maybe_autofill_live_typing();
+        self.focus_setup(Some(4));
     }
 
-    /// Open an unread sample message through the same explicit read-state
-    /// neutral path that agents and Ctrl+K use, so visual review covers the
-    /// persistent preview indicator rather than relying only on a unit test.
-    pub fn prime_preview_shot(&mut self) {
+    /// The bundled HTML newsletter open in the reader (it is starred, so the
+    /// filled-star action shows too).
+    fn stage_html_mail(&mut self, doc: &mut AutoCommit) {
+        let id = {
+            let st = self.shared.borrow();
+            st.mailbox
+                .messages
+                .values()
+                .find(|m| m.from.email == "news@weekly.example.test")
+                .map(|m| m.id)
+        };
+        if let Some(id) = id {
+            self.shared.borrow_mut().select_message(doc, id);
+            self.process_intents();
+        }
+    }
+
+    /// An unread message inspected through the read-neutral preview, so the
+    /// persistent preview indicator shows.
+    fn stage_preview(&mut self) {
         let id = self
             .shared
             .borrow()
@@ -601,13 +734,11 @@ impl MailApp {
             self.shared.borrow_mut().preview_message(id);
             self.process_intents();
         }
-        self.dirty = true;
     }
 
-    /// Show the local multi-message triage state with a small, deliberate
-    /// selection. This exercises the extra header row, selected-row treatment,
-    /// and bulk controls without putting synthetic mail on the live path.
-    pub fn prime_bulk_shot(&mut self) {
+    /// Two messages selected for bulk triage: the extra header row, the
+    /// selected-row treatment and the bulk controls.
+    fn stage_bulk(&self) {
         let ids: Vec<MessageId> = self
             .shared
             .borrow()
@@ -621,14 +752,11 @@ impl MailApp {
         for id in ids {
             state.toggle_bulk_selection(id);
         }
-        drop(state);
-        self.dirty = true;
     }
 
-    /// Render the destructive confirmation after an all-Trash selection. This
-    /// is a visual contract test: the review surface names the affected count
-    /// and the irreversibility before the canonical purge action is authored.
-    pub fn prime_bulk_purge_confirmation_shot(&mut self) {
+    /// Two messages moved to Trash and selected, with the confirmation that
+    /// names how many will be deleted for good.
+    fn stage_bulk_purge_confirmation(&mut self, doc: &mut AutoCommit) {
         let ids: Vec<MessageId> = self
             .shared
             .borrow()
@@ -639,19 +767,20 @@ impl MailApp {
             .map(|message| message.id)
             .collect();
         let mut state = self.shared.borrow_mut();
+        for id in &ids {
+            state.move_message(doc, *id, Folder::Trash);
+        }
         state.set_bulk_selecting(true);
         for id in ids {
-            state.mailbox.move_to(id, Folder::Trash);
             state.toggle_bulk_selection(id);
         }
         state.push_intent(Intent::ConfirmBulkPurge);
         drop(state);
         self.process_intents();
-        self.dirty = true;
     }
 
-    /// Review a real reply draft rather than a generic blank composition.
-    pub fn prime_reply_shot(&mut self) {
+    /// A reply to the newest inbox message, rather than a blank composition.
+    fn stage_reply(&mut self) {
         let id = self
             .shared
             .borrow()
@@ -663,99 +792,6 @@ impl MailApp {
             self.shared.borrow_mut().push_intent(Intent::Reply(id));
             self.process_intents();
         }
-        self.dirty = true;
-    }
-
-    /// Open the same menu a row right-click produces. It exercises only the
-    /// existing sample mailbox and never implies provider activity or delivery.
-    pub fn prime_context_menu_shot(&mut self) {
-        let selected = self.shared.borrow().selected;
-        if let Some(id) = selected {
-            self.shared
-                .borrow_mut()
-                .push_intent(Intent::ContextMenu(id, Point::new(790.0, 206.0)));
-            self.process_intents();
-        }
-        self.dirty = true;
-    }
-
-    /// Put the list in an active, non-empty search state. This is deliberately
-    /// seeded through the same shared query state used by type-ahead rather
-    /// than fabricating a separate search-only data path.
-    pub fn prime_search_shot(&mut self) {
-        let mut st = self.shared.borrow_mut();
-        st.search = "spatial".into();
-        st.search_focused = true;
-        st.selected = st.list_rows().first().map(|(id, _)| *id);
-        st.dirty = true;
-        drop(st);
-        self.dirty = true;
-    }
-
-    /// Open the account-setup sheet (setup shot).
-    pub fn prime_setup_shot(&mut self) {
-        let active = self.shared.borrow().accounts.active;
-        self.open_setup_edit(Some(active));
-    }
-
-    /// Open a blank "Add account" sheet with an email typed + servers
-    /// autofilled, so the shot shows the add flow with single-border fields.
-    pub fn prime_setup_add_shot(&mut self) {
-        self.open_setup_edit(None);
-        self.set_setup_input(0, "Grace Hopper");
-        self.set_setup_input(1, "grace@fastmail.com");
-        self.maybe_autofill();
-        // Land focus on a server field so the single-border focus ring shows.
-        self.focus_setup(Some(4));
-    }
-
-    /// Open a blank "Add account" sheet with a Gmail address — which presets to
-    /// OAuth — so the shot shows the OAuth sign-in flow.
-    pub fn prime_setup_oauth_shot(&mut self) {
-        self.open_setup_edit(None);
-        self.set_setup_input(0, "Grace Hopper");
-        self.set_setup_input(1, "grace.hopper@gmail.com");
-        self.maybe_autofill();
-        self.focus_setup(Some(1));
-    }
-
-    /// Select the bundled HTML newsletter so the reader renders it through the
-    /// sandboxed `WebView` (HTML-mail shot). Also demonstrates the filled-star
-    /// action (the newsletter is starred).
-    pub fn prime_html_mail_shot(&mut self) {
-        let id = {
-            let st = self.shared.borrow();
-            st.mailbox
-                .messages
-                .values()
-                .find(|m| m.from.email == "news@weekly.example.test")
-                .map(|m| m.id)
-        };
-        if let Some(id) = id {
-            let mut doc = AutoCommit::new();
-            self.shared.borrow_mut().select_message(&mut doc, id);
-            self.process_intents();
-        }
-        self.dirty = true;
-    }
-
-    /// A configured mailbox before any messages have arrived.
-    pub fn prime_empty_shot(&mut self) {
-        let mut st = self.shared.borrow_mut();
-        let account = st.mailbox.account.clone();
-        st.mailbox = crate::model::Mailbox::new(account);
-        st.selected = None;
-        st.folder = Folder::Inbox;
-        st.dirty = true;
-        drop(st);
-        self.dirty = true;
-    }
-
-    /// A real in-flight sync indication over cached mail.
-    pub fn prime_loading_shot(&mut self) {
-        self.awaiting_engine = true;
-        self.shared.borrow_mut().status = Some("Syncing Inbox…".into());
-        self.dirty = true;
     }
 
     /// Queue one worker request and account for it exactly once.  Every engine
@@ -783,29 +819,6 @@ impl MailApp {
     /// out-of-order result must not update a different operation's UI state.
     fn expects_engine_event(&self, request_id: EngineRequestId, kind: EngineRequestKind) -> bool {
         self.pending_engine_requests.get(&request_id) == Some(&kind)
-    }
-
-    /// Cached mail remains usable while connectivity is unavailable.
-    pub fn prime_offline_shot(&mut self) {
-        self.shared.borrow_mut().status = Some("You’re offline · Showing downloaded mail".into());
-        self.dirty = true;
-    }
-
-    /// A recoverable account error: the configuration stays open and editable.
-    pub fn prime_error_shot(&mut self) {
-        self.prime_setup_add_shot();
-        self.setup_error = Some(
-            "Couldn’t connect to IMAP. Check the server, port, and TLS settings, then try again."
-                .into(),
-        );
-        self.dirty = true;
-    }
-
-    /// Open the sidebar overlay drawer and snap it (narrow drawer shot).
-    pub fn prime_drawer_shot(&mut self) {
-        self.nav.open_sidebar();
-        self.nav.snap_sidebar(true);
-        self.dirty = true;
     }
 
     // ---- nav layout -------------------------------------------------------
@@ -3595,11 +3608,7 @@ impl MailApp {
     /// prove sample mode never resolves the real store path.
     #[cfg(test)]
     fn accounts_persist_root(&self) -> Option<std::path::PathBuf> {
-        match &self.accounts_persist {
-            AccountsPersist::Real => accounts::config_root(),
-            AccountsPersist::Sandbox(dir) => Some(dir.path().to_path_buf()),
-            AccountsPersist::Disabled => None,
-        }
+        self.accounts_persist.root()
     }
 }
 
@@ -3936,13 +3945,6 @@ fn draft_from_message(m: &Message) -> Draft {
         ),
         in_reply_to: None,
     }
-}
-
-/// Load the account list from the shared canonical store
-/// (`$XDG_CONFIG_HOME/tilo/accounts/`), hydrating each password from the
-/// encrypted vault. An empty store when nothing is configured yet.
-fn load_account_store() -> AccountStore {
-    AccountStore::load()
 }
 
 fn report_account_sync(
@@ -4924,6 +4926,9 @@ impl Widget for MailApp {
                 self.connect_requested = true;
             }
             self.shared.borrow_mut().seeded = true;
+        }
+        if let Some(scenario) = self.pending_stage.take() {
+            self.stage_scenario(state, &scenario);
         }
         // Live app: advance the wall clock (relative timestamps + the periodic
         // refresh cadence read it) and fire a periodic refresh when due. The
@@ -7934,14 +7939,35 @@ mod tests {
             );
         }
 
-        // Phase `live_mode_persists_to_the_real_config_root`.
+        // Phase `a_live_window_persists_into_its_hosts_profile`.
         {
-            // The live app is the ONLY constructor allowed to write the real store.
-            let app = MailApp::new_live();
+            // A session window keeps the person's accounts; a test, capture or
+            // `--data-dir` profile keeps its own beside its settings document.
+            let session = ui::storage::AppStorage::for_app("so.tilo.mail");
+            assert_eq!(profile_config_root(&session), accounts::config_root());
+            let profile = tempfile::tempdir().unwrap();
+            let storage = ui::storage::AppStorage::new(
+                "so.tilo.mail",
+                session.secrets(),
+                ui::storage::SettingsDocument::File(profile.path().join("settings.json")),
+            );
             assert_eq!(
-                app.accounts_persist_root(),
-                accounts::config_root(),
-                "the live app must persist to the real per-user config root"
+                profile_config_root(&storage).as_deref(),
+                Some(profile.path())
+            );
+            let app = MailApp::for_window(&storage, Some(ContentStore::memory()));
+            assert_eq!(
+                app.accounts_persist_root().as_deref(),
+                Some(profile.path()),
+                "the live app persists into its host's profile"
+            );
+            assert!(
+                app.shared.borrow().accounts.is_empty(),
+                "a fresh profile has no accounts"
+            );
+            assert!(
+                app.shared.borrow().mailbox.messages.is_empty(),
+                "no fabricated startup mail"
             );
         }
 
@@ -7977,17 +8003,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn presentation_state_stays_local_and_the_live_app_starts_empty() {
-        // Phase `live_starts_without_fabricated_messages`.
-        {
-            // The live constructor must not seed a sample corpus.
-            let app = MailApp::new_live();
-            assert!(
-                app.shared.borrow().mailbox.messages.is_empty(),
-                "no fabricated startup mail"
-            );
-        }
-
+    fn presentation_state_stays_local() {
         // Phase `presentation_state_is_local_and_never_restored_from_a_peer_document`.
         {
             let mut doc = AutoCommit::new();
