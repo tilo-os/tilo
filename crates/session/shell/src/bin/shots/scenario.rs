@@ -1636,10 +1636,25 @@ fn build_scenarios() -> Vec<Scenario> {
             actions: vec![
                 Action::ShowHostDesktopOnboarding,
                 Action::Wait(4),
-                Action::Snapshot("01-identity-introduction"),
-                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Connect),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Intro),
                 Action::Relayout,
-                Action::Snapshot("02-restore-existing"),
+                Action::Snapshot("01-identity-introduction"),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::Existing,
+                ),
+                Action::Relayout,
+                Action::Snapshot("02-use-existing"),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Nearby),
+                Action::Relayout,
+                Action::Snapshot("02a-nearby-waiting"),
+                Action::SetOnboardingVisual(
+                    shell::onboarding_view::OnboardingVisualState::NearbyCode,
+                ),
+                Action::Relayout,
+                Action::Snapshot("02b-nearby-code"),
+                Action::SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState::Restore),
+                Action::Relayout,
+                Action::Snapshot("02c-restore-backup"),
                 Action::SetOnboardingVisual(
                     shell::onboarding_view::OnboardingVisualState::RestoreError,
                 ),
