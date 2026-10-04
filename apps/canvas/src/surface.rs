@@ -2645,6 +2645,7 @@ fn embedded_picture(
     let alone = Mark {
         transform: None,
         clip: String::new(),
+        area: String::new(),
         style: crate::model::Style {
             adjust: mark.style.adjust.clone(),
             ..crate::model::Style::default()
