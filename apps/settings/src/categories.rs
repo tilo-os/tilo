@@ -36,6 +36,17 @@ impl Section {
         Section::Maintenance,
     ];
 
+    /// Stable identifier of the section in the navigation list.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Section::Connectivity => "connectivity",
+            Section::Devices => "devices",
+            Section::System => "system",
+            Section::Hubs => "accounts-permissions",
+            Section::Maintenance => "maintenance",
+        }
+    }
+
     /// The section header label.
     pub fn label(self) -> String {
         t(match self {
@@ -484,9 +495,12 @@ impl Category {
         match self {
             Category::Network => Icon::Wifi,
             Category::Bluetooth => Icon::Bluetooth,
-            Category::DeviceMesh | Category::ExternalAccounts => Icon::CloudDownload,
-            Category::AgentModels | Category::Appearance => Icon::Sparkles,
-            Category::Sound | Category::Speakers => Icon::Volume2,
+            Category::DeviceMesh => Icon::CloudDownload,
+            Category::ExternalAccounts => Icon::Mail,
+            Category::AgentModels => Icon::Sparkles,
+            Category::Appearance => Icon::Sun,
+            Category::Sound => Icon::Volume2,
+            Category::Speakers => Icon::Music,
             Category::Displays => Icon::Monitor,
             Category::MouseKeyboard => Icon::Mouse,
             Category::KeyboardShortcuts => Icon::Keyboard,
@@ -559,6 +573,11 @@ impl Category {
             .any(|k| k.contains(&q) || padded.contains(&format!(" {k} ")))
     }
 
+    /// The category whose [`Self::slug`] is `slug`.
+    pub fn from_slug(slug: &str) -> Option<Category> {
+        Category::ALL.iter().copied().find(|c| c.slug() == slug)
+    }
+
     /// Stable identifier suffix used to compose `test_id`s and CRDT keys.
     pub fn slug(self) -> &'static str {
         match self {
@@ -624,7 +643,7 @@ mod tests {
         // The device privacy destination does not claim workspace authority.
         assert_eq!(
             Category::Permissions.label(),
-            "Device Privacy & Security",
+            "Device privacy & security",
             "the navigation destination names its system-wide scope"
         );
         assert!(

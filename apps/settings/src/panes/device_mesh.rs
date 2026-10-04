@@ -367,7 +367,7 @@ fn continuity_key(capability: Capability) -> String {
 }
 
 fn origin_summary(origin: &Origin) -> String {
-    format!("{} · revision {}", origin.device_label, origin.counter)
+    format!("{} (revision {})", origin.device_label, origin.counter)
 }
 
 fn resolution_summary(winner: &Origin, alternatives: &[Origin]) -> String {
@@ -510,7 +510,7 @@ fn last_seen_label(last_seen_ms: u64) -> String {
 }
 
 fn peer_health_badge(health: &str) -> String {
-    if health.starts_with("Online") && health.contains("Syncing") {
+    if health.starts_with("Online") && health.contains("syncing") {
         t("mesh-badge-syncing")
     } else if health.starts_with("Online") {
         t("mesh-badge-online")
@@ -902,10 +902,7 @@ impl DeviceMeshPane {
         let sync_auto = t("mesh-sync-auto");
         let files = t("mesh-files");
         let download_opened = t("mesh-download-opened");
-        let mut continuation_rows = vec![
-            value_row(&activity, &sync_auto),
-            caption(&t("mesh-activity-caption")),
-        ];
+        let mut continuation_rows = vec![value_row(&activity, &sync_auto)];
         if self.config.workspaces.is_empty() {
             continuation_rows.push(value_row(&files, &download_opened));
         } else {
@@ -1046,7 +1043,6 @@ impl DeviceMeshPane {
                 &pair_label,
                 Some(APPROVE_ENROLLMENT_KEY),
             )
-            .content_sized()
             .with_enabled(!pairing),
         );
         let personal_label = if pairing && self.pairing_target == PairingTarget::PersonalDevice {
@@ -1073,15 +1069,8 @@ impl DeviceMeshPane {
                 &personal_label,
                 Some(APPROVE_PERSONAL_DEVICE_KEY),
             )
-            .content_sized()
             .with_enabled(!pairing),
         );
-        let mut personal_rows = vec![caption(&t("mesh-personal-caption"))];
-        if self.pairing_target == PairingTarget::PersonalDevice
-            && (pairing || self.pairing_candidate.is_some() || !self.load_status.is_empty())
-        {
-            personal_rows.push(caption(&mesh_status_shown(&self.load_status)));
-        }
         let mut enrolled_device_rows = Vec::new();
         for device in &self.personal_devices {
             let armed = self.personal_remove_armed.contains(&device.key);
@@ -1106,7 +1095,6 @@ impl DeviceMeshPane {
                 if armed {
                     Box::new(
                         Button::new(&revoke_key, &t("mesh-revoke-access"), Some(&revoke_key))
-                            .content_sized()
                             .with_enabled(!device.current && !device.revoked),
                     )
                 } else if device.current || device.revoked || device.can_host {
@@ -1119,10 +1107,11 @@ impl DeviceMeshPane {
                         },
                     )
                 } else {
-                    Box::new(
-                        Button::new(&revoke_key, &t("mesh-decommission"), Some(&revoke_key))
-                            .content_sized(),
-                    )
+                    Box::new(Button::new(
+                        &revoke_key,
+                        &t("mesh-decommission"),
+                        Some(&revoke_key),
+                    ))
                 },
             ));
             if armed {
@@ -1147,10 +1136,11 @@ impl DeviceMeshPane {
                 enrolled_device_rows.push(setting_row_described(
                     &ends,
                     &ends_desc,
-                    Box::new(
-                        Button::new(&cancel_key, &t("mesh-cancel"), Some(&cancel_key))
-                            .content_sized(),
-                    ),
+                    Box::new(Button::new(
+                        &cancel_key,
+                        &t("mesh-cancel"),
+                        Some(&cancel_key),
+                    )),
                 ));
             }
         }
@@ -1161,6 +1151,12 @@ impl DeviceMeshPane {
             )));
         } else if enrolled_device_rows.is_empty() {
             enrolled_device_rows.push(caption(&t("mesh-device-list-empty")));
+        }
+        enrolled_device_rows.push(caption(&t("mesh-personal-caption")));
+        if self.pairing_target == PairingTarget::PersonalDevice
+            && (pairing || self.pairing_candidate.is_some() || !self.load_status.is_empty())
+        {
+            enrolled_device_rows.push(caption(&mesh_status_shown(&self.load_status)));
         }
 
         let current_device = self
@@ -1249,21 +1245,17 @@ impl DeviceMeshPane {
             let cap_label = capability.label();
             privacy_rows.push(setting_row_described(&cap_label, &status, Box::new(toggle)));
         }
-        privacy_rows.push(caption(&t("mesh-privacy-stay")));
         if let Some(status) = &self.continuity_status {
             privacy_rows.push(caption(status));
         }
 
         let current_target_label = t("mesh-current-target");
         let source_label = t("mesh-source");
-        let mut provenance_rows = vec![
+        let provenance_rows = vec![
             value_row(&current_target_label, target_name),
             caption(&target_detail),
             value_row(&source_label, &source_detail),
         ];
-        if current_target.is_none() {
-            provenance_rows.push(caption(&t("mesh-no-active-until")));
-        }
 
         let audit_rows = if self.continuity.audit.is_empty() {
             vec![caption(&t("mesh-audit-empty"))]
@@ -1273,11 +1265,7 @@ impl DeviceMeshPane {
                 .iter()
                 .rev()
                 .take(6)
-                .map(|entry| {
-                    let change = t("mesh-audit-change");
-                    value_row(&change, &entry.summary())
-                })
-                .chain(std::iter::once(caption(&t("mesh-audit-caption"))))
+                .map(|entry| value_row(&entry.summary(), &entry.when()))
                 .collect()
         };
         let mut roaming_rows = self.roaming_provenance.as_ref().map_or_else(
@@ -1297,7 +1285,6 @@ impl DeviceMeshPane {
         if let Some(status) = &self.roaming_provenance_status {
             roaming_rows.push(caption(status));
         }
-        roaming_rows.push(caption(&t("mesh-roaming-caption")));
         let mut home_server_rows = vec![caption(&t("mesh-home-caption"))];
         if self.registered_home_peers > 0 {
             let paired = t("mesh-paired-homes");
@@ -1311,7 +1298,6 @@ impl DeviceMeshPane {
         let route_title = t("mesh-route-title");
         let roaming_title = t("mesh-roaming-title");
         let activity_title = t("mesh-activity-title");
-        let add_personal = t("mesh-add-personal");
         let trusted_title = t("mesh-trusted-title");
         let availability_title = t("mesh-availability-title");
         let synced_title = t("mesh-synced-title");
@@ -1319,11 +1305,10 @@ impl DeviceMeshPane {
         let mut sections = vec![
             card(&continue_title, rows(continuation_rows)),
             card(&privacy_title, rows(privacy_rows)),
+            card_with_action(&trusted_title, approve_personal, rows(enrolled_device_rows)),
             card(&route_title, rows(provenance_rows)),
             card(&roaming_title, rows(roaming_rows)),
             card(&activity_title, rows(audit_rows)),
-            card_with_action(&add_personal, approve_personal, rows(personal_rows)),
-            card(&trusted_title, rows(enrolled_device_rows)),
             card(&availability_title, rows(availability_rows)),
             card(&synced_title, workspace_rows),
             card_with_action(&home_nas, approve, rows(home_server_rows)),
@@ -1336,21 +1321,23 @@ impl DeviceMeshPane {
             let name = TextInput::new(Vec::new())
                 .with_id(&rename_key)
                 .with_on_change_path(&rename_key)
-                .with_placeholder(&peer.label)
-                .with_font_size(13.0);
-            let rename = Box::new(
-                Button::new(&rename_action, &t("mesh-rename"), Some(&rename_action))
-                    .content_sized(),
-            );
+                .with_placeholder(&peer.label);
+            let rename = Box::new(Button::new(
+                &rename_action,
+                &t("mesh-rename"),
+                Some(&rename_action),
+            ));
             let armed = self.remove_armed.contains(device);
             let remove_label = if armed {
                 t("mesh-revoke-remove")
             } else {
                 t("mesh-remove-server")
             };
-            let remove = Box::new(
-                Button::new(&remove_action, &remove_label, Some(&remove_action)).content_sized(),
-            );
+            let remove = Box::new(Button::new(
+                &remove_action,
+                &remove_label,
+                Some(&remove_action),
+            ));
             let health = self
                 .home_peer_health
                 .get(device)
@@ -1392,10 +1379,11 @@ impl DeviceMeshPane {
                 peer_rows.push(setting_row_described(
                     &files_stay,
                     &files_stay_desc,
-                    Box::new(
-                        Button::new(&cancel_action, &t("mesh-cancel"), Some(&cancel_action))
-                            .content_sized(),
-                    ),
+                    Box::new(Button::new(
+                        &cancel_action,
+                        &t("mesh-cancel"),
+                        Some(&cancel_action),
+                    )),
                 ));
             }
             sections.push(card_with_action(&peer.label, remove, rows(peer_rows)));
@@ -1694,7 +1682,7 @@ impl DeviceMeshPane {
             }
             Err(error) => {
                 self.home_peer_health
-                    .insert(peer.device_node_id.clone(), format!("Offline · {error}"));
+                    .insert(peer.device_node_id.clone(), format!("Offline, {error}"));
             }
         }
         self.structure_dirty = true;
@@ -1855,9 +1843,9 @@ impl DeviceMeshPane {
                             if removed {
                                 "Removed".into()
                             } else if ready {
-                                "Online · Files ready".into()
+                                "Online, files ready".into()
                             } else {
-                                "Online · Syncing files".into()
+                                "Online, syncing files".into()
                             },
                         );
                         let now_ms = ui::time::wall()
@@ -1873,7 +1861,7 @@ impl DeviceMeshPane {
                 } else {
                     let detail = command_error(&output.stderr, "not reachable");
                     let label = self.home_peer_last_seen.get(&device).map_or_else(
-                        || format!("Offline · {detail}"),
+                        || format!("Offline, {detail}"),
                         |last_seen| last_seen_label(*last_seen),
                     );
                     self.home_peer_health.insert(device, label);
@@ -1884,7 +1872,7 @@ impl DeviceMeshPane {
                 self.management_child = None;
                 if let Some(device) = self.management_device.take() {
                     self.home_peer_health
-                        .insert(device, format!("Offline · {error}"));
+                        .insert(device, format!("Offline, {error}"));
                 }
                 self.structure_dirty = true;
             }
@@ -2146,9 +2134,113 @@ impl ui::undo::UndoPoints for DeviceMeshPane {
         crate::panes::preference_commit_context(
             pending,
             "devices-sync",
-            "Devices & Sync",
+            "Devices & sync",
             "Change device mesh settings",
         )
+    }
+}
+
+/// The `--shots` pane: a laptop that is one of three personal devices,
+/// keeping one workspace available and sharing most of what Continuity can.
+#[cfg(not(feature = "thin"))]
+mod capture {
+    use super::{
+        Capability, CheckpointPrefixRecovery, ContinuityPrivacy, DeviceMeshPane,
+        DiscoveredWorkspace, HashMap, ReplicationIntent,
+    };
+    use crate::continuity::AuditEntry;
+    use crate::device_fleet::DeviceView;
+    use tilo_relay_protocol::WorkspaceBinding;
+
+    fn device(label: &str, seed: u8, current: bool, can_host: bool) -> DeviceView {
+        let key = [seed; 32];
+        DeviceView {
+            label: label.into(),
+            key,
+            fingerprint: key[..6]
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            current,
+            revoked: false,
+            can_host,
+        }
+    }
+
+    impl DeviceMeshPane {
+        pub(crate) fn for_shot() -> Self {
+            let mut pane = Self::from_path(
+                std::env::temp_dir()
+                    .join(format!("settings-shot-{}/relay.toml", std::process::id())),
+            );
+            pane.config.workspaces = vec![WorkspaceBinding {
+                id: 1,
+                pin: true,
+                replication: ReplicationIntent::OnDemand,
+                admitted_users: Vec::new(),
+                shell_authority: None,
+                checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
+            }];
+            pane.discovered_workspaces = vec![
+                DiscoveredWorkspace {
+                    id: 1,
+                    name: "Personal".into(),
+                },
+                DiscoveredWorkspace {
+                    id: 2,
+                    name: "Studio".into(),
+                },
+            ];
+            pane.registered_home_peers = 0;
+            pane.home_peers = Vec::new();
+            pane.home_peer_health = HashMap::new();
+            pane.home_peer_last_seen = HashMap::new();
+            pane.personal_devices = vec![
+                device("ada-laptop", 0x3a, true, false),
+                device("Pixel 9", 0x7c, false, false),
+                device("Studio tower", 0x51, false, true),
+            ];
+            pane.personal_device_error = None;
+            let now = ui::time::wall()
+                .duration_since(ui::time::SystemTime::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs());
+            let mut continuity = ContinuityPrivacy {
+                enabled: true,
+                ..ContinuityPrivacy::default()
+            };
+            for capability in [
+                Capability::Clipboard,
+                Capability::Notifications,
+                Capability::WifiSettings,
+                Capability::Media,
+                Capability::FileTransfer,
+                Capability::RealtimeSessions,
+                Capability::AppContinuations,
+            ] {
+                continuity.set_allowed(capability, true);
+            }
+            continuity.audit = vec![
+                AuditEntry {
+                    recorded_at_secs: now.saturating_sub(26 * 3600),
+                    capability: Some(Capability::Clipboard),
+                    enabled: true,
+                },
+                AuditEntry {
+                    recorded_at_secs: now.saturating_sub(2 * 3600),
+                    capability: Some(Capability::DisplayInput),
+                    enabled: false,
+                },
+            ];
+            pane.continuity = continuity;
+            pane.continuity_path = None;
+            pane.roaming_provenance = None;
+            pane.roaming_provenance_path = None;
+            pane.roaming_provenance_status = None;
+            pane.structure_dirty = false;
+            pane.next_status_refresh = ui::time::now() + std::time::Duration::from_secs(24 * 3600);
+            pane
+        }
     }
 }
 
@@ -2219,11 +2311,11 @@ mod tests {
                 vec![
                     (
                         "tilo.appearance.theme".into(),
-                        "Resolved to Laptop · revision 8; differs from Desktop".into()
+                        "Resolved to Laptop (revision 8); differs from Desktop".into()
                     ),
                     (
-                        "Wi-Fi · Home".into(),
-                        "Sealed WPA2 profile. From Laptop · revision 9".into()
+                        "Wi-Fi: Home".into(),
+                        "Sealed WPA2 profile. From Laptop (revision 9)".into()
                     )
                 ]
             );
@@ -2491,9 +2583,9 @@ mod tests {
     fn device_health_and_workspace_status_reflect_fresh_facts() {
         // Case `peer_health_is_a_compact_visual_state_with_detail_beside_it`.
         {
-            assert_eq!(peer_health_badge("Online · Files ready"), "Online");
-            assert_eq!(peer_health_badge("Online · Syncing files"), "Syncing");
-            assert_eq!(peer_health_badge("Offline · Last seen 4 h ago"), "Offline");
+            assert_eq!(peer_health_badge("Online, files ready"), "Online");
+            assert_eq!(peer_health_badge("Online, syncing files"), "Syncing");
+            assert_eq!(peer_health_badge("Offline, last seen 4 h ago"), "Offline");
             assert_eq!(peer_health_badge("Checking…"), "Checking");
         }
 

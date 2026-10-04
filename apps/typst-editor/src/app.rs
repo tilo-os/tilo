@@ -284,13 +284,6 @@ impl TypstApp {
         Self::from_library(Self::save_dir().as_deref())
     }
 
-    /// This editor with its History button left to the window's own bar.
-    #[cfg(test)]
-    pub(crate) fn without_history_button(mut self) -> Self {
-        self.chrome.omit_history();
-        self
-    }
-
     /// A hermetic instance seeded with the bundled example documents. Used by
     /// the offscreen `--shots` renderer and tests so the output never depends
     /// on what happens to be on disk.
