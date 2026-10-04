@@ -6,7 +6,6 @@
 //! one bounded worker thread so redraws never dial a phone and shutdown is
 //! bounded by the transport's socket deadlines.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use ui::time::{Duration, UNIX_EPOCH};
@@ -213,17 +212,6 @@ impl DeviceSync {
         out
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_test_view(view: SyncView) -> Self {
-        let (_tx, events) = mpsc::channel();
-        Self {
-            commands: None,
-            events,
-            pairing_input: Arc::new(Mutex::new(String::new())),
-            view,
-        }
-    }
-
     /// Deterministic, secret-free lifecycle state for the offscreen visual
     /// review mode. It never starts a worker or opens a socket.
     #[doc(hidden)]
@@ -345,11 +333,10 @@ impl DeviceSync {
 
     /// Drain worker updates without mutating the render model.
     ///
-    /// A pulled package is intentionally returned to `TubeApp`, which imports
-    /// it through its canonical `TubeAction`/`ActionHost` boundary. Writing a
-    /// remote package directly into `TubeModel` made the next Automerge
-    /// reconciliation overwrite it, and made the device-only change invisible
-    /// to activity history, collaborators, and a restart.
+    /// A pulled package is returned to `TubeApp`, which imports it as library
+    /// edits through the framework's door and into the person's own watch
+    /// history, so it reaches collaborators, history and a restart like any
+    /// other change.
     ///
     /// The bool reports public status/fingerprint changes; the vector contains
     /// personal state that still needs canonical import.
@@ -762,45 +749,6 @@ pub fn state_from_model(model: &TubeModel) -> SyncState {
     }
 }
 
-/// Deterministic, additive merge for personal state arriving from devices.
-/// Automerge remains the collaboration authority after this is persisted by
-/// `TubeApp`; transport/device metadata is never inserted into that document.
-pub fn merge_remote_state(model: &mut TubeModel, remote: &SyncState) -> bool {
-    let mut changed = false;
-    let remote_channels = remote
-        .subscriptions
-        .iter()
-        .filter_map(|url| url.split('/').rfind(|part| !part.is_empty()))
-        .collect::<HashSet<_>>();
-    for channel in &model.channels {
-        if (remote_channels.contains(channel.id.as_str())
-            || remote_channels.contains(channel.handle.trim_start_matches('@'))
-            || remote_channels.contains(channel.handle.as_str()))
-            && !model.subscriptions.contains(&channel.id)
-        {
-            model.subscriptions.push(channel.id.clone());
-            changed = true;
-        }
-    }
-    for remote_id in &remote.watch_history {
-        let id = remote_id
-            .split(['/', '='])
-            .rfind(|part| !part.is_empty())
-            .unwrap_or(remote_id);
-        if model.video(id).is_some() && !model.history.iter().any(|local| local == id) {
-            model.history.push(id.to_string());
-            changed = true;
-        }
-    }
-    if let Some(settings) = &remote.settings
-        && &model.settings != settings
-    {
-        model.settings = settings.clone();
-        changed = true;
-    }
-    changed
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -815,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn device_sync_lifecycle_persists_keys_peers_and_merges_additively() {
+    fn device_sync_lifecycle_persists_keys_and_peers() {
         // Case `peer_store_survives_restart_and_keeps_revocation_tombstone`.
         {
             let dir = tempfile::tempdir().unwrap();
@@ -843,22 +791,6 @@ mod tests {
             let b = DeviceKey::from_private(&[2; 32]).unwrap();
             assert_eq!(a.public_base64(), a_restart.public_base64());
             assert_ne!(a.public_base64(), b.public_base64());
-        }
-        // Case `collaborative_merge_is_additive_and_never_adds_unknown_entities`.
-        {
-            let mut model = crate::sample::model();
-            let channel = model.channels[0].clone();
-            let video = model.videos[0].clone();
-            model.subscriptions.clear();
-            model.history.clear();
-            let remote = SyncState {
-                subscriptions: vec![format!("https://youtube.com/{}", channel.handle)],
-                watch_history: vec![video.id.clone(), "unknown-secret-looking-value".into()],
-                settings: None,
-            };
-            assert!(merge_remote_state(&mut model, &remote));
-            assert_eq!(model.subscriptions, vec![channel.id]);
-            assert_eq!(model.history, vec![video.id]);
         }
     }
 }

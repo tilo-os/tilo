@@ -47,7 +47,7 @@ pub use transport::{DeviceKey, GrayjaySession, GrayjaySyncTransport};
 #[cfg(feature = "grayjay-sync")]
 pub use lifecycle::state_from_model as lifecycle_state;
 #[cfg(feature = "grayjay-sync")]
-pub use lifecycle::{DeviceSync, PeerRecord, SyncStatus, SyncView, merge_remote_state};
+pub use lifecycle::{DeviceSync, PeerRecord, SyncStatus, SyncView};
 
 #[cfg(not(feature = "grayjay-sync"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

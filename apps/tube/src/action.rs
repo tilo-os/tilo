@@ -1,17 +1,18 @@
 //! The action bus: how leaf widgets (cards, nav items, toggles, the
 //! scrubber) tell the root [`crate::app::TubeApp`] what the user did.
 //!
-//! The toolkit's own widgets mutate the CRDT directly on click. Our
-//! navigation is richer than a boolean flag per control (open *this*
-//! video, subscribe to *that* channel, skip to *this* fraction), so we
-//! use a tiny shared queue instead: every interactive widget holds a
-//! clone of the `ActionBus` and pushes an [`Action`]; the root drains the
-//! queue after each event, applies it to the model, and flags a rebuild.
+//! Tube's screens are pure functions of the model, so their controls do not
+//! hold the root's state: every interactive widget holds a clone of the
+//! `ActionBus` and pushes an [`Action`] (open *this* video, skip to *this*
+//! fraction, set *this* like). The root drains the queue after each event:
+//! library edits and confirmed effects go through the framework's door,
+//! the rest changes what this window shows.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::model::{Category, ChannelId, PlaylistId, Route, SearchType, VideoId};
+use crate::actions::{TubeAction, TubeEffect};
+use crate::model::{ChannelId, PlaylistId, Route, SearchType, VideoId};
 use serde::{Deserialize, Serialize};
 
 /// Everything a click can request.
@@ -19,9 +20,6 @@ use serde::{Deserialize, Serialize};
 pub enum Action {
     Navigate(Route),
     OpenVideo(VideoId),
-    /// Clear this signed-in profile's synchronised watch-history collection.
-    /// This only affects the signed-in owner's local history store.
-    ClearHistory,
     OpenChannel(ChannelId),
     OpenPlaylist(PlaylistId),
     /// Toggle a type in the multi-select filter; first click narrows to just
@@ -30,19 +28,13 @@ pub enum Action {
     /// Pop the navigation stack (`ui::NavStack`); also reached via Escape /
     /// Alt-Left / edge-swipe.
     Back,
-    ToggleSubscribe(ChannelId),
     /// Fraction of the current video's duration, in `[0, 1]`.
     Seek(f64),
     TogglePlay,
-    /// Cycle a `SponsorBlock` category through auto-skip → show → off.
-    ToggleCategory(Category),
     /// Skip to `to` seconds, offered for a `Show`-mode segment the playhead
     /// is currently inside.
     SkipSegment(f64),
-    ToggleSetting(SettingFlag),
     SubmitSearch,
-    SetQuality(String),
-    ToggleLike(VideoId),
     Share(VideoId),
     /// Only visible on a narrow window, where the rail is an overlay flap.
     ToggleSidebar,
@@ -51,11 +43,14 @@ pub enum Action {
     /// `hit` is a deep-link (`tube://watch/<id>`, `tube://channel/<id>`);
     /// routes to the right screen and closes the palette.
     ActivateHit(String),
-    /// Approve the Grayjay invite currently held in the local-only input.
+    /// A change to the shared library, submitted as it is through the
+    /// framework's door.
+    Edit(TubeAction),
+    /// An effect the framework confirms before it runs: clearing the watch
+    /// history, approving or revoking a device, syncing.
+    Confirm(TubeEffect),
+    /// Pair with the Grayjay invite currently held in the local-only input.
     PairDevice,
-    SyncDevices,
-    ApproveDevice(String),
-    RevokeDevice(String),
 }
 
 impl Action {
@@ -71,29 +66,29 @@ impl Action {
             Self::Navigate(Route::Settings) => "Open settings",
             Self::Navigate(_) => "Open view",
             Self::OpenVideo(_) => "Open video",
-            Self::ClearHistory => "Clear watch history",
             Self::OpenChannel(_) => "Open creator",
             Self::OpenPlaylist(_) => "Open playlist",
             Self::ToggleSearchType(_) => "Toggle result type",
             Self::Back => "Go back",
-            Self::ToggleSubscribe(_) => "Subscribe or unsubscribe",
             Self::Seek(_) => "Seek video",
             Self::TogglePlay => "Play or pause",
-            Self::ToggleCategory(_) => "Change segment handling",
             Self::SkipSegment(_) => "Skip segment",
-            Self::ToggleSetting(_) => "Change setting",
             Self::SubmitSearch => "Search",
-            Self::SetQuality(_) => "Change playback quality",
-            Self::ToggleLike(_) => "Like or unlike video",
             Self::Share(_) => "Copy share link",
             Self::ToggleSidebar => "Show or hide navigation",
             Self::OpenPalette => "Search Tube actions",
             Self::ClosePalette => "Close action search",
             Self::ActivateHit(_) => "Open search result",
+            Self::Edit(TubeAction::SetVideoLiked { .. }) => "Like or unlike video",
+            Self::Edit(TubeAction::SetQueueMembership { .. }) => "Add to or remove from queue",
+            Self::Edit(TubeAction::SetSubscription { .. }) => "Subscribe or unsubscribe",
+            Self::Edit(TubeAction::SetSetting { .. }) => "Change setting",
+            Self::Edit(TubeAction::SetPreferredQuality { .. }) => "Change playback quality",
+            Self::Edit(TubeAction::SetSponsorCategory { .. }) => "Change segment handling",
+            Self::Edit(TubeAction::SetCommentLiked { .. }) => "Like or unlike comment",
+            Self::Edit(TubeAction::SetCommentReply { .. }) => "Reply to comment",
+            Self::Confirm(effect) => effect.label(),
             Self::PairDevice => "Pair Grayjay device",
-            Self::SyncDevices => "Sync approved devices now",
-            Self::ApproveDevice(_) => "Approve device access",
-            Self::RevokeDevice(_) => "Revoke device access",
         }
     }
 }
