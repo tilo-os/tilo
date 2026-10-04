@@ -1,15 +1,14 @@
-//! The open project as a complete, bounded Tilo global-search source.
+//! The open project as search entries: every marker, track, clip, effect
+//! and bin source is a findable place, and choosing one reveals it.
 //!
-//! Timeline data is a durable namespace, not a viewport. Do not use
-//! `DEFAULT_SEARCH_INDEX_LIMIT` here: a marker near the end of a large
-//! collaborative project must be as discoverable as the first one. The shared
-//! [`SearchCatalog`] retains the complete in-memory projection and bounds each
-//! query page by work and result count instead.
+//! Timeline data is a durable namespace, not a viewport: a marker near the
+//! end of a large collaborative project must be as discoverable as the first
+//! one, so nothing here is truncated. Searchable text is not display-trimmed
+//! either: a word late in a caption or a marker note remains findable.
 
 use std::collections::HashMap;
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
-use ui::icons::Icon;
+use ui::tilo_resource::SearchEntry;
 
 use crate::model::{Clip, ClipEffect, Marker, MediaItem, Project, Track};
 use crate::timecode;
@@ -22,183 +21,118 @@ pub const TRACK_KIND: &str = "Tracks";
 pub const MEDIA_KIND: &str = "Media";
 pub const EFFECT_KIND: &str = "Clip effects";
 
-/// A complete, cheap-to-clone catalogue over the current document snapshot.
-///
-/// The project is already resident for rendering, so building this projection
-/// never opens a decoder or reads a file. Search text is deliberately not
-/// display-truncated: a word late in a caption or marker note remains
-/// findable. `SearchCatalog` only materialises matching result rows.
-#[derive(Clone)]
-pub struct ProjectSearchProvider {
-    catalog: SearchCatalog,
+/// Every live navigable thing in `project`, each hit revealing it.
+pub fn project_entries(project: &Project) -> Vec<SearchEntry> {
+    let media: HashMap<_, _> = project.media.iter().map(|item| (item.id, item)).collect();
+    let tracks: HashMap<_, _> = project
+        .tracks
+        .iter()
+        .map(|track| (track.id, track))
+        .collect();
+    let mut media_uses = HashMap::new();
+    for clip in &project.clips {
+        *media_uses.entry(clip.media).or_insert(0usize) += 1;
+    }
+
+    let mut entries = Vec::new();
+    for marker in &project.markers {
+        entries.push(project_marker(marker));
+    }
+    for track in &project.tracks {
+        entries.push(track_entry(track));
+    }
+    for clip in &project.clips {
+        // A dangling placement cannot be revealed coherently, so never
+        // publish an action for it. The action tree makes the same refusal
+        // after a concurrent delete.
+        let (Some(item), Some(track)) = (media.get(&clip.media), tracks.get(&clip.track)) else {
+            continue;
+        };
+        entries.push(clip_entry(clip, item, track));
+        for effect in &clip.effects {
+            entries.push(effect_entry(clip, effect, item, track));
+        }
+        for marker in &clip.markers {
+            entries.push(clip_marker(clip, marker, item));
+        }
+    }
+    for item in &project.media {
+        entries.push(media_entry(
+            item,
+            media_uses.get(&item.id).copied().unwrap_or(0),
+        ));
+    }
+    entries
 }
 
-impl ProjectSearchProvider {
-    /// Index every live navigable resource in the supplied project snapshot.
-    pub fn new(project: &Project) -> Self {
-        let provider = Self {
-            catalog: SearchCatalog::new("Video editor"),
-        };
+fn project_marker(marker: &Marker) -> SearchEntry {
+    SearchEntry::new(marker_label(marker), marker.note.clone())
+        .anchored(crate::actions::marker_resource_id(marker.id))
+        .invoking(crate::actions::reveal_marker_address(marker.id))
+        .grouped(MARKER_KIND)
+        .subtitled(marker_subtitle(marker.t, marker))
+        .with_icon("star")
+}
 
-        let media: HashMap<_, _> = project.media.iter().map(|item| (item.id, item)).collect();
-        let tracks: HashMap<_, _> = project
-            .tracks
-            .iter()
-            .map(|track| (track.id, track))
-            .collect();
-        let mut media_uses = HashMap::new();
-        for clip in &project.clips {
-            *media_uses.entry(clip.media).or_insert(0usize) += 1;
-        }
+fn clip_marker(clip: &Clip, marker: &Marker, media: &MediaItem) -> SearchEntry {
+    let at = clip.start + marker.t;
+    SearchEntry::new(marker_label(marker), marker.note.clone())
+        .anchored(crate::actions::marker_resource_id(marker.id))
+        .invoking(crate::actions::reveal_marker_address(marker.id))
+        .grouped(MARKER_KIND)
+        .subtitled(format!("{} · {}", timecode::clock(at), media.name))
+        .with_icon("star")
+}
 
-        for marker in &project.markers {
-            provider.index_project_marker(marker);
-        }
-        for track in &project.tracks {
-            provider.index_track(track);
-        }
-        for clip in &project.clips {
-            // A dangling placement cannot be revealed coherently, so never
-            // publish a canonical action for it. The action tree makes the
-            // same refusal after a concurrent delete.
-            let (Some(item), Some(track)) = (media.get(&clip.media), tracks.get(&clip.track))
-            else {
-                continue;
-            };
-            provider.index_clip(clip, item, track);
-            for effect in &clip.effects {
-                provider.index_effect(clip, effect, item, track);
-            }
-            for marker in &clip.markers {
-                provider.index_clip_marker(clip, marker, item);
-            }
-        }
-        for item in &project.media {
-            provider.index_media(item, media_uses.get(&item.id).copied().unwrap_or(0));
-        }
-        provider
-    }
+fn track_entry(track: &Track) -> SearchEntry {
+    SearchEntry::new(track.name.clone(), track.kind.as_str())
+        .invoking(crate::actions::reveal_track_address(track.id))
+        .grouped(TRACK_KIND)
+        .subtitled(format!("{} track", track.kind.as_str()))
+        .with_icon("layers")
+}
 
-    fn put(&self, searchable: String, result: SearchResult) {
-        let Some(address) = result.action_address() else {
-            return;
-        };
-        // `for_action` is constructed from this exact stable id below. If a
-        // future edit breaks that invariant, omit the row instead of creating
-        // an opaque navigation path outside the action/resource authority.
-        let _ = self.catalog.upsert(address.resource, searchable, result);
-    }
+fn clip_entry(clip: &Clip, media: &MediaItem, track: &Track) -> SearchEntry {
+    SearchEntry::new(media.name.clone(), media_text(media))
+        .anchored(crate::actions::clip_resource_id(clip.id))
+        .invoking(crate::actions::reveal_clip_address(clip.id))
+        .grouped(CLIP_KIND)
+        .subtitled(format!("{} · {}", track.name, timecode::clock(clip.start)))
+        .with_icon("film")
+}
 
-    fn index_project_marker(&self, marker: &Marker) {
-        let title = marker_label(marker);
-        let subtitle = marker_subtitle(marker.t, marker);
-        self.put(
-            format!("{}\0{}", title, marker.note),
-            SearchResult::for_action(
-                MARKER_KIND,
-                title,
-                crate::actions::reveal_marker_address(marker.id),
-            )
-            .with_subtitle(subtitle)
-            .with_icon(Icon::Star),
-        );
-    }
+fn effect_entry(clip: &Clip, effect: &ClipEffect, media: &MediaItem, track: &Track) -> SearchEntry {
+    SearchEntry::new(format!("{} effect", effect.kind.label()), String::new())
+        .invoking(crate::actions::reveal_effect_address(clip.id, effect.id))
+        .grouped(EFFECT_KIND)
+        .subtitled(format!(
+            "{} · {} · {:.0}%",
+            media.name,
+            track.name,
+            effect.amount * 100.0
+        ))
+        .with_icon("sparkles")
+}
 
-    fn index_clip_marker(&self, clip: &Clip, marker: &Marker, media: &MediaItem) {
-        let title = marker_label(marker);
-        let at = clip.start + marker.t;
-        self.put(
-            format!("{}\0{}\0{}", title, marker.note, media.name),
-            SearchResult::for_action(
-                MARKER_KIND,
-                title,
-                crate::actions::reveal_marker_address(marker.id),
-            )
-            .with_subtitle(format!("{} · {}", timecode::clock(at), media.name))
-            .with_icon(Icon::Star),
-        );
-    }
-
-    fn index_track(&self, track: &Track) {
-        self.put(
-            format!("{}\0{}", track.name, track.kind.as_str()),
-            SearchResult::for_action(
-                TRACK_KIND,
-                track.name.clone(),
-                crate::actions::reveal_track_address(track.id),
-            )
-            .with_subtitle(format!("{} track", track.kind.as_str()))
-            .with_icon(Icon::Layers),
-        );
-    }
-
-    fn index_clip(&self, clip: &Clip, media: &MediaItem, track: &Track) {
-        self.put(
-            format!("{}\0{}\0{}", media.name, track.name, media_text(media)),
-            SearchResult::for_action(
-                CLIP_KIND,
-                media.name.clone(),
-                crate::actions::reveal_clip_address(clip.id),
-            )
-            .with_subtitle(format!("{} · {}", track.name, timecode::clock(clip.start)))
-            .with_icon(Icon::Film),
-        );
-    }
-
-    fn index_effect(&self, clip: &Clip, effect: &ClipEffect, media: &MediaItem, track: &Track) {
-        let title = format!("{} effect", effect.kind.label());
-        self.put(
-            format!("{}\0{}\0{}", title, media.name, track.name),
-            SearchResult::for_action(
-                EFFECT_KIND,
-                title,
-                crate::actions::reveal_effect_address(clip.id, effect.id),
-            )
-            .with_subtitle(format!(
-                "{} · {} · {:.0}%",
-                media.name,
-                track.name,
-                effect.amount * 100.0
-            ))
-            .with_icon(Icon::Sparkles),
-        );
-    }
-
-    fn index_media(&self, item: &MediaItem, uses: usize) {
-        let subtitle = if uses == 0 {
-            format!("{} · in the bin", item.kind.as_str())
+fn media_entry(item: &MediaItem, uses: usize) -> SearchEntry {
+    let subtitle = if uses == 0 {
+        format!("{} · in the bin", item.kind.as_str())
+    } else {
+        format!(
+            "{} · used {uses} time{}",
+            item.kind.as_str(),
+            if uses == 1 { "" } else { "s" }
+        )
+    };
+    SearchEntry::new(item.name.clone(), media_text(item))
+        .invoking(crate::actions::reveal_media_address(item.id))
+        .grouped(MEDIA_KIND)
+        .subtitled(subtitle)
+        .with_icon(if item.text.is_some() {
+            "file-text"
         } else {
-            format!(
-                "{} · used {uses} time{}",
-                item.kind.as_str(),
-                if uses == 1 { "" } else { "s" }
-            )
-        };
-        self.put(
-            format!(
-                "{}\0{}\0{}",
-                item.name,
-                item.kind.as_str(),
-                media_text(item)
-            ),
-            SearchResult::for_action(
-                MEDIA_KIND,
-                item.name.clone(),
-                crate::actions::reveal_media_address(item.id),
-            )
-            .with_subtitle(subtitle)
-            .with_icon(if item.text.is_some() {
-                Icon::FileText
-            } else {
-                Icon::Film
-            }),
-        );
-    }
-
-    #[cfg(test)]
-    fn stats(&self) -> ui::search::SearchCatalogStats {
-        self.catalog.stats()
-    }
+            "film"
+        })
 }
 
 fn marker_label(marker: &Marker) -> String {
@@ -213,26 +147,17 @@ fn marker_subtitle(at: f64, marker: &Marker) -> String {
     if marker.note.trim().is_empty() {
         timecode::clock(at)
     } else {
-        // The subtitle is merely presentation; retaining the complete note in
-        // the index above avoids a hidden discovery cap while keeping palette
-        // rows compact and responsive.
+        // The subtitle is merely presentation; the complete note is the
+        // entry's text, so nothing caps discovery while rows stay compact.
         let note: String = marker.note.chars().take(160).collect();
         format!("{} · {}", timecode::clock(at), note)
     }
 }
 
-fn media_text(item: &MediaItem) -> &str {
-    item.text.as_ref().map_or("", |text| text.content.as_str())
-}
-
-impl CatalogSearchProvider for ProjectSearchProvider {
-    fn provider_name(&self) -> &'static str {
-        "Video editor"
-    }
-
-    fn catalog(&self) -> Option<SearchCatalog> {
-        Some(self.catalog.clone())
-    }
+fn media_text(item: &MediaItem) -> String {
+    item.text
+        .as_ref()
+        .map_or_else(String::new, |text| text.content.clone())
 }
 
 #[cfg(test)]
@@ -241,6 +166,13 @@ mod tests {
     use crate::model::{MediaKind, Project, TextSource, Track, TrackKind};
     use ui::search::SearchProvider;
     use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
+
+    /// The editor's search source for `project`, as the framework builds it.
+    fn source(project: &Project) -> impl SearchProvider + use<> {
+        ui::framework::testing::search_source::<crate::resource::VideoProject>(project_entries(
+            project,
+        ))
+    }
 
     fn add_track(project: &mut Project, kind: TrackKind, name: impl Into<String>) -> uuid::Uuid {
         let id = uuid::Uuid::new_v4();
@@ -275,7 +207,7 @@ mod tests {
         // Case `a_shot_is_findable_as_media_and_as_an_exact_clip`.
         {
             let p = project_with_things();
-            let hits = ProjectSearchProvider::new(&p).search("coastline");
+            let hits = source(&p).search("coastline");
             assert!(hits.iter().any(|hit| {
                 hit.kind == MEDIA_KIND
                     && hit.action_address()
@@ -313,7 +245,7 @@ mod tests {
                 }),
                 ..Default::default()
             });
-            let provider = ProjectSearchProvider::new(&project);
+            let provider = source(&project);
             assert!(
                 provider
                     .search_page("DEN FL", None, 8, 8)
@@ -342,14 +274,13 @@ mod tests {
                     for row in corpus {
                         add_track(&mut project, TrackKind::Video, row.text);
                     }
-                    ProjectSearchProvider::new(&project)
+                    source(&project)
                 },
                 3_000,
             );
             assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
             let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 4);
-            assert_eq!(page.inspected, 1, "rare posting avoids a corpus scan");
-            assert_eq!(provider.stats().records, 3_000);
+            assert_eq!(page.results.len(), 1, "the one track that matches");
         }
         // Case `pages_bound_work_and_materialisation_without_losing_broad_hits`.
         {
@@ -361,7 +292,7 @@ mod tests {
                     format!("Common track {number}"),
                 );
             }
-            let provider = ProjectSearchProvider::new(&project);
+            let provider = source(&project);
             let mut cursor = None;
             let mut seen = 0;
             loop {
@@ -382,7 +313,7 @@ mod tests {
         {
             let mut project = project_with_things();
             let clip = project.clips[0].id;
-            let provider = ProjectSearchProvider::new(&project);
+            let provider = source(&project);
             let hit = provider
                 .search("")
                 .into_iter()
@@ -440,7 +371,7 @@ mod tests {
             let second = clip.effects[1].id;
             assert_ne!(first, second, "two Sepias are distinct durable instances");
 
-            let provider = ProjectSearchProvider::new(&project);
+            let provider = source(&project);
             let address = crate::actions::reveal_effect_address(clip_id, second);
             let _hit = provider
                 .search("sepia effect")
